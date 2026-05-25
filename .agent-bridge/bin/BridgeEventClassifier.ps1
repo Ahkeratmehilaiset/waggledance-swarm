@@ -59,19 +59,42 @@ function Test-BridgeMessageAnswerStatus {
     ) -contains $Status
 }
 
+function Test-BridgeRequesterClosureStatus {
+    param([AllowEmptyString()] [string] $Status)
+
+    if (@(
+        'done','closed','superseded','merged','abandoned',
+        'completed','approved','cancelled','canceled'
+    ) -contains $Status) {
+        return $true
+    }
+
+    foreach ($prefix in @(
+        'done_','closed_','superseded_','merged_','abandoned_',
+        'completed_','approved_','cancelled_','canceled_'
+    )) {
+        if ($Status.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Test-BridgeRequesterClosureEvent {
     param([Parameter(Mandatory)] [object] $Event)
 
     $status = [string]$Event.status
     $type = [string]$Event.type
     if ($type -eq 'message') {
-        return @('closed','superseded','cancelled','canceled') -contains $status
+        return @('closed','superseded','cancelled','canceled') -contains $status -or
+            $status.StartsWith('closed_', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $status.StartsWith('superseded_', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $status.StartsWith('cancelled_', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $status.StartsWith('canceled_', [System.StringComparison]::OrdinalIgnoreCase)
     }
     if (@('done','release','decision') -notcontains $type) { return $false }
-    return @(
-        'done','closed','superseded','merged','abandoned',
-        'completed','approved','cancelled','canceled'
-    ) -contains $status
+    return (Test-BridgeRequesterClosureStatus -Status $status)
 }
 
 function Test-BridgeRequestLikeEvent {

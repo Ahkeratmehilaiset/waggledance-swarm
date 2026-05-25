@@ -188,10 +188,10 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
     errors: list[str] = []
     verifier_report = verify_manifest(manifest_path)
     errors.extend(str(error) for error in verifier_report.get("errors", []))
-    manifest = _read_json(manifest_path)
-    entries = manifest.get("entries", [])
+    manifest = _read_json_object(manifest_path, errors, "manifest")
+    entries = manifest.get("entries", []) if manifest is not None else []
     verified = 0
-    if not isinstance(entries, list) or not entries:
+    if manifest is not None and (not isinstance(entries, list) or not entries):
         errors.append("manifest: entries must be a non-empty array")
         entries = []
     for index, entry in enumerate(entries, 1):
@@ -237,9 +237,19 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
             errors.append(f"entry {index}: referenced JSON artifact missing")
             continue
 
-        rco_artifact = _read_json(rco_path)
-        receipt = _read_json(receipt_path)
-        evaluation = _read_json(evaluation_path)
+        rco_artifact = _read_json_object(
+            rco_path,
+            errors,
+            f"entry {index}: rco_decision_artifact",
+        )
+        receipt = _read_json_object(receipt_path, errors, f"entry {index}: receipt")
+        evaluation = _read_json_object(
+            evaluation_path,
+            errors,
+            f"entry {index}: evaluation_result",
+        )
+        if rco_artifact is None or receipt is None or evaluation is None:
+            continue
         try:
             validate_rco_decision_artifact(rco_artifact)
         except ValueError as exc:
@@ -252,11 +262,12 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
         if evaluation.get("actual_gate") != rco_artifact.get("gate_decision"):
             errors.append(f"entry {index}: evaluation actual_gate does not match RCO artifact")
         verified += 1
+    deduped_errors = _dedupe_errors(errors)
     return {
-        "ok": not errors,
+        "ok": not deduped_errors,
         "receipt_count": int(verifier_report.get("receipt_count", 0)),
         "rco_artifact_count": verified,
-        "errors": errors,
+        "errors": deduped_errors,
     }
 
 
@@ -274,8 +285,34 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _read_json_object(
+    path: Path,
+    errors: list[str],
+    label: str,
+) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        errors.append(f"{label}: cannot read JSON file ({exc.__class__.__name__})")
+        return None
+    except json.JSONDecodeError as exc:
+        errors.append(f"{label}: invalid JSON at line {exc.lineno} column {exc.colno}")
+        return None
+    if not isinstance(value, dict):
+        errors.append(f"{label}: must be a JSON object")
+        return None
+    return value
+
+
+def _dedupe_errors(errors: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for error in errors:
+        if error in seen:
+            continue
+        seen.add(error)
+        deduped.append(error)
+    return deduped
 
 
 def _entry_path(

@@ -142,6 +142,38 @@ def test_rejects_rco_artifact_raw_unsafe_segments(tmp_path: Path) -> None:
         )
 
 
+def test_invalid_manifest_json_fails_closed_without_path_leak(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{ malformed\n", encoding="utf-8")
+
+    report = verify_rco_receipt_binding(manifest_path)
+
+    assert report["ok"] is False
+    assert report["rco_artifact_count"] == 0
+    assert any("manifest: invalid JSON" in error for error in report["errors"])
+    assert str(tmp_path) not in "\n".join(report["errors"])
+
+
+def test_invalid_rco_artifact_json_fails_closed_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "rco-demo"
+    build_rco_receipt_binding_demo(
+        out_dir=out_dir,
+        now_utc=datetime.fromisoformat("2026-05-20T12:00:00+00:00"),
+    )
+    (out_dir / "rco-decision-001.json").write_text("{ malformed\n", encoding="utf-8")
+
+    report = verify_rco_receipt_binding(out_dir / "manifest.json")
+
+    assert report["ok"] is False
+    assert report["rco_artifact_count"] == 0
+    assert any(
+        "rco_decision_artifact: invalid JSON" in error for error in report["errors"]
+    )
+    assert str(out_dir) not in "\n".join(report["errors"])
+
+
 def test_cli_emits_json_and_does_not_leak_private_marker(tmp_path: Path) -> None:
     out_dir = tmp_path / "rco-demo"
 

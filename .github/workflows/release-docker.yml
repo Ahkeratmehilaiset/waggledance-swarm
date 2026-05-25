@@ -75,7 +75,7 @@ jobs:
 
       # Canonical image (full tag from operator decision 2 / 3)
       - name: Build and push canonical image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile

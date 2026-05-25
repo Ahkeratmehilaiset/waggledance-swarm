@@ -87,7 +87,18 @@ foreach ($req in $requestsForAgent) {
             Sort-Object ts_utc |
             Select-Object -Last 1
     )
-    if ($answer.Count -eq 0) {
+    $requesterClosure = @(
+        $events |
+            Where-Object {
+                [string]$_.agent -eq [string]$req.agent -and
+                [string]$_.task_id -eq [string]$req.task_id -and
+                [string]$_.ts_utc -gt [string]$req.ts_utc -and
+                (Test-BridgeRequesterClosureEvent -Event $_)
+            } |
+            Sort-Object ts_utc |
+            Select-Object -Last 1
+    )
+    if ($answer.Count -eq 0 -and $requesterClosure.Count -eq 0) {
         [void]$openRequests.Add($req)
     }
 }

@@ -118,6 +118,12 @@ try {
     Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:30.0000000Z' `
         -Agent codex -Type done -TaskId done-request-remains-actionable-2026-05-11 `
         -Status request -To claude -Message 'done/request is still a request'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:40.0000000Z' `
+        -Agent claude -Type message -TaskId requester-closed-next-action-2026-05-11 `
+        -Status request -To codex -Message 'request later closed by requester'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:50.0000000Z' `
+        -Agent claude -Type done -TaskId requester-closed-next-action-2026-05-11 `
+        -Status merged_post_merge_ci_green -To codex -Message 'requester closed after merge'
 
     $status = (& $statusScript -Json -Tail 100 | ConvertFrom-Json)
     $waitingOwnershipForClaude = @(
@@ -190,6 +196,10 @@ try {
     $next = (& $nextActionScript -Agent codex -Json -Tail 100 | ConvertFrom-Json)
     Add-Check -Name 'next-action no longer asks Codex to answer already-answered postchat' `
         -Passed (-not ([string]$next.task_id -eq 'claude-codex-postchat-2026-05-11' -and [string]$next.action -eq 'answer_incoming')) `
+        -Detail "action=$($next.action), task=$($next.task_id)"
+
+    Add-Check -Name 'next-action ignores requests closed by requester' `
+        -Passed (-not ([string]$next.task_id -eq 'requester-closed-next-action-2026-05-11' -and [string]$next.action -eq 'answer_incoming')) `
         -Detail "action=$($next.action), task=$($next.task_id)"
 
     Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:59:00.0000000Z' `

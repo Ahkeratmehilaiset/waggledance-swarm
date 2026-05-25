@@ -43,7 +43,7 @@ class OpusMTAdapter:
                     return result[0]
                 return str(result)
             except Exception:
-                pass
+                log.debug("Translation proxy fi_to_en fallback failed", exc_info=True)
         return self._direct_translate(text, "fi", "en")
 
     def en_to_fi(self, text):
@@ -58,7 +58,7 @@ class OpusMTAdapter:
                     return result[0]
                 return str(result)
             except Exception:
-                pass
+                log.debug("Translation proxy en_to_fi fallback failed", exc_info=True)
         return self._direct_translate(text, "en", "fi")
 
     def _direct_translate(self, text, src, tgt):

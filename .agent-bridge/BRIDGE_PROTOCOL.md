@@ -124,11 +124,18 @@ distinct worktrees/branches while the source repo branch remains unchanged.
 Claim records carry a `last_heartbeat_utc` field that is bumped
 by `Send-Liveness.ps1` on every `liveness/active` and
 `heartbeat/active` event for the claim's owning agent. If
-`now - last_heartbeat_utc` exceeds the lease threshold
-(default 300s, override via `AGENT_BRIDGE_STALE_LEASE_SECONDS`),
-the claim is automatically archived to
+`now` is at or past the claim's effective lease expiry, the claim
+is automatically archived to
 `work_queue/done/<task>.<utc>.stale_lease.json` and a
 `release/stale_lease` event is emitted by the `system` agent.
+
+The default lease threshold is 300s, overridden by
+`AGENT_BRIDGE_STALE_LEASE_SECONDS` or by passing `-StaleSeconds` to
+`Invoke-StaleClaimSweep.ps1`. New claim records also carry
+per-claim lease fields. A positive `lease_seconds` value replaces
+the global threshold for that claim, and a later
+`claim_lease_expires_utc` extends the effective expiry. Legacy
+claims without those fields still use the global threshold.
 
 The sweep is opportunistic: every call to
 `Read-AgentBridge.ps1` and `Get-AgentBridgeStatus.ps1` runs
@@ -146,9 +153,10 @@ To verify the sweep works on your setup:
 .\.agent-bridge\bin\Test-BridgeStaleLeaseSmoke.ps1
 ```
 
-10/10 pass on a healthy bridge. Covers stale auto-release,
+13/13 pass on a healthy bridge. Covers stale auto-release,
 fresh-claim-not-swept, heartbeat-extends-lease, operator/system
-immunity, and the env-var threshold contract.
+immunity, per-claim lease fields, and the env-var threshold
+contract.
 
 R23.1 adds a session heartbeat job so long-running active turns do
 not accidentally let claims expire while tests or model reasoning run.
@@ -252,14 +260,22 @@ operation lock / lease for TOCTOU).
      receive a substantive reply with the same `task_id`.
    - `message/received` only proves the target has seen it. It never
      satisfies the reply requirement.
-   - A valid reply is `done/*`, `finding/*`, `decision/*`, `blocked/*`,
-     `handoff/*`, `test/*`, or `message/answered`.
+   - A valid target reply is `done/*`, `finding/*`, `decision/*`,
+     `blocked/*`, `handoff/*`, `test/*`, or `message/answered`.
    - If an agent disagrees, it must say why and propose the smallest safe
      alternative. Silence is treated as unresolved work.
    - If the original requester later proves the request is obsolete, it may
-     close the request with the same `task_id` using `done/superseded`,
-     `done/closed`, `decision/superseded`, or `release/done`. Status tools
-     report this as `closed`, not as an answer from the target agent.
+     close the request with the same `task_id`. For `done`, `release`,
+     and `decision`, closeout statuses are `done`, `closed`,
+     `superseded`, `merged`, `abandoned`, `completed`, `approved`,
+     `cancelled`/`canceled`, or a descriptive underscore-suffixed form
+     of one of those stems such as `superseded_availability_ping` or
+     `merged_post_merge_ci_green`. For `message`, only `closed`,
+     `superseded`, `cancelled`/`canceled`, and their underscore-suffixed
+     forms close a request. Status tools report requester closeout as
+     `closed`, not as an answer from the target agent.
+   - `done/request` is still request-like work. Do not use it as a
+     closeout status.
 
 7. Alternate review loops.
    - For meaningful bridge/protocol/source changes, run the

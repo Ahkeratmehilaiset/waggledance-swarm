@@ -1233,6 +1233,22 @@ def test_repository_evidence_dir_jamjet_static_artifact_stays_not_passing() -> N
         jamjet["artifact_proof"]["local_artifact_sha256"]
         == "sha256:9004288030d50c41da509d0e189a1f79aba5333e73c476f5ea3e817f64ba28bc"
     )
+    assert jamjet["blocker_detail"] == (
+        "The required JamJet rival check needs a policy/audit/replay smoke "
+        "with no cloud dependency. This artifact only proves that a pinned "
+        "wheel was inspected and that relevant modules are present."
+    )
+    assert jamjet["artifact_observation_details"][
+        "policy_audit_or_replay_smoke"
+    ] == {
+        "ok": False,
+        "offline": True,
+        "summary": (
+            "Not executed. Static wheel inspection found "
+            "policy/audit/replay-related modules, but no local "
+            "policy/audit/replay smoke was run in this artifact."
+        ),
+    }
     assert jamjet["consensus_grade_contribution"] is False
     assert preloop["local_status"] == "not_passed"
     assert preloop["blocker"] == "smoke_result is not passed"
@@ -1242,6 +1258,23 @@ def test_repository_evidence_dir_jamjet_static_artifact_stays_not_passing() -> N
         preloop["artifact_proof"]["local_artifact_sha256"]
         == "sha256:3dbf07f70b700a917be0afdcc893b6dfb22c59403763b369470f35d1d41e53ae"
     )
+    assert preloop["blocker_detail"] == (
+        "The required Preloop rival check needs an MCP allow/deny/approval "
+        "smoke. This artifact only records pinned public package/source "
+        "metadata and deliberately must not contribute to consensus_grade."
+    )
+    assert preloop["artifact_observation_details"][
+        "mcp_allow_deny_approval_smoke"
+    ] == {
+        "ok": False,
+        "offline": False,
+        "summary": (
+            "Not executed. Static public metadata inspection found a "
+            "Preloop 0.9.3 PyPI release, Apache-2.0/self-hostable claims, "
+            "MCP firewall and approval workflow claims, but no local MCP "
+            "allow/deny/approval smoke was run in this artifact."
+        ),
+    }
     assert preloop["consensus_grade_contribution"] is False
     assert agt["local_status"] == "passed"
     assert asqav["local_status"] == "cloud_dependent"

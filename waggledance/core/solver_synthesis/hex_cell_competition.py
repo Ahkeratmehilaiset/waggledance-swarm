@@ -30,6 +30,21 @@ HEX_CELL_PROMOTION_ACCEPTANCE_STATUS = "operator_gate_required"
 HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE = (
     "solver_provenance_operator_activation"
 )
+HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION = (
+    "hex_cell_operator_gate_authorization.v0"
+)
+HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS = (
+    "operator_gate_cleared_activation_authorized"
+)
+HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE = (
+    "solver_provenance_receipt_bound_activation"
+)
+HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE = (
+    "hex_cell.operator_gate_authorization"
+)
+HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR = (
+    "same_inputs_same_authorization_digest_no_runtime_mutation"
+)
 
 
 @dataclass(frozen=True)
@@ -150,6 +165,86 @@ class HexCellPromotionAcceptance:
             "required_next_gate": self.required_next_gate,
             "operator_gate_required": self.operator_gate_required,
             "operator_gate_cleared": self.operator_gate_cleared,
+            "runtime_authority_granted": self.runtime_authority_granted,
+            "runtime_traffic_mutation_applied": (
+                self.runtime_traffic_mutation_applied
+            ),
+            "candidate_state_mutation_applied": (
+                self.candidate_state_mutation_applied
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class HexCellOperatorGateAuthorization:
+    """Operator approval handoff after non-authority promotion acceptance.
+
+    The artifact clears the operator gate for downstream solver provenance
+    activation. It does not apply runtime authority or mutate candidate state.
+    """
+
+    schema_version: str
+    authorization_id: str
+    acceptance_id: str
+    competition_id: str
+    cell_id: str
+    capability_id: str
+    accepted_candidate_id: str
+    rejected_candidate_ids: tuple[str, ...]
+    competition_evidence_digest: str
+    acceptance_digest: str
+    acceptance_receipt_digest: str
+    authorization_digest: str
+    evidence_digest_algorithm: str
+    operator_approval_id: str
+    approved_by: str
+    operator_decision: str
+    operator_scope: str
+    authority_status: str
+    required_next_gate: str
+    required_receipt_event_type: str
+    receipt_ordering_enforced: bool
+    authorization_receipt_required_before_runtime_authority: bool
+    duplicate_retry_behavior: str
+    operator_gate_required: bool
+    operator_gate_cleared: bool
+    operator_authorized_activation: bool
+    runtime_authority_granted: bool
+    runtime_traffic_mutation_applied: bool
+    candidate_state_mutation_applied: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": self.schema_version,
+            "authorization_id": self.authorization_id,
+            "acceptance_id": self.acceptance_id,
+            "competition_id": self.competition_id,
+            "cell_id": self.cell_id,
+            "capability_id": self.capability_id,
+            "accepted_candidate_id": self.accepted_candidate_id,
+            "rejected_candidate_ids": list(self.rejected_candidate_ids),
+            "competition_evidence_digest": self.competition_evidence_digest,
+            "acceptance_digest": self.acceptance_digest,
+            "acceptance_receipt_digest": self.acceptance_receipt_digest,
+            "authorization_digest": self.authorization_digest,
+            "evidence_digest_algorithm": self.evidence_digest_algorithm,
+            "operator_approval_id": self.operator_approval_id,
+            "approved_by": self.approved_by,
+            "operator_decision": self.operator_decision,
+            "operator_scope": self.operator_scope,
+            "authority_status": self.authority_status,
+            "required_next_gate": self.required_next_gate,
+            "required_receipt_event_type": self.required_receipt_event_type,
+            "receipt_ordering_enforced": self.receipt_ordering_enforced,
+            "authorization_receipt_required_before_runtime_authority": (
+                self.authorization_receipt_required_before_runtime_authority
+            ),
+            "duplicate_retry_behavior": self.duplicate_retry_behavior,
+            "operator_gate_required": self.operator_gate_required,
+            "operator_gate_cleared": self.operator_gate_cleared,
+            "operator_authorized_activation": (
+                self.operator_authorized_activation
+            ),
             "runtime_authority_granted": self.runtime_authority_granted,
             "runtime_traffic_mutation_applied": (
                 self.runtime_traffic_mutation_applied
@@ -283,27 +378,19 @@ def build_hex_cell_promotion_acceptance(
         )
 
     rejected_ids = tuple(competition.loser_ids)
-    payload = {
-        "schema_version": HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
-        "competition_id": competition.competition_id,
-        "cell_id": competition.cell_id,
-        "capability_id": competition.capability_id,
-        "accepted_candidate_id": accepted_id,
-        "rejected_candidate_ids": list(rejected_ids),
-        "competition_evidence_digest": competition.evidence_digest,
-        "promotion_acceptance_status": HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
-        "required_next_gate": HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
-        "operator_gate_required": True,
-        "operator_gate_cleared": False,
-        "runtime_authority_granted": False,
-        "runtime_traffic_mutation_applied": False,
-        "candidate_state_mutation_applied": False,
-    }
+    payload = _promotion_acceptance_payload(
+        competition_id=competition.competition_id,
+        cell_id=competition.cell_id,
+        capability_id=competition.capability_id,
+        accepted_candidate_id=accepted_id,
+        rejected_candidate_ids=rejected_ids,
+        competition_evidence_digest=competition.evidence_digest,
+    )
     acceptance_digest = sha256_digest(payload)
-    acceptance_id = (
-        "hexcellaccept:"
-        f"{competition.cell_id}:{competition.capability_id}:"
-        f"{acceptance_digest.removeprefix('sha256:')[:16]}"
+    acceptance_id = _promotion_acceptance_id(
+        competition.cell_id,
+        competition.capability_id,
+        acceptance_digest,
     )
     return HexCellPromotionAcceptance(
         schema_version=HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
@@ -320,6 +407,102 @@ def build_hex_cell_promotion_acceptance(
         required_next_gate=HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
         operator_gate_required=True,
         operator_gate_cleared=False,
+        runtime_authority_granted=False,
+        runtime_traffic_mutation_applied=False,
+        candidate_state_mutation_applied=False,
+    )
+
+
+def build_hex_cell_operator_gate_authorization(
+    *,
+    acceptance: HexCellPromotionAcceptance,
+    operator_approval_id: str,
+    approved_by: str,
+    acceptance_receipt_digest: str,
+    operator_decision: str = "approved",
+    operator_scope: str = HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+) -> HexCellOperatorGateAuthorization:
+    """Build a deterministic operator-gate authorization artifact.
+
+    The caller must provide the receipt digest for the earlier promotion
+    acceptance before this handoff can be built. Duplicate retries with the
+    same accepted candidate, approval, and receipt digest return the same
+    authorization ID and digest, while runtime authority remains unapplied.
+    """
+    _validate_promotion_acceptance_for_operator_gate(acceptance)
+    normalized_approval_id = _require_non_empty(
+        "operator_approval_id",
+        operator_approval_id,
+    )
+    normalized_approved_by = _require_non_empty("approved_by", approved_by)
+    normalized_decision = _require_non_empty(
+        "operator_decision",
+        operator_decision,
+    )
+    if normalized_decision != "approved":
+        raise ValueError(
+            "hex-cell operator gate authorization requires "
+            "operator_decision 'approved'"
+        )
+    normalized_scope = _require_non_empty("operator_scope", operator_scope)
+    if normalized_scope != HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE:
+        raise ValueError(
+            "hex-cell operator gate authorization requires operator_scope "
+            f"{HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE!r}; got "
+            f"{normalized_scope!r}"
+        )
+    normalized_receipt_digest = _require_sha256_digest(
+        "acceptance_receipt_digest",
+        acceptance_receipt_digest,
+    )
+
+    payload = _operator_gate_authorization_payload(
+        acceptance=acceptance,
+        operator_approval_id=normalized_approval_id,
+        approved_by=normalized_approved_by,
+        operator_decision=normalized_decision,
+        operator_scope=normalized_scope,
+        acceptance_receipt_digest=normalized_receipt_digest,
+    )
+    authorization_digest = sha256_digest(payload)
+    authorization_id = _operator_gate_authorization_id(
+        acceptance.cell_id,
+        acceptance.capability_id,
+        authorization_digest,
+    )
+    return HexCellOperatorGateAuthorization(
+        schema_version=(
+            HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION
+        ),
+        authorization_id=authorization_id,
+        acceptance_id=acceptance.acceptance_id,
+        competition_id=acceptance.competition_id,
+        cell_id=acceptance.cell_id,
+        capability_id=acceptance.capability_id,
+        accepted_candidate_id=acceptance.accepted_candidate_id,
+        rejected_candidate_ids=tuple(acceptance.rejected_candidate_ids),
+        competition_evidence_digest=acceptance.competition_evidence_digest,
+        acceptance_digest=acceptance.acceptance_digest,
+        acceptance_receipt_digest=normalized_receipt_digest,
+        authorization_digest=authorization_digest,
+        evidence_digest_algorithm=HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        operator_approval_id=normalized_approval_id,
+        approved_by=normalized_approved_by,
+        operator_decision=normalized_decision,
+        operator_scope=normalized_scope,
+        authority_status=HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS,
+        required_next_gate=HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE,
+        required_receipt_event_type=(
+            HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE
+        ),
+        receipt_ordering_enforced=True,
+        authorization_receipt_required_before_runtime_authority=True,
+        duplicate_retry_behavior=(
+            HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR
+        ),
+        operator_gate_required=True,
+        operator_gate_cleared=True,
+        operator_authorized_activation=True,
         runtime_authority_granted=False,
         runtime_traffic_mutation_applied=False,
         candidate_state_mutation_applied=False,
@@ -453,6 +636,181 @@ def _validate_competition_evidence_integrity(
         )
 
 
+def _validate_promotion_acceptance_for_operator_gate(
+    acceptance: HexCellPromotionAcceptance,
+) -> None:
+    if acceptance.schema_version != HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION:
+        raise ValueError(
+            "hex-cell operator gate authorization requires promotion "
+            f"acceptance schema {HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION!r}; "
+            f"got {acceptance.schema_version!r}"
+        )
+    if (
+        acceptance.evidence_digest_algorithm
+        != HEX_CELL_COMPETITION_DIGEST_ALGORITHM
+    ):
+        raise ValueError(
+            "hex-cell operator gate authorization requires digest algorithm "
+            f"{HEX_CELL_COMPETITION_DIGEST_ALGORITHM!r}; got "
+            f"{acceptance.evidence_digest_algorithm!r}"
+        )
+    if acceptance.promotion_acceptance_status != (
+        HEX_CELL_PROMOTION_ACCEPTANCE_STATUS
+    ):
+        raise ValueError(
+            "hex-cell operator gate authorization requires acceptance "
+            "status operator_gate_required"
+        )
+    if acceptance.required_next_gate != HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE:
+        raise ValueError(
+            "hex-cell operator gate authorization requires next gate "
+            f"{HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE!r}; got "
+            f"{acceptance.required_next_gate!r}"
+        )
+    if acceptance.operator_gate_required is not True:
+        raise ValueError(
+            "hex-cell operator gate authorization requires operator gate"
+        )
+    if acceptance.operator_gate_cleared:
+        raise ValueError(
+            "hex-cell operator gate authorization refuses pre-cleared "
+            "operator gate"
+        )
+    if acceptance.runtime_authority_granted:
+        raise ValueError(
+            "hex-cell operator gate authorization refuses pre-granted "
+            "runtime authority"
+        )
+    if acceptance.runtime_traffic_mutation_applied:
+        raise ValueError(
+            "hex-cell operator gate authorization refuses mutated "
+            "runtime traffic"
+        )
+    if acceptance.candidate_state_mutation_applied:
+        raise ValueError(
+            "hex-cell operator gate authorization refuses mutated "
+            "candidate state"
+        )
+
+    accepted_id = _require_non_empty(
+        "accepted_candidate_id",
+        acceptance.accepted_candidate_id,
+    )
+    rejected_ids = tuple(
+        _require_non_empty("rejected_candidate_id", candidate_id)
+        for candidate_id in acceptance.rejected_candidate_ids
+    )
+    if accepted_id in rejected_ids:
+        raise ValueError(
+            "hex-cell operator gate authorization refuses acceptance "
+            "where accepted candidate is also rejected"
+        )
+    _require_non_empty("competition_id", acceptance.competition_id)
+    _require_non_empty("cell_id", acceptance.cell_id)
+    _require_non_empty("capability_id", acceptance.capability_id)
+    _require_sha256_digest(
+        "competition_evidence_digest",
+        acceptance.competition_evidence_digest,
+    )
+    _require_sha256_digest("acceptance_digest", acceptance.acceptance_digest)
+
+    expected_digest = sha256_digest(_promotion_acceptance_payload(
+        competition_id=acceptance.competition_id,
+        cell_id=acceptance.cell_id,
+        capability_id=acceptance.capability_id,
+        accepted_candidate_id=accepted_id,
+        rejected_candidate_ids=rejected_ids,
+        competition_evidence_digest=acceptance.competition_evidence_digest,
+    ))
+    if acceptance.acceptance_digest != expected_digest:
+        raise ValueError(
+            "hex-cell operator gate authorization requires acceptance_digest "
+            "to match current acceptance fields"
+        )
+
+    expected_acceptance_id = _promotion_acceptance_id(
+        acceptance.cell_id,
+        acceptance.capability_id,
+        acceptance.acceptance_digest,
+    )
+    if acceptance.acceptance_id != expected_acceptance_id:
+        raise ValueError(
+            "hex-cell operator gate authorization requires acceptance_id to "
+            "match acceptance_digest"
+        )
+
+
+def _promotion_acceptance_payload(
+    *,
+    competition_id: str,
+    cell_id: str,
+    capability_id: str,
+    accepted_candidate_id: str,
+    rejected_candidate_ids: tuple[str, ...],
+    competition_evidence_digest: str,
+) -> dict:
+    return {
+        "schema_version": HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+        "competition_id": competition_id,
+        "cell_id": cell_id,
+        "capability_id": capability_id,
+        "accepted_candidate_id": accepted_candidate_id,
+        "rejected_candidate_ids": list(rejected_candidate_ids),
+        "competition_evidence_digest": competition_evidence_digest,
+        "promotion_acceptance_status": HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+        "required_next_gate": HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+        "operator_gate_required": True,
+        "operator_gate_cleared": False,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+
+
+def _operator_gate_authorization_payload(
+    *,
+    acceptance: HexCellPromotionAcceptance,
+    operator_approval_id: str,
+    approved_by: str,
+    operator_decision: str,
+    operator_scope: str,
+    acceptance_receipt_digest: str,
+) -> dict:
+    return {
+        "schema_version": HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION,
+        "acceptance_id": acceptance.acceptance_id,
+        "competition_id": acceptance.competition_id,
+        "cell_id": acceptance.cell_id,
+        "capability_id": acceptance.capability_id,
+        "accepted_candidate_id": acceptance.accepted_candidate_id,
+        "rejected_candidate_ids": list(acceptance.rejected_candidate_ids),
+        "competition_evidence_digest": acceptance.competition_evidence_digest,
+        "acceptance_digest": acceptance.acceptance_digest,
+        "acceptance_receipt_digest": acceptance_receipt_digest,
+        "evidence_digest_algorithm": HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        "operator_approval_id": operator_approval_id,
+        "approved_by": approved_by,
+        "operator_decision": operator_decision,
+        "operator_scope": operator_scope,
+        "authority_status": HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS,
+        "required_next_gate": HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE,
+        "required_receipt_event_type": (
+            HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE
+        ),
+        "receipt_ordering_enforced": True,
+        "authorization_receipt_required_before_runtime_authority": True,
+        "duplicate_retry_behavior": (
+            HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR
+        ),
+        "operator_gate_required": True,
+        "operator_gate_cleared": True,
+        "operator_authorized_activation": True,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+
+
 def _competition_evidence_payload(
     *,
     cell_id: str,
@@ -490,6 +848,30 @@ def _competition_id(
     )
 
 
+def _promotion_acceptance_id(
+    cell_id: str,
+    capability_id: str,
+    acceptance_digest: str,
+) -> str:
+    return (
+        "hexcellaccept:"
+        f"{cell_id}:{capability_id}:"
+        f"{acceptance_digest.removeprefix('sha256:')[:16]}"
+    )
+
+
+def _operator_gate_authorization_id(
+    cell_id: str,
+    capability_id: str,
+    authorization_digest: str,
+) -> str:
+    return (
+        "hexcellauth:"
+        f"{cell_id}:{capability_id}:"
+        f"{authorization_digest.removeprefix('sha256:')[:16]}"
+    )
+
+
 def _require_non_empty(field_name: str, value: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -497,17 +879,37 @@ def _require_non_empty(field_name: str, value: str) -> str:
     return normalized
 
 
+def _require_sha256_digest(field_name: str, value: str) -> str:
+    normalized = _require_non_empty(field_name, value)
+    if not normalized.startswith("sha256:"):
+        raise ValueError(f"{field_name} must be a sha256 digest")
+    suffix = normalized.removeprefix("sha256:")
+    hexdigits = "0123456789abcdef"
+    if len(suffix) != 64 or any(
+        char not in hexdigits for char in suffix.lower()
+    ):
+        raise ValueError(f"{field_name} must be a sha256 digest")
+    return normalized
+
+
 __all__ = [
     "CandidateCompetitionScore",
     "HexCellCompetitionResult",
+    "HexCellOperatorGateAuthorization",
     "HexCellPromotionAcceptance",
     "HEX_CELL_COMPETITION_AUTHORITY_STATUS",
     "HEX_CELL_COMPETITION_DIGEST_ALGORITHM",
     "HEX_CELL_COMPETITION_RANKING_RULE",
     "HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION",
+    "HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE",
+    "HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE",
+    "HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION",
+    "HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS",
+    "HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR",
     "HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE",
     "HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION",
     "HEX_CELL_PROMOTION_ACCEPTANCE_STATUS",
     "build_hex_cell_competition_result",
+    "build_hex_cell_operator_gate_authorization",
     "build_hex_cell_promotion_acceptance",
 ]

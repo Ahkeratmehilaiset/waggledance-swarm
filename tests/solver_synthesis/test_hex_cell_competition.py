@@ -14,15 +14,22 @@ from pathlib import Path
 
 import pytest
 
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.solver_synthesis.hex_cell_competition import (
     HEX_CELL_COMPETITION_AUTHORITY_STATUS,
     HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
     HEX_CELL_COMPETITION_RANKING_RULE,
     HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
+    HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE,
+    HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE,
+    HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION,
+    HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS,
+    HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR,
     HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
     HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
     HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
     build_hex_cell_competition_result,
+    build_hex_cell_operator_gate_authorization,
     build_hex_cell_promotion_acceptance,
 )
 from waggledance.core.solver_synthesis.solver_candidate_store import (
@@ -107,6 +114,14 @@ def _build_from_fixture(payload: dict):
         evidence_refs=evidence_refs,
     )
     return candidates, result
+
+
+def _acceptance_receipt_digest(acceptance) -> str:
+    return sha256_digest({
+        "event_type": "hex_cell.promotion_acceptance",
+        "acceptance_id": acceptance.acceptance_id,
+        "acceptance_digest": acceptance.acceptance_digest,
+    })
 
 
 def test_fixture_builds_expected_non_authority_result():
@@ -295,6 +310,190 @@ def test_promotion_acceptance_rejects_mutation_drift():
         build_hex_cell_promotion_acceptance(competition=runtime_drift)
     with pytest.raises(ValueError, match="mutated candidate state"):
         build_hex_cell_promotion_acceptance(competition=candidate_drift)
+
+
+def test_builds_operator_gate_authorization_without_runtime_mutation():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+
+    authorization = build_hex_cell_operator_gate_authorization(
+        acceptance=acceptance,
+        operator_approval_id="approval:hexcell:thermal:001",
+        approved_by="operator:jkh",
+        acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+    )
+
+    assert authorization.schema_version == (
+        HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION
+    )
+    assert authorization.acceptance_id == acceptance.acceptance_id
+    assert authorization.competition_id == acceptance.competition_id
+    assert authorization.cell_id == acceptance.cell_id
+    assert authorization.capability_id == acceptance.capability_id
+    assert authorization.accepted_candidate_id == (
+        acceptance.accepted_candidate_id
+    )
+    assert authorization.rejected_candidate_ids == (
+        acceptance.rejected_candidate_ids
+    )
+    assert authorization.competition_evidence_digest == (
+        acceptance.competition_evidence_digest
+    )
+    assert authorization.acceptance_digest == acceptance.acceptance_digest
+    assert authorization.evidence_digest_algorithm == (
+        HEX_CELL_COMPETITION_DIGEST_ALGORITHM
+    )
+    assert authorization.operator_decision == "approved"
+    assert authorization.operator_scope == (
+        HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE
+    )
+    assert authorization.authority_status == (
+        HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS
+    )
+    assert authorization.required_next_gate == (
+        HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE
+    )
+    assert authorization.required_receipt_event_type == (
+        HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE
+    )
+    assert authorization.receipt_ordering_enforced is True
+    assert (
+        authorization.authorization_receipt_required_before_runtime_authority
+        is True
+    )
+    assert authorization.duplicate_retry_behavior == (
+        HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR
+    )
+    assert authorization.operator_gate_required is True
+    assert authorization.operator_gate_cleared is True
+    assert authorization.operator_authorized_activation is True
+    assert authorization.runtime_authority_granted is False
+    assert authorization.runtime_traffic_mutation_applied is False
+    assert authorization.candidate_state_mutation_applied is False
+    assert authorization.authorization_id.startswith("hexcellauth:")
+    assert authorization.authorization_digest.startswith("sha256:")
+
+    as_dict = authorization.to_dict()
+    assert as_dict["operator_gate_cleared"] is True
+    assert as_dict["runtime_authority_granted"] is False
+    assert as_dict["runtime_traffic_mutation_applied"] is False
+    assert as_dict["candidate_state_mutation_applied"] is False
+
+
+def test_operator_gate_authorization_is_stable_for_duplicate_retry():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+    receipt_digest = _acceptance_receipt_digest(acceptance)
+
+    first = build_hex_cell_operator_gate_authorization(
+        acceptance=acceptance,
+        operator_approval_id="approval:hexcell:thermal:001",
+        approved_by="operator:jkh",
+        acceptance_receipt_digest=receipt_digest,
+    )
+    second = build_hex_cell_operator_gate_authorization(
+        acceptance=acceptance,
+        operator_approval_id="approval:hexcell:thermal:001",
+        approved_by="operator:jkh",
+        acceptance_receipt_digest=receipt_digest,
+    )
+
+    assert second.to_dict() == first.to_dict()
+
+
+def test_operator_gate_authorization_rejects_non_approved_decision():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+
+    with pytest.raises(ValueError, match="operator_decision 'approved'"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=acceptance,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            operator_decision="denied",
+            acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
+
+
+def test_operator_gate_authorization_rejects_wrong_scope():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+
+    with pytest.raises(ValueError, match="requires operator_scope"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=acceptance,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            operator_scope="external_effect_runtime_write",
+            acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
+
+
+def test_operator_gate_authorization_requires_acceptance_receipt_digest():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+
+    with pytest.raises(ValueError, match="acceptance_receipt_digest"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=acceptance,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest="sha256:fixture",
+        )
+
+
+def test_operator_gate_authorization_rejects_acceptance_digest_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+    drifted = replace(
+        acceptance,
+        capability_id="tampered-capability",
+    )
+
+    with pytest.raises(ValueError, match="acceptance_digest"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=drifted,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
+
+
+def test_operator_gate_authorization_rejects_precleared_authority_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+    cleared = replace(acceptance, operator_gate_cleared=True)
+    authorized = replace(acceptance, runtime_authority_granted=True)
+    mutated = replace(acceptance, runtime_traffic_mutation_applied=True)
+
+    with pytest.raises(ValueError, match="pre-cleared operator gate"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=cleared,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
+    with pytest.raises(ValueError, match="pre-granted runtime authority"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=authorized,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
+    with pytest.raises(ValueError, match="mutated runtime traffic"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=mutated,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
 
 
 def test_requires_at_least_two_candidates():

@@ -332,7 +332,7 @@ def _entry_path(
     ):
         errors.append(f"{context} path must be relative")
         return None
-    parts = PurePosixPath(raw_path).parts
+    parts = raw_path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         errors.append(f"{context} unsafe relative path")
         return None

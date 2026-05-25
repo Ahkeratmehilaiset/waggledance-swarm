@@ -204,6 +204,27 @@ def test_cli_rejects_manifest_entry_path_escape(tmp_path: Path) -> None:
     assert str(outside) not in combined
 
 
+def test_cli_rejects_manifest_entry_raw_unsafe_segments(tmp_path: Path) -> None:
+    unsafe_templates = (
+        "./{name}",
+        "{name}/",
+        "{name}/.",
+        "nested//{name}",
+    )
+    for index, template in enumerate(unsafe_templates):
+        manifest = _write_chain(tmp_path / f"chain-{index}")
+        manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+        first = manifest_json["entries"][0]
+        first["receipt"] = template.format(name=first["receipt"])
+        _write_json(manifest, manifest_json)
+
+        result = _run_verify(manifest, "--json")
+        combined = result.stdout + result.stderr
+
+        assert result.returncode == 1, combined
+        assert "receipt unsafe relative path" in combined
+
+
 def test_cli_can_check_expected_charter_and_policy_digests(tmp_path: Path) -> None:
     manifest = _write_chain(tmp_path / "chain")
 

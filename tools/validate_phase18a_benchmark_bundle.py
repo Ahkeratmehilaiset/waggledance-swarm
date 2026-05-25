@@ -39,7 +39,7 @@ import hashlib
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -317,6 +317,42 @@ def scan_forbidden_in_text(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Bundle-relative path helpers
+# ---------------------------------------------------------------------------
+
+def _safe_bundle_path(
+    bundle_dir: Path,
+    raw_path: Any,
+    context: str,
+    errors: list[str],
+) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path:
+        errors.append(f"{context}: invalid bundle-relative path {raw_path!r}")
+        return None
+    if "\\" in raw_path:
+        errors.append(f"{context}: path must use POSIX separators: {raw_path!r}")
+        return None
+    if (
+        PurePosixPath(raw_path).is_absolute()
+        or PureWindowsPath(raw_path).is_absolute()
+    ):
+        errors.append(f"{context}: path must be relative: {raw_path!r}")
+        return None
+    parts = PurePosixPath(raw_path).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        errors.append(f"{context}: unsafe relative path: {raw_path!r}")
+        return None
+
+    full = (bundle_dir / Path(*parts)).resolve()
+    try:
+        full.relative_to(bundle_dir)
+    except ValueError:
+        errors.append(f"{context}: path escapes bundle: {raw_path!r}")
+        return None
+    return full
+
+
+# ---------------------------------------------------------------------------
 # Main validator
 # ---------------------------------------------------------------------------
 
@@ -404,7 +440,11 @@ def validate_bundle(bundle_dir: Path) -> tuple[bool, list[str]]:
 
     # Verify every checksum.
     for relpath, expected in declared_checksums.items():
-        full = bundle_dir / relpath
+        full = _safe_bundle_path(
+            bundle_dir, relpath, f"checksums.sha256[{relpath}]", errors
+        )
+        if full is None:
+            continue
         if not full.is_file():
             errors.append(f"checksums.sha256: file not found: {relpath}")
             continue
@@ -416,7 +456,11 @@ def validate_bundle(bundle_dir: Path) -> tuple[bool, list[str]]:
     # 6. validate each artifact against its declared schema; sanitization scan
     for entry in artifact_index.get("artifacts", []):
         path_in_bundle = entry.get("path_in_bundle", "")
-        full = bundle_dir / path_in_bundle
+        full = _safe_bundle_path(
+            bundle_dir, path_in_bundle, f"artifact_index[{path_in_bundle}]", errors
+        )
+        if full is None:
+            continue
         if not full.is_file():
             errors.append(f"artifact_index: missing file {path_in_bundle}")
             continue
@@ -460,9 +504,18 @@ def validate_bundle(bundle_dir: Path) -> tuple[bool, list[str]]:
             errors.append(f"claim_ledger[{cid}]: label {c.get('label')!r} "
                             f"not in allowed labels")
         artpath = c.get("evidence_path_in_bundle", "")
-        full = bundle_dir / artpath if artpath else None
-        if (artpath
-                and (full is None or not full.is_file())):
+        full = (
+            _safe_bundle_path(
+                bundle_dir,
+                artpath,
+                f"claim_ledger[{cid}].evidence_path_in_bundle",
+                errors,
+            )
+            if artpath else None
+        )
+        if artpath and full is None:
+            continue
+        if artpath and full is not None and not full.is_file():
             errors.append(f"claim_ledger[{cid}]: evidence_path_in_bundle "
                             f"{artpath} not found")
             continue

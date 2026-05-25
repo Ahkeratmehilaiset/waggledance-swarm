@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -74,6 +75,103 @@ def test_tampered_rco_artifact_breaks_binding_report(tmp_path: Path) -> None:
     assert report["ok"] is False
     assert any("rco_decision_digest mismatch" in error for error in report["errors"])
     assert any("actual_gate does not match" in error for error in report["errors"])
+
+
+def test_rejects_rco_artifact_path_escape(tmp_path: Path) -> None:
+    out_dir = tmp_path / "rco-demo"
+    build_rco_receipt_binding_demo(
+        out_dir=out_dir,
+        now_utc=datetime.fromisoformat("2026-05-20T12:00:00+00:00"),
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copy2(
+        out_dir / "rco-decision-001.json",
+        outside / "rco-decision-001.json",
+    )
+    manifest_path = out_dir / "manifest.json"
+    manifest = _read_json(manifest_path)
+    manifest["entries"][0]["rco_decision_artifact"] = (
+        "../outside/rco-decision-001.json"
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    report = verify_rco_receipt_binding(manifest_path)
+
+    assert report["ok"] is False
+    assert any(
+        "rco_decision_artifact unsafe relative path" in error
+        for error in report["errors"]
+    )
+    assert str(outside) not in "\n".join(report["errors"])
+
+
+def test_rejects_rco_artifact_raw_unsafe_segments(tmp_path: Path) -> None:
+    unsafe_templates = (
+        "./{name}",
+        "{name}/",
+        "{name}/.",
+        "nested//{name}",
+    )
+    for index, template in enumerate(unsafe_templates):
+        out_dir = tmp_path / f"rco-demo-{index}"
+        build_rco_receipt_binding_demo(
+            out_dir=out_dir,
+            now_utc=datetime.fromisoformat("2026-05-20T12:00:00+00:00"),
+        )
+        manifest_path = out_dir / "manifest.json"
+        manifest = _read_json(manifest_path)
+        entry = manifest["entries"][0]
+        entry["rco_decision_artifact"] = template.format(
+            name=entry["rco_decision_artifact"],
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        report = verify_rco_receipt_binding(manifest_path)
+
+        assert report["ok"] is False
+        assert any(
+            "rco_decision_artifact unsafe relative path" in error
+            for error in report["errors"]
+        )
+
+
+def test_invalid_manifest_json_fails_closed_without_path_leak(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{ malformed\n", encoding="utf-8")
+
+    report = verify_rco_receipt_binding(manifest_path)
+
+    assert report["ok"] is False
+    assert report["rco_artifact_count"] == 0
+    assert any("manifest: invalid JSON" in error for error in report["errors"])
+    assert str(tmp_path) not in "\n".join(report["errors"])
+
+
+def test_invalid_rco_artifact_json_fails_closed_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "rco-demo"
+    build_rco_receipt_binding_demo(
+        out_dir=out_dir,
+        now_utc=datetime.fromisoformat("2026-05-20T12:00:00+00:00"),
+    )
+    (out_dir / "rco-decision-001.json").write_text("{ malformed\n", encoding="utf-8")
+
+    report = verify_rco_receipt_binding(out_dir / "manifest.json")
+
+    assert report["ok"] is False
+    assert report["rco_artifact_count"] == 0
+    assert any(
+        "rco_decision_artifact: invalid JSON" in error for error in report["errors"]
+    )
+    assert str(out_dir) not in "\n".join(report["errors"])
 
 
 def test_cli_emits_json_and_does_not_leak_private_marker(tmp_path: Path) -> None:

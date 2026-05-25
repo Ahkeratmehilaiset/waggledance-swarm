@@ -263,6 +263,20 @@ def test_missing_events_file_returns_unknown_without_bridge_write(tmp_path: Path
     assert not (tmp_path / "scratch").exists()
 
 
+def test_path_like_proposal_id_is_refused_before_scratch_write(tmp_path: Path) -> None:
+    outside = tmp_path / "escape.json"
+    outside.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(IdleRunnerError) as excinfo:
+        _run(tmp_path, emit=False, proposal_id="../escape")
+
+    assert excinfo.value.report["decision"] == "invalid_proposal_id"
+    assert excinfo.value.report["emitted"] is False
+    assert outside.read_text(encoding="utf-8") == "keep"
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    assert not (tmp_path / "scratch").exists()
+
+
 def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     events_path = tmp_path / "events.jsonl"

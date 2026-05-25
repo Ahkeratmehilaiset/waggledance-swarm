@@ -125,6 +125,23 @@
       }
     },
     {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "enum": ["informational", "internal_memory", "local_artifact"]
+          }
+        },
+        "required": ["risk_class"]
+      },
+      "then": {
+        "properties": {
+          "approval_id": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
       "oneOf": [
         {
           "properties": {

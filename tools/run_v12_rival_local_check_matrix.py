@@ -38,6 +38,17 @@ REQUIRED_EVIDENCE_FIELDS = (
     "cloud_dependency",
     "evidence_type",
 )
+REQUIRED_EVIDENCE_FIELD_TYPES = {
+    "evidence_manifest_contract_version": str,
+    "rival": str,
+    "pinned_revision": str,
+    "local_artifact_path": str,
+    "local_artifact_sha256": str,
+    "smoke_command": str,
+    "smoke_result": str,
+    "cloud_dependency": bool,
+    "evidence_type": str,
+}
 REQUIRED_EVIDENCE_ARTIFACT_FIELDS = (
     "evidence_artifact_contract_version",
     "rival",
@@ -48,6 +59,16 @@ REQUIRED_EVIDENCE_ARTIFACT_FIELDS = (
     "evidence_type",
     "observations",
 )
+REQUIRED_EVIDENCE_ARTIFACT_FIELD_TYPES = {
+    "evidence_artifact_contract_version": str,
+    "rival": str,
+    "pinned_revision": str,
+    "smoke_result": str,
+    "offline": bool,
+    "ok": bool,
+    "evidence_type": str,
+    "observations": dict,
+}
 PASSING_SMOKE_RESULT = "passed"
 ALLOWED_EVIDENCE_TYPES = {"local_inspection", "local_smoke"}
 REQUIRED_OBSERVATIONS_BY_RIVAL = {
@@ -356,6 +377,10 @@ def render_markdown(report: dict[str, Any]) -> str:
                 for rival, observations in REQUIRED_OBSERVATIONS_BY_RIVAL.items()
             ),
             "",
+            "Each required observation must set `ok=true`, `offline=true`,",
+            "and include a non-empty string `summary` describing the local",
+            "evidence that was inspected or smoked.",
+            "",
         ]
     )
     return "\n".join(lines)
@@ -426,6 +451,17 @@ def _build_check_row(
             "local_status": "invalid_manifest",
             "blocker": "missing required fields: " + ", ".join(missing),
         }
+    type_error = _required_field_type_error(
+        manifest,
+        REQUIRED_EVIDENCE_FIELD_TYPES,
+        "manifest field",
+    )
+    if type_error:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": type_error,
+        }
     if str(manifest.get("rival")) != rival:
         return {
             **base,
@@ -477,6 +513,13 @@ def _build_check_row(
                 evidence_root=evidence_root,
                 manifest=manifest,
             ),
+        }
+    placeholder_error = _passing_manifest_placeholder_error(manifest)
+    if placeholder_error:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": placeholder_error,
         }
     artifact_result = _validate_local_artifact(
         evidence_root=evidence_root,
@@ -608,11 +651,16 @@ def _lightweight_artifact_proof(
         return base
 
     try:
-        json.loads(artifact_text)
+        artifact_json = json.loads(artifact_text)
     except json.JSONDecodeError as exc:
         base["artifact_digest_reason"] = (
             f"local artifact is not valid UTF-8 JSON: {exc}"
         )
+        base["local_artifact_path"] = str(artifact_path)
+        base["local_artifact_sha256"] = actual_digest
+        return base
+    if not isinstance(artifact_json, dict):
+        base["artifact_digest_reason"] = "local artifact JSON must be an object"
         base["local_artifact_path"] = str(artifact_path)
         base["local_artifact_sha256"] = actual_digest
         return base
@@ -726,6 +774,13 @@ def _validate_artifact_payload(
     ]
     if missing:
         return "local artifact missing required fields: " + ", ".join(missing)
+    type_error = _required_field_type_error(
+        artifact,
+        REQUIRED_EVIDENCE_ARTIFACT_FIELD_TYPES,
+        "local artifact field",
+    )
+    if type_error:
+        return type_error
     if artifact.get("evidence_artifact_contract_version") != EVIDENCE_ARTIFACT_CONTRACT_VERSION:
         return "evidence_artifact_contract_version does not match v1"
     if artifact.get("rival") != manifest.get("rival"):
@@ -764,11 +819,54 @@ def _validate_artifact_payload(
             return f"local artifact observation {name} ok is not true"
         if observation.get("offline") is not True:
             return f"local artifact observation {name} offline is not true"
+        summary = observation.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return (
+                f"local artifact observation {name} summary must be "
+                "a non-empty string"
+            )
+        if _looks_like_placeholder(summary):
+            return f"local artifact observation {name} summary must not be a placeholder"
     return None
 
 
 def _is_missing_required_value(value: Any) -> bool:
     return value is None or value == ""
+
+
+def _passing_manifest_placeholder_error(manifest: dict[str, Any]) -> str | None:
+    for field in ("pinned_revision", "smoke_command"):
+        value = str(manifest.get(field, "")).strip()
+        if _looks_like_placeholder(value):
+            return f"passing manifest field {field} must not be a placeholder"
+    return None
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        not normalized
+        or normalized.startswith("todo")
+        or "todo_" in normalized
+        or normalized in {"placeholder", "unknown", "tbd", "n/a"}
+    )
+
+
+def _required_field_type_error(
+    payload: dict[str, Any],
+    expected_types: dict[str, type],
+    label: str,
+) -> str | None:
+    for field, expected_type in expected_types.items():
+        value = payload.get(field)
+        if _is_missing_required_value(value):
+            continue
+        if type(value) is not expected_type:
+            return (
+                f"{label} {field} must be "
+                f"{expected_type.__name__}; got {type(value).__name__}"
+            )
+    return None
 
 
 def _slugify(value: str) -> str:

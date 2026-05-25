@@ -12,6 +12,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Sequence
 
@@ -34,6 +35,7 @@ from tools.idle_protocol_activate import (
 
 
 DEFAULT_SCRATCH_DIR = Path(".codex-audit") / "idle-runner"
+SAFE_SCRATCH_PROPOSAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -263,8 +265,25 @@ class IdleRunnerError(ValueError):
 
 
 def _write_scratch_payload(payload: dict[str, Any], scratch_dir: Path) -> Path:
+    proposal_id = str(payload.get("proposal_id", ""))
+    if not SAFE_SCRATCH_PROPOSAL_ID.fullmatch(proposal_id):
+        raise IdleRunnerError(
+            "proposal_id is not safe for a scratch filename",
+            {
+                "decision": "invalid_proposal_id",
+                "emitted": False,
+                "errors": [
+                    (
+                        "proposal_id may contain only ASCII letters, digits, "
+                        "'.', '_', and '-', must start with a letter or digit, "
+                        "and must be at most 128 characters"
+                    )
+                ],
+                "exit_code": 2,
+            },
+        )
     scratch_dir.mkdir(parents=True, exist_ok=True)
-    path = scratch_dir / f"{payload['proposal_id']}.json"
+    path = scratch_dir / f"{proposal_id}.json"
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     return path
 

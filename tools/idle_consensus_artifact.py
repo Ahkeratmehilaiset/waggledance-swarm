@@ -313,7 +313,7 @@ def _artifact_id(
 
 def _slug(value: object) -> str:
     text = str(value).lower()
-    text = re.sub(r"[^a-z0-9_.:-]+", "-", text)
+    text = re.sub(r"[^a-z0-9_.-]+", "-", text)
     return text.strip("-")[:120] or "idle-consensus-unknown"
 
 

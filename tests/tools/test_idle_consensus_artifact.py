@@ -181,6 +181,27 @@ def test_soft_consensus_writes_operator_review_artifact(tmp_path: Path) -> None:
     assert all(hint not in markdown.lower() for hint in PROHIBITED_HINTS)
 
 
+def test_consensus_target_colon_is_sanitized_before_artifact_write(
+    tmp_path: Path,
+) -> None:
+    events = _soft_events()
+    for payload in events:
+        if payload["event_type"] == "idle_consensus_reached":
+            payload["consensus_target_proposal_id"] = "idle-artifact:ads"
+
+    report = _write_artifact(tmp_path, events)
+
+    assert report["artifact_id"] == "idle-consensus-idle-artifact-ads"
+    json_path = Path(report["json_path"])
+    markdown_path = Path(report["markdown_path"])
+    assert ":" not in json_path.name
+    assert ":" not in markdown_path.name
+    assert sorted(path.name for path in json_path.parent.iterdir()) == [
+        "idle-consensus-idle-artifact-ads.json",
+        "idle-consensus-idle-artifact-ads.md",
+    ]
+
+
 def test_soft_consensus_receipt_bundle_is_verified_and_bound_to_artifact(
     tmp_path: Path,
 ) -> None:

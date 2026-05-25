@@ -238,6 +238,48 @@ class TestTinySampleGuard:
         assert wp is None
 
 
+# ── Specialist trainer weight path guard ────────────────
+
+class TestSpecialistWeightPathGuard:
+    """Test specialist model weight paths reject path-like identifiers."""
+
+    def test_save_weights_rejects_path_like_model_id_before_write(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from waggledance.core.specialist_models import specialist_trainer as module
+
+        models_dir = tmp_path / "models"
+        (models_dir / "foo").mkdir(parents=True)
+        monkeypatch.setattr(module, "MODELS_DIR", models_dir)
+
+        with pytest.raises(ValueError, match="model_id"):
+            module.SpecialistTrainer._save_weights(
+                "foo/../../escape",
+                1,
+                {"ok": True},
+            )
+
+        assert not (tmp_path / "escape_v1.joblib").exists()
+        assert not (models_dir / "escape_v1.joblib").exists()
+
+    def test_load_weights_rejects_path_like_model_id_before_filesystem_check(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from waggledance.core.specialist_models import specialist_trainer as module
+
+        models_dir = tmp_path / "models"
+        monkeypatch.setattr(module, "MODELS_DIR", models_dir)
+
+        with pytest.raises(ValueError, match="model_id"):
+            module.SpecialistTrainer.load_weights("foo/../../escape", 1)
+
+        assert not models_dir.exists()
+
+
 # ── Rate limiter localhost exemption ────────────────────
 
 class TestRateLimiterLocalhostExempt:

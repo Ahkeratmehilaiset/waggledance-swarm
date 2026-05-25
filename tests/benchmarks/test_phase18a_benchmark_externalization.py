@@ -165,6 +165,54 @@ def test_validator_rejects_unresolved_evidence_reference(bundle: Path):
     assert any("nope.json" in e for e in errors)
 
 
+def test_validator_rejects_artifact_path_escape(bundle: Path, tmp_path: Path):
+    validator = _load_validator()
+    outside = tmp_path / "outside.json"
+    source = (
+        bundle
+        / "artifacts"
+        / "phase17b_local_efficiency_benchmark.sanitized.json"
+    )
+    outside.write_bytes(source.read_bytes())
+
+    artifact_index_path = bundle / "artifact_index.json"
+    artifact_index = json.loads(artifact_index_path.read_text(encoding="utf-8"))
+    artifact_index["artifacts"][0]["path_in_bundle"] = "../outside.json"
+    artifact_index["artifacts"][0]["exported_sha256"] = validator.sha256_of_file(
+        outside
+    )
+    artifact_index_path.write_text(
+        json.dumps(artifact_index, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    _refresh_one_checksum(bundle, "artifact_index.json")
+
+    ok, errors = validator.validate_bundle(bundle)
+    assert not ok
+    assert any(
+        "unsafe relative path" in e and "../outside.json" in e for e in errors
+    )
+
+
+def test_validator_rejects_checksum_path_escape(bundle: Path, tmp_path: Path):
+    validator = _load_validator()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside evidence\n", encoding="utf-8")
+    checksum = validator.sha256_of_file(outside)
+    checksums_path = bundle / "checksums.sha256"
+    checksums_path.write_text(
+        checksums_path.read_text(encoding="utf-8")
+        + f"{checksum}  ../outside.txt\n",
+        encoding="utf-8",
+    )
+
+    ok, errors = validator.validate_bundle(bundle)
+    assert not ok
+    assert any(
+        "unsafe relative path" in e and "../outside.txt" in e for e in errors
+    )
+
+
 def test_validator_rejects_raw_stdout_leakage(tmp_path: Path):
     """Re-export with --include-raw and assert the validator detects the
     leakage AND the exporter correctly sets release_gate_pass=false."""

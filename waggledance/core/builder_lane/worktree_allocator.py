@@ -12,9 +12,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+
+REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{12}$")
 
 
 @dataclass(frozen=True)
@@ -36,7 +40,8 @@ class WorktreeAllocation:
 def derive_worktree_path(*, request_id: str,
                               root: Path | str) -> Path:
     """Deterministic path: <root>/builder_lane/<request_id>/."""
-    return Path(root) / "builder_lane" / request_id
+    safe_request_id = _validate_request_id(request_id)
+    return Path(root) / "builder_lane" / safe_request_id
 
 
 def derive_branch_name(*, request_id: str,
@@ -44,7 +49,8 @@ def derive_branch_name(*, request_id: str,
                             ) -> str:
     """Deterministic branch name. Suffix with first 8 chars of
     request_id so the branch is stable + collision-resistant."""
-    return f"phase9-builder/{request_id[:8]}"
+    safe_request_id = _validate_request_id(request_id)
+    return f"phase9-builder/{safe_request_id[:8]}"
 
 
 def allocate(*, request_id: str,
@@ -59,6 +65,12 @@ def allocate(*, request_id: str,
                                             base_branch=base_branch),
         base_branch=base_branch,
     )
+
+
+def _validate_request_id(request_id: str) -> str:
+    if not REQUEST_ID_PATTERN.fullmatch(request_id):
+        raise ValueError("request_id must match ^[a-f0-9]{12}$")
+    return request_id
 
 
 # ── Invocation log (append-only, atomic per-line) ────────────────-

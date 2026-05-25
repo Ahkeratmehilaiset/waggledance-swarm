@@ -22,6 +22,7 @@ All training runs on CPU (no GPU needed for small specialists).
 from __future__ import annotations
 
 import logging
+import re
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -60,6 +61,15 @@ SPECIALIST_MODELS = [
 ]
 
 MODELS_DIR = Path("data/models")
+SAFE_MODEL_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _weights_path(model_id: str, version: int) -> Path:
+    if not isinstance(model_id, str) or not SAFE_MODEL_ID.fullmatch(model_id):
+        raise ValueError("model_id must be a filename-safe lowercase identifier")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError("version must be a positive integer")
+    return MODELS_DIR / f"{model_id}_v{version}.joblib"
 
 
 @dataclass
@@ -222,8 +232,8 @@ class SpecialistTrainer:
     def _save_weights(model_id: str, version: int, pipeline: Any) -> str:
         """Persist sklearn pipeline to disk via joblib. Returns weight file path."""
         import joblib
+        path = _weights_path(model_id, version)
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        path = MODELS_DIR / f"{model_id}_v{version}.joblib"
         joblib.dump(pipeline, path)
         log.info("Saved weights: %s", path)
         return str(path)
@@ -232,7 +242,7 @@ class SpecialistTrainer:
     def load_weights(model_id: str, version: int) -> Any:
         """Load a saved sklearn pipeline from disk."""
         import joblib
-        path = MODELS_DIR / f"{model_id}_v{version}.joblib"
+        path = _weights_path(model_id, version)
         if not path.exists():
             raise FileNotFoundError(f"No weights at {path}")
         return joblib.load(path)

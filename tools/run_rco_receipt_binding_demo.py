@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import sys
 from typing import Any, Sequence
 
@@ -188,10 +188,10 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
     errors: list[str] = []
     verifier_report = verify_manifest(manifest_path)
     errors.extend(str(error) for error in verifier_report.get("errors", []))
-    manifest = _read_json(manifest_path)
-    entries = manifest.get("entries", [])
+    manifest = _read_json_object(manifest_path, errors, "manifest")
+    entries = manifest.get("entries", []) if manifest is not None else []
     verified = 0
-    if not isinstance(entries, list) or not entries:
+    if manifest is not None and (not isinstance(entries, list) or not entries):
         errors.append("manifest: entries must be a non-empty array")
         entries = []
     for index, entry in enumerate(entries, 1):
@@ -201,12 +201,55 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
         rco_name = entry.get("rco_decision_artifact")
         receipt_name = entry.get("receipt")
         evaluation_name = entry.get("evaluation_result")
-        if not all(isinstance(value, str) and value for value in (rco_name, receipt_name, evaluation_name)):
-            errors.append(f"entry {index}: missing rco_decision_artifact/receipt/evaluation_result")
+        if not all(
+            isinstance(value, str) and value
+            for value in (rco_name, receipt_name, evaluation_name)
+        ):
+            errors.append(
+                f"entry {index}: missing "
+                "rco_decision_artifact/receipt/evaluation_result"
+            )
             continue
-        rco_artifact = _read_json(manifest_path.parent / str(rco_name))
-        receipt = _read_json(manifest_path.parent / str(receipt_name))
-        evaluation = _read_json(manifest_path.parent / str(evaluation_name))
+        rco_path = _entry_path(
+            manifest_path,
+            str(rco_name),
+            "rco_decision_artifact",
+            errors,
+            index,
+        )
+        receipt_path = _entry_path(
+            manifest_path, str(receipt_name), "receipt", errors, index
+        )
+        evaluation_path = _entry_path(
+            manifest_path,
+            str(evaluation_name),
+            "evaluation_result",
+            errors,
+            index,
+        )
+        if rco_path is None or receipt_path is None or evaluation_path is None:
+            continue
+        if (
+            not rco_path.is_file()
+            or not receipt_path.is_file()
+            or not evaluation_path.is_file()
+        ):
+            errors.append(f"entry {index}: referenced JSON artifact missing")
+            continue
+
+        rco_artifact = _read_json_object(
+            rco_path,
+            errors,
+            f"entry {index}: rco_decision_artifact",
+        )
+        receipt = _read_json_object(receipt_path, errors, f"entry {index}: receipt")
+        evaluation = _read_json_object(
+            evaluation_path,
+            errors,
+            f"entry {index}: evaluation_result",
+        )
+        if rco_artifact is None or receipt is None or evaluation is None:
+            continue
         try:
             validate_rco_decision_artifact(rco_artifact)
         except ValueError as exc:
@@ -219,11 +262,12 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
         if evaluation.get("actual_gate") != rco_artifact.get("gate_decision"):
             errors.append(f"entry {index}: evaluation actual_gate does not match RCO artifact")
         verified += 1
+    deduped_errors = _dedupe_errors(errors)
     return {
-        "ok": not errors,
+        "ok": not deduped_errors,
         "receipt_count": int(verifier_report.get("receipt_count", 0)),
         "rco_artifact_count": verified,
-        "errors": errors,
+        "errors": deduped_errors,
     }
 
 
@@ -241,8 +285,65 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _read_json_object(
+    path: Path,
+    errors: list[str],
+    label: str,
+) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        errors.append(f"{label}: cannot read JSON file ({exc.__class__.__name__})")
+        return None
+    except json.JSONDecodeError as exc:
+        errors.append(f"{label}: invalid JSON at line {exc.lineno} column {exc.colno}")
+        return None
+    if not isinstance(value, dict):
+        errors.append(f"{label}: must be a JSON object")
+        return None
+    return value
+
+
+def _dedupe_errors(errors: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for error in errors:
+        if error in seen:
+            continue
+        seen.add(error)
+        deduped.append(error)
+    return deduped
+
+
+def _entry_path(
+    manifest_path: Path,
+    raw_path: str,
+    field: str,
+    errors: list[str],
+    index: int,
+) -> Path | None:
+    context = f"entry {index}: {field}"
+    if "\\" in raw_path:
+        errors.append(f"{context} path must use POSIX separators")
+        return None
+    if (
+        PurePosixPath(raw_path).is_absolute()
+        or PureWindowsPath(raw_path).is_absolute()
+    ):
+        errors.append(f"{context} path must be relative")
+        return None
+    parts = raw_path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        errors.append(f"{context} unsafe relative path")
+        return None
+
+    path = (manifest_path.parent / Path(*parts)).resolve()
+    try:
+        path.relative_to(manifest_path.parent)
+    except ValueError:
+        errors.append(f"{context} path escapes manifest directory")
+        return None
+    return path
 
 
 def _write_json(path: Path, value: object) -> None:

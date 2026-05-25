@@ -72,6 +72,36 @@ def test_release_gate_treats_commit_as_evidence_subject(tmp_path) -> None:
     assert result["blockers"] == []
 
 
+def test_release_gate_redacts_unreadable_release_readiness_path(tmp_path) -> None:
+    readiness_path = tmp_path / "missing_readiness_DO_NOT_LEAK.md"
+
+    result = evaluate_release_gate(readiness_path=readiness_path)
+    encoded = json.dumps(result)
+
+    assert result["decision"] == "hold"
+    assert result["blockers"] == [
+        "release_readiness_unreadable:FileNotFoundError"
+    ]
+    assert str(readiness_path) not in encoded
+    assert readiness_path.name not in encoded
+
+
+def test_release_gate_redacts_unreadable_soak_evidence_path(tmp_path) -> None:
+    evidence_path = tmp_path / "missing_soak_DO_NOT_LEAK.json"
+
+    result = evaluate_release_gate(
+        readiness_path="docs/release/RELEASE_READINESS.md",
+        soak_evidence_path=evidence_path,
+        today=dt.date(2026, 5, 24),
+    )
+    encoded = json.dumps(result)
+
+    assert result["decision"] == "hold"
+    assert "soak_evidence_unreadable:FileNotFoundError" in result["blockers"]
+    assert str(evidence_path) not in encoded
+    assert evidence_path.name not in encoded
+
+
 def test_release_gate_rejects_partial_or_dirty_soak_evidence(tmp_path) -> None:
     evidence = _valid_evidence()
     evidence.update({

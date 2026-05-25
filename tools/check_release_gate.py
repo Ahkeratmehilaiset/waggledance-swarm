@@ -163,7 +163,9 @@ def evaluate_release_gate(
     except OSError as exc:
         return {
             "decision": "hold",
-            "blockers": [f"release_readiness_unreadable:{exc}"],
+            "blockers": [
+                f"release_readiness_unreadable:{exc.__class__.__name__}"
+            ],
         }
 
     readiness, parse_blockers = parse_release_readiness(readiness_text)
@@ -182,7 +184,7 @@ def evaluate_release_gate(
         try:
             evidence = json.loads(soak_evidence_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            blockers.append(f"soak_evidence_unreadable:{exc}")
+            blockers.append(f"soak_evidence_unreadable:{exc.__class__.__name__}")
         else:
             if not isinstance(evidence, dict):
                 blockers.append("soak_evidence_not_object")

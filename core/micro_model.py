@@ -256,7 +256,7 @@ class PatternMatchEngine:
                     data = json.load(f)
                 return len(data.get("promoted", {}))
         except Exception:
-            pass
+            log.debug("V1 promoted count read failed", exc_info=True)
         return 0
 
     @property
@@ -477,7 +477,7 @@ class ClassifierModel:
                     "timestamp": time.time(),
                 }, ensure_ascii=False) + "\n")
         except Exception:
-            pass
+            log.warning("V2 training log write failed", exc_info=True)
 
         # v1.16.0: Return structured eval result
         return self._evaluate_holdout(X_val, y_val, answers)
@@ -923,7 +923,7 @@ class TopicPromotionManager:
                     "timestamp": time.time(),
                 }, ensure_ascii=False) + "\n")
         except Exception:
-            pass
+            log.warning("Topic promotion log write failed", exc_info=True)
 
     def is_promoted(self, topic: str) -> bool:
         """Check if topic is promoted (should skip LLM)."""
@@ -1218,5 +1218,5 @@ class MicroModelOrchestrator:
                 result = trainer.train(model_name, case_trajectories)
                 results.append(result)
             except Exception:
-                pass
+                log.debug("Specialist trainer failed for %s", model_name, exc_info=True)
         return len(results)

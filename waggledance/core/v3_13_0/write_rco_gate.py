@@ -189,6 +189,35 @@ def _intent_approval_fingerprint(intent: Intent) -> str:
     })
 
 
+def _execution_approval_binding_digest(
+    intent: Intent,
+    outcome: GateOutcome,
+) -> str:
+    """Hash the route-issued approval context consumed by execute()."""
+    artifact = outcome.rco_decision_artifact
+    return sha256_digest({
+        "intent_fingerprint": _intent_approval_fingerprint(intent),
+        "outcome": {
+            "intent_id": outcome.intent_id,
+            "risk_class": outcome.risk_class.value,
+            "payload_hash": outcome.payload_hash,
+            "intent_fingerprint": outcome.intent_fingerprint,
+            "approved": outcome.approved,
+            "denial_reason": outcome.denial_reason or "",
+            "stop_condition": (
+                outcome.stop_condition.value if outcome.stop_condition else ""
+            ),
+            "audit_event_ids": list(outcome.audit_event_ids),
+            "diff_preview_uri": outcome.diff_preview_uri or "",
+            "rollback_plan_ref": outcome.rollback_plan_ref or "",
+            "rco_decision_digest": outcome.rco_decision_digest or "",
+            "rco_decision_artifact_digest": (
+                sha256_digest(artifact) if artifact is not None else ""
+            ),
+        },
+    })
+
+
 def _new_gate_outcome(
     intent: Intent,
     *,
@@ -346,6 +375,11 @@ class WriteRCOGate:
         init=False,
         repr=False,
     )
+    _route_execution_bindings: dict[int, str] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     # =========================================================================
     # PUBLIC API
@@ -426,6 +460,7 @@ class WriteRCOGate:
                 outcome.audit_event_ids.append(denied_audit)
             self._attach_rco_decision_artifact(intent, outcome)
             self._emit_route_receipt_bundle(intent, outcome)
+            self._bind_outcome_for_execution(intent, outcome)
             return outcome
         except GateStopCondition as stop:
             denied_audit = self._audit(AuditEventType.DENIED, intent, {
@@ -532,6 +567,13 @@ class WriteRCOGate:
                 "execute intent"
             )
 
+        binding_error = self._consume_route_execution_binding(intent, outcome)
+        if binding_error:
+            return binding_error
+        decision_error = self._rco_decision_binding_error(outcome)
+        if decision_error:
+            return decision_error
+
         try:
             current_risk = self.classify(intent)
         except Exception as exc:
@@ -543,6 +585,122 @@ class WriteRCOGate:
                 f"{current_risk.value}"
             )
 
+        precondition_error = self._current_route_precondition_error(
+            intent,
+            current_risk,
+        )
+        if precondition_error:
+            return precondition_error
+
+        return None
+
+    def _bind_outcome_for_execution(
+        self,
+        intent: Intent,
+        outcome: GateOutcome,
+    ) -> None:
+        if not outcome.approved:
+            return
+        self._route_execution_bindings[id(outcome)] = (
+            _execution_approval_binding_digest(intent, outcome)
+        )
+
+    def _consume_route_execution_binding(
+        self,
+        intent: Intent,
+        outcome: GateOutcome,
+    ) -> Optional[str]:
+        expected = self._route_execution_bindings.pop(id(outcome), None)
+        if expected is None:
+            return (
+                "gate outcome approval binding is stale or was not "
+                "route-issued by this WriteRCOGate"
+            )
+        actual = _execution_approval_binding_digest(intent, outcome)
+        if actual != expected:
+            return "gate outcome approval binding changed since route"
+        return None
+
+    def _rco_decision_binding_error(
+        self,
+        outcome: GateOutcome,
+    ) -> Optional[str]:
+        if outcome.rco_decision_artifact is None:
+            return "gate outcome missing rco_decision_artifact"
+        if not outcome.rco_decision_digest:
+            return "gate outcome missing rco_decision_digest"
+        if sha256_digest(outcome.rco_decision_artifact) != outcome.rco_decision_digest:
+            return "gate outcome rco_decision_digest mismatch"
+        return None
+
+    def _current_route_precondition_error(
+        self,
+        intent: Intent,
+        risk: WriteRiskClass,
+    ) -> Optional[str]:
+        if risk == WriteRiskClass.INFORMATIONAL:
+            return self._state_write_mode_error(intent)
+        if risk == WriteRiskClass.INTERNAL_MEMORY:
+            return None
+        if risk == WriteRiskClass.LOCAL_ARTIFACT:
+            cred_hits = self.classify_payload_credential_scan(intent.payload)
+            if cred_hits:
+                return f"ANTI-004 credential pattern detected: {cred_hits[:3]}"
+            return self._state_write_mode_error(intent)
+        if risk == WriteRiskClass.EXTERNAL_EFFECT:
+            return self._external_effect_precondition_error(intent)
+        return f"unhandled risk class during execute: {risk}"
+
+    def _state_write_mode_error(self, intent: Intent) -> Optional[str]:
+        state = self.fetch_state_info(intent.target_state_ref)
+        if state is None:
+            return "target_state_ref unresolved"
+        if intent.action not in (state.write_modes_allowed or []):
+            return (
+                f"action '{intent.action}' not in state.write_modes_allowed="
+                f"{state.write_modes_allowed!r}"
+            )
+        return None
+
+    def _external_effect_precondition_error(
+        self,
+        intent: Intent,
+    ) -> Optional[str]:
+        connector = (
+            self.fetch_connector_info(intent.connector_ref)
+            if intent.connector_ref
+            else None
+        )
+        if connector is None:
+            return "WRT-003 requires connector_ref"
+        if connector.write_risk != WriteRiskClass.EXTERNAL_EFFECT:
+            return "connector write_risk does not match WRT-003 classification"
+        state_error = self._state_write_mode_error(intent)
+        if state_error:
+            return state_error
+        capsule = self.fetch_recovery_capsule(intent.tool_descriptor_id)
+        if capsule is None or not capsule.rollback_command:
+            return "WRT-003 requires RecoveryCapsule with rollback_command"
+
+        solver_candidate_id = _solver_candidate_id(intent)
+        if solver_candidate_id:
+            if self.verify_solver_provenance is None:
+                return "WRT-003 solver write requires verify_solver_provenance hook"
+            solver_result = self.verify_solver_provenance(solver_candidate_id)
+            if not solver_result.valid:
+                reasons = ",".join(solver_result.reasons) or "invalid"
+                return (
+                    "WRT-003 solver provenance invalid for "
+                    f"{solver_candidate_id}: {reasons}"
+                )
+
+        state = self.fetch_state_info(intent.target_state_ref)
+        scope_result = self.operator_scope_policy_check(intent, connector, state)
+        if scope_result.decision == "denied":
+            return (
+                "operator scope policy no longer approves execute intent: "
+                f"{scope_result.reason}"
+            )
         return None
 
     # =========================================================================

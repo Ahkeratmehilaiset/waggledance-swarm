@@ -1599,6 +1599,176 @@ class TestExecution:
             e["event_type"] for e in audit
         ]
 
+    def test_execute_refuses_forged_approved_gate_outcome(self):
+        audit = []
+        executed = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent = _make_intent(
+            target_state_ref="state:audit_log",
+            action="append",
+            payload={"key": "approved"},
+        )
+        routed = gate.route(intent)
+        forged = GateOutcome(
+            intent_id=routed.intent_id,
+            risk_class=routed.risk_class,
+            payload_hash=routed.payload_hash,
+            intent_fingerprint=routed.intent_fingerprint,
+            approved=True,
+            audit_event_ids=list(routed.audit_event_ids),
+            rco_decision_artifact=json.loads(json.dumps(routed.rco_decision_artifact)),
+            rco_decision_digest=routed.rco_decision_digest,
+        )
+        audit.clear()
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+
+        result = gate.execute(intent, forged)
+
+        assert result.success is False
+        assert "route-issued" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
+    def test_execute_refuses_gate_outcome_mutated_after_route(self):
+        audit = []
+        executed = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:audit_log", action="append")
+        outcome = gate.route(intent)
+        outcome.audit_event_ids.append("evt_forged_after_route")
+        audit.clear()
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert "approval binding" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
+    def test_execute_refuses_reused_stale_gate_outcome(self):
+        audit = []
+        executed = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:audit_log", action="append")
+        outcome = gate.route(intent)
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+        first = gate.execute(intent, outcome)
+        audit.clear()
+
+        second = gate.execute(intent, outcome)
+
+        assert first.success is True
+        assert second.success is False
+        assert "stale" in (second.error_reason or "")
+        assert executed == [intent]
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
+    def test_execute_refuses_write_modes_changed_after_route(self):
+        audit = []
+        executed = []
+        state = StateInfo(
+            state_id="state:report",
+            plane="filesystem_artifact",
+            write_modes_allowed=["write"],
+            sensitive_class="internal",
+            single_writer_required=False,
+        )
+        gate = _make_gate(audit_collector=audit, states={"state:report": state})
+        intent = _make_intent(target_state_ref="state:report", action="write")
+        outcome = gate.route(intent)
+        state.write_modes_allowed = []
+        audit.clear()
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert "write_modes_allowed" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
+    def test_execute_refuses_scope_policy_changed_after_route(self):
+        audit = []
+        executed = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+            scope_decision="auto_approved",
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+        outcome = gate.route(intent)
+        gate.operator_scope_policy_check = lambda _intent, _conn, _state: (
+            ScopePolicyResult(
+                decision="denied",
+                reason="approval_context_revoked",
+            )
+        )
+        audit.clear()
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert "approval_context_revoked" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
     def test_execute_reclassifies_risk_before_effect_started(self):
         audit = []
         executed = []

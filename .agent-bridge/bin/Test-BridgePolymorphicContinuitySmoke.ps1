@@ -184,6 +184,16 @@ try {
         -Passed ($waitingDoneRequest.Count -eq 1) `
         -Detail "unresolved_done_request=$($waitingDoneRequest.Count)"
 
+    $codexIdleSignal = @(
+        $status.idle_signals |
+            Where-Object { [string]$_.agent -eq 'codex' } |
+            Select-Object -First 1
+    )
+    Add-Check -Name 'status idle signal ignores requests closed by requester' `
+        -Passed (-not ([string]$codexIdleSignal.next -eq 'process requester-closed-next-action-2026-05-11' -and
+                       [string]$codexIdleSignal.state -eq 'needs-work')) `
+        -Detail "state=$($codexIdleSignal.state), next=$($codexIdleSignal.next)"
+
     $readerOutput = (& $readScript -Agent codex -NoAckReceived -Tail 20 6>&1) | Out-String
     Add-Check -Name 'Read-AgentBridge outgoing view sees custom reply type' `
         -Passed ($readerOutput -match 'answered-by-claude eig2-m0-ownership-split-2026-05-11: request message/request -> ownership_proposal/open') `

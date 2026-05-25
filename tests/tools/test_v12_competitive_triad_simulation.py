@@ -129,6 +129,16 @@ def test_cli_json_reports_real_triad_simulation() -> None:
     assert payload["no_overclaim_guardrails"]["not_a_competitor_benchmark"] is True
 
 
+def test_cli_rejects_markdown_out_outside_repo(tmp_path: Path) -> None:
+    out = tmp_path / "competitive-triad.md"
+
+    result = _run("--markdown-out", str(out))
+
+    assert result.returncode == 1
+    assert "markdown_out must stay under repo root" in result.stderr
+    assert not out.exists()
+
+
 def _fixed_now() -> datetime:
     return datetime(2026, 5, 24, 6, 30, tzinfo=timezone.utc)
 

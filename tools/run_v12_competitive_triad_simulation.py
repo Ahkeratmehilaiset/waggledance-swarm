@@ -163,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        markdown_out = _resolve_markdown_out(args.markdown_out)
         report = build_competitive_triad_simulation(
             evidence_dir=args.evidence_dir,
             now_utc=_parse_utc(args.now) if args.now else None,
@@ -172,9 +173,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     markdown = render_markdown(report)
-    if args.markdown_out is not None:
-        args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown_out.write_text(markdown, encoding="utf-8")
+    if markdown_out is not None:
+        markdown_out.parent.mkdir(parents=True, exist_ok=True)
+        markdown_out.write_text(markdown, encoding="utf-8")
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -561,6 +562,18 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ValueError("--now requires a UTC timestamp with Z or +00:00 suffix")
     return parsed.astimezone(timezone.utc)
+
+
+def _resolve_markdown_out(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    root = ROOT.resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("markdown_out must stay under repo root") from exc
+    return resolved
 
 
 if __name__ == "__main__":

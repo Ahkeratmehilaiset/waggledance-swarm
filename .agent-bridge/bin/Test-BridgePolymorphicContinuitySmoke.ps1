@@ -109,6 +109,15 @@ try {
     Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:00.0000000Z' `
         -Agent codex -Type message -TaskId recovery-answer-status-2026-05-11 `
         -Status answered_after_recovery -To claude -Message 'recovery answer status replies'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:10.0000000Z' `
+        -Agent codex -Type message -TaskId requester-close-prefix-2026-05-11 `
+        -Status request -To claude -Message 'stale availability ping'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:20.0000000Z' `
+        -Agent codex -Type done -TaskId requester-close-prefix-2026-05-11 `
+        -Status superseded_availability_ping -To claude -Message 'descriptive closeout'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:30.0000000Z' `
+        -Agent codex -Type done -TaskId done-request-remains-actionable-2026-05-11 `
+        -Status request -To claude -Message 'done/request is still a request'
 
     $status = (& $statusScript -Json -Tail 100 | ConvertFrom-Json)
     $waitingOwnershipForClaude = @(
@@ -144,6 +153,30 @@ try {
     Add-Check -Name 'message/answered_after_recovery counts as a message answer' `
         -Passed ($waitingRecoveryForCodex.Count -eq 0) `
         -Detail "unresolved_recovery_to_codex=$($waitingRecoveryForCodex.Count)"
+
+    $waitingRequesterClosePrefix = @(
+        $status.unresolved_requests |
+            Where-Object {
+                [string]$_.task_id -eq 'requester-close-prefix-2026-05-11' -and
+                [string]$_.to -eq 'claude' -and
+                [string]$_.from -eq 'codex'
+            }
+    )
+    Add-Check -Name 'done/superseded_* by requester closes stale request' `
+        -Passed ($waitingRequesterClosePrefix.Count -eq 0) `
+        -Detail "unresolved_requester_close_prefix=$($waitingRequesterClosePrefix.Count)"
+
+    $waitingDoneRequest = @(
+        $status.unresolved_requests |
+            Where-Object {
+                [string]$_.task_id -eq 'done-request-remains-actionable-2026-05-11' -and
+                [string]$_.to -eq 'claude' -and
+                [string]$_.from -eq 'codex'
+            }
+    )
+    Add-Check -Name 'done/request remains actionable request-like work' `
+        -Passed ($waitingDoneRequest.Count -eq 1) `
+        -Detail "unresolved_done_request=$($waitingDoneRequest.Count)"
 
     $readerOutput = (& $readScript -Agent codex -NoAckReceived -Tail 20 6>&1) | Out-String
     Add-Check -Name 'Read-AgentBridge outgoing view sees custom reply type' `

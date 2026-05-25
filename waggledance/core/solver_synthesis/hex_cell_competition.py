@@ -30,6 +30,9 @@ HEX_CELL_PROMOTION_ACCEPTANCE_STATUS = "operator_gate_required"
 HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE = (
     "solver_provenance_operator_activation"
 )
+HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE = (
+    "hex_cell.promotion_acceptance"
+)
 HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION = (
     "hex_cell_operator_gate_authorization.v0"
 )
@@ -455,6 +458,14 @@ def build_hex_cell_operator_gate_authorization(
         "acceptance_receipt_digest",
         acceptance_receipt_digest,
     )
+    expected_receipt_digest = _promotion_acceptance_receipt_digest(
+        acceptance,
+    )
+    if normalized_receipt_digest != expected_receipt_digest:
+        raise ValueError(
+            "hex-cell operator gate authorization requires "
+            "acceptance_receipt_digest to match the promotion acceptance"
+        )
 
     payload = _operator_gate_authorization_payload(
         acceptance=acceptance,
@@ -712,6 +723,16 @@ def _validate_promotion_acceptance_for_operator_gate(
         "competition_evidence_digest",
         acceptance.competition_evidence_digest,
     )
+    expected_competition_id = _competition_id(
+        acceptance.cell_id,
+        acceptance.capability_id,
+        acceptance.competition_evidence_digest,
+    )
+    if acceptance.competition_id != expected_competition_id:
+        raise ValueError(
+            "hex-cell operator gate authorization requires competition_id "
+            "to match competition_evidence_digest"
+        )
     _require_sha256_digest("acceptance_digest", acceptance.acceptance_digest)
 
     expected_digest = sha256_digest(_promotion_acceptance_payload(
@@ -765,6 +786,16 @@ def _promotion_acceptance_payload(
         "runtime_traffic_mutation_applied": False,
         "candidate_state_mutation_applied": False,
     }
+
+
+def _promotion_acceptance_receipt_digest(
+    acceptance: HexCellPromotionAcceptance,
+) -> str:
+    return sha256_digest({
+        "event_type": HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE,
+        "acceptance_id": acceptance.acceptance_id,
+        "acceptance_digest": acceptance.acceptance_digest,
+    })
 
 
 def _operator_gate_authorization_payload(
@@ -907,6 +938,7 @@ __all__ = [
     "HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS",
     "HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR",
     "HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE",
+    "HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE",
     "HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION",
     "HEX_CELL_PROMOTION_ACCEPTANCE_STATUS",
     "build_hex_cell_competition_result",

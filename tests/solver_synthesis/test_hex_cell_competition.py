@@ -26,6 +26,7 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (
     HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS,
     HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR,
     HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+    HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE,
     HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
     HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
     build_hex_cell_competition_result,
@@ -118,10 +119,50 @@ def _build_from_fixture(payload: dict):
 
 def _acceptance_receipt_digest(acceptance) -> str:
     return sha256_digest({
-        "event_type": "hex_cell.promotion_acceptance",
+        "event_type": HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE,
         "acceptance_id": acceptance.acceptance_id,
         "acceptance_digest": acceptance.acceptance_digest,
     })
+
+
+def _acceptance_digest(
+    *,
+    competition_id: str,
+    cell_id: str,
+    capability_id: str,
+    accepted_candidate_id: str,
+    rejected_candidate_ids: tuple[str, ...],
+    competition_evidence_digest: str,
+) -> str:
+    return sha256_digest({
+        "schema_version": HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+        "competition_id": competition_id,
+        "cell_id": cell_id,
+        "capability_id": capability_id,
+        "accepted_candidate_id": accepted_candidate_id,
+        "rejected_candidate_ids": list(rejected_candidate_ids),
+        "competition_evidence_digest": competition_evidence_digest,
+        "promotion_acceptance_status": HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+        "required_next_gate": HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+        "operator_gate_required": True,
+        "operator_gate_cleared": False,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    })
+
+
+def _acceptance_id(
+    *,
+    cell_id: str,
+    capability_id: str,
+    acceptance_digest: str,
+) -> str:
+    return (
+        "hexcellaccept:"
+        f"{cell_id}:{capability_id}:"
+        f"{acceptance_digest.removeprefix('sha256:')[:16]}"
+    )
 
 
 def test_fixture_builds_expected_non_authority_result():
@@ -447,13 +488,62 @@ def test_operator_gate_authorization_requires_acceptance_receipt_digest():
         )
 
 
+def test_operator_gate_authorization_rejects_unrelated_receipt_digest():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+
+    with pytest.raises(ValueError, match="acceptance_receipt_digest"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=acceptance,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest="sha256:" + "0" * 64,
+        )
+
+
+def test_operator_gate_authorization_rejects_competition_id_forgery():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+    forged_competition_id = "hexcellcmp:thermal:frost-risk-detection:forged"
+    forged_digest = _acceptance_digest(
+        competition_id=forged_competition_id,
+        cell_id=acceptance.cell_id,
+        capability_id=acceptance.capability_id,
+        accepted_candidate_id=acceptance.accepted_candidate_id,
+        rejected_candidate_ids=acceptance.rejected_candidate_ids,
+        competition_evidence_digest=acceptance.competition_evidence_digest,
+    )
+    forged = replace(
+        acceptance,
+        competition_id=forged_competition_id,
+        acceptance_digest=forged_digest,
+        acceptance_id=_acceptance_id(
+            cell_id=acceptance.cell_id,
+            capability_id=acceptance.capability_id,
+            acceptance_digest=forged_digest,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="competition_id"):
+        build_hex_cell_operator_gate_authorization(
+            acceptance=forged,
+            operator_approval_id="approval:hexcell:thermal:001",
+            approved_by="operator:jkh",
+            acceptance_receipt_digest=_acceptance_receipt_digest(forged),
+        )
+
+
 def test_operator_gate_authorization_rejects_acceptance_digest_drift():
     payload = _load_fixture()
     _candidates, result = _build_from_fixture(payload)
     acceptance = build_hex_cell_promotion_acceptance(competition=result)
     drifted = replace(
         acceptance,
-        capability_id="tampered-capability",
+        rejected_candidate_ids=tuple(
+            reversed(acceptance.rejected_candidate_ids)
+        ),
     )
 
     with pytest.raises(ValueError, match="acceptance_digest"):

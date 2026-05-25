@@ -651,11 +651,16 @@ def _lightweight_artifact_proof(
         return base
 
     try:
-        json.loads(artifact_text)
+        artifact_json = json.loads(artifact_text)
     except json.JSONDecodeError as exc:
         base["artifact_digest_reason"] = (
             f"local artifact is not valid UTF-8 JSON: {exc}"
         )
+        base["local_artifact_path"] = str(artifact_path)
+        base["local_artifact_sha256"] = actual_digest
+        return base
+    if not isinstance(artifact_json, dict):
+        base["artifact_digest_reason"] = "local artifact JSON must be an object"
         base["local_artifact_path"] = str(artifact_path)
         base["local_artifact_sha256"] = actual_digest
         return base

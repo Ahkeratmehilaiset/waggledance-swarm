@@ -188,7 +188,10 @@ if ($lastSubstantive.Count -gt 0) {
 $idleSignals = @()
 foreach ($agent in $agents) {
     $claimCount = @($claims | Where-Object { [string]$_.agent -eq $agent }).Count
-    $pendingForAgent = @($requestStates | Where-Object { $_.to -eq $agent -and $_.state -ne 'answered' })
+    $pendingForAgent = @(
+        $requestStates |
+            Where-Object { $_.to -eq $agent -and $_.state -notin @('answered','closed') }
+    )
     $state = 'active'
     $next = 'continue active claim'
     if ($claimCount -eq 0 -and $pendingForAgent.Count -gt 0) {

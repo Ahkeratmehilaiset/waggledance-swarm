@@ -86,7 +86,7 @@ class VoikkoEngine:
                     if lemmas:
                         return lemmas
             except Exception:
-                pass
+                logger.debug("Voikko lemmatization failed; using suffix fallback", exc_info=True)
 
         # Fallback: suomi-suffix-stripperi
         return finnish_stem(word)
@@ -116,7 +116,7 @@ class VoikkoEngine:
             try:
                 self.voikko.terminate()
             except Exception:
-                pass
+                logger.debug("Voikko terminate failed", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════

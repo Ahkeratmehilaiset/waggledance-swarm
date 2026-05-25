@@ -491,7 +491,7 @@ def _build_check_row(
             "blocker": "cloud_dependency is not false",
             "blocked_artifact_reason": "cloud_dependency",
             "consensus_grade_contribution": False,
-            "artifact_proof": _lightweight_artifact_proof(
+            **_blocked_artifact_fields(
                 evidence_root=evidence_root,
                 manifest=manifest,
             ),
@@ -509,7 +509,7 @@ def _build_check_row(
             "blocker": "smoke_result is not passed",
             "blocked_artifact_reason": "smoke_result",
             "consensus_grade_contribution": False,
-            "artifact_proof": _lightweight_artifact_proof(
+            **_blocked_artifact_fields(
                 evidence_root=evidence_root,
                 manifest=manifest,
             ),
@@ -581,6 +581,25 @@ def _build_manifest_template(check: dict[str, Any]) -> dict[str, Any]:
             "under evidence_dir before setting smoke_result to passed."
         ),
     }
+
+
+def _blocked_artifact_fields(
+    *,
+    evidence_root: Path | None,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    artifact_proof = _lightweight_artifact_proof(
+        evidence_root=evidence_root,
+        manifest=manifest,
+    )
+    fields: dict[str, Any] = {"artifact_proof": artifact_proof}
+    blocker_detail = artifact_proof.get("artifact_blocker_detail")
+    if isinstance(blocker_detail, str) and blocker_detail.strip():
+        fields["blocker_detail"] = blocker_detail
+    observation_details = artifact_proof.get("artifact_observation_details")
+    if isinstance(observation_details, dict) and observation_details:
+        fields["artifact_observation_details"] = observation_details
+    return fields
 
 
 def _lightweight_artifact_proof(
@@ -668,7 +687,48 @@ def _lightweight_artifact_proof(
     base["artifact_digest_verified"] = True
     base["local_artifact_path"] = str(artifact_path)
     base["local_artifact_sha256"] = actual_digest
+    blocker_detail = _artifact_blocker_detail(artifact_json)
+    if blocker_detail:
+        base["artifact_blocker_detail"] = blocker_detail
+    observation_details = _artifact_observation_details(artifact_json)
+    if observation_details:
+        base["artifact_observation_details"] = observation_details
     return base
+
+
+def _artifact_blocker_detail(artifact: dict[str, Any]) -> str:
+    direct = artifact.get("why_not_passing")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    static_inspection = artifact.get("static_inspection")
+    if isinstance(static_inspection, dict):
+        nested = static_inspection.get("why_not_passing")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
+
+
+def _artifact_observation_details(
+    artifact: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    observations = artifact.get("observations")
+    if not isinstance(observations, dict):
+        return {}
+    details: dict[str, dict[str, Any]] = {}
+    for name, observation in sorted(observations.items()):
+        if not isinstance(observation, dict):
+            continue
+        row: dict[str, Any] = {}
+        summary = observation.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            row["summary"] = summary.strip()
+        if type(observation.get("ok")) is bool:
+            row["ok"] = observation["ok"]
+        if type(observation.get("offline")) is bool:
+            row["offline"] = observation["offline"]
+        if row:
+            details[str(name)] = row
+    return details
 
 
 def _validate_local_artifact(

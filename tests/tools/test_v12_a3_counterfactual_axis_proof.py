@@ -31,6 +31,7 @@ def _run_a3(*args: str) -> subprocess.CompletedProcess[str]:
 
 def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     report = build_a3_counterfactual_axis_proof(now_utc=FIXED_NOW)
+    replay = report["stored_consensus_replay"]
 
     assert report["report_version"] == "wd.v12.a3_counterfactual_axis_proof.v0"
     assert report["ok"] is True
@@ -54,6 +55,26 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     ]
     assert set(report["delta_fields"]) == {"actual_gate", "kind", "verdict"}
     assert report["receipt_chain_verified"] is False
+    assert report["stored_consensus_replay_verified"] is True
+    assert report["receipt_bound_stored_consensus_replay"] is False
+    assert replay["replay_version"] == "wd.v12.a3_stored_consensus_replay.v0"
+    assert replay["decision"] == "candidate_diff_charter_passed"
+    assert replay["candidate_diff_charter_allowed"] is True
+    assert replay["receipt_bound"] is False
+    assert replay["receipt_chain_id"] is None
+    assert replay["stored_consensus"]["artifact_version"] == (
+        "idle_consensus_operator_review.v1"
+    )
+    assert replay["stored_consensus"]["status"] == "soft_convergence"
+    assert replay["candidate_diff"]["changed_paths"] == [
+        "docs/architecture/consensus_artifacts/a3_counterfactual_delta_replay.md"
+    ]
+    assert replay["path_gate"]["allowed"] is True
+    assert replay["diff_gate"]["allowed"] is True
+    assert replay["eligible_for_draft_pr_gate"] is False
+    assert replay["external_effect"] is False
+    assert replay["would_create_pr"] is False
+    assert replay["would_merge"] is False
     assert report["factual"]["evaluation_version"] == "magma.evaluation_result.v1"
     assert report["factual"]["competitor_axis_reference"] == "A3"
     assert report["factual"]["confidence_basis"] == {
@@ -77,6 +98,11 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
     )
 
     assert report["receipt_chain_verified"] is True
+    assert report["receipt_bound_stored_consensus_replay"] is True
+    assert report["stored_consensus_replay"]["receipt_bound"] is True
+    assert report["stored_consensus_replay"]["receipt_chain_id"] == (
+        "magma:v12_a3_counterfactual_axis:v1"
+    )
     assert report["receipt_bundle"]["available"] is True
     assert report["receipt_bundle"]["receipt_count"] == 6
     assert report["receipt_bundle"]["manifest"].endswith("manifest.json")
@@ -108,6 +134,31 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
     assert first_evaluation["competitor_axis_reference"] == "A3"
     assert first_evaluation["confidence_basis"]["method"] == "point_estimate"
     assert "axis:A3_counterfactual_evaluation_delta" in first_evaluation["reason_codes"]
+    assert (
+        "stored_consensus_replay:candidate_diff_charter_gate"
+        in first_evaluation["reason_codes"]
+    )
+    replay_binding = _receipt_replay_binding(report)
+    assert first_receipt["rco_decision_digest"] == sha256_digest({
+        "actual_gate": first_evaluation["actual_gate"],
+        "case_id": first_evaluation["case_id"],
+        "competitor_axis_reference": first_evaluation["competitor_axis_reference"],
+        "stored_consensus_replay": replay_binding,
+        "verdict": first_evaluation["verdict"],
+    })
+    assert first_receipt["world_snapshot_digest"] == sha256_digest({
+        "case_id": report["variants"][0]["case_id"],
+        "scenario": "factual",
+        "stored_consensus_replay": replay_binding,
+        "subtool_state": report["variants"][0]["factual"]["subtool_state"],
+    })
+    assert first_receipt["solver_contract_digest"] == sha256_digest({
+        "solver_selection": first_evaluation["solver_selection"],
+        "policy_version": first_evaluation["policy_version"],
+        "stored_consensus_replay_version": report["stored_consensus_replay"][
+            "replay_version"
+        ],
+    })
 
 
 def test_a3_markdown_preserves_no_rival_benchmark_guardrail(tmp_path: Path) -> None:
@@ -123,6 +174,9 @@ def test_a3_markdown_preserves_no_rival_benchmark_guardrail(tmp_path: Path) -> N
     assert "variant_count: `3`" in markdown
     assert "`review_to_clean_close`" in markdown
     assert "receipt_chain_verified: `true`" in markdown
+    assert "stored_consensus_replay_verified: `true`" in markdown
+    assert "stored_consensus_replay_receipt_bound: `true`" in markdown
+    assert "stored_consensus_replay_decision: `candidate_diff_charter_passed`" in markdown
     assert "not a rival benchmark" in markdown
 
 
@@ -143,6 +197,8 @@ def test_a3_cli_json_with_receipts_is_deterministic(tmp_path: Path) -> None:
     assert payload["counterfactual_delta_proven"] is True
     assert payload["variant_count"] == 3
     assert payload["receipt_chain_verified"] is True
+    assert payload["receipt_bound_stored_consensus_replay"] is True
+    assert payload["stored_consensus_replay"]["candidate_diff_charter_allowed"] is True
     assert payload["receipt_bundle"]["receipt_count"] == 6
     assert payload["evaluation_result_version"] == "magma.evaluation_result.v1"
 
@@ -192,3 +248,36 @@ def test_a3_v1_receipt_bundle_detects_tampered_axis_metadata(tmp_path: Path) -> 
 
     assert verification["ok"] is False
     assert "entry 1: evaluation_result_digest mismatch" in verification["errors"]
+
+
+def test_a3_v1_receipt_chain_detects_tampered_replay_binding(tmp_path: Path) -> None:
+    out_dir = tmp_path / "a3-receipts"
+
+    report = build_a3_counterfactual_axis_proof(
+        receipt_out_dir=out_dir,
+        now_utc=FIXED_NOW,
+    )
+    manifest_path = Path(report["receipt_bundle"]["manifest"])
+    receipt_path = out_dir / "receipt-001-limited_to_idle-factual.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["rco_decision_digest"] = "sha256:" + ("9" * 64)
+    receipt_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    verification = verify_manifest(manifest_path)
+
+    assert verification["ok"] is False
+    assert "chain: missing_parent for entry 2" in verification["errors"]
+
+
+def _receipt_replay_binding(report: dict) -> dict:
+    replay = report["stored_consensus_replay"]
+    return {
+        "replay_version": replay["replay_version"],
+        "stored_consensus_digest": replay["stored_consensus"]["digest"],
+        "candidate_diff_digest": replay["candidate_diff"]["digest"],
+        "candidate_diff_charter_allowed": replay["candidate_diff_charter_allowed"],
+        "replay_decision": replay["decision"],
+    }

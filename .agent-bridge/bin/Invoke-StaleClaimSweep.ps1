@@ -80,6 +80,33 @@ if ($StaleSeconds -le 0) {
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 $doneDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'done'
 
+function ConvertTo-BridgeUtc {
+    param([object] $Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+
+    $text = [string]$Value
+    if (-not $text) { return $null }
+
+    try {
+        return [DateTime]::Parse(
+            $text,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+                [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        ).ToUniversalTime()
+    } catch {
+        try {
+            return [DateTime]::Parse($text).ToUniversalTime()
+        } catch {
+            return $null
+        }
+    }
+}
+
 # Emit zero or more swept-claim records into the pipeline; caller
 # wraps with @(...) to always get an array. Avoid the
 # Generic.List + return-comma trick that PSStrictMode's boolean
@@ -95,7 +122,7 @@ if (-not (Test-Path -LiteralPath $doneDir -PathType Container)) {
 $now = (Get-Date).ToUniversalTime()
 
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
-                                  -ErrorAction SilentlyContinue)) {
+        -ErrorAction SilentlyContinue)) {
     try {
         $claim = Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
             ConvertFrom-Json
@@ -115,13 +142,34 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     }
     if (-not $tsString) { continue }
 
-    $ts = $null
-    try {
-        $ts = [DateTime]::Parse($tsString).ToUniversalTime()
-    } catch { continue }
+    $ts = ConvertTo-BridgeUtc -Value $claim.last_heartbeat_utc
+    if ($null -eq $ts -and $claim.PSObject.Properties['claimed_at_utc']) {
+        $ts = ConvertTo-BridgeUtc -Value $claim.claimed_at_utc
+    }
+    if ($null -eq $ts) { continue }
+    $tsString = $ts.ToString('o')
 
     $ageSeconds = ($now - $ts).TotalSeconds
-    if ($ageSeconds -lt $StaleSeconds) { continue }
+    $claimLeaseSeconds = $StaleSeconds
+    if ($claim.PSObject.Properties['lease_seconds']) {
+        $parsedLease = 0
+        if ([int]::TryParse([string]$claim.lease_seconds, [ref]$parsedLease) -and
+            $parsedLease -gt 0) {
+            $claimLeaseSeconds = $parsedLease
+        }
+    }
+
+    $effectiveExpiresUtc = $ts.AddSeconds($claimLeaseSeconds)
+    if ($claim.PSObject.Properties['claim_lease_expires_utc'] -and
+        [string]$claim.claim_lease_expires_utc) {
+        $claimExpiresUtc = ConvertTo-BridgeUtc -Value $claim.claim_lease_expires_utc
+        if ($null -ne $claimExpiresUtc -and $claimExpiresUtc -gt $effectiveExpiresUtc) {
+            $effectiveExpiresUtc = $claimExpiresUtc
+        }
+    }
+    $effectiveLeaseSeconds = [int][Math]::Ceiling(($effectiveExpiresUtc - $ts).TotalSeconds)
+    if ($effectiveLeaseSeconds -lt 1) { $effectiveLeaseSeconds = 1 }
+    if ($now -lt $effectiveExpiresUtc) { continue }
 
     # Stale: archive the claim file to done/ with a stale_lease
     # stamp and emit a release/stale_lease event.
@@ -134,7 +182,7 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     $claim | Add-Member -NotePropertyName release_status `
         -NotePropertyValue 'stale_lease' -Force
     $claim | Add-Member -NotePropertyName release_reason `
-        -NotePropertyValue ("last_heartbeat_utc was $([int]$ageSeconds)s old; lease threshold $StaleSeconds s") `
+        -NotePropertyValue ("last_heartbeat_utc was $([int]$ageSeconds)s old; lease threshold $effectiveLeaseSeconds s") `
         -Force
 
     try {
@@ -157,7 +205,9 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                 claim_agent        = $agent
                 last_heartbeat_utc = $tsString
                 age_seconds        = [int]$ageSeconds
-                stale_threshold_s  = $StaleSeconds
+                stale_threshold_s  = $effectiveLeaseSeconds
+                claim_lease_seconds = $claimLeaseSeconds
+                claim_lease_expires_utc = $effectiveExpiresUtc.ToString('o')
                 archived_path      = $donePath
                 swept_by           = $env:AGENT_BRIDGE_RUN_ID
             }

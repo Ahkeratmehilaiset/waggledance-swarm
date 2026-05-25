@@ -82,7 +82,9 @@ try {
     $obj = Get-Content -Raw -Path $claimPath -Encoding UTF8 |
         ConvertFrom-Json
     $past = (Get-Date).AddMinutes(-10).ToUniversalTime().ToString('o')
+    $pastLeaseExpiry = ([DateTime]::Parse($past).ToUniversalTime()).AddSeconds(300).ToString('o')
     $obj.last_heartbeat_utc = $past
+    $obj.claim_lease_expires_utc = $pastLeaseExpiry
     ($obj | ConvertTo-Json -Depth 8) |
         Set-Content -Path $claimPath -Encoding UTF8
 
@@ -126,6 +128,7 @@ try {
     $directOwner = Get-Content -Raw -Path $directOwnerPath -Encoding UTF8 |
         ConvertFrom-Json
     $directOwner.last_heartbeat_utc = $past
+    $directOwner.claim_lease_expires_utc = $pastLeaseExpiry
     ($directOwner | ConvertTo-Json -Depth 8) |
         Set-Content -Path $directOwnerPath -Encoding UTF8
 
@@ -200,6 +203,7 @@ try {
     $opObj = Get-Content -Raw -Path $opClaimPath -Encoding UTF8 |
         ConvertFrom-Json
     $opObj.last_heartbeat_utc = $past  # 10 min ago
+    $opObj.claim_lease_expires_utc = $pastLeaseExpiry
     ($opObj | ConvertTo-Json -Depth 8) |
         Set-Content -Path $opClaimPath -Encoding UTF8
 
@@ -208,24 +212,70 @@ try {
         -Passed (Test-Path -LiteralPath $opClaimPath) `
         -Detail "operator/system claims are privileged"
 
-    # ── 5: Default threshold from env var ──────────────────────
+    # ── 5: Per-claim lease overrides default threshold ─────────
     Write-Host ''
-    Write-Host '5. Default lease threshold honors AGENT_BRIDGE_STALE_LEASE_SECONDS env:'
-    # Set env to a very small value, claim won't be swept yet
-    # (claim has fresh heartbeat from step 2's setup).
-    $env:AGENT_BRIDGE_STALE_LEASE_SECONDS = '1000'
-    # Backdate freshClaim again
-    $obj4 = Get-Content -Raw -Path $freshClaimPath -Encoding UTF8 |
+    Write-Host '5. Per-claim lease fields override the default threshold:'
+    & $claimTask -Agent codex -TaskId 'r15-smoke-per-claim-lease' `
+        -Summary 'R15 smoke: per-claim long lease' -Mode write `
+        -WriteScope 'tests/smoke/per-claim-lease' -LeaseSeconds 1000 | Out-Null
+    $perClaimPath = Join-Path $claimsDir 'r15-smoke-per-claim-lease.json'
+    $perClaim = Get-Content -Raw -Path $perClaimPath -Encoding UTF8 |
         ConvertFrom-Json
-    $obj4.last_heartbeat_utc = (Get-Date).AddSeconds(-500).ToUniversalTime().ToString('o')
-    ($obj4 | ConvertTo-Json -Depth 8) |
-        Set-Content -Path $freshClaimPath -Encoding UTF8
+    $perClaim.last_heartbeat_utc = (Get-Date).AddSeconds(-500).ToUniversalTime().ToString('o')
+    $perClaim.PSObject.Properties.Remove('claim_lease_expires_utc')
+    ($perClaim | ConvertTo-Json -Depth 8) |
+        Set-Content -Path $perClaimPath -Encoding UTF8
+
+    $sweptPerClaimLease = & $sweep -Quiet
+    $sweptPerClaimLeaseCount = @($sweptPerClaimLease).Count
+    Add-Check -Name 'per-claim lease_seconds spares a claim past global default' `
+        -Passed ((Test-Path -LiteralPath $perClaimPath) -and
+                 ($sweptPerClaimLeaseCount -eq 0)) `
+        -Detail "lease_seconds=1000 + 500s-old claim => 0 swept"
+
+    & $claimTask -Agent codex -TaskId 'r15-smoke-per-claim-expires' `
+        -Summary 'R15 smoke: per-claim future expiry' -Mode write `
+        -WriteScope 'tests/smoke/per-claim-expires' -LeaseSeconds 100 | Out-Null
+    $perExpiresPath = Join-Path $claimsDir 'r15-smoke-per-claim-expires.json'
+    $perExpires = Get-Content -Raw -Path $perExpiresPath -Encoding UTF8 |
+        ConvertFrom-Json
+    $perExpires.last_heartbeat_utc = (Get-Date).AddSeconds(-500).ToUniversalTime().ToString('o')
+    $perExpires.claim_lease_expires_utc = (Get-Date).AddSeconds(500).ToUniversalTime().ToString('o')
+    ($perExpires | ConvertTo-Json -Depth 8) |
+        Set-Content -Path $perExpiresPath -Encoding UTF8
+
+    $sweptPerClaimExpires = & $sweep -Quiet
+    $sweptPerClaimExpiresCount = @($sweptPerClaimExpires).Count
+    Add-Check -Name 'future claim_lease_expires_utc spares a claim past lease_seconds' `
+        -Passed ((Test-Path -LiteralPath $perExpiresPath) -and
+                 ($sweptPerClaimExpiresCount -eq 0)) `
+        -Detail "lease_seconds=100 + future expires_utc => 0 swept"
+
+    # ── 6: Default threshold from env var for legacy claims ─────
+    Write-Host ''
+    Write-Host '6. Default lease threshold honors AGENT_BRIDGE_STALE_LEASE_SECONDS env for legacy claims:'
+    & $claimTask -Agent codex -TaskId 'r15-smoke-legacy-env' `
+        -Summary 'R15 smoke: legacy env threshold claim' -Mode write `
+        -WriteScope 'tests/smoke/legacy-env' | Out-Null
+    $legacyEnvPath = Join-Path $claimsDir 'r15-smoke-legacy-env.json'
+    $legacyEnv = Get-Content -Raw -Path $legacyEnvPath -Encoding UTF8 |
+        ConvertFrom-Json
+    $legacyEnv.PSObject.Properties.Remove('lease_seconds')
+    $legacyEnv.PSObject.Properties.Remove('claim_lease_expires_utc')
+    $legacyEnv.last_heartbeat_utc = (Get-Date).AddSeconds(-500).ToUniversalTime().ToString('o')
+    ($legacyEnv | ConvertTo-Json -Depth 8) |
+        Set-Content -Path $legacyEnvPath -Encoding UTF8
+
+    # Set env to a very small value, claim won't be swept yet
+    # (legacy claim is 500s old).
+    $env:AGENT_BRIDGE_STALE_LEASE_SECONDS = '1000'
 
     # With env=1000, 500s old heartbeat should NOT trigger sweep.
     $sweptEnvHigh = & $sweep -Quiet
     $sweptEnvHighCount = @($sweptEnvHigh).Count
     Add-Check -Name 'env threshold 1000s spares a 500s-old claim' `
-        -Passed ($sweptEnvHighCount -eq 0) `
+        -Passed ((Test-Path -LiteralPath $legacyEnvPath) -and
+                 ($sweptEnvHighCount -eq 0)) `
         -Detail "env=1000 + 500s-old claim => 0 swept"
 
     # Now lower env to 100s; 500s-old claim should be swept.
@@ -233,7 +283,8 @@ try {
     $sweptEnvLow = & $sweep -Quiet
     $sweptEnvLowCount = @($sweptEnvLow).Count
     Add-Check -Name 'env threshold 100s sweeps a 500s-old claim' `
-        -Passed ($sweptEnvLowCount -ge 1) `
+        -Passed ((-not (Test-Path -LiteralPath $legacyEnvPath)) -and
+                 ($sweptEnvLowCount -ge 1)) `
         -Detail "env=100 + 500s-old claim => >=1 swept"
 
     # Reset env for cleanup

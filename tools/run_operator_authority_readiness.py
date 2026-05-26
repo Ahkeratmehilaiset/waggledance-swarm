@@ -27,6 +27,7 @@ AUTHORITY_TASK_ID = "operator_gated_authority_activation_decision"
 BRIDGE_TASK_ID = "next100h-operator-authority-readiness-hold-2026-05-26"
 APPROVAL_EVENT_TYPES = {"approval", "decision"}
 APPROVAL_STATUSES = {"approved", "operator_approved", "authority_approved"}
+STRICT_BLOCKED_EXIT_CODE = 2
 
 FALSE_RELEASE_BOUNDARY = {
     "stable_release_claim": False,
@@ -220,6 +221,10 @@ def build_report_from_paths(
     )
 
 
+def strict_exit_code(report: dict[str, Any]) -> int:
+    return STRICT_BLOCKED_EXIT_CODE if report.get("activation_blockers") else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -235,6 +240,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Return a non-zero exit code when authority activation blockers "
+            "are present. The report is still written before returning."
+        ),
+    )
     args = parser.parse_args(argv)
 
     report = build_report_from_paths(
@@ -248,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output.write_text(encoded, encoding="utf-8")
     if args.json:
         print(encoded, end="")
-    return 0
+    return strict_exit_code(report) if args.strict else 0
 
 
 if __name__ == "__main__":

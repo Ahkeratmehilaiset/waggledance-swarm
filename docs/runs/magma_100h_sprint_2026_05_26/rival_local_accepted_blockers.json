@@ -1,0 +1,80 @@
+{
+  "accepted_blocker_count": 3,
+  "accepted_blockers": [
+    {
+      "accepted_blocker": true,
+      "accepted_blocker_reason": "policy_audit_or_replay_smoke_not_run",
+      "artifact_digest_verified": true,
+      "artifact_observation_details": {
+        "policy_audit_or_replay_smoke": {
+          "offline": true,
+          "ok": false,
+          "summary": "Not executed. Static wheel inspection found policy/audit/replay-related modules, but no local policy/audit/replay smoke was run in this artifact."
+        }
+      },
+      "blocked_artifact_reason": "smoke_result",
+      "blocker": "smoke_result is not passed",
+      "blocker_detail": "The required JamJet rival check needs a policy/audit/replay smoke with no cloud dependency. This artifact only proves that a pinned wheel was inspected and that relevant modules are present.",
+      "consensus_grade_contribution": false,
+      "local_artifact_path": "artifacts/jamjet-local-inspection-not-run.json",
+      "local_artifact_sha256": "sha256:9004288030d50c41da509d0e189a1f79aba5333e73c476f5ea3e817f64ba28bc",
+      "local_status": "not_passed",
+      "required_next_action": "Run a local offline policy/audit/replay smoke against the pinned JamJet artifact before it can contribute to consensus_grade.",
+      "rival": "JamJet"
+    },
+    {
+      "accepted_blocker": true,
+      "accepted_blocker_reason": "cloud_dependent_headline_receipt",
+      "artifact_digest_verified": true,
+      "artifact_observation_details": {},
+      "blocked_artifact_reason": "cloud_dependency",
+      "blocker": "cloud_dependency is not false",
+      "blocker_detail": "The local Asqav artifact proves offline keypair generation and action queueing, but the headline ML-DSA-65 signature and signed receipt emission remain cloud-dependent.",
+      "consensus_grade_contribution": false,
+      "local_artifact_path": "artifacts/asqav-local-smoke.json",
+      "local_artifact_sha256": "sha256:663950d89d9b87b0ad8776ab0385e01a3827ea7d71a27aabcdff876d12b2bf1f",
+      "local_status": "cloud_dependent",
+      "required_next_action": "Produce a local signed-receipt/hash-chain smoke with cloud_dependency=false, or keep Asqav as an accepted blocker.",
+      "rival": "Asqav"
+    },
+    {
+      "accepted_blocker": true,
+      "accepted_blocker_reason": "mcp_allow_deny_approval_smoke_not_run",
+      "artifact_digest_verified": true,
+      "artifact_observation_details": {
+        "mcp_allow_deny_approval_smoke": {
+          "offline": false,
+          "ok": false,
+          "summary": "Not executed. Static public metadata inspection found a Preloop 0.9.3 PyPI release, Apache-2.0/self-hostable claims, MCP firewall and approval workflow claims, but no local MCP allow/deny/approval smoke was run in this artifact."
+        }
+      },
+      "blocked_artifact_reason": "smoke_result",
+      "blocker": "smoke_result is not passed",
+      "blocker_detail": "The required Preloop rival check needs an MCP allow/deny/approval smoke. This artifact only records pinned public package/source metadata and deliberately must not contribute to consensus_grade.",
+      "consensus_grade_contribution": false,
+      "local_artifact_path": "artifacts/preloop-static-metadata-not-run.json",
+      "local_artifact_sha256": "sha256:3dbf07f70b700a917be0afdcc893b6dfb22c59403763b369470f35d1d41e53ae",
+      "local_status": "not_passed",
+      "required_next_action": "Run a local offline MCP allow/deny/approval smoke against the pinned Preloop artifact before it can contribute to consensus_grade.",
+      "rival": "Preloop"
+    }
+  ],
+  "blocked_count": 3,
+  "blockers": [],
+  "consensus_grade": false,
+  "evidence_dir": "docs/benchmarks/rival_local_checks",
+  "generated_at_utc": "2026-05-26T01:40:00Z",
+  "matrix_generated_at_utc": "2026-05-26T01:40:00Z",
+  "matrix_report_version": "wd.v12.rival_local_check_matrix.v0",
+  "no_overclaim_guardrails": {
+    "blocked_rows_do_not_contribute_to_consensus_grade": true,
+    "consensus_grade_remains_false": true,
+    "does_not_promote_blocked_rows": true,
+    "requires_artifact_digest_verified": true
+  },
+  "ok": true,
+  "passed_count": 1,
+  "required_count": 4,
+  "rival_local_checks_status": "1/4 rival local checks passed",
+  "schema_version": "wd.v12.rival_local_accepted_blockers.v0"
+}

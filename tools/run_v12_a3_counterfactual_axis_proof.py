@@ -404,6 +404,14 @@ def _with_receipt_binding_state(
     replay = deepcopy(stored_consensus_replay)
     replay["receipt_bound"] = bool(receipt_chain_verified)
     replay["receipt_chain_id"] = CHAIN_ID if receipt_chain_verified else None
+    replay["satisfied_gates"] = []
+    if receipt_chain_verified:
+        replay["satisfied_gates"].append("forensic_artifact_receipt")
+        replay["next_required_gates"] = [
+            gate
+            for gate in replay["next_required_gates"]
+            if gate != "forensic_artifact_receipt"
+        ]
     return replay
 
 

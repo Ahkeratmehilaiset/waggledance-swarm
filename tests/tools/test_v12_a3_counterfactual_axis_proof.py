@@ -62,6 +62,8 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert replay["candidate_diff_charter_allowed"] is True
     assert replay["receipt_bound"] is False
     assert replay["receipt_chain_id"] is None
+    assert replay["satisfied_gates"] == []
+    assert "forensic_artifact_receipt" in replay["next_required_gates"]
     assert replay["stored_consensus"]["artifact_version"] == (
         "idle_consensus_operator_review.v1"
     )
@@ -102,6 +104,13 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
     assert report["stored_consensus_replay"]["receipt_bound"] is True
     assert report["stored_consensus_replay"]["receipt_chain_id"] == (
         "magma:v12_a3_counterfactual_axis:v1"
+    )
+    assert report["stored_consensus_replay"]["satisfied_gates"] == [
+        "forensic_artifact_receipt"
+    ]
+    assert (
+        "forensic_artifact_receipt"
+        not in report["stored_consensus_replay"]["next_required_gates"]
     )
     assert report["receipt_bundle"]["available"] is True
     assert report["receipt_bundle"]["receipt_count"] == 6

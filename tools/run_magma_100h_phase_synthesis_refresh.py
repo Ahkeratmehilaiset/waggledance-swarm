@@ -48,6 +48,21 @@ FALSE_RELEASE_BOUNDARY = {
     "external_effect_authority_change": False,
 }
 
+SOAK_DIAGNOSTIC_SUMMARY_KEYS = (
+    "target_version",
+    "result",
+    "duration_hours",
+    "required_duration_hours",
+    "ended_at_date",
+    "required_soak_end",
+    "silent_failures",
+    "expected_silent_failures",
+    "error_log_clean",
+    "expected_error_log_clean",
+    "docker_stable_policy",
+    "expected_docker_stable_policy",
+)
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -126,9 +141,36 @@ def _rival_guardrails(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _release_soak_diagnostics_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gate = report.get("gate")
+    if not isinstance(gate, dict):
+        return {}
+    diagnostics = gate.get("soak_evidence_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return {}
+
+    summary = {
+        key: diagnostics[key]
+        for key in SOAK_DIAGNOSTIC_SUMMARY_KEYS
+        if key in diagnostics
+    }
+    status_fields = diagnostics.get("status_fields")
+    if isinstance(status_fields, dict):
+        safe_status_fields = {}
+        for name, value in sorted(status_fields.items()):
+            if isinstance(name, str) and isinstance(value, dict):
+                safe_status_fields[name] = {
+                    "actual": value.get("actual"),
+                    "expected": value.get("expected"),
+                }
+        if safe_status_fields:
+            summary["status_fields"] = safe_status_fields
+    return summary
+
+
 def _release_gate_guardrails(report: dict[str, Any]) -> dict[str, Any]:
     invariants = report.get("read_only_invariants") or {}
-    return {
+    summary = {
         "report_ok": report.get("ok") is True,
         "read_only": report.get("read_only") is True,
         "decision": report.get("release_gate_decision"),
@@ -137,6 +179,10 @@ def _release_gate_guardrails(report: dict[str, Any]) -> dict[str, Any]:
         "release_boundary_all_false": _boundary_is_false(report),
         "read_only_invariants": dict(invariants),
     }
+    soak_diagnostics = _release_soak_diagnostics_summary(report)
+    if soak_diagnostics:
+        summary["soak_evidence_diagnostics"] = soak_diagnostics
+    return summary
 
 
 def _collect_blockers(

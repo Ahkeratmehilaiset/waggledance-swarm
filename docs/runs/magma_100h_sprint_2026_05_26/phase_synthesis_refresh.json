@@ -26,7 +26,7 @@
     }
   },
   "blockers": [],
-  "generated_at_utc": "2026-05-26T05:23:31Z",
+  "generated_at_utc": "2026-05-26T08:36:00Z",
   "landed_work_packages": [
     {
       "evidence": "docs/runs/magma_100h_sprint_2026_05_26/rival_local_accepted_blockers.json",
@@ -68,7 +68,47 @@
         },
         "release_boundary_all_false": true,
         "release_gate_effect": "none",
-        "report_ok": true
+        "report_ok": true,
+        "soak_evidence_diagnostics": {
+          "docker_stable_policy": "finalized",
+          "duration_hours": 311.365,
+          "ended_at_date": "2026-05-22",
+          "error_log_clean": true,
+          "expected_docker_stable_policy": "finalized",
+          "expected_error_log_clean": true,
+          "expected_silent_failures": 0,
+          "required_duration_hours": 336,
+          "required_soak_end": "2026-05-24",
+          "result": "hold",
+          "silent_failures": 0,
+          "status_fields": {
+            "axis_a_regression": {
+              "actual": "pass",
+              "expected": "pass"
+            },
+            "axis_b_gate": {
+              "actual": "pass",
+              "expected": "pass"
+            },
+            "ci_status": {
+              "actual": "pass",
+              "expected": "pass"
+            },
+            "profile_s_smoke": {
+              "actual": "pass",
+              "expected": "pass"
+            },
+            "release_notes_anti_claims": {
+              "actual": "pass",
+              "expected": "pass"
+            },
+            "security_privacy_gate": {
+              "actual": "pass",
+              "expected": "pass"
+            }
+          },
+          "target_version": "v3.12.0"
+        }
       }
     },
     {
@@ -140,7 +180,7 @@
       "present": false
     },
     "forbidden_claims_count": 7,
-    "generated_at_utc": "2026-05-26T05:23:31Z",
+    "generated_at_utc": "2026-05-26T08:36:00Z",
     "governance_throughput": {
       "event_count_in_window": 2077,
       "metric_count": 8,

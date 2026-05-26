@@ -30,6 +30,15 @@ STATUS_PASS_FIELDS = {
     "release_notes_anti_claims": "pass",
 }
 
+_DIAGNOSTIC_STRING_VALUES = {
+    "pass",
+    "hold",
+    "blocked",
+    "unknown",
+    "draft",
+    "finalized",
+}
+
 
 @dataclass(frozen=True)
 class ReleaseReadiness:
@@ -146,6 +155,70 @@ def _validate_soak_evidence(
     return blockers
 
 
+def _diagnostic_string(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if not isinstance(value, str):
+        return "<redacted>"
+    normalized = value.strip().lower()
+    if normalized in _DIAGNOSTIC_STRING_VALUES:
+        return normalized
+    if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){1,2}", value.strip()):
+        return value.strip()
+    return "<redacted>"
+
+
+def _soak_evidence_diagnostics(
+    evidence: dict[str, Any] | None,
+    readiness: ReleaseReadiness,
+    *,
+    provided: bool,
+    readable: bool,
+    is_object: bool,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "provided": provided,
+        "readable": readable,
+        "object": is_object,
+    }
+    if evidence is None:
+        return diagnostics
+
+    started_at = _parse_timestamp(evidence.get("started_at_utc"))
+    ended_at = _parse_timestamp(evidence.get("ended_at_utc"))
+    required_hours = (readiness.soak_end - readiness.soak_start).days * 24
+
+    diagnostics.update({
+        "target_version": _diagnostic_string(evidence.get("target_version")),
+        "expected_target_version": readiness.target_version,
+        "result": _diagnostic_string(evidence.get("result")),
+        "expected_result": "pass",
+        "commit_present": bool(evidence.get("commit")),
+        "started_at_valid": started_at is not None,
+        "ended_at_valid": ended_at is not None,
+        "ended_at_date": ended_at.date().isoformat() if ended_at else None,
+        "required_soak_end": readiness.soak_end.isoformat(),
+        "duration_hours": _diagnostic_string(evidence.get("duration_hours")),
+        "required_duration_hours": required_hours,
+        "silent_failures": _diagnostic_string(evidence.get("silent_failures")),
+        "expected_silent_failures": 0,
+        "error_log_clean": _diagnostic_string(evidence.get("error_log_clean")),
+        "expected_error_log_clean": True,
+        "docker_stable_policy": _diagnostic_string(
+            evidence.get("docker_stable_policy")
+        ),
+        "expected_docker_stable_policy": "finalized",
+        "status_fields": {
+            field: {
+                "actual": _diagnostic_string(evidence.get(field)),
+                "expected": expected,
+            }
+            for field, expected in STATUS_PASS_FIELDS.items()
+        },
+    })
+    return diagnostics
+
+
 def evaluate_release_gate(
     readiness_path: Path | str,
     *,
@@ -180,16 +253,38 @@ def evaluate_release_gate(
 
     if soak_evidence_path is None:
         blockers.append("soak_evidence_missing")
+        soak_diagnostics: dict[str, Any] = {
+            "provided": False,
+            "readable": False,
+            "object": False,
+        }
     else:
         try:
             evidence = json.loads(soak_evidence_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             blockers.append(f"soak_evidence_unreadable:{exc.__class__.__name__}")
+            soak_diagnostics = {
+                "provided": True,
+                "readable": False,
+                "object": False,
+            }
         else:
             if not isinstance(evidence, dict):
                 blockers.append("soak_evidence_not_object")
+                soak_diagnostics = {
+                    "provided": True,
+                    "readable": True,
+                    "object": False,
+                }
             else:
                 blockers.extend(_validate_soak_evidence(evidence, readiness))
+                soak_diagnostics = _soak_evidence_diagnostics(
+                    evidence,
+                    readiness,
+                    provided=True,
+                    readable=True,
+                    is_object=True,
+                )
 
     return {
         "decision": "pass" if not blockers else "hold",
@@ -202,6 +297,7 @@ def evaluate_release_gate(
             "end": readiness.soak_end.isoformat(),
             "required_hours": (readiness.soak_end - readiness.soak_start).days * 24,
         },
+        "soak_evidence_diagnostics": soak_diagnostics,
     }
 
 

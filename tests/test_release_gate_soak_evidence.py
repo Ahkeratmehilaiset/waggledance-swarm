@@ -98,6 +98,11 @@ def test_release_gate_redacts_unreadable_soak_evidence_path(tmp_path) -> None:
 
     assert result["decision"] == "hold"
     assert "soak_evidence_unreadable:FileNotFoundError" in result["blockers"]
+    assert result["soak_evidence_diagnostics"] == {
+        "provided": True,
+        "readable": False,
+        "object": False,
+    }
     assert str(evidence_path) not in encoded
     assert evidence_path.name not in encoded
 
@@ -128,3 +133,49 @@ def test_release_gate_rejects_partial_or_dirty_soak_evidence(tmp_path) -> None:
     assert "soak_evidence_error_log_not_clean" in result["blockers"]
     assert "soak_evidence_docker_policy_not_finalized" in result["blockers"]
     assert "soak_evidence_axis_b_gate_not_pass" in result["blockers"]
+    diagnostics = result["soak_evidence_diagnostics"]
+    assert diagnostics["provided"] is True
+    assert diagnostics["readable"] is True
+    assert diagnostics["object"] is True
+    assert diagnostics["duration_hours"] == 12
+    assert diagnostics["required_duration_hours"] == 336
+    assert diagnostics["ended_at_date"] == "2026-05-11"
+    assert diagnostics["required_soak_end"] == "2026-05-24"
+    assert diagnostics["silent_failures"] == 1
+    assert diagnostics["expected_silent_failures"] == 0
+    assert diagnostics["error_log_clean"] is False
+    assert diagnostics["expected_error_log_clean"] is True
+    assert diagnostics["docker_stable_policy"] == "draft"
+    assert diagnostics["expected_docker_stable_policy"] == "finalized"
+    assert diagnostics["status_fields"]["axis_b_gate"] == {
+        "actual": "hold",
+        "expected": "pass",
+    }
+
+
+def test_release_gate_diagnostics_redact_unexpected_status_values(tmp_path) -> None:
+    evidence = _valid_evidence()
+    evidence["ci_status"] = {"token": "DO_NOT_LEAK"}
+    evidence["axis_a_regression"] = "secret-status-DO_NOT_LEAK"
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    result = evaluate_release_gate(
+        readiness_path="docs/release/RELEASE_READINESS.md",
+        soak_evidence_path=evidence_path,
+        today=dt.date(2026, 5, 24),
+    )
+    encoded = json.dumps(result)
+
+    assert result["decision"] == "hold"
+    assert result["soak_evidence_diagnostics"]["status_fields"]["ci_status"] == {
+        "actual": "<redacted>",
+        "expected": "pass",
+    }
+    assert result["soak_evidence_diagnostics"]["status_fields"][
+        "axis_a_regression"
+    ] == {
+        "actual": "<redacted>",
+        "expected": "pass",
+    }
+    assert "DO_NOT_LEAK" not in encoded

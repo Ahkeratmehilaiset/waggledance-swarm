@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from tools.run_operator_authority_readiness import (
+    DECISION_PACKET_SCHEMA_VERSION,
     FALSE_RELEASE_BOUNDARY,
     SCHEMA_VERSION,
     STRICT_BLOCKED_EXIT_CODE,
@@ -94,6 +95,35 @@ def test_report_records_hold_when_operator_approval_is_missing() -> None:
         },
     }
     assert report["release_boundary"] == FALSE_RELEASE_BOUNDARY
+    packet = report["operator_decision_packet"]
+    assert packet["schema_version"] == DECISION_PACKET_SCHEMA_VERSION
+    assert packet["id"] == "operator_gated_authority_activation_decision"
+    assert packet["decision_status"] == "operator_approval_missing"
+    assert packet["default_recommendation"] == "hold_no_authority_change"
+    assert packet["operator_input_required"] is True
+    assert packet["activation_effect_before_followup"] == "none"
+    assert {
+        option["id"] for option in packet["decision_options"]
+    } == {
+        "hold_no_authority_change",
+        "approve_receipt_bound_activation_preparation",
+    }
+    assert all(
+        option["runtime_authority_granted"] is False
+        for option in packet["decision_options"]
+    )
+    assert all(
+        option["runtime_traffic_mutation_allowed"] is False
+        for option in packet["decision_options"]
+    )
+    assert all(
+        option["candidate_state_mutation_allowed"] is False
+        for option in packet["decision_options"]
+    )
+    assert all(
+        option["release_boundary_mutation_allowed"] is False
+        for option in packet["decision_options"]
+    )
 
 
 def test_only_operator_approval_event_counts() -> None:
@@ -145,6 +175,18 @@ def test_report_records_approval_without_granting_authority() -> None:
     assert (
         report["authority_guardrails"]["candidate_state_mutation_applied"]
         is False
+    )
+    packet = report["operator_decision_packet"]
+    assert packet["decision_status"] == "operator_approval_recorded"
+    assert packet["operator_input_required"] is False
+    assert packet["activation_effect_before_followup"] == "none"
+    assert all(
+        option["runtime_authority_granted"] is False
+        for option in packet["decision_options"]
+    )
+    assert all(
+        option["release_boundary_mutation_allowed"] is False
+        for option in packet["decision_options"]
     )
 
 

@@ -13,9 +13,48 @@
     "runtime_authority_granted": false,
     "runtime_traffic_mutation_applied": false
   },
-  "checked_at_utc": "2026-05-26T09:40:00Z",
+  "checked_at_utc": "2026-05-26T20:44:40Z",
   "explicit_operator_approval_found": false,
   "ok": true,
+  "operator_decision_packet": {
+    "activation_effect_before_followup": "none",
+    "approval_event_required_for_activation": true,
+    "decision_options": [
+      {
+        "candidate_state_mutation_allowed": false,
+        "id": "hold_no_authority_change",
+        "next_status": "hold_operator_approval_required",
+        "operator_approval_required": false,
+        "release_boundary_mutation_allowed": false,
+        "runtime_authority_granted": false,
+        "runtime_traffic_mutation_allowed": false,
+        "summary": "Keep all authority guardrails closed."
+      },
+      {
+        "candidate_state_mutation_allowed": false,
+        "followup_requirements": [
+          "receipt_bound_activation_plan",
+          "separate_candidate_state_mutation_pr",
+          "fresh_exact_head_ci",
+          "rco_and_bridge_preflight"
+        ],
+        "id": "approve_receipt_bound_activation_preparation",
+        "next_status": "operator_approved_activation_still_not_granted",
+        "operator_approval_required": true,
+        "release_boundary_mutation_allowed": false,
+        "runtime_authority_granted": false,
+        "runtime_traffic_mutation_allowed": false,
+        "summary": "Record approval to prepare a separate receipt-bound activation change; this report still grants no authority."
+      }
+    ],
+    "decision_status": "operator_approval_missing",
+    "default_recommendation": "hold_no_authority_change",
+    "id": "operator_gated_authority_activation_decision",
+    "operator_input_required": true,
+    "schema_version": "waggledance.operator_authority_decision_packet.v0",
+    "source_acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
+    "source_status": "operator_decision_required"
+  },
   "read_only_invariants": {
     "no_candidate_state_mutated": true,
     "no_release_boundary_mutated": true,

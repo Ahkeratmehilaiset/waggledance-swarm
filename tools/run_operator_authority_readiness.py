@@ -24,6 +24,7 @@ DEFAULT_EVENTS = Path(".agent-bridge/shared/events.jsonl")
 DEFAULT_OUTPUT = SPRINT_DIR / "operator_authority_readiness.json"
 
 AUTHORITY_TASK_ID = "operator_gated_authority_activation_decision"
+RELEASE_SOAK_TASK_ID = "release_soak_evidence_blocker_resolution"
 BRIDGE_TASK_ID = "next100h-operator-authority-readiness-hold-2026-05-26"
 APPROVAL_EVENT_TYPES = {"approval", "decision"}
 APPROVAL_STATUSES = {"approved", "operator_approved", "authority_approved"}
@@ -119,10 +120,41 @@ def explicit_operator_approval_events(
 def _remaining_authority_package(
     phase_synthesis_refresh: dict[str, Any],
 ) -> dict[str, Any]:
+    return _remaining_package(phase_synthesis_refresh, AUTHORITY_TASK_ID)
+
+
+def _remaining_package(
+    phase_synthesis_refresh: dict[str, Any],
+    package_id: str,
+) -> dict[str, Any]:
     for package in phase_synthesis_refresh.get("remaining_work_packages") or []:
-        if isinstance(package, dict) and package.get("id") == AUTHORITY_TASK_ID:
+        if isinstance(package, dict) and package.get("id") == package_id:
             return dict(package)
     return {}
+
+
+def _source_phase_synthesis_summary(
+    phase_synthesis_refresh: dict[str, Any],
+) -> dict[str, Any]:
+    release_soak_package = _remaining_package(
+        phase_synthesis_refresh,
+        RELEASE_SOAK_TASK_ID,
+    )
+    return {
+        "schema_version": phase_synthesis_refresh.get("schema_version"),
+        "sprint_id": phase_synthesis_refresh.get("sprint_id"),
+        "generated_at_utc": phase_synthesis_refresh.get("generated_at_utc"),
+        "ok": phase_synthesis_refresh.get("ok") is True,
+        "release_boundary_all_false": (
+            phase_synthesis_refresh.get("release_boundary")
+            == FALSE_RELEASE_BOUNDARY
+        ),
+        "remaining_release_soak_package": {
+            "id": RELEASE_SOAK_TASK_ID,
+            "status": release_soak_package.get("status"),
+            "owner": release_soak_package.get("owner"),
+        },
+    }
 
 
 def _collect_blockers(
@@ -181,6 +213,9 @@ def build_report(
             }
             for event in approval_events
         ],
+        "source_phase_synthesis_refresh": _source_phase_synthesis_summary(
+            phase_synthesis_refresh
+        ),
         "required_operator_task": {
             "id": AUTHORITY_TASK_ID,
             "source_status": _remaining_authority_package(

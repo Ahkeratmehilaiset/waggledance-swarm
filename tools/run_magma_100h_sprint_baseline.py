@@ -126,36 +126,7 @@ def build_baseline(
             "governance_throughput": v12_proof.get("governance_throughput", {}),
             "competitor_pilot": _competitor_summary(v12_proof),
         },
-        "next_work_packages": [
-            {
-                "id": "runtime_receipt_emission_one_path",
-                "owner": "codex",
-                "peer": "claude",
-                "target": "one concrete solver/demo path emits verifiable receipt + EvaluationResult",
-                "acceptance": "manifest verifies with tools/verify_magma_receipt.py and tests cover tampered payload/evaluation result",
-            },
-            {
-                "id": "counterfactual_evaluation_demo_a3",
-                "owner": "codex",
-                "peer": "claude",
-                "target": "three deterministic variants show receipt-bound EvaluationResult diffs",
-                "acceptance": "diff includes gate, solver selection/verifier path or explicit unavailable guardrail, risk/verdict/reason codes",
-            },
-            {
-                "id": "solver_growth_lifecycle_a4",
-                "owner": "codex",
-                "peer": "claude",
-                "target": "candidate -> shadow evaluation -> receipt-bound promotion evidence",
-                "acceptance": "promotion proof fails closed without EvaluationResult, receipt, solver contract digest, and operator gate flag where required",
-            },
-            {
-                "id": "rival_axis_upgrade",
-                "owner": "claude",
-                "peer": "codex",
-                "target": "upgrade competitor matrix labels without claiming consensus-grade rival benchmark",
-                "acceptance": "A3/A4 WD evidence linked; rival local checks remain public-doc/not-run unless actually measured",
-            },
-        ],
+        "next_work_packages": _next_work_packages(),
         "claude_activation_contract": {
             "required_roles": required_claude_roles,
             "heartbeat_only_timeout_minutes": 5,
@@ -173,6 +144,63 @@ def build_baseline(
         ],
     }
     return baseline
+
+
+def _next_work_packages() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "rival_local_evidence_execution_or_accepted_blockers",
+            "owner": "codex",
+            "peer": "claude",
+            "target": (
+                "turn JamJet, Preloop, and Asqav blocked rows into pinned "
+                "local-smoke artifacts or accepted explicit blockers"
+            ),
+            "acceptance": (
+                "rival matrix artifacts verify; consensus_grade remains false "
+                "unless all four required local checks pass"
+            ),
+        },
+        {
+            "id": "operator_gated_authority_activation_decision",
+            "owner": "operator",
+            "peer": "codex,claude",
+            "target": (
+                "decide whether any non-authority A3/A4/hex evidence can "
+                "advance to runtime authority"
+            ),
+            "acceptance": (
+                "requires an explicit operator approval event; no runtime "
+                "traffic or candidate-state mutation before approval"
+            ),
+        },
+        {
+            "id": "phase_synthesis_and_baseline_refresh",
+            "owner": "codex",
+            "peer": "claude",
+            "target": (
+                "summarize landed A3, A4, receipt-adoption, and rival-local "
+                "evidence into the next sprint seed"
+            ),
+            "acceptance": (
+                "baseline remains ok=true; release_boundary stays all false; "
+                "forbidden_claims are preserved"
+            ),
+        },
+        {
+            "id": "release_gate_readonly_recheck",
+            "owner": "codex",
+            "peer": "claude",
+            "target": (
+                "run release-readiness gates read-only after baseline refresh "
+                "without tag or Docker stable/latest action"
+            ),
+            "acceptance": (
+                "gate output records blockers or pass state and no release "
+                "boundary mutation is applied"
+            ),
+        },
+    ]
 
 
 def _baseline_blockers(v12_proof: dict[str, Any]) -> list[str]:

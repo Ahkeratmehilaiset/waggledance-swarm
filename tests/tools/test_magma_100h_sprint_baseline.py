@@ -247,6 +247,12 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
         ]
         is False
     )
+    assert [package["id"] for package in baseline["next_work_packages"]] == [
+        "rival_local_evidence_execution_or_accepted_blockers",
+        "operator_gated_authority_activation_decision",
+        "phase_synthesis_and_baseline_refresh",
+        "release_gate_readonly_recheck",
+    ]
     assert "rival benchmark consensus-grade" in baseline["forbidden_claims"]
 
 

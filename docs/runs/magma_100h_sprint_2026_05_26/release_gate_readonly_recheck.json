@@ -4,7 +4,7 @@
     "soak_evidence_duration_lt_336h",
     "soak_evidence_ended_before_required_soak_end"
   ],
-  "checked_at_utc": "2026-05-26T01:10:00Z",
+  "checked_at_utc": "2026-05-26T08:08:00Z",
   "gate": {
     "blockers": [
       "soak_evidence_result_not_pass",
@@ -14,6 +14,54 @@
     "decision": "hold",
     "latest_stable": "v3.8.0",
     "no_earlier_than": "2026-05-24",
+    "soak_evidence_diagnostics": {
+      "commit_present": true,
+      "docker_stable_policy": "finalized",
+      "duration_hours": 311.365,
+      "ended_at_date": "2026-05-22",
+      "ended_at_valid": true,
+      "error_log_clean": true,
+      "expected_docker_stable_policy": "finalized",
+      "expected_error_log_clean": true,
+      "expected_result": "pass",
+      "expected_silent_failures": 0,
+      "expected_target_version": "v3.12.0",
+      "object": true,
+      "provided": true,
+      "readable": true,
+      "required_duration_hours": 336,
+      "required_soak_end": "2026-05-24",
+      "result": "hold",
+      "silent_failures": 0,
+      "started_at_valid": true,
+      "status_fields": {
+        "axis_a_regression": {
+          "actual": "pass",
+          "expected": "pass"
+        },
+        "axis_b_gate": {
+          "actual": "pass",
+          "expected": "pass"
+        },
+        "ci_status": {
+          "actual": "pass",
+          "expected": "pass"
+        },
+        "profile_s_smoke": {
+          "actual": "pass",
+          "expected": "pass"
+        },
+        "release_notes_anti_claims": {
+          "actual": "pass",
+          "expected": "pass"
+        },
+        "security_privacy_gate": {
+          "actual": "pass",
+          "expected": "pass"
+        }
+      },
+      "target_version": "v3.12.0"
+    },
     "soak_window": {
       "end": "2026-05-24",
       "required_hours": 336,

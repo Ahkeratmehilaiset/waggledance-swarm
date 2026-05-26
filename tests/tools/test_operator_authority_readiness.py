@@ -8,9 +8,11 @@ from pathlib import Path
 from tools.run_operator_authority_readiness import (
     FALSE_RELEASE_BOUNDARY,
     SCHEMA_VERSION,
+    STRICT_BLOCKED_EXIT_CODE,
     build_report,
     explicit_operator_approval_events,
     main,
+    strict_exit_code,
 )
 
 
@@ -178,3 +180,87 @@ def test_cli_writes_hold_report(tmp_path: Path, capsys) -> None:
     assert disk_report["authority_activation_status"] == (
         "hold_operator_approval_required"
     )
+
+
+def test_strict_exit_code_reports_blocked_hold() -> None:
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(),
+        events=[],
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert strict_exit_code(report) == STRICT_BLOCKED_EXIT_CODE
+
+
+def test_cli_strict_returns_blocked_after_writing_report(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    phase_path = tmp_path / "phase_synthesis_refresh.json"
+    events_path = tmp_path / "events.jsonl"
+    output_path = tmp_path / "operator_authority_readiness.json"
+    phase_path.write_text(
+        json.dumps(_phase_synthesis_refresh()),
+        encoding="utf-8",
+    )
+    events_path.write_text("", encoding="utf-8")
+
+    rc = main(
+        [
+            "--phase-synthesis-refresh",
+            str(phase_path),
+            "--events",
+            str(events_path),
+            "--checked-at-utc",
+            "2026-05-26T06:00:00Z",
+            "--output",
+            str(output_path),
+            "--json",
+            "--strict",
+        ]
+    )
+
+    assert rc == STRICT_BLOCKED_EXIT_CODE
+    stdout_report = json.loads(capsys.readouterr().out)
+    disk_report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert stdout_report == disk_report
+    assert disk_report["activation_blockers"] == [
+        "explicit_operator_approval_event_missing"
+    ]
+
+
+def test_cli_strict_passes_when_approval_is_recorded_without_authority_grant(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    phase_path = tmp_path / "phase_synthesis_refresh.json"
+    events_path = tmp_path / "events.jsonl"
+    output_path = tmp_path / "operator_authority_readiness.json"
+    phase_path.write_text(
+        json.dumps(_phase_synthesis_refresh()),
+        encoding="utf-8",
+    )
+    events_path.write_text(json.dumps(_operator_approval_event()) + "\n")
+
+    rc = main(
+        [
+            "--phase-synthesis-refresh",
+            str(phase_path),
+            "--events",
+            str(events_path),
+            "--checked-at-utc",
+            "2026-05-26T06:00:00Z",
+            "--output",
+            str(output_path),
+            "--json",
+            "--strict",
+        ]
+    )
+
+    assert rc == 0
+    stdout_report = json.loads(capsys.readouterr().out)
+    assert stdout_report["activation_blockers"] == []
+    assert stdout_report["authority_activation_status"] == (
+        "operator_approved_activation_still_not_granted"
+    )
+    assert stdout_report["authority_guardrails"]["runtime_authority_granted"] is False

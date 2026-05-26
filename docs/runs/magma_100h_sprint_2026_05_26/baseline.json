@@ -155,15 +155,15 @@
     },
     "governance_throughput": {
       "available": true,
-      "event_count_in_window": 2060,
+      "event_count_in_window": 2077,
       "metric_count": 8,
       "status_counts": {
         "deferred": 1,
         "insufficient_data": 2,
         "ok": 5
       },
-      "task_count_in_window": 345,
-      "window_label": "last-7d (from 2026-05-19T00:45:55.868205+00:00)"
+      "task_count_in_window": 351,
+      "window_label": "last-7d (from 2026-05-19T02:11:07.900215+00:00)"
     },
     "receipt_adoption": {
       "accepted_exception_count": 0,
@@ -186,7 +186,7 @@
     "public cryptographic verification parity",
     "rival benchmark consensus-grade"
   ],
-  "generated_at_utc": "2026-05-26T00:45:56Z",
+  "generated_at_utc": "2026-05-26T02:11:08Z",
   "next_work_packages": [
     {
       "acceptance": "rival matrix artifacts verify; consensus_grade remains false unless all four required local checks pass",

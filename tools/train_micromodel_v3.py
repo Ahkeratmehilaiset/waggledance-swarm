@@ -18,11 +18,24 @@ Usage:
 
 # Import unsloth early ONLY if --no-unsloth is not passed
 import sys as _sys
-if "--no-unsloth" not in _sys.argv:
+
+
+_OPTIONAL_UNSLOTH_RUNTIME_ERRORS = (NotImplementedError, RuntimeError, OSError)
+
+
+def _try_import_unsloth() -> tuple[bool, str]:
+    """Return whether optional Unsloth is usable without failing CPU-only imports."""
     try:
         import unsloth  # Must import before transformers/peft/trl for optimizations
+        return True, ""
     except ImportError:
-        pass
+        return False, "not installed"
+    except _OPTIONAL_UNSLOTH_RUNTIME_ERRORS as exc:
+        return False, str(exc)
+
+
+if "--no-unsloth" not in _sys.argv:
+    _try_import_unsloth()
 
 import argparse
 import json
@@ -71,12 +84,14 @@ def check_dependencies() -> dict:
         except ImportError:
             log.warning(f"  ✗ {pkg_name} not installed")
 
-    try:
-        import unsloth
+    unsloth_available, unsloth_reason = _try_import_unsloth()
+    if unsloth_available:
         status["unsloth"] = True
         log.info(f"  ✓ unsloth (fast LoRA)")
-    except ImportError:
+    elif unsloth_reason == "not installed":
         log.info(f"  - unsloth not installed (optional, 2x speedup)")
+    else:
+        log.info(f"  - unsloth unavailable (optional): {unsloth_reason}")
 
     return status
 

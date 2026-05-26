@@ -1,4 +1,6 @@
 """Tests for tools/migrate_db.py — schema migration + auth + training tools."""
+import builtins
+import importlib
 import importlib.util
 import json
 import sqlite3
@@ -254,6 +256,28 @@ class TestCollectTrainingData(unittest.TestCase):
 
 class TestTrainScript(unittest.TestCase):
     """Tests for tools/train_micromodel_v3.py."""
+
+    def test_40_optional_unsloth_runtime_failure_is_nonfatal(self):
+        original_import = builtins.__import__
+        sys.modules.pop("tools.train_micromodel_v3", None)
+
+        def fake_import(name, *args, **kwargs):
+            if name == "unsloth":
+                raise NotImplementedError(
+                    "Unsloth cannot find any torch accelerator? You need a GPU."
+                )
+            return original_import(name, *args, **kwargs)
+
+        try:
+            builtins.__import__ = fake_import
+            module = importlib.import_module("tools.train_micromodel_v3")
+            deps = module.check_dependencies()
+        finally:
+            builtins.__import__ = original_import
+            sys.modules.pop("tools.train_micromodel_v3", None)
+
+        self.assertIn("unsloth", deps)
+        self.assertFalse(deps["unsloth"])
 
     def test_40_import(self):
         from tools.train_micromodel_v3 import (

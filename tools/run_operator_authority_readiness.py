@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 
 SCHEMA_VERSION = "waggledance.operator_authority_readiness.v0"
+DECISION_PACKET_SCHEMA_VERSION = "waggledance.operator_authority_decision_packet.v0"
 SPRINT_DIR = Path("docs/runs/magma_100h_sprint_2026_05_26")
 DEFAULT_PHASE_SYNTHESIS_REFRESH = SPRINT_DIR / "phase_synthesis_refresh.json"
 DEFAULT_EVENTS = Path(".agent-bridge/shared/events.jsonl")
@@ -176,6 +177,60 @@ def _collect_blockers(
     return blockers
 
 
+def _operator_decision_packet(
+    *,
+    phase_synthesis_refresh: dict[str, Any],
+    approval_seen: bool,
+) -> dict[str, Any]:
+    package = _remaining_authority_package(phase_synthesis_refresh)
+    return {
+        "schema_version": DECISION_PACKET_SCHEMA_VERSION,
+        "id": AUTHORITY_TASK_ID,
+        "decision_status": (
+            "operator_approval_recorded"
+            if approval_seen
+            else "operator_approval_missing"
+        ),
+        "default_recommendation": "hold_no_authority_change",
+        "source_status": package.get("status"),
+        "source_acceptance": package.get("acceptance"),
+        "activation_effect_before_followup": "none",
+        "operator_input_required": not approval_seen,
+        "approval_event_required_for_activation": True,
+        "decision_options": [
+            {
+                "id": "hold_no_authority_change",
+                "summary": "Keep all authority guardrails closed.",
+                "operator_approval_required": False,
+                "runtime_authority_granted": False,
+                "runtime_traffic_mutation_allowed": False,
+                "candidate_state_mutation_allowed": False,
+                "release_boundary_mutation_allowed": False,
+                "next_status": "hold_operator_approval_required",
+            },
+            {
+                "id": "approve_receipt_bound_activation_preparation",
+                "summary": (
+                    "Record approval to prepare a separate receipt-bound "
+                    "activation change; this report still grants no authority."
+                ),
+                "operator_approval_required": True,
+                "runtime_authority_granted": False,
+                "runtime_traffic_mutation_allowed": False,
+                "candidate_state_mutation_allowed": False,
+                "release_boundary_mutation_allowed": False,
+                "next_status": "operator_approved_activation_still_not_granted",
+                "followup_requirements": [
+                    "receipt_bound_activation_plan",
+                    "separate_candidate_state_mutation_pr",
+                    "fresh_exact_head_ci",
+                    "rco_and_bridge_preflight",
+                ],
+            },
+        ],
+    }
+
+
 def build_report(
     *,
     phase_synthesis_refresh: dict[str, Any],
@@ -225,6 +280,10 @@ def build_report(
                 phase_synthesis_refresh
             ).get("acceptance"),
         },
+        "operator_decision_packet": _operator_decision_packet(
+            phase_synthesis_refresh=phase_synthesis_refresh,
+            approval_seen=approval_seen,
+        ),
         "authority_guardrails": {
             "operator_gate_required": True,
             "runtime_authority_granted": False,

@@ -154,6 +154,26 @@ def _release_gate_report() -> dict[str, object]:
             "no_stable_release_claim": True,
             "no_external_effect_authority_change": True,
         },
+        "gate": {
+            "soak_evidence_diagnostics": {
+                "target_version": "v3.12.0",
+                "result": "hold",
+                "duration_hours": 311.365,
+                "required_duration_hours": 336,
+                "ended_at_date": "2026-05-22",
+                "required_soak_end": "2026-05-24",
+                "silent_failures": 0,
+                "expected_silent_failures": 0,
+                "error_log_clean": True,
+                "expected_error_log_clean": True,
+                "docker_stable_policy": "finalized",
+                "expected_docker_stable_policy": "finalized",
+                "status_fields": {
+                    "ci_status": {"actual": "pass", "expected": "pass"},
+                    "axis_b_gate": {"actual": "pass", "expected": "pass"},
+                },
+            }
+        },
     }
 
 
@@ -187,6 +207,26 @@ def test_report_records_phase_refresh_without_overclaim() -> None:
         "docs/runs/magma_100h_sprint_2026_05_26/"
         "rival_local_accepted_blockers.json"
     )
+    release_summary = report["landed_work_packages"][1]["summary"]
+    assert release_summary["decision"] == "hold"
+    assert release_summary["soak_evidence_diagnostics"] == {
+        "target_version": "v3.12.0",
+        "result": "hold",
+        "duration_hours": 311.365,
+        "required_duration_hours": 336,
+        "ended_at_date": "2026-05-22",
+        "required_soak_end": "2026-05-24",
+        "silent_failures": 0,
+        "expected_silent_failures": 0,
+        "error_log_clean": True,
+        "expected_error_log_clean": True,
+        "docker_stable_policy": "finalized",
+        "expected_docker_stable_policy": "finalized",
+        "status_fields": {
+            "axis_b_gate": {"actual": "pass", "expected": "pass"},
+            "ci_status": {"actual": "pass", "expected": "pass"},
+        },
+    }
     assert report["remaining_work_packages"][0]["status"] == (
         "operator_decision_required"
     )

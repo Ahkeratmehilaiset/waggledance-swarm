@@ -1,0 +1,127 @@
+{
+  "schema_version": "waggledance.local_substrate_smoke_rotation.v0",
+  "recorded_at_utc": "2026-05-26T11:58:21Z",
+  "sprint_id": "magma-100h-sprint3-2026-05-26",
+  "agent": "codex-lead-1",
+  "source_branch": "waggledance/live-bridge-runtime-current-main-20260526",
+  "source_main_commit": "0b819e977f7cbc751ec9d3d19314dedf5223bbca",
+  "classification": "local_read_only_verification",
+  "summary": "Records the completed 8/8 deterministic substrate-smoke rotation for codex-lead-1 on 2026-05-26 while GitHub Actions delivery remained unavailable.",
+  "scope": {
+    "artifact_type": "report_only",
+    "write_scope": "docs/runs/magma_100h_sprint_2026_05_26",
+    "source_behavior_changed": false,
+    "runtime_authority_changed": false,
+    "release_boundary_changed": false,
+    "consensus_grade_changed": false
+  },
+  "github_actions_context": {
+    "main_ci_green_claimed": false,
+    "reason": "GitHub Actions runs and check-runs were absent during the documented Actions outage; these local tests are supporting evidence only and do not replace green main CI."
+  },
+  "rotation": {
+    "pool_size": 8,
+    "completed_count": 8,
+    "completed_all": true,
+    "selection_tool": "tools/agent_next_task.py --agent codex-lead-1 --json",
+    "selection_mode": "deterministic_daily_rotation"
+  },
+  "test_results": [
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-6",
+      "target": "tests/tools/test_bridge_next_action.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\tools\\test_bridge_next_action.py -q",
+      "passed": 29,
+      "failed": 0,
+      "duration_seconds": 0.47,
+      "result": "passed",
+      "rationale": "Verify bridge_next_action still matches the protocol decision tree and Rule 6 reply requirements."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-7",
+      "target": "tests/tools/test_idle_consensus_auto_merge.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\tools\\test_idle_consensus_auto_merge.py -q",
+      "passed": 22,
+      "failed": 0,
+      "duration_seconds": 0.78,
+      "result": "passed",
+      "rationale": "Verify idle auto-merge gate enforces the seven parallel charter conditions."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-0",
+      "target": "tests/contracts/",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\contracts\\ -q",
+      "passed": 555,
+      "failed": 0,
+      "duration_seconds": 10.26,
+      "result": "passed",
+      "rationale": "Run schema contract regression coverage across the contracts suite."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-1",
+      "target": "tests/tools/test_idle_loop_once.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\tools\\test_idle_loop_once.py -q",
+      "passed": 15,
+      "failed": 0,
+      "duration_seconds": 0.77,
+      "result": "passed",
+      "rationale": "Verify the idle-loop one-tick orchestrator reports the documented decisions."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-2",
+      "target": "tests/unit/test_idle_protocol_session.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\unit\\test_idle_protocol_session.py -q",
+      "passed": 9,
+      "failed": 0,
+      "duration_seconds": 0.43,
+      "result": "passed",
+      "rationale": "Verify the idle-protocol session summarizer still gates convergence behind operator review."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-3",
+      "target": "tests/unit/test_idle_protocol_validator.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\unit\\test_idle_protocol_validator.py -q",
+      "passed": 7,
+      "failed": 0,
+      "duration_seconds": 0.42,
+      "result": "passed",
+      "rationale": "Verify idle-protocol payload validation rejects low-quality or unfalsifiable content."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-4",
+      "target": "tests/unit/test_idle_consensus_charter.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\unit\\test_idle_consensus_charter.py -q",
+      "passed": 22,
+      "failed": 0,
+      "duration_seconds": 0.36,
+      "result": "passed",
+      "rationale": "Verify charter evaluator still enforces allowlist, denylist, and code-pattern denylist behavior."
+    },
+    {
+      "task_id": "codex-lead-1-substrate-smoke-2026-05-26-5",
+      "target": "tests/unit/test_work_queue.py",
+      "command": "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest tests\\unit\\test_work_queue.py -q",
+      "passed": 25,
+      "failed": 0,
+      "duration_seconds": 0.60,
+      "result": "passed",
+      "rationale": "Verify bridge work-queue primitives refuse overlap and honor stale-claim lease behavior."
+    }
+  ],
+  "totals": {
+    "passed": 684,
+    "failed": 0,
+    "result": "passed"
+  },
+  "guardrails": [
+    "This artifact records local evidence only and does not claim GitHub Actions CI green.",
+    "This artifact does not authorize runtime authority, candidate-state mutation, tag creation, Docker latest or stable movement, or release promotion.",
+    "This artifact does not change rival consensus_grade and does not turn accepted rival blockers into passing local checks.",
+    "Open Dependabot PR #353 remains HOLD/failing unless separately authorized."
+  ],
+  "next_actions": [
+    "Continue using explicit no-CI exception evidence only for scoped work while GitHub Actions delivery is unavailable.",
+    "When GitHub Actions delivery recovers, prefer attached PR/main CI evidence over this local smoke artifact for merge readiness.",
+    "Keep operator-gated authority activation and release-boundary work blocked until their explicit prerequisites are satisfied."
+  ]
+}

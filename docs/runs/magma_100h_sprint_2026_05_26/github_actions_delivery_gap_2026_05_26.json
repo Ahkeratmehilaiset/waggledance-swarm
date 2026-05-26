@@ -1,0 +1,95 @@
+{
+  "schema_version": "waggledance.github_actions_delivery_gap.v0",
+  "recorded_at_utc": "2026-05-26T11:21:28Z",
+  "classification": "suspected_external_github_actions_delivery_degradation",
+  "severity": "medium",
+  "summary": "Main-branch GitHub Actions delivery did not attach runs or check-runs for the PR #683 and PR #684 merge commits, and manual workflow_dispatch attempts for PR #684 returned GitHub HTTP 500 while the GitHub Status component API reported Actions degraded performance.",
+  "scope": {
+    "artifact_type": "report_only",
+    "write_scope": "docs/runs/magma_100h_sprint_2026_05_26",
+    "source_behavior_changed": false,
+    "runtime_authority_changed": false,
+    "release_boundary_changed": false
+  },
+  "affected_commits": [
+    {
+      "pr": 683,
+      "merge_commit": "5fc77351e14d9262fad5dd9b5e45d29bbf90c4f9",
+      "source_head": "20db61278c3a95077005f93ac6c76bf420758bf5",
+      "evidence": [
+        "PR branch CI was green before merge: 6/6 checks passed.",
+        "Local post-merge verification passed: 14 tests passed.",
+        "Main push run lookup returned no runs for the merge commit.",
+        "Check-runs API reported total_count 0 for the merge commit."
+      ],
+      "conclusion": "Do not mark PR #683 main push CI green from GitHub Actions evidence; treat the missing run attachment as an unresolved delivery gap unless a later rerun records a green main run."
+    },
+    {
+      "pr": 684,
+      "merge_commit": "f32834b53da9c689cc644521ad2ec51e9e9a38b3",
+      "source_head": "aca7817401ad005348712b629a39d3c380c58b5f",
+      "evidence": [
+        "PR merged workflow_dispatch metadata for .github/workflows/ci.yml and .github/workflows/tests.yml.",
+        "Local post-merge smoke verification passed: 8 tests passed.",
+        "Manual dispatch attempt for WaggleDance CI on main returned GitHub HTTP 500.",
+        "Manual dispatch attempt for Tests on main returned GitHub HTTP 500.",
+        "Main push run lookup returned no runs for the merge commit.",
+        "Check-runs API reported total_count 0 for the merge commit."
+      ],
+      "conclusion": "Do not mark PR #684 main push CI green from GitHub Actions evidence; manual dispatch is now available in workflow metadata but GitHub rejected dispatch attempts during the incident."
+    }
+  ],
+  "official_status_evidence": {
+    "source": "https://www.githubstatus.com/api/v2/components.json",
+    "component": "Actions",
+    "status": "degraded_performance",
+    "updated_at": "2026-05-26T10:57:13.922Z",
+    "description": "Workflows, Compute and Orchestration for GitHub Actions",
+    "note": "The component-level API was fresher and more specific than the summary endpoint observation that still reported all systems operational."
+  },
+  "workflow_metadata_on_main": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "name": "WaggleDance CI",
+      "state": "active",
+      "triggers": [
+        "push",
+        "pull_request",
+        "workflow_dispatch"
+      ],
+      "job_body_changed_by_pr_684": false
+    },
+    {
+      "path": ".github/workflows/tests.yml",
+      "name": "Tests",
+      "state": "active",
+      "triggers": [
+        "push",
+        "pull_request",
+        "workflow_dispatch"
+      ],
+      "job_body_changed_by_pr_684": false
+    }
+  ],
+  "reproduction_commands": [
+    "gh run list --branch main --commit 5fc77351e14d9262fad5dd9b5e45d29bbf90c4f9",
+    "gh api repos/Ahkeratmehilaiset/waggledance-swarm/commits/5fc77351e14d9262fad5dd9b5e45d29bbf90c4f9/check-runs --jq \".total_count\"",
+    "gh run list --branch main --commit f32834b53da9c689cc644521ad2ec51e9e9a38b3",
+    "gh api repos/Ahkeratmehilaiset/waggledance-swarm/commits/f32834b53da9c689cc644521ad2ec51e9e9a38b3/check-runs --jq \".total_count\"",
+    "gh workflow run \"WaggleDance CI\" --ref main",
+    "gh workflow run \"Tests\" --ref main",
+    "gh run list --branch main --limit 10 --json databaseId,headSha,status,conclusion,workflowName,event,createdAt,url"
+  ],
+  "guardrails": [
+    "No release boundary mutation is justified by this artifact.",
+    "No runtime authority mutation is justified by this artifact.",
+    "No source behavior change is included in this artifact.",
+    "Open Dependabot PR #353 remains HOLD/failing unless separately authorized."
+  ],
+  "next_actions": [
+    "Retry manual workflow_dispatch for WaggleDance CI and Tests after the GitHub Actions component is healthy.",
+    "If workflow_dispatch still fails while GitHub Actions is healthy, escalate GitHub/API authentication or repository Actions settings as a separate incident.",
+    "Keep PR #683 and PR #684 main CI status documented as missing GitHub Actions delivery evidence unless a later green main run is attached.",
+    "Continue using local verification and explicit RCO exception evidence only for scoped work while the external Actions delivery incident persists."
+  ]
+}

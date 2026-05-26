@@ -25,6 +25,7 @@ from tools.check_release_gate import evaluate_release_gate
 SCHEMA_VERSION = "waggledance.release_gate_readonly_recheck.v0"
 DEFAULT_RELEASE_READINESS = Path("docs/release/RELEASE_READINESS.md")
 DEFAULT_SOAK_EVIDENCE = Path("docs/runs/release_soak_evidence/v3.12.0.json")
+STRICT_BLOCKED_EXIT_CODE = 2
 
 RELEASE_BOUNDARY = {
     "tag_creation": False,
@@ -93,6 +94,14 @@ def build_report(
     }
 
 
+def strict_exit_code(report: dict[str, Any]) -> int:
+    if report.get("ok") is not True:
+        return 1
+    if report.get("release_gate_decision") != "pass" or report.get("blockers"):
+        return STRICT_BLOCKED_EXIT_CODE
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -112,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Override report timestamp, ISO-8601 UTC.",
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Return a non-zero exit code when the release gate is not pass "
+            "or blockers are present. The read-only report is still written."
+        ),
+    )
     args = parser.parse_args(argv)
 
     report = build_report(
@@ -125,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(encoded, encoding="utf-8")
     print(encoded, end="")
+    if args.strict:
+        return strict_exit_code(report)
     return 0 if report["ok"] else 1
 
 

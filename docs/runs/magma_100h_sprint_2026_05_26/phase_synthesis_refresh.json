@@ -26,7 +26,7 @@
     }
   },
   "blockers": [],
-  "generated_at_utc": "2026-05-26T08:36:00Z",
+  "generated_at_utc": "2026-05-26T21:14:25Z",
   "landed_work_packages": [
     {
       "evidence": "docs/runs/magma_100h_sprint_2026_05_26/rival_local_accepted_blockers.json",
@@ -112,6 +112,43 @@
       }
     },
     {
+      "evidence": "docs/runs/magma_100h_sprint_2026_05_26/operator_authority_readiness.json",
+      "id": "operator_authority_decision_packet",
+      "status": "complete_non_authority_decision_surface_recorded",
+      "summary": {
+        "activation_blockers": [
+          "explicit_operator_approval_event_missing"
+        ],
+        "authority_activation_status": "hold_operator_approval_required",
+        "authority_guardrails": {
+          "activation_effect": "none",
+          "candidate_state_mutation_applied": false,
+          "operator_gate_required": true,
+          "requires_separate_receipt_bound_activation": true,
+          "runtime_authority_granted": false,
+          "runtime_traffic_mutation_applied": false
+        },
+        "explicit_operator_approval_found": false,
+        "operator_decision_packet": {
+          "activation_effect_before_followup": "none",
+          "all_options_non_mutating": true,
+          "approval_event_required_for_activation": true,
+          "decision_status": "operator_approval_missing",
+          "default_recommendation": "hold_no_authority_change",
+          "option_count": 2,
+          "schema_version": "waggledance.operator_authority_decision_packet.v0"
+        },
+        "read_only_invariants": {
+          "no_candidate_state_mutated": true,
+          "no_release_boundary_mutated": true,
+          "no_runtime_authority_granted": true,
+          "no_runtime_traffic_mutated": true
+        },
+        "release_boundary_all_false": true,
+        "report_ok": true
+      }
+    },
+    {
       "evidence": "docs/runs/magma_100h_sprint_2026_05_26/phase_synthesis_refresh.json",
       "id": "phase_synthesis_and_baseline_refresh",
       "status": "complete_if_report_ok"
@@ -180,7 +217,7 @@
       "present": false
     },
     "forbidden_claims_count": 7,
-    "generated_at_utc": "2026-05-26T08:36:00Z",
+    "generated_at_utc": "2026-05-26T21:14:25Z",
     "governance_throughput": {
       "event_count_in_window": 2077,
       "metric_count": 8,
@@ -268,7 +305,7 @@
       "acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
       "id": "operator_gated_authority_activation_decision",
       "owner": "operator",
-      "status": "operator_decision_required"
+      "status": "operator_approval_missing_decision_packet_recorded"
     },
     {
       "acceptance": "release boundary remains false until release gate passes and an explicit release-boundary authorization exists",

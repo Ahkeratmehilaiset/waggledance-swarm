@@ -177,11 +177,59 @@ def _release_gate_report() -> dict[str, object]:
     }
 
 
+def _operator_authority_report() -> dict[str, object]:
+    return {
+        "ok": True,
+        "authority_activation_status": "hold_operator_approval_required",
+        "activation_blockers": ["explicit_operator_approval_event_missing"],
+        "explicit_operator_approval_found": False,
+        "release_boundary": dict(FALSE_RELEASE_BOUNDARY),
+        "authority_guardrails": {
+            "operator_gate_required": True,
+            "requires_separate_receipt_bound_activation": True,
+            "activation_effect": "none",
+            "runtime_authority_granted": False,
+            "runtime_traffic_mutation_applied": False,
+            "candidate_state_mutation_applied": False,
+        },
+        "read_only_invariants": {
+            "no_runtime_authority_granted": True,
+            "no_runtime_traffic_mutated": True,
+            "no_candidate_state_mutated": True,
+            "no_release_boundary_mutated": True,
+        },
+        "operator_decision_packet": {
+            "schema_version": "waggledance.operator_authority_decision_packet.v0",
+            "decision_status": "operator_approval_missing",
+            "default_recommendation": "hold_no_authority_change",
+            "approval_event_required_for_activation": True,
+            "activation_effect_before_followup": "none",
+            "decision_options": [
+                {
+                    "id": "hold_no_authority_change",
+                    "runtime_authority_granted": False,
+                    "runtime_traffic_mutation_allowed": False,
+                    "candidate_state_mutation_allowed": False,
+                    "release_boundary_mutation_allowed": False,
+                },
+                {
+                    "id": "approve_receipt_bound_activation_preparation",
+                    "runtime_authority_granted": False,
+                    "runtime_traffic_mutation_allowed": False,
+                    "candidate_state_mutation_allowed": False,
+                    "release_boundary_mutation_allowed": False,
+                },
+            ],
+        },
+    }
+
+
 def test_report_records_phase_refresh_without_overclaim() -> None:
     report = build_report(
         baseline=_baseline(),
         rival_report=_rival_report(),
         release_gate_report=_release_gate_report(),
+        operator_authority_report=_operator_authority_report(),
         generated_at_utc=FIXED_NOW,
     )
 
@@ -201,12 +249,36 @@ def test_report_records_phase_refresh_without_overclaim() -> None:
     ] == [
         "rival_local_evidence_execution_or_accepted_blockers",
         "release_gate_readonly_recheck",
+        "operator_authority_decision_packet",
         "phase_synthesis_and_baseline_refresh",
     ]
     assert report["landed_work_packages"][0]["evidence"] == (
         "docs/runs/magma_100h_sprint_2026_05_26/"
         "rival_local_accepted_blockers.json"
     )
+    authority_summary = report["landed_work_packages"][2]["summary"]
+    assert authority_summary["report_ok"] is True
+    assert authority_summary["authority_activation_status"] == (
+        "hold_operator_approval_required"
+    )
+    assert authority_summary["release_boundary_all_false"] is True
+    assert authority_summary["authority_guardrails"] == {
+        "operator_gate_required": True,
+        "requires_separate_receipt_bound_activation": True,
+        "activation_effect": "none",
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+    assert authority_summary["operator_decision_packet"] == {
+        "schema_version": "waggledance.operator_authority_decision_packet.v0",
+        "decision_status": "operator_approval_missing",
+        "default_recommendation": "hold_no_authority_change",
+        "approval_event_required_for_activation": True,
+        "activation_effect_before_followup": "none",
+        "option_count": 2,
+        "all_options_non_mutating": True,
+    }
     release_summary = report["landed_work_packages"][1]["summary"]
     assert release_summary["decision"] == "hold"
     assert release_summary["soak_evidence_diagnostics"] == {
@@ -228,7 +300,7 @@ def test_report_records_phase_refresh_without_overclaim() -> None:
         },
     }
     assert report["remaining_work_packages"][0]["status"] == (
-        "operator_decision_required"
+        "operator_approval_missing_decision_packet_recorded"
     )
 
 
@@ -241,6 +313,7 @@ def test_report_fails_closed_on_baseline_release_boundary_mutation() -> None:
         baseline=baseline,
         rival_report=_rival_report(),
         release_gate_report=_release_gate_report(),
+        operator_authority_report=_operator_authority_report(),
         generated_at_utc=FIXED_NOW,
     )
 
@@ -256,6 +329,7 @@ def test_report_fails_closed_on_rival_consensus_overclaim() -> None:
         baseline=_baseline(),
         rival_report=rival_report,
         release_gate_report=_release_gate_report(),
+        operator_authority_report=_operator_authority_report(),
         generated_at_utc=FIXED_NOW,
     )
 
@@ -273,6 +347,7 @@ def test_report_fails_closed_on_blocked_rival_contribution() -> None:
         baseline=_baseline(),
         rival_report=rival_report,
         release_gate_report=_release_gate_report(),
+        operator_authority_report=_operator_authority_report(),
         generated_at_utc=FIXED_NOW,
     )
 
@@ -289,11 +364,50 @@ def test_report_fails_closed_on_release_gate_boundary_mutation() -> None:
         baseline=_baseline(),
         rival_report=_rival_report(),
         release_gate_report=release_report,
+        operator_authority_report=_operator_authority_report(),
         generated_at_utc=FIXED_NOW,
     )
 
     assert report["ok"] is False
     assert "release_gate_release_boundary_mutated" in report["blockers"]
+
+
+def test_report_fails_closed_on_operator_authority_mutation() -> None:
+    authority_report = _operator_authority_report()
+    authority_guardrails = dict(authority_report["authority_guardrails"])
+    authority_guardrails["runtime_authority_granted"] = True
+    authority_report["authority_guardrails"] = authority_guardrails
+
+    report = build_report(
+        baseline=_baseline(),
+        rival_report=_rival_report(),
+        release_gate_report=_release_gate_report(),
+        operator_authority_report=authority_report,
+        generated_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "operator_authority_runtime_authority_granted" in report["blockers"]
+
+
+def test_report_fails_closed_on_mutating_operator_decision_option() -> None:
+    authority_report = _operator_authority_report()
+    packet = dict(authority_report["operator_decision_packet"])
+    options = copy.deepcopy(packet["decision_options"])
+    options[1]["candidate_state_mutation_allowed"] = True
+    packet["decision_options"] = options
+    authority_report["operator_decision_packet"] = packet
+
+    report = build_report(
+        baseline=_baseline(),
+        rival_report=_rival_report(),
+        release_gate_report=_release_gate_report(),
+        operator_authority_report=authority_report,
+        generated_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "operator_authority_decision_option_mutates" in report["blockers"]
 
 
 def test_cli_writes_phase_synthesis_refresh_report(
@@ -303,10 +417,15 @@ def test_cli_writes_phase_synthesis_refresh_report(
     baseline_path = tmp_path / "baseline.json"
     rival_path = tmp_path / "rivals.json"
     release_path = tmp_path / "release.json"
+    operator_path = tmp_path / "operator_authority.json"
     output_path = tmp_path / "phase_synthesis_refresh.json"
     baseline_path.write_text(json.dumps(_baseline()), encoding="utf-8")
     rival_path.write_text(json.dumps(_rival_report()), encoding="utf-8")
     release_path.write_text(json.dumps(_release_gate_report()), encoding="utf-8")
+    operator_path.write_text(
+        json.dumps(_operator_authority_report()),
+        encoding="utf-8",
+    )
 
     rc = main(
         [
@@ -316,6 +435,8 @@ def test_cli_writes_phase_synthesis_refresh_report(
             str(rival_path),
             "--release-gate-recheck",
             str(release_path),
+            "--operator-authority-readiness",
+            str(operator_path),
             "--generated-at-utc",
             "2026-05-26T02:15:00Z",
             "--output",

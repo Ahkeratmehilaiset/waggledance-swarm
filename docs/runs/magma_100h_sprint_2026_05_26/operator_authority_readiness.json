@@ -1,0 +1,37 @@
+{
+  "activation_blockers": [
+    "explicit_operator_approval_event_missing"
+  ],
+  "approval_event_count": 0,
+  "approval_events": [],
+  "authority_activation_status": "hold_operator_approval_required",
+  "authority_guardrails": {
+    "activation_effect": "none",
+    "candidate_state_mutation_applied": false,
+    "operator_gate_required": true,
+    "requires_separate_receipt_bound_activation": true,
+    "runtime_authority_granted": false,
+    "runtime_traffic_mutation_applied": false
+  },
+  "checked_at_utc": "2026-05-26T05:55:54Z",
+  "explicit_operator_approval_found": false,
+  "ok": true,
+  "read_only_invariants": {
+    "no_candidate_state_mutated": true,
+    "no_release_boundary_mutated": true,
+    "no_runtime_authority_granted": true,
+    "no_runtime_traffic_mutated": true
+  },
+  "release_boundary": {
+    "docker_latest_move": false,
+    "external_effect_authority_change": false,
+    "stable_release_claim": false,
+    "tag_creation": false
+  },
+  "required_operator_task": {
+    "id": "operator_gated_authority_activation_decision",
+    "source_acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
+    "source_status": "operator_decision_required"
+  },
+  "schema_version": "waggledance.operator_authority_readiness.v0"
+}

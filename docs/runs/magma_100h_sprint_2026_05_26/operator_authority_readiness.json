@@ -13,7 +13,7 @@
     "runtime_authority_granted": false,
     "runtime_traffic_mutation_applied": false
   },
-  "checked_at_utc": "2026-05-26T05:55:54Z",
+  "checked_at_utc": "2026-05-26T09:40:00Z",
   "explicit_operator_approval_found": false,
   "ok": true,
   "read_only_invariants": {
@@ -33,5 +33,17 @@
     "source_acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
     "source_status": "operator_decision_required"
   },
-  "schema_version": "waggledance.operator_authority_readiness.v0"
+  "schema_version": "waggledance.operator_authority_readiness.v0",
+  "source_phase_synthesis_refresh": {
+    "generated_at_utc": "2026-05-26T08:36:00Z",
+    "ok": true,
+    "release_boundary_all_false": true,
+    "remaining_release_soak_package": {
+      "id": "release_soak_evidence_blocker_resolution",
+      "owner": "operator,codex",
+      "status": "blocked_until_release_gate_soak_evidence_passes"
+    },
+    "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+    "sprint_id": "magma-100h-sprint3-2026-05-26"
+  }
 }

@@ -21,6 +21,9 @@ FIXED_NOW = dt.datetime(2026, 5, 26, 6, 0, tzinfo=dt.UTC)
 
 def _phase_synthesis_refresh() -> dict[str, object]:
     return {
+        "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+        "sprint_id": "magma-100h-sprint3-2026-05-26",
+        "generated_at_utc": "2026-05-26T08:36:00Z",
         "ok": True,
         "release_boundary": dict(FALSE_RELEASE_BOUNDARY),
         "remaining_work_packages": [
@@ -35,6 +38,7 @@ def _phase_synthesis_refresh() -> dict[str, object]:
             },
             {
                 "id": "release_soak_evidence_blocker_resolution",
+                "owner": "operator,codex",
                 "status": "blocked_until_release_gate_soak_evidence_passes",
             },
         ],
@@ -76,6 +80,18 @@ def test_report_records_hold_when_operator_approval_is_missing() -> None:
         "requires_separate_receipt_bound_activation": True,
         "runtime_authority_granted": False,
         "runtime_traffic_mutation_applied": False,
+    }
+    assert report["source_phase_synthesis_refresh"] == {
+        "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+        "sprint_id": "magma-100h-sprint3-2026-05-26",
+        "generated_at_utc": "2026-05-26T08:36:00Z",
+        "ok": True,
+        "release_boundary_all_false": True,
+        "remaining_release_soak_package": {
+            "id": "release_soak_evidence_blocker_resolution",
+            "owner": "operator,codex",
+            "status": "blocked_until_release_gate_soak_evidence_passes",
+        },
     }
     assert report["release_boundary"] == FALSE_RELEASE_BOUNDARY
 

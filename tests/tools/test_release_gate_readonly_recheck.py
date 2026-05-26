@@ -4,7 +4,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 
-from tools.run_release_gate_readonly_recheck import build_report, main
+from tools.run_release_gate_readonly_recheck import (
+    STRICT_BLOCKED_EXIT_CODE,
+    build_report,
+    main,
+    strict_exit_code,
+)
 
 
 def _valid_evidence() -> dict[str, object]:
@@ -95,3 +100,67 @@ def test_cli_writes_hold_report_without_failing(tmp_path) -> None:
     assert loaded["release_boundary"]["docker_latest_move"] is False
     assert loaded["release_boundary"]["stable_release_claim"] is False
     assert loaded["release_boundary"]["external_effect_authority_change"] is False
+
+
+def test_strict_exit_code_reports_blocked_hold() -> None:
+    report = build_report(
+        checked_at_utc=dt.datetime(2026, 5, 26, 1, 0, tzinfo=dt.UTC),
+        today=dt.date(2026, 5, 26),
+    )
+
+    assert strict_exit_code(report) == STRICT_BLOCKED_EXIT_CODE
+
+
+def test_cli_strict_returns_blocked_after_writing_report(tmp_path, capsys) -> None:
+    output = tmp_path / "release_gate_readonly_recheck.json"
+
+    rc = main(
+        [
+            "--checked-at-utc",
+            "2026-05-26T01:00:00Z",
+            "--today",
+            "2026-05-26",
+            "--output",
+            str(output),
+            "--strict",
+        ]
+    )
+
+    assert rc == STRICT_BLOCKED_EXIT_CODE
+    stdout_report = json.loads(capsys.readouterr().out)
+    disk_report = json.loads(output.read_text(encoding="utf-8"))
+    assert stdout_report == disk_report
+    assert disk_report["release_gate_decision"] == "hold"
+    assert disk_report["blockers"] == [
+        "soak_evidence_result_not_pass",
+        "soak_evidence_duration_lt_336h",
+        "soak_evidence_ended_before_required_soak_end",
+    ]
+    assert all(value is False for value in disk_report["release_boundary"].values())
+
+
+def test_cli_strict_passes_without_release_mutation(tmp_path, capsys) -> None:
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    output = tmp_path / "release_gate_readonly_recheck.json"
+    evidence_path.write_text(json.dumps(_valid_evidence()), encoding="utf-8")
+
+    rc = main(
+        [
+            "--checked-at-utc",
+            "2026-05-24T01:00:00Z",
+            "--today",
+            "2026-05-24",
+            "--soak-evidence",
+            str(evidence_path),
+            "--output",
+            str(output),
+            "--strict",
+        ]
+    )
+
+    assert rc == 0
+    stdout_report = json.loads(capsys.readouterr().out)
+    assert stdout_report["release_gate_decision"] == "pass"
+    assert stdout_report["blockers"] == []
+    assert stdout_report["release_gate_effect"] == "none"
+    assert all(value is False for value in stdout_report["release_boundary"].values())

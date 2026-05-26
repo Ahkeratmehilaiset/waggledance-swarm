@@ -1,0 +1,42 @@
+{
+  "blockers": [
+    "soak_evidence_result_not_pass",
+    "soak_evidence_duration_lt_336h",
+    "soak_evidence_ended_before_required_soak_end"
+  ],
+  "checked_at_utc": "2026-05-26T01:10:00Z",
+  "gate": {
+    "blockers": [
+      "soak_evidence_result_not_pass",
+      "soak_evidence_duration_lt_336h",
+      "soak_evidence_ended_before_required_soak_end"
+    ],
+    "decision": "hold",
+    "latest_stable": "v3.8.0",
+    "no_earlier_than": "2026-05-24",
+    "soak_window": {
+      "end": "2026-05-24",
+      "required_hours": 336,
+      "start": "2026-05-10"
+    },
+    "target_version": "v3.12.0"
+  },
+  "ok": true,
+  "read_only": true,
+  "read_only_invariants": {
+    "no_docker_latest_moved": true,
+    "no_external_effect_authority_change": true,
+    "no_stable_release_claim": true,
+    "no_tag_created": true,
+    "release_gate_effect": "observation_only"
+  },
+  "release_boundary": {
+    "docker_latest_move": false,
+    "external_effect_authority_change": false,
+    "stable_release_claim": false,
+    "tag_creation": false
+  },
+  "release_gate_decision": "hold",
+  "release_gate_effect": "none",
+  "schema_version": "waggledance.release_gate_readonly_recheck.v0"
+}

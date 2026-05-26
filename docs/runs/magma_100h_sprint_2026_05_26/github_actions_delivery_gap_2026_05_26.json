@@ -41,11 +41,20 @@
   ],
   "official_status_evidence": {
     "source": "https://www.githubstatus.com/api/v2/components.json",
-    "component": "Actions",
-    "status": "degraded_performance",
-    "updated_at": "2026-05-26T10:57:13.922Z",
-    "description": "Workflows, Compute and Orchestration for GitHub Actions",
-    "note": "The component-level API was fresher and more specific than the summary endpoint observation that still reported all systems operational."
+    "initial_component_observation": {
+      "component": "Actions",
+      "status": "degraded_performance",
+      "updated_at": "2026-05-26T10:57:13.922Z",
+      "description": "Workflows, Compute and Orchestration for GitHub Actions"
+    },
+    "latest_component_observation": {
+      "component": "Actions",
+      "status": "major_outage",
+      "updated_at": "2026-05-26T11:19:04.531Z",
+      "observed_at_utc": "2026-05-26T11:31:45Z",
+      "description": "Workflows, Compute and Orchestration for GitHub Actions"
+    },
+    "note": "The component-level API was fresher and more specific than the summary endpoint observation that still reported all systems operational during the earlier degraded-performance observation."
   },
   "workflow_metadata_on_main": [
     {

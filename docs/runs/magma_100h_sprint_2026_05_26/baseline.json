@@ -1,0 +1,229 @@
+{
+  "blockers": [],
+  "claude_activation_contract": {
+    "heartbeat_only_timeout_minutes": 5,
+    "must_emit_substantive_event_per_phase": true,
+    "rco_timeout_minutes_after_ci_green": 10,
+    "required_roles": [
+      "independent_audit",
+      "adversarial_review",
+      "rco_before_merge",
+      "competitor_counter_read",
+      "phase_synthesis"
+    ]
+  },
+  "current_state": {
+    "a3_counterfactual_axis": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_PARTIAL",
+      "counterfactual_delta_proven": true,
+      "receipt_chain_verified": true,
+      "variant_count": 3,
+      "variants_with_gate_delta": 2,
+      "variants_with_kind_delta": 3
+    },
+    "a4_autogrowth_lifecycle": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_PARTIAL",
+      "default_sink_required": false,
+      "evidence_scope": "real opt-in AutogrowthScheduler queue->grower->engine path; proof fixture only; not long-running production auto-promotion authority",
+      "external_writes_applied": false,
+      "ok": true,
+      "receipt_chain_verified": true,
+      "receipt_count": 1,
+      "receipt_emission_mode": "opt_in_disk_bundle_sink",
+      "runtime_path": "AutogrowthScheduler.tick -> LowRiskGrower.grow_from_gap -> AutoPromotionEngine.evaluate_candidate",
+      "sink_none_preserved": true,
+      "transitions": [
+        "auto_promoted"
+      ]
+    },
+    "a4_autogrowth_soak_fixture": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_PARTIAL",
+      "evidence_scope": "local repeated multi-intent AutogrowthScheduler soak fixture; not release soak evidence; not long-running production auto-promotion authority",
+      "expected_receipt_count": 18,
+      "failed_rounds": 0,
+      "intent_count_per_round": 6,
+      "not_production_authority": true,
+      "not_release_soak_evidence": true,
+      "ok": true,
+      "ok_rounds": 3,
+      "pass_rate": 1.0,
+      "raw_payload_leak_check": true,
+      "receipt_chain_verified": true,
+      "round_count": 3,
+      "runtime_path": "AutogrowthScheduler.run_until_idle -> LowRiskGrower.grow_from_gap -> AutoPromotionEngine.evaluate_candidate",
+      "sink_none_preserved": true,
+      "stability_metrics": {
+        "auto_promoted_max": 6,
+        "auto_promoted_min": 6,
+        "drained_count_max": 6,
+        "drained_count_min": 6,
+        "errored_total": 0,
+        "raw_payload_leak_failures": 0,
+        "receipt_count_max": 6,
+        "receipt_count_min": 6,
+        "rejected_total": 0,
+        "sink_none_failures": 0,
+        "verifier_failures": 0
+      },
+      "total_receipt_count": 18
+    },
+    "a4_solver_growth_axis": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_SYNTHETIC",
+      "receipt_chain_verified": true,
+      "solver_growth_proven": true
+    },
+    "a4_solver_lifecycle": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_PARTIAL",
+      "evidence_scope": "real opt-in SolverProvenance sign/activate/revoke path; not production auto-promotion authority",
+      "external_writes_applied": false,
+      "ok": true,
+      "receipt_chain_verified": true,
+      "receipt_count": 2,
+      "receipt_emission_mode": "opt_in_disk_bundle_sink",
+      "runtime_path": "SolverProvenance.{sign,activate,revoke}",
+      "transitions": [
+        "activation_authorised",
+        "activation_revoked"
+      ]
+    },
+    "adversarial_corpus": {
+      "available": true,
+      "case_count": 42,
+      "coverage": {
+        "clean_baseline_case_count": 4,
+        "counterfactual_case_count": 3,
+        "defect_type_counts": {
+          "charter_violation": 5,
+          "correlated_review_trap": 3,
+          "evidence_spoofing": 7,
+          "payload_leak": 5,
+          "policy_bypass": 3,
+          "privilege_leak": 3,
+          "risk_escalation": 3,
+          "subtle_drift": 9,
+          "tool_argument_abuse": 4
+        },
+        "evaluation_result_case_count": 3,
+        "hidden_tool_case_count": 1,
+        "operator_gate_case_count": 2,
+        "privacy_canary_case_count": 28,
+        "receipt_binding_case_count": 2,
+        "risk_class_counts": {
+          "external_effect": 22,
+          "informational": 10,
+          "internal_memory": 5,
+          "local_artifact": 5
+        }
+      },
+      "fail_count": 0,
+      "gate_accuracy": 1.0,
+      "ok": true,
+      "pass_count": 42,
+      "reason_code_accuracy": 1.0,
+      "verdict_accuracy": 1.0
+    },
+    "competitor_pilot": {
+      "available": true,
+      "ceded_axes": [
+        "A6 adapter_distribution_friction",
+        "A7 public_cryptographic_verification",
+        "A8 standard_policy_language_portability"
+      ],
+      "consensus_grade": false,
+      "must_win_axes": [
+        "A3 counterfactual_evaluation_delta",
+        "A4 solver_growth_shadow_canary_live_lifecycle"
+      ],
+      "pilot_status": "scope_ready_not_consensus_grade",
+      "rival_local_check_blocked_count": 3,
+      "rival_local_check_consensus_grade": false,
+      "rival_local_check_matrix_available": true,
+      "rival_local_check_pass_count": 1,
+      "rival_local_check_required_count": 4,
+      "rival_local_checks_status": "1/4 rival local checks passed",
+      "rivals": [
+        "JamJet",
+        "Asqav",
+        "Microsoft AGT",
+        "Preloop"
+      ]
+    },
+    "governance_throughput": {
+      "available": true,
+      "event_count_in_window": 2060,
+      "metric_count": 8,
+      "status_counts": {
+        "deferred": 1,
+        "insufficient_data": 2,
+        "ok": 5
+      },
+      "task_count_in_window": 345,
+      "window_label": "last-7d (from 2026-05-19T00:45:55.868205+00:00)"
+    },
+    "receipt_adoption": {
+      "accepted_exception_count": 0,
+      "action_required_gap_count": 0,
+      "available": true,
+      "high_criticality_gap_count": 0,
+      "medium_gap_targets": [],
+      "status_counts": {
+        "receipt_bound": 3,
+        "receipt_capable_opt_in": 4
+      }
+    }
+  },
+  "forbidden_claims": [
+    "beats all competitors",
+    "world best AI",
+    "AGI",
+    "consciousness",
+    "production-ready fleet learning",
+    "public cryptographic verification parity",
+    "rival benchmark consensus-grade"
+  ],
+  "generated_at_utc": "2026-05-26T00:45:56Z",
+  "next_work_packages": [
+    {
+      "acceptance": "rival matrix artifacts verify; consensus_grade remains false unless all four required local checks pass",
+      "id": "rival_local_evidence_execution_or_accepted_blockers",
+      "owner": "codex",
+      "peer": "claude",
+      "target": "turn JamJet, Preloop, and Asqav blocked rows into pinned local-smoke artifacts or accepted explicit blockers"
+    },
+    {
+      "acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
+      "id": "operator_gated_authority_activation_decision",
+      "owner": "operator",
+      "peer": "codex,claude",
+      "target": "decide whether any non-authority A3/A4/hex evidence can advance to runtime authority"
+    },
+    {
+      "acceptance": "baseline remains ok=true; release_boundary stays all false; forbidden_claims are preserved",
+      "id": "phase_synthesis_and_baseline_refresh",
+      "owner": "codex",
+      "peer": "claude",
+      "target": "summarize landed A3, A4, receipt-adoption, and rival-local evidence into the next sprint seed"
+    },
+    {
+      "acceptance": "gate output records blockers or pass state and no release boundary mutation is applied",
+      "id": "release_gate_readonly_recheck",
+      "owner": "codex",
+      "peer": "claude",
+      "target": "run release-readiness gates read-only after baseline refresh without tag or Docker stable/latest action"
+    }
+  ],
+  "ok": true,
+  "release_boundary": {
+    "docker_latest_move": false,
+    "external_effect_authority_change": false,
+    "stable_release_claim": false,
+    "tag_creation": false
+  },
+  "schema_version": "waggledance.magma_100h_sprint_baseline.v0",
+  "sprint_id": "magma-100h-sprint3-2026-05-26"
+}

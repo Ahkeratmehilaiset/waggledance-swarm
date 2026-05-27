@@ -229,6 +229,36 @@ def test_not_ready_when_peer_block_standing():
     assert "peer_block_or_changes_requested" in r["blockers"]
 
 
+def test_not_ready_when_peer_block_mentions_same_pr_under_different_task_id():
+    events = [
+        _rco_pass(
+            "fix-bridge-next-action-stale-ack-requester-close-2026-05-27",
+            pr=701,
+            head=HEAD,
+            ts="2026-05-27T07:30:00Z",
+        ),
+        {
+            "ts_utc": "2026-05-27T07:31:39Z",
+            "agent": "codex-lead-1",
+            "type": "finding",
+            "task_id": "pr701-bridge-stale-ack-close-readonly-review-2026-05-27",
+            "status": "confirmed_bug_blocks_merge",
+            "message": "Lead BLOCK PR #701 exact head abc123.",
+        },
+    ]
+    r = evaluate_merge_ready(
+        _candidate(
+            pr=701,
+            task="fix-bridge-next-action-stale-ack-requester-close-2026-05-27",
+        ),
+        events=events,
+        agent="claude",
+        snapshot_fn=lambda pr: _green_snapshot(pr),
+    )
+    assert r["ready"] is False
+    assert "peer_block_or_changes_requested" in r["blockers"]
+
+
 def test_no_snapshot_fn_is_unchecked_not_ready():
     events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
     r = evaluate_merge_ready(

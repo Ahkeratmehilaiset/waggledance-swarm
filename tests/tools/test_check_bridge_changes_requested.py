@@ -160,6 +160,76 @@ def test_other_task_blocks_do_not_affect_this_task() -> None:
     assert result["clear_to_merge"] is True
 
 
+def test_pr_scoped_finding_blocks_when_task_id_differs() -> None:
+    events = [
+        _event(
+            "2026-05-27T07:31:39Z",
+            "codex-lead-1",
+            "finding",
+            "confirmed_bug_blocks_merge",
+            task_id="pr701-bridge-stale-ack-close-readonly-review-2026-05-27",
+        )
+        | {"message": "Lead BLOCK PR #701 exact head abc123."},
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="fix-bridge-next-action-stale-ack-requester-close-2026-05-27",
+        merging_agent="codex-tools-1",
+        pr_number=701,
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "codex-lead-1"
+    assert result["latest_blocking_event"]["status"] == "confirmed_bug_blocks_merge"
+
+
+def test_pr_scoped_same_peer_approval_clears_older_task_id_mismatch_block() -> None:
+    events = [
+        _event(
+            "2026-05-27T07:31:39Z",
+            "claude-rco-1",
+            "finding",
+            "blocked",
+            task_id="pr701-bridge-stale-ack-close-readonly-review-2026-05-27",
+        )
+        | {"message": "RCO BLOCK PR #701 exact head abc123."},
+        _event(
+            "2026-05-27T07:55:00Z",
+            "claude-rco-1",
+            "decision",
+            "rco_pass",
+            task_id="pr701-bridge-stale-ack-close-readonly-review-2026-05-27",
+        )
+        | {"payload": {"pr": 701}},
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="fix-bridge-next-action-stale-ack-requester-close-2026-05-27",
+        merging_agent="codex-tools-1",
+        pr_number=701,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
+def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:
+    events = [
+        _event(
+            "2026-05-27T07:31:39Z",
+            "codex-lead-1",
+            "finding",
+            "confirmed_bug_blocks_merge",
+            task_id="pr701-bridge-stale-ack-close-readonly-review-2026-05-27",
+        )
+        | {"message": "Lead BLOCK PR #701 exact head abc123."},
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="fix-bridge-next-action-stale-ack-requester-close-2026-05-27",
+        merging_agent="codex-tools-1",
+    )
+    assert result["clear_to_merge"] is True
+
+
 def test_unrelated_event_types_are_ignored() -> None:
     """Heartbeats, claims, handoffs etc. should not affect the gate."""
     events = [

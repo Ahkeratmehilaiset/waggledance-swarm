@@ -29,3 +29,4 @@ class ChatResult:
     round_table: bool
     cached: bool
     hybrid_trace: dict[str, Any] | None = None
+    route_stage_trace: list[dict[str, Any]] | None = None

@@ -135,11 +135,23 @@ class ChatService:
         9. Return ChatResult
         """
         start = time.monotonic()
+        route_stage_trace: list[dict[str, object]] = []
+
+        def record_route_stage(stage: str, **details: object) -> None:
+            event = {"stage": stage}
+            event.update(details)
+            route_stage_trace.append(event)
 
         language = self._detect_language(req.query, req.language)
+        record_route_stage(
+            "language_detection",
+            hint=req.language,
+            detected_language=language,
+        )
 
         cache_key = req.query.strip().lower()
         cached = self._hot_cache.get(cache_key)
+        record_route_stage("hot_cache", hit=cached is not None)
         if cached is not None:
             elapsed = (time.monotonic() - start) * 1000
             self._record_telemetry("hotcache", 1.0, elapsed, True, req.query)
@@ -152,6 +164,7 @@ class ChatService:
                 agent_id=None,
                 round_table=False,
                 cached=True,
+                route_stage_trace=route_stage_trace,
             )
 
         memory_context = await self._memory_service.retrieve_context(
@@ -161,6 +174,13 @@ class ChatService:
         )
         memory_score = max(
             (r.confidence for r in memory_context), default=0.0
+        )
+        record_route_stage(
+            "memory_context",
+            language=language,
+            limit=5,
+            result_count=len(memory_context),
+            memory_score=memory_score,
         )
 
         self._query_frequency[cache_key] = (
@@ -185,10 +205,22 @@ class ChatService:
             micromodel_confidence=mm_confidence,
         )
         route = select_route(features, self._config)
+        record_route_stage(
+            "route_selection",
+            route_type=route.route_type,
+            solver_intent=features.solver_intent,
+            memory_score=memory_score,
+            profile=req.profile,
+        )
 
         # Solver-first: try deterministic solver before LLM
         if route.route_type == "solver":
             solver_result = self._try_solver(req.query, features.solver_intent)
+            record_route_stage(
+                "deterministic_solver",
+                intent=features.solver_intent,
+                answered=solver_result is not None,
+            )
             if solver_result is not None:
                 elapsed = (time.monotonic() - start) * 1000
                 if should_cache_result_simple(solver_result, self._query_frequency.get(cache_key, 0)):
@@ -205,6 +237,7 @@ class ChatService:
                     agent_id=None,
                     round_table=False,
                     cached=False,
+                    route_stage_trace=route_stage_trace,
                 )
             # Solver miss — fall through to hybrid retrieval or LLM
             route = route.__class__(
@@ -218,8 +251,34 @@ class ChatService:
             hybrid_trace = await self._try_hybrid_retrieval(
                 req.query, features.solver_intent, language, cache_key, start,
                 req.profile)
+            hybrid_answered = bool(hybrid_trace and hybrid_trace.get("answered"))
+            record_route_stage(
+                "hybrid_retrieval_8_cell",
+                enabled=True,
+                authoritative=bool(
+                    getattr(self._hybrid_retrieval, "is_authoritative", False)
+                ),
+                answered=hybrid_answered,
+                retrieval_mode=(
+                    hybrid_trace.get("retrieval_mode")
+                    if isinstance(hybrid_trace, dict)
+                    else None
+                ),
+                hit_count=(
+                    hybrid_trace.get("hit_count")
+                    if isinstance(hybrid_trace, dict)
+                    else None
+                ),
+                cell_id=(
+                    hybrid_trace.get("cell_id")
+                    if isinstance(hybrid_trace, dict)
+                    else None
+                ),
+            )
             if hybrid_trace and hybrid_trace.get("answered"):
-                return hybrid_trace["result"]
+                result = hybrid_trace["result"]
+                result.route_stage_trace = route_stage_trace
+                return result
 
         # v3.5.4: Hex neighbor mesh — after solver/hybrid, before orchestrator
         # v3.5.6: hex_trace only populated when hex actually ran (trace alignment)
@@ -231,7 +290,25 @@ class ChatService:
                     intent=features.solver_intent,
                     context={"language": language, "profile": req.profile},
                 )
-                if hex_result and hex_result.get("confidence", 0) >= 0.72:
+                hex_answered = bool(
+                    hex_result and hex_result.get("confidence", 0) >= 0.72
+                )
+                record_route_stage(
+                    "hex_neighbor_assist_7_cell",
+                    enabled=True,
+                    answered=hex_answered,
+                    confidence=(
+                        hex_result.get("confidence")
+                        if isinstance(hex_result, dict)
+                        else None
+                    ),
+                    source=(
+                        hex_result.get("source")
+                        if isinstance(hex_result, dict)
+                        else None
+                    ),
+                )
+                if hex_answered:
                     elapsed = (time.monotonic() - start) * 1000
                     hex_trace = hex_result.get("trace")
                     self._record_telemetry(
@@ -250,6 +327,7 @@ class ChatService:
                         round_table=False,
                         cached=False,
                         hybrid_trace=hybrid_trace,
+                        route_stage_trace=route_stage_trace,
                     )
                 # v3.5.6: if hex ran but didn't resolve, record the trace for
                 # telemetry (skipped/escalated) — but don't attribute to hex
@@ -257,6 +335,12 @@ class ChatService:
                     hex_trace = hex_result.get("trace")
             except Exception as e:
                 log.debug("Hex mesh resolve failed: %s", e)
+                record_route_stage(
+                    "hex_neighbor_assist_7_cell",
+                    enabled=True,
+                    answered=False,
+                    error=e.__class__.__name__,
+                )
 
         task = TaskRequest(
             id=str(uuid.uuid4()),
@@ -283,6 +367,13 @@ class ChatService:
                     metadata={},
                 )
                 round_table_used = True
+        record_route_stage(
+            "orchestrator_llm_fallback",
+            route_type=route.route_type,
+            source=result.source,
+            confidence=result.confidence,
+            round_table_used=round_table_used,
+        )
 
         if should_cache_result(result, self._query_frequency.get(cache_key, 0)):
             self._hot_cache.set(cache_key, result.response, ttl=3600)
@@ -318,6 +409,7 @@ class ChatService:
             round_table=round_table_used,
             cached=False,
             hybrid_trace=hybrid_trace,
+            route_stage_trace=route_stage_trace,
         )
 
     async def _record_low_confidence_gap(

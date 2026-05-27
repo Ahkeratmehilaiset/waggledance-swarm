@@ -141,6 +141,8 @@ def test_hex_mesh_runtime_trace_smoke_matches_live_chatservice_order() -> None:
         "orchestrator_llm_fallback",
     ]
     assert smoke["observed_route_order"] == smoke["expected_live_route_order"]
+    assert smoke["trace_source"] == "ChatResult.route_stage_trace"
+    assert smoke["test_only_instrumentation"] is False
     assert smoke["pre_hex_stages_observed_before_optional_hex"] is True
     assert smoke["disabled_static_stages"] == ["hex_neighbor_assist_7_cell"]
     assert smoke["extra_observed_stages"] == []

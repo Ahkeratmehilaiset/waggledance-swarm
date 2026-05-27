@@ -37,12 +37,77 @@ class TestChatService:
             assert result.response == "Cached answer"
         asyncio.run(_run())
 
+    def test_hot_cache_hit_includes_route_stage_trace(self, chat_service, mock_hot_cache):
+        async def _run():
+            raw_query = "What is varroa private-token-123?"
+            mock_hot_cache.get.return_value = "Cached answer"
+            result = await chat_service.handle(ChatRequest(query=raw_query))
+
+            assert [event["stage"] for event in result.route_stage_trace] == [
+                "language_detection",
+                "hot_cache",
+            ]
+            assert result.route_stage_trace[1]["hit"] is True
+            assert raw_query not in json.dumps(result.route_stage_trace)
+
+        asyncio.run(_run())
+
     def test_cache_miss_calls_orchestrator(self, chat_service, mock_orchestrator):
         async def _run():
             req = ChatRequest(query="How to treat varroa?")
             result = await chat_service.handle(req)
             assert result.cached is False
             mock_orchestrator.handle_task.assert_called_once()
+        asyncio.run(_run())
+
+    def test_solver_hybrid_llm_path_includes_route_stage_trace(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            raw_query = "statistics summary for hive sensor readings private-token-123"
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = False
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:candidate",
+                route_source="cell:math+global",
+                answered_by_layer="llm",
+                cell_id="math",
+                llm_fallback=True,
+            ))
+
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+
+            result = await svc.handle(ChatRequest(query=raw_query))
+
+            assert [event["stage"] for event in result.route_stage_trace] == [
+                "language_detection",
+                "hot_cache",
+                "memory_context",
+                "route_selection",
+                "deterministic_solver",
+                "hybrid_retrieval_8_cell",
+                "orchestrator_llm_fallback",
+            ]
+            assert result.route_stage_trace[4]["intent"] == "stats"
+            assert result.route_stage_trace[4]["answered"] is False
+            assert result.route_stage_trace[5]["retrieval_mode"] == "hybrid:candidate"
+            assert result.hybrid_trace["retrieval_mode"] == "hybrid:candidate"
+            assert raw_query not in json.dumps(result.route_stage_trace)
+
         asyncio.run(_run())
 
     def test_language_detection_fi(self, chat_service):

@@ -110,6 +110,111 @@ class TestChatService:
 
         asyncio.run(_run())
 
+    def test_authoritative_hybrid_answer_includes_route_stage_trace(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            raw_query = "statistics summary private-token-123"
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = True
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:authoritative",
+                route_source="cell:math+global",
+                answered_by_layer="local_faiss",
+                hits=[
+                    HybridHit(
+                        "d1",
+                        "authoritative stats evidence",
+                        0.93,
+                        "local_faiss",
+                        "math",
+                    ),
+                ],
+                cell_id="math",
+            ))
+
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+
+            result = await svc.handle(ChatRequest(query=raw_query))
+
+            assert result.source == "local_faiss"
+            assert [event["stage"] for event in result.route_stage_trace] == [
+                "language_detection",
+                "hot_cache",
+                "memory_context",
+                "route_selection",
+                "deterministic_solver",
+                "hybrid_retrieval_8_cell",
+            ]
+            assert result.route_stage_trace[-1]["answered"] is True
+            assert raw_query not in json.dumps(result.route_stage_trace)
+
+        asyncio.run(_run())
+
+    def test_hex_answer_includes_route_stage_trace(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        class HexAssist:
+            enabled = True
+
+            async def resolve(self, *, query, intent, context):
+                return {
+                    "response": "hex answer",
+                    "source": "hex_mesh",
+                    "confidence": 0.88,
+                    "trace": {"cell_count": 7, "answered": True},
+                }
+
+        async def _run():
+            raw_profile = "PRIVATE_PROFILE_MARKER"
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hex_neighbor_assist=HexAssist(),
+            )
+
+            result = await svc.handle(ChatRequest(
+                query="tell me about hive layout",
+                language="PRIVATE_LANGUAGE_MARKER",
+                profile=raw_profile,
+            ))
+
+            assert result.source == "hex_mesh"
+            assert [event["stage"] for event in result.route_stage_trace] == [
+                "language_detection",
+                "hot_cache",
+                "memory_context",
+                "route_selection",
+                "hex_neighbor_assist_7_cell",
+            ]
+            assert result.route_stage_trace[0]["explicit_hint"] is True
+            trace_json = json.dumps(result.route_stage_trace)
+            assert "PRIVATE_LANGUAGE_MARKER" not in trace_json
+            assert raw_profile not in trace_json
+
+        asyncio.run(_run())
+
     def test_language_detection_fi(self, chat_service):
         async def _run():
             req = ChatRequest(query="Miten hoidetaan varroa-häätö?")

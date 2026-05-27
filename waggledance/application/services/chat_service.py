@@ -143,10 +143,11 @@ class ChatService:
             route_stage_trace.append(event)
 
         language = self._detect_language(req.query, req.language)
+        trace_language = language if language in {"en", "fi"} else "custom"
         record_route_stage(
             "language_detection",
-            hint=req.language,
-            detected_language=language,
+            explicit_hint=req.language != "auto",
+            detected_language=trace_language,
         )
 
         cache_key = req.query.strip().lower()
@@ -177,7 +178,7 @@ class ChatService:
         )
         record_route_stage(
             "memory_context",
-            language=language,
+            language=trace_language,
             limit=5,
             result_count=len(memory_context),
             memory_score=memory_score,
@@ -210,7 +211,6 @@ class ChatService:
             route_type=route.route_type,
             solver_intent=features.solver_intent,
             memory_score=memory_score,
-            profile=req.profile,
         )
 
         # Solver-first: try deterministic solver before LLM

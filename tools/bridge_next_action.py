@@ -67,7 +67,6 @@ OPEN_STATUS_FRAGMENTS = (
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
-    "acknowledged",
     "answered",
     "approved",
     "block",
@@ -77,10 +76,8 @@ ANSWER_STATUS_FRAGMENTS = (
     "done",
     "merged",
     "pass",
-    "received",
     "resolved",
     "reported",
-    "seen",
     "superseded",
     "validated",
     "verified",

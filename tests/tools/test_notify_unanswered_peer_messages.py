@@ -110,6 +110,39 @@ def test_answered_request_does_not_create_marker(tmp_path: Path) -> None:
     assert not (tmp_path / "inbox" / "claude").exists()
 
 
+def test_passive_ack_message_does_not_clear_peer_marker(tmp_path: Path) -> None:
+    for status in ("acknowledged", "received", "seen"):
+        report = surface_unanswered_peer_messages(
+            agent="claude",
+            events=[
+                {
+                    "ts_utc": "2026-05-21T18:13:42Z",
+                    "agent": "codex",
+                    "to": "claude",
+                    "type": "message",
+                    "task_id": f"status-query-{status}",
+                    "status": "status_query",
+                    "message": "what are you doing?",
+                },
+                {
+                    "ts_utc": "2026-05-21T18:16:04Z",
+                    "agent": "claude",
+                    "to": "codex",
+                    "type": "message",
+                    "task_id": f"status-query-{status}",
+                    "status": status,
+                    "message": f"{status} message/status_query from codex",
+                },
+            ],
+            out_dir=tmp_path / "inbox" / "claude",
+            now_utc=_now(),
+            apply=False,
+        )
+
+        assert report["marker_count"] == 1
+        assert report["markers"][0]["task_id"] == f"status-query-{status}"
+
+
 def test_originator_done_closes_obsolete_rco_request(tmp_path: Path) -> None:
     report = surface_unanswered_peer_messages(
         agent="claude",

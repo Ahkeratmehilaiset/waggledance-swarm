@@ -290,6 +290,35 @@ def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
     assert report["bridge_peer_gate"]["clear_to_merge"] is False
 
 
+def test_bridge_peer_block_matches_pr_number_when_task_id_differs(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    event = _bridge_event(
+        agent="codex",
+        type_="finding",
+        status="confirmed_bug_blocks_merge",
+        task_id="pr477-idle-consensus-readonly-review",
+        ts="2026-05-18T01:05:00Z",
+    )
+    event["message"] = "Lead BLOCK PR #477 exact head abc123."
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(pr_number=477),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [event]),
+        from_agent="claude",
+        bridge_task_id="implementation-task-without-pr-number",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is False
+
+
 def test_apply_requires_bridge_events_path() -> None:
     calls: list[list[str]] = []
     report = evaluate_auto_merge_gate(

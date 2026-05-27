@@ -78,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="The agent attempting the merge (claude / codex / operator).",
     )
     parser.add_argument(
+        "--pr-number",
+        type=int,
+        default=None,
+        help=(
+            "Optional pull request number. When provided, peer blocks whose "
+            "payload or task_id identifies this PR also block even if their "
+            "bridge task_id differs from the implementation task."
+        ),
+    )
+    parser.add_argument(
         "--bridge-root",
         type=Path,
         default=DEFAULT_BRIDGE_ROOT,
@@ -125,6 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         events=events,
         task_id=args.task_id,
         merging_agent=args.from_agent,
+        pr_number=args.pr_number,
     )
     if args.json:
         print(json.dumps(result, sort_keys=True))
@@ -150,18 +161,19 @@ def check_bridge_clear_to_merge(
     events: Sequence[Mapping[str, Any]],
     task_id: str,
     merging_agent: str,
+    pr_number: int | None = None,
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
     A peer is any agent != merging_agent. We scan events for the task_id and
-    record the most recent decision event whose status is in BLOCKING_STATUSES
-    or APPROVAL_STATUSES. If the most recent peer decision is blocking, we
-    refuse. Otherwise we permit.
+    optional PR number, then record the most recent decision event whose status
+    is in BLOCKING_STATUSES or APPROVAL_STATUSES. If the most recent peer
+    decision is blocking, we refuse. Otherwise we permit.
     """
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
 
     for index, event in enumerate(events):
-        if str(event.get("task_id", "")) != task_id:
+        if not _event_matches_scope(event, task_id=task_id, pr_number=pr_number):
             continue
         agent = str(event.get("agent", ""))
         if agent == merging_agent:
@@ -192,6 +204,7 @@ def check_bridge_clear_to_merge(
         "ok": True,
         "clear_to_merge": clear,
         "task_id": task_id,
+        "pr_number": pr_number,
         "merging_agent": merging_agent,
         "latest_blocking_event": _summarize_event(
             latest_block[1] if latest_block is not None else None
@@ -201,6 +214,30 @@ def check_bridge_clear_to_merge(
         ),
         "decision": "clear" if clear else "blocked",
     }
+
+
+def _event_matches_scope(
+    event: Mapping[str, Any], *, task_id: str, pr_number: int | None
+) -> bool:
+    if str(event.get("task_id", "")) == task_id:
+        return True
+    if pr_number is None:
+        return False
+    return _event_mentions_pr(event, pr_number)
+
+
+def _event_mentions_pr(event: Mapping[str, Any], pr_number: int) -> bool:
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        for key in ("pr", "pr_number", "pull_request", "pull_request_number"):
+            value = payload.get(key)
+            if value == pr_number:
+                return True
+            if isinstance(value, str) and value.strip() == str(pr_number):
+                return True
+
+    pattern = re.compile(rf"(?i)(?:\bpr\s*#?\s*|#){pr_number}\b")
+    return pattern.search(str(event.get("task_id", ""))) is not None
 
 
 def _status_tokens(status: str) -> set[str]:
@@ -217,8 +254,7 @@ def _is_blocking_status(status: str) -> bool:
     tokens = _status_tokens(status)
     return (
         {"changes", "requested"}.issubset(tokens)
-        or "blocked" in tokens
-        or "block" in tokens
+        or any(token.startswith("block") for token in tokens)
     )
 
 

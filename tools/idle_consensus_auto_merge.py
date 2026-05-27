@@ -179,10 +179,12 @@ def evaluate_auto_merge_gate(
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
 
     events = _read_bridge_events(events_path) if events_path is not None else []
+    pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = bridge_task_id.strip() or consensus_proposal_id
     bridge_peer_gate = _bridge_peer_gate(
         events=events,
         task_id=bridge_gate_task_id,
+        pr_number=pr_number,
         from_agent=from_agent,
         checked=events_path is not None,
     )
@@ -197,7 +199,6 @@ def evaluate_auto_merge_gate(
         "quota_total": quota_total,
     }
 
-    pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     head_sha = str(pr_status.get("head_sha", ""))
     _validate_sha(head_sha, "head_sha")
     title = str(pr_status.get("title", ""))
@@ -491,6 +492,7 @@ def _bridge_peer_gate(
     *,
     events: Sequence[Mapping[str, Any]],
     task_id: str,
+    pr_number: int,
     from_agent: str,
     checked: bool,
 ) -> dict[str, Any]:
@@ -500,6 +502,7 @@ def _bridge_peer_gate(
             "clear_to_merge": True,
             "decision": "not_checked",
             "task_id": task_id,
+            "pr_number": pr_number,
             "merging_agent": from_agent,
             "latest_blocking_event": None,
             "latest_approval_event": None,
@@ -508,6 +511,7 @@ def _bridge_peer_gate(
         events=events,
         task_id=task_id,
         merging_agent=from_agent,
+        pr_number=pr_number,
     )
 
 

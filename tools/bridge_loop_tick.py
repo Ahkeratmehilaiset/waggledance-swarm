@@ -639,7 +639,7 @@ def evaluate_merge_ready(
     }
 
     preflight = check_bridge_clear_to_merge(
-        events=events, task_id=task, merging_agent=agent
+        events=events, task_id=task, merging_agent=agent, pr_number=pr
     )
     result["preflight_clear"] = bool(preflight.get("clear_to_merge"))
     if not result["preflight_clear"]:

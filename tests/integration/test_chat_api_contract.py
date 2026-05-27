@@ -14,6 +14,8 @@ These tests lock in the ergonomics decisions from
    message (no regression).
 """
 
+import json
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -92,7 +94,14 @@ def test_message_alias_produces_same_response_shape_as_query():
     r_m = _post({"message": "Tell me about varroa"})
     assert r_q.status_code == 200
     assert r_m.status_code == 200
-    for field in ("response", "source", "confidence", "latency_ms", "cached"):
+    for field in (
+        "response",
+        "source",
+        "confidence",
+        "latency_ms",
+        "cached",
+        "route_stage_trace",
+    ):
         assert field in r_q.json(), f"canonical missing {field}"
         assert field in r_m.json(), f"alias missing {field}"
 
@@ -101,6 +110,32 @@ def test_query_wins_over_message_when_both_present():
     """If both are sent, the canonical ``query`` takes precedence."""
     resp = _post({"query": "canonical", "message": "alias_loser"})
     assert resp.status_code == 200
+
+
+def test_success_response_includes_privacy_safe_route_stage_trace():
+    raw_query = "Hello WaggleDance PRIVATE_QUERY_MARKER"
+    raw_language = "PRIVATE_LANGUAGE_MARKER"
+    raw_profile = "PRIVATE_PROFILE_MARKER"
+
+    resp = _post({
+        "query": raw_query,
+        "language": raw_language,
+        "profile": raw_profile,
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    trace = data.get("route_stage_trace")
+    assert isinstance(trace, list)
+    assert trace
+    assert trace[0]["stage"] == "language_detection"
+    assert trace[1]["stage"] == "hot_cache"
+    assert all(isinstance(event.get("stage"), str) for event in trace)
+
+    trace_json = json.dumps(trace)
+    assert raw_query not in trace_json
+    assert raw_language not in trace_json
+    assert raw_profile not in trace_json
 
 
 # ------------------------------------------------------------------ #

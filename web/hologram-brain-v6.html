@@ -236,6 +236,21 @@
       align-self: center; text-align: center;
       color: rgba(200,230,244,0.6); font-style: italic;
     }
+    .route-stage-list {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+    }
+    .route-stage-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      max-width: 100%; min-height: 24px;
+      padding: 3px 8px; border-radius: 999px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(235,247,255,0.9); font-size: 10px;
+    }
+    .route-stage-chip .stage-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .route-stage-chip .stage-status { color: rgba(200,230,244,0.62); }
+    .route-stage-observed { border-color: rgba(74,222,128,0.24); }
+    .route-stage-disabled { border-color: rgba(245,158,11,0.28); opacity: 0.72; }
     .chat-input-row {
       display: flex; gap: 6px; padding-top: 8px;
       border-top: 1px solid rgba(110,220,255,0.08);
@@ -435,7 +450,10 @@ const LANG = {
       placeholder_disabled: "Open dashboard first to enable chat",
       send: "Send",
       route_label: "Route",
-      confidence_label: "Confidence"
+      confidence_label: "Confidence",
+      route_stages_label: "Stages",
+      stage_observed: "Observed",
+      stage_disabled: "Disabled"
     },
     profile: {
       restart_notice: "Saved — applies after restart",
@@ -502,7 +520,10 @@ const LANG = {
       placeholder_disabled: "Avaa dashboard ensin",
       send: "Laheta",
       route_label: "Reitti",
-      confidence_label: "Luottamus"
+      confidence_label: "Luottamus",
+      route_stages_label: "Vaiheet",
+      stage_observed: "Havaittu",
+      stage_disabled: "Pois"
     },
     profile: {
       restart_notice: "Tallennettu — kayttoon uudelleenkaynn. jalkeen",
@@ -1776,6 +1797,68 @@ function buildMagmaPanel(el) {
 let chatMessages = [];
 let chatRouteInfo = null;
 
+const CHAT_ROUTE_STAGE_NAMES = {
+  language_detection: 'Language',
+  hot_cache: 'Hot cache',
+  memory_context: 'Memory',
+  route_selection: 'Route select',
+  deterministic_solver: 'Solver',
+  hybrid_retrieval_8_cell: '8-cell retrieval',
+  hex_neighbor_assist_7_cell: '7-cell assist',
+  orchestrator_llm_fallback: 'LLM fallback',
+};
+
+function _routeStageStatus(rawStatus) {
+  return rawStatus === 'disabled' ? 'disabled' : 'observed';
+}
+
+function _routeStageRows(info) {
+  const rows = [];
+  const seen = new Set();
+  const labels = Array.isArray(info && info.route_stage_labels) ? info.route_stage_labels : [];
+  labels.forEach(item => {
+    const stage = item && typeof item.stage === 'string' ? item.stage : '';
+    const name = CHAT_ROUTE_STAGE_NAMES[stage];
+    if (!name || seen.has(stage)) return;
+    const status = _routeStageStatus(item.status);
+    rows.push({ stage, name, status });
+    seen.add(stage);
+  });
+  const disabled = Array.isArray(info && info.disabled_route_stages) ? info.disabled_route_stages : [];
+  disabled.forEach(stage => {
+    const name = typeof stage === 'string' ? CHAT_ROUTE_STAGE_NAMES[stage] : '';
+    if (!name || seen.has(stage)) return;
+    rows.push({ stage, name, status: 'disabled' });
+    seen.add(stage);
+  });
+  return rows;
+}
+
+function _routeStageChipHtml(row) {
+  const statusLabel = row.status === 'disabled'
+    ? t('chat.stage_disabled')
+    : t('chat.stage_observed');
+  return `<span class="route-stage-chip route-stage-${row.status}" data-route-stage="${escapeHtml(row.stage)}">
+    <span class="stage-name">${escapeHtml(row.name)}</span>
+    <span class="stage-status">${escapeHtml(statusLabel)}</span>
+  </span>`;
+}
+
+function _mergeChatRouteInfo(data, preserveStageDetails) {
+  const current = preserveStageDetails && chatRouteInfo ? chatRouteInfo : {};
+  chatRouteInfo = {
+    source: data.source,
+    confidence: data.confidence,
+    agent_id: data.agent_id,
+    route_stage_labels: Array.isArray(data.route_stage_labels)
+      ? data.route_stage_labels
+      : (current.route_stage_labels || []),
+    disabled_route_stages: Array.isArray(data.disabled_route_stages)
+      ? data.disabled_route_stages
+      : (current.disabled_route_stages || []),
+  };
+}
+
 function _renderChatMessages(container, hasAuth) {
   let html = '';
   if (!hasAuth) {
@@ -1811,6 +1894,13 @@ function buildChatPanel(el) {
     html += card(t('chat.route_label'), chatRouteInfo.source || '\u2014');
     html += card(t('chat.confidence_label'), chatRouteInfo.confidence != null ? (chatRouteInfo.confidence * 100).toFixed(0) + '%' : '\u2014');
     html += `</div></div>`;
+    const stageRows = _routeStageRows(chatRouteInfo);
+    if (stageRows.length) {
+      html += `<div class="p-section"><div class="p-section-title">${t('chat.route_stages_label')}</div>`;
+      html += `<div class="route-stage-list" data-route-stage-list>`;
+      stageRows.forEach(row => { html += _routeStageChipHtml(row); });
+      html += `</div></div>`;
+    }
   }
 
   html += `<div class="chat-messages" id="chatMessages"></div>`;
@@ -1863,6 +1953,7 @@ async function sendChat() {
   if (!msg) return;
   input.value = '';
   chatMessages.push({ role: 'user', text: msg });
+  chatRouteInfo = null;
   buildActivePanel();
 
   try {
@@ -1875,7 +1966,7 @@ async function sendChat() {
     if (res.ok) {
       const data = await res.json();
       chatMessages.push({ role: 'assistant', text: data.response || '' });
-      chatRouteInfo = { source: data.source, confidence: data.confidence, agent_id: data.agent_id };
+      _mergeChatRouteInfo(data, true);
       if (data.source) highlightChatRoute(data.source, 3000);
     } else {
       chatMessages.push({ role: 'system', text: `Error: ${res.status}` });
@@ -1988,7 +2079,7 @@ function connectWebSocket() {
       } else if (msg.type === 'system' && msg.data) {
         dashboardState.system = { ...dashboardState.system, ...msg.data };
       } else if (msg.type === 'chat_route' && msg.data) {
-        chatRouteInfo = msg.data;
+        _mergeChatRouteInfo(msg.data, false);
         if (activeTab === 'chat') buildActivePanel();
         if (msg.data.source) highlightChatRoute(msg.data.source, 3000);
       }

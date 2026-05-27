@@ -18,6 +18,9 @@ from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smo
 from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_runtime_boundary_smoke,
 )
+from tools.wd_image1_capability_manifest import (
+    build_low_risk_autogrowth_operator_metrics_smoke,
+)
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
 
@@ -395,6 +398,47 @@ def test_low_risk_autogrowth_runtime_boundary_smoke_reports_runtime_wiring() -> 
     assert proof["external_writes_applied"] is False
 
 
+def test_low_risk_autogrowth_operator_metrics_smoke_reports_prometheus_contract() -> None:
+    proof = build_low_risk_autogrowth_operator_metrics_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "low_risk_autogrowth_operator_metrics_smoke_v1"
+    assert proof["metrics_endpoint"] == "/metrics"
+    assert proof["prometheus_namespace"] == "waggledance_autogrowth"
+    assert proof["operator_visible_metrics"] is True
+    assert proof["missing_metrics"] == []
+    assert proof["double_suffix_absent"] is True
+    assert "waggledance_autogrowth_wakeups_total" in proof["metric_names"]
+    assert "waggledance_autogrowth_background_interval_seconds" in (
+        proof["metric_names"]
+    )
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
+def test_low_risk_autogrowth_operator_metrics_smoke_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/core/autonomy_growth/autogrowth_scheduler.py",
+        "tests/test_metrics_endpoint.py",
+        "docs/API.md",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_low_risk_autogrowth_operator_metrics_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["operator_visible_metrics"] is False
+    assert proof["metric_names"] == []
+
+
 def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
     report = build_manifest(ROOT)
     capability = _by_id(report)["hexagonal_upgrades"]
@@ -432,6 +476,14 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert capability["proof"]["runtime_boundary_smoke"][
         "runtime_authority_changed"
     ] is False
+    assert capability["proof"]["operator_metrics_smoke"]["ok"] is True
+    assert capability["proof"]["operator_metrics_smoke"][
+        "operator_visible_metrics"
+    ] is True
+    assert capability["proof"]["operator_metrics_smoke"][
+        "runtime_authority_changed"
+    ] is False
+    assert "dashboard ops overlay" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

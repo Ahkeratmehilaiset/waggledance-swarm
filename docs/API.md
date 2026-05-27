@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges) plus a `waggledance_up` liveness gauge. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), low-risk autogrowth ticker boundary metrics, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -70,6 +70,12 @@ waggledance_up 1.0
 # HELP waggledance_hex_preflight_skips_total Queries skipped via cheap preflight gating.
 # TYPE waggledance_hex_preflight_skips_total counter
 waggledance_hex_preflight_skips_total 0.0
+# HELP waggledance_autogrowth_background_enabled 1 if the low-risk autogrowth background ticker is configured.
+# TYPE waggledance_autogrowth_background_enabled gauge
+waggledance_autogrowth_background_enabled 1.0
+# HELP waggledance_autogrowth_wakeups_total low-risk autogrowth runtime-boundary counter: wakeups_total.
+# TYPE waggledance_autogrowth_wakeups_total counter
+waggledance_autogrowth_wakeups_total 0.0
 ...
 ```
 

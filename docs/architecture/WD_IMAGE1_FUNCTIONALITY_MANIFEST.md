@@ -31,7 +31,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | Deterministic solver-first routing | Partial | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Add per-solver-call trace coverage so "full MAGMA provenance" becomes measurable. |
 | MAGMA audit log | Partial | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only enforcement or keep user-facing wording at "audit/provenance wrappers". |
 | Low-risk autonomy loop | Partial | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py` | Add a read-only runtime proof that a gap signal can flow to an allowlisted growth intent without external authority. |
-| Hexagonal upgrades | Partial | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py` | Wire these pure primitives into a non-mutating integration proof before runtime use. |
+| Hexagonal upgrades | Partial, with in-memory proof | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py` | Wire the pure proof into a read-only runtime-facing smoke that reports current config and active topology boundaries. |
 | Future swarm scalability | Planned | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Replace broad future claims with measurable scale axes and gate them with proof artifacts. |
 
 ## Agent Work Split
@@ -60,6 +60,13 @@ The command is read-only. It emits a JSON matrix with:
 - `evidence`: repo paths used for the status
 - `gaps`: why stronger wording is not yet supported
 - `next_smallest_pr`: the next scoped implementation step
+- `proof`: optional non-mutating proof payload for capabilities that have an
+  executable local proof, currently `hexagonal_upgrades`
+
+The `hexagonal_upgrades` proof is intentionally pure. It builds a temporary
+topology in memory, applies a shadow subdivision plan, verifies parent/child
+relations, and delivers ring / parent-to-child / child-to-parent messages
+without changing runtime topology or files.
 
 ## Bridge Handoff Template
 

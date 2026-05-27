@@ -10,10 +10,25 @@ import argparse
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import sys
 from typing import Iterable, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.hex_topology.cell_message_contract import make_message
+from waggledance.core.hex_topology.parent_child_relations import (
+    ancestors_of,
+    children_of,
+    siblings_of,
+)
+from waggledance.core.hex_topology.ring_messaging import deliver_batch
+from waggledance.core.hex_topology.subdivision_operator import (
+    apply_plan_to_topology,
+    plan_subdivision,
+)
 
 STATUS_IMPLEMENTED = "implemented"
 STATUS_PARTIAL = "partial"
@@ -45,10 +60,13 @@ class Capability:
     evidence: tuple[Evidence, ...]
     gaps: tuple[str, ...]
     next_smallest_pr: str
+    proof: dict | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["evidence"] = [asdict(item) for item in self.evidence]
+        if self.proof is None:
+            data.pop("proof", None)
         return data
 
 
@@ -84,6 +102,87 @@ def _status_for(
     if planned:
         return STATUS_PLANNED
     return STATUS_BLOCKED
+
+
+def build_hexagonal_upgrade_proof() -> dict:
+    """Run a pure in-memory proof for subdivision + hierarchy + messages."""
+
+    topology = {
+        "cells": {
+            "thermal": {
+                "schema_version": 1,
+                "cell_id": "thermal",
+                "parent_cell_id": None,
+                "child_cell_ids": [],
+                "neighbor_cell_ids": ["energy"],
+                "live_state": "live",
+                "subdivision_state": "leaf",
+            },
+            "energy": {
+                "schema_version": 1,
+                "cell_id": "energy",
+                "parent_cell_id": None,
+                "child_cell_ids": [],
+                "neighbor_cell_ids": ["thermal"],
+                "live_state": "live",
+                "subdivision_state": "leaf",
+            },
+        }
+    }
+    original = json.loads(json.dumps(topology, sort_keys=True))
+    plan = plan_subdivision(
+        parent_cell_id="thermal",
+        new_child_cell_ids=("thermal.heating", "thermal.cooling"),
+        rationale="Image #1 proof: split one live parent into shadow children.",
+        target_state="subdivision_in_shadow",
+    )
+    shadow_topology = apply_plan_to_topology(topology, plan)
+
+    messages = [
+        make_message(
+            from_cell_id="thermal",
+            to_cell_id="energy",
+            kind="ring_request",
+            payload={"purpose": "neighbor proof"},
+        ),
+        make_message(
+            from_cell_id="thermal",
+            to_cell_id="thermal.heating",
+            kind="parent_to_child",
+            payload={"purpose": "hierarchy proof"},
+        ),
+        make_message(
+            from_cell_id="thermal.heating",
+            to_cell_id="thermal",
+            kind="child_to_parent",
+            payload={"purpose": "hierarchy proof"},
+        ),
+    ]
+    deliveries = deliver_batch(shadow_topology, messages)
+    relations = {
+        "thermal_children": children_of(shadow_topology, "thermal"),
+        "heating_siblings": siblings_of(shadow_topology, "thermal.heating"),
+        "heating_ancestors": ancestors_of(shadow_topology, "thermal.heating"),
+    }
+    ok = (
+        topology == original
+        and plan.no_runtime_mutation
+        and relations["thermal_children"] == [
+            "thermal.cooling",
+            "thermal.heating",
+        ]
+        and relations["heating_siblings"] == ["thermal.cooling"]
+        and relations["heating_ancestors"] == ["thermal"]
+        and all(item.delivered for item in deliveries)
+    )
+    return {
+        "proof_id": "hexagonal_upgrades_in_memory_v1",
+        "ok": ok,
+        "no_runtime_mutation": topology == original and plan.no_runtime_mutation,
+        "plan": plan.to_dict(),
+        "relations": relations,
+        "deliveries": [item.to_dict() for item in deliveries],
+    }
 
 
 def _capabilities(root: Path) -> tuple[Capability, ...]:
@@ -185,6 +284,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
         ),
     )
+    hex_upgrade_proof = build_hexagonal_upgrade_proof()
 
     return (
         Capability(
@@ -309,9 +409,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "delivery layer.",
             ),
             next_smallest_pr=(
-                "Add an integration proof that applies a subdivision plan to "
-                "a temp topology and delivers valid parent/ring messages."
+                "Wire the pure proof into a read-only runtime-facing smoke "
+                "that reports current config and active topology boundaries."
             ),
+            proof=hex_upgrade_proof,
         ),
         Capability(
             capability_id="future_waggledance_swarm",
@@ -369,6 +470,10 @@ def build_manifest(root: Path | str = ROOT) -> dict:
             "status_counts": counts,
             "unsafe_literal_claim_ids": unsafe_claim_ids,
             "all_literal_claims_safe": len(unsafe_claim_ids) == 0,
+            "proofs_ok": all(
+                capability.proof is None or capability.proof.get("ok") is True
+                for capability in capabilities
+            ),
         },
     }
 

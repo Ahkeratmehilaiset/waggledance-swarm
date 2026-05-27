@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from tools.wd_image1_capability_manifest import build_manifest
+from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +61,35 @@ def test_manifest_evidence_paths_are_present_for_current_repo() -> None:
     for capability in report["capabilities"]:
         assert capability["evidence"], capability["capability_id"]
         assert any(item["present"] for item in capability["evidence"])
+
+
+def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
+    proof = build_hexagonal_upgrade_proof()
+
+    assert proof["ok"] is True
+    assert proof["no_runtime_mutation"] is True
+    assert proof["plan"]["target_state"] == "subdivision_in_shadow"
+    assert proof["relations"]["thermal_children"] == [
+        "thermal.cooling",
+        "thermal.heating",
+    ]
+    assert proof["relations"]["heating_siblings"] == ["thermal.cooling"]
+    assert proof["relations"]["heating_ancestors"] == ["thermal"]
+    assert [item["delivered"] for item in proof["deliveries"]] == [
+        True,
+        True,
+        True,
+    ]
+
+
+def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["hexagonal_upgrades"]
+
+    assert capability["status"] == "partial"
+    assert capability["claim_safe"] is False
+    assert capability["proof"]["ok"] is True
+    assert report["summary"]["proofs_ok"] is True
 
 
 def test_cli_emits_json_and_strict_claims_fails_on_unsafe_claims() -> None:

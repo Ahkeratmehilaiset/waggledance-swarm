@@ -174,6 +174,37 @@ def test_runtime_summary_receipt_bundle_accepts_legacy_v0_without_trace_fields(
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("stage", "solver_call:unsafe", "stage is not allowed"),
+        ("status", "fallback", "status is not allowed"),
+        ("execution_boundary", "direct_runtime", "execution_boundary is not allowed"),
+    ],
+)
+def test_runtime_summary_receipt_bundle_rejects_disallowed_solver_trace_values(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    match: str,
+) -> None:
+    summary = _summary()
+    summary["solver_call_trace"][0][field] = value
+    summary["solver_call_trace_digest"] = sha256_digest(
+        {"solver_call_trace": summary["solver_call_trace"]}
+    )
+
+    with pytest.raises(ValueError, match=match):
+        write_runtime_summary_receipt_bundle(
+            out_dir=tmp_path / f"bad-trace-{field}",
+            summary_payload=summary,
+            now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+            verify_manifest=verify_manifest,
+        )
+
+    assert not (tmp_path / f"bad-trace-{field}").exists()
+
+
 def test_runtime_summary_receipt_bundle_rejects_unknown_evaluation_version(
     tmp_path: Path,
 ) -> None:

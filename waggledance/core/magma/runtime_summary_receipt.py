@@ -38,6 +38,9 @@ SOLVER_TRACE_FIELDS = (
     "quality_path",
     "execution_boundary",
 )
+SOLVER_TRACE_STAGE_VALUES = frozenset({"solver_call"})
+SOLVER_TRACE_STATUS_VALUES = frozenset({"selected"})
+SOLVER_TRACE_EXECUTION_BOUNDARY_VALUES = frozenset({"safe_action_bus"})
 
 
 def build_handle_query_runtime_summary(
@@ -367,6 +370,7 @@ def _sanitize_solver_call_trace(
     for item in trace:
         if not isinstance(item, Mapping):
             raise ValueError("solver_call_trace entries must be mappings")
+        _validate_solver_trace_values(item)
         entry: dict[str, Any] = {}
         for field in SOLVER_TRACE_FIELDS:
             value = item.get(field)
@@ -387,12 +391,25 @@ def _validate_solver_trace_payload(payload: Mapping[str, Any]) -> None:
             raise ValueError("runtime summary solver_call_trace entries must be objects")
         if set(item.keys()) != set(SOLVER_TRACE_FIELDS):
             raise ValueError("runtime summary solver_call_trace field mismatch")
+        _validate_solver_trace_values(item)
     count = payload.get("solver_call_trace_count")
     if count != len(trace):
         raise ValueError("runtime summary solver_call_trace_count mismatch")
     expected_digest = sha256_digest({"solver_call_trace": trace})
     if payload.get("solver_call_trace_digest") != expected_digest:
         raise ValueError("runtime summary solver_call_trace_digest mismatch")
+
+
+def _validate_solver_trace_values(item: Mapping[str, Any]) -> None:
+    stage = str(item.get("stage") or "")
+    status = str(item.get("status") or "")
+    execution_boundary = str(item.get("execution_boundary") or "")
+    if stage not in SOLVER_TRACE_STAGE_VALUES:
+        raise ValueError("solver_call_trace stage is not allowed")
+    if status not in SOLVER_TRACE_STATUS_VALUES:
+        raise ValueError("solver_call_trace status is not allowed")
+    if execution_boundary not in SOLVER_TRACE_EXECUTION_BOUNDARY_VALUES:
+        raise ValueError("solver_call_trace execution_boundary is not allowed")
 
 
 def _coerce_utc(value: datetime) -> datetime:

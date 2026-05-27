@@ -7,7 +7,7 @@ context values, executor payloads, or solver outputs into the emitted bundle.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -29,6 +29,15 @@ PAYLOAD_VERSION = "magma.runtime_summary_receipt_payload.v0"
 CHAIN_ID = "magma:runtime_summary:handle_query:v0"
 EVALUATION_VERSION_V0 = "magma.evaluation_result.v0"
 EVALUATION_VERSION_V1 = "magma.evaluation_result.v1"
+SOLVER_TRACE_FIELDS = (
+    "stage",
+    "status",
+    "intent",
+    "capability_id",
+    "selected_index",
+    "quality_path",
+    "execution_boundary",
+)
 
 
 def build_handle_query_runtime_summary(
@@ -50,6 +59,7 @@ def build_handle_query_runtime_summary(
     verifier_passed: bool | None,
     verifier_confidence: float | None,
     result_keys: list[str],
+    solver_call_trace: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a payload-safe summary for a completed handle_query path."""
     actual_gate = _actual_gate(
@@ -63,6 +73,7 @@ def build_handle_query_runtime_summary(
         needs_approval=needs_approval,
         verifier_passed=verifier_passed,
     )
+    sanitized_solver_trace = _sanitize_solver_call_trace(solver_call_trace or [])
     return {
         "payload_version": PAYLOAD_VERSION,
         "runtime_path": "AutonomyRuntime.handle_query",
@@ -85,6 +96,11 @@ def build_handle_query_runtime_summary(
         "context_keys": sorted(str(key) for key in context.keys()),
         "decision_reason_digest": sha256_digest({"reason": str(decision_reason)}),
         "result_keys": sorted(str(key) for key in result_keys),
+        "solver_call_trace": sanitized_solver_trace,
+        "solver_call_trace_count": len(sanitized_solver_trace),
+        "solver_call_trace_digest": sha256_digest(
+            {"solver_call_trace": sanitized_solver_trace}
+        ),
         "verifier_passed": verifier_passed,
         "verifier_confidence": (
             round(float(verifier_confidence), 4)
@@ -105,6 +121,7 @@ def write_runtime_summary_receipt_bundle(
 ) -> dict[str, Any]:
     """Write and verify a one-entry runtime summary receipt bundle."""
     payload = dict(summary_payload)
+    _ensure_solver_trace_payload_defaults(payload)
     _validate_summary_payload(payload)
     now_utc = _coerce_utc(now_utc)
     evaluation = _build_runtime_evaluation(
@@ -127,6 +144,7 @@ def write_runtime_summary_receipt_bundle(
                 "executed": payload["executed"],
                 "needs_approval": payload["needs_approval"],
                 "decision_reason_digest": payload["decision_reason_digest"],
+                "solver_call_trace_digest": payload["solver_call_trace_digest"],
             }
         ),
         world_snapshot_digest=sha256_digest(
@@ -140,6 +158,8 @@ def write_runtime_summary_receipt_bundle(
                 "capability_id": payload["capability_id"],
                 "quality_path": payload["quality_path"],
                 "solver_selection": evaluation["solver_selection"],
+                "solver_call_trace_count": payload["solver_call_trace_count"],
+                "solver_call_trace_digest": payload["solver_call_trace_digest"],
             }
         ),
     )
@@ -170,12 +190,7 @@ def _build_runtime_evaluation(
         "risk_class": "internal_memory",
         "expected_gate": str(payload["expected_gate"]),
         "actual_gate": str(payload["actual_gate"]),
-        "verifier_path": [
-            "autonomy_runtime_handle_query",
-            "runtime_summary_payload_v0",
-            "magma_receipt_v1",
-            "offline_receipt_verifier",
-        ],
+        "verifier_path": _verifier_path(payload),
         "solver_selection": _solver_selection(payload),
         "policy_version": f"policy:autonomy_runtime:{payload['profile']}",
         "charter_version": "charter:v1",
@@ -219,9 +234,22 @@ def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
         "verdict",
         "query_digest",
         "decision_reason_digest",
+        "solver_call_trace_digest",
     ):
         if not payload.get(key):
             raise ValueError(f"runtime summary missing required field: {key}")
+    _validate_solver_trace_payload(payload)
+
+
+def _ensure_solver_trace_payload_defaults(payload: dict[str, Any]) -> None:
+    if "solver_call_trace" not in payload:
+        payload["solver_call_trace"] = []
+    if "solver_call_trace_count" not in payload:
+        payload["solver_call_trace_count"] = len(payload["solver_call_trace"])
+    if "solver_call_trace_digest" not in payload:
+        payload["solver_call_trace_digest"] = sha256_digest(
+            {"solver_call_trace": payload["solver_call_trace"]}
+        )
 
 
 def _payload_size_bytes(payload: Mapping[str, Any]) -> int:
@@ -263,6 +291,13 @@ def _verdict(
 
 
 def _solver_selection(payload: Mapping[str, Any]) -> list[str]:
+    trace_ids = [
+        str(item.get("capability_id"))
+        for item in payload.get("solver_call_trace", [])
+        if isinstance(item, Mapping) and item.get("capability_id")
+    ]
+    if trace_ids:
+        return trace_ids
     cap_id = str(payload.get("capability_id") or "")
     return [cap_id] if cap_id else []
 
@@ -273,6 +308,13 @@ def _reason_codes(payload: Mapping[str, Any]) -> list[str]:
         "path:handle_query",
         f"gate:{payload['actual_gate']}",
     ]
+    solver_trace_count = int(payload.get("solver_call_trace_count") or 0)
+    codes.append(f"solver_trace_count:{solver_trace_count}")
+    codes.append(
+        "solver_trace:receipt_bound"
+        if solver_trace_count > 0
+        else "solver_trace:none"
+    )
     codes.append("action:executed" if payload.get("executed") else "action:not_executed")
     verifier_passed = payload.get("verifier_passed")
     if verifier_passed is True:
@@ -304,6 +346,53 @@ def _uncertainty_sources(payload: Mapping[str, Any]) -> list[dict[str, str]]:
             }
         ]
     return []
+
+
+def _verifier_path(payload: Mapping[str, Any]) -> list[str]:
+    path = [
+        "autonomy_runtime_handle_query",
+        "runtime_summary_payload_v0",
+        "magma_receipt_v1",
+        "offline_receipt_verifier",
+    ]
+    if int(payload.get("solver_call_trace_count") or 0) > 0:
+        path.append("solver_call_trace_receipt_bound")
+    return path
+
+
+def _sanitize_solver_call_trace(
+    trace: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    sanitized: list[dict[str, Any]] = []
+    for item in trace:
+        if not isinstance(item, Mapping):
+            raise ValueError("solver_call_trace entries must be mappings")
+        entry: dict[str, Any] = {}
+        for field in SOLVER_TRACE_FIELDS:
+            value = item.get(field)
+            if field == "selected_index":
+                entry[field] = int(value) if value is not None else 0
+            else:
+                entry[field] = "" if value is None else str(value)
+        sanitized.append(entry)
+    return sanitized
+
+
+def _validate_solver_trace_payload(payload: Mapping[str, Any]) -> None:
+    trace = payload.get("solver_call_trace")
+    if not isinstance(trace, list):
+        raise ValueError("runtime summary solver_call_trace must be a list")
+    for item in trace:
+        if not isinstance(item, Mapping):
+            raise ValueError("runtime summary solver_call_trace entries must be objects")
+        if set(item.keys()) != set(SOLVER_TRACE_FIELDS):
+            raise ValueError("runtime summary solver_call_trace field mismatch")
+    count = payload.get("solver_call_trace_count")
+    if count != len(trace):
+        raise ValueError("runtime summary solver_call_trace_count mismatch")
+    expected_digest = sha256_digest({"solver_call_trace": trace})
+    if payload.get("solver_call_trace_digest") != expected_digest:
+        raise ValueError("runtime summary solver_call_trace_digest mismatch")
 
 
 def _coerce_utc(value: datetime) -> datetime:

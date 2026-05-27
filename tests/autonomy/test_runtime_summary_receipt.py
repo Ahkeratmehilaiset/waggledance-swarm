@@ -29,6 +29,17 @@ class _RouteResult:
         self.quality_path = "gold"
         self.autonomy_consult = None
         self.autonomy_served = False
+        self.solver_call_trace = [
+            {
+                "stage": "solver_call",
+                "status": "selected",
+                "intent": "detect",
+                "capability_id": capability.capability_id,
+                "selected_index": 0,
+                "quality_path": "gold",
+                "execution_boundary": "safe_action_bus",
+            }
+        ]
 
 
 class _Executor:
@@ -90,6 +101,19 @@ def test_handle_query_emits_opt_in_runtime_summary_receipt(tmp_path: Path) -> No
         path.read_text(encoding="utf-8")
         for path in sorted((tmp_path / "runtime-summary-1").rglob("*.json"))
     )
+    assert result["solver_call_trace"] == [
+        {
+            "stage": "solver_call",
+            "status": "selected",
+            "intent": "detect",
+            "capability_id": "detect.fixture",
+            "selected_index": 0,
+            "quality_path": "gold",
+            "execution_boundary": "safe_action_bus",
+        }
+    ]
+    assert "solver_call_trace" in emitted_text
+    assert "solver_call_trace_digest" in emitted_text
     assert "private runtime query" not in emitted_text
     assert "context secret" not in emitted_text
     assert "DO_NOT_LEAK" not in emitted_text

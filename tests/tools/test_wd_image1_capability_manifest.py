@@ -12,6 +12,7 @@ from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
+from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -181,7 +182,22 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
         }
     ]
     assert proof["query_text_recorded"] is False
-    assert proof["magma_execution_receipt_claimed"] is False
+    assert proof["magma_execution_receipt_claimed"] is True
+    assert proof["magma_execution_receipt_scope"] == (
+        "opt_in_handle_query_runtime_summary"
+    )
+    assert proof["magma_execution_receipt_proof"]["ok"] is True
+    assert proof["magma_execution_receipt_proof"][
+        "solver_call_trace_receipt_bound"
+    ] is True
+    assert proof["magma_execution_receipt_proof"][
+        "solver_call_trace_privacy_safe"
+    ] is True
+    assert proof["receipt_metrics"] == {
+        "receipt_count": 1,
+        "solver_call_trace_count": 1,
+        "solver_call_trace_receipt_bound": True,
+    }
     assert proof["external_writes_applied"] is False
 
 
@@ -205,6 +221,24 @@ def test_deterministic_solver_trace_proof_blocks_foreign_root(
     assert proof["selected_solver_ids"] == []
     assert proof["trace"] == []
     assert proof["magma_execution_receipt_claimed"] is False
+
+
+def test_solver_trace_magma_receipt_proof_binds_trace_without_raw_payload() -> None:
+    proof = build_solver_trace_magma_receipt_proof(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "solver_trace_runtime_receipt_v1"
+    assert proof["receipt_scope"] == "opt_in_handle_query_runtime_summary"
+    assert proof["receipt_count"] == 1
+    assert proof["verifier_ok"] is True
+    assert proof["solver_call_trace_count"] == 1
+    assert proof["solver_call_trace_digest_bound"] is True
+    assert proof["solver_call_trace_receipt_bound"] is True
+    assert proof["solver_call_trace_privacy_safe"] is True
+    assert proof["raw_payload_leak_check"] is True
+    assert proof["temp_artifacts_removed"] is True
+    assert proof["default_sink_required"] is False
+    assert proof["operator_gate_required"] is False
 
 
 def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> None:
@@ -323,7 +357,20 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
     assert capability["claim_safe"] is False
     assert capability["proof"]["ok"] is True
     assert capability["proof"]["selected_solver_ids"] == ["solve.math"]
-    assert "append-only MAGMA" in capability["safe_statement"]
+    assert capability["proof"]["magma_execution_receipt_claimed"] is True
+    assert "opt-in MAGMA" in capability["safe_statement"]
+    assert report["summary"]["proofs_ok"] is True
+
+
+def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["magma_audit_log"]
+
+    assert capability["status"] == "partial"
+    assert capability["claim_safe"] is False
+    assert capability["proof"]["ok"] is True
+    assert capability["proof"]["solver_call_trace_receipt_bound"] is True
+    assert "hard append-only" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 
 

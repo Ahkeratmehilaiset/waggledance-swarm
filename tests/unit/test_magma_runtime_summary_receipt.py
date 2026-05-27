@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.runtime_summary_receipt import (
     EVALUATION_VERSION_V1,
     PAYLOAD_VERSION,
@@ -35,6 +36,18 @@ def _summary(secret_query: str = "private query marker DO_NOT_LEAK") -> dict:
         verifier_passed=True,
         verifier_confidence=0.8,
         result_keys=["intent", "approved", "result"],
+        solver_call_trace=[
+            {
+                "stage": "solver_call",
+                "status": "selected",
+                "intent": "diagnose",
+                "capability_id": "detect.fixture",
+                "selected_index": 0,
+                "quality_path": "gold",
+                "execution_boundary": "safe_action_bus",
+                "query": "private query marker DO_NOT_LEAK",
+            }
+        ],
     )
 
 
@@ -54,6 +67,21 @@ def test_runtime_summary_payload_is_sanitized_and_digest_bound() -> None:
     assert summary["query_digest"].startswith("sha256:")
     assert "DO_NOT_LEAK" not in json.dumps(summary, sort_keys=True)
     assert summary["context_keys"] == ["operator_note"]
+    assert summary["solver_call_trace"] == [
+        {
+            "stage": "solver_call",
+            "status": "selected",
+            "intent": "diagnose",
+            "capability_id": "detect.fixture",
+            "selected_index": 0,
+            "quality_path": "gold",
+            "execution_boundary": "safe_action_bus",
+        }
+    ]
+    assert summary["solver_call_trace_count"] == 1
+    assert summary["solver_call_trace_digest"] == sha256_digest(
+        {"solver_call_trace": summary["solver_call_trace"]}
+    )
 
 
 def test_runtime_summary_receipt_bundle_writes_and_verifies(tmp_path: Path) -> None:
@@ -80,6 +108,9 @@ def test_runtime_summary_receipt_bundle_writes_and_verifies(tmp_path: Path) -> N
     assert evaluation["target_digest"] == receipt["canonical_payload_digest"]
     assert evaluation["evaluation_version"] == "magma.evaluation_result.v0"
     assert evaluation["case_id"] == payload["case_id"]
+    assert evaluation["solver_selection"] == ["detect.fixture"]
+    assert "solver_trace:receipt_bound" in evaluation["reason_codes"]
+    assert "solver_call_trace_receipt_bound" in evaluation["verifier_path"]
     assert "DO_NOT_LEAK" not in _all_text(out_dir)
 
 
@@ -113,6 +144,34 @@ def test_runtime_summary_receipt_bundle_can_emit_v1_evaluation_result(
     }
     assert evaluation["subject_payload_size_bytes"] > 0
     assert "DO_NOT_LEAK" not in _all_text(out_dir)
+
+
+def test_runtime_summary_receipt_bundle_accepts_legacy_v0_without_trace_fields(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "runtime-summary-legacy-v0"
+    summary = _summary()
+    summary.pop("solver_call_trace")
+    summary.pop("solver_call_trace_count")
+    summary.pop("solver_call_trace_digest")
+
+    report = write_runtime_summary_receipt_bundle(
+        out_dir=out_dir,
+        summary_payload=summary,
+        now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+        verify_manifest=verify_manifest,
+    )
+
+    assert report["receipt_count"] == 1
+    assert report["verifier_report"]["ok"] is True
+    payload = json.loads(
+        (out_dir / "payload-001-runtime-summary.json").read_text(encoding="utf-8")
+    )
+    assert payload["solver_call_trace"] == []
+    assert payload["solver_call_trace_count"] == 0
+    assert payload["solver_call_trace_digest"] == sha256_digest(
+        {"solver_call_trace": []}
+    )
 
 
 def test_runtime_summary_receipt_bundle_rejects_unknown_evaluation_version(

@@ -62,6 +62,11 @@ Captured by direct code inspection on 2026-04-24 (`docs/runs/phase8_ci_baseline.
   selected-solver trace and `AutonomyRuntime` carries it in the
   `capability.selected` payload. This is selection visibility, not a full
   append-only per-execution receipt.
+- 2026-05-27 follow-up: the opt-in `runtime_receipt_sink` path now binds the
+  sanitized `solver_call_trace` into the verified MAGMA runtime summary
+  receipt payload. This proves receipt binding for the opt-in
+  `AutonomyRuntime.handle_query` path; it still does not make receipt emission
+  default for every solver path.
 
 ### 1.7 EventBus
 
@@ -75,7 +80,7 @@ Captured by direct code inspection on 2026-04-24 (`docs/runs/phase8_ci_baseline.
 ### 1.9 Metrics
 
 - Prometheus `/metrics` exposes 15 counters + 4 gauges (see `waggledance/adapters/http/routes/metrics.py:45-66`): hex-mesh and retrieval routing counters plus `cells_loaded`, `quarantined_cells`, `waggledance_hex_mesh_enabled`, `waggledance_up`.
-- **No per-solver-call metrics**, no proposal-gate verdict metrics, no composition-path metrics. A selected-solver trace exists, but it is not yet a metrics series.
+- **No exported per-solver-call metrics series yet**, no proposal-gate verdict metrics, no composition-path metrics. The runtime summary receipt payload now records a local `solver_call_trace_count` and trace digest for verified opt-in receipt bundles, but those fields are not exposed as Prometheus metrics.
 
 ## 2. Measurable capability growth — the definitions we will use
 

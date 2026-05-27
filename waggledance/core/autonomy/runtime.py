@@ -370,6 +370,7 @@ class AutonomyRuntime:
         case,
         elapsed_ms: float,
         result_keys: list[str],
+        solver_call_trace: list[dict[str, Any]] | None = None,
     ):
         """Emit an opt-in sanitized runtime summary receipt."""
         if self.runtime_receipt_sink is None:
@@ -400,6 +401,7 @@ class AutonomyRuntime:
                 verifier_result.confidence if verifier_result is not None else None
             ),
             result_keys=result_keys,
+            solver_call_trace=solver_call_trace,
         )
         return self.runtime_receipt_sink(summary)
 
@@ -827,6 +829,7 @@ class AutonomyRuntime:
             case=case,
             elapsed_ms=elapsed,
             result_keys=list(result.keys()),
+            solver_call_trace=list(solver_call_trace or []),
         )
         if runtime_receipt is not None:
             result["runtime_receipt"] = runtime_receipt

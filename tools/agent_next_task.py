@@ -43,7 +43,6 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
@@ -210,7 +209,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge events JSONL path. Defaults to "
+            "<bridge-root>/shared/events.jsonl."
+        ),
+    )
     parser.add_argument("--bridge-root", type=Path, default=None)
     parser.add_argument(
         "--tail",
@@ -226,10 +233,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     now_utc = _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
+    bridge_root = _bridge_root_for_args(args.events, args.bridge_root)
+    events_path = _events_path_for_args(args.events, bridge_root)
     report = evaluate_agent_next_task(
         agent=args.agent,
-        events_path=args.events,
-        bridge_root=_bridge_root_for_args(args.events, args.bridge_root),
+        events_path=events_path,
+        bridge_root=bridge_root,
         tail=args.tail,
         now_utc=now_utc,
     )
@@ -977,12 +986,22 @@ def _is_same_day_continuous_operational_scout_task_id(
     )
 
 
-def _bridge_root_for_args(events_path: Path, bridge_root: Path | None) -> Path:
+def _bridge_root_for_args(events_path: Path | None, bridge_root: Path | None) -> Path:
     if bridge_root is not None:
         return bridge_root
-    if events_path.name == "events.jsonl" and events_path.parent.name == "shared":
+    if (
+        events_path is not None
+        and events_path.name == "events.jsonl"
+        and events_path.parent.name == "shared"
+    ):
         return events_path.parent.parent
     return DEFAULT_BRIDGE_ROOT
+
+
+def _events_path_for_args(events_path: Path | None, bridge_root: Path) -> Path:
+    if events_path is not None:
+        return events_path
+    return bridge_root / "shared" / "events.jsonl"
 
 
 def _completed_substrate_smoke_task_ids(

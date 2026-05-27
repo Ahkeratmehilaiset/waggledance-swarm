@@ -1028,6 +1028,65 @@ def test_cli_infers_bridge_root_from_events_path_for_claims(
     )
 
 
+def test_cli_bridge_root_without_events_uses_bridge_root_events(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / "real" / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:59:00Z",
+                "agent": "codex-lead-1",
+                "to": "claude",
+                "type": "message",
+                "task_id": "real-bridge-root-request",
+                "status": "request",
+                "message": "request from the explicit bridge root",
+            }
+        ],
+    )
+    _claims_dir(bridge)
+
+    shadow_bridge = tmp_path / "shadow" / ".agent-bridge"
+    _events_file(
+        shadow_bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "shadow-baseline",
+                "status": "active",
+                "message": "cwd-local shadow bridge baseline",
+            }
+        ],
+    )
+    _claims_dir(shadow_bridge)
+    monkeypatch.chdir(shadow_bridge.parent)
+
+    exit_code = main(
+        [
+            "--agent",
+            "claude",
+            "--bridge-root",
+            str(bridge),
+            "--now",
+            "2026-05-20T12:00:00Z",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    parsed = json.loads(out)
+    assert parsed["decision"] == "defer_to_bridge_next_action"
+    assert parsed["bridge_recommendation"]["action"] == "answer_incoming"
+    assert parsed["bridge_recommendation"]["task_id"] == "real-bridge-root-request"
+
+
 # ---------------------------------------------------------------------------
 # regression: bridge_root is the authoritative source for claim loading
 # ---------------------------------------------------------------------------

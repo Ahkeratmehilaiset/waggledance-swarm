@@ -16,6 +16,8 @@ import sys
 import tempfile
 from typing import Iterable, Sequence
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -43,6 +45,10 @@ from waggledance.core.autonomy_growth import (
     is_low_risk_family,
 )
 from waggledance.core.storage.control_plane import ControlPlaneDB
+from waggledance.application.services.hex_topology_registry import (
+    HexTopologyRegistry,
+)
+from waggledance.core.hex_cell_topology import ALL_CELLS, HexCellTopology
 
 STATUS_IMPLEMENTED = "implemented"
 STATUS_PARTIAL = "partial"
@@ -116,6 +122,165 @@ def _status_for(
     if planned:
         return STATUS_PLANNED
     return STATUS_BLOCKED
+
+
+def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
+    """Report current query-entry boundaries for the two hex topologies."""
+
+    repo_root = Path(root)
+    settings = _load_yaml_mapping(repo_root / "configs" / "settings.yaml")
+    hybrid_cfg = _nested_mapping(settings, "hybrid_retrieval")
+    hex_mesh_cfg = _nested_mapping(settings, "hex_mesh")
+
+    solver_topology = HexCellTopology()
+    solver_samples = [
+        {
+            "query": "What is the temperature in Celsius?",
+            "intent": "chat",
+            "expected_cell": "thermal",
+        },
+        {
+            "query": "calculate 2 plus 2",
+            "intent": "math",
+            "expected_cell": "math",
+        },
+        {
+            "query": "How much electricity power does heating use?",
+            "intent": "chat",
+            "expected_cell": "energy",
+        },
+    ]
+    solver_assignments = []
+    for sample in solver_samples:
+        assignment = solver_topology.assign_cell(
+            str(sample["intent"]),
+            str(sample["query"]),
+        )
+        solver_assignments.append({
+            "query": sample["query"],
+            "intent": sample["intent"],
+            "expected_cell": sample["expected_cell"],
+            "cell_id": assignment.cell_id,
+            "method": assignment.method,
+            "ring1": assignment.neighbors_ring1,
+            "ring2": assignment.neighbors_ring2,
+            "matched_expected": assignment.cell_id == sample["expected_cell"],
+        })
+
+    cell_config_path = str(
+        hex_mesh_cfg.get("cell_config_path") or "configs/hex_cells.yaml"
+    )
+    agent_registry = HexTopologyRegistry(
+        config_path=str(repo_root / cell_config_path),
+    )
+    agent_samples = [
+        {
+            "query": "bee hive swarm monitoring",
+            "intent": "bee",
+            "expected_cell": "bee_ops",
+        },
+        {
+            "query": "safety fire alarm",
+            "intent": "safety",
+            "expected_cell": "safety_security",
+        },
+        {
+            "query": "energy hvac lighting",
+            "intent": "energy",
+            "expected_cell": "home_comfort",
+        },
+    ]
+    agent_assignments = []
+    for sample in agent_samples:
+        cell_id = agent_registry.select_origin_cell(
+            str(sample["query"]),
+            str(sample["intent"]),
+        )
+        neighbors = [
+            cell.id for cell in agent_registry.get_neighbor_cells(str(cell_id))
+        ] if cell_id else []
+        agent_assignments.append({
+            "query": sample["query"],
+            "intent": sample["intent"],
+            "expected_cell": sample["expected_cell"],
+            "cell_id": cell_id,
+            "ring1": neighbors,
+            "matched_expected": cell_id == sample["expected_cell"],
+        })
+
+    hybrid_enabled = bool(hybrid_cfg.get("enabled", False))
+    hybrid_mode = str(hybrid_cfg.get("mode", "shadow"))
+    hex_mesh_enabled = bool(hex_mesh_cfg.get("enabled", False))
+    route_order = [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "hex_neighbor_assist_7_cell",
+        "orchestrator_llm_fallback",
+    ]
+    pre_hex_steps = route_order[:5]
+    ok = (
+        len(ALL_CELLS) == 8
+        and agent_registry.cell_count == 7
+        and all(item["matched_expected"] for item in solver_assignments)
+        and all(item["matched_expected"] for item in agent_assignments)
+        and hybrid_enabled is True
+        and hybrid_mode in {"shadow", "candidate", "authoritative"}
+    )
+    return {
+        "proof_id": "hex_mesh_entry_route_order_v1",
+        "ok": ok,
+        "proves_every_query_first_enters_mesh": False,
+        "literal_claim_safe": False,
+        "current_config": {
+            "hybrid_retrieval_enabled": hybrid_enabled,
+            "hybrid_retrieval_mode": hybrid_mode,
+            "hybrid_retrieval_authoritative": (
+                hybrid_enabled and hybrid_mode == "authoritative"
+            ),
+            "hex_mesh_enabled": hex_mesh_enabled,
+            "hex_mesh_cell_config_path": cell_config_path,
+        },
+        "topologies": {
+            "solver_retrieval": {
+                "cell_count": len(ALL_CELLS),
+                "cell_ids": list(ALL_CELLS),
+                "entry_point": "HybridRetrievalService.retrieve",
+                "gated_by": "hybrid_retrieval.enabled",
+            },
+            "agent_routing": {
+                "cell_count": agent_registry.cell_count,
+                "cell_ids": sorted(agent_registry.cells.keys()),
+                "entry_point": "HexNeighborAssist.resolve",
+                "gated_by": "hex_mesh.enabled",
+            },
+        },
+        "chat_route_order": route_order,
+        "pre_hex_steps": pre_hex_steps,
+        "solver_retrieval_samples": solver_assignments,
+        "agent_routing_samples": agent_assignments,
+        "safe_conclusion": (
+            "Current code has two independent hex topologies. Chat requests "
+            "do not literally enter a hex mesh first: cache, memory, route "
+            "selection, and deterministic solver stages precede hex-backed "
+            "retrieval/neighbor assist. The 8-cell retrieval path is enabled "
+            "in candidate mode, while the 7-cell hex mesh is disabled by "
+            "current settings."
+        ),
+    }
+
+
+def _load_yaml_mapping(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _nested_mapping(data: dict, key: str) -> dict:
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def build_hexagonal_upgrade_proof() -> dict:
@@ -504,6 +669,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof()
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
+    hex_entry_proof = build_hex_mesh_entry_proof(root)
 
     return (
         Capability(
@@ -525,13 +691,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             gaps=(
                 "The repo explicitly documents two different hex topologies.",
                 "The 7-cell hex_mesh path can be disabled by runtime config.",
-                "The literal 'every query first enters' claim needs an "
-                "end-to-end active-runtime proof.",
+                "The route-order proof shows cache, memory, route selection, "
+                "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add a read-only chat route proof that emits the active "
-                "hex/retrieval/fallback order for current config flags."
+                "Add a runtime-facing trace smoke that compares this static "
+                "route-order proof against one live ChatService request."
             ),
+            proof=hex_entry_proof,
         ),
         Capability(
             capability_id="deterministic_solver_first",

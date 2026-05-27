@@ -27,7 +27,7 @@ Use the safest true wording until the proof tool reports otherwise:
 
 | Capability | Safe status | Repo evidence | Smallest next work |
 | --- | --- | --- | --- |
-| Hex-mesh routing | Partial | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Add an end-to-end proof that shows the exact query entry order for the active runtime flags. |
+| Hex-mesh routing | Partial, with route-order proof | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Add a runtime-facing trace smoke that compares the static proof against one live ChatService request. |
 | Deterministic solver-first routing | Partial | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Add per-solver-call trace coverage so "full MAGMA provenance" becomes measurable. |
 | MAGMA audit log | Partial | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only enforcement or keep user-facing wording at "audit/provenance wrappers". |
 | Low-risk autonomy loop | Partial, with temp-DB proof | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py` | Wire the proof into a runtime-facing smoke that reports scheduler cadence and authority boundaries. |
@@ -63,8 +63,15 @@ artifacts and delete them before returning. It emits a JSON matrix with:
 - `gaps`: why stronger wording is not yet supported
 - `next_smallest_pr`: the next scoped implementation step
 - `proof`: optional non-mutating proof payload for capabilities that have an
-  executable local proof, currently `hexagonal_upgrades` and
-  `low_risk_autonomy_loop`
+  executable local proof, currently `hex_mesh_entry`, `hexagonal_upgrades`,
+  and `low_risk_autonomy_loop`
+
+The `hex_mesh_entry` proof is a route-boundary proof, not a literal claim
+approval. It reads `configs/settings.yaml`, loads both hex topologies, verifies
+representative 8-cell solver-retrieval and 7-cell agent-routing assignments,
+and reports the current chat route order. Current settings have
+`hybrid_retrieval.enabled=true` in `candidate` mode and `hex_mesh.enabled=false`,
+so the literal "every query first enters the mesh" wording remains unsafe.
 
 The `hexagonal_upgrades` proof is intentionally pure. It builds a temporary
 topology in memory, applies a shadow subdivision plan, verifies parent/child

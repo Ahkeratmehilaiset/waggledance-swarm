@@ -79,6 +79,13 @@ waggledance_autogrowth_wakeups_total 0.0
 ...
 ```
 
+Low-risk autogrowth alert thresholds are documented in
+`docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md`. The initial operator rules
+watch `waggledance_autogrowth_up`, `waggledance_autogrowth_errors_total`,
+`waggledance_autogrowth_wakeups_total`, and
+`waggledance_autogrowth_non_idle_ticks_total`; they are read-only Prometheus
+checks and do not add start/stop or configuration controls.
+
 ---
 
 ## Core

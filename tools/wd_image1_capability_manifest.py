@@ -1773,6 +1773,147 @@ def build_low_risk_autogrowth_operator_metrics_smoke(
     }
 
 
+def _blocked_low_risk_autogrowth_alert_runbook_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+) -> dict:
+    return {
+        "proof_id": "low_risk_autogrowth_alert_runbook_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "runbook_path": "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md",
+        "api_docs_path": "docs/API.md",
+        "alert_thresholds_documented": False,
+        "metric_names": [],
+        "missing_metric_mentions": [],
+        "missing_threshold_rules": [],
+        "api_docs_link_runbook": False,
+        "forbidden_controls_absent": False,
+        "forbidden_control_tokens_found": [],
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required runbook or API documentation inputs are missing, so "
+            "operator alert thresholds cannot be certified for this root."
+        ),
+    }
+
+
+def build_low_risk_autogrowth_alert_runbook_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Prove low-risk autogrowth has read-only operator alert thresholds."""
+
+    repo_root = Path(root)
+    runbook_rel = "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md"
+    api_rel = "docs/API.md"
+    required = (runbook_rel, api_rel)
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_low_risk_autogrowth_alert_runbook_smoke(
+            missing_inputs=missing,
+        )
+
+    runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
+    api_text = (repo_root / api_rel).read_text(encoding="utf-8")
+    runbook_lower = runbook_text.lower()
+    api_lower = api_text.lower()
+
+    metric_names = {
+        "waggledance_autogrowth_up",
+        "waggledance_autogrowth_background_enabled",
+        "waggledance_autogrowth_background_running",
+        "waggledance_autogrowth_background_interval_seconds",
+        "waggledance_autogrowth_background_max_ticks_per_wake",
+        "waggledance_autogrowth_wakeups_total",
+        "waggledance_autogrowth_non_idle_ticks_total",
+        "waggledance_autogrowth_errors_total",
+    }
+    missing_metric_mentions = [
+        name for name in sorted(metric_names) if name not in runbook_text
+    ]
+    required_threshold_rules = {
+        "waggledance_autogrowth_up == 0",
+        "increase(waggledance_autogrowth_errors_total[10m]) > 0",
+        "increase(waggledance_autogrowth_errors_total[10m]) >= 3",
+        "increase(waggledance_autogrowth_wakeups_total[30m]) == 0",
+        "increase(waggledance_autogrowth_wakeups_total[10m]) > 40",
+        "increase(waggledance_autogrowth_non_idle_ticks_total[10m]) > 20",
+    }
+    missing_threshold_rules = [
+        rule
+        for rule in sorted(required_threshold_rules)
+        if rule not in runbook_text
+    ]
+    forbidden_control_tokens = {
+        "POST /api/autogrowth",
+        "autogrowth_start",
+        "autogrowth_stop",
+        "start_button",
+        "stop_button",
+        "config_write",
+        "write_config",
+    }
+    forbidden_control_tokens_found = [
+        token
+        for token in sorted(forbidden_control_tokens)
+        if token.lower() in runbook_lower
+    ]
+    api_docs_link_runbook = (
+        "low_risk_autogrowth_runbook.md" in api_lower
+        and "waggledance_autogrowth_errors_total" in api_text
+        and "waggledance_autogrowth_wakeups_total" in api_text
+    )
+    guardrail_language_present = all(
+        phrase in runbook_lower
+        for phrase in (
+            "does not add runtime controls",
+            "does not grant new solver-growth authority",
+            "no alert rule in this runbook should call a mutating endpoint",
+            "no alert rule should auto-merge",
+        )
+    )
+    ok = (
+        not missing_metric_mentions
+        and not missing_threshold_rules
+        and api_docs_link_runbook
+        and not forbidden_control_tokens_found
+        and guardrail_language_present
+    )
+    return {
+        "proof_id": "low_risk_autogrowth_alert_runbook_smoke_v1",
+        "ok": ok,
+        "proof_mode": "source_doc_contract",
+        "runbook_path": runbook_rel,
+        "api_docs_path": api_rel,
+        "alert_thresholds_documented": not missing_threshold_rules,
+        "metric_names": sorted(metric_names),
+        "missing_metric_mentions": missing_metric_mentions,
+        "missing_threshold_rules": missing_threshold_rules,
+        "api_docs_link_runbook": api_docs_link_runbook,
+        "forbidden_controls_absent": not forbidden_control_tokens_found,
+        "forbidden_control_tokens_found": forbidden_control_tokens_found,
+        "guardrail_language_present": guardrail_language_present,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The low-risk autogrowth runbook documents conservative "
+            "Prometheus alert thresholds for source health, error count, "
+            "wakeup stalls, wakeup bursts, and non-idle burst rates. The "
+            "contract is read-only and does not introduce runtime controls "
+            "or growth authority."
+        ),
+    }
+
+
 def _scalar_unit_seed(name: str) -> dict:
     return {
         "spec": {
@@ -2134,6 +2275,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "docs/API.md",
                 "Operator-facing metrics contract documents autogrowth counters.",
             ),
+            (
+                "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md",
+                "Operator runbook documents read-only autogrowth alert thresholds.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -2198,16 +2343,23 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_operator_metrics_smoke = (
         build_low_risk_autogrowth_operator_metrics_smoke(root)
     )
+    low_risk_alert_runbook_smoke = (
+        build_low_risk_autogrowth_alert_runbook_smoke(root)
+    )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = (
         low_risk_runtime_boundary_smoke
     )
     low_risk_autonomy_proof["operator_metrics_smoke"] = (
         low_risk_operator_metrics_smoke
     )
+    low_risk_autonomy_proof["alert_runbook_smoke"] = (
+        low_risk_alert_runbook_smoke
+    )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
         and low_risk_runtime_boundary_smoke.get("ok") is True
         and low_risk_operator_metrics_smoke.get("ok") is True
+        and low_risk_alert_runbook_smoke.get("ok") is True
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
@@ -2307,8 +2459,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "A bounded low-risk autogrowth substrate exists with an "
                 "allowlist, runtime gap seam, scheduler ticks, a runtime "
                 "ticker boundary smoke, Prometheus operator metrics, a "
-                "read-only dashboard ops overlay, and proof fixtures; "
-                "unrestricted runtime authority is not claimed."
+                "read-only dashboard ops overlay, operator alert thresholds, "
+                "and proof fixtures; unrestricted runtime authority is not "
+                "claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -2326,10 +2479,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "new mutation authority.",
                 "The dashboard overlay is read-only status; it adds no "
                 "start/stop or configuration controls.",
+                "The alert thresholds are read-only Prometheus/operator "
+                "runbook guidance; they add no mutating endpoints or runtime "
+                "authority.",
             ),
             next_smallest_pr=(
-                "Add alert thresholds and an operator runbook for low-risk "
-                "autogrowth error/wakeup rates without adding controls."
+                "Add read-only alert state to the Ops dashboard once a "
+                "Prometheus/Alertmanager feed exists, without adding "
+                "controls."
             ),
             proof=low_risk_autonomy_proof,
         ),

@@ -108,6 +108,55 @@ class TestChatInputStability:
 
 
 # ═══════════════════════════════════════════════════════════════
+# A2. Chat route-stage visibility
+# ═══════════════════════════════════════════════════════════════
+
+class TestChatRouteStageLabels:
+    """Chat panel renders privacy-safe route stage labels from WS events."""
+
+    _EXPECTED_STAGES = [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "hex_neighbor_assist_7_cell",
+        "orchestrator_llm_fallback",
+    ]
+
+    def test_hologram_chat_renders_ws_route_stage_labels(self):
+        html = _read_html()
+        assert "route_stage_labels" in html
+        assert "disabled_route_stages" in html
+        assert "data-route-stage-list" in html
+        assert "route-stage-chip" in html
+        assert "route-stage-observed" in html
+        assert "route-stage-disabled" in html
+        for stage in self._EXPECTED_STAGES:
+            assert stage in html, f"missing chat route stage allowlist entry: {stage}"
+
+    def test_hologram_route_stage_renderer_uses_client_allowlist(self):
+        html = _read_html()
+        assert "const CHAT_ROUTE_STAGE_NAMES" in html
+        assert "CHAT_ROUTE_STAGE_NAMES[stage]" in html
+        assert "if (!name || seen.has(stage)) return;" in html
+        assert "item.label" not in html, \
+            "frontend must not render backend-supplied free-form route stage labels"
+        assert "route_stage_trace" not in html, \
+            "frontend must render safe labels, not raw route_stage_trace payloads"
+
+    def test_chat_route_http_response_does_not_clobber_ws_stage_details(self):
+        html = _read_html()
+        assert "_mergeChatRouteInfo(data, true)" in html, \
+            "HTTP chat response should preserve richer WS stage details if they arrived first"
+        assert "_mergeChatRouteInfo(msg.data, false)" in html, \
+            "WS chat_route event should replace route details with the canonical event payload"
+        assert "chatRouteInfo = null;" in html, \
+            "new chat submissions should clear stale route stage labels"
+
+
+# ═══════════════════════════════════════════════════════════════
 # B. Profile selector — truthful persist-only behavior
 # ═══════════════════════════════════════════════════════════════
 

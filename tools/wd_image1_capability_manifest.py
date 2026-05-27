@@ -12,7 +12,9 @@ import argparse
 import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import gc
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -1103,6 +1105,183 @@ def build_low_risk_autonomy_proof() -> dict:
     return proof
 
 
+def _blocked_low_risk_runtime_boundary_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    proof = {
+        "proof_id": "low_risk_autogrowth_runtime_boundary_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "runtime_wiring_present": False,
+        "container_ticker_present": False,
+        "lifespan_start_stop_present": False,
+        "runtime_authority_changed": False,
+        "production_control_plane_mutated": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required runtime wiring files are missing, so no low-risk "
+            "autogrowth runtime boundary smoke is available for this root."
+        ),
+    }
+    if blocked_reason == "non_current_import_root":
+        proof["safe_conclusion"] = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the proof blocks instead of certifying one checkout "
+            "with runtime code imported from another checkout."
+        )
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+class _RuntimeBoundarySmokeSettings:
+    db_path = "shared_memory.db"
+
+    def get_profile(self) -> str:
+        return "HOME"
+
+    def get(self, key: str, default=None):
+        return default
+
+
+def build_low_risk_autogrowth_runtime_boundary_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Report runtime wiring and cadence without changing runtime authority."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/core/autonomy_growth/autogrowth_scheduler.py",
+        "waggledance/bootstrap/container.py",
+        "waggledance/adapters/http/api.py",
+        "tests/integration/test_runtime_autogrowth_lifespan.py",
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_low_risk_runtime_boundary_smoke(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_low_risk_runtime_boundary_smoke(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
+
+    from waggledance.bootstrap.container import Container
+
+    api_text = (repo_root / "waggledance/adapters/http/api.py").read_text(
+        encoding="utf-8"
+    )
+    lifespan_start_stop_present = (
+        "autogrowth_background_ticker" in api_text
+        and "await autogrowth_ticker.start()" in api_text
+        and "await autogrowth_ticker.stop()" in api_text
+    )
+
+    temp_root: Path | None = None
+    old_cwd = Path.cwd()
+    ticker_present = False
+    ticker_is_running: bool | None = None
+    control_plane_path: str | None = None
+    schema_version: int | None = None
+    interval_seconds: float | None = None
+    max_ticks_per_wake: int | None = None
+    container = None
+    cp_db = None
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="wd-image1-autogrowth-runtime-"
+        ) as tmp:
+            temp_root = Path(tmp)
+            os.chdir(temp_root)
+            container = Container(
+                settings=_RuntimeBoundarySmokeSettings(),
+                stub=False,
+            )
+            try:
+                ticker = container.autogrowth_background_ticker
+                ticker_present = ticker is not None
+                if ticker is not None:
+                    ticker_is_running = getattr(ticker, "is_running", None)
+                    interval_seconds = getattr(ticker, "interval_seconds", None)
+                    max_ticks_per_wake = getattr(
+                        ticker,
+                        "max_ticks_per_wake",
+                        None,
+                    )
+                cp_db = container.control_plane_db
+                if cp_db is not None:
+                    control_plane_path = str(cp_db.db_path)
+                    schema_version = cp_db.schema_version()
+            finally:
+                cp_db = (
+                    getattr(container, "control_plane_db", None)
+                    if container is not None else None
+                )
+                if cp_db is not None:
+                    cp_db.close()
+                cp_db = None
+                ticker = None
+                container = None
+                os.chdir(old_cwd)
+                gc.collect()
+    finally:
+        os.chdir(old_cwd)
+
+    temp_artifacts_removed = temp_root is not None and not temp_root.exists()
+    ok = (
+        ticker_present
+        and ticker_is_running is False
+        and interval_seconds == 30.0
+        and max_ticks_per_wake == 20
+        and lifespan_start_stop_present
+        and schema_version is not None
+        and temp_artifacts_removed
+    )
+    return {
+        "proof_id": "low_risk_autogrowth_runtime_boundary_smoke_v1",
+        "ok": ok,
+        "runtime_wiring_present": ticker_present and lifespan_start_stop_present,
+        "container_ticker_present": ticker_present,
+        "lifespan_start_stop_present": lifespan_start_stop_present,
+        "default_interval_seconds": interval_seconds,
+        "default_max_ticks_per_wake": max_ticks_per_wake,
+        "is_running_before_start": ticker_is_running,
+        "temporary_control_plane_db": True,
+        "temporary_control_plane_db_path": control_plane_path,
+        "control_plane_schema_version_present": schema_version is not None,
+        "temp_artifacts_removed": temp_artifacts_removed,
+        "production_control_plane_mutated": False,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Runtime wiring can construct an AutogrowthBackgroundTicker with "
+            "the default cadence and bounded max ticks per wake, and FastAPI "
+            "lifespan contains start/stop hooks. The smoke uses only a "
+            "temporary control-plane DB and does not change production runtime "
+            "authority."
+        ),
+    }
+
+
 def _scalar_unit_seed(name: str) -> dict:
     return {
         "spec": {
@@ -1199,6 +1378,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "waggledance/core/autonomy_growth/autogrowth_scheduler.py",
                 "Queue consumer for bounded autogrowth ticks.",
             ),
+            (
+                "waggledance/bootstrap/container.py",
+                "Runtime container wires the background autogrowth ticker.",
+            ),
+            (
+                "waggledance/adapters/http/api.py",
+                "FastAPI lifespan starts and stops the autogrowth ticker.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -1233,6 +1420,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof()
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
+    low_risk_runtime_boundary_smoke = (
+        build_low_risk_autogrowth_runtime_boundary_smoke(root)
+    )
+    low_risk_autonomy_proof["runtime_boundary_smoke"] = (
+        low_risk_runtime_boundary_smoke
+    )
+    low_risk_autonomy_proof["ok"] = bool(
+        low_risk_autonomy_proof.get("ok") is True
+        and low_risk_runtime_boundary_smoke.get("ok") is True
+    )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
 
@@ -1328,8 +1525,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             safe_statement=(
                 "A bounded low-risk autogrowth substrate exists with an "
-                "allowlist, runtime gap seam, scheduler ticks, and proof "
-                "fixtures; unrestricted runtime authority is not claimed."
+                "allowlist, runtime gap seam, scheduler ticks, a runtime "
+                "ticker boundary smoke, and proof fixtures; unrestricted "
+                "runtime authority is not claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -1341,10 +1539,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "reviewed deterministic compiler and executor support.",
                 "The executable proof uses an ephemeral temp DB; it does not "
                 "grant production runtime authority.",
+                "The runtime boundary smoke proves ticker construction and "
+                "lifespan hooks, not autonomous production authority.",
             ),
             next_smallest_pr=(
-                "Wire the temp-DB proof into a runtime-facing smoke that "
-                "reports the active scheduler cadence and authority boundary."
+                "Promote runtime boundary reporting into operator-visible "
+                "metrics without changing the low-risk authority boundary."
             ),
             proof=low_risk_autonomy_proof,
         ),

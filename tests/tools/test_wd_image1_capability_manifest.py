@@ -11,6 +11,9 @@ from tools.wd_image1_capability_manifest import build_deterministic_solver_trace
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
+from tools.wd_image1_capability_manifest import (
+    build_low_risk_autogrowth_runtime_boundary_smoke,
+)
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
 
@@ -313,6 +316,26 @@ def test_low_risk_autonomy_proof_flows_gap_to_scheduler_outcome() -> None:
     }
 
 
+def test_low_risk_autogrowth_runtime_boundary_smoke_reports_runtime_wiring() -> None:
+    proof = build_low_risk_autogrowth_runtime_boundary_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "low_risk_autogrowth_runtime_boundary_smoke_v1"
+    assert proof["runtime_wiring_present"] is True
+    assert proof["container_ticker_present"] is True
+    assert proof["lifespan_start_stop_present"] is True
+    assert proof["default_interval_seconds"] == 30.0
+    assert proof["default_max_ticks_per_wake"] == 20
+    assert proof["is_running_before_start"] is False
+    assert proof["temporary_control_plane_db"] is True
+    assert proof["control_plane_schema_version_present"] is True
+    assert proof["temp_artifacts_removed"] is True
+    assert proof["production_control_plane_mutated"] is False
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
 def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
     report = build_manifest(ROOT)
     capability = _by_id(report)["hexagonal_upgrades"]
@@ -333,6 +356,16 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert capability["proof"]["route_before"]["source"] == "gap_emitted"
     assert capability["proof"]["scheduler_tick"]["outcome"] == "auto_promoted"
     assert capability["proof"]["route_after"]["source"] == "auto_promoted_solver"
+    assert capability["proof"]["runtime_boundary_smoke"]["ok"] is True
+    assert capability["proof"]["runtime_boundary_smoke"][
+        "default_interval_seconds"
+    ] == 30.0
+    assert capability["proof"]["runtime_boundary_smoke"][
+        "default_max_ticks_per_wake"
+    ] == 20
+    assert capability["proof"]["runtime_boundary_smoke"][
+        "runtime_authority_changed"
+    ] is False
     assert report["summary"]["proofs_ok"] is True
 
 

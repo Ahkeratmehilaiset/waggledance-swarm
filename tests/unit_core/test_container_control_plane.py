@@ -38,6 +38,15 @@ class _AutogrowthDisabledSettings(_StubSettings):
         return super().get(key, default)
 
 
+class _AutogrowthCustomTickSettings(_StubSettings):
+    def get(self, key, default=None):
+        if key == "autogrowth.background_interval_s":
+            return 7.5
+        if key == "autogrowth.background_max_ticks":
+            return 3
+        return super().get(key, default)
+
+
 class TestControlPlaneDbWiring:
     def test_stub_mode_returns_none(self):
         """Stub mode (tests/CI without persistent data dir) returns None
@@ -95,6 +104,23 @@ class TestControlPlaneDbWiring:
         try:
             ticker = c.autogrowth_background_ticker
             assert ticker is not None
+            assert ticker.is_running is False
+            assert ticker.interval_seconds == 30.0
+            assert ticker.max_ticks_per_wake == 20
+        finally:
+            if c.control_plane_db is not None:
+                c.control_plane_db.close()
+
+    def test_autogrowth_background_ticker_exposes_configured_runtime_bounds(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        c = Container(settings=_AutogrowthCustomTickSettings(), stub=False)
+        try:
+            ticker = c.autogrowth_background_ticker
+            assert ticker is not None
+            assert ticker.interval_seconds == 7.5
+            assert ticker.max_ticks_per_wake == 3
             assert ticker.is_running is False
         finally:
             if c.control_plane_db is not None:

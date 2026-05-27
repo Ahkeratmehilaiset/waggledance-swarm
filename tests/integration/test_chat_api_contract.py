@@ -193,6 +193,91 @@ def test_ws_chat_route_event_includes_privacy_safe_trace_and_disabled_labels():
     assert raw_profile not in event_json
 
 
+def test_route_stage_trace_boundary_drops_unsafe_trace_keys():
+    from types import SimpleNamespace
+
+    from waggledance.adapters.http.routes.chat import (
+        ChatHttpResponse,
+        _build_chat_route_ws_event,
+    )
+
+    raw_query = "PRIVATE_QUERY_MARKER_BOUNDARY"
+    raw_language = "PRIVATE_LANGUAGE_MARKER_BOUNDARY"
+    raw_profile = "PRIVATE_PROFILE_MARKER_BOUNDARY"
+    raw_user = "PRIVATE_USER_MARKER_BOUNDARY"
+    raw_session = "PRIVATE_SESSION_MARKER_BOUNDARY"
+    unsafe_trace = [
+        {
+            "stage": "language_detection",
+            "explicit_hint": True,
+            "detected_language": raw_language,
+            "query": raw_query,
+            "language": raw_language,
+            "profile": raw_profile,
+            "user_id": raw_user,
+            "session_id": raw_session,
+        },
+        {
+            "stage": "memory_context",
+            "language": raw_language,
+            "limit": 5,
+            "result_count": 0,
+            "memory_score": 0.0,
+        },
+        {
+            "stage": "unknown_stage",
+            "query": raw_query,
+            "profile": raw_profile,
+        },
+    ]
+    result = SimpleNamespace(
+        response="ok",
+        source="llm",
+        confidence=0.8,
+        latency_ms=1.0,
+        cached=False,
+        language="en",
+        agent_id=None,
+        round_table=False,
+        route_stage_trace=unsafe_trace,
+    )
+    service = SimpleNamespace(
+        _hybrid_retrieval=SimpleNamespace(enabled=True),
+        _hex_neighbor_assist=SimpleNamespace(enabled=False),
+    )
+
+    resp = ChatHttpResponse.from_result(result)
+    assert resp.route_stage_trace == [
+        {
+            "stage": "language_detection",
+            "explicit_hint": True,
+            "detected_language": "custom",
+        },
+        {
+            "stage": "memory_context",
+            "limit": 5,
+            "result_count": 0,
+            "memory_score": 0.0,
+        },
+        {"stage": "unknown_stage"},
+    ]
+
+    event = _build_chat_route_ws_event(resp, service)
+    data = event["data"]
+    assert data["route_stage_trace"] == resp.route_stage_trace
+    assert "hex_neighbor_assist_7_cell" in data["disabled_route_stages"]
+
+    serialized = json.dumps({"http": resp.route_stage_trace, "ws": data})
+    for marker in (
+        raw_query,
+        raw_language,
+        raw_profile,
+        raw_user,
+        raw_session,
+    ):
+        assert marker not in serialized
+
+
 # ------------------------------------------------------------------ #
 #  Error ergonomics                                                   #
 # ------------------------------------------------------------------ #

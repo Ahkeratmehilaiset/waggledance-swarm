@@ -9,6 +9,9 @@ import sys
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
+from tools.wd_image1_capability_manifest import (
+    build_hexagonal_upgrade_runtime_smoke,
+)
 from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
 from tools.wd_image1_capability_manifest import (
@@ -283,6 +286,40 @@ def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
     ]
 
 
+def test_hexagonal_upgrade_runtime_smoke_reports_active_topology_boundary() -> None:
+    proof = build_hexagonal_upgrade_runtime_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "hexagonal_upgrades_runtime_boundary_smoke_v1"
+    assert proof["runtime_wiring_present"] is True
+    assert proof["container_registry_present"] is True
+    assert proof["container_hex_neighbor_assist_wiring_present"] is True
+    assert proof["current_config"] == {
+        "hex_mesh_enabled": False,
+        "hex_mesh_cell_config_path": "configs/hex_cells.yaml",
+    }
+    assert proof["active_runtime_dispatch_enabled"] is False
+    assert proof["runtime_topology"]["cell_count"] == 7
+    assert proof["runtime_topology"]["enabled_cell_count"] == 7
+    assert sorted(proof["runtime_topology"]["neighbor_map"]["hub"]) == [
+        "bee_ops",
+        "environment",
+        "home_comfort",
+        "logistics",
+        "production",
+        "safety_security",
+    ]
+    assert all(
+        item["matched_expected"]
+        for item in proof["runtime_topology"]["sample_origins"]
+    )
+    assert proof["shadow_child_cell_ids_absent_from_runtime_config"] is True
+    assert proof["no_runtime_topology_mutation"] is True
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
 def test_low_risk_autonomy_proof_flows_gap_to_scheduler_outcome() -> None:
     proof = build_low_risk_autonomy_proof()
 
@@ -343,6 +380,13 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["status"] == "partial"
     assert capability["claim_safe"] is False
     assert capability["proof"]["ok"] is True
+    assert capability["proof"]["runtime_boundary_smoke"]["ok"] is True
+    assert capability["proof"]["runtime_boundary_smoke"][
+        "active_runtime_dispatch_enabled"
+    ] is False
+    assert capability["proof"]["runtime_boundary_smoke"][
+        "shadow_child_cell_ids_absent_from_runtime_config"
+    ] is True
     assert report["summary"]["proofs_ok"] is True
 
 

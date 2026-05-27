@@ -32,7 +32,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
 | Low-risk autonomy loop | Partial, with temp-DB proof and runtime-boundary smoke | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py` | Promote runtime boundary reporting into operator-visible metrics without changing the low-risk authority boundary. |
-| Hexagonal upgrades | Partial, with in-memory proof | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py` | Wire the pure proof into a read-only runtime-facing smoke that reports current config and active topology boundaries. |
+| Hexagonal upgrades | Partial, with in-memory proof and runtime-boundary smoke | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py`, `waggledance/bootstrap/container.py`, `hex_topology_registry.py`, `hex_neighbor_assist.py` | Promote hexagonal topology boundary reporting into operator-visible metrics without enabling runtime mutation. |
 | Future swarm scalability | Planned | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Replace broad future claims with measurable scale axes and gate them with proof artifacts. |
 
 ## Agent Work Split
@@ -83,7 +83,11 @@ so the literal "every query first enters the mesh" wording remains unsafe.
 The `hexagonal_upgrades` proof is intentionally pure. It builds a temporary
 topology in memory, applies a shadow subdivision plan, verifies parent/child
 relations, and delivers ring / parent-to-child / child-to-parent messages
-without changing runtime topology or files.
+without changing runtime topology or files. It also runs a runtime-boundary
+smoke through `Container.hex_topology_registry`, reports the current
+`hex_mesh.enabled` dispatch gate and 7-cell runtime config topology, and
+verifies that the shadow child cells from the pure proof are not inserted into
+the runtime config. This does not enable runtime subdivision authority.
 
 The `low_risk_autonomy_loop` proof is intentionally local. It creates an
 ephemeral control-plane database, records one low-risk runtime miss, digests it

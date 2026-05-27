@@ -922,6 +922,246 @@ def build_hexagonal_upgrade_proof() -> dict:
     }
 
 
+def _blocked_hexagonal_runtime_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    proof = {
+        "proof_id": "hexagonal_upgrades_runtime_boundary_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "runtime_wiring_present": False,
+        "container_registry_present": False,
+        "container_hex_neighbor_assist_wiring_present": False,
+        "active_runtime_dispatch_enabled": False,
+        "no_runtime_topology_mutation": True,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required runtime topology files are missing, so no "
+            "hexagonal-upgrades runtime boundary smoke is available for "
+            "this root."
+        ),
+    }
+    if blocked_reason == "non_current_import_root":
+        proof["safe_conclusion"] = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the proof blocks instead of certifying one checkout "
+            "with runtime code imported from another checkout."
+        )
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+class _HexRuntimeSmokeSettings:
+    db_path = "shared_memory.db"
+
+    def __init__(self, *, hex_mesh_enabled: bool, cell_config_path: str):
+        self._hex_mesh_enabled = hex_mesh_enabled
+        self._cell_config_path = cell_config_path
+
+    def get_profile(self) -> str:
+        return "HOME"
+
+    def get(self, key: str, default=None):
+        if key == "hex_mesh.enabled":
+            return self._hex_mesh_enabled
+        if key == "hex_mesh.cell_config_path":
+            return self._cell_config_path
+        return default
+
+
+def build_hexagonal_upgrade_runtime_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Report active runtime topology boundaries without mutating topology."""
+
+    repo_root = Path(root)
+    settings_path = repo_root / "configs" / "settings.yaml"
+    if not settings_path.exists():
+        return _blocked_hexagonal_runtime_smoke(
+            missing_inputs=("configs/settings.yaml",),
+        )
+
+    settings = _load_yaml_mapping(settings_path)
+    hex_mesh_cfg = _nested_mapping(settings, "hex_mesh")
+    cell_config_path = str(
+        hex_mesh_cfg.get("cell_config_path") or "configs/hex_cells.yaml"
+    )
+    cell_config_file = Path(cell_config_path)
+    if not cell_config_file.is_absolute():
+        cell_config_file = repo_root / cell_config_file
+
+    required = (
+        "waggledance/bootstrap/container.py",
+        "waggledance/application/services/hex_topology_registry.py",
+        "waggledance/application/services/hex_neighbor_assist.py",
+        "waggledance/core/hex_topology/subdivision_operator.py",
+        "waggledance/core/hex_topology/ring_messaging.py",
+        "waggledance/core/hex_topology/parent_child_relations.py",
+        cell_config_path,
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (
+            (Path(rel_path).is_absolute() and Path(rel_path).exists())
+            or (repo_root / rel_path).exists()
+        )
+    ]
+    if missing:
+        return _blocked_hexagonal_runtime_smoke(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_hexagonal_runtime_smoke(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
+
+    from waggledance.bootstrap.container import Container
+
+    container_text = (repo_root / "waggledance/bootstrap/container.py").read_text(
+        encoding="utf-8"
+    )
+    assist_text = (
+        repo_root / "waggledance/application/services/hex_neighbor_assist.py"
+    ).read_text(encoding="utf-8")
+    assist_wiring_present = (
+        "def hex_neighbor_assist" in container_text
+        and "HexNeighborAssist(" in container_text
+        and "hex_mesh.enabled" in container_text
+        and "enabled: bool = False" in assist_text
+        and "self.enabled = enabled" in assist_text
+    )
+
+    hex_mesh_enabled = bool(hex_mesh_cfg.get("enabled", False))
+    container_registry_present = False
+    registry_stats: dict = {}
+    cell_ids: list[str] = []
+    enabled_cell_ids: list[str] = []
+    neighbor_map: dict[str, list[str]] = {}
+    sample_origins: list[dict] = []
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(repo_root)
+        container = Container(
+            settings=_HexRuntimeSmokeSettings(
+                hex_mesh_enabled=hex_mesh_enabled,
+                cell_config_path=cell_config_path,
+            ),
+            stub=True,
+        )
+        registry = container.hex_topology_registry
+        registry_stats = registry.stats()
+        cells = registry.cells
+        cell_ids = list(cells.keys())
+        enabled_cell_ids = [
+            cell_id for cell_id, cell in cells.items() if cell.enabled
+        ]
+        neighbor_map = {
+            cell_id: [
+                neighbor.id for neighbor in registry.get_neighbor_cells(cell_id)
+            ]
+            for cell_id in cell_ids
+        }
+        for sample in (
+            {
+                "query": "bee hive swarm monitoring",
+                "intent": "bee",
+                "expected_cell": "bee_ops",
+            },
+            {
+                "query": "energy hvac lighting",
+                "intent": "energy",
+                "expected_cell": "home_comfort",
+            },
+            {
+                "query": "safety fire alarm",
+                "intent": "safety",
+                "expected_cell": "safety_security",
+            },
+        ):
+            selected = registry.select_origin_cell(
+                str(sample["query"]),
+                str(sample["intent"]),
+            )
+            sample_origins.append({
+                "query": sample["query"],
+                "intent": sample["intent"],
+                "expected_cell": sample["expected_cell"],
+                "cell_id": selected,
+                "matched_expected": selected == sample["expected_cell"],
+            })
+        container_registry_present = registry.cell_count > 0
+    finally:
+        os.chdir(old_cwd)
+
+    shadow_child_ids = ("thermal.heating", "thermal.cooling")
+    shadow_children_absent = all(
+        child_id not in cell_ids for child_id in shadow_child_ids
+    )
+    ok = (
+        container_registry_present
+        and assist_wiring_present
+        and registry_stats.get("cells_loaded") == 7
+        and len(enabled_cell_ids) == 7
+        and all(item["matched_expected"] for item in sample_origins)
+        and shadow_children_absent
+    )
+    return {
+        "proof_id": "hexagonal_upgrades_runtime_boundary_smoke_v1",
+        "ok": ok,
+        "runtime_wiring_present": (
+            container_registry_present and assist_wiring_present
+        ),
+        "container_registry_present": container_registry_present,
+        "container_hex_neighbor_assist_wiring_present": assist_wiring_present,
+        "current_config": {
+            "hex_mesh_enabled": hex_mesh_enabled,
+            "hex_mesh_cell_config_path": cell_config_path,
+        },
+        "active_runtime_dispatch_enabled": hex_mesh_enabled,
+        "runtime_topology": {
+            "cell_count": registry_stats.get("cells_loaded"),
+            "enabled_cell_count": len(enabled_cell_ids),
+            "cell_ids": cell_ids,
+            "enabled_cell_ids": enabled_cell_ids,
+            "neighbor_map": neighbor_map,
+            "sample_origins": sample_origins,
+            "stats": registry_stats,
+        },
+        "shadow_child_cell_ids_absent_from_runtime_config": (
+            shadow_children_absent
+        ),
+        "shadow_child_cell_ids": list(shadow_child_ids),
+        "no_runtime_topology_mutation": shadow_children_absent,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Runtime-facing hex topology wiring can load the current "
+            "7-cell agent-routing registry through Container and report "
+            "the active hex_mesh dispatch gate. The subdivision/ring proof "
+            "remains shadow-only: its child cells are not inserted into the "
+            "runtime config, and no runtime topology authority is changed."
+        ),
+    }
+
+
 def build_low_risk_autonomy_proof() -> dict:
     """Run a temp-DB proof for gap -> intent -> scheduler -> solver serve."""
 
@@ -1403,6 +1643,18 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "waggledance/core/hex_topology/parent_child_relations.py",
                 "Pure parent/child/sibling/neighbor relation helpers.",
             ),
+            (
+                "waggledance/bootstrap/container.py",
+                "Runtime container wires the active hex topology registry.",
+            ),
+            (
+                "waggledance/application/services/hex_topology_registry.py",
+                "Runtime-facing agent hex topology registry.",
+            ),
+            (
+                "waggledance/application/services/hex_neighbor_assist.py",
+                "Feature-flagged runtime hex neighbor assist boundary.",
+            ),
         ),
     )
     future_evidence = _evidence(
@@ -1419,6 +1671,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         ),
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof()
+    hex_upgrade_runtime_smoke = build_hexagonal_upgrade_runtime_smoke(root)
+    hex_upgrade_proof["runtime_boundary_smoke"] = (
+        hex_upgrade_runtime_smoke
+    )
+    hex_upgrade_proof["ok"] = bool(
+        hex_upgrade_proof.get("ok") is True
+        and hex_upgrade_runtime_smoke.get("ok") is True
+    )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_runtime_boundary_smoke = (
         build_low_risk_autogrowth_runtime_boundary_smoke(root)
@@ -1557,8 +1817,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             safe_statement=(
                 "Pure primitives for subdivision planning, ring messaging, "
-                "and parent-child relation queries exist; runtime mutation is "
-                "intentionally gated."
+                "and parent-child relation queries exist, and a runtime "
+                "boundary smoke reports the active config topology without "
+                "mutating it."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -1568,10 +1829,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "topology.",
                 "Ring delivery is pure validation, not a networked runtime "
                 "delivery layer.",
+                "The runtime boundary smoke reports current Container/config "
+                "wiring; it does not activate subdivision authority.",
             ),
             next_smallest_pr=(
-                "Wire the pure proof into a read-only runtime-facing smoke "
-                "that reports current config and active topology boundaries."
+                "Promote hexagonal topology boundary reporting into "
+                "operator-visible metrics without enabling runtime mutation."
             ),
             proof=hex_upgrade_proof,
         ),

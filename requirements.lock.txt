@@ -271,7 +271,7 @@ sounddevice==0.5.5
 soundfile==0.13.1
 soupsieve==2.7
 soxr==1.0.0
-SpeechRecognition==3.14.3
+SpeechRecognition==3.16.1
 srt==3.5.3
 standard-aifc==3.13.0
 standard-chunk==3.13.0
@@ -338,4 +338,4 @@ xformers==0.0.35
 xlrd==2.0.2
 xxhash==3.6.0
 yarl==1.23.0
-zipp==3.23.0
+zipp==4.1.0

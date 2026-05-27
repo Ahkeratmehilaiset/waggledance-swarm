@@ -109,6 +109,62 @@ SUBSTRATE_SMOKE_CANDIDATES: tuple[dict[str, str], ...] = (
 )
 
 
+# A compact strategic fallback pool derived from
+# docs/architecture/DREAM_MODE_AGENDA.md. These are deliberately framed as
+# read-only discovery seeds so the idle/dream loop can keep moving after the
+# daily smoke rotation is exhausted without silently inventing write authority.
+DREAM_MODE_CANDIDATES: tuple[dict[str, str], ...] = (
+    {
+        "category": "competitor-tracking",
+        "slug": "evidence-matrix-staleness-audit",
+        "target": "docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md",
+        "rationale": "flag PROVEN/MEASURED competitor evidence older than the dream-mode freshness cadence",
+    },
+    {
+        "category": "security",
+        "slug": "bridge-event-schema-sweep",
+        "target": ".agent-bridge/shared/events.jsonl",
+        "rationale": "scan bridge events for malformed payloads or unexpected agent IDs that landed despite schema guards",
+    },
+    {
+        "category": "wd-sub-area",
+        "slug": "idle-deferred-item-lift",
+        "target": "docs/architecture/IDLE_PROTOCOL_V1.md",
+        "rationale": "identify the closest deferred idle-protocol item that can be promoted safely",
+    },
+    {
+        "category": "roadmap",
+        "slug": "multi-instance-replay-sanitization-contract",
+        "target": "docs/architecture/DREAM_MODE_AGENDA.md",
+        "rationale": "advance the five-ingredient roadmap by drafting the next sanitization-contract surface",
+    },
+    {
+        "category": "roadmap",
+        "slug": "counterfactual-eval-extension-inventory",
+        "target": "tools/idle_consensus_artifact.py",
+        "rationale": "find the smallest replay extension needed for stored consensus versus candidate diff evaluation",
+    },
+    {
+        "category": "wd-sub-area",
+        "slug": "contracts-regression-gap-audit",
+        "target": "tests/contracts/",
+        "rationale": "identify one missing contract test that would have caught a recent substrate regression",
+    },
+    {
+        "category": "security",
+        "slug": "autonomous-merge-denylist-diff-audit",
+        "target": "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+        "rationale": "compare autonomous-merge denylist intent against recent merged substrate diffs",
+    },
+    {
+        "category": "competitor-tracking",
+        "slug": "local-runtime-baseline-refresh",
+        "target": "docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md",
+        "rationale": "check whether a local-runtime baseline should be added or retired from the WD comparison matrix",
+    },
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -251,24 +307,70 @@ def evaluate_agent_next_task(
             completed_task_ids=completed_task_ids,
         )
         if candidate is None:
+            completed_dream_mode_task_ids = _completed_dream_mode_task_ids(
+                events=events,
+                bridge_root=Path(bridge_root),
+                now_utc=now_utc,
+            )
+            dream_candidate = _pick_dream_mode_seed(
+                agent=agent,
+                now_utc=now_utc,
+                completed_task_ids=completed_dream_mode_task_ids,
+            )
+            if dream_candidate is not None:
+                return {
+                    "decision": "claim_dream_mode_seed",
+                    "next_action": "claim_and_run",
+                    "exit_code": 0,
+                    "agent": agent,
+                    "underlying_bridge_action": bridge_action,
+                    "bridge_recommendation": bridge_recommendation,
+                    **_bridge_context(bridge_recommendation),
+                    "completed_substrate_smoke_task_ids": sorted(
+                        completed_task_ids
+                    ),
+                    "completed_dream_mode_task_ids": sorted(
+                        completed_dream_mode_task_ids
+                    ),
+                    "candidate": dream_candidate,
+                    "notes": [
+                        (
+                            "bridge_next_action left the next-work choice open "
+                            "and every substrate-smoke candidate for this agent "
+                            "is already completed today"
+                        ),
+                        (
+                            "the picker advanced to a deterministic dream-mode "
+                            "seed from docs/architecture/DREAM_MODE_AGENDA.md "
+                            "instead of returning an abstract non-smoke action"
+                        ),
+                        (
+                            "the candidate is a recommendation only; the caller "
+                            "is responsible for claiming it before running"
+                        ),
+                    ],
+                }
             return {
-                "decision": "substrate_smoke_pool_exhausted",
-                "next_action": "claim_non_smoke_work",
+                "decision": "dream_mode_pool_exhausted",
+                "next_action": "operator_handles",
                 "exit_code": 0,
                 "agent": agent,
                 "underlying_bridge_action": bridge_action,
                 "bridge_recommendation": bridge_recommendation,
                 **_bridge_context(bridge_recommendation),
                 "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
+                "completed_dream_mode_task_ids": sorted(
+                    completed_dream_mode_task_ids
+                ),
                 "notes": [
                     (
                         "bridge_next_action left the next-work choice open, but "
-                        "every substrate-smoke candidate for this agent is "
+                        "every substrate-smoke and dream-mode candidate is "
                         "already completed today"
                     ),
                     (
-                        "the scheduler should claim a non-smoke WD-mission task "
-                        "instead of rerunning an already-completed daily smoke"
+                        "the scheduler should escalate instead of rerunning an "
+                        "already-completed daily candidate"
                     ),
                 ],
             }
@@ -422,6 +524,72 @@ def _pick_substrate_smoke(
     }
 
 
+def _pick_dream_mode_seed(
+    *,
+    agent: str,
+    now_utc: datetime,
+    completed_task_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Pick one strategic dream-mode seed deterministically for ``agent``."""
+    pool = DREAM_MODE_CANDIDATES
+    day_of_year = now_utc.timetuple().tm_yday
+    agent_salt = sum(ord(c) for c in agent) % len(pool)
+    start_index = (day_of_year + agent_salt) % len(pool)
+    completed = completed_task_ids or set()
+
+    index = start_index
+    offset = 0
+    for candidate_offset in range(len(pool)):
+        candidate_index = (start_index + candidate_offset) % len(pool)
+        candidate = pool[candidate_index]
+        candidate_task_id = _dream_mode_task_id(
+            now_utc=now_utc,
+            category=candidate["category"],
+            slug=candidate["slug"],
+        )
+        if candidate_task_id not in completed:
+            index = candidate_index
+            offset = candidate_offset
+            break
+    else:
+        return None
+
+    chosen = pool[index]
+    category = chosen["category"]
+    slug = chosen["slug"]
+    task_id = _dream_mode_task_id(
+        now_utc=now_utc,
+        category=category,
+        slug=slug,
+    )
+    return {
+        "kind": "advance_dream_mode_seed",
+        "category": category,
+        "slug": slug,
+        "target": chosen["target"],
+        "rationale": chosen["rationale"],
+        "task_id_suggestion": task_id,
+        "mode": "read-only",
+        "write_scope": [],
+        "agenda": "docs/architecture/DREAM_MODE_AGENDA.md",
+        "acceptance": (
+            "Produce a concise finding or next-step proposal tied to the "
+            "target path and route any source change through a separate "
+            "write claim."
+        ),
+        "rotation": {
+            "agent": agent,
+            "day_of_year": day_of_year,
+            "agent_salt": agent_salt,
+            "pool_size": len(pool),
+            "start_index": start_index,
+            "index": index,
+            "offset": offset,
+            "skipped_completed_task_ids": sorted(completed),
+        },
+    }
+
+
 def _daily_smoke_task_prefix(agent: str, now_utc: datetime) -> str:
     return f"{agent}-substrate-smoke-{now_utc.strftime('%Y-%m-%d')}-"
 
@@ -437,6 +605,22 @@ def _substrate_smoke_task_id(
     index: int,
 ) -> str:
     return f"{_daily_smoke_task_prefix(agent, now_utc)}{index}"
+
+
+def _dream_mode_task_id(
+    *,
+    now_utc: datetime,
+    category: str,
+    slug: str,
+) -> str:
+    return f"dream-mode-{category}-{slug}-{now_utc.strftime('%Y-%m-%d')}"
+
+
+def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
+    return (
+        task_id.startswith("dream-mode-")
+        and task_id.endswith(f"-{now_utc.strftime('%Y-%m-%d')}")
+    )
 
 
 def _bridge_root_for_args(events_path: Path, bridge_root: Path | None) -> Path:
@@ -482,6 +666,47 @@ def _completed_substrate_smoke_task_ids(
             continue
         task_id = str(payload.get("task_id", ""))
         if task_id != legacy_task_id and not task_id.startswith(prefix):
+            continue
+        status = str(
+            payload.get("release_status")
+            or payload.get("status")
+            or payload.get("release_message")
+            or ""
+        )
+        if _status_is_successful(status):
+            completed.add(task_id)
+
+    return completed
+
+
+def _completed_dream_mode_task_ids(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    now_utc: datetime,
+) -> set[str]:
+    completed: set[str] = set()
+
+    for event in events:
+        task_id = str(event.get("task_id", ""))
+        if not _is_same_day_dream_mode_task_id(task_id, now_utc):
+            continue
+        if _is_successful_completion_event(event):
+            completed.add(task_id)
+
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        done_files = []
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        task_id = str(payload.get("task_id", ""))
+        if not _is_same_day_dream_mode_task_id(task_id, now_utc):
             continue
         status = str(
             payload.get("release_status")

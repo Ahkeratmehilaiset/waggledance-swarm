@@ -238,25 +238,29 @@ executable script. It does not weaken any existing gate:
 
 ## How agents read this file
 
-When `tools/agent_next_task.py` returns `claim_substrate_smoke`
-because the bridge is otherwise unblocked, a live agent (Claude or
+When the bridge is otherwise unblocked, `tools/agent_next_task.py`
+first returns a deterministic `claim_substrate_smoke` recommendation.
+If all same-day substrate-smoke candidates for that agent are already
+complete, it now advances directly to `claim_dream_mode_seed` with a
+concrete candidate derived from §A–D below. A live agent (Claude or
 Codex) should:
 
-1. Read this file's §A–D seed lists.
-2. Pick the first seed whose category is "in-cadence" per §Cadence
-   (e.g., a security seed if § B has not been advanced this week).
-3. Claim a write/read-only task for that seed (`task_id` like
+1. Follow the concrete `candidate` returned by
+   `tools/agent_next_task.py` when present.
+2. Claim a read-only task for that seed (`task_id` like
    `dream-mode-<category>-<short-slug>-<utc-date>`).
+3. If the seed proves a source change is needed, open a separate
+   write claim for the exact paths before editing.
 4. If the seed produces a candidate diff or design, route it through
    the existing chain: `idle_consensus_artifact` →
    `idle_consensus_draft_pr` → `pr_status_snapshot` →
    `idle_consensus_auto_merge --apply`.
-5. If no seed is in-cadence, fall back to the substrate-smoke pool
-   currently in `tools/agent_next_task.SUBSTRATE_SMOKE_CANDIDATES`.
+5. If every same-day dream-mode seed is also complete, escalate
+   instead of rerunning a completed daily candidate.
 
-A follow-up PR (Slice 5) wires the cadence-aware seed selection into
-`agent_next_task.py` directly; until then the cadence is a manual
-discipline the agents follow when they pick a round-1 proposal.
+The coded seed pool is intentionally smaller than this agenda; this
+file remains the source for expanding or rebalancing the categories as
+the WD sub-area map evolves.
 
 ## Versioning
 

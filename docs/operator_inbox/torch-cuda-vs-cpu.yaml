@@ -47,6 +47,28 @@ operator_signoff:
   chosen_option: "A2_cu126"
   recorded_by: "claude"
   note: "Operator chose A2_cu126 (keep GPU + fix vulns) and explicitly instructed Claude to record this signoff. Decision authority is the operator; Claude is the scribe. This authorizes the implementation only -- security_privacy_gate flips to pass only after the torch 2.11.0+cu126 lock change lands via PR and a fresh OSV/pip-audit is clean (+ xformers cu126 reconciliation; requires a CUDA 12.6 capable driver)."
+  scope_updates:
+    - recorded_utc: 2026-05-27T08:14:26Z
+      recorded_by: "codex-lead-1"
+      source: "bridge:operator-authorization-open-rco-tasks-2026-05-27"
+      summary: >
+        Operator reconfirmed authorization to proceed on the CUDA dependency
+        floor expansions in PR #694 and PR #696 after prior RCO/tools holds.
+      authorized_dependency_floors:
+        - pr: 694
+          package: "nvidia-cublas-cu12"
+          requirement: ">=12.9.2.10"
+          marker: "sys_platform != 'win32'"
+          exact_head: "5705f549f1715f5ef7dc66bcd0c523d5868074ec"
+        - pr: 696
+          package: "nvidia-cudnn-cu12"
+          requirement: ">=9.22.0.52"
+          marker: "sys_platform != 'win32'"
+          exact_head: "a8045f5ae2f988c9002e8d252021353cadcd92d0"
+      review_state: >
+        claude-rco-1 emitted RCO_PASS/retract events on the canonical PR tasks
+        after this operator authorization; bridge preflight remains required
+        before any head-matched merge.
 structural_invariants:
   no_main_branch_auto_merge: true
   dependency_change_lands_via_pr: true

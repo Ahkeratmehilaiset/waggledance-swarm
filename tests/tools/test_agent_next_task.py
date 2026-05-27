@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from tools.agent_next_task import (
+    DREAM_MODE_CANDIDATES,
     SUBSTRATE_SMOKE_CANDIDATES,
+    _pick_dream_mode_seed,
     _pick_substrate_smoke,
     evaluate_agent_next_task,
     main,
@@ -360,7 +362,7 @@ def test_legacy_completed_same_day_smoke_claim_advances_to_next_candidate(
     assert legacy_task_id in candidate["rotation"]["skipped_completed_task_ids"]
 
 
-def test_all_completed_same_day_smokes_returns_exhausted_decision(
+def test_all_completed_same_day_smokes_falls_back_to_dream_mode_seed(
     tmp_path: Path,
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
@@ -398,11 +400,76 @@ def test_all_completed_same_day_smokes_returns_exhausted_decision(
         now_utc=NOW,
     )
 
-    assert report["decision"] == "substrate_smoke_pool_exhausted"
-    assert report["next_action"] == "claim_non_smoke_work"
-    assert "candidate" not in report
+    assert report["decision"] == "claim_dream_mode_seed"
+    assert report["next_action"] == "claim_and_run"
+    candidate = report["candidate"]
+    assert candidate["kind"] == "advance_dream_mode_seed"
+    assert candidate["mode"] == "read-only"
+    assert candidate["write_scope"] == []
+    assert candidate["target"] in {entry["target"] for entry in DREAM_MODE_CANDIDATES}
+    assert candidate["task_id_suggestion"].startswith("dream-mode-")
+    assert candidate["task_id_suggestion"].endswith("-2026-05-20")
     assert len(report["completed_substrate_smoke_task_ids"]) == len(
         SUBSTRATE_SMOKE_CANDIDATES
+    )
+    assert report["completed_dream_mode_task_ids"] == []
+
+
+def test_completed_same_day_dream_seed_advances_to_next_seed(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    completed_smokes = [
+        {
+            "ts_utc": "2026-05-20T12:10:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+            "status": "done",
+            "message": "daily substrate smoke passed",
+        }
+        for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+    ]
+    first = _pick_dream_mode_seed(agent="codex", now_utc=NOW)
+    assert first is not None
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            *completed_smokes,
+            {
+                "ts_utc": "2026-05-20T12:20:00Z",
+                "agent": "claude",
+                "type": "done",
+                "task_id": first["task_id_suggestion"],
+                "status": "done",
+                "message": "dream-mode seed completed by another agent",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert report["decision"] == "claim_dream_mode_seed"
+    assert candidate["task_id_suggestion"] != first["task_id_suggestion"]
+    assert candidate["rotation"]["offset"] == 1
+    assert (
+        first["task_id_suggestion"]
+        in candidate["rotation"]["skipped_completed_task_ids"]
     )
 
 
@@ -453,6 +520,12 @@ def test_rotation_wraps_around_pool() -> None:
 def test_candidates_pool_is_nonempty_and_each_entry_is_well_formed() -> None:
     assert SUBSTRATE_SMOKE_CANDIDATES
     for entry in SUBSTRATE_SMOKE_CANDIDATES:
+        assert entry["target"]
+        assert entry["rationale"]
+    assert DREAM_MODE_CANDIDATES
+    for entry in DREAM_MODE_CANDIDATES:
+        assert entry["category"]
+        assert entry["slug"]
         assert entry["target"]
         assert entry["rationale"]
 

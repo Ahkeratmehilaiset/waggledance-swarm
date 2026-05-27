@@ -138,6 +138,61 @@ def test_success_response_includes_privacy_safe_route_stage_trace():
     assert raw_profile not in trace_json
 
 
+def test_ws_chat_route_event_includes_privacy_safe_trace_and_disabled_labels():
+    raw_query = "statistics summary for ws trace PRIVATE_QUERY_MARKER_WS"
+    raw_language = "PRIVATE_LANGUAGE_MARKER_WS"
+    raw_profile = "PRIVATE_PROFILE_MARKER_WS"
+    _reset_rate_limit()
+    client, api_key = _get_client()
+
+    chat_route = None
+    with client.websocket_connect(f"/ws?token={api_key}") as ws:
+        resp = client.post(
+            "/api/chat",
+            json={
+                "query": raw_query,
+                "language": raw_language,
+                "profile": raw_profile,
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        assert resp.status_code == 200
+
+        for _ in range(5):
+            event = ws.receive_json()
+            if event.get("type") == "chat_route":
+                chat_route = event
+                break
+
+    assert chat_route is not None
+    data = chat_route.get("data")
+    assert isinstance(data, dict)
+    assert "query" not in data
+    assert "language" not in data
+    assert "profile" not in data
+    trace = data.get("route_stage_trace")
+    assert isinstance(trace, list)
+    assert trace
+    assert trace[0]["stage"] == "language_detection"
+    assert trace[1]["stage"] == "hot_cache"
+
+    labels = data.get("route_stage_labels")
+    assert isinstance(labels, list)
+    assert {
+        "stage": "hex_neighbor_assist_7_cell",
+        "status": "disabled",
+        "label": "disabled:runtime_config",
+    } in labels
+    disabled_route_stages = data.get("disabled_route_stages")
+    assert isinstance(disabled_route_stages, list)
+    assert "hex_neighbor_assist_7_cell" in disabled_route_stages
+
+    event_json = json.dumps(data)
+    assert raw_query not in event_json
+    assert raw_language not in event_json
+    assert raw_profile not in event_json
+
+
 # ------------------------------------------------------------------ #
 #  Error ergonomics                                                   #
 # ------------------------------------------------------------------ #

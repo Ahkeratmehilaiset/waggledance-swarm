@@ -44,6 +44,103 @@ router = APIRouter()
 # Maximum query length (characters).  Prevents OOM / DoS via
 # oversized payloads that block the LLM for minutes.
 MAX_QUERY_LENGTH = 10_000
+CHAT_ROUTE_STAGE_ORDER = (
+    "language_detection",
+    "hot_cache",
+    "memory_context",
+    "route_selection",
+    "deterministic_solver",
+    "hybrid_retrieval_8_cell",
+    "hex_neighbor_assist_7_cell",
+    "orchestrator_llm_fallback",
+)
+OPTIONAL_ROUTE_STAGE_COMPONENTS = {
+    "hybrid_retrieval_8_cell": "_hybrid_retrieval",
+    "hex_neighbor_assist_7_cell": "_hex_neighbor_assist",
+}
+
+
+def _route_stage_trace_for_ws(
+    trace: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not trace:
+        return []
+    return [
+        dict(event)
+        for event in trace
+        if isinstance(event, dict) and isinstance(event.get("stage"), str)
+    ]
+
+
+def _route_stage_component_enabled(chat_service: Any, attr: str) -> bool:
+    component = getattr(chat_service, attr, None)
+    if component is None:
+        return False
+    return bool(getattr(component, "enabled", False))
+
+
+def _route_stage_labels(
+    trace: list[dict[str, Any]],
+    chat_service: Any,
+) -> list[dict[str, str]]:
+    observed = {event["stage"] for event in trace}
+    disabled = {
+        stage
+        for stage, attr in OPTIONAL_ROUTE_STAGE_COMPONENTS.items()
+        if not _route_stage_component_enabled(chat_service, attr)
+    }
+    labels: list[dict[str, str]] = []
+    added: set[str] = set()
+
+    for stage in CHAT_ROUTE_STAGE_ORDER:
+        if stage in observed:
+            labels.append({
+                "stage": stage,
+                "status": "observed",
+                "label": "observed",
+            })
+            added.add(stage)
+        elif stage in disabled:
+            labels.append({
+                "stage": stage,
+                "status": "disabled",
+                "label": "disabled:runtime_config",
+            })
+            added.add(stage)
+
+    for event in trace:
+        stage = event["stage"]
+        if stage not in added:
+            labels.append({
+                "stage": stage,
+                "status": "observed",
+                "label": "observed",
+            })
+            added.add(stage)
+
+    return labels
+
+
+def _build_chat_route_ws_event(
+    resp: "ChatHttpResponse",
+    chat_service: Any,
+) -> dict[str, Any]:
+    trace = _route_stage_trace_for_ws(resp.route_stage_trace)
+    labels = _route_stage_labels(trace, chat_service)
+    disabled_route_stages = [
+        item["stage"] for item in labels if item["status"] == "disabled"
+    ]
+    return {
+        "type": "chat_route",
+        "data": {
+            "source": resp.source,
+            "confidence": resp.confidence,
+            "agent_id": resp.agent_id,
+            "route_stage_trace": trace,
+            "route_stage_labels": labels,
+            "disabled_route_stages": disabled_route_stages,
+        },
+    }
 
 
 class ChatHttpRequest(BaseModel):
@@ -144,14 +241,9 @@ async def chat_endpoint(
     try:
         from waggledance.adapters.http.routes.compat_dashboard import broadcast_ws
         import asyncio
-        asyncio.ensure_future(broadcast_ws({
-            "type": "chat_route",
-            "data": {
-                "source": resp.source,
-                "confidence": resp.confidence,
-                "agent_id": resp.agent_id,
-            },
-        }))
+        asyncio.ensure_future(
+            broadcast_ws(_build_chat_route_ws_event(resp, chat_service))
+        )
     except Exception:
         pass  # WS broadcast is best-effort
 

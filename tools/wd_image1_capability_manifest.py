@@ -993,8 +993,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Surface the privacy-safe HTTP route_stage_trace in the "
-                "dashboard/WS chat_route event with disabled-stage labels."
+                "Render the WS route-stage labels in the dashboard UI and "
+                "add a visual contract smoke."
             ),
             proof=hex_entry_proof,
         ),

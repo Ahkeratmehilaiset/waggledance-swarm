@@ -9,6 +9,7 @@ returning.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -1582,6 +1583,196 @@ def build_low_risk_autogrowth_runtime_boundary_smoke(
     }
 
 
+def _blocked_low_risk_operator_metrics_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    proof = {
+        "proof_id": "low_risk_autogrowth_operator_metrics_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "metrics_endpoint": "/metrics",
+        "prometheus_namespace": "waggledance_autogrowth",
+        "operator_visible_metrics": False,
+        "metric_names": [],
+        "missing_metrics": [],
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required operator metrics inputs are missing, so the low-risk "
+            "autogrowth boundary cannot be shown as operator-visible for "
+            "this root."
+        ),
+    }
+    if blocked_reason == "non_current_import_root":
+        proof["safe_conclusion"] = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the operator-metrics proof blocks instead of "
+            "certifying one checkout with runtime code imported from "
+            "another checkout."
+        )
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+def build_low_risk_autogrowth_operator_metrics_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Prove low-risk autogrowth exposes operator-visible metrics."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/core/autonomy_growth/autogrowth_scheduler.py",
+        "tests/test_metrics_endpoint.py",
+        "docs/API.md",
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_low_risk_operator_metrics_smoke(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_low_risk_operator_metrics_smoke(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
+
+    metrics_text = (
+        repo_root / "waggledance/adapters/http/routes/metrics.py"
+    ).read_text(encoding="utf-8")
+    metrics_tree = ast.parse(metrics_text)
+    counter_source_names: list[str] = []
+    gauge_source_names: set[str] = set()
+    literal_metric_names: set[str] = set()
+    for node in ast.walk(metrics_tree):
+        if isinstance(node, ast.Assign):
+            target_names = [
+                target.id
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            ]
+            if (
+                "_AUTOGROWTH_COUNTER_NAMES" in target_names
+                and isinstance(node.value, ast.Tuple)
+            ):
+                counter_source_names = [
+                    item.value
+                    for item in node.value.elts
+                    if isinstance(item, ast.Constant)
+                    and isinstance(item.value, str)
+                ]
+            if (
+                "gauge_values" in target_names
+                and isinstance(node.value, ast.Dict)
+            ):
+                gauge_source_names.update(
+                    key.value
+                    for key in node.value.keys
+                    if isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                )
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_AUTOGROWTH_COUNTER_NAMES"
+            and isinstance(node.value, ast.Tuple)
+        ):
+            counter_source_names = [
+                item.value
+                for item in node.value.elts
+                if isinstance(item, ast.Constant)
+                and isinstance(item.value, str)
+            ]
+        if isinstance(node, ast.Call) and node.args:
+            func_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else None
+            )
+            if (
+                func_name in {"GaugeMetricFamily", "CounterMetricFamily"}
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and node.args[0].value.startswith("waggledance_autogrowth")
+            ):
+                literal_metric_names.add(node.args[0].value)
+
+    emitted_metric_names = set(literal_metric_names)
+    emitted_metric_names.update(
+        f"waggledance_autogrowth_{name}"
+        for name in gauge_source_names
+    )
+    for source_name in counter_source_names:
+        base = (
+            source_name[:-6]
+            if source_name.endswith("_total")
+            else source_name
+        )
+        emitted_metric_names.add(f"waggledance_autogrowth_{base}_total")
+
+    test_text = (repo_root / "tests/test_metrics_endpoint.py").read_text(
+        encoding="utf-8"
+    )
+    expected_metrics = {
+        "waggledance_autogrowth_up",
+        "waggledance_autogrowth_background_enabled",
+        "waggledance_autogrowth_background_running",
+        "waggledance_autogrowth_background_interval_seconds",
+        "waggledance_autogrowth_background_max_ticks_per_wake",
+        "waggledance_autogrowth_wakeups_total",
+        "waggledance_autogrowth_non_idle_ticks_total",
+        "waggledance_autogrowth_errors_total",
+    }
+    missing_metrics = [
+        name
+        for name in sorted(expected_metrics)
+        if name not in emitted_metric_names or name not in test_text
+    ]
+    double_suffix_absent = all(
+        "total_total" not in name for name in emitted_metric_names
+    )
+    ok = not missing_metrics and double_suffix_absent
+    return {
+        "proof_id": "low_risk_autogrowth_operator_metrics_smoke_v1",
+        "ok": ok,
+        "proof_mode": "ast_source_contract",
+        "metrics_endpoint": "/metrics",
+        "prometheus_namespace": "waggledance_autogrowth",
+        "operator_visible_metrics": ok,
+        "metric_names": sorted(expected_metrics),
+        "missing_metrics": missing_metrics,
+        "double_suffix_absent": double_suffix_absent,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The public Prometheus /metrics endpoint exposes the low-risk "
+            "autogrowth background ticker boundary as scrapeable operator "
+            "metrics. The proof parses the metrics source and endpoint tests "
+            "without importing Prometheus, and does not start the ticker or "
+            "grant runtime growth authority."
+        ),
+    }
+
+
 def _scalar_unit_seed(name: str) -> dict:
     return {
         "spec": {
@@ -1927,6 +2118,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "waggledance/adapters/http/api.py",
                 "FastAPI lifespan starts and stops the autogrowth ticker.",
             ),
+            (
+                "waggledance/adapters/http/routes/metrics.py",
+                "Prometheus metrics expose the autogrowth ticker boundary.",
+            ),
+            (
+                "docs/API.md",
+                "Operator-facing metrics contract documents autogrowth counters.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -1988,12 +2187,19 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_runtime_boundary_smoke = (
         build_low_risk_autogrowth_runtime_boundary_smoke(root)
     )
+    low_risk_operator_metrics_smoke = (
+        build_low_risk_autogrowth_operator_metrics_smoke(root)
+    )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = (
         low_risk_runtime_boundary_smoke
+    )
+    low_risk_autonomy_proof["operator_metrics_smoke"] = (
+        low_risk_operator_metrics_smoke
     )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
         and low_risk_runtime_boundary_smoke.get("ok") is True
+        and low_risk_operator_metrics_smoke.get("ok") is True
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
@@ -2092,8 +2298,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "A bounded low-risk autogrowth substrate exists with an "
                 "allowlist, runtime gap seam, scheduler ticks, a runtime "
-                "ticker boundary smoke, and proof fixtures; unrestricted "
-                "runtime authority is not claimed."
+                "ticker boundary smoke, Prometheus operator metrics, and "
+                "proof fixtures; unrestricted runtime authority is not "
+                "claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -2107,10 +2314,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "grant production runtime authority.",
                 "The runtime boundary smoke proves ticker construction and "
                 "lifespan hooks, not autonomous production authority.",
+                "Operator metrics expose ticker cadence and counters, not "
+                "new mutation authority.",
             ),
             next_smallest_pr=(
-                "Promote runtime boundary reporting into operator-visible "
-                "metrics without changing the low-risk authority boundary."
+                "Add low-risk autogrowth metrics to the dashboard ops "
+                "overlay without changing the authority boundary."
             ),
             proof=low_risk_autonomy_proof,
         ),

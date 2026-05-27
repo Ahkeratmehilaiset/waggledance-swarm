@@ -44,8 +44,13 @@ class _FakeHexAssist:
 
 
 class _FakeContainer:
-    def __init__(self, hex_neighbor_assist) -> None:
+    def __init__(
+        self,
+        hex_neighbor_assist,
+        autogrowth_background_ticker=None,
+    ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
+        self.autogrowth_background_ticker = autogrowth_background_ticker
 
 
 def test_metrics_is_in_public_paths():
@@ -142,6 +147,67 @@ def test_metrics_body_contains_gauge_values():
     assert "waggledance_hex_quarantined_cells 2.0" in body
 
 
+def test_metrics_body_contains_autogrowth_boundary_gauges():
+    ticker = types.SimpleNamespace(
+        stats=types.SimpleNamespace(
+            wakeups_total=2,
+            non_idle_ticks=1,
+            errors_total=0,
+        ),
+        is_running=False,
+        interval_seconds=30.0,
+        max_ticks_per_wake=20,
+    )
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": True}),
+        autogrowth_background_ticker=ticker,
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_autogrowth_up 1.0" in body
+    assert "waggledance_autogrowth_background_enabled 1.0" in body
+    assert "waggledance_autogrowth_background_running 0.0" in body
+    assert "waggledance_autogrowth_background_interval_seconds 30.0" in body
+    assert "waggledance_autogrowth_background_max_ticks_per_wake 20.0" in body
+
+
+def test_metrics_body_contains_autogrowth_boundary_counters():
+    ticker = types.SimpleNamespace(
+        stats=types.SimpleNamespace(
+            wakeups_total=8,
+            non_idle_ticks=3,
+            errors_total=1,
+        ),
+        is_running=True,
+        interval_seconds=15.0,
+        max_ticks_per_wake=4,
+    )
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": True}),
+        autogrowth_background_ticker=ticker,
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_autogrowth_wakeups_total 8.0" in body
+    assert "waggledance_autogrowth_non_idle_ticks_total 3.0" in body
+    assert "waggledance_autogrowth_errors_total 1.0" in body
+    assert "autogrowth_wakeups_total_total" not in body
+
+
+def test_metrics_reports_autogrowth_disabled_when_ticker_missing():
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_autogrowth_up 0.0" in body
+    assert "waggledance_autogrowth_background_enabled 0.0" in body
+
+
 def test_metrics_ignores_non_numeric_stats_silently():
     """A malformed entry in stats must not break the whole scrape."""
     container = _FakeContainer(
@@ -215,6 +281,22 @@ def test_metrics_hex_assist_property_raising_reports_down():
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "waggledance_up 0.0" in resp.text
+
+
+def test_metrics_autogrowth_property_raising_reports_autogrowth_down():
+    class _Container:
+        hex_neighbor_assist = _FakeHexAssist({"enabled": True})
+
+        @property
+        def autogrowth_background_ticker(self):
+            raise RuntimeError("ticker constructor failed")
+
+    client = TestClient(_make_app(_Container()))
+
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "waggledance_up 1.0" in resp.text
+    assert "waggledance_autogrowth_up 0.0" in resp.text
 
 
 def test_metrics_missing_container_attribute_reports_down():

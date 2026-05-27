@@ -3,8 +3,9 @@
 Closes F5-002 from the Release Polish Run 20260409_054702 by giving
 the ``prometheus-client`` dependency a real job: expose the existing
 v3.5.6 efficiency counters (preflight skips, budget exhaustions,
-neighbor-assist ratios, etc.) in Prometheus text format so the
-operator's standard observability stack can scrape them.
+neighbor-assist ratios, etc.) and the low-risk autogrowth ticker
+boundary in Prometheus text format so the operator's standard
+observability stack can scrape them.
 
 Design notes
 ------------
@@ -15,9 +16,10 @@ Design notes
   default, which would leak file-descriptor counts and Python GC
   stats that operators haven't asked for.
 - Metrics are collected on-demand via a tiny ``Collector`` subclass
-  that reads the container's ``hex_neighbor_assist.get_metrics()``
-  each time ``/metrics`` is scraped. This avoids the "metrics go
-  stale" trap of snapshotting into Gauges at startup.
+  that reads the container's ``hex_neighbor_assist.get_metrics()`` and
+  ``autogrowth_background_ticker.stats`` each time ``/metrics`` is
+  scraped. This avoids the "metrics go stale" trap of snapshotting into
+  Gauges at startup.
 - If ``hex_neighbor_assist`` is None (feature disabled) or raises,
   we emit the gauges with value ``0`` and a ``_up`` gauge set to
   ``0`` so alerts can fire on "metrics source unhealthy".
@@ -65,6 +67,26 @@ _GAUGE_NAMES: tuple[str, ...] = (
     "quarantined_cells",
 )
 
+_AUTOGROWTH_COUNTER_NAMES: tuple[str, ...] = (
+    "wakeups_total",
+    "non_idle_ticks",
+    "errors_total",
+)
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(obj, name, default)
+    except Exception:
+        return default
+
 
 class _WaggleCollector:
     """On-demand collector that reads the live container state.
@@ -95,6 +117,14 @@ class _WaggleCollector:
             yield up
             return
 
+        yield from self._collect_hex_metrics(container, up)
+        yield from self._collect_autogrowth_metrics(container)
+
+    def _collect_hex_metrics(
+        self,
+        container: Any,
+        up: GaugeMetricFamily,
+    ) -> Iterable[Any]:
         try:
             hex_assist = getattr(container, "hex_neighbor_assist", None)
         except Exception as exc:
@@ -133,9 +163,8 @@ class _WaggleCollector:
             val = stats.get(name)
             if val is None:
                 continue
-            try:
-                numeric = float(val)
-            except (TypeError, ValueError):
+            numeric = _as_float(val)
+            if numeric is None:
                 continue
             # Prometheus convention: counter names end in ``_total``.
             # A few source keys (e.g. ``neighbors_consulted_total``)
@@ -152,13 +181,99 @@ class _WaggleCollector:
             val = stats.get(name)
             if val is None:
                 continue
-            try:
-                numeric = float(val)
-            except (TypeError, ValueError):
+            numeric = _as_float(val)
+            if numeric is None:
                 continue
             yield GaugeMetricFamily(
                 f"waggledance_hex_{name}",
                 f"v3.5.6 hex-mesh gauge: {name}",
+                value=numeric,
+            )
+
+    def _collect_autogrowth_metrics(self, container: Any) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_autogrowth_up",
+            "1 if the metrics collector could read autogrowth ticker stats this scrape",
+            value=0.0,
+        )
+        disabled = GaugeMetricFamily(
+            "waggledance_autogrowth_background_enabled",
+            "1 if the low-risk autogrowth background ticker is configured",
+            value=0.0,
+        )
+        try:
+            ticker = getattr(container, "autogrowth_background_ticker", None)
+        except Exception as exc:
+            logger.warning(
+                "metrics: failed to fetch autogrowth_background_ticker: %s",
+                exc,
+            )
+            yield up
+            return
+        if ticker is None:
+            yield up
+            yield disabled
+            return
+
+        try:
+            stats_obj = getattr(ticker, "stats", None)
+        except Exception as exc:
+            logger.warning("metrics: autogrowth ticker stats raised: %s", exc)
+            yield up
+            yield GaugeMetricFamily(
+                "waggledance_autogrowth_background_enabled",
+                "1 if the low-risk autogrowth background ticker is configured",
+                value=1.0,
+            )
+            return
+        if stats_obj is None:
+            yield up
+            yield GaugeMetricFamily(
+                "waggledance_autogrowth_background_enabled",
+                "1 if the low-risk autogrowth background ticker is configured",
+                value=1.0,
+            )
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_autogrowth_up",
+            "1 if the metrics collector could read autogrowth ticker stats this scrape",
+            value=1.0,
+        )
+        yield GaugeMetricFamily(
+            "waggledance_autogrowth_background_enabled",
+            "1 if the low-risk autogrowth background ticker is configured",
+            value=1.0,
+        )
+
+        gauge_values = {
+            "background_running": _safe_getattr(ticker, "is_running", False),
+            "background_interval_seconds": _safe_getattr(
+                ticker, "interval_seconds"
+            ),
+            "background_max_ticks_per_wake": _safe_getattr(
+                ticker, "max_ticks_per_wake"
+            ),
+        }
+        for name, value in gauge_values.items():
+            numeric = _as_float(value)
+            if numeric is None:
+                continue
+            yield GaugeMetricFamily(
+                f"waggledance_autogrowth_{name}",
+                f"low-risk autogrowth runtime-boundary gauge: {name}",
+                value=numeric,
+            )
+
+        for name in _AUTOGROWTH_COUNTER_NAMES:
+            val = _safe_getattr(stats_obj, name)
+            numeric = _as_float(val)
+            if numeric is None:
+                continue
+            base = name[:-6] if name.endswith("_total") else name
+            yield CounterMetricFamily(
+                f"waggledance_autogrowth_{base}_total",
+                f"low-risk autogrowth runtime-boundary counter: {name}",
                 value=numeric,
             )
 

@@ -21,8 +21,8 @@ Use the safest true wording until the proof tool reports otherwise:
 - Do not claim unlimited scalability. The repo supports planned and measured
   scalability work, not an unbounded guarantee.
 - Low-risk autogrowth may be described as a bounded substrate with an
-  allowlist, queue, scheduler, and proof fixtures; do not imply unrestricted
-  runtime authority.
+  allowlist, queue, scheduler, operator metrics, and proof fixtures; do not
+  imply unrestricted runtime authority.
 
 ## Capability Matrix
 
@@ -31,7 +31,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | Hex-mesh routing | Partial, with route-order proof and HTTP/WS trace contract | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Render the WS route-stage labels in the dashboard UI and add a visual contract smoke. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
-| Low-risk autonomy loop | Partial, with temp-DB proof and runtime-boundary smoke | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py` | Promote runtime boundary reporting into operator-visible metrics without changing the low-risk authority boundary. |
+| Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, and operator metrics | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py` | Add low-risk autogrowth metrics to the dashboard ops overlay without changing the authority boundary. |
 | Hexagonal upgrades | Partial, with in-memory proof and runtime-boundary smoke | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py`, `waggledance/bootstrap/container.py`, `hex_topology_registry.py`, `hex_neighbor_assist.py` | Promote hexagonal topology boundary reporting into operator-visible metrics without enabling runtime mutation. |
 | Future swarm scalability | Partial, with scale-axis scorecard proof | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`, `tools/wd_image1_capability_manifest.py` | Populate the scale-axis scorecard from runtime metrics and benchmark artifacts. |
 
@@ -97,7 +97,11 @@ It now also runs a runtime-boundary smoke that constructs the configured
 `AutogrowthBackgroundTicker` through `Container`, reports the default 30 second
 cadence and 20 ticks per wake limit, and verifies that FastAPI lifespan contains
 start/stop hooks for that ticker. It does not change production runtime
-authority or write tracked files.
+authority or write tracked files. The proof also checks that `/metrics` exposes
+the same boundary under the `waggledance_autogrowth_*` Prometheus namespace:
+source health, ticker configured/running state, cadence, max ticks per wake,
+wakeups, non-idle ticks, and errors. Those metrics are observability only; they
+do not enable additional runtime mutation or solver growth authority.
 
 The solver/MAGMA receipt proof is also local and opt-in. It runs
 `AutonomyRuntime.handle_query` with a runtime receipt sink, writes a temporary

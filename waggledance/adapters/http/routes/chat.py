@@ -58,18 +58,70 @@ OPTIONAL_ROUTE_STAGE_COMPONENTS = {
     "hybrid_retrieval_8_cell": "_hybrid_retrieval",
     "hex_neighbor_assist_7_cell": "_hex_neighbor_assist",
 }
+ROUTE_STAGE_TRACE_ALLOWED_FIELDS = {
+    "language_detection": {"explicit_hint", "detected_language"},
+    "hot_cache": {"hit"},
+    "memory_context": {"limit", "result_count", "memory_score"},
+    "route_selection": {"route_type", "solver_intent", "memory_score"},
+    "deterministic_solver": {"intent", "answered"},
+    "hybrid_retrieval_8_cell": {
+        "enabled",
+        "authoritative",
+        "answered",
+        "retrieval_mode",
+        "hit_count",
+        "cell_id",
+    },
+    "hex_neighbor_assist_7_cell": {
+        "enabled",
+        "answered",
+        "confidence",
+        "source",
+        "error",
+    },
+    "orchestrator_llm_fallback": {
+        "route_type",
+        "source",
+        "confidence",
+        "round_table_used",
+    },
+}
 
 
-def _route_stage_trace_for_ws(
+def _route_stage_value_is_json_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (bool, int, float, str))
+
+
+def _sanitize_route_stage_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    stage = event.get("stage")
+    if not isinstance(stage, str):
+        return None
+    sanitized: dict[str, Any] = {"stage": stage}
+    for key in ROUTE_STAGE_TRACE_ALLOWED_FIELDS.get(stage, set()):
+        if key not in event:
+            continue
+        value = event[key]
+        if not _route_stage_value_is_json_scalar(value):
+            continue
+        if key == "detected_language" and value not in {"en", "fi", "custom"}:
+            value = "custom"
+        sanitized[key] = value
+    return sanitized
+
+
+def _sanitize_route_stage_trace(
     trace: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     if not trace:
         return []
-    return [
-        dict(event)
-        for event in trace
-        if isinstance(event, dict) and isinstance(event.get("stage"), str)
-    ]
+    sanitized: list[dict[str, Any]] = []
+    for event in trace:
+        if not isinstance(event, dict):
+            continue
+        safe_event = _sanitize_route_stage_event(event)
+        if safe_event is not None:
+            sanitized.append(safe_event)
+    return sanitized
 
 
 def _route_stage_component_enabled(chat_service: Any, attr: str) -> bool:
@@ -125,7 +177,7 @@ def _build_chat_route_ws_event(
     resp: "ChatHttpResponse",
     chat_service: Any,
 ) -> dict[str, Any]:
-    trace = _route_stage_trace_for_ws(resp.route_stage_trace)
+    trace = _sanitize_route_stage_trace(resp.route_stage_trace)
     labels = _route_stage_labels(trace, chat_service)
     disabled_route_stages = [
         item["stage"] for item in labels if item["status"] == "disabled"
@@ -224,7 +276,7 @@ class ChatHttpResponse(BaseModel):
             language=r.language,
             agent_id=r.agent_id,
             round_table=r.round_table,
-            route_stage_trace=r.route_stage_trace,
+            route_stage_trace=_sanitize_route_stage_trace(r.route_stage_trace),
         )
 
 

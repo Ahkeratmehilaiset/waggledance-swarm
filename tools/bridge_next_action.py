@@ -67,6 +67,7 @@ OPEN_STATUS_FRAGMENTS = (
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
+    "acknowledged",
     "answered",
     "approved",
     "block",
@@ -76,8 +77,10 @@ ANSWER_STATUS_FRAGMENTS = (
     "done",
     "merged",
     "pass",
+    "received",
     "resolved",
     "reported",
+    "seen",
     "superseded",
     "validated",
     "verified",
@@ -334,13 +337,8 @@ def _open_requests_for_agent(
     ]
     open_requests: list[Mapping[str, Any]] = []
     for request in requests:
-        request_ts = _event_ts(request)
-        task_id = _task_id(request)
         answered = any(
-            _event_agent(event) == agent
-            and _task_id(event) == task_id
-            and _event_ts(event) > request_ts
-            and _is_answer_like(event)
+            _closes_request_for_agent(event=event, request=request, agent=agent)
             for event in events
         )
         if not answered and _idle_protocol_progressed(request, events):
@@ -348,6 +346,22 @@ def _open_requests_for_agent(
         if not answered:
             open_requests.append(request)
     return open_requests
+
+
+def _closes_request_for_agent(
+    *,
+    event: Mapping[str, Any],
+    request: Mapping[str, Any],
+    agent: str,
+) -> bool:
+    if _task_id(event) != _task_id(request):
+        return False
+    if _event_ts(event) <= _event_ts(request):
+        return False
+    if not _is_answer_like(event):
+        return False
+    event_agent = _event_agent(event)
+    return event_agent == agent or event_agent == _event_agent(request)
 
 
 def _split_fresh_and_stale_requests(

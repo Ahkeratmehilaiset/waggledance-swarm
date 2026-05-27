@@ -584,11 +584,24 @@ def _build_hex_mesh_runtime_trace_smoke_from_static(static_proof: dict) -> dict:
 def _blocked_deterministic_solver_trace_proof(
     *,
     missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
 ) -> dict:
-    return {
+    safe_conclusion = (
+        "Required solver-routing files are missing, so no deterministic "
+        "solver trace proof is available for this root."
+    )
+    if blocked_reason == "non_current_import_root":
+        safe_conclusion = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the proof blocks instead of certifying one checkout "
+            "with SolverRouter imported from another checkout."
+        )
+    proof = {
         "proof_id": "deterministic_solver_trace_v1",
         "ok": False,
-        "blocked_reason": "missing_required_inputs",
+        "blocked_reason": blocked_reason,
         "missing_inputs": list(missing_inputs),
         "router_entrypoint": (
             "waggledance.core.reasoning.solver_router.SolverRouter.route"
@@ -597,11 +610,13 @@ def _blocked_deterministic_solver_trace_proof(
         "trace": [],
         "query_text_recorded": False,
         "magma_execution_receipt_claimed": False,
-        "safe_conclusion": (
-            "Required solver-routing files are missing, so no deterministic "
-            "solver trace proof is available for this root."
-        ),
+        "safe_conclusion": safe_conclusion,
     }
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
 
 
 def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
@@ -621,6 +636,16 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     if missing:
         return _blocked_deterministic_solver_trace_proof(
             missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_deterministic_solver_trace_proof(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
         )
 
     from waggledance.core.reasoning.solver_router import SolverRouter

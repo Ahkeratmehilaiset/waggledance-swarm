@@ -185,6 +185,28 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
     assert proof["external_writes_applied"] is False
 
 
+def test_deterministic_solver_trace_proof_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "waggledance/core/reasoning/solver_router.py",
+        "waggledance/core/capabilities/selector.py",
+        "waggledance/core/capabilities/registry.py",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_deterministic_solver_trace_proof(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["selected_solver_ids"] == []
+    assert proof["trace"] == []
+    assert proof["magma_execution_receipt_claimed"] is False
+
+
 def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> None:
     report = build_manifest(tmp_path)
     capabilities = _by_id(report)

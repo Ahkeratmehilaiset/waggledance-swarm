@@ -1,10 +1,11 @@
 # Competitive Evidence Matrix — 2026-Q2
 
-**Status:** Phase 17A + 17B + 17C + 17D + 18A + 18B + 18C snapshot, derived from this session's reproducible artifacts only.
-**Date:** 2026-05-05
-**Branch:** `phase18c/mined-solver-runtime-dispatch` (Phase 18B at `b408b14a`; 18A at `4554b24a`; 17D at `d0704efe`; 17C at `db5d7db1`; 17B at `f4d0a4a4`; 17A on `main` at `c726995c`)
-**Anchor:** `v3.10.2-mined-solver-dispatch-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0/v3.9.1/v3.9.2/v3.9.3/v3.10.0/v3.10.1 alphas remain the previous Pre-releases).
-**New evidence this PR (Phase 18C):** mined low-risk solver specs are now registered into the **real** `ControlPlaneDB` and dispatched through the **real** `LowRiskSolverDispatcher.dispatch_by_features()` capability lookup path. New mainline module `waggledance/core/autonomy_growth/mined_solver_runtime.py` (registration via the canonical Phase 17A four-step pattern), proof harness `tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`, 33 unit tests. Host run: 6 ALLOWLISTED candidates → 6 registered auto-promoted solvers; 18/18 deterministic dispatch cases hit (3 per family × 6 families); 8 non-allowlisted verdicts rejected from registration; `release_gate_pass = true`; `provider_jobs_delta = builder_jobs_delta = 0`. **Axis M upgrades from "PROVEN with measured runtime-gap feedback loop" to "PROVEN with measured runtime-gap feedback loop AND runtime dispatch of mined solver specs within six-family allowlist".** Phase 18A bundle + Phase 18B proof both carry forward green. Detailed run report: `docs/benchmarks/MINED_SOLVER_RUNTIME_DISPATCH_2026.md`.
+**Status:** Phase 17A + 17B + 17C + 17D + 18A + 18B + 18C + 18E + 18F snapshot, derived from reproducible artifacts only.
+**Evidence snapshot date:** 2026-05-06
+**Freshness audit:** 2026-05-27 read-only audit found the dated PROVEN/MEASURED evidence older than the dream-mode <=14-day freshness target. Labels below remain historical evidence labels until refreshed; this audit does not upgrade or invalidate any row.
+**Branch lineage:** `phase18f/incremental-gap-replay` (Phase 18F at `c1ddded1`; 18E at `6c6ca859`; 18C at `e9aa1de1`; 18B at `b408b14a`; 18A at `4554b24a`; 17D at `d0704efe`; 17C at `db5d7db1`; 17B at `f4d0a4a4`; 17A on `main` at `c726995c`)
+**Anchor:** `v3.10.4-incremental-gap-replay-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0/v3.9.1/v3.9.2/v3.9.3/v3.10.0/v3.10.1/v3.10.2/v3.10.3 alphas remain the previous Pre-releases).
+**New evidence since the prior matrix header (Phase 18F):** the runtime-gap replay path is now cursor-incremental on the existing `runtime_gap_signals` table with replay state in `schema_meta`, no schema change, no allowlist widening, no new dispatcher, and no model/cloud/builder calls. The Phase 18F proof records cursor advancement, no-op replay idempotency, post-cursor learning in all six allowlisted families, strict malformed-row rejection, RuntimeGapDetector bridge validation, and `LOCKED_NOT_RUN` concurrency behavior. Release decision evidence reports Phase 18F targeted tests 46/46 PASS, targeted carry-forward suite 297/297 PASS, Docker `--network none` Phase 18F + 18E + 18C + 18B + 18A verification PASS, and `release_gate_pass = true`. Axis M remains the only row advanced by Phase 18E/18F. Detailed run reports: `docs/benchmarks/RUNTIME_GAP_REPLAY_2026.md`, `docs/benchmarks/INCREMENTAL_RUNTIME_GAP_REPLAY_2026.md`, and `docs/runs/phase18f_incremental_gap_replay_2026_05_06/release_decision.md`.
 
 This is an **engineering** document. It does not market WaggleDance. It enumerates the comparison axes most often used to assess local-first cognitive runtimes, states one factual claim per axis, points to a reproducible artifact in this repo, and labels the claim with one of:
 
@@ -18,6 +19,12 @@ This is an **engineering** document. It does not market WaggleDance. It enumerat
 WaggleDance does **not** claim to be conscious, sentient, aware, alive, or AGI. The autonomy mechanisms in this release are bounded engineering primitives, each mapped to a code path, persisted event, replayable proof, metric delta, and regression test.
 
 WaggleDance does **not** claim to "beat all competitors." This document does not rank rivals. It records what *we* have proven about *this* runtime, in this branch, in this session, against artifacts that anyone can reproduce.
+
+## Freshness notes
+
+The dream-mode agenda targets <=14-day staleness for PROVEN/MEASURED competitor-matrix rows. On the 2026-05-27 audit, the direct proof and measurement artifacts referenced here were 21-23 days old: Phase 17A/17B/17C mostly 2026-05-04, Phase 17D/18A/18B/18C mostly 2026-05-05, and Phase 18E/18F 2026-05-06.
+
+Refresh priority is: measured rows G, J, and L first; then PROVEN rows A-H, M, N, and O via targeted reruns or explicit carry-forward evidence. The 2026-05-20/21 competitor-axis pilot artifacts are fresher but are not yet integrated into these matrix labels.
 
 ## Axes
 
@@ -127,6 +134,8 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 * **Reproduce:** `python tools/run_phase18b_gap_miner_feedback_proof.py`. Expected: 30 signals → 14 candidates → 6 allowlisted specs + 3 insufficient + 2 out-of-family + 1 high-risk + 1 builder-handoff + 1 duplicate; `release_gate_pass = true`.
 * **Phase 18C closes the runtime-dispatch half:** mined ALLOWLISTED specs are registered into the real `ControlPlaneDB` via the canonical Phase 17A four-step pattern (`upsert_solver_family` → `upsert_solver(status='auto_promoted')` → `set_solver_capability_features` → `upsert_solver_artifact`) and served through the real `LowRiskSolverDispatcher.dispatch_by_features()`. New mainline module `waggledance/core/autonomy_growth/mined_solver_runtime.py`; proof harness `tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`; 33 unit tests. Host run: 6 ALLOWLISTED candidates → 6 registered auto-promoted solvers → 18/18 dispatch cases hit (3 per family × 6 families) via capability-aware path. Non-allowlisted verdicts (insufficient evidence, out-of-family, high-risk, builder-handoff, duplicate) are rejected from registration; never become executable.
 * **Reproduce (Phase 18C):** `python tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`. Expected: `registered_solver_count = 6`, `dispatch_success_count = 18`, `dispatch_failure_count = 0`, `families_covered = 6`; `release_gate_pass = true`; `provider_jobs_delta = builder_jobs_delta = 0`.
+* **Phase 18E/18F productionize replay:** Phase 18E persists content-keyed runtime-gap events into the existing `runtime_gap_signals` table and reuses the Phase 18B miner + Phase 18C registration/dispatch path. Phase 18F adds cursor-based incremental replay, no-op replay idempotency, post-cursor learning in all six allowlisted families, strict malformed-row rejection, RuntimeGapDetector bridging, and logical lock behavior. It keeps `schema_version = 4`, adds no event table, widens no allowlist, and does not execute builder handoff or high-risk variants.
+* **Reproduce (Phase 18F):** `python -X utf8 tools/run_phase18f_incremental_gap_replay_proof.py --out-dir docs/runs/phase18f_incremental_gap_replay_2026_05_06`. Expected: first replay 32 new events and 6 registered solvers, no-op replay creates 0 extra rows, third replay processes 12 appended events and registers 6 more solvers, total registered solver count >=12, malformed/type-confused/forbidden rows rejected, `lock_result = "LOCKED_NOT_RUN"`, `release_gate_pass = true`, `provider_jobs_delta = builder_jobs_delta = 0`.
 * **Label:** **PROVEN with persisted, idempotent, cursor-incremental runtime-gap replay, RuntimeGapDetector bridge, measured feedback loop, and runtime dispatch of mined solver specs within six-family allowlist** (Phase 18F). **NOT CLAIMED** for high-risk families. Builder-handoff lane is **PROVEN as a quarantined contract**, **NOT CLAIMED as automatic builder promotion**.
 
 ### N. High-risk safety gate
@@ -180,3 +189,4 @@ For any axis currently labelled NOT CLAIMED or INFERRED:
 3. Update this matrix to upgrade the label to MEASURED or PROVEN.
 4. Reference the reproduction command in the matrix entry.
 5. Open a PR. Do not change another row's label without adding new evidence.
+6. If a PROVEN/MEASURED row is older than the dream-mode freshness target, refresh it with a rerun or mark the staleness explicitly before using it for planning.

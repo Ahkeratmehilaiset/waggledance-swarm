@@ -1,5 +1,7 @@
 """Chat HTTP route -- thin wrapper around ChatService."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -33,6 +35,7 @@ except ImportError:
         agent_id: str | None
         round_table: bool
         cached: bool
+        route_stage_trace: list[dict[str, Any]] | None = None
 
 
 router = APIRouter()
@@ -110,6 +113,7 @@ class ChatHttpResponse(BaseModel):
     language: str = "en"
     agent_id: str | None = None
     round_table: bool = False
+    route_stage_trace: list[dict[str, Any]] | None = None
 
     @classmethod
     def from_result(cls, r: ChatResult) -> "ChatHttpResponse":
@@ -123,6 +127,7 @@ class ChatHttpResponse(BaseModel):
             language=r.language,
             agent_id=r.agent_id,
             round_table=r.round_table,
+            route_stage_trace=r.route_stage_trace,
         )
 
 

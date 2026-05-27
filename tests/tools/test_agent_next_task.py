@@ -9,8 +9,10 @@ import pytest
 
 from tools.agent_next_task import (
     DREAM_MODE_CANDIDATES,
+    OPERATIONAL_SCOUT_CANDIDATES,
     SUBSTRATE_SMOKE_CANDIDATES,
     _pick_dream_mode_seed,
+    _pick_operational_scout,
     _pick_substrate_smoke,
     evaluate_agent_next_task,
     main,
@@ -533,6 +535,154 @@ def test_active_same_day_dream_seed_advances_to_next_seed(
     )
 
 
+def test_completed_smoke_and_dream_pools_fall_back_to_operational_scout(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    completed_smokes = [
+        {
+            "ts_utc": "2026-05-20T12:10:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+            "status": "done",
+            "message": "daily substrate smoke passed",
+        }
+        for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+    ]
+    completed_dreams = [
+        {
+            "ts_utc": "2026-05-20T12:20:00Z",
+            "agent": "claude",
+            "type": "done",
+            "task_id": (
+                f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
+            ),
+            "status": "done",
+            "message": "dream-mode seed completed",
+        }
+        for entry in DREAM_MODE_CANDIDATES
+    ]
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            *completed_smokes,
+            *completed_dreams,
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_operational_scout"
+    assert report["next_action"] == "claim_and_run"
+    candidate = report["candidate"]
+    assert candidate["kind"] == "operational_read_only_scout"
+    assert candidate["mode"] == "read-only"
+    assert candidate["write_scope"] == []
+    assert candidate["target"] in {
+        entry["target"] for entry in OPERATIONAL_SCOUT_CANDIDATES
+    }
+    assert candidate["task_id_suggestion"].startswith("operational-scout-")
+    assert candidate["task_id_suggestion"].endswith("-2026-05-20")
+    assert candidate["recommended_command"]
+    assert len(report["completed_substrate_smoke_task_ids"]) == len(
+        SUBSTRATE_SMOKE_CANDIDATES
+    )
+    assert len(report["completed_dream_mode_task_ids"]) == len(
+        DREAM_MODE_CANDIDATES
+    )
+    assert report["completed_operational_scout_task_ids"] == []
+
+
+def test_active_same_day_operational_scout_advances_to_next_scout(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    completed_smokes = [
+        {
+            "ts_utc": "2026-05-20T12:10:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+            "status": "done",
+            "message": "daily substrate smoke passed",
+        }
+        for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+    ]
+    completed_dreams = [
+        {
+            "ts_utc": "2026-05-20T12:20:00Z",
+            "agent": "claude",
+            "type": "done",
+            "task_id": (
+                f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
+            ),
+            "status": "done",
+            "message": "dream-mode seed completed",
+        }
+        for entry in DREAM_MODE_CANDIDATES
+    ]
+    first = _pick_operational_scout(agent="codex", now_utc=NOW)
+    assert first is not None
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            *completed_smokes,
+            *completed_dreams,
+        ],
+    )
+    _claims_dir(bridge)
+    claim_task(
+        agent="claude",
+        task_id=first["task_id_suggestion"],
+        summary="same-day operational scout already claimed by another agent",
+        mode="read-only",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert report["decision"] == "claim_operational_scout"
+    assert candidate["task_id_suggestion"] != first["task_id_suggestion"]
+    assert candidate["rotation"]["offset"] == 1
+    assert report["active_operational_scout_task_ids"] == [
+        first["task_id_suggestion"]
+    ]
+    assert (
+        first["task_id_suggestion"]
+        in candidate["rotation"]["skipped_active_task_ids"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # rotation determinism
 # ---------------------------------------------------------------------------
@@ -588,6 +738,14 @@ def test_candidates_pool_is_nonempty_and_each_entry_is_well_formed() -> None:
         assert entry["slug"]
         assert entry["target"]
         assert entry["rationale"]
+    assert OPERATIONAL_SCOUT_CANDIDATES
+    for entry in OPERATIONAL_SCOUT_CANDIDATES:
+        assert entry["slug"]
+        assert entry["target"]
+        assert entry["rationale"]
+        assert entry.get("recommended_command") or entry.get(
+            "recommended_command_template"
+        )
 
 
 # ---------------------------------------------------------------------------

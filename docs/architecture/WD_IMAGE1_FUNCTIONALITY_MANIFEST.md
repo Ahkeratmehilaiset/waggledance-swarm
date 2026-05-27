@@ -30,7 +30,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | Hex-mesh routing | Partial | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Add an end-to-end proof that shows the exact query entry order for the active runtime flags. |
 | Deterministic solver-first routing | Partial | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Add per-solver-call trace coverage so "full MAGMA provenance" becomes measurable. |
 | MAGMA audit log | Partial | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only enforcement or keep user-facing wording at "audit/provenance wrappers". |
-| Low-risk autonomy loop | Partial | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py` | Add a read-only runtime proof that a gap signal can flow to an allowlisted growth intent without external authority. |
+| Low-risk autonomy loop | Partial, with temp-DB proof | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py` | Wire the proof into a runtime-facing smoke that reports scheduler cadence and authority boundaries. |
 | Hexagonal upgrades | Partial, with in-memory proof | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py` | Wire the pure proof into a read-only runtime-facing smoke that reports current config and active topology boundaries. |
 | Future swarm scalability | Planned | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Replace broad future claims with measurable scale axes and gate them with proof artifacts. |
 
@@ -53,7 +53,9 @@ Run:
 python tools\wd_image1_capability_manifest.py --json
 ```
 
-The command is read-only. It emits a JSON matrix with:
+The command is read-only with respect to repo files, runtime state, bridge
+state, and GitHub state. Executable local proofs may create ephemeral temp
+artifacts and delete them before returning. It emits a JSON matrix with:
 
 - `status`: `implemented`, `partial`, `planned`, or `blocked`
 - `claim_safe`: whether the image's literal claim is safe to repeat
@@ -61,12 +63,19 @@ The command is read-only. It emits a JSON matrix with:
 - `gaps`: why stronger wording is not yet supported
 - `next_smallest_pr`: the next scoped implementation step
 - `proof`: optional non-mutating proof payload for capabilities that have an
-  executable local proof, currently `hexagonal_upgrades`
+  executable local proof, currently `hexagonal_upgrades` and
+  `low_risk_autonomy_loop`
 
 The `hexagonal_upgrades` proof is intentionally pure. It builds a temporary
 topology in memory, applies a shadow subdivision plan, verifies parent/child
 relations, and delivers ring / parent-to-child / child-to-parent messages
 without changing runtime topology or files.
+
+The `low_risk_autonomy_loop` proof is intentionally local. It creates an
+ephemeral control-plane database, records one low-risk runtime miss, digests it
+into an allowlisted growth intent, runs one bounded scheduler tick, verifies the
+promoted solver serves the next matching query, then deletes the temp database.
+It does not change production runtime authority or write tracked files.
 
 ## Bridge Handoff Template
 

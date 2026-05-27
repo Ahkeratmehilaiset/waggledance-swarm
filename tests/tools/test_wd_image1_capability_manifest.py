@@ -8,6 +8,7 @@ import sys
 
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
+from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +83,39 @@ def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
     ]
 
 
+def test_low_risk_autonomy_proof_flows_gap_to_scheduler_outcome() -> None:
+    proof = build_low_risk_autonomy_proof()
+
+    assert proof["ok"] is True
+    assert proof["family_kind"] == "scalar_unit_conversion"
+    assert proof["family_low_risk"] is True
+    assert proof["external_writes_applied"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["runtime_authority_changed"] is False
+    assert proof["temporary_control_plane_db"] is True
+    assert proof["temp_db_removed"] is True
+    assert proof["route_before"]["served"] is False
+    assert proof["route_before"]["source"] == "gap_emitted"
+    assert proof["recorded_signal"]["count"] == 1
+    assert proof["digest"]["intents_created"] == 1
+    assert proof["digest"]["intents_enqueued"] == 1
+    assert proof["queued_before_tick"][0]["status"] == "queued"
+    assert proof["scheduler_tick"]["claimed"] is True
+    assert proof["scheduler_tick"]["outcome"] == "auto_promoted"
+    assert proof["intent_after_tick"]["status"] == "fulfilled"
+    assert proof["queue_after_tick"][0]["status"] == "completed"
+    assert proof["route_after"]["served"] is True
+    assert proof["route_after"]["source"] == "auto_promoted_solver"
+    assert proof["route_after"]["output"] == 298.15
+    assert proof["run_outcomes"] == ["auto_promoted"]
+    assert proof["growth_event_counts"] == {
+        "signal_recorded": 1,
+        "intent_created": 1,
+        "intent_enqueued": 1,
+        "solver_auto_promoted": 1,
+    }
+
+
 def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
     report = build_manifest(ROOT)
     capability = _by_id(report)["hexagonal_upgrades"]
@@ -89,6 +123,19 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["status"] == "partial"
     assert capability["claim_safe"] is False
     assert capability["proof"]["ok"] is True
+    assert report["summary"]["proofs_ok"] is True
+
+
+def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["low_risk_autonomy_loop"]
+
+    assert capability["status"] == "partial"
+    assert capability["claim_safe"] is False
+    assert capability["proof"]["ok"] is True
+    assert capability["proof"]["route_before"]["source"] == "gap_emitted"
+    assert capability["proof"]["scheduler_tick"]["outcome"] == "auto_promoted"
+    assert capability["proof"]["route_after"]["source"] == "auto_promoted_solver"
     assert report["summary"]["proofs_ok"] is True
 
 

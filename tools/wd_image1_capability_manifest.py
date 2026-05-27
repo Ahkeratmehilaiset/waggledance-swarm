@@ -9,6 +9,7 @@ returning.
 from __future__ import annotations
 
 import argparse
+import asyncio
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
@@ -306,7 +307,7 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
         and hybrid_enabled is True
         and hybrid_mode in {"shadow", "candidate", "authoritative"}
     )
-    return {
+    proof = {
         "proof_id": "hex_mesh_entry_route_order_v1",
         "ok": ok,
         "proves_every_query_first_enters_mesh": False,
@@ -339,6 +340,10 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
             "current settings."
         ),
     }
+    runtime_trace_smoke = _build_hex_mesh_runtime_trace_smoke_from_static(proof)
+    proof["runtime_trace_smoke"] = runtime_trace_smoke
+    proof["ok"] = bool(proof["ok"] and runtime_trace_smoke["ok"])
+    return proof
 
 
 def _load_yaml_mapping(path: Path) -> dict:
@@ -349,6 +354,293 @@ def _load_yaml_mapping(path: Path) -> dict:
 def _nested_mapping(data: dict, key: str) -> dict:
     value = data.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def build_hex_mesh_runtime_trace_smoke(root: Path | str = ROOT) -> dict:
+    """Run one read-only ChatService request and compare route-stage order."""
+
+    static_proof = build_hex_mesh_entry_proof(root)
+    existing = static_proof.get("runtime_trace_smoke")
+    if isinstance(existing, dict):
+        return existing
+    return _build_hex_mesh_runtime_trace_smoke_from_static(static_proof)
+
+
+def _build_hex_mesh_runtime_trace_smoke_from_static(static_proof: dict) -> dict:
+    proof_id = "hex_mesh_runtime_trace_smoke_v1"
+    if static_proof.get("ok") is not True:
+        return {
+            "proof_id": proof_id,
+            "ok": False,
+            "blocked_reason": "static_hex_mesh_entry_proof_not_ok",
+            "static_proof_ok": static_proof.get("ok") is True,
+            "no_runtime_mutation": True,
+            "external_writes_applied": False,
+        }
+
+    current_config = static_proof.get("current_config") or {}
+    static_route_order = list(static_proof.get("chat_route_order") or [])
+    disabled_static_stages = []
+    if not current_config.get("hybrid_retrieval_enabled", False):
+        disabled_static_stages.append("hybrid_retrieval_8_cell")
+    if not current_config.get("hex_mesh_enabled", False):
+        disabled_static_stages.append("hex_neighbor_assist_7_cell")
+    expected_live_order = [
+        stage
+        for stage in static_route_order
+        if stage not in disabled_static_stages
+    ]
+
+    observed_events: list[dict] = []
+
+    def record(stage: str, **details: object) -> None:
+        event = {"stage": stage}
+        event.update(details)
+        observed_events.append(event)
+
+    class _TraceHotCache:
+        def get(self, key: str) -> None:
+            record("hot_cache", hit=False, key=key)
+            return None
+
+        def set(self, key: str, value: str, ttl: int) -> None:
+            record("cache_write", key=key, ttl=ttl, value_present=bool(value))
+
+    class _TraceMemoryService:
+        async def retrieve_context(
+            self,
+            *,
+            query: str,
+            language: str,
+            limit: int,
+        ) -> list:
+            record(
+                "memory_context",
+                query_present=bool(query),
+                language=language,
+                limit=limit,
+                result_count=0,
+            )
+            return []
+
+    class _TraceConfig:
+        def get(self, key: str, default: object = None) -> object:
+            return {
+                "advanced_learning.micro_model_enabled": False,
+                "swarm.enabled": False,
+            }.get(key, default)
+
+    class _TraceHybridRetrieval:
+        enabled = bool(current_config.get("hybrid_retrieval_enabled", False))
+        is_authoritative = bool(
+            current_config.get("hybrid_retrieval_authoritative", False)
+        )
+
+        async def retrieve(self, query: str, intent: str, k: int) -> object:
+            from waggledance.application.services.hybrid_retrieval_service import (
+                HybridTraceResult,
+            )
+
+            mode = str(current_config.get("hybrid_retrieval_mode") or "shadow")
+            record(
+                "hybrid_retrieval_8_cell",
+                enabled=self.enabled,
+                authoritative=self.is_authoritative,
+                mode=mode,
+                query_present=bool(query),
+                intent=intent,
+                k=k,
+            )
+            return HybridTraceResult(
+                retrieval_mode=f"hybrid:{mode}",
+                route_source="cell:math+global",
+                answered_by_layer="llm",
+                cell_id="math",
+                llm_fallback=True,
+            )
+
+    class _TraceHexNeighborAssist:
+        enabled = bool(current_config.get("hex_mesh_enabled", False))
+
+        async def resolve(
+            self,
+            *,
+            query: str,
+            intent: str,
+            context: dict,
+        ) -> dict:
+            record(
+                "hex_neighbor_assist_7_cell",
+                enabled=self.enabled,
+                query_present=bool(query),
+                intent=intent,
+                context_keys=sorted(context),
+            )
+            return {
+                "confidence": 0.0,
+                "trace": {"cell_count": 7, "answered": False},
+            }
+
+    class _TraceOrchestrator:
+        async def handle_task(self, task: object, route: object) -> object:
+            from waggledance.core.domain.agent import AgentResult
+
+            record(
+                "orchestrator_llm_fallback",
+                route_type=getattr(route, "route_type", None),
+                task_language=getattr(task, "language", None),
+                task_profile=getattr(task, "profile", None),
+            )
+            return AgentResult(
+                agent_id="wd_image1_runtime_smoke",
+                response="runtime smoke answer",
+                confidence=0.8,
+                latency_ms=1.0,
+                source="llm",
+            )
+
+        async def run_round_table(self, task: object) -> object:
+            raise AssertionError("runtime smoke should not need round-table")
+
+    class _TraceTelemetry:
+        def record(
+            self,
+            route_type: str,
+            latency_ms: float,
+            success: bool,
+        ) -> None:
+            return None
+
+    class _TraceHybridObserver:
+        async def record_candidate(self, **kwargs: object) -> None:
+            return None
+
+    async def _run_request() -> object:
+        import waggledance.application.services.chat_service as chat_mod
+        from waggledance.application.dto.chat_dto import ChatRequest
+        from waggledance.application.services.chat_service import ChatService
+
+        original_detect_language = ChatService._detect_language
+        original_select_route = chat_mod.select_route
+        original_try_solver = ChatService._try_solver
+
+        def traced_detect_language(query: str, hint: str) -> str:
+            record("language_detection", hint=hint, query_present=bool(query))
+            return original_detect_language(query, hint)
+
+        def traced_select_route(features: object, config: object) -> object:
+            record(
+                "route_selection",
+                solver_intent=getattr(features, "solver_intent", None),
+                memory_score=getattr(features, "memory_score", None),
+            )
+            return original_select_route(features, config)
+
+        def traced_try_solver(query: str, intent: str) -> str | None:
+            record(
+                "deterministic_solver",
+                intent=intent,
+                query_present=bool(query),
+            )
+            return original_try_solver(query, intent)
+
+        ChatService._detect_language = staticmethod(traced_detect_language)
+        chat_mod.select_route = traced_select_route
+        ChatService._try_solver = staticmethod(traced_try_solver)
+        try:
+            service = ChatService(
+                orchestrator=_TraceOrchestrator(),
+                memory_service=_TraceMemoryService(),
+                hot_cache=_TraceHotCache(),
+                routing_policy_fn=chat_mod.select_route,
+                config=_TraceConfig(),
+                hybrid_retrieval=(
+                    _TraceHybridRetrieval()
+                    if current_config.get("hybrid_retrieval_enabled", False)
+                    else None
+                ),
+                hex_neighbor_assist=(
+                    _TraceHexNeighborAssist()
+                    if current_config.get("hex_mesh_enabled", False)
+                    else None
+                ),
+            )
+            service._telemetry = _TraceTelemetry()
+            service._hybrid_observer = _TraceHybridObserver()
+            result = await service.handle(
+                ChatRequest(
+                    query="statistics summary for hive sensor readings",
+                    language="auto",
+                    profile="HOME",
+                )
+            )
+            await asyncio.sleep(0)
+            return result
+        finally:
+            ChatService._detect_language = staticmethod(original_detect_language)
+            chat_mod.select_route = original_select_route
+            ChatService._try_solver = staticmethod(original_try_solver)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        result = asyncio.run(_run_request())
+    else:
+        return {
+            "proof_id": proof_id,
+            "ok": False,
+            "blocked_reason": "active_asyncio_loop",
+            "static_route_order": static_route_order,
+            "expected_live_route_order": expected_live_order,
+            "disabled_static_stages": disabled_static_stages,
+            "no_runtime_mutation": True,
+            "external_writes_applied": False,
+        }
+    observed_route_order = [
+        event["stage"]
+        for event in observed_events
+        if event["stage"] in static_route_order
+    ]
+    extra_observed_stages = [
+        event["stage"]
+        for event in observed_events
+        if event["stage"] not in static_route_order
+    ]
+    pre_hex_stages = list(static_proof.get("pre_hex_steps") or [])
+    pre_hex_observed = [
+        stage for stage in observed_route_order if stage in pre_hex_stages
+    ]
+    ok = (
+        observed_route_order == expected_live_order
+        and pre_hex_observed == pre_hex_stages
+        and getattr(result, "source", None) == "llm"
+        and getattr(result, "cached", None) is False
+    )
+    return {
+        "proof_id": proof_id,
+        "ok": ok,
+        "query": "statistics summary for hive sensor readings",
+        "static_route_order": static_route_order,
+        "expected_live_route_order": expected_live_order,
+        "observed_route_order": observed_route_order,
+        "disabled_static_stages": disabled_static_stages,
+        "extra_observed_stages": extra_observed_stages,
+        "pre_hex_stages_observed_before_optional_hex": (
+            pre_hex_observed == pre_hex_stages
+        ),
+        "live_result": {
+            "source": getattr(result, "source", None),
+            "confidence": getattr(result, "confidence", None),
+            "cached": getattr(result, "cached", None),
+            "hybrid_trace_present": getattr(result, "hybrid_trace", None)
+            is not None,
+            "round_table": getattr(result, "round_table", None),
+        },
+        "current_config": current_config,
+        "no_runtime_mutation": True,
+        "external_writes_applied": False,
+        "events": observed_events,
+    }
 
 
 def build_hexagonal_upgrade_proof() -> dict:
@@ -763,8 +1055,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add a runtime-facing trace smoke that compares this static "
-                "route-order proof against one live ChatService request."
+                "Promote the runtime trace smoke into first-class "
+                "ChatService route-stage telemetry so production receipts can "
+                "expose the same order without test-only instrumentation."
             ),
             proof=hex_entry_proof,
         ),

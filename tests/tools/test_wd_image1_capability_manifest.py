@@ -112,6 +112,26 @@ def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
     assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
 
 
+def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> None:
+    report = build_manifest(tmp_path)
+    capabilities = _by_id(report)
+    hex_proof = capabilities["hex_mesh_entry"]["proof"]
+
+    assert all(
+        capability["status"] == "blocked"
+        for capability in report["capabilities"]
+    )
+    assert all(
+        capability["claim_safe"] is False
+        for capability in report["capabilities"]
+    )
+    assert hex_proof["ok"] is False
+    assert hex_proof["blocked_reason"] == "missing_required_inputs"
+    assert hex_proof["missing_inputs"] == ["configs/settings.yaml"]
+    assert report["summary"]["all_literal_claims_safe"] is False
+    assert report["summary"]["proofs_ok"] is False
+
+
 def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
     proof = build_hexagonal_upgrade_proof()
 

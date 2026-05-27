@@ -124,11 +124,71 @@ def _status_for(
     return STATUS_BLOCKED
 
 
+def _blocked_hex_mesh_entry_proof(
+    *,
+    missing_inputs: Sequence[str],
+    current_config: dict | None = None,
+) -> dict:
+    route_order = [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "hex_neighbor_assist_7_cell",
+        "orchestrator_llm_fallback",
+    ]
+    return {
+        "proof_id": "hex_mesh_entry_route_order_v1",
+        "ok": False,
+        "blocked_reason": "missing_required_inputs",
+        "missing_inputs": list(missing_inputs),
+        "proves_every_query_first_enters_mesh": False,
+        "literal_claim_safe": False,
+        "current_config": current_config or {
+            "hybrid_retrieval_enabled": False,
+            "hybrid_retrieval_mode": "unknown",
+            "hybrid_retrieval_authoritative": False,
+            "hex_mesh_enabled": False,
+            "hex_mesh_cell_config_path": "configs/hex_cells.yaml",
+        },
+        "topologies": {
+            "solver_retrieval": {
+                "cell_count": 0,
+                "cell_ids": [],
+                "entry_point": "HybridRetrievalService.retrieve",
+                "gated_by": "hybrid_retrieval.enabled",
+            },
+            "agent_routing": {
+                "cell_count": 0,
+                "cell_ids": [],
+                "entry_point": "HexNeighborAssist.resolve",
+                "gated_by": "hex_mesh.enabled",
+            },
+        },
+        "chat_route_order": route_order,
+        "pre_hex_steps": route_order[:5],
+        "solver_retrieval_samples": [],
+        "agent_routing_samples": [],
+        "safe_conclusion": (
+            "Required config files are missing, so no hex entry proof or "
+            "literal first-entry mesh claim is safe for this root."
+        ),
+    }
+
+
 def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
     """Report current query-entry boundaries for the two hex topologies."""
 
     repo_root = Path(root)
-    settings = _load_yaml_mapping(repo_root / "configs" / "settings.yaml")
+    settings_path = repo_root / "configs" / "settings.yaml"
+    if not settings_path.exists():
+        return _blocked_hex_mesh_entry_proof(
+            missing_inputs=("configs/settings.yaml",),
+        )
+
+    settings = _load_yaml_mapping(settings_path)
     hybrid_cfg = _nested_mapping(settings, "hybrid_retrieval")
     hex_mesh_cfg = _nested_mapping(settings, "hex_mesh")
 
@@ -170,8 +230,27 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
     cell_config_path = str(
         hex_mesh_cfg.get("cell_config_path") or "configs/hex_cells.yaml"
     )
+    cell_config_file = repo_root / cell_config_path
+    hybrid_enabled = bool(hybrid_cfg.get("enabled", False))
+    hybrid_mode = str(hybrid_cfg.get("mode", "shadow"))
+    hex_mesh_enabled = bool(hex_mesh_cfg.get("enabled", False))
+    current_config = {
+        "hybrid_retrieval_enabled": hybrid_enabled,
+        "hybrid_retrieval_mode": hybrid_mode,
+        "hybrid_retrieval_authoritative": (
+            hybrid_enabled and hybrid_mode == "authoritative"
+        ),
+        "hex_mesh_enabled": hex_mesh_enabled,
+        "hex_mesh_cell_config_path": cell_config_path,
+    }
+    if not cell_config_file.exists():
+        return _blocked_hex_mesh_entry_proof(
+            missing_inputs=(cell_config_path,),
+            current_config=current_config,
+        )
+
     agent_registry = HexTopologyRegistry(
-        config_path=str(repo_root / cell_config_path),
+        config_path=str(cell_config_file),
     )
     agent_samples = [
         {
@@ -208,9 +287,6 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
             "matched_expected": cell_id == sample["expected_cell"],
         })
 
-    hybrid_enabled = bool(hybrid_cfg.get("enabled", False))
-    hybrid_mode = str(hybrid_cfg.get("mode", "shadow"))
-    hex_mesh_enabled = bool(hex_mesh_cfg.get("enabled", False))
     route_order = [
         "language_detection",
         "hot_cache",
@@ -235,15 +311,7 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
         "ok": ok,
         "proves_every_query_first_enters_mesh": False,
         "literal_claim_safe": False,
-        "current_config": {
-            "hybrid_retrieval_enabled": hybrid_enabled,
-            "hybrid_retrieval_mode": hybrid_mode,
-            "hybrid_retrieval_authoritative": (
-                hybrid_enabled and hybrid_mode == "authoritative"
-            ),
-            "hex_mesh_enabled": hex_mesh_enabled,
-            "hex_mesh_cell_config_path": cell_config_path,
-        },
+        "current_config": current_config,
         "topologies": {
             "solver_retrieval": {
                 "cell_count": len(ALL_CELLS),

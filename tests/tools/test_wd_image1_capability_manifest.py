@@ -9,6 +9,7 @@ import sys
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
+from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 
 
@@ -109,7 +110,49 @@ def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
         "safety_security",
         "home_comfort",
     ]
+    assert proof["runtime_trace_smoke"]["ok"] is True
+    assert proof["runtime_trace_smoke"]["disabled_static_stages"] == [
+        "hex_neighbor_assist_7_cell",
+    ]
     assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
+
+
+def test_hex_mesh_runtime_trace_smoke_matches_live_chatservice_order() -> None:
+    smoke = build_hex_mesh_runtime_trace_smoke(ROOT)
+
+    assert smoke["ok"] is True
+    assert smoke["static_route_order"] == [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "hex_neighbor_assist_7_cell",
+        "orchestrator_llm_fallback",
+    ]
+    assert smoke["expected_live_route_order"] == [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "orchestrator_llm_fallback",
+    ]
+    assert smoke["observed_route_order"] == smoke["expected_live_route_order"]
+    assert smoke["pre_hex_stages_observed_before_optional_hex"] is True
+    assert smoke["disabled_static_stages"] == ["hex_neighbor_assist_7_cell"]
+    assert smoke["extra_observed_stages"] == []
+    assert smoke["live_result"] == {
+        "source": "llm",
+        "confidence": 0.8,
+        "cached": False,
+        "hybrid_trace_present": True,
+        "round_table": False,
+    }
+    assert smoke["no_runtime_mutation"] is True
+    assert smoke["external_writes_applied"] is False
 
 
 def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> None:

@@ -683,6 +683,177 @@ def test_active_same_day_operational_scout_advances_to_next_scout(
     )
 
 
+def test_completed_daily_pools_fall_back_to_continuous_operational_scout(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    completed_smokes = [
+        {
+            "ts_utc": "2026-05-20T12:10:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+            "status": "done",
+            "message": "daily substrate smoke passed",
+        }
+        for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+    ]
+    completed_dreams = [
+        {
+            "ts_utc": "2026-05-20T12:20:00Z",
+            "agent": "claude",
+            "type": "done",
+            "task_id": (
+                f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
+            ),
+            "status": "done",
+            "message": "dream-mode seed completed",
+        }
+        for entry in DREAM_MODE_CANDIDATES
+    ]
+    completed_operational = [
+        {
+            "ts_utc": "2026-05-20T12:30:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"operational-scout-{entry['slug']}-2026-05-20",
+            "status": "done",
+            "message": "operational scout completed",
+        }
+        for entry in OPERATIONAL_SCOUT_CANDIDATES
+    ]
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            *completed_smokes,
+            *completed_dreams,
+            *completed_operational,
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert report["decision"] == "claim_continuous_operational_scout"
+    assert report["next_action"] == "claim_and_run"
+    assert candidate["kind"] == "continuous_operational_read_only_scout"
+    assert candidate["mode"] == "read-only"
+    assert candidate["write_scope"] == []
+    assert candidate["task_id_suggestion"].startswith(
+        "continuous-operational-scout-"
+    )
+    assert candidate["task_id_suggestion"].endswith("-2026-05-20-0")
+    assert candidate["recommended_command"]
+    assert len(report["completed_operational_scout_task_ids"]) == len(
+        OPERATIONAL_SCOUT_CANDIDATES
+    )
+    assert report["completed_continuous_operational_scout_task_ids"] == []
+
+
+def test_completed_continuous_operational_scout_advances_sequence(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    base_events = [
+        {
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "agent": "codex",
+            "type": "heartbeat",
+            "task_id": "baseline",
+            "status": "active",
+            "message": "background heartbeat",
+        },
+        *[
+            {
+                "ts_utc": "2026-05-20T12:10:00Z",
+                "agent": "codex",
+                "type": "done",
+                "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+                "status": "done",
+                "message": "daily substrate smoke passed",
+            }
+            for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+        ],
+        *[
+            {
+                "ts_utc": "2026-05-20T12:20:00Z",
+                "agent": "claude",
+                "type": "done",
+                "task_id": (
+                    f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
+                ),
+                "status": "done",
+                "message": "dream-mode seed completed",
+            }
+            for entry in DREAM_MODE_CANDIDATES
+        ],
+        *[
+            {
+                "ts_utc": "2026-05-20T12:30:00Z",
+                "agent": "codex",
+                "type": "done",
+                "task_id": f"operational-scout-{entry['slug']}-2026-05-20",
+                "status": "done",
+                "message": "operational scout completed",
+            }
+            for entry in OPERATIONAL_SCOUT_CANDIDATES
+        ],
+    ]
+    events_path = _events_file(bridge, base_events)
+    _claims_dir(bridge)
+    first = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    first_task_id = first["candidate"]["task_id_suggestion"]
+
+    events_path = _events_file(
+        bridge,
+        [
+            *base_events,
+            {
+                "ts_utc": "2026-05-20T12:40:00Z",
+                "agent": "codex",
+                "type": "done",
+                "task_id": first_task_id,
+                "status": "done",
+                "message": "continuous operational scout completed",
+            },
+        ],
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert report["decision"] == "claim_continuous_operational_scout"
+    assert candidate["task_id_suggestion"] != first_task_id
+    assert candidate["rotation"]["sequence"] == 1
+    assert report["completed_continuous_operational_scout_task_ids"] == [
+        first_task_id
+    ]
+
+
 # ---------------------------------------------------------------------------
 # rotation determinism
 # ---------------------------------------------------------------------------
@@ -855,6 +1026,65 @@ def test_cli_infers_bridge_root_from_events_path_for_claims(
         parsed["bridge_recommendation"]["task_id"]
         == "claude-real-bridge-root-claim"
     )
+
+
+def test_cli_bridge_root_without_events_uses_bridge_root_events(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / "real" / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:59:00Z",
+                "agent": "codex-lead-1",
+                "to": "claude",
+                "type": "message",
+                "task_id": "real-bridge-root-request",
+                "status": "request",
+                "message": "request from the explicit bridge root",
+            }
+        ],
+    )
+    _claims_dir(bridge)
+
+    shadow_bridge = tmp_path / "shadow" / ".agent-bridge"
+    _events_file(
+        shadow_bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "shadow-baseline",
+                "status": "active",
+                "message": "cwd-local shadow bridge baseline",
+            }
+        ],
+    )
+    _claims_dir(shadow_bridge)
+    monkeypatch.chdir(shadow_bridge.parent)
+
+    exit_code = main(
+        [
+            "--agent",
+            "claude",
+            "--bridge-root",
+            str(bridge),
+            "--now",
+            "2026-05-20T12:00:00Z",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    parsed = json.loads(out)
+    assert parsed["decision"] == "defer_to_bridge_next_action"
+    assert parsed["bridge_recommendation"]["action"] == "answer_incoming"
+    assert parsed["bridge_recommendation"]["task_id"] == "real-bridge-root-request"
 
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,6 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
@@ -210,7 +209,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge events JSONL path. Defaults to "
+            "<bridge-root>/shared/events.jsonl."
+        ),
+    )
     parser.add_argument("--bridge-root", type=Path, default=None)
     parser.add_argument(
         "--tail",
@@ -226,10 +233,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     now_utc = _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
+    bridge_root = _bridge_root_for_args(args.events, args.bridge_root)
+    events_path = _events_path_for_args(args.events, bridge_root)
     report = evaluate_agent_next_task(
         agent=args.agent,
-        events_path=args.events,
-        bridge_root=_bridge_root_for_args(args.events, args.bridge_root),
+        events_path=events_path,
+        bridge_root=bridge_root,
         tail=args.tail,
         now_utc=now_utc,
     )
@@ -455,6 +464,74 @@ def evaluate_agent_next_task(
                         ),
                     ],
                 }
+            completed_continuous_operational_scout_task_ids = (
+                _completed_continuous_operational_scout_task_ids(
+                    events=events,
+                    bridge_root=Path(bridge_root),
+                    now_utc=now_utc,
+                )
+            )
+            active_continuous_operational_scout_task_ids = (
+                _active_continuous_operational_scout_task_ids(
+                    claims=claims,
+                    now_utc=now_utc,
+                )
+            )
+            continuous_candidate = _pick_continuous_operational_scout(
+                agent=agent,
+                now_utc=now_utc,
+                completed_task_ids=completed_continuous_operational_scout_task_ids,
+                active_task_ids=active_continuous_operational_scout_task_ids,
+            )
+            if continuous_candidate is not None:
+                return {
+                    "decision": "claim_continuous_operational_scout",
+                    "next_action": "claim_and_run",
+                    "exit_code": 0,
+                    "agent": agent,
+                    "underlying_bridge_action": bridge_action,
+                    "bridge_recommendation": bridge_recommendation,
+                    **_bridge_context(bridge_recommendation),
+                    "completed_substrate_smoke_task_ids": sorted(
+                        completed_task_ids
+                    ),
+                    "completed_dream_mode_task_ids": sorted(
+                        completed_dream_mode_task_ids
+                    ),
+                    "active_dream_mode_task_ids": sorted(
+                        active_dream_mode_task_ids
+                    ),
+                    "completed_operational_scout_task_ids": sorted(
+                        completed_operational_scout_task_ids
+                    ),
+                    "active_operational_scout_task_ids": sorted(
+                        active_operational_scout_task_ids
+                    ),
+                    "completed_continuous_operational_scout_task_ids": sorted(
+                        completed_continuous_operational_scout_task_ids
+                    ),
+                    "active_continuous_operational_scout_task_ids": sorted(
+                        active_continuous_operational_scout_task_ids
+                    ),
+                    "candidate": continuous_candidate,
+                    "notes": [
+                        (
+                            "bridge_next_action left the next-work choice open, "
+                            "and every daily substrate-smoke, dream-mode, and "
+                            "operational scout candidate is already completed "
+                            "or actively claimed today"
+                        ),
+                        (
+                            "the picker advanced to a continuous read-only "
+                            "operational scout with a unique sequence task id "
+                            "instead of returning an operator handoff"
+                        ),
+                        (
+                            "the candidate is a recommendation only; the caller "
+                            "is responsible for claiming it before running"
+                        ),
+                    ],
+                }
             return {
                 "decision": "dream_mode_pool_exhausted",
                 "next_action": "operator_handles",
@@ -473,6 +550,12 @@ def evaluate_agent_next_task(
                 ),
                 "active_operational_scout_task_ids": sorted(
                     active_operational_scout_task_ids
+                ),
+                "completed_continuous_operational_scout_task_ids": sorted(
+                    completed_continuous_operational_scout_task_ids
+                ),
+                "active_continuous_operational_scout_task_ids": sorted(
+                    active_continuous_operational_scout_task_ids
                 ),
                 "notes": [
                     (
@@ -773,6 +856,63 @@ def _pick_operational_scout(
     }
 
 
+def _pick_continuous_operational_scout(
+    *,
+    agent: str,
+    now_utc: datetime,
+    completed_task_ids: set[str] | None = None,
+    active_task_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Pick a read-only scout after all daily candidate pools are exhausted."""
+    pool = OPERATIONAL_SCOUT_CANDIDATES
+    day_of_year = now_utc.timetuple().tm_yday
+    agent_salt = sum(ord(c) for c in agent) % len(pool)
+    completed = completed_task_ids or set()
+    active = active_task_ids or set()
+    unavailable = completed | active
+
+    for sequence in range(1000):
+        index = (day_of_year + agent_salt + sequence) % len(pool)
+        chosen = pool[index]
+        slug = chosen["slug"]
+        task_id = _continuous_operational_scout_task_id(
+            now_utc=now_utc,
+            slug=slug,
+            sequence=sequence,
+        )
+        if task_id in unavailable:
+            continue
+        command_template = chosen.get("recommended_command_template")
+        if command_template is None:
+            command_template = chosen["recommended_command"]
+        return {
+            "kind": "continuous_operational_read_only_scout",
+            "slug": slug,
+            "target": chosen["target"],
+            "rationale": chosen["rationale"],
+            "task_id_suggestion": task_id,
+            "mode": "read-only",
+            "write_scope": [],
+            "acceptance": (
+                "Produce a concise bridge finding or handoff with fresh "
+                "queue/health evidence; route any source change through a "
+                "separate write claim."
+            ),
+            "recommended_command": command_template.format(agent=agent),
+            "rotation": {
+                "agent": agent,
+                "day_of_year": day_of_year,
+                "agent_salt": agent_salt,
+                "pool_size": len(pool),
+                "index": index,
+                "sequence": sequence,
+                "skipped_completed_task_ids": sorted(completed),
+                "skipped_active_task_ids": sorted(active),
+            },
+        }
+    return None
+
+
 def _daily_smoke_task_prefix(agent: str, now_utc: datetime) -> str:
     return f"{agent}-substrate-smoke-{now_utc.strftime('%Y-%m-%d')}-"
 
@@ -807,6 +947,18 @@ def _operational_scout_task_id(
     return f"operational-scout-{slug}-{now_utc.strftime('%Y-%m-%d')}"
 
 
+def _continuous_operational_scout_task_id(
+    *,
+    now_utc: datetime,
+    slug: str,
+    sequence: int,
+) -> str:
+    return (
+        f"continuous-operational-scout-{slug}-"
+        f"{now_utc.strftime('%Y-%m-%d')}-{sequence}"
+    )
+
+
 def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
     return (
         task_id.startswith("dream-mode-")
@@ -824,12 +976,32 @@ def _is_same_day_operational_scout_task_id(
     )
 
 
-def _bridge_root_for_args(events_path: Path, bridge_root: Path | None) -> Path:
+def _is_same_day_continuous_operational_scout_task_id(
+    task_id: str,
+    now_utc: datetime,
+) -> bool:
+    return (
+        task_id.startswith("continuous-operational-scout-")
+        and f"-{now_utc.strftime('%Y-%m-%d')}-" in task_id
+    )
+
+
+def _bridge_root_for_args(events_path: Path | None, bridge_root: Path | None) -> Path:
     if bridge_root is not None:
         return bridge_root
-    if events_path.name == "events.jsonl" and events_path.parent.name == "shared":
+    if (
+        events_path is not None
+        and events_path.name == "events.jsonl"
+        and events_path.parent.name == "shared"
+    ):
         return events_path.parent.parent
     return DEFAULT_BRIDGE_ROOT
+
+
+def _events_path_for_args(events_path: Path | None, bridge_root: Path) -> Path:
+    if events_path is not None:
+        return events_path
+    return bridge_root / "shared" / "events.jsonl"
 
 
 def _completed_substrate_smoke_task_ids(
@@ -962,6 +1134,47 @@ def _completed_operational_scout_task_ids(
     return completed
 
 
+def _completed_continuous_operational_scout_task_ids(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    now_utc: datetime,
+) -> set[str]:
+    completed: set[str] = set()
+
+    for event in events:
+        task_id = str(event.get("task_id", ""))
+        if not _is_same_day_continuous_operational_scout_task_id(task_id, now_utc):
+            continue
+        if _is_successful_completion_event(event):
+            completed.add(task_id)
+
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        done_files = []
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        task_id = str(payload.get("task_id", ""))
+        if not _is_same_day_continuous_operational_scout_task_id(task_id, now_utc):
+            continue
+        status = str(
+            payload.get("release_status")
+            or payload.get("status")
+            or payload.get("release_message")
+            or ""
+        )
+        if _status_is_successful(status):
+            completed.add(task_id)
+
+    return completed
+
+
 def _active_dream_mode_task_ids(
     *,
     claims: Sequence[Any],
@@ -984,6 +1197,19 @@ def _active_operational_scout_task_ids(
     for claim in claims:
         task_id = str(getattr(claim, "task_id", ""))
         if _is_same_day_operational_scout_task_id(task_id, now_utc):
+            active.add(task_id)
+    return active
+
+
+def _active_continuous_operational_scout_task_ids(
+    *,
+    claims: Sequence[Any],
+    now_utc: datetime,
+) -> set[str]:
+    active: set[str] = set()
+    for claim in claims:
+        task_id = str(getattr(claim, "task_id", ""))
+        if _is_same_day_continuous_operational_scout_task_id(task_id, now_utc):
             active.add(task_id)
     return active
 

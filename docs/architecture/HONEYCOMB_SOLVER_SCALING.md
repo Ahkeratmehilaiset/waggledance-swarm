@@ -58,6 +58,10 @@ Captured by direct code inspection on 2026-04-24 (`docs/runs/phase8_ci_baseline.
 - `core/audit_log.py` + `waggledance/core/magma/audit_projector.py`.
 - SQLite append-only (`data/audit_log.db`, WAL mode) with 28 autonomy event types (`goal.*`, `plan.*`, `action.*`, `policy.*`, `capability.selected`, `verification.*`, `world.snapshot_committed`, `specialist.*`, `learning.*`, `reflection.*`, `simulated.*`).
 - Coverage is **goal/action/capability-level**, not per-solver-call yet.
+- 2026-05-27 Image #1 hardening: `SolverRouter` emits a privacy-safe
+  selected-solver trace and `AutonomyRuntime` carries it in the
+  `capability.selected` payload. This is selection visibility, not a full
+  append-only per-execution receipt.
 
 ### 1.7 EventBus
 
@@ -71,7 +75,7 @@ Captured by direct code inspection on 2026-04-24 (`docs/runs/phase8_ci_baseline.
 ### 1.9 Metrics
 
 - Prometheus `/metrics` exposes 15 counters + 4 gauges (see `waggledance/adapters/http/routes/metrics.py:45-66`): hex-mesh and retrieval routing counters plus `cells_loaded`, `quarantined_cells`, `waggledance_hex_mesh_enabled`, `waggledance_up`.
-- **No per-solver-call metrics**, no proposal-gate verdict metrics, no composition-path metrics.
+- **No per-solver-call metrics**, no proposal-gate verdict metrics, no composition-path metrics. A selected-solver trace exists, but it is not yet a metrics series.
 
 ## 2. Measurable capability growth — the definitions we will use
 

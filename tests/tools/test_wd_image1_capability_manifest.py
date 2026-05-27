@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from tools.wd_image1_capability_manifest import build_manifest
+from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
 from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
@@ -157,6 +158,55 @@ def test_hex_mesh_runtime_trace_smoke_matches_live_chatservice_order() -> None:
     assert smoke["external_writes_applied"] is False
 
 
+def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
+    proof = build_deterministic_solver_trace_proof(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "deterministic_solver_trace_v1"
+    assert proof["router_entrypoint"] == (
+        "waggledance.core.reasoning.solver_router.SolverRouter.route"
+    )
+    assert proof["quality_path"] == "gold"
+    assert proof["fallback_used"] is False
+    assert proof["selected_solver_ids"] == ["solve.math"]
+    assert proof["trace"] == [
+        {
+            "stage": "solver_call",
+            "status": "selected",
+            "intent": "math",
+            "capability_id": "solve.math",
+            "selected_index": 0,
+            "quality_path": "gold",
+            "execution_boundary": "safe_action_bus",
+        }
+    ]
+    assert proof["query_text_recorded"] is False
+    assert proof["magma_execution_receipt_claimed"] is False
+    assert proof["external_writes_applied"] is False
+
+
+def test_deterministic_solver_trace_proof_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "waggledance/core/reasoning/solver_router.py",
+        "waggledance/core/capabilities/selector.py",
+        "waggledance/core/capabilities/registry.py",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_deterministic_solver_trace_proof(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["selected_solver_ids"] == []
+    assert proof["trace"] == []
+    assert proof["magma_execution_receipt_claimed"] is False
+
+
 def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> None:
     report = build_manifest(tmp_path)
     capabilities = _by_id(report)
@@ -262,6 +312,18 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["literal_claim_safe"] is False
     assert capability["proof"]["topologies"]["solver_retrieval"]["cell_count"] == 8
     assert capability["proof"]["topologies"]["agent_routing"]["cell_count"] == 7
+    assert report["summary"]["proofs_ok"] is True
+
+
+def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["deterministic_solver_first"]
+
+    assert capability["status"] == "partial"
+    assert capability["claim_safe"] is False
+    assert capability["proof"]["ok"] is True
+    assert capability["proof"]["selected_solver_ids"] == ["solve.math"]
+    assert "append-only MAGMA" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 
 

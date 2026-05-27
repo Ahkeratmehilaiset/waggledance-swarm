@@ -581,6 +581,120 @@ def _build_hex_mesh_runtime_trace_smoke_from_static(static_proof: dict) -> dict:
     }
 
 
+def _blocked_deterministic_solver_trace_proof(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    safe_conclusion = (
+        "Required solver-routing files are missing, so no deterministic "
+        "solver trace proof is available for this root."
+    )
+    if blocked_reason == "non_current_import_root":
+        safe_conclusion = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the proof blocks instead of certifying one checkout "
+            "with SolverRouter imported from another checkout."
+        )
+    proof = {
+        "proof_id": "deterministic_solver_trace_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "router_entrypoint": (
+            "waggledance.core.reasoning.solver_router.SolverRouter.route"
+        ),
+        "selected_solver_ids": [],
+        "trace": [],
+        "query_text_recorded": False,
+        "magma_execution_receipt_claimed": False,
+        "safe_conclusion": safe_conclusion,
+    }
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
+    """Prove SolverRouter emits a privacy-safe selected-solver trace."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/core/reasoning/solver_router.py",
+        "waggledance/core/capabilities/selector.py",
+        "waggledance/core/capabilities/registry.py",
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_deterministic_solver_trace_proof(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_deterministic_solver_trace_proof(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
+
+    from waggledance.core.reasoning.solver_router import SolverRouter
+
+    sample_query = "calculate 2 + 2"
+    result = SolverRouter().route("math", sample_query)
+    trace = list(result.solver_call_trace)
+    trace_json = json.dumps(trace, sort_keys=True)
+    selected_solver_ids = [
+        str(item.get("capability_id"))
+        for item in trace
+        if item.get("stage") == "solver_call"
+    ]
+    query_text_recorded = (
+        sample_query in trace_json
+        or '"query"' in trace_json
+    )
+    ok = (
+        result.quality_path == "gold"
+        and result.selection.fallback_used is False
+        and selected_solver_ids == ["solve.math"]
+        and bool(trace)
+        and not query_text_recorded
+        and all(
+            item.get("execution_boundary") == "safe_action_bus"
+            for item in trace
+        )
+    )
+    return {
+        "proof_id": "deterministic_solver_trace_v1",
+        "ok": ok,
+        "router_entrypoint": (
+            "waggledance.core.reasoning.solver_router.SolverRouter.route"
+        ),
+        "quality_path": result.quality_path,
+        "fallback_used": result.selection.fallback_used,
+        "selected_solver_ids": selected_solver_ids,
+        "trace": trace,
+        "query_text_recorded": query_text_recorded,
+        "magma_execution_receipt_claimed": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "SolverRouter now emits a privacy-safe selected-solver trace "
+            "before SafeActionBus execution; full append-only MAGMA "
+            "execution receipts are still a separate proof boundary."
+        ),
+    }
+
+
 def build_hexagonal_upgrade_proof() -> dict:
     """Run a pure in-memory proof for subdivision + hierarchy + messages."""
 
@@ -968,6 +1082,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof = build_hexagonal_upgrade_proof()
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     hex_entry_proof = build_hex_mesh_entry_proof(root)
+    solver_trace_proof = build_deterministic_solver_trace_proof(root)
 
     return (
         Capability(
@@ -1006,22 +1121,25 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "specialist models, with LLM only advisory."
             ),
             safe_statement=(
-                "Solver-first routing surfaces exist; full per-solver-call "
-                "MAGMA trace coverage is still the next proof boundary."
+                "Solver-first routing surfaces exist and SolverRouter emits "
+                "a privacy-safe selected-solver trace; full append-only "
+                "MAGMA execution receipt coverage remains a next boundary."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
             evidence=solver_evidence,
             gaps=(
-                "Architecture docs record MAGMA coverage as goal/action/"
-                "capability-level rather than per-solver-call.",
+                "SolverRouter selection trace is present, but full append-only "
+                "MAGMA execution receipts for every solver call are still "
+                "pending.",
                 "The image's 'full MAGMA provenance' wording should wait for "
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Thread a per-solver-call trace event through SolverRouter "
-                "and add a focused route test."
+                "Promote the solver call trace into append-only MAGMA "
+                "execution receipts and metrics."
             ),
+            proof=solver_trace_proof,
         ),
         Capability(
             capability_id="magma_audit_log",

@@ -567,12 +567,16 @@ class AutonomyRuntime:
         if self.audit and AuditEntry is not None:
             cap_ids = [c.capability_id for c in route_result.selection.selected]
             primary_cap_id = cap_ids[0] if cap_ids else ""
+            solver_call_trace = list(
+                getattr(route_result, "solver_call_trace", []) or []
+            )
             self._magma_safe("audit.capability_selected", self.audit.record,
                 AuditEntry(
                     event_type="capability.selected",
                     payload={"intent": intent, "capabilities": cap_ids,
                              "quality_path": route_result.quality_path,
-                             "cap_id": primary_cap_id},
+                             "cap_id": primary_cap_id,
+                             "solver_call_trace": solver_call_trace},
                     capability_id=primary_cap_id,
                 ))
 
@@ -804,6 +808,9 @@ class AutonomyRuntime:
             "approved": action_result.decision.approved,
             "elapsed_ms": elapsed,
         }
+        solver_call_trace = getattr(route_result, "solver_call_trace", None)
+        if solver_call_trace:
+            result["solver_call_trace"] = list(solver_call_trace)
         if capsule_match:
             result["capsule_decision"] = capsule_match.decision_id
             result["capsule_layer"] = capsule_match.layer

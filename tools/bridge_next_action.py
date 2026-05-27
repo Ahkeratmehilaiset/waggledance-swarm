@@ -417,6 +417,8 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
 
 
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
+    if _event_type(event) == "done":
+        return True
     status = _event_status(event)
     return _event_type(event) in ANSWER_TYPES and _status_has_any(
         status, ANSWER_STATUS_FRAGMENTS

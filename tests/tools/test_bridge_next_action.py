@@ -263,6 +263,39 @@ def test_done_verified_closes_incoming_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_done_with_domain_status_closes_incoming_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-25T06:53:01Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1,claude-rco-1",
+            "type": "message",
+            "task_id": "gpu-runtime-handoff-2026-05-25",
+            "status": "request",
+            "message": "record this runtime handoff",
+        },
+        {
+            "ts_utc": "2026-05-25T06:56:40Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,claude-rco-1,operator",
+            "type": "done",
+            "task_id": "gpu-runtime-handoff-2026-05-25",
+            "status": "gpu_runtime_noted",
+            "message": "GPU runtime note recorded in memory",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
 @pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
 def test_ack_message_statuses_do_not_close_incoming_request(status: str) -> None:
     events = [

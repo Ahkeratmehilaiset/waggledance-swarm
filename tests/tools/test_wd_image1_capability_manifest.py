@@ -268,7 +268,7 @@ def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> N
 
 
 def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
-    proof = build_hexagonal_upgrade_proof()
+    proof = build_hexagonal_upgrade_proof(ROOT)
 
     assert proof["ok"] is True
     assert proof["no_runtime_mutation"] is True
@@ -284,6 +284,26 @@ def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
         True,
         True,
     ]
+
+
+def test_hexagonal_upgrade_proof_blocks_foreign_root(tmp_path: Path) -> None:
+    for rel_path in (
+        "waggledance/core/hex_topology/subdivision_operator.py",
+        "waggledance/core/hex_topology/ring_messaging.py",
+        "waggledance/core/hex_topology/parent_child_relations.py",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_hexagonal_upgrade_proof(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["plan"] is None
+    assert proof["relations"] == {}
+    assert proof["deliveries"] == []
 
 
 def test_hexagonal_upgrade_runtime_smoke_reports_active_topology_boundary() -> None:

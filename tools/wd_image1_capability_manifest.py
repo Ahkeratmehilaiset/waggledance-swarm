@@ -841,8 +841,68 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     }
 
 
-def build_hexagonal_upgrade_proof() -> dict:
+def _blocked_hexagonal_upgrade_proof(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    proof = {
+        "proof_id": "hexagonal_upgrades_in_memory_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "no_runtime_mutation": False,
+        "plan": None,
+        "relations": {},
+        "deliveries": [],
+        "safe_conclusion": (
+            "Required hexagonal upgrade proof files are missing, so the "
+            "in-memory subdivision/ring proof is unavailable for this root."
+        ),
+    }
+    if blocked_reason == "non_current_import_root":
+        proof["safe_conclusion"] = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the proof blocks instead of certifying one checkout "
+            "with runtime code imported from another checkout."
+        )
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+def build_hexagonal_upgrade_proof(root: Path | str = ROOT) -> dict:
     """Run a pure in-memory proof for subdivision + hierarchy + messages."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/core/hex_topology/subdivision_operator.py",
+        "waggledance/core/hex_topology/ring_messaging.py",
+        "waggledance/core/hex_topology/parent_child_relations.py",
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_hexagonal_upgrade_proof(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_hexagonal_upgrade_proof(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
 
     topology = {
         "cells": {
@@ -1670,7 +1730,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
         ),
     )
-    hex_upgrade_proof = build_hexagonal_upgrade_proof()
+    hex_upgrade_proof = build_hexagonal_upgrade_proof(root)
     hex_upgrade_runtime_smoke = build_hexagonal_upgrade_runtime_smoke(root)
     hex_upgrade_proof["runtime_boundary_smoke"] = (
         hex_upgrade_runtime_smoke

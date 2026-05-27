@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Read-only capability manifest for the WD Image #1 storyboard.
+"""Repo/runtime-read-only capability manifest for the WD Image #1 storyboard.
 
 The tool deliberately separates the visual claim from repo-safe wording.
 It does not mutate runtime state, bridge state, GitHub state, or tracked files.
+Local executable proofs may create ephemeral temp files and delete them before
+returning.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import sys
+import tempfile
 from typing import Iterable, Sequence
 
 
@@ -29,6 +32,17 @@ from waggledance.core.hex_topology.subdivision_operator import (
     apply_plan_to_topology,
     plan_subdivision,
 )
+from waggledance.core.autonomy_growth import (
+    AutogrowthScheduler,
+    GapSignal,
+    LowRiskGrower,
+    OUTCOME_AUTO_PROMOTED,
+    RuntimeQuery,
+    RuntimeQueryRouter,
+    digest_signals_into_intents,
+    is_low_risk_family,
+)
+from waggledance.core.storage.control_plane import ControlPlaneDB
 
 STATUS_IMPLEMENTED = "implemented"
 STATUS_PARTIAL = "partial"
@@ -185,6 +199,210 @@ def build_hexagonal_upgrade_proof() -> dict:
     }
 
 
+def build_low_risk_autonomy_proof() -> dict:
+    """Run a temp-DB proof for gap -> intent -> scheduler -> solver serve."""
+
+    family_kind = "scalar_unit_conversion"
+    cell_coord = "thermal"
+    intent_seed = "wd_image1_celsius_to_kelvin"
+    seed = _scalar_unit_seed(intent_seed)
+    temp_path: Path | None = None
+    proof: dict
+
+    with tempfile.TemporaryDirectory(prefix="wd-image1-low-risk-") as temp_dir:
+        temp_path = Path(temp_dir)
+        cp = ControlPlaneDB(temp_path / "control_plane.sqlite")
+        cp.migrate()
+        try:
+            LowRiskGrower(cp).ensure_low_risk_policies()
+            router = RuntimeQueryRouter(cp, min_signal_interval_seconds=0.0)
+            query = RuntimeQuery(
+                family_kind=family_kind,
+                inputs={"x": 25.0},
+                cell_coord=cell_coord,
+                intent_seed=intent_seed,
+                spec_seed=seed,
+            )
+
+            before = router.route(query)
+            recorded_signals = cp.list_runtime_gap_signals(
+                kind="runtime_miss",
+                family_kind=family_kind,
+                cell_coord=cell_coord,
+            )
+            candidate = GapSignal(
+                kind="runtime_miss",
+                family_kind=family_kind,
+                cell_coord=cell_coord,
+                intent_seed=intent_seed,
+                spec_seed=seed,
+                weight=1.0,
+            )
+            digest = digest_signals_into_intents(
+                cp,
+                candidate_signals=[candidate],
+                min_signals_per_intent=1,
+                autoenqueue=True,
+            )
+            queued = cp.list_autogrowth_queue(status="queued", limit=5)
+
+            scheduler = AutogrowthScheduler(
+                cp,
+                scheduler_id="wd_image1_low_risk_autonomy_proof",
+            )
+            tick = scheduler.tick()
+            after = router.route(query)
+            intent = (
+                cp.get_growth_intent(tick.intent_id)
+                if tick.intent_id is not None else None
+            )
+            queue_rows = cp.list_autogrowth_queue(limit=5)
+            runs = cp.list_autogrowth_runs(family_kind=family_kind, limit=5)
+            served_value = (
+                after.output
+                if isinstance(after.output, (int, float))
+                else None
+            )
+            ok = (
+                is_low_risk_family(family_kind)
+                and before.served is False
+                and before.source == "gap_emitted"
+                and len(recorded_signals) == 1
+                and digest.intents_created == 1
+                and digest.intents_enqueued == 1
+                and len(queued) == 1
+                and tick.claimed is True
+                and tick.outcome == OUTCOME_AUTO_PROMOTED
+                and intent is not None
+                and intent.status == "fulfilled"
+                and after.served is True
+                and after.source == "auto_promoted_solver"
+                and served_value is not None
+                and abs(float(served_value) - 298.15) < 0.000001
+                and cp.count_solvers(status="auto_promoted") == 1
+            )
+            proof = {
+                "proof_id": "low_risk_autonomy_temp_db_v1",
+                "ok": ok,
+                "family_kind": family_kind,
+                "family_low_risk": is_low_risk_family(family_kind),
+                "cell_coord": cell_coord,
+                "external_writes_applied": False,
+                "operator_gate_required": False,
+                "runtime_authority_changed": False,
+                "temporary_control_plane_db": True,
+                "route_before": {
+                    "served": before.served,
+                    "source": before.source,
+                    "signal_id_present": before.signal_id is not None,
+                    "miss_reason": before.miss_reason,
+                },
+                "recorded_signal": {
+                    "count": len(recorded_signals),
+                    "ids": [item.id for item in recorded_signals],
+                    "kinds": [item.kind for item in recorded_signals],
+                },
+                "digest": {
+                    "intents_created": digest.intents_created,
+                    "intents_enqueued": digest.intents_enqueued,
+                    "by_family": dict(digest.by_family),
+                },
+                "queued_before_tick": [
+                    {
+                        "id": row.id,
+                        "intent_id": row.intent_id,
+                        "status": row.status,
+                        "priority": row.priority,
+                        "attempt_count": row.attempt_count,
+                    }
+                    for row in queued
+                ],
+                "scheduler_tick": {
+                    "claimed": tick.claimed,
+                    "queue_row_id": tick.queue_row_id,
+                    "intent_id": tick.intent_id,
+                    "family_kind": tick.family_kind,
+                    "cell_coord": tick.cell_coord,
+                    "outcome": tick.outcome,
+                    "solver_id_present": tick.solver_id is not None,
+                    "autogrowth_run_id": tick.autogrowth_run_id,
+                },
+                "intent_after_tick": (
+                    {
+                        "id": intent.id,
+                        "intent_key": intent.intent_key,
+                        "status": intent.status,
+                        "priority": intent.priority,
+                        "signal_count": intent.signal_count,
+                    }
+                    if intent is not None else None
+                ),
+                "queue_after_tick": [
+                    {
+                        "id": row.id,
+                        "intent_id": row.intent_id,
+                        "status": row.status,
+                        "attempt_count": row.attempt_count,
+                        "last_error": row.last_error,
+                    }
+                    for row in queue_rows
+                ],
+                "route_after": {
+                    "served": after.served,
+                    "source": after.source,
+                    "output": after.output,
+                    "solver_id_present": after.solver_id is not None,
+                },
+                "run_outcomes": [row.outcome for row in runs],
+                "growth_event_counts": {
+                    "signal_recorded": cp.count_growth_events(
+                        event_kind="signal_recorded",
+                        family_kind=family_kind,
+                    ),
+                    "intent_created": cp.count_growth_events(
+                        event_kind="intent_created",
+                        family_kind=family_kind,
+                    ),
+                    "intent_enqueued": cp.count_growth_events(
+                        event_kind="intent_enqueued",
+                        family_kind=family_kind,
+                    ),
+                    "solver_auto_promoted": cp.count_growth_events(
+                        event_kind="solver_auto_promoted",
+                        family_kind=family_kind,
+                    ),
+                },
+            }
+        finally:
+            cp.close()
+
+    temp_db_removed = temp_path is not None and not temp_path.exists()
+    proof["temp_db_removed"] = temp_db_removed
+    proof["ok"] = bool(proof["ok"] and temp_db_removed)
+    return proof
+
+
+def _scalar_unit_seed(name: str) -> dict:
+    return {
+        "spec": {
+            "from_unit": "C",
+            "to_unit": "K",
+            "factor": 1.0,
+            "offset": 273.15,
+        },
+        "validation_cases": [
+            {"inputs": {"x": 0.0}, "expected": 273.15},
+            {"inputs": {"x": 25.0}, "expected": 298.15},
+            {"inputs": {"x": 100.0}, "expected": 373.15},
+        ],
+        "shadow_samples": [{"x": float(i)} for i in range(12)],
+        "solver_name_seed": name,
+        "cell_id": "thermal",
+        "source": "wd_image1_low_risk_autonomy_proof",
+        "source_kind": "local_temp_db_proof",
+    }
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -285,6 +503,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         ),
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof()
+    low_risk_autonomy_proof = build_low_risk_autonomy_proof()
 
     return (
         Capability(
@@ -381,11 +600,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "bounded.",
                 "The low-risk allowlist is fixed; adding families requires "
                 "reviewed deterministic compiler and executor support.",
+                "The executable proof uses an ephemeral temp DB; it does not "
+                "grant production runtime authority.",
             ),
             next_smallest_pr=(
-                "Add a read-only proof that one gap signal can become a "
-                "low-risk queued intent and a scheduler outcome in a temp DB."
+                "Wire the temp-DB proof into a runtime-facing smoke that "
+                "reports the active scheduler cadence and authority boundary."
             ),
+            proof=low_risk_autonomy_proof,
         ),
         Capability(
             capability_id="hexagonal_upgrades",

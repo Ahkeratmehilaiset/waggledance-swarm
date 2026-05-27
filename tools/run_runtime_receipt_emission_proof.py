@@ -26,6 +26,7 @@ from waggledance.core.domain.autonomy import (  # noqa: E402
     CapabilityCategory,
     CapabilityContract,
 )
+from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.runtime_summary_receipt import (  # noqa: E402
     CHAIN_ID,
     EVALUATION_VERSION_V0,
@@ -60,6 +61,17 @@ class _RouteResult:
         self.quality_path = "gold"
         self.autonomy_consult = None
         self.autonomy_served = False
+        self.solver_call_trace = [
+            {
+                "stage": "solver_call",
+                "status": "selected",
+                "intent": "solve",
+                "capability_id": capability.capability_id,
+                "selected_index": 0,
+                "quality_path": "gold",
+                "execution_boundary": "safe_action_bus",
+            }
+        ]
 
 
 class _Executor:
@@ -160,7 +172,24 @@ def build_runtime_receipt_emission_proof(
     verifier_report = verify_manifest(manifest_path)
     payload = _read_json(receipt_dir / "payload-001-runtime-summary.json")
     evaluation = _read_json(receipt_dir / "evaluation-001-runtime-summary.json")
+    receipt = _read_json(receipt_dir / "receipt-001-runtime-summary.json")
     leak_free = _raw_payload_leak_free(out_dir, result)
+    solver_call_trace = payload.get("solver_call_trace") or []
+    solver_trace_json = json.dumps(solver_call_trace, sort_keys=True)
+    solver_trace_privacy_safe = (
+        _PRIVATE_QUERY not in solver_trace_json
+        and "DO_NOT_LEAK" not in solver_trace_json
+        and '"query"' not in solver_trace_json
+    )
+    solver_trace_digest_bound = (
+        payload.get("solver_call_trace_digest")
+        == sha256_digest({"solver_call_trace": solver_call_trace})
+    )
+    solver_trace_receipt_bound = (
+        solver_trace_digest_bound
+        and receipt.get("canonical_payload_digest") == sha256_digest(payload)
+        and verifier_report.get("ok") is True
+    )
 
     blockers: list[str] = []
     if result.get("runtime_receipt") is None:
@@ -176,6 +205,12 @@ def build_runtime_receipt_emission_proof(
         blockers.append("offline_receipt_verifier_failed")
     if not leak_free:
         blockers.append("raw_payload_marker_leaked")
+    if not solver_call_trace:
+        blockers.append("solver_call_trace_missing_from_payload")
+    if not solver_trace_privacy_safe:
+        blockers.append("solver_call_trace_privacy_boundary_failed")
+    if not solver_trace_receipt_bound:
+        blockers.append("solver_call_trace_not_receipt_bound")
     if payload.get("payload_version") != PAYLOAD_VERSION:
         blockers.append("payload_version_mismatch")
     if evaluation.get("evaluation_version") != evaluation_version:
@@ -208,6 +243,14 @@ def build_runtime_receipt_emission_proof(
         "receipt_count": int(verifier_report.get("receipt_count", 0) or 0),
         "verifier_ok": verifier_report.get("ok") is True,
         "raw_payload_leak_check": leak_free,
+        "solver_call_trace_count": int(
+            payload.get("solver_call_trace_count", 0) or 0
+        ),
+        "solver_call_trace_digest": payload.get("solver_call_trace_digest"),
+        "solver_call_trace_digest_bound": solver_trace_digest_bound,
+        "solver_call_trace_receipt_bound": solver_trace_receipt_bound,
+        "solver_call_trace_privacy_safe": solver_trace_privacy_safe,
+        "solver_selection": evaluation.get("solver_selection", []),
         "receipt_out_dir": str(receipt_dir),
         "receipt_manifest": str(manifest_path),
         "result_keys": sorted(str(key) for key in result.keys()),
@@ -223,13 +266,13 @@ def build_runtime_receipt_emission_proof(
 def _build_fixture_runtime(*, runtime_receipt_sink) -> AutonomyRuntime:
     registry = CapabilityRegistry(load_builtins=False)
     capability = CapabilityContract(
-        capability_id="detect.fixture",
-        category=CapabilityCategory.DETECT,
-        description="Fixture detector",
+        capability_id="solve.fixture",
+        category=CapabilityCategory.SOLVE,
+        description="Fixture solver",
         success_criteria=["success"],
     )
     registry.register(capability)
-    registry.register_executor("detect.fixture", _Executor())
+    registry.register_executor("solve.fixture", _Executor())
     runtime = AutonomyRuntime(
         capability_registry=registry,
         enable_persistence=False,
@@ -239,7 +282,7 @@ def _build_fixture_runtime(*, runtime_receipt_sink) -> AutonomyRuntime:
         lambda _intent, _query, _context: _RouteResult(capability)
     )
     runtime.action_bus.register_executor(
-        "detect.fixture",
+        "solve.fixture",
         lambda _action: {"success": True, "value": 42},
     )
     return runtime

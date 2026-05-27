@@ -15,8 +15,9 @@ Use the safest true wording until the proof tool reports otherwise:
 - Do not claim that every query first enters an 8-cell mesh. The repo has two
   independent hex topologies: a 7-cell agent-routing topology and an 8-cell
   solver-retrieval topology.
-- Do not claim hard MAGMA append-only enforcement. Current architecture docs
-  state that append-only is still convention for some storage paths.
+- Do not claim hard MAGMA append-only/default enforcement. The repo now has an
+  opt-in runtime summary receipt proof that binds sanitized solver traces, but
+  some MAGMA storage paths still rely on append-only convention.
 - Do not claim unlimited scalability. The repo supports planned and measured
   scalability work, not an unbounded guarantee.
 - Low-risk autogrowth may be described as a bounded substrate with an
@@ -28,8 +29,8 @@ Use the safest true wording until the proof tool reports otherwise:
 | Capability | Safe status | Repo evidence | Smallest next work |
 | --- | --- | --- | --- |
 | Hex-mesh routing | Partial, with route-order proof and HTTP/WS trace contract | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Render the WS route-stage labels in the dashboard UI and add a visual contract smoke. |
-| Deterministic solver-first routing | Partial | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Add per-solver-call trace coverage so "full MAGMA provenance" becomes measurable. |
-| MAGMA audit log | Partial | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only enforcement or keep user-facing wording at "audit/provenance wrappers". |
+| Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
+| MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
 | Low-risk autonomy loop | Partial, with temp-DB proof | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py` | Wire the proof into a runtime-facing smoke that reports scheduler cadence and authority boundaries. |
 | Hexagonal upgrades | Partial, with in-memory proof | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py` | Wire the pure proof into a read-only runtime-facing smoke that reports current config and active topology boundaries. |
 | Future swarm scalability | Planned | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Replace broad future claims with measurable scale axes and gate them with proof artifacts. |
@@ -63,8 +64,9 @@ artifacts and delete them before returning. It emits a JSON matrix with:
 - `gaps`: why stronger wording is not yet supported
 - `next_smallest_pr`: the next scoped implementation step
 - `proof`: optional non-mutating proof payload for capabilities that have an
-  executable local proof, currently `hex_mesh_entry`, `hexagonal_upgrades`,
-  and `low_risk_autonomy_loop`
+  executable local proof, currently `hex_mesh_entry`,
+  `deterministic_solver_first`, `magma_audit_log`, `hexagonal_upgrades`, and
+  `low_risk_autonomy_loop`
 
 The `hex_mesh_entry` proof is a route-boundary proof, not a literal claim
 approval. It reads `configs/settings.yaml`, loads both hex topologies, verifies
@@ -88,6 +90,13 @@ ephemeral control-plane database, records one low-risk runtime miss, digests it
 into an allowlisted growth intent, runs one bounded scheduler tick, verifies the
 promoted solver serves the next matching query, then deletes the temp database.
 It does not change production runtime authority or write tracked files.
+
+The solver/MAGMA receipt proof is also local and opt-in. It runs
+`AutonomyRuntime.handle_query` with a runtime receipt sink, writes a temporary
+MAGMA receipt bundle, verifies it offline, checks that the sanitized
+`solver_call_trace` is digest-bound by the receipt payload, and then deletes
+the temp artifacts. It does not prove default receipt emission for every
+solver path.
 
 ## Bridge Handoff Template
 

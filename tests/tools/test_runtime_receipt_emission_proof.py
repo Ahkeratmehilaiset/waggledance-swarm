@@ -67,6 +67,12 @@ def test_runtime_receipt_emission_proof_writes_verified_sanitized_bundle(
     assert report["receipt_count"] == 1
     assert report["verifier_ok"] is True
     assert report["raw_payload_leak_check"] is True
+    assert report["solver_call_trace_count"] == 1
+    assert report["solver_call_trace_digest"].startswith("sha256:")
+    assert report["solver_call_trace_digest_bound"] is True
+    assert report["solver_call_trace_receipt_bound"] is True
+    assert report["solver_call_trace_privacy_safe"] is True
+    assert report["solver_selection"] == ["solve.fixture"]
     assert report["external_effect_authority_change"] is False
     assert report["operator_gate_required"] is False
     assert report["external_writes_applied"] is False
@@ -154,6 +160,8 @@ def test_runtime_receipt_emission_proof_cli_json(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["verifier_ok"] is True
     assert payload["raw_payload_leak_check"] is True
+    assert payload["solver_call_trace_receipt_bound"] is True
+    assert payload["solver_call_trace_privacy_safe"] is True
     assert payload["evaluation_version"] == "magma.evaluation_result.v1"
     assert payload["evaluation_v1_metadata_present"] is True
     assert "DO_NOT_LEAK" not in result.stdout

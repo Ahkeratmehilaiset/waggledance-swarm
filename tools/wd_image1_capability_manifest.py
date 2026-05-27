@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -619,6 +620,135 @@ def _blocked_deterministic_solver_trace_proof(
     return proof
 
 
+def _blocked_solver_trace_magma_receipt_proof(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    safe_conclusion = (
+        "Required runtime receipt files are missing, so no solver-trace "
+        "MAGMA receipt proof is available for this root."
+    )
+    if blocked_reason == "non_current_import_root":
+        safe_conclusion = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the receipt proof blocks instead of certifying one "
+            "checkout with runtime code imported from another checkout."
+        )
+    proof = {
+        "proof_id": "solver_trace_runtime_receipt_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "receipt_scope": "opt_in_handle_query_runtime_summary",
+        "solver_call_trace_receipt_bound": False,
+        "solver_call_trace_privacy_safe": False,
+        "default_sink_required": False,
+        "external_writes_applied": False,
+        "operator_gate_required": False,
+        "safe_conclusion": safe_conclusion,
+    }
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+def build_solver_trace_magma_receipt_proof(root: Path | str = ROOT) -> dict:
+    """Prove an opt-in MAGMA runtime receipt binds the solver call trace."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/core/autonomy/runtime.py",
+        "waggledance/core/magma/runtime_summary_receipt.py",
+        "tools/run_runtime_receipt_emission_proof.py",
+        "tools/verify_magma_receipt.py",
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_solver_trace_magma_receipt_proof(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_solver_trace_magma_receipt_proof(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
+
+    from tools.run_runtime_receipt_emission_proof import (
+        build_runtime_receipt_emission_proof,
+    )
+
+    temp_root = None
+    report: dict
+    with tempfile.TemporaryDirectory(prefix="wd-image1-solver-receipt-") as tmp:
+        temp_root = Path(tmp)
+        report = build_runtime_receipt_emission_proof(
+            out_dir=temp_root / "proof",
+            now_utc=datetime(2026, 5, 27, 18, 0, tzinfo=timezone.utc),
+        )
+    temp_artifacts_removed = temp_root is not None and not temp_root.exists()
+    blockers = list(report.get("blockers") or [])
+    if not temp_artifacts_removed:
+        blockers.append("temp_artifacts_not_removed")
+    ok = (
+        report.get("ok") is True
+        and report.get("verifier_ok") is True
+        and report.get("solver_call_trace_count") == 1
+        and report.get("solver_call_trace_digest_bound") is True
+        and report.get("solver_call_trace_receipt_bound") is True
+        and report.get("solver_call_trace_privacy_safe") is True
+        and report.get("raw_payload_leak_check") is True
+        and temp_artifacts_removed
+    )
+    return {
+        "proof_id": "solver_trace_runtime_receipt_v1",
+        "ok": ok,
+        "blockers": blockers,
+        "receipt_scope": "opt_in_handle_query_runtime_summary",
+        "chain_id": report.get("chain_id"),
+        "receipt_count": report.get("receipt_count"),
+        "verifier_ok": report.get("verifier_ok"),
+        "evaluation_version": report.get("evaluation_version"),
+        "reason_codes": report.get("reason_codes", []),
+        "solver_selection": report.get("solver_selection", []),
+        "solver_call_trace_count": report.get("solver_call_trace_count"),
+        "solver_call_trace_digest_bound": report.get(
+            "solver_call_trace_digest_bound"
+        ),
+        "solver_call_trace_receipt_bound": report.get(
+            "solver_call_trace_receipt_bound"
+        ),
+        "solver_call_trace_privacy_safe": report.get(
+            "solver_call_trace_privacy_safe"
+        ),
+        "raw_payload_leak_check": report.get("raw_payload_leak_check"),
+        "external_writes_applied": False,
+        "local_artifacts_written": True,
+        "temp_artifacts_removed": temp_artifacts_removed,
+        "default_sink_required": report.get("default_sink_required"),
+        "operator_gate_required": report.get("operator_gate_required"),
+        "safe_conclusion": (
+            "An opt-in AutonomyRuntime.handle_query MAGMA runtime summary "
+            "receipt can bind the sanitized solver_call_trace and verifies "
+            "offline without recording raw query or context text. This does "
+            "not yet make receipt emission default for every runtime path."
+        ),
+    }
+
+
 def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     """Prove SolverRouter emits a privacy-safe selected-solver trace."""
 
@@ -663,6 +793,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         sample_query in trace_json
         or '"query"' in trace_json
     )
+    receipt_proof = build_solver_trace_magma_receipt_proof(root)
     ok = (
         result.quality_path == "gold"
         and result.selection.fallback_used is False
@@ -673,6 +804,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             item.get("execution_boundary") == "safe_action_bus"
             for item in trace
         )
+        and receipt_proof.get("ok") is True
     )
     return {
         "proof_id": "deterministic_solver_trace_v1",
@@ -685,12 +817,24 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         "selected_solver_ids": selected_solver_ids,
         "trace": trace,
         "query_text_recorded": query_text_recorded,
-        "magma_execution_receipt_claimed": False,
+        "magma_execution_receipt_claimed": receipt_proof.get("ok") is True,
+        "magma_execution_receipt_scope": receipt_proof.get("receipt_scope"),
+        "magma_execution_receipt_proof": receipt_proof,
+        "receipt_metrics": {
+            "receipt_count": receipt_proof.get("receipt_count"),
+            "solver_call_trace_count": receipt_proof.get(
+                "solver_call_trace_count"
+            ),
+            "solver_call_trace_receipt_bound": receipt_proof.get(
+                "solver_call_trace_receipt_bound"
+            ),
+        },
         "external_writes_applied": False,
         "safe_conclusion": (
             "SolverRouter now emits a privacy-safe selected-solver trace "
-            "before SafeActionBus execution; full append-only MAGMA "
-            "execution receipts are still a separate proof boundary."
+            "before SafeActionBus execution, and an opt-in MAGMA runtime "
+            "summary receipt can bind that trace. Default receipt emission "
+            "for every runtime path remains a separate proof boundary."
         ),
     }
 
@@ -1027,6 +1171,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "MAGMA receipt bundle writer/verifier surface.",
             ),
             (
+                "waggledance/core/magma/runtime_summary_receipt.py",
+                "Opt-in runtime summary receipt binds sanitized query-path payloads.",
+            ),
+            (
+                "tools/run_runtime_receipt_emission_proof.py",
+                "Executable proof for verified runtime receipt emission.",
+            ),
+            (
                 "docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md",
                 "Storage truth doc records append-only boundary.",
             ),
@@ -1121,23 +1273,23 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "specialist models, with LLM only advisory."
             ),
             safe_statement=(
-                "Solver-first routing surfaces exist and SolverRouter emits "
-                "a privacy-safe selected-solver trace; full append-only "
-                "MAGMA execution receipt coverage remains a next boundary."
+                "Solver-first routing surfaces exist, SolverRouter emits "
+                "a privacy-safe selected-solver trace, and an opt-in MAGMA "
+                "runtime summary receipt can bind that trace; default full "
+                "coverage remains a next boundary."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
             evidence=solver_evidence,
             gaps=(
-                "SolverRouter selection trace is present, but full append-only "
-                "MAGMA execution receipts for every solver call are still "
-                "pending.",
+                "Solver trace receipt binding is currently opt-in through a "
+                "runtime receipt sink, not default for every runtime path.",
                 "The image's 'full MAGMA provenance' wording should wait for "
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Promote the solver call trace into append-only MAGMA "
-                "execution receipts and metrics."
+                "Promote the solver trace receipt sink from opt-in proof to "
+                "configured runtime coverage and exposed metrics."
             ),
             proof=solver_trace_proof,
         ),
@@ -1146,22 +1298,26 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             title="MAGMA audit log",
             image_claim="MAGMA is an append-only provenance trail.",
             safe_statement=(
-                "MAGMA audit/provenance wrappers and receipt bundles exist; "
-                "hard append-only enforcement is not yet safe to claim."
+                "MAGMA audit/provenance wrappers, receipt bundles, and an "
+                "opt-in solver-trace runtime receipt proof exist; hard "
+                "append-only/default enforcement is not yet safe to claim."
             ),
             status=_status_for(magma_evidence),
             claim_safe=False,
             evidence=magma_evidence,
             gaps=(
+                "The solver trace receipt proof uses an opt-in disk bundle "
+                "sink; the default runtime does not require it yet.",
                 "The storage truth doc says append-only is convention for "
                 "some MAGMA-backed paths.",
                 "A hardening pass is needed before literal append-only "
                 "language is safe.",
             ),
             next_smallest_pr=(
-                "Add append-only enforcement or a failing proof that clearly "
-                "keeps wording at audit-wrapper level."
+                "Promote the runtime receipt sink to configured append-only "
+                "storage coverage or keep default wording at opt-in proof level."
             ),
+            proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),
         Capability(
             capability_id="low_risk_autonomy_loop",

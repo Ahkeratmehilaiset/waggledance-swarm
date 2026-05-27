@@ -211,6 +211,36 @@ def test_pr_scoped_same_peer_approval_clears_older_task_id_mismatch_block() -> N
     assert result["latest_approval_event"]["status"] == "rco_pass"
 
 
+def test_no_blocker_status_does_not_block_pr_scoped_preflight() -> None:
+    events = [
+        _event(
+            "2026-05-27T11:13:27Z",
+            "codex-lead-1",
+            "decision",
+            "lead_no_blocker_rco_pending",
+            task_id="pr706-done-status-close-rco-request-2026-05-27",
+        )
+        | {"message": "No lead blocker; hold for RCO_PASS."},
+        _event(
+            "2026-05-27T11:24:04Z",
+            "claude-rco-1",
+            "decision",
+            "rco_pass",
+            task_id="pr706-done-status-close-rco-request-2026-05-27",
+        )
+        | {"message": "RCO_PASS PR #706 exact head 9fb2f18c."},
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="pr706-done-status-close-rco-request-2026-05-27",
+        merging_agent="codex-tools-1",
+        pr_number=706,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
 def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:
     events = [
         _event(

@@ -442,6 +442,14 @@ class AutogrowthBackgroundTicker:
         return self._stats
 
     @property
+    def interval_seconds(self) -> float:
+        return self._interval_seconds
+
+    @property
+    def max_ticks_per_wake(self) -> int:
+        return self._max_ticks_per_wake
+
+    @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 

@@ -31,7 +31,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | Hex-mesh routing | Partial, with route-order proof and HTTP/WS trace contract | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Render the WS route-stage labels in the dashboard UI and add a visual contract smoke. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
-| Low-risk autonomy loop | Partial, with temp-DB proof | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py` | Wire the proof into a runtime-facing smoke that reports scheduler cadence and authority boundaries. |
+| Low-risk autonomy loop | Partial, with temp-DB proof and runtime-boundary smoke | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py` | Promote runtime boundary reporting into operator-visible metrics without changing the low-risk authority boundary. |
 | Hexagonal upgrades | Partial, with in-memory proof | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py` | Wire the pure proof into a read-only runtime-facing smoke that reports current config and active topology boundaries. |
 | Future swarm scalability | Planned | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Replace broad future claims with measurable scale axes and gate them with proof artifacts. |
 
@@ -89,7 +89,11 @@ The `low_risk_autonomy_loop` proof is intentionally local. It creates an
 ephemeral control-plane database, records one low-risk runtime miss, digests it
 into an allowlisted growth intent, runs one bounded scheduler tick, verifies the
 promoted solver serves the next matching query, then deletes the temp database.
-It does not change production runtime authority or write tracked files.
+It now also runs a runtime-boundary smoke that constructs the configured
+`AutogrowthBackgroundTicker` through `Container`, reports the default 30 second
+cadence and 20 ticks per wake limit, and verifies that FastAPI lifespan contains
+start/stop hooks for that ticker. It does not change production runtime
+authority or write tracked files.
 
 The solver/MAGMA receipt proof is also local and opt-in. It runs
 `AutonomyRuntime.handle_query` with a runtime receipt sink, writes a temporary

@@ -312,10 +312,15 @@ def evaluate_agent_next_task(
                 bridge_root=Path(bridge_root),
                 now_utc=now_utc,
             )
+            active_dream_mode_task_ids = _active_dream_mode_task_ids(
+                claims=claims,
+                now_utc=now_utc,
+            )
             dream_candidate = _pick_dream_mode_seed(
                 agent=agent,
                 now_utc=now_utc,
                 completed_task_ids=completed_dream_mode_task_ids,
+                active_task_ids=active_dream_mode_task_ids,
             )
             if dream_candidate is not None:
                 return {
@@ -331,6 +336,9 @@ def evaluate_agent_next_task(
                     ),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
+                    ),
+                    "active_dream_mode_task_ids": sorted(
+                        active_dream_mode_task_ids
                     ),
                     "candidate": dream_candidate,
                     "notes": [
@@ -362,11 +370,12 @@ def evaluate_agent_next_task(
                 "completed_dream_mode_task_ids": sorted(
                     completed_dream_mode_task_ids
                 ),
+                "active_dream_mode_task_ids": sorted(active_dream_mode_task_ids),
                 "notes": [
                     (
                         "bridge_next_action left the next-work choice open, but "
                         "every substrate-smoke and dream-mode candidate is "
-                        "already completed today"
+                        "already completed or actively claimed today"
                     ),
                     (
                         "the scheduler should escalate instead of rerunning an "
@@ -529,6 +538,7 @@ def _pick_dream_mode_seed(
     agent: str,
     now_utc: datetime,
     completed_task_ids: set[str] | None = None,
+    active_task_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Pick one strategic dream-mode seed deterministically for ``agent``."""
     pool = DREAM_MODE_CANDIDATES
@@ -536,6 +546,8 @@ def _pick_dream_mode_seed(
     agent_salt = sum(ord(c) for c in agent) % len(pool)
     start_index = (day_of_year + agent_salt) % len(pool)
     completed = completed_task_ids or set()
+    active = active_task_ids or set()
+    unavailable = completed | active
 
     index = start_index
     offset = 0
@@ -547,7 +559,7 @@ def _pick_dream_mode_seed(
             category=candidate["category"],
             slug=candidate["slug"],
         )
-        if candidate_task_id not in completed:
+        if candidate_task_id not in unavailable:
             index = candidate_index
             offset = candidate_offset
             break
@@ -586,6 +598,7 @@ def _pick_dream_mode_seed(
             "index": index,
             "offset": offset,
             "skipped_completed_task_ids": sorted(completed),
+            "skipped_active_task_ids": sorted(active),
         },
     }
 
@@ -718,6 +731,19 @@ def _completed_dream_mode_task_ids(
             completed.add(task_id)
 
     return completed
+
+
+def _active_dream_mode_task_ids(
+    *,
+    claims: Sequence[Any],
+    now_utc: datetime,
+) -> set[str]:
+    active: set[str] = set()
+    for claim in claims:
+        task_id = str(getattr(claim, "task_id", ""))
+        if _is_same_day_dream_mode_task_id(task_id, now_utc):
+            active.add(task_id)
+    return active
 
 
 def _is_successful_completion_event(event: Mapping[str, Any]) -> bool:

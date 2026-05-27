@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tools.bridge_next_action import (
     BridgeNextActionError,
     main,
@@ -259,6 +261,65 @@ def test_done_verified_closes_incoming_request() -> None:
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
+def test_ack_message_statuses_close_incoming_request(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "ack-request",
+            "status": "request",
+            "message": "please acknowledge",
+        },
+        {
+            "ts_utc": "2026-05-18T10:12:00Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "message",
+            "task_id": "ack-request",
+            "status": status,
+            "message": f"{status} message/request from claude",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
+def test_requester_done_close_closes_incoming_request_for_target() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "finding",
+            "task_id": "requester-closed-task",
+            "status": "open",
+            "message": "please inspect this finding",
+        },
+        {
+            "ts_utc": "2026-05-18T10:12:00Z",
+            "agent": "claude",
+            "to": "codex,operator",
+            "type": "done",
+            "task_id": "requester-closed-task",
+            "status": "closed_current_main_reconciled",
+            "message": "requester closeout after current main reconciled it",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
 
 
 def test_comma_separated_recipient_is_incoming_for_target_agent() -> None:

@@ -8,6 +8,7 @@ import sys
 
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
+from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 
 
@@ -45,6 +46,7 @@ def test_manifest_keeps_literal_image_overclaims_unsafe() -> None:
     assert capabilities["hex_mesh_entry"]["status"] == "partial"
     assert capabilities["hex_mesh_entry"]["claim_safe"] is False
     assert "two independent" in capabilities["hex_mesh_entry"]["safe_statement"]
+    assert capabilities["hex_mesh_entry"]["proof"]["literal_claim_safe"] is False
 
     assert capabilities["magma_audit_log"]["status"] == "partial"
     assert capabilities["magma_audit_log"]["claim_safe"] is False
@@ -62,6 +64,72 @@ def test_manifest_evidence_paths_are_present_for_current_repo() -> None:
     for capability in report["capabilities"]:
         assert capability["evidence"], capability["capability_id"]
         assert any(item["present"] for item in capability["evidence"])
+
+
+def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
+    proof = build_hex_mesh_entry_proof(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "hex_mesh_entry_route_order_v1"
+    assert proof["proves_every_query_first_enters_mesh"] is False
+    assert proof["literal_claim_safe"] is False
+    assert proof["current_config"] == {
+        "hybrid_retrieval_enabled": True,
+        "hybrid_retrieval_mode": "candidate",
+        "hybrid_retrieval_authoritative": False,
+        "hex_mesh_enabled": False,
+        "hex_mesh_cell_config_path": "configs/hex_cells.yaml",
+    }
+    assert proof["topologies"]["solver_retrieval"]["cell_count"] == 8
+    assert proof["topologies"]["agent_routing"]["cell_count"] == 7
+    assert proof["chat_route_order"] == [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "hex_neighbor_assist_7_cell",
+        "orchestrator_llm_fallback",
+    ]
+    assert proof["pre_hex_steps"] == [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+    ]
+    assert [item["cell_id"] for item in proof["solver_retrieval_samples"]] == [
+        "thermal",
+        "math",
+        "energy",
+    ]
+    assert [item["cell_id"] for item in proof["agent_routing_samples"]] == [
+        "bee_ops",
+        "safety_security",
+        "home_comfort",
+    ]
+    assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
+
+
+def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> None:
+    report = build_manifest(tmp_path)
+    capabilities = _by_id(report)
+    hex_proof = capabilities["hex_mesh_entry"]["proof"]
+
+    assert all(
+        capability["status"] == "blocked"
+        for capability in report["capabilities"]
+    )
+    assert all(
+        capability["claim_safe"] is False
+        for capability in report["capabilities"]
+    )
+    assert hex_proof["ok"] is False
+    assert hex_proof["blocked_reason"] == "missing_required_inputs"
+    assert hex_proof["missing_inputs"] == ["configs/settings.yaml"]
+    assert report["summary"]["all_literal_claims_safe"] is False
+    assert report["summary"]["proofs_ok"] is False
 
 
 def test_hexagonal_upgrade_proof_is_pure_and_delivers_messages() -> None:
@@ -136,6 +204,19 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert capability["proof"]["route_before"]["source"] == "gap_emitted"
     assert capability["proof"]["scheduler_tick"]["outcome"] == "auto_promoted"
     assert capability["proof"]["route_after"]["source"] == "auto_promoted_solver"
+    assert report["summary"]["proofs_ok"] is True
+
+
+def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["hex_mesh_entry"]
+
+    assert capability["status"] == "partial"
+    assert capability["claim_safe"] is False
+    assert capability["proof"]["ok"] is True
+    assert capability["proof"]["literal_claim_safe"] is False
+    assert capability["proof"]["topologies"]["solver_retrieval"]["cell_count"] == 8
+    assert capability["proof"]["topologies"]["agent_routing"]["cell_count"] == 7
     assert report["summary"]["proofs_ok"] is True
 
 

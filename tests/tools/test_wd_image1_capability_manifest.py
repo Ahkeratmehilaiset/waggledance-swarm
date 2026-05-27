@@ -8,6 +8,7 @@ import sys
 
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
+from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
 from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_runtime_smoke,
@@ -62,9 +63,10 @@ def test_manifest_keeps_literal_image_overclaims_unsafe() -> None:
     assert "hard append-only" in capabilities["magma_audit_log"]["safe_statement"]
 
     future = capabilities["future_waggledance_swarm"]
-    assert future["status"] == "planned"
+    assert future["status"] == "partial"
     assert future["claim_safe"] is False
     assert "unlimited scalability" in future["safe_statement"]
+    assert future["proof"]["literal_future_claim_safe"] is False
 
 
 def test_manifest_evidence_paths_are_present_for_current_repo() -> None:
@@ -468,6 +470,75 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["ok"] is True
     assert capability["proof"]["solver_call_trace_receipt_bound"] is True
     assert "hard append-only" in capability["safe_statement"]
+    assert report["summary"]["proofs_ok"] is True
+
+
+def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
+    proof = build_future_scale_axis_scorecard(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "future_scale_axis_scorecard_v1"
+    assert proof["literal_future_claim_safe"] is False
+    assert proof["unbounded_claims_rejected"] is True
+    assert proof["axis_count"] == 8
+    assert proof["defined_axis_count"] == 8
+    assert proof["all_axis_proxies_named"] is True
+    assert proof["eig_disabled_by_default"] is True
+    assert proof["eig_benchmark_only"] is True
+    assert proof["scorecard_doc_present"] is True
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+    assert {
+        item["axis_id"] for item in proof["axes"]
+    } == {
+        "coverage",
+        "llm_fallback_rate",
+        "route_depth",
+        "useful_composite_paths",
+        "contradiction_rate",
+        "insight_score",
+        "latency",
+        "audit_completeness",
+    }
+    assert all(
+        item["literal_claim_safe"] is False
+        for item in proof["claim_decomposition"]
+    )
+
+
+def test_future_scale_axis_scorecard_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "docs/architecture/explosive_intelligence_growth_2.md",
+        "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
+        "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_future_scale_axis_scorecard(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["axes"] == []
+    assert proof["claim_decomposition"] == []
+
+
+def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["future_waggledance_swarm"]
+
+    assert capability["status"] == "partial"
+    assert capability["claim_safe"] is False
+    assert capability["proof"]["ok"] is True
+    assert capability["proof"]["literal_future_claim_safe"] is False
+    assert capability["proof"]["unbounded_claims_rejected"] is True
+    assert capability["proof"]["axis_count"] == 8
+    assert "runtime metrics" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

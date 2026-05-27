@@ -33,7 +33,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
 | Low-risk autonomy loop | Partial, with temp-DB proof and runtime-boundary smoke | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py` | Promote runtime boundary reporting into operator-visible metrics without changing the low-risk authority boundary. |
 | Hexagonal upgrades | Partial, with in-memory proof and runtime-boundary smoke | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py`, `waggledance/bootstrap/container.py`, `hex_topology_registry.py`, `hex_neighbor_assist.py` | Promote hexagonal topology boundary reporting into operator-visible metrics without enabling runtime mutation. |
-| Future swarm scalability | Planned | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Replace broad future claims with measurable scale axes and gate them with proof artifacts. |
+| Future swarm scalability | Partial, with scale-axis scorecard proof | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`, `tools/wd_image1_capability_manifest.py` | Populate the scale-axis scorecard from runtime metrics and benchmark artifacts. |
 
 ## Agent Work Split
 
@@ -65,8 +65,8 @@ artifacts and delete them before returning. It emits a JSON matrix with:
 - `next_smallest_pr`: the next scoped implementation step
 - `proof`: optional non-mutating proof payload for capabilities that have an
   executable local proof, currently `hex_mesh_entry`,
-  `deterministic_solver_first`, `magma_audit_log`, `hexagonal_upgrades`, and
-  `low_risk_autonomy_loop`
+  `deterministic_solver_first`, `magma_audit_log`, `hexagonal_upgrades`,
+  `low_risk_autonomy_loop`, and `future_waggledance_swarm`
 
 The `hex_mesh_entry` proof is a route-boundary proof, not a literal claim
 approval. It reads `configs/settings.yaml`, loads both hex topologies, verifies
@@ -105,6 +105,18 @@ MAGMA receipt bundle, verifies it offline, checks that the sanitized
 `solver_call_trace` is digest-bound by the receipt payload, and then deletes
 the temp artifacts. It does not prove default receipt emission for every
 solver path.
+
+### Future Scale-Axis Scorecard
+
+The `future_waggledance_swarm` proof is a scale-axis scorecard, not a
+scalability claim. It decomposes the image phrases "emergent intelligence",
+"infinite scalability", and "industrial-grade efficiency" into measurable
+axes from `HONEYCOMB_SOLVER_SCALING.md`: coverage, LLM fallback rate, route
+depth, useful composite paths, contradiction rate, insight score, latency, and
+audit completeness. It also checks that EIG2 remains disabled by default and
+that scale simulation is benchmark-only. The literal future phrases remain
+unsafe until those axes are populated by versioned runtime metrics and
+benchmark artifacts.
 
 ## Bridge Handoff Template
 

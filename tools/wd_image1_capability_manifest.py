@@ -1603,6 +1603,247 @@ def _scalar_unit_seed(name: str) -> dict:
     }
 
 
+_FUTURE_SCALE_AXES: tuple[dict[str, str], ...] = (
+    {
+        "axis_id": "coverage",
+        "image_phrase": "emergent intelligence",
+        "proxy": "coverage",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs a versioned coverage corpus and pass/fail trend.",
+    },
+    {
+        "axis_id": "llm_fallback_rate",
+        "image_phrase": "industrial-grade efficiency",
+        "proxy": "LLM fallback rate",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs runtime fallback-rate export by route and profile.",
+    },
+    {
+        "axis_id": "route_depth",
+        "image_phrase": "emergent intelligence",
+        "proxy": "route depth",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs route-depth histograms from sanitized traces.",
+    },
+    {
+        "axis_id": "useful_composite_paths",
+        "image_phrase": "emergent intelligence",
+        "proxy": "useful composite paths",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs replayable composite-path usefulness receipts.",
+    },
+    {
+        "axis_id": "contradiction_rate",
+        "image_phrase": "emergent intelligence",
+        "proxy": "contradiction rate",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs verifier-backed contradiction-rate reporting.",
+    },
+    {
+        "axis_id": "insight_score",
+        "image_phrase": "emergent intelligence",
+        "proxy": "insight score",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs a scored insight rubric and reproducible corpus.",
+    },
+    {
+        "axis_id": "latency",
+        "image_phrase": "industrial-grade efficiency",
+        "proxy": "latency",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs p50/p95/p99 latency baselines under load.",
+    },
+    {
+        "axis_id": "audit_completeness",
+        "image_phrase": "industrial-grade efficiency",
+        "proxy": "audit completeness",
+        "current_status": "proxy_defined",
+        "claim_gate": "Needs route and solver trace receipt coverage metrics.",
+    },
+)
+
+
+def _blocked_future_scale_axis_scorecard(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+    inspected_root: str | None = None,
+    import_root: str | None = None,
+) -> dict:
+    proof = {
+        "proof_id": "future_scale_axis_scorecard_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "literal_future_claim_safe": False,
+        "unbounded_claims_rejected": True,
+        "axes": [],
+        "claim_decomposition": [],
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required future-scale scorecard inputs are missing, so the "
+            "future swarm claim remains a target with no local proof."
+        ),
+    }
+    if blocked_reason == "non_current_import_root":
+        proof["safe_conclusion"] = (
+            "The inspected root is not the manifest tool's current import "
+            "root, so the future scorecard blocks instead of certifying one "
+            "checkout with constants imported from another checkout."
+        )
+    if inspected_root is not None:
+        proof["inspected_root"] = inspected_root
+    if import_root is not None:
+        proof["import_root"] = import_root
+    return proof
+
+
+def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
+    """Gate future swarm wording through measurable axes."""
+
+    repo_root = Path(root)
+    required = (
+        "docs/architecture/explosive_intelligence_growth_2.md",
+        "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
+        "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md",
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_future_scale_axis_scorecard(
+            missing_inputs=missing,
+        )
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return _blocked_future_scale_axis_scorecard(
+            missing_inputs=[],
+            blocked_reason="non_current_import_root",
+            inspected_root=str(resolved_repo_root),
+            import_root=str(resolved_import_root),
+        )
+
+    eig_text = (
+        repo_root / "docs/architecture/explosive_intelligence_growth_2.md"
+    ).read_text(encoding="utf-8")
+    honeycomb_text = (
+        repo_root / "docs/architecture/HONEYCOMB_SOLVER_SCALING.md"
+    ).read_text(encoding="utf-8")
+    manifest_text = (
+        repo_root / "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
+    ).read_text(encoding="utf-8")
+    honeycomb_lower = honeycomb_text.lower()
+    eig_lower = eig_text.lower()
+
+    axes = []
+    for axis in _FUTURE_SCALE_AXES:
+        proxy = axis["proxy"]
+        axes.append({
+            "axis_id": axis["axis_id"],
+            "image_phrase": axis["image_phrase"],
+            "proxy": proxy,
+            "current_status": axis["current_status"],
+            "proxy_named_in_scoreboard_doc": proxy.lower() in honeycomb_lower,
+            "source_path": "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
+            "claim_gate": axis["claim_gate"],
+            "literal_claim_safe": False,
+        })
+
+    claim_decomposition = [
+        {
+            "image_phrase": "emergent intelligence",
+            "literal_claim_safe": False,
+            "axis_ids": [
+                "coverage",
+                "route_depth",
+                "useful_composite_paths",
+                "contradiction_rate",
+                "insight_score",
+                "audit_completeness",
+            ],
+            "safe_replacement": (
+                "measured solver coverage, route depth, composite paths, "
+                "contradiction rate, insight score, and audit completeness"
+            ),
+        },
+        {
+            "image_phrase": "infinite scalability",
+            "literal_claim_safe": False,
+            "axis_ids": [
+                "coverage",
+                "llm_fallback_rate",
+                "latency",
+                "audit_completeness",
+            ],
+            "safe_replacement": (
+                "bounded scale targets with benchmark-only simulation before "
+                "runtime activation"
+            ),
+        },
+        {
+            "image_phrase": "industrial-grade efficiency",
+            "literal_claim_safe": False,
+            "axis_ids": [
+                "llm_fallback_rate",
+                "latency",
+                "audit_completeness",
+            ],
+            "safe_replacement": (
+                "reported fallback, latency, and audit-completeness metrics"
+            ),
+        },
+    ]
+
+    eig_disabled_by_default = "enabled: false" in eig_lower
+    eig_benchmark_only = (
+        "| m6 | benchmarks and scale simulation | benchmark-only |"
+        in eig_lower
+    )
+    scorecard_doc_present = "future scale-axis scorecard" in (
+        manifest_text.lower()
+    )
+    all_axis_proxies_named = all(
+        axis["proxy_named_in_scoreboard_doc"] for axis in axes
+    )
+    ok = (
+        all_axis_proxies_named
+        and eig_disabled_by_default
+        and eig_benchmark_only
+        and scorecard_doc_present
+    )
+    return {
+        "proof_id": "future_scale_axis_scorecard_v1",
+        "ok": ok,
+        "literal_future_claim_safe": False,
+        "unbounded_claims_rejected": True,
+        "axis_count": len(axes),
+        "defined_axis_count": sum(
+            1 for axis in axes if axis["proxy_named_in_scoreboard_doc"]
+        ),
+        "all_axis_proxies_named": all_axis_proxies_named,
+        "eig_disabled_by_default": eig_disabled_by_default,
+        "eig_benchmark_only": eig_benchmark_only,
+        "scorecard_doc_present": scorecard_doc_present,
+        "axes": axes,
+        "claim_decomposition": claim_decomposition,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The future swarm wording is decomposed into measurable scale "
+            "axes. The literal claims for emergent intelligence, infinite "
+            "scalability, and industrial-grade efficiency remain unsafe until "
+            "those axes have versioned metrics and proof artifacts."
+        ),
+    }
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -1728,6 +1969,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
                 "Scoreboard and non-goals for capability growth.",
             ),
+            (
+                "tools/wd_image1_capability_manifest.py",
+                "Executable scale-axis scorecard proof.",
+            ),
         ),
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof(root)
@@ -1752,6 +1997,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
+    future_scale_scorecard = build_future_scale_axis_scorecard(root)
 
     return (
         Capability(
@@ -1906,14 +2152,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "scalability, and industrial-grade efficiency."
             ),
             safe_statement=(
-                "The repo has future scale architecture and measurable axes; "
-                "unlimited scalability remains a target, not a fact."
+                "The repo has future scale architecture and a scale-axis "
+                "scorecard; unlimited scalability remains a target, not a "
+                "fact."
             ),
-            status=(
-                STATUS_PLANNED
-                if _some_present(future_evidence)
-                else STATUS_BLOCKED
-            ),
+            status=_status_for(future_evidence),
             claim_safe=False,
             evidence=future_evidence,
             gaps=(
@@ -1921,11 +2164,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "scalability.",
                 "Future claims must be tied to measured axes such as "
                 "coverage, fallback rate, latency, and audit completeness.",
+                "The current scorecard defines gates; it does not yet export "
+                "all runtime metrics."
             ),
             next_smallest_pr=(
-                "Create a scale-axis scorecard artifact and link each future "
-                "claim to a measurable proof."
+                "Populate the scale-axis scorecard from runtime metrics and "
+                "benchmark artifacts."
             ),
+            proof=future_scale_scorecard,
         ),
     )
 

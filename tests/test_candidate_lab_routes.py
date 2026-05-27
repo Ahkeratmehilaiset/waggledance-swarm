@@ -82,7 +82,14 @@ class TestAdditiveFieldsPreserved:
         from waggledance.adapters.http.routes.compat_dashboard import api_ops
         src = inspect.getsource(api_ops)
         # Original v3.4 fields
-        for field in ["status", "flexhw", "throttle", "hybrid_retrieval", "recommendation"]:
+        for field in [
+            "status",
+            "flexhw",
+            "throttle",
+            "hybrid_retrieval",
+            "recommendation",
+            "autogrowth",
+        ]:
             assert f'"{field}"' in src, f"Missing original field: {field}"
         # New v3.5 additive fields
         assert '"backfill"' in src

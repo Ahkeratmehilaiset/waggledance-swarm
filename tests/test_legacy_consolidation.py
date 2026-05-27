@@ -191,6 +191,43 @@ class TestApiOpsExtended:
         assert "machine_class" in throttle
         assert "max_concurrent" in throttle
 
+    def test_ops_returns_autogrowth_section(self):
+        client, key = self._get_client()
+        r = client.get("/api/ops", headers={"Authorization": f"Bearer {key}"})
+        data = r.json()
+        assert "autogrowth" in data
+        autogrowth = data["autogrowth"]
+        for field in [
+            "enabled",
+            "up",
+            "running",
+            "interval_seconds",
+            "max_ticks_per_wake",
+            "wakeups_total",
+            "non_idle_ticks",
+            "errors_total",
+        ]:
+            assert field in autogrowth
+        assert isinstance(autogrowth["enabled"], bool)
+        assert isinstance(autogrowth["running"], bool)
+        assert "last_error" not in autogrowth
+
+    def test_ops_autogrowth_section_hides_ticker_exception_details(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _autogrowth_section,
+        )
+
+        class BrokenContainer:
+            @property
+            def autogrowth_background_ticker(self):
+                raise RuntimeError("private scheduler detail")
+
+        section = _autogrowth_section(BrokenContainer())
+
+        assert section["enabled"] is False
+        assert section["up"] is False
+        assert "private scheduler detail" not in str(section)
+
     def test_ops_still_has_status_and_recommendation(self):
         """Existing fields must not break."""
         client, key = self._get_client()
@@ -300,6 +337,16 @@ class TestHologramOpsFlexHW:
         html = _read_html()
         assert "ops.throttle" in html or "thr.machine_class" in html
         assert "thr.avg_latency_ms" in html
+
+    def test_hologram_ops_renders_autogrowth_section(self):
+        html = _read_html()
+        assert "ops.autogrowth" in html
+        assert "ops_autogrowth" in html
+        assert "ag.wakeups_total" in html
+        assert "ag.non_idle_ticks" in html
+        assert "ag.errors_total" in html
+        assert "autogrowth_start" not in html
+        assert "autogrowth_stop" not in html
 
     def test_hologram_ops_has_flexhw_en_labels(self):
         html = _read_html()

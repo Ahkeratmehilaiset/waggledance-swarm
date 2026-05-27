@@ -12,6 +12,7 @@ Tests cover:
 - ModelStore lifecycle (train → canary → promote/rollback)
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -100,6 +101,33 @@ class TestSolverRouterRouting:
         assert "quality_path" in d
         assert "selected" in d
         assert "execution_time_ms" in d
+
+    def test_route_math_includes_privacy_safe_solver_call_trace(self):
+        router = SolverRouter()
+        query = "calculate 2 + 2 private-token-123"
+        result = router.route("math", query=query)
+
+        assert result.solver_call_trace == [
+            {
+                "stage": "solver_call",
+                "status": "selected",
+                "intent": "math",
+                "capability_id": "solve.math",
+                "selected_index": 0,
+                "quality_path": "gold",
+                "execution_boundary": "safe_action_bus",
+            }
+        ]
+        trace_json = json.dumps(result.solver_call_trace)
+        assert "private-token-123" not in trace_json
+        assert '"query"' not in trace_json
+        assert result.to_dict()["solver_call_trace"] == result.solver_call_trace
+
+    def test_route_chat_has_no_solver_call_trace(self):
+        router = SolverRouter()
+        result = router.route("chat")
+        assert result.solver_call_trace == []
+        assert "solver_call_trace" not in result.to_dict()
 
     def test_set_and_clear_context(self):
         router = SolverRouter()

@@ -60,6 +60,22 @@ class TestQueryPathAudit:
         assert payload["cap_id"] == payload["capabilities"][0]
         assert entries[0].capability_id == payload["cap_id"]
 
+    def test_capability_selected_event_includes_solver_call_trace(self):
+        rt = AutonomyRuntime()
+        raw_query = "calculate 2 + 2 private-token-123"
+        result = rt.handle_query(raw_query)
+
+        entries = rt.audit.query_by_event_type("capability.selected")
+        assert len(entries) >= 1
+        payload = entries[0].payload
+        trace = payload["solver_call_trace"]
+        assert trace == result["solver_call_trace"]
+        assert trace[0]["stage"] == "solver_call"
+        assert trace[0]["capability_id"] == "solve.math"
+        assert trace[0]["execution_boundary"] == "safe_action_bus"
+        assert raw_query not in repr(trace)
+        assert "query" not in repr(trace)
+
     def test_capability_selected_event_includes_empty_cap_id_without_capabilities(self):
         class _Selection:
             selected = []

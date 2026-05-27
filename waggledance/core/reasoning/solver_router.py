@@ -26,6 +26,7 @@ from waggledance.core.capabilities.registry import CapabilityRegistry
 from waggledance.core.capabilities.selector import CapabilitySelector, SelectionResult
 from waggledance.core.domain.autonomy import (
     Action,
+    CapabilityCategory,
     CapabilityContract,
     WorldSnapshot,
 )
@@ -74,6 +75,10 @@ class SolverRouteResult:
     execution_time_ms: float = 0.0
     # Phase 14 — autonomy consult outcome (None when not attempted).
     autonomy_consult: Optional[AutonomyConsultOutcome] = None
+    # Image #1 solver-first proof boundary: privacy-safe trace of solver
+    # capabilities selected for the caller to execute. Query text and free-form
+    # descriptions are intentionally excluded.
+    solver_call_trace: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def quality_path(self) -> str:
@@ -101,6 +106,8 @@ class SolverRouteResult:
             "execution_time_ms": self.execution_time_ms,
             "fallback_used": self.selection.fallback_used,
         }
+        if self.solver_call_trace:
+            out["solver_call_trace"] = list(self.solver_call_trace)
         if self.autonomy_consult is not None:
             out["autonomy_consult"] = {
                 "served": self.autonomy_consult.served,
@@ -352,6 +359,10 @@ class SolverRouter:
             context_keys=context_keys,
             execution_time_ms=round(elapsed, 2),
             autonomy_consult=autonomy_outcome,
+            solver_call_trace=self._solver_call_trace(
+                intent=intent,
+                selection=selection,
+            ),
         )
 
         self._record(result)
@@ -370,6 +381,10 @@ class SolverRouter:
             intent="direct",
             selection=selection,
             execution_time_ms=round(elapsed, 2),
+            solver_call_trace=self._solver_call_trace(
+                intent="direct",
+                selection=selection,
+            ),
         )
         self._record(result)
         return result
@@ -529,6 +544,34 @@ class SolverRouter:
         }
 
     # ── Internal ──────────────────────────────────────────
+
+    @staticmethod
+    def _solver_call_trace(
+        *,
+        intent: str,
+        selection: SelectionResult,
+    ) -> List[Dict[str, Any]]:
+        """Build a privacy-safe selected-solver trace.
+
+        SolverRouter selects capabilities; the caller performs execution via
+        SafeActionBus. The trace records that boundary explicitly so this is
+        not mistaken for a completed solver execution receipt.
+        """
+
+        trace: List[Dict[str, Any]] = []
+        for selected_index, capability in enumerate(selection.selected):
+            if capability.category != CapabilityCategory.SOLVE:
+                continue
+            trace.append({
+                "stage": "solver_call",
+                "status": "selected",
+                "intent": intent,
+                "capability_id": capability.capability_id,
+                "selected_index": selected_index,
+                "quality_path": selection.quality_path,
+                "execution_boundary": "safe_action_bus",
+            })
+        return trace
 
     # Regex for detecting numbers in query text (digits, decimals, percentages)
     _NUMBER_RE = re.compile(r'\d')

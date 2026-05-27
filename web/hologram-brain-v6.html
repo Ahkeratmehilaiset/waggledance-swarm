@@ -442,6 +442,7 @@ const LANG = {
       ops_cpu: "CPU", ops_gpu: "GPU", ops_memory: "Memory",
       ops_auth: "Auth", ops_ws: "WebSocket", ops_queues: "Queues",
       ops_flexhw: "FlexHW Tier", ops_throttle: "AutoThrottle",
+      ops_autogrowth: "Low-risk Autogrowth",
       chat_route: "Route", chat_explain: "Explainability"
     },
     chat: {
@@ -512,6 +513,7 @@ const LANG = {
       ops_cpu: "CPU", ops_gpu: "GPU", ops_memory: "Muisti",
       ops_auth: "Tunnistautuminen", ops_ws: "WebSocket", ops_queues: "Jonot",
       ops_flexhw: "FlexHW-taso", ops_throttle: "Automaattisaato",
+      ops_autogrowth: "Matalariskinen autokasvu",
       chat_route: "Reitti", chat_explain: "Selitettavyys"
     },
     chat: {
@@ -1545,6 +1547,7 @@ function buildOpsPanel(el) {
   const st = ops.status || {};
   const fhw = ops.flexhw || {};
   const thr = ops.throttle || {};
+  const ag = ops.autogrowth || {};
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1594,6 +1597,18 @@ function buildOpsPanel(el) {
   html += card('Max Concurrent', thr.max_concurrent != null ? thr.max_concurrent : '\u2014');
   const scaleEvts = thr.scale_events || [];
   html += card('Scale Events', scaleEvts.length > 0 ? scaleEvts.length : '0');
+  html += `</div></div>`;
+  // ── Low-risk autogrowth section ──
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_autogrowth')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Enabled', ag.enabled ? 'Yes' : 'No');
+  html += card('Source', ag.up ? 'OK' : 'Off');
+  html += card('Running', ag.running ? 'Yes' : 'No');
+  html += card('Interval', ag.interval_seconds != null ? `${ag.interval_seconds}s` : '\u2014');
+  html += card('Max/Wake', ag.max_ticks_per_wake != null ? ag.max_ticks_per_wake : '\u2014');
+  html += card('Wakeups', ag.wakeups_total != null ? ag.wakeups_total : '0');
+  html += card('Non-idle', ag.non_idle_ticks != null ? ag.non_idle_ticks : '0');
+  html += card('Errors', ag.errors_total != null ? ag.errors_total : '0');
   html += `</div></div>`;
   el.innerHTML = html;
 }

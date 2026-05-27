@@ -2123,6 +2123,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Prometheus metrics expose the autogrowth ticker boundary.",
             ),
             (
+                "waggledance/adapters/http/routes/compat_dashboard.py",
+                "Ops API exposes read-only autogrowth ticker status.",
+            ),
+            (
+                "web/hologram-brain-v6.html",
+                "Hologram Ops panel renders the autogrowth status cards.",
+            ),
+            (
                 "docs/API.md",
                 "Operator-facing metrics contract documents autogrowth counters.",
             ),
@@ -2298,9 +2306,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "A bounded low-risk autogrowth substrate exists with an "
                 "allowlist, runtime gap seam, scheduler ticks, a runtime "
-                "ticker boundary smoke, Prometheus operator metrics, and "
-                "proof fixtures; unrestricted runtime authority is not "
-                "claimed."
+                "ticker boundary smoke, Prometheus operator metrics, a "
+                "read-only dashboard ops overlay, and proof fixtures; "
+                "unrestricted runtime authority is not claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -2316,10 +2324,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "lifespan hooks, not autonomous production authority.",
                 "Operator metrics expose ticker cadence and counters, not "
                 "new mutation authority.",
+                "The dashboard overlay is read-only status; it adds no "
+                "start/stop or configuration controls.",
             ),
             next_smallest_pr=(
-                "Add low-risk autogrowth metrics to the dashboard ops "
-                "overlay without changing the authority boundary."
+                "Add alert thresholds and an operator runbook for low-risk "
+                "autogrowth error/wakeup rates without adding controls."
             ),
             proof=low_risk_autonomy_proof,
         ),

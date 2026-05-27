@@ -483,7 +483,8 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert capability["proof"]["operator_metrics_smoke"][
         "runtime_authority_changed"
     ] is False
-    assert "dashboard ops overlay" in capability["next_smallest_pr"]
+    assert "alert thresholds" in capability["next_smallest_pr"]
+    assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 
 

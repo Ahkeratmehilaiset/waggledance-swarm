@@ -674,3 +674,15 @@ class TestProfileTabSmokeMatrix:
         for line in ws_lines:
             assert "token=" not in line, \
                 f"Frontend WS must not use ?token= parameter: {line.strip()}"
+
+    def test_ops_tab_renders_autogrowth_readonly_status(self):
+        html = _read_html()
+        assert "const ag = ops.autogrowth || {}" in html
+        assert "Low-risk Autogrowth" in html
+        assert "Matalariskinen autokasvu" in html
+        assert "ag.interval_seconds" in html
+        assert "ag.max_ticks_per_wake" in html
+        assert "ag.wakeups_total" in html
+        assert "ag.errors_total" in html
+        assert "autogrowth_start" not in html
+        assert "autogrowth_stop" not in html

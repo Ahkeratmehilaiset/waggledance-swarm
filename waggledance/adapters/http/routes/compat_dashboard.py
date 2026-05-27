@@ -346,6 +346,78 @@ def _throttle_section(container) -> dict:
         return {}
 
 
+def _autogrowth_disabled_section() -> dict:
+    return {
+        "enabled": False,
+        "up": False,
+        "running": False,
+        "interval_seconds": None,
+        "max_ticks_per_wake": None,
+        "wakeups_total": 0,
+        "non_idle_ticks": 0,
+        "errors_total": 0,
+    }
+
+
+def _safe_getattr(obj, name: str, default=None):  # noqa: ANN001
+    try:
+        return getattr(obj, name, default)
+    except Exception:
+        return default
+
+
+def _number_or_none(value):  # noqa: ANN001
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_zero(value) -> int:  # noqa: ANN001
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _autogrowth_section(container) -> dict:
+    """Build read-only low-risk autogrowth status for the Ops panel."""
+    try:
+        ticker = getattr(container, "autogrowth_background_ticker", None)
+    except Exception as exc:
+        logger.debug("Autogrowth ticker lookup failed: %s", exc)
+        return _autogrowth_disabled_section()
+    if ticker is None:
+        return _autogrowth_disabled_section()
+
+    section = _autogrowth_disabled_section()
+    section["enabled"] = True
+    section["running"] = bool(_safe_getattr(ticker, "is_running", False))
+
+    interval = _number_or_none(_safe_getattr(ticker, "interval_seconds", None))
+    if interval is not None:
+        section["interval_seconds"] = interval
+    max_ticks = _safe_getattr(ticker, "max_ticks_per_wake", None)
+    if max_ticks is not None:
+        section["max_ticks_per_wake"] = _int_or_zero(max_ticks)
+
+    stats = _safe_getattr(ticker, "stats", None)
+    if stats is None:
+        return section
+
+    section["up"] = True
+    section["wakeups_total"] = _int_or_zero(
+        _safe_getattr(stats, "wakeups_total", 0)
+    )
+    section["non_idle_ticks"] = _int_or_zero(
+        _safe_getattr(stats, "non_idle_ticks", 0)
+    )
+    section["errors_total"] = _int_or_zero(
+        _safe_getattr(stats, "errors_total", 0)
+    )
+    return section
+
+
 @router.get("/api/ops")
 def api_ops(service=Depends(get_autonomy_service),
             container=Depends(get_container)):
@@ -386,6 +458,7 @@ def api_ops(service=Depends(get_autonomy_service),
         "hybrid_retrieval": hybrid_stats,
         "backfill": backfill_metrics,
         "accelerator": accelerator_metrics,
+        "autogrowth": _autogrowth_section(container),
         "gemma_profiles": gemma_metrics,
         "llm_parallel": parallel_metrics,
         "hex_mesh": _safe(

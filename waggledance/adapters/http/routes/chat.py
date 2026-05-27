@@ -94,7 +94,7 @@ def _route_stage_value_is_json_scalar(value: Any) -> bool:
 
 def _sanitize_route_stage_event(event: dict[str, Any]) -> dict[str, Any] | None:
     stage = event.get("stage")
-    if not isinstance(stage, str):
+    if not isinstance(stage, str) or stage not in ROUTE_STAGE_TRACE_ALLOWED_FIELDS:
         return None
     sanitized: dict[str, Any] = {"stage": stage}
     for key in ROUTE_STAGE_TRACE_ALLOWED_FIELDS.get(stage, set()):

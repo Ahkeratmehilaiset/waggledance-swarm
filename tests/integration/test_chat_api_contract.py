@@ -225,7 +225,7 @@ def test_route_stage_trace_boundary_drops_unsafe_trace_keys():
             "memory_score": 0.0,
         },
         {
-            "stage": "unknown_stage",
+            "stage": raw_query,
             "query": raw_query,
             "profile": raw_profile,
         },
@@ -259,7 +259,6 @@ def test_route_stage_trace_boundary_drops_unsafe_trace_keys():
             "result_count": 0,
             "memory_score": 0.0,
         },
-        {"stage": "unknown_stage"},
     ]
 
     event = _build_chat_route_ws_event(resp, service)

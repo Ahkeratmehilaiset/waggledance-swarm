@@ -67,7 +67,6 @@ OPEN_STATUS_FRAGMENTS = (
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
-    "acknowledged",
     "answered",
     "approved",
     "block",
@@ -77,14 +76,13 @@ ANSWER_STATUS_FRAGMENTS = (
     "done",
     "merged",
     "pass",
-    "received",
     "resolved",
     "reported",
-    "seen",
     "superseded",
     "validated",
     "verified",
 )
+PASSIVE_ACK_STATUSES = {"acknowledged", "received", "seen"}
 
 
 class BridgeNextActionError(ValueError):
@@ -358,10 +356,19 @@ def _closes_request_for_agent(
         return False
     if _event_ts(event) <= _event_ts(request):
         return False
+    event_agent = _event_agent(event)
+    if event_agent == agent and _is_passive_ack_like(event):
+        return True
     if not _is_answer_like(event):
         return False
-    event_agent = _event_agent(event)
     return event_agent == agent or event_agent == _event_agent(request)
+
+
+def _is_passive_ack_like(event: Mapping[str, Any]) -> bool:
+    return (
+        _event_type(event) == "message"
+        and _event_status(event) in PASSIVE_ACK_STATUSES
+    )
 
 
 def _split_fresh_and_stale_requests(

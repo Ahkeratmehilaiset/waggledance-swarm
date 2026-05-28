@@ -31,7 +31,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | --- | --- | --- | --- |
 | Hex-mesh routing | Partial, with route-order proof, HTTP/WS trace contract, dashboard route-stage label smoke, operator route-stage count metrics, runtime rate/latency counters, p95/p99 PromQL panel templates from sanitized histograms, and an optional sanitized read-only Prometheus/Alertmanager latency feed provider with timeout, credential, and private-host guardrails | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md`, `waggledance/adapters/http/routes/chat.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `waggledance/adapters/http/route_stage_latency_feed.py`, `web/hologram-brain-v6.html` | Add provider health/cache metrics and bounded backoff without adding route controls. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
-| MAGMA audit log | Partial, with opt-in solver-trace receipt proof, a contract-first no-payload cross-instance share manifest, an explicit operator-gated local share exporter, a no-authority replay importer, an operator-owned peer-review handoff artifact for import decisions, and a read-only bounded `/api/ops` / hologram status history plus provider health, freshness/retention thresholds, an operator-owned feed freshness source, privacy-safe `/metrics` gauges for that handoff feed, and read-only provider metrics alert thresholds | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `waggledance/core/magma/share_manifest.py`, `tools/export_magma_share_manifest.py`, `tools/import_magma_share_manifest.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `waggledance/adapters/http/routes/metrics.py`, `web/hologram-brain-v6.html`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md`, `docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Wire a read-only Prometheus/Alertmanager alert-state feed for MAGMA handoff metrics without adding controls. |
+| MAGMA audit log | Partial, with opt-in solver-trace receipt proof, a contract-first no-payload cross-instance share manifest, an explicit operator-gated local share exporter, a no-authority replay importer, an operator-owned peer-review handoff artifact for import decisions, and a read-only bounded `/api/ops` / hologram status history plus provider health, freshness/retention thresholds, an operator-owned feed freshness source, privacy-safe `/metrics` gauges for that handoff feed, read-only provider metrics alert thresholds, and an optional sanitized MAGMA handoff metrics Alertmanager feed state | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `waggledance/core/magma/share_manifest.py`, `tools/export_magma_share_manifest.py`, `tools/import_magma_share_manifest.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `waggledance/adapters/http/routes/metrics.py`, `web/hologram-brain-v6.html`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md`, `docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Add a configured MAGMA handoff metrics Alertmanager adapter with timeout, credential, and private-host guardrails. |
 | Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, operator metrics, a read-only dashboard ops overlay with local alert state, and operator alert thresholds | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html`, `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md` | Wire a real Prometheus/Alertmanager feed into the read-only Ops alert state without adding controls. |
 | Hexagonal upgrades | Partial, with in-memory proof and runtime-boundary smoke | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py`, `waggledance/bootstrap/container.py`, `hex_topology_registry.py`, `hex_neighbor_assist.py` | Promote hexagonal topology boundary reporting into operator-visible metrics without enabling runtime mutation. |
 | Future swarm scalability | Partial, with scale-axis scorecard proof | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`, `tools/wd_image1_capability_manifest.py` | Populate the scale-axis scorecard from runtime metrics and benchmark artifacts. |
@@ -175,19 +175,24 @@ operator-owned freshness source for the peer-review handoff feed. That source
 is sanitized down to fixed timestamp/count/window/state fields plus the fixed
 `operator_peer_review_handoff_feed` label, can raise stale/invalid/unavailable
 warning IDs, and does not expose raw paths, URLs, arbitrary source labels,
-provider exception details, local paths, payloads, or controls. The next small
-step promoted the provider health and freshness source state into privacy-safe
-`waggledance_magma_handoff_*` operator metrics. Those gauges use
-fixed status/freshness/alert label sets and do not publish timestamps, share
-IDs, operator decision IDs, paths, URLs, arbitrary source labels, raw provider
-summaries, exception details, payloads, or controls. The next small step adds a
-MAGMA handoff provider metrics runbook and alert thresholds. The runbook
-defines read-only Prometheus checks for source health, snapshot validity,
+provider exception details, local paths, payloads, or controls. The provider
+health and freshness source state are also promoted into privacy-safe
+`waggledance_magma_handoff_*` operator metrics. Those gauges use fixed
+status/freshness/alert label sets and do not publish timestamps, share IDs,
+operator decision IDs, paths, URLs, arbitrary source labels, raw provider
+summaries, exception details, payloads, or controls. The MAGMA handoff provider
+metrics runbook defines read-only Prometheus checks for source health, snapshot
+validity,
 freshness staleness, retention drops, private-material flags, runtime-authority
 flags, and payload-import flags. Those alerts do not call mutating endpoints,
-import payloads, add import controls, or grant runtime authority. The next
-small step after that is wiring a read-only Prometheus/Alertmanager alert-state
-feed for those MAGMA handoff metrics without adding controls.
+import payloads, add import controls, or grant runtime authority. `/api/ops`
+can now expose `provider_health.metrics_alert_state` from an explicit
+MAGMA handoff metrics Alertmanager feed. It accepts only fixed runbook alert
+IDs, warning/critical severities, finite numeric samples, and sanitized ISO
+timestamps; it drops raw Alertmanager labels, annotations, URLs, paths,
+hostnames, unknown alert IDs, resolved alerts, and provider exception details.
+The next small step is adding a configured MAGMA handoff metrics Alertmanager
+adapter with timeout, credential, and private-host guardrails.
 
 ### Future Scale-Axis Scorecard
 

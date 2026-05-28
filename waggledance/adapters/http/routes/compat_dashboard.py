@@ -863,6 +863,71 @@ MAGMA_HANDOFF_PROVIDER_FRESHNESS_WARNING_SECONDS = 24 * 60 * 60
 MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT = 1
 MAGMA_HANDOFF_FRESHNESS_SOURCE = "operator_peer_review_handoff_feed"
 MAGMA_HANDOFF_FRESHNESS_STATES = frozenset({"fresh", "stale", "unknown"})
+MAGMA_HANDOFF_METRICS_ALERT_IDS = {
+    "MagmaHandoffMetricsSourceDown": "warning",
+    "MagmaHandoffSnapshotInvalid": "warning",
+    "MagmaHandoffFreshnessStale": "warning",
+    "MagmaHandoffRetentionDropped": "warning",
+    "MagmaHandoffPrivateMaterialRecorded": "critical",
+    "MagmaHandoffRuntimeAuthorityReported": "critical",
+    "MagmaHandoffPayloadImported": "critical",
+    "MagmaHandoffProviderUnavailable": "warning",
+    "MagmaHandoffFreshnessSourceUnavailable": "warning",
+}
+MAGMA_HANDOFF_METRICS_ALERT_METRICS = {
+    "MagmaHandoffMetricsSourceDown": "waggledance_magma_handoff_provider_up",
+    "MagmaHandoffSnapshotInvalid": "waggledance_magma_handoff_snapshot_valid",
+    "MagmaHandoffFreshnessStale": (
+        "waggledance_magma_handoff_freshness_source_stale"
+    ),
+    "MagmaHandoffRetentionDropped": (
+        "waggledance_magma_handoff_history_dropped_count"
+    ),
+    "MagmaHandoffPrivateMaterialRecorded": (
+        "waggledance_magma_handoff_local_paths_recorded"
+    ),
+    "MagmaHandoffRuntimeAuthorityReported": (
+        "waggledance_magma_handoff_runtime_authority_granted"
+    ),
+    "MagmaHandoffPayloadImported": (
+        "waggledance_magma_handoff_payload_files_imported"
+    ),
+    "MagmaHandoffProviderUnavailable": (
+        "waggledance_magma_handoff_provider_alert_active"
+    ),
+    "MagmaHandoffFreshnessSourceUnavailable": (
+        "waggledance_magma_handoff_provider_alert_active"
+    ),
+}
+MAGMA_HANDOFF_METRICS_ALERT_SUMMARIES = {
+    "MagmaHandoffMetricsSourceDown": (
+        "MAGMA handoff metrics source is unavailable."
+    ),
+    "MagmaHandoffSnapshotInvalid": (
+        "MAGMA handoff metrics report an invalid snapshot."
+    ),
+    "MagmaHandoffFreshnessStale": (
+        "MAGMA handoff freshness source reports stale state."
+    ),
+    "MagmaHandoffRetentionDropped": (
+        "MAGMA handoff history dropped entries from the retained window."
+    ),
+    "MagmaHandoffPrivateMaterialRecorded": (
+        "MAGMA handoff metrics report private material."
+    ),
+    "MagmaHandoffRuntimeAuthorityReported": (
+        "MAGMA handoff metrics report runtime authority."
+    ),
+    "MagmaHandoffPayloadImported": (
+        "MAGMA handoff metrics report imported payload files."
+    ),
+    "MagmaHandoffProviderUnavailable": (
+        "MAGMA handoff provider alert is active."
+    ),
+    "MagmaHandoffFreshnessSourceUnavailable": (
+        "MAGMA handoff freshness source alert is active."
+    ),
+}
 
 
 def _magma_share_import_handoff_freshness_snapshot(container):  # noqa: ANN001
@@ -1141,6 +1206,171 @@ def _magma_share_import_handoff_provider_retention_alerts(
     return alerts
 
 
+def _magma_handoff_metrics_alert_empty_state(source: str) -> dict:
+    return {
+        "source": source,
+        "status": "not_configured",
+        "severity": "none",
+        "prometheus_alertmanager_feed": False,
+        "updated_at": None,
+        "active_count": 0,
+        "active": [],
+        "controls_present": False,
+    }
+
+
+def _magma_handoff_metrics_alert_feed_provider(container):  # noqa: ANN001
+    for name in (
+        "magma_share_import_handoff_metrics_alert_feed",
+        "magma_handoff_metrics_alert_feed",
+        "magma_share_import_handoff_alert_feed",
+        "magma_handoff_alert_feed",
+        "magma_handoff_prometheus_alertmanager_feed",
+    ):
+        provider = _safe_getattr(container, name, None)
+        if provider is not None:
+            return provider
+    return None
+
+
+def _magma_handoff_metrics_alert_feed_snapshot(container):  # noqa: ANN001
+    provider = _magma_handoff_metrics_alert_feed_provider(container)
+    if provider is None:
+        return None, "not_configured"
+    if isinstance(provider, Mapping):
+        return dict(provider), ""
+    for method_name in ("snapshot", "get_status", "status"):
+        method = _safe_getattr(provider, method_name, None)
+        if callable(method):
+            try:
+                snapshot = method()
+            except Exception:
+                return None, "unavailable"
+            if isinstance(snapshot, Mapping):
+                return dict(snapshot), ""
+            return None, "invalid"
+    return None, "invalid"
+
+
+def _magma_handoff_metrics_alert_id(item: dict) -> str | None:
+    labels = item.get("labels")
+    if not isinstance(labels, Mapping):
+        labels = {}
+    alert_id = item.get("id", item.get("alertname", labels.get("alertname")))
+    if isinstance(alert_id, str) and alert_id in MAGMA_HANDOFF_METRICS_ALERT_IDS:
+        return alert_id
+    return None
+
+
+def _magma_handoff_metrics_alert_value(item: dict) -> float | None:
+    for key in ("value", "current_value", "sample_value"):
+        value = _number_or_none(item.get(key))
+        if value is not None:
+            return round(value, 3)
+    return None
+
+
+def _sanitize_magma_handoff_metrics_active_alerts(
+    snapshot: dict,
+) -> list[dict[str, object]]:
+    raw_alerts = snapshot.get(
+        "active",
+        snapshot.get("active_alerts", snapshot.get("alerts", [])),
+    )
+    if not isinstance(raw_alerts, list):
+        return []
+    alerts: list[dict[str, object]] = []
+    for raw in raw_alerts:
+        if not isinstance(raw, dict):
+            continue
+        labels = raw.get("labels")
+        if not isinstance(labels, Mapping):
+            labels = {}
+        alert_id = _magma_handoff_metrics_alert_id(raw)
+        if alert_id is None:
+            continue
+        state = raw.get("state", raw.get("status", raw.get("alert_state")))
+        if isinstance(state, Mapping):
+            state = state.get("state")
+        if isinstance(state, str) and state.lower() not in {"active", "firing"}:
+            continue
+        severity = raw.get("severity", labels.get("severity"))
+        if severity not in {"warning", "critical"}:
+            severity = MAGMA_HANDOFF_METRICS_ALERT_IDS[alert_id]
+        item = {
+            "id": alert_id,
+            "severity": severity,
+            "summary": MAGMA_HANDOFF_METRICS_ALERT_SUMMARIES[alert_id],
+            "metric": MAGMA_HANDOFF_METRICS_ALERT_METRICS[alert_id],
+        }
+        value = _magma_handoff_metrics_alert_value(raw)
+        if value is not None:
+            item["value"] = value
+        alerts.append(item)
+    return alerts
+
+
+def _magma_handoff_metrics_alert_max_severity(items: list[dict]) -> str:
+    severity = "none"
+    for item in items:
+        candidate = item.get("severity", "none")
+        if (
+            isinstance(candidate, str)
+            and ROUTE_STAGE_LATENCY_SEVERITY_RANK.get(candidate, 0)
+            > ROUTE_STAGE_LATENCY_SEVERITY_RANK.get(severity, 0)
+        ):
+            severity = candidate
+    return severity
+
+
+def _magma_handoff_metrics_alert_state(container) -> dict:  # noqa: ANN001
+    snapshot, state = _magma_handoff_metrics_alert_feed_snapshot(container)
+    if state == "not_configured":
+        return _magma_handoff_metrics_alert_empty_state("not_configured")
+    if snapshot is None:
+        invalid = state == "invalid"
+        alert_id = (
+            "MagmaHandoffMetricsAlertFeedInvalid"
+            if invalid
+            else "MagmaHandoffMetricsAlertFeedUnavailable"
+        )
+        return {
+            **_magma_handoff_metrics_alert_empty_state(
+                "prometheus_alertmanager_invalid"
+                if invalid
+                else "prometheus_alertmanager_unavailable"
+            ),
+            "status": "warning",
+            "severity": "warning",
+            "active_count": 1,
+            "active": [{
+                "id": alert_id,
+                "severity": "warning",
+                "summary": (
+                    "MAGMA handoff metrics alert feed snapshot is invalid."
+                    if invalid
+                    else (
+                        "MAGMA handoff metrics alert feed snapshot is "
+                        "unavailable."
+                    )
+                ),
+            }],
+        }
+
+    active = _sanitize_magma_handoff_metrics_active_alerts(snapshot)
+    severity = _magma_handoff_metrics_alert_max_severity(active)
+    return {
+        "source": "prometheus_alertmanager_snapshot",
+        "status": severity if severity != "none" else "nominal",
+        "severity": severity,
+        "prometheus_alertmanager_feed": True,
+        "updated_at": _route_stage_latency_updated_at(snapshot),
+        "active_count": len(active),
+        "active": active,
+        "controls_present": False,
+    }
+
+
 def _magma_share_import_handoff_provider_health(
     *,
     reason: str,
@@ -1148,6 +1378,7 @@ def _magma_share_import_handoff_provider_health(
     summary: Mapping[str, object] | None = None,
     freshness_source: Mapping[str, object] | None = None,
     freshness_state: str = "not_configured",
+    metrics_alert_state: Mapping[str, object] | None = None,
 ) -> dict:
     provider_configured = reason != "not_configured"
     snapshot_available = reason in {"valid_snapshot", "snapshot_invalid"}
@@ -1300,6 +1531,11 @@ def _magma_share_import_handoff_provider_health(
         ),
         "active_count": len(active),
         "active": active,
+        "metrics_alert_state": (
+            dict(metrics_alert_state)
+            if metrics_alert_state is not None
+            else _magma_handoff_metrics_alert_empty_state("not_configured")
+        ),
         "controls_present": False,
         "runtime_authority_granted": False,
         "payload_files_imported": 0,
@@ -1314,6 +1550,7 @@ def _with_magma_share_import_handoff_provider_health(
     snapshot=None,  # noqa: ANN001
     freshness_source: Mapping[str, object] | None = None,
     freshness_state: str = "not_configured",
+    metrics_alert_state: Mapping[str, object] | None = None,
 ) -> dict:
     section["provider_health"] = (
         _magma_share_import_handoff_provider_health(
@@ -1322,6 +1559,7 @@ def _with_magma_share_import_handoff_provider_health(
             summary=section,
             freshness_source=freshness_source,
             freshness_state=freshness_state,
+            metrics_alert_state=metrics_alert_state,
         )
     )
     return section
@@ -1333,6 +1571,7 @@ def _magma_share_import_handoff_section(container=None) -> dict:
     freshness_source, freshness_state = (
         _magma_share_import_handoff_freshness_source(container)
     )
+    metrics_alert_state = _magma_handoff_metrics_alert_state(container)
     if state == "not_configured":
         section = build_magma_share_import_handoff_status_summary(None)
         return _with_magma_share_import_handoff_provider_health(
@@ -1340,6 +1579,7 @@ def _magma_share_import_handoff_section(container=None) -> dict:
             reason="not_configured",
             freshness_source=freshness_source,
             freshness_state=freshness_state,
+            metrics_alert_state=metrics_alert_state,
         )
     if snapshot is None:
         invalid = state == "invalid"
@@ -1378,6 +1618,7 @@ def _magma_share_import_handoff_section(container=None) -> dict:
             ),
             freshness_source=freshness_source,
             freshness_state=freshness_state,
+            metrics_alert_state=metrics_alert_state,
         )
     try:
         section = build_magma_share_import_handoff_status_summary(snapshot)
@@ -1387,6 +1628,7 @@ def _magma_share_import_handoff_section(container=None) -> dict:
             snapshot=snapshot,
             freshness_source=freshness_source,
             freshness_state=freshness_state,
+            metrics_alert_state=metrics_alert_state,
         )
     except (TypeError, ValueError):
         section = build_magma_share_import_handoff_status_summary(None)
@@ -1407,6 +1649,7 @@ def _magma_share_import_handoff_section(container=None) -> dict:
             snapshot=snapshot,
             freshness_source=freshness_source,
             freshness_state=freshness_state,
+            metrics_alert_state=metrics_alert_state,
         )
 
 

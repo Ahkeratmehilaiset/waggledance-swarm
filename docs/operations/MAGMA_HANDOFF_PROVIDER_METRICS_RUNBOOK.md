@@ -274,6 +274,26 @@ python tools\build_magma_alert_feed_reviewer_handoff_bundle_verification_summary
   --json
 ```
 
+Validate the bundle's operator decision-reference locally with
+`tools/validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py`.
+The local operator decision-reference validator compares the bridge-event
+template reference with the expected sanitized operator-owned reference and the
+local verification summary. It reports `decision_reference_validated` as
+reviewer context only and keeps `decision_reference_is_approval=false`,
+`decision_reference_is_release_decision=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`, and
+`release_decision_made=false`; it does not append bridge events, transport
+artifacts, fetch endpoints, approve, merge, promote, or grant runtime
+authority.
+
+```powershell
+python tools\validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py `
+  --verification-summary-json <collected>\bundle_verification_summary.json `
+  --bridge-template-json <collected>\reviewer_bridge_event_template.json `
+  --expected-decision-ref bridge:operator-decision:pending-review `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

@@ -3122,6 +3122,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_handoff_bundle_index_contract_present": False,
         "reviewer_handoff_bundle_verifier_contract_present": False,
         "reviewer_handoff_bundle_verification_summary_contract_present": False,
+        "reviewer_handoff_bundle_operator_decision_reference_validator_contract_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -3161,6 +3162,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bundle_verification_summary_rel = (
         "tools/build_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py"
     )
+    decision_reference_validator_rel = (
+        "tools/validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py"
+    )
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
@@ -3185,6 +3189,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bundle_verification_summary_tests_rel = (
         "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py"
     )
+    decision_reference_validator_tests_rel = (
+        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_validator.py"
+    )
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
@@ -3201,6 +3208,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         bundle_index_rel,
         bundle_verifier_rel,
         bundle_verification_summary_rel,
+        decision_reference_validator_rel,
         settings_rel,
         tests_rel,
         metrics_tests_rel,
@@ -3211,6 +3219,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         bundle_index_tests_rel,
         bundle_verifier_tests_rel,
         bundle_verification_summary_tests_rel,
+        decision_reference_validator_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -3245,6 +3254,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bundle_verification_summary_text = (
         repo_root / bundle_verification_summary_rel
     ).read_text(encoding="utf-8")
+    decision_reference_validator_text = (
+        repo_root / decision_reference_validator_rel
+    ).read_text(encoding="utf-8")
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
@@ -3271,6 +3283,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bundle_verification_summary_tests_text = (
         repo_root / bundle_verification_summary_tests_rel
     ).read_text(encoding="utf-8")
+    decision_reference_validator_tests_text = (
+        repo_root / decision_reference_validator_tests_rel
+    ).read_text(encoding="utf-8")
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
@@ -3287,6 +3302,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         bundle_index_text,
         bundle_verifier_text,
         bundle_verification_summary_text,
+        decision_reference_validator_text,
         settings_text,
         metrics_tests_text,
         package_tests_text,
@@ -3296,6 +3312,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         bundle_index_tests_text,
         bundle_verifier_tests_text,
         bundle_verification_summary_tests_text,
+        decision_reference_validator_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
@@ -3592,6 +3609,25 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "local reviewer handoff bundle verification summary",
         )
     )
+    reviewer_handoff_bundle_operator_decision_reference_validator_contract_present = all(
+        token in "\n".join((
+            decision_reference_validator_text,
+            decision_reference_validator_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_validation.v1",
+            "validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference",
+            "decision_reference_validated",
+            "decision_reference_is_approval",
+            "decision_reference_is_release_decision",
+            "test_operator_decision_reference_validator_accepts_context_reference_without_approval",
+            "test_operator_decision_reference_validator_cli_json_is_path_free",
+            "local operator decision-reference validator",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -3640,6 +3676,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and reviewer_handoff_bundle_index_contract_present
         and reviewer_handoff_bundle_verifier_contract_present
         and reviewer_handoff_bundle_verification_summary_contract_present
+        and reviewer_handoff_bundle_operator_decision_reference_validator_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3682,6 +3719,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_handoff_bundle_verification_summary_contract_present": (
             reviewer_handoff_bundle_verification_summary_contract_present
         ),
+        "reviewer_handoff_bundle_operator_decision_reference_validator_contract_present": (
+            reviewer_handoff_bundle_operator_decision_reference_validator_contract_present
+        ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3722,7 +3762,11 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "reviewer handoff bundle verification summary renders that "
             "verifier result into path-free reviewer context while preserving "
             "the same no-approval, no-transport, no-bridge-write, no-payload, "
-            "no-local-path, and no-runtime-control boundary."
+            "no-local-path, and no-runtime-control boundary. The local "
+            "operator decision-reference validator checks the bundle's "
+            "bridge-event template reference against the verified bundle "
+            "summary while keeping that reference context-only, not approval "
+            "or a release decision."
         ),
     }
 
@@ -4255,6 +4299,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI renders a local reviewer handoff bundle verification summary from the verifier report without approval automation.",
             ),
             (
+                "tools/validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py",
+                "Explicit CLI validates a local reviewer handoff bundle operator decision reference without granting approval.",
+            ),
+            (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
@@ -4317,6 +4365,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py",
                 "Reviewer handoff bundle verification summary tests prove path-free verifier-result rendering, no payload inclusion, and no approval automation.",
+            ),
+            (
+                "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_validator.py",
+                "Reviewer handoff bundle operator decision-reference validator tests prove path-free context validation and no approval automation.",
             ),
             (
                 "tests/test_metrics_endpoint.py",
@@ -4619,7 +4671,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "A local verification summary renderer can turn that "
                 "verifier result into path-free reviewer context without "
                 "transport, bridge writes, payload inclusion, path recording, "
-                "or approval automation; hard "
+                "or approval automation. A local operator decision-reference "
+                "validator can check that the bundle bridge-event template "
+                "reference matches the expected operator-owned reference and "
+                "stays context-only, not approval or a release decision; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -4640,8 +4695,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local operator decision-reference validator for "
-                "reviewer handoff bundles without granting approval."
+                "Add a local operator decision-reference review summary "
+                "renderer without granting approval."
             ),
             proof=magma_audit_proof,
         ),

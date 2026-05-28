@@ -215,6 +215,14 @@ sanitized blocker tokens for reviewer handoff while keeping
 `direct_bridge_write_performed=false`, `artifact_payloads_included=false`,
 `local_paths_recorded=false`, `transport_added=false`,
 `approval_granted=false`, and `release_decision_made=false`.
+`tools/validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py`
+can validate the local bundle bridge-event template's operator
+decision-reference against an expected sanitized operator-owned reference and
+the local verification summary. It reports `decision_reference_validated`
+only as reviewer context and keeps `decision_reference_is_approval=false`,
+`decision_reference_is_release_decision=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`, and
+`release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

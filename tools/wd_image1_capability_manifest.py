@@ -3312,6 +3312,20 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "SLO panel templates",
         )
     )
+    release_gate_examples_present = all(
+        token in "\n".join((docs_text, manifest_text, runbook_text))
+        for token in (
+            "Manual release-gate examples",
+            "Pre-merge MAGMA alert-feed observability gate",
+            "avg_over_time(waggledance_magma_handoff_alert_feed_available[5m]) == 1",
+            "increase(waggledance_magma_handoff_alert_feed_fetch_failures_total[15m]) == 0",
+            "max_over_time(waggledance_magma_handoff_alert_feed_backoff_active[15m]) == 0",
+            "waggledance_magma_handoff_runtime_authority_granted == 0",
+            "must not auto-merge",
+            "documentation-only",
+            "operator-owned evidence export packaging",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -3351,6 +3365,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and docs_contract_present
         and cache_backoff_contract_present
         and slo_drill_contract_present
+        and release_gate_examples_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3368,6 +3383,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "docs_contract_present": docs_contract_present,
         "cache_backoff_contract_present": cache_backoff_contract_present,
         "slo_drill_contract_present": slo_drill_contract_present,
+        "release_gate_examples_present": release_gate_examples_present,
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3381,8 +3397,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "query, redirect, oversized response, and non-allowlisted "
             "private-host shapes. Its TTL cache and bounded failure backoff "
             "surface only sanitized provider-health metrics and read-only "
-            "SLO/drill-evidence templates without adding import controls or "
-            "runtime authority."
+            "SLO/drill-evidence templates. The runbook adds manual "
+            "release-gate examples that consume that evidence without adding "
+            "merge, promotion, configuration, importer/exporter, or runtime "
+            "controls."
         ),
     }
 
@@ -4204,8 +4222,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "fetch that state from an operator-owned Alertmanager with "
                 "timeout, credential, private-host, TTL cache, and bounded "
                 "failure-backoff guardrails. The Ops/hologram surface now "
-                "adds read-only freshness/error SLO panels and drill-evidence "
-                "artifact classes for operator review; hard "
+                "adds read-only freshness/error SLO panels, drill-evidence "
+                "artifact classes, and manual release-gate examples for "
+                "operator review; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -4226,8 +4245,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add release-gate examples that consume the SLO evidence "
-                "manually without adding controls."
+                "Add operator-owned evidence export packaging for release "
+                "review without adding runtime controls."
             ),
             proof=magma_audit_proof,
         ),

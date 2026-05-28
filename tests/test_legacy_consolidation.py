@@ -830,7 +830,9 @@ class TestApiOpsExtended:
             magma_share_import_handoff_metrics_alert_feed = feed
 
         section = _magma_share_import_handoff_section(Container())
-        alert_state = section["provider_health"]["metrics_alert_state"]
+        cached_section = _magma_share_import_handoff_section(Container())
+        alert_state = cached_section["provider_health"]["metrics_alert_state"]
+        feed_health = alert_state["feed_health"]
         serialized = str(section)
 
         assert len(calls) == 1
@@ -849,11 +851,105 @@ class TestApiOpsExtended:
         assert alert_state["active"][0]["metric"] == (
             "waggledance_magma_handoff_runtime_authority_granted"
         )
+        assert feed_health["source"] == "alertmanager_adapter"
+        assert feed_health["status"] == "nominal"
+        assert feed_health["configured"] is True
+        assert feed_health["available"] is True
+        assert feed_health["cache_enabled"] is True
+        assert feed_health["cache_present"] is True
+        assert feed_health["cache_hit_count"] == 1
+        assert feed_health["cache_miss_count"] == 1
+        assert feed_health["fetch_success_count"] == 1
+        assert feed_health["fetch_failure_count"] == 0
+        assert feed_health["backoff_active"] is False
+        assert feed_health["controls_present"] is False
+        assert feed_health["runtime_authority_granted"] is False
         assert "PRIVATE_ANNOTATION" not in serialized
         assert "PRIVATE_UNKNOWN" not in serialized
         assert "C:/private" not in serialized
         assert "prod-db" not in serialized
         assert "generatorURL" not in serialized
+
+    def test_magma_handoff_metrics_alertmanager_feed_uses_bounded_backoff(self):
+        from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+            MagmaHandoffMetricsAlertFeedHttpResponse,
+            MagmaHandoffMetricsAlertmanagerFeed,
+        )
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+
+        calls = []
+        now = [0.0]
+
+        def utc_now():
+            return datetime(
+                2026,
+                5,
+                28,
+                10,
+                int(now[0]),
+                tzinfo=timezone.utc,
+            )
+
+        def transport(url, headers, timeout_seconds, params):
+            calls.append((url, dict(params)))
+            if len(calls) > 1:
+                raise RuntimeError("C:/private/alertmanager-token")
+            body = [{
+                "labels": {
+                    "alertname": "MagmaHandoffMetricsSourceDown",
+                    "severity": "warning",
+                },
+                "status": {"state": "active"},
+            }]
+            return MagmaHandoffMetricsAlertFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = MagmaHandoffMetricsAlertmanagerFeed(
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            cache_ttl_seconds=1,
+            failure_backoff_seconds=10,
+            monotonic=lambda: now[0],
+            utc_now=utc_now,
+            transport=transport,
+        )
+
+        class Container:
+            magma_share_import_handoff_metrics_alert_feed = feed
+
+        first = _magma_share_import_handoff_section(Container())
+        now[0] = 2.0
+        failed_refresh = _magma_share_import_handoff_section(Container())
+        now[0] = 3.0
+        backoff_reuse = _magma_share_import_handoff_section(Container())
+
+        first_state = first["provider_health"]["metrics_alert_state"]
+        failed_state = failed_refresh["provider_health"]["metrics_alert_state"]
+        backoff_state = backoff_reuse["provider_health"]["metrics_alert_state"]
+        feed_health = backoff_state["feed_health"]
+        serialized = str(backoff_reuse)
+
+        assert len(calls) == 2
+        assert first_state["active_count"] == 1
+        assert failed_state["active_count"] == 1
+        assert backoff_state["active"][0]["id"] == "MagmaHandoffMetricsSourceDown"
+        assert feed_health["status"] == "warning"
+        assert feed_health["available"] is True
+        assert feed_health["cache_present"] is True
+        assert feed_health["cache_stale"] is True
+        assert feed_health["backoff_active"] is True
+        assert feed_health["fetch_success_count"] == 1
+        assert feed_health["fetch_failure_count"] == 1
+        assert feed_health["backoff_skip_count"] == 1
+        assert feed_health["last_failure_reason"] == "NETWORK_REQUEST_FAILED"
+        assert "C:/private/alertmanager-token" not in serialized
+        assert "127.0.0.1" not in serialized
 
     def test_magma_handoff_metrics_alertmanager_feed_guardrails_refuse_secrets(self):
         from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (

@@ -21,7 +21,10 @@ provider-health summary used by the hologram Ops panel.
 and reads only the operator-owned Alertmanager `/api/v2/alerts` endpoint. It
 refuses URL userinfo, query strings, fragments, credential-like headers,
 redirects, oversized responses, and private or localhost hosts unless the host
-appears exactly in `allowed_private_hosts`.
+appears exactly in `allowed_private_hosts`. It uses a bounded in-process TTL
+cache and bounded failure backoff; when the operator Alertmanager read fails
+after a prior good read, Ops can continue showing the last sanitized alert
+snapshot while surfacing `backoff_active` and a fixed failure reason.
 
 ## Metrics
 
@@ -43,6 +46,18 @@ appears exactly in `allowed_private_hosts`.
 | `waggledance_magma_handoff_provider_status{status=...}` | Fixed status gauge for `not_configured`, `nominal`, and `warning`. |
 | `waggledance_magma_handoff_freshness_state{state=...}` | Fixed freshness-state gauge for `fresh`, `stale`, and `unknown`. |
 | `waggledance_magma_handoff_provider_alert_active{alert_id=...}` | Fixed alert-id gauge for sanitized provider warning IDs. |
+| `waggledance_magma_handoff_alert_feed_configured` | `1` when the optional Alertmanager adapter is explicitly configured. |
+| `waggledance_magma_handoff_alert_feed_available` | `1` when the adapter has a usable sanitized snapshot or current successful read. |
+| `waggledance_magma_handoff_alert_feed_cache_present` | `1` when the adapter has a cached sanitized snapshot. |
+| `waggledance_magma_handoff_alert_feed_cache_stale` | `1` when the cached snapshot is past its TTL. |
+| `waggledance_magma_handoff_alert_feed_backoff_active` | `1` while the bounded failure backoff suppresses repeated feed reads. |
+| `waggledance_magma_handoff_alert_feed_cache_hits_total` | Count of snapshot requests served from the in-process cache. |
+| `waggledance_magma_handoff_alert_feed_cache_misses_total` | Count of snapshot requests that attempted a feed refresh. |
+| `waggledance_magma_handoff_alert_feed_fetch_successes_total` | Count of successful Alertmanager reads. |
+| `waggledance_magma_handoff_alert_feed_fetch_failures_total` | Count of failed Alertmanager reads after sanitization. |
+| `waggledance_magma_handoff_alert_feed_backoff_skips_total` | Count of refreshes skipped by bounded backoff. |
+| `waggledance_magma_handoff_alert_feed_status{status=...}` | Fixed adapter status gauge for `not_configured`, `nominal`, and `warning`. |
+| `waggledance_magma_handoff_alert_feed_failure_reason{reason=...}` | Fixed sanitized failure reason gauge, including `none`, `NETWORK_TIMEOUT`, `NETWORK_REQUEST_FAILED`, and response-refusal categories. |
 
 The exporter intentionally does not publish timestamps, share IDs, operator
 decision IDs, filesystem paths, URLs, arbitrary source labels, raw provider
@@ -66,6 +81,8 @@ collection, not automatic mutation.
 | `MagmaHandoffPayloadImported` | `waggledance_magma_handoff_payload_files_imported > 0` | `1m` | critical | Treat as a no-payload boundary violation; preserve evidence and block related importer or exporter changes. |
 | `MagmaHandoffProviderUnavailable` | `waggledance_magma_handoff_provider_alert_active{alert_id="MagmaShareImportHandoffProviderUnavailable"} == 1` | `10m` | warning | Confirm whether the explicit provider source is intentionally absent or failing. |
 | `MagmaHandoffFreshnessSourceUnavailable` | `waggledance_magma_handoff_provider_alert_active{alert_id="MagmaShareImportHandoffFreshnessSourceUnavailable"} == 1` | `10m` | warning | Check the operator-owned freshness source and compare it with the bounded handoff history. |
+| `MagmaHandoffAlertFeedBackoffActive` | `waggledance_magma_handoff_alert_feed_backoff_active == 1` | `10m` | warning | Inspect the operator Alertmanager endpoint and compare the cached sanitized snapshot with current `/api/ops` before making release claims from alert state. |
+| `MagmaHandoffAlertFeedFetchFailures` | `increase(waggledance_magma_handoff_alert_feed_fetch_failures_total[15m]) > 0` | `15m` | warning | Review network reachability, response shape, content type, and size cap. Do not include URLs, headers, or exception text in alert payloads. |
 
 ## Triage flow
 
@@ -73,9 +90,11 @@ collection, not automatic mutation.
 2. Fetch `/metrics` and `/api/ops`; store both outputs with timestamps.
 3. Capture runtime logs for the alert window plus the preceding 10 minutes.
 4. Compare `provider_status`, `freshness_state`, and
-   `provider_alert_active` before deciding whether the issue is source
-   availability, stale feed state, retention pressure, or a no-authority
-   boundary violation.
+   `provider_alert_active` plus the optional
+   `alert_feed_status`/`alert_feed_failure_reason` gauges before deciding
+   whether the issue is source availability, stale feed state, retention
+   pressure, Alertmanager adapter backoff, or a no-authority boundary
+   violation.
 5. For private-material, runtime-authority, or payload-import alerts, hold
    related MAGMA handoff changes until the artifact, summary builder, and
    metric sample have been reviewed.

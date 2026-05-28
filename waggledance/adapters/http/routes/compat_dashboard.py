@@ -928,6 +928,116 @@ MAGMA_HANDOFF_METRICS_ALERT_SUMMARIES = {
         "MAGMA handoff freshness source alert is active."
     ),
 }
+MAGMA_HANDOFF_METRICS_ALERT_FEED_HEALTH_REASONS = frozenset({
+    "BACKOFF_ACTIVE",
+    "NETWORK_TIMEOUT",
+    "NETWORK_REQUEST_FAILED",
+    "RESPONSE_STATUS_REFUSED",
+    "RESPONSE_JSON_REFUSED",
+    "RESPONSE_TOO_LARGE",
+    "RESPONSE_CONTENT_TYPE_REFUSED",
+    "MAGMA_HANDOFF_METRICS_ALERT_FEED_UNAVAILABLE",
+    "FEED_READ_FAILED",
+})
+
+
+def _magma_handoff_metrics_alert_feed_health_default(source: str) -> dict:
+    configured = source != "not_configured"
+    return {
+        "source": source,
+        "status": "not_configured" if not configured else "warning",
+        "configured": configured,
+        "available": False,
+        "cache_enabled": False,
+        "cache_present": False,
+        "cache_stale": False,
+        "backoff_active": False,
+        "cache_ttl_seconds": 0.0,
+        "failure_backoff_seconds": 0.0,
+        "timeout_seconds": 0.0,
+        "max_response_bytes": 0.0,
+        "last_response_bytes": 0.0,
+        "cache_hit_count": 0.0,
+        "cache_miss_count": 0.0,
+        "fetch_success_count": 0.0,
+        "fetch_failure_count": 0.0,
+        "backoff_skip_count": 0.0,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "last_failure_reason": None,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
+
+
+def _magma_handoff_metrics_alert_feed_health(provider, snapshot=None) -> dict:  # noqa: ANN001
+    if provider is None:
+        return _magma_handoff_metrics_alert_feed_health_default("not_configured")
+    raw_health = None
+    if isinstance(snapshot, Mapping):
+        raw_health = snapshot.get("provider_health")
+    if not isinstance(raw_health, Mapping):
+        method = _safe_getattr(provider, "provider_health", None)
+        if callable(method):
+            try:
+                raw_health = method()
+            except Exception:
+                raw_health = None
+    if not isinstance(raw_health, Mapping):
+        raw_health = {}
+
+    health = _magma_handoff_metrics_alert_feed_health_default(
+        "alertmanager_adapter"
+    )
+    for key in (
+        "configured",
+        "available",
+        "cache_enabled",
+        "cache_present",
+        "cache_stale",
+        "backoff_active",
+        "controls_present",
+        "runtime_authority_granted",
+        "external_writes_applied",
+    ):
+        if key in raw_health:
+            health[key] = bool(raw_health.get(key))
+    for key in (
+        "cache_ttl_seconds",
+        "failure_backoff_seconds",
+        "timeout_seconds",
+        "max_response_bytes",
+        "last_response_bytes",
+        "cache_hit_count",
+        "cache_miss_count",
+        "fetch_success_count",
+        "fetch_failure_count",
+        "backoff_skip_count",
+    ):
+        value = _number_or_none(raw_health.get(key))
+        if value is not None and value >= 0:
+            health[key] = round(value, 3)
+    for key in ("last_success_at", "last_failure_at"):
+        value = raw_health.get(key)
+        health[key] = (
+            _route_stage_latency_updated_at({ "updated_at": value })
+            if isinstance(value, str)
+            else None
+        )
+    reason = raw_health.get("last_failure_reason")
+    if isinstance(reason, str) and reason in (
+        MAGMA_HANDOFF_METRICS_ALERT_FEED_HEALTH_REASONS
+    ):
+        health["last_failure_reason"] = reason
+    raw_status = raw_health.get("status")
+    if raw_status in {"not_configured", "nominal", "warning"}:
+        health["status"] = raw_status
+    elif health["backoff_active"] or health["fetch_failure_count"] > 0:
+        health["status"] = "warning"
+    elif health["configured"]:
+        health["status"] = "nominal"
+    return health
 
 
 def _magma_share_import_handoff_freshness_snapshot(container):  # noqa: ANN001
@@ -1252,6 +1362,39 @@ def _magma_handoff_metrics_alert_feed_snapshot(container):  # noqa: ANN001
     return None, "invalid"
 
 
+def _magma_handoff_metrics_alert_feed_status(container):  # noqa: ANN001
+    provider = _magma_handoff_metrics_alert_feed_provider(container)
+    if provider is None:
+        return None, "not_configured", (
+            _magma_handoff_metrics_alert_feed_health_default("not_configured")
+        )
+    if isinstance(provider, Mapping):
+        snapshot = dict(provider)
+        return snapshot, "", _magma_handoff_metrics_alert_feed_health(
+            provider,
+            snapshot,
+        )
+    for method_name in ("snapshot", "get_status", "status"):
+        method = _safe_getattr(provider, method_name, None)
+        if callable(method):
+            try:
+                snapshot = method()
+            except Exception:
+                return None, "unavailable", (
+                    _magma_handoff_metrics_alert_feed_health(provider)
+                )
+            if isinstance(snapshot, Mapping):
+                snapshot = dict(snapshot)
+                return snapshot, "", _magma_handoff_metrics_alert_feed_health(
+                    provider,
+                    snapshot,
+                )
+            return None, "invalid", (
+                _magma_handoff_metrics_alert_feed_health(provider)
+            )
+    return None, "invalid", _magma_handoff_metrics_alert_feed_health(provider)
+
+
 def _magma_handoff_metrics_alert_id(item: dict) -> str | None:
     labels = item.get("labels")
     if not isinstance(labels, Mapping):
@@ -1324,9 +1467,14 @@ def _magma_handoff_metrics_alert_max_severity(items: list[dict]) -> str:
 
 
 def _magma_handoff_metrics_alert_state(container) -> dict:  # noqa: ANN001
-    snapshot, state = _magma_handoff_metrics_alert_feed_snapshot(container)
+    snapshot, state, feed_health = _magma_handoff_metrics_alert_feed_status(
+        container
+    )
     if state == "not_configured":
-        return _magma_handoff_metrics_alert_empty_state("not_configured")
+        return {
+            **_magma_handoff_metrics_alert_empty_state("not_configured"),
+            "feed_health": feed_health,
+        }
     if snapshot is None:
         invalid = state == "invalid"
         alert_id = (
@@ -1355,6 +1503,7 @@ def _magma_handoff_metrics_alert_state(container) -> dict:  # noqa: ANN001
                     )
                 ),
             }],
+            "feed_health": feed_health,
         }
 
     active = _sanitize_magma_handoff_metrics_active_alerts(snapshot)
@@ -1367,6 +1516,7 @@ def _magma_handoff_metrics_alert_state(container) -> dict:  # noqa: ANN001
         "updated_at": _route_stage_latency_updated_at(snapshot),
         "active_count": len(active),
         "active": active,
+        "feed_health": feed_health,
         "controls_present": False,
     }
 

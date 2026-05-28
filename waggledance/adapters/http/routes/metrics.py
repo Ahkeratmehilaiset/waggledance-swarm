@@ -125,6 +125,23 @@ _MAGMA_HANDOFF_PROVIDER_ALERT_IDS: tuple[str, ...] = (
     "MagmaShareImportHandoffFreshnessSourceUnavailable",
     "MagmaShareImportHandoffFreshnessSourceInvalid",
 )
+_MAGMA_HANDOFF_ALERT_FEED_STATUSES: tuple[str, ...] = (
+    "not_configured",
+    "nominal",
+    "warning",
+)
+_MAGMA_HANDOFF_ALERT_FEED_FAILURE_REASONS: tuple[str, ...] = (
+    "none",
+    "BACKOFF_ACTIVE",
+    "NETWORK_TIMEOUT",
+    "NETWORK_REQUEST_FAILED",
+    "RESPONSE_STATUS_REFUSED",
+    "RESPONSE_JSON_REFUSED",
+    "RESPONSE_TOO_LARGE",
+    "RESPONSE_CONTENT_TYPE_REFUSED",
+    "MAGMA_HANDOFF_METRICS_ALERT_FEED_UNAVAILABLE",
+    "FEED_READ_FAILED",
+)
 
 
 def _as_float(value: Any) -> float | None:
@@ -599,6 +616,108 @@ class _WaggleCollector:
                 1.0 if alert_id in active_alert_ids else 0.0,
             )
         yield alert_metric
+
+        metrics_alert_state = provider_health.get("metrics_alert_state")
+        feed_health = (
+            metrics_alert_state.get("feed_health")
+            if isinstance(metrics_alert_state, dict)
+            else None
+        )
+        if not isinstance(feed_health, dict):
+            feed_health = {}
+
+        bool_gauges = {
+            "configured": feed_health.get("configured"),
+            "available": feed_health.get("available"),
+            "cache_enabled": feed_health.get("cache_enabled"),
+            "cache_present": feed_health.get("cache_present"),
+            "cache_stale": feed_health.get("cache_stale"),
+            "backoff_active": feed_health.get("backoff_active"),
+            "controls_present": feed_health.get("controls_present"),
+            "runtime_authority_granted": feed_health.get(
+                "runtime_authority_granted"
+            ),
+            "external_writes_applied": feed_health.get(
+                "external_writes_applied"
+            ),
+        }
+        for name, value in bool_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_magma_handoff_alert_feed_{name}",
+                (
+                    "read-only MAGMA handoff Alertmanager adapter "
+                    f"provider-health gauge: {name}"
+                ),
+                value=_as_bool_float(value),
+            )
+
+        numeric_gauges = {
+            "cache_ttl_seconds": feed_health.get("cache_ttl_seconds"),
+            "failure_backoff_seconds": feed_health.get(
+                "failure_backoff_seconds"
+            ),
+            "timeout_seconds": feed_health.get("timeout_seconds"),
+            "max_response_bytes": feed_health.get("max_response_bytes"),
+            "last_response_bytes": feed_health.get("last_response_bytes"),
+        }
+        for name, value in numeric_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_magma_handoff_alert_feed_{name}",
+                (
+                    "read-only MAGMA handoff Alertmanager adapter "
+                    f"provider-health gauge: {name}"
+                ),
+                value=_as_nonnegative_float(value),
+            )
+
+        counter_values = {
+            "cache_hits": feed_health.get("cache_hit_count"),
+            "cache_misses": feed_health.get("cache_miss_count"),
+            "fetch_successes": feed_health.get("fetch_success_count"),
+            "fetch_failures": feed_health.get("fetch_failure_count"),
+            "backoff_skips": feed_health.get("backoff_skip_count"),
+        }
+        for name, value in counter_values.items():
+            yield CounterMetricFamily(
+                f"waggledance_magma_handoff_alert_feed_{name}_total",
+                (
+                    "read-only MAGMA handoff Alertmanager adapter "
+                    f"provider-health counter: {name}"
+                ),
+                value=_as_nonnegative_float(value),
+            )
+
+        feed_status_metric = GaugeMetricFamily(
+            "waggledance_magma_handoff_alert_feed_status",
+            (
+                "Current MAGMA handoff Alertmanager adapter status as "
+                "fixed-state gauges."
+            ),
+            labels=["status"],
+        )
+        current_feed_status = feed_health.get("status")
+        for status in _MAGMA_HANDOFF_ALERT_FEED_STATUSES:
+            feed_status_metric.add_metric(
+                [status],
+                1.0 if current_feed_status == status else 0.0,
+            )
+        yield feed_status_metric
+
+        feed_failure_metric = GaugeMetricFamily(
+            "waggledance_magma_handoff_alert_feed_failure_reason",
+            (
+                "Current sanitized MAGMA handoff Alertmanager adapter "
+                "failure reason as fixed-state gauges."
+            ),
+            labels=["reason"],
+        )
+        current_reason = feed_health.get("last_failure_reason") or "none"
+        for reason in _MAGMA_HANDOFF_ALERT_FEED_FAILURE_REASONS:
+            feed_failure_metric.add_metric(
+                [reason],
+                1.0 if current_reason == reason else 0.0,
+            )
+        yield feed_failure_metric
 
 
 def _build_registry(get_container) -> CollectorRegistry:  # noqa: ANN001

@@ -3133,16 +3133,20 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
     )
     container_rel = "waggledance/bootstrap/container.py"
+    metrics_rel = "waggledance/adapters/http/routes/metrics.py"
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
+    metrics_tests_rel = "tests/test_metrics_endpoint.py"
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
     required = (
         adapter_rel,
         container_rel,
+        metrics_rel,
         settings_rel,
         tests_rel,
+        metrics_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -3159,15 +3163,21 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
 
     adapter_text = (repo_root / adapter_rel).read_text(encoding="utf-8")
     container_text = (repo_root / container_rel).read_text(encoding="utf-8")
+    metrics_text = (repo_root / metrics_rel).read_text(encoding="utf-8")
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
+    metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
+        encoding="utf-8"
+    )
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
     combined_runtime_lower = "\n".join((
         adapter_text,
         container_text,
+        metrics_text,
         settings_text,
+        metrics_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
@@ -3190,6 +3200,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "RESPONSE_SOURCE_URL_REFUSED",
             "contains_secret_marker_substring",
             "_alertmanager_active_alerts",
+            "DEFAULT_CACHE_TTL_SECONDS",
+            "DEFAULT_FAILURE_BACKOFF_SECONDS",
+            "provider_health",
+            "BACKOFF_ACTIVE",
         )
     )
     container_contract_present = all(
@@ -3209,13 +3223,18 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "enabled: false",
             "alertmanager_base_url: ''",
             "allowed_private_hosts: []",
+            "cache_ttl_s: 30",
+            "failure_backoff_s: 30",
             "headers: {}",
         )
     )
     test_contract_present = all(
-        token in tests_text
+        token in "\n".join((tests_text, metrics_tests_text))
         for token in (
             "test_magma_handoff_metrics_alertmanager_feed_reads_operator_alerts",
+            "test_magma_handoff_metrics_alertmanager_feed_uses_bounded_backoff",
+            "test_metrics_body_contains_magma_alert_feed_cache_gauges",
+            "test_metrics_magma_alert_feed_backoff_failure_is_sanitized",
             "test_magma_handoff_metrics_alertmanager_feed_guardrails_refuse_secrets",
             "test_container_wires_configured_magma_handoff_metrics_alert_feed",
             "MagmaHandoffRuntimeAuthorityReported",
@@ -3232,6 +3251,30 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "credential",
             "allowed_private_hosts",
             "private or localhost hosts",
+            "bounded failure backoff",
+            "cache/backoff",
+        )
+    )
+    cache_backoff_contract_present = all(
+        token in "\n".join((
+            adapter_text,
+            metrics_text,
+            settings_text,
+            tests_text,
+            metrics_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "cache_ttl_s",
+            "failure_backoff_s",
+            "cache_hit_count",
+            "backoff_skip_count",
+            "waggledance_magma_handoff_alert_feed_cache_hits_total",
+            "waggledance_magma_handoff_alert_feed_backoff_active",
+            "metrics_alert_state",
+            "feed_health",
         )
     )
     guardrails_present = all(
@@ -3271,6 +3314,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and settings_contract_present
         and test_contract_present
         and docs_contract_present
+        and cache_backoff_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3286,6 +3330,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "settings_contract_present": settings_contract_present,
         "test_contract_present": test_contract_present,
         "docs_contract_present": docs_contract_present,
+        "cache_backoff_contract_present": cache_backoff_contract_present,
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3297,8 +3342,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "default, read-only, and wired into /api/ops provider health. It "
             "uses bounded GETs to /api/v2/alerts and refuses credential, "
             "query, redirect, oversized response, and non-allowlisted "
-            "private-host shapes without adding import controls or runtime "
-            "authority."
+            "private-host shapes. Its TTL cache and bounded failure backoff "
+            "surface only sanitized provider-health metrics without adding "
+            "import controls or runtime authority."
         ),
     }
 
@@ -4118,9 +4164,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "labels, annotations, URLs, paths, exception details, import "
                 "controls, or runtime authority. A configured adapter can "
                 "fetch that state from an operator-owned Alertmanager with "
-                "timeout, credential, and private-host guardrails; hard "
-                "append-only/default enforcement is still not yet safe to "
-                "claim."
+                "timeout, credential, private-host, TTL cache, and bounded "
+                "failure-backoff guardrails; hard append-only/default "
+                "enforcement is still not yet safe to claim."
             ),
             status=_status_for(magma_evidence),
             claim_safe=False,
@@ -4139,9 +4185,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add provider health/cache metrics and bounded backoff for "
-                "the MAGMA handoff metrics Alertmanager adapter without "
-                "adding controls."
+                "Add operator-visible adapter freshness/error SLO panels "
+                "and drill evidence without adding controls."
             ),
             proof=magma_audit_proof,
         ),

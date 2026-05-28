@@ -694,6 +694,7 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
     assert proof["settings_contract_present"] is True
     assert proof["test_contract_present"] is True
     assert proof["docs_contract_present"] is True
+    assert proof["cache_backoff_contract_present"] is True
     assert proof["guardrails_present"] is True
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
@@ -1016,6 +1017,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "metrics runbook" in capability["safe_statement"]
     assert "metrics_alert_state" in capability["safe_statement"]
     assert "configured adapter" in capability["safe_statement"]
+    assert "bounded failure-backoff guardrails" in capability["safe_statement"]
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "alert_thresholds_documented"
@@ -1032,7 +1034,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         "guardrails_present"
     ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "provider health/cache metrics" in (
+    assert "adapter freshness/error SLO panels" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

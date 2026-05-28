@@ -228,6 +228,7 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["histogram_quantile_supported"] is True
     assert smoke["latency_panel_templates_visible"] is True
     assert smoke["prometheus_alertmanager_feed_supported"] is True
+    assert smoke["prometheus_alertmanager_feed_provider_configured"] is True
     assert smoke["latency_feed_state_visible"] is True
     assert smoke["alert_thresholds_documented"] is True
     assert smoke["runbook_path"] == (
@@ -727,7 +728,10 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "waggledance/adapters/http/routes/chat.py",
         "waggledance/adapters/http/routes/metrics.py",
         "waggledance/adapters/http/routes/compat_dashboard.py",
+        "waggledance/adapters/http/route_stage_latency_feed.py",
+        "waggledance/bootstrap/container.py",
         "web/hologram-brain-v6.html",
+        "configs/settings.yaml",
         "tests/test_metrics_endpoint.py",
         "tests/integration/test_chat_api_contract.py",
         "tests/test_legacy_consolidation.py",
@@ -849,8 +853,9 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
     assert "p95/p99" in capability["safe_statement"]
-    assert "read-only feed state" in capability["safe_statement"]
-    assert "endpoint configuration" in capability["next_smallest_pr"]
+    assert "feed provider" in capability["safe_statement"]
+    assert "private-host guardrails" in capability["safe_statement"]
+    assert "provider health/cache metrics" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

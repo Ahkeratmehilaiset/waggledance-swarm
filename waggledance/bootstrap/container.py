@@ -785,6 +785,30 @@ class Container:
             priority_lock=self.priority_lock,
         )
 
+    @cached_property
+    def route_stage_latency_feed(self):
+        """Optional read-only Prometheus/Alertmanager route-stage feed."""
+        cfg = self._settings.get("route_stage_latency_feed", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return None
+        try:
+            from waggledance.adapters.http.route_stage_latency_feed import (
+                RouteStageLatencyPrometheusAlertmanagerFeed,
+            )
+
+            return RouteStageLatencyPrometheusAlertmanagerFeed.from_config(cfg)
+        except Exception as exc:
+            log.error(
+                "Route-stage latency feed configuration refused; "
+                "feed_state will report unavailable: %s",
+                exc,
+            )
+            from waggledance.adapters.http.route_stage_latency_feed import (
+                UnavailableRouteStageLatencyFeed,
+            )
+
+            return UnavailableRouteStageLatencyFeed()
+
     def build_app(self):
         """Build FastAPI application."""
         from waggledance.adapters.http.api import create_app

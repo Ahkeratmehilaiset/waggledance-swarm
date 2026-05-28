@@ -29,7 +29,7 @@ Use the safest true wording until the proof tool reports otherwise:
 
 | Capability | Safe status | Repo evidence | Smallest next work |
 | --- | --- | --- | --- |
-| Hex-mesh routing | Partial, with route-order proof and HTTP/WS trace contract | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Render the WS route-stage labels in the dashboard UI and add a visual contract smoke. |
+| Hex-mesh routing | Partial, with route-order proof, HTTP/WS trace contract, and dashboard route-stage label smoke | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md`, `waggledance/adapters/http/routes/chat.py`, `web/hologram-brain-v6.html` | Expose route-stage counts in operator metrics without changing routing order or enabling disabled hex paths. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
 | Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, operator metrics, a read-only dashboard ops overlay with local alert state, and operator alert thresholds | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html`, `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md` | Wire a real Prometheus/Alertmanager feed into the read-only Ops alert state without adding controls. |
@@ -76,8 +76,10 @@ and reports the current chat route order. The `/api/chat` contract and
 dashboard `/ws` `chat_route` event expose the same privacy-safe
 `route_stage_trace` emitted by `ChatResult`; the WS event also adds
 `route_stage_labels` and `disabled_route_stages` so clients can inspect route
-stages without receiving raw query, language hint, or profile values. Current
-settings have
+stages without receiving raw query, language hint, or profile values. The
+dashboard chat panel renders those labels through a local stage-name allowlist
+and escapes stage/status text; it does not render backend-supplied free-form
+labels or raw route trace payloads. Current settings have
 `hybrid_retrieval.enabled=true` in `candidate` mode and `hex_mesh.enabled=false`,
 so the literal "every query first enters the mesh" wording remains unsafe.
 

@@ -14,6 +14,7 @@ from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_runtime_smoke,
 )
 from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
+from tools.wd_image1_capability_manifest import build_hex_mesh_route_stage_ui_smoke
 from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
 from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_runtime_boundary_smoke,
@@ -133,7 +134,40 @@ def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
     assert proof["runtime_trace_smoke"]["disabled_static_stages"] == [
         "hex_neighbor_assist_7_cell",
     ]
+    assert proof["route_stage_ui_smoke"]["ok"] is True
+    assert proof["route_stage_ui_smoke"]["checks"][
+        "dashboard_stage_container_present"
+    ] is True
     assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
+
+
+def test_hex_mesh_route_stage_ui_smoke_reports_dashboard_contract() -> None:
+    smoke = build_hex_mesh_route_stage_ui_smoke(ROOT)
+
+    assert smoke["ok"] is True
+    assert smoke["proof_id"] == "hex_mesh_route_stage_ui_smoke_v1"
+    assert smoke["expected_route_stages"] == [
+        "language_detection",
+        "hot_cache",
+        "memory_context",
+        "route_selection",
+        "deterministic_solver",
+        "hybrid_retrieval_8_cell",
+        "hex_neighbor_assist_7_cell",
+        "orchestrator_llm_fallback",
+    ]
+    assert all(smoke["checks"].values())
+    assert smoke["ws_event_contract"]["ok"] is True
+    assert smoke["ws_event_contract"]["forbidden_raw_markers_absent"] is True
+    assert "query" not in smoke["ws_event_contract"]["data_keys"]
+    assert "language" not in smoke["ws_event_contract"]["data_keys"]
+    assert "profile" not in smoke["ws_event_contract"]["data_keys"]
+    assert "hex_neighbor_assist_7_cell" in smoke["ws_event_contract"][
+        "disabled_route_stages"
+    ]
+    assert smoke["observed_ui_stage_names"] == smoke["expected_route_stages"]
+    assert smoke["no_runtime_mutation"] is True
+    assert smoke["external_writes_applied"] is False
 
 
 def test_hex_mesh_runtime_trace_smoke_matches_live_chatservice_order() -> None:
@@ -518,6 +552,17 @@ def test_low_risk_autogrowth_ops_alert_state_smoke_blocks_missing_inputs(
     assert proof["runtime_authority_changed"] is False
 
 
+def test_hex_mesh_route_stage_ui_smoke_blocks_missing_inputs(tmp_path: Path) -> None:
+    proof = build_hex_mesh_route_stage_ui_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "missing_required_inputs"
+    assert "web/hologram-brain-v6.html" in proof["missing_inputs"]
+    assert "waggledance/adapters/http/routes/chat.py" in proof["missing_inputs"]
+    assert proof["no_runtime_mutation"] is True
+    assert proof["external_writes_applied"] is False
+
+
 def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
     report = build_manifest(ROOT)
     capability = _by_id(report)["hexagonal_upgrades"]
@@ -599,6 +644,9 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["literal_claim_safe"] is False
     assert capability["proof"]["topologies"]["solver_retrieval"]["cell_count"] == 8
     assert capability["proof"]["topologies"]["agent_routing"]["cell_count"] == 7
+    assert capability["proof"]["route_stage_ui_smoke"]["ok"] is True
+    assert "route-stage labels" in capability["safe_statement"]
+    assert "route-stage counts" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

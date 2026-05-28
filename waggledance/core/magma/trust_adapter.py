@@ -16,9 +16,11 @@ Extends L5 trust from agent-only to also cover:
 from __future__ import annotations
 
 import logging
+import heapq
 import threading
 import time
 from dataclasses import dataclass, field
+from operator import itemgetter
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -203,11 +205,16 @@ class TrustAdapter:
 
     def get_ranking(self, target_type: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Get ranked list of targets by trust score."""
+        if limit <= 0:
+            return []
         scores = self.get_all_scores(target_type=target_type)
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        if limit < len(scores):
+            ranked = heapq.nlargest(limit, scores.items(), key=itemgetter(1))
+        else:
+            ranked = sorted(scores.items(), key=itemgetter(1), reverse=True)
         return [
             {"target": k, "trust_score": round(v, 4)}
-            for k, v in ranked[:limit]
+            for k, v in ranked
         ]
 
     def get_trend(self, target_type: str, target_id: str,

@@ -15,6 +15,7 @@ These tests lock in the ergonomics decisions from
 """
 
 import json
+import re
 
 import pytest
 from starlette.testclient import TestClient
@@ -136,6 +137,37 @@ def test_success_response_includes_privacy_safe_route_stage_trace():
     assert raw_query not in trace_json
     assert raw_language not in trace_json
     assert raw_profile not in trace_json
+
+
+def test_chat_request_updates_privacy_safe_route_stage_runtime_metrics():
+    raw_query = "Hello runtime metrics PRIVATE_QUERY_MARKER_METRICS"
+    resp = _post({"query": raw_query})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data.get("route_stage_trace"), list)
+
+    client, _api_key = _get_client()
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    body = metrics.text
+
+    assert "# HELP waggledance_route_stage_observations_total" in body
+    assert "# HELP waggledance_route_stage_request_latency_ms_total" in body
+    assert re.search(
+        r'waggledance_route_stage_observations_total\{'
+        r'stage="language_detection"\} [1-9]\d*\.0',
+        body,
+    )
+    assert re.search(
+        r'waggledance_route_stage_request_latency_ms_total\{'
+        r'stage="language_detection"\} (?!0\.0)\d+(?:\.\d+)?',
+        body,
+    )
+    assert raw_query not in body
+    assert "PRIVATE_QUERY_MARKER_METRICS" not in body
+    assert "query=" not in body
+    assert "profile=" not in body
+    assert "route_stage_trace" not in body
 
 
 def test_ws_chat_route_event_includes_privacy_safe_trace_and_disabled_labels():

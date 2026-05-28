@@ -17,6 +17,9 @@ from tools.wd_image1_capability_manifest import build_hex_mesh_entry_proof
 from tools.wd_image1_capability_manifest import (
     build_hex_mesh_route_stage_operator_metrics_smoke,
 )
+from tools.wd_image1_capability_manifest import (
+    build_hex_mesh_route_stage_runtime_metrics_smoke,
+)
 from tools.wd_image1_capability_manifest import build_hex_mesh_route_stage_ui_smoke
 from tools.wd_image1_capability_manifest import build_hex_mesh_runtime_trace_smoke
 from tools.wd_image1_capability_manifest import (
@@ -145,6 +148,10 @@ def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
     assert proof["route_stage_operator_metrics_smoke"][
         "operator_visible_metrics"
     ] is True
+    assert proof["route_stage_runtime_metrics_smoke"]["ok"] is True
+    assert proof["route_stage_runtime_metrics_smoke"][
+        "operator_visible_metrics"
+    ] is True
     assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
 
 
@@ -196,6 +203,31 @@ def test_hex_mesh_route_stage_operator_metrics_smoke_reports_counts() -> None:
     assert smoke["runtime_contract"]["missing_lines"] == []
     assert smoke["runtime_contract"]["forbidden_payload_markers_absent"] is True
     assert smoke["operator_visible_metrics"] is True
+    assert smoke["runtime_routing_changed"] is False
+    assert smoke["disabled_hex_paths_enabled"] is False
+    assert smoke["no_runtime_mutation"] is True
+    assert smoke["external_writes_applied"] is False
+
+
+def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
+    smoke = build_hex_mesh_route_stage_runtime_metrics_smoke(ROOT)
+
+    assert smoke["ok"] is True
+    assert smoke["proof_id"] == "hex_mesh_route_stage_runtime_metrics_smoke_v1"
+    assert smoke["metric_names"] == [
+        "waggledance_route_stage_observations_total",
+        "waggledance_route_stage_request_latency_ms_total",
+    ]
+    assert all(smoke["checks"].values())
+    assert smoke["runtime_contract"]["ok"] is True
+    assert smoke["runtime_contract"]["missing_lines"] == []
+    assert smoke["runtime_contract"]["forbidden_payload_markers_absent"] is True
+    assert smoke["operator_visible_metrics"] is True
+    assert smoke["rate_query_supported"] is True
+    assert smoke["latency_metric_semantics"] == (
+        "stage_correlated_request_latency"
+    )
+    assert smoke["raw_payload_recorded"] is False
     assert smoke["runtime_routing_changed"] is False
     assert smoke["disabled_hex_paths_enabled"] is False
     assert smoke["no_runtime_mutation"] is True
@@ -660,6 +692,50 @@ def test_hex_mesh_route_stage_operator_metrics_smoke_blocks_foreign_root(
     assert proof["external_writes_applied"] is False
 
 
+def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    proof = build_hex_mesh_route_stage_runtime_metrics_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "missing_required_inputs"
+    assert "waggledance/adapters/http/routes/chat.py" in proof["missing_inputs"]
+    assert "waggledance/adapters/http/routes/metrics.py" in proof["missing_inputs"]
+    assert proof["runtime_routing_changed"] is False
+    assert proof["disabled_hex_paths_enabled"] is False
+    assert proof["raw_payload_recorded"] is False
+    assert proof["no_runtime_mutation"] is True
+    assert proof["external_writes_applied"] is False
+
+
+def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "waggledance/adapters/http/routes/chat.py",
+        "waggledance/adapters/http/routes/metrics.py",
+        "tests/test_metrics_endpoint.py",
+        "tests/integration/test_chat_api_contract.py",
+        "docs/API.md",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_hex_mesh_route_stage_runtime_metrics_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["inspected_root"] == str(tmp_path.resolve())
+    assert proof["import_root"] == str(ROOT.resolve())
+    assert proof["runtime_routing_changed"] is False
+    assert proof["disabled_hex_paths_enabled"] is False
+    assert proof["raw_payload_recorded"] is False
+    assert proof["no_runtime_mutation"] is True
+    assert proof["external_writes_applied"] is False
+
+
 def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
     report = build_manifest(ROOT)
     capability = _by_id(report)["hexagonal_upgrades"]
@@ -743,9 +819,11 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["topologies"]["agent_routing"]["cell_count"] == 7
     assert capability["proof"]["route_stage_ui_smoke"]["ok"] is True
     assert capability["proof"]["route_stage_operator_metrics_smoke"]["ok"] is True
+    assert capability["proof"]["route_stage_runtime_metrics_smoke"]["ok"] is True
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
-    assert "latency" in capability["next_smallest_pr"]
+    assert "runtime rate/latency counters" in capability["safe_statement"]
+    assert "p95" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

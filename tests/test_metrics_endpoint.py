@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from waggledance.adapters.http.middleware.auth import PUBLIC_PATHS, BearerAuthMiddleware
+from waggledance.adapters.http.routes.chat import RouteStageRuntimeMetrics
 from waggledance.adapters.http.routes.metrics import router as metrics_router
 
 
@@ -49,10 +50,12 @@ class _FakeContainer:
         hex_neighbor_assist,
         autogrowth_background_ticker=None,
         hybrid_retrieval=None,
+        route_stage_runtime_metrics=None,
     ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
         self.autogrowth_background_ticker = autogrowth_background_ticker
         self.hybrid_retrieval = hybrid_retrieval
+        self.route_stage_runtime_metrics = route_stage_runtime_metrics
 
 
 def test_metrics_is_in_public_paths():
@@ -182,6 +185,77 @@ def test_metrics_route_stage_counts_disable_missing_optional_components():
         'waggledance_route_stage_count{group="disabled_optional"} 2.0'
         in body
     )
+
+
+def test_metrics_body_contains_route_stage_runtime_counters():
+    runtime_metrics = RouteStageRuntimeMetrics()
+    runtime_metrics.record(
+        [
+            {
+                "stage": "language_detection",
+                "query": "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+            },
+            {"stage": "hot_cache", "hit": False},
+            {"stage": "not_an_allowed_stage"},
+        ],
+        12.5,
+    )
+    runtime_metrics.record(
+        [
+            {"stage": "language_detection", "detected_language": "custom"},
+            {"stage": "orchestrator_llm_fallback", "source": "llm"},
+        ],
+        20.0,
+    )
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": False}),
+        hybrid_retrieval=types.SimpleNamespace(enabled=True),
+        route_stage_runtime_metrics=runtime_metrics,
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "# HELP waggledance_route_stage_observations_total" in body
+    assert (
+        'waggledance_route_stage_observations_total{'
+        'stage="language_detection"} 2.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_observations_total{stage="hot_cache"} 1.0'
+        in body
+    )
+    assert (
+        'waggledance_route_stage_observations_total{'
+        'stage="orchestrator_llm_fallback"} 1.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_ms_total{'
+        'stage="language_detection"} 32.5'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_ms_total{'
+        'stage="hot_cache"} 12.5'
+    ) in body
+    assert "not_an_allowed_stage" not in body
+    assert "WD_IMAGE1_PRIVATE_QUERY_MARKER" not in body
+    assert "query=" not in body
+
+
+def test_metrics_route_stage_runtime_counters_default_to_zero():
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert (
+        'waggledance_route_stage_observations_total{'
+        'stage="language_detection"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_ms_total{'
+        'stage="language_detection"} 0.0'
+    ) in body
 
 
 def test_metrics_body_contains_autogrowth_boundary_gauges():

@@ -341,16 +341,23 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
     route_stage_operator_metrics_smoke = (
         build_hex_mesh_route_stage_operator_metrics_smoke(repo_root)
     )
+    route_stage_runtime_metrics_smoke = (
+        build_hex_mesh_route_stage_runtime_metrics_smoke(repo_root)
+    )
     proof["runtime_trace_smoke"] = runtime_trace_smoke
     proof["route_stage_ui_smoke"] = route_stage_ui_smoke
     proof["route_stage_operator_metrics_smoke"] = (
         route_stage_operator_metrics_smoke
+    )
+    proof["route_stage_runtime_metrics_smoke"] = (
+        route_stage_runtime_metrics_smoke
     )
     proof["ok"] = bool(
         proof["ok"]
         and runtime_trace_smoke["ok"]
         and route_stage_ui_smoke["ok"]
         and route_stage_operator_metrics_smoke["ok"]
+        and route_stage_runtime_metrics_smoke["ok"]
     )
     return proof
 
@@ -764,6 +771,254 @@ def build_hex_mesh_route_stage_operator_metrics_smoke(
             "counts derived from the static stage allowlist and optional "
             "component flags. The scrape path records no raw query/context "
             "data and does not enable disabled hex routing paths."
+        ),
+    }
+
+
+def build_hex_mesh_route_stage_runtime_metrics_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Verify sanitized route traces feed per-stage runtime metrics."""
+
+    proof_id = "hex_mesh_route_stage_runtime_metrics_smoke_v1"
+    repo_root = Path(root)
+    required_paths = (
+        "waggledance/adapters/http/routes/chat.py",
+        "waggledance/adapters/http/routes/metrics.py",
+        "tests/test_metrics_endpoint.py",
+        "tests/integration/test_chat_api_contract.py",
+        "docs/API.md",
+    )
+    metric_names = (
+        "waggledance_route_stage_observations_total",
+        "waggledance_route_stage_request_latency_ms_total",
+    )
+    missing_inputs = [
+        rel_path
+        for rel_path in required_paths
+        if not (repo_root / rel_path).exists()
+    ]
+    base = {
+        "proof_id": proof_id,
+        "metrics_endpoint": "/metrics",
+        "metric_names": list(metric_names),
+        "expected_route_stages": list(HEX_MESH_CHAT_ROUTE_ORDER),
+        "source_trace": "ChatHttpResponse.route_stage_trace",
+        "runtime_routing_changed": False,
+        "disabled_hex_paths_enabled": False,
+        "raw_payload_recorded": False,
+        "no_runtime_mutation": True,
+        "external_writes_applied": False,
+    }
+    if missing_inputs:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing_inputs,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+        }
+
+    chat_text = (
+        repo_root / "waggledance/adapters/http/routes/chat.py"
+    ).read_text(encoding="utf-8")
+    metrics_text = (
+        repo_root / "waggledance/adapters/http/routes/metrics.py"
+    ).read_text(encoding="utf-8")
+    metrics_tests_text = (
+        repo_root / "tests/test_metrics_endpoint.py"
+    ).read_text(encoding="utf-8")
+    chat_tests_text = (
+        repo_root / "tests/integration/test_chat_api_contract.py"
+    ).read_text(encoding="utf-8")
+    docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
+
+    try:
+        from types import SimpleNamespace
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from waggledance.adapters.http.routes.chat import (
+            RouteStageRuntimeMetrics,
+            _sanitize_route_stage_trace,
+        )
+        from waggledance.adapters.http.routes.metrics import router as metrics_router
+
+        class _MetricsHexAssist:
+            enabled = False
+
+            def get_metrics(self) -> dict:
+                return {"enabled": False}
+
+        raw_trace = [
+            {
+                "stage": "language_detection",
+                "query": "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+                "profile": "WD_IMAGE1_PRIVATE_PROFILE_MARKER",
+                "detected_language": "WD_IMAGE1_PRIVATE_LANGUAGE_MARKER",
+            },
+            {
+                "stage": "hot_cache",
+                "hit": False,
+                "route_stage_trace": "WD_IMAGE1_PRIVATE_TRACE_MARKER",
+            },
+            {
+                "stage": "orchestrator_llm_fallback",
+                "source": "llm",
+            },
+        ]
+        sanitized_trace = _sanitize_route_stage_trace(raw_trace)
+        runtime_metrics = RouteStageRuntimeMetrics()
+        runtime_metrics.record(sanitized_trace, 12.5)
+        runtime_metrics.record(
+            [{"stage": "language_detection"}, {"stage": "hot_cache"}],
+            7.5,
+        )
+        app = FastAPI()
+        app.state.container = SimpleNamespace(
+            hex_neighbor_assist=_MetricsHexAssist(),
+            hybrid_retrieval=SimpleNamespace(enabled=True),
+            route_stage_runtime_metrics=runtime_metrics,
+            autogrowth_background_ticker=None,
+        )
+        app.include_router(metrics_router)
+        resp = TestClient(app).get("/metrics")
+        body = resp.text
+        forbidden_markers = (
+            "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+            "WD_IMAGE1_PRIVATE_PROFILE_MARKER",
+            "WD_IMAGE1_PRIVATE_LANGUAGE_MARKER",
+            "WD_IMAGE1_PRIVATE_TRACE_MARKER",
+            "query=",
+            "profile=",
+            "language=",
+            "route_stage_trace",
+        )
+        expected_lines = {
+            'waggledance_route_stage_observations_total{'
+            'stage="language_detection"} 2.0',
+            'waggledance_route_stage_observations_total{'
+            'stage="hot_cache"} 2.0',
+            'waggledance_route_stage_observations_total{'
+            'stage="orchestrator_llm_fallback"} 1.0',
+            'waggledance_route_stage_request_latency_ms_total{'
+            'stage="language_detection"} 20.0',
+            'waggledance_route_stage_request_latency_ms_total{'
+            'stage="hot_cache"} 20.0',
+            'waggledance_route_stage_request_latency_ms_total{'
+            'stage="orchestrator_llm_fallback"} 12.5',
+        }
+        runtime_contract = {
+            "ok": (
+                resp.status_code == 200
+                and expected_lines.issubset(set(body.splitlines()))
+                and all(marker not in body for marker in forbidden_markers)
+            ),
+            "status_code": resp.status_code,
+            "expected_lines": sorted(expected_lines),
+            "missing_lines": sorted(
+                line for line in expected_lines if line not in body
+            ),
+            "forbidden_payload_markers_absent": all(
+                marker not in body for marker in forbidden_markers
+            ),
+            "sanitized_trace": sanitized_trace,
+        }
+    except Exception as exc:  # pragma: no cover - surfaced in proof payload
+        runtime_contract = {
+            "ok": False,
+            "error": repr(exc),
+            "status_code": None,
+            "expected_lines": [],
+            "missing_lines": [],
+            "forbidden_payload_markers_absent": False,
+            "sanitized_trace": [],
+        }
+
+    forbidden_storage_tokens = (
+        "req.query",
+        "request.query",
+        "profile=",
+        "language=",
+        "route_stage_trace\": trace",
+    )
+    checks = {
+        "chat_records_after_sanitized_response": (
+            "RouteStageRuntimeMetrics" in chat_text
+            and "_record_route_stage_runtime_metrics" in chat_text
+            and "ChatHttpResponse.from_result(result)" in chat_text
+            and "resp.route_stage_trace" in chat_text
+            and "resp.latency_ms" in chat_text
+        ),
+        "runtime_aggregator_allowlists_stage_names": (
+            "stage in self._allowed_stages" in chat_text
+            and "observations_total" in chat_text
+            and "request_latency_ms_total" in chat_text
+        ),
+        "metrics_export_counters_present": all(
+            token in metrics_text
+            for token in (
+                "_collect_route_stage_runtime_metrics",
+                "waggledance_route_stage_observations_total",
+                "waggledance_route_stage_request_latency_ms_total",
+                "CHAT_ROUTE_STAGE_ORDER",
+            )
+        ),
+        "raw_payload_storage_absent": not any(
+            token in metrics_text for token in forbidden_storage_tokens
+        ),
+        "endpoint_regression_tests_present": all(
+            token in metrics_tests_text
+            for token in (
+                "test_metrics_body_contains_route_stage_runtime_counters",
+                "test_metrics_route_stage_runtime_counters_default_to_zero",
+                "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+                "not_an_allowed_stage",
+            )
+        ),
+        "chat_contract_records_metrics_after_request": all(
+            token in chat_tests_text
+            for token in (
+                "test_chat_request_updates_privacy_safe_route_stage_runtime_metrics",
+                "waggledance_route_stage_observations_total",
+                "PRIVATE_QUERY_MARKER_METRICS",
+            )
+        ),
+        "api_docs_present": (
+            "route-stage runtime observation/latency counters" in docs_text
+            and "waggledance_route_stage_observations_total" in docs_text
+            and "waggledance_route_stage_request_latency_ms_total" in docs_text
+            and "It is not an internal span timer" in docs_text
+        ),
+        "runtime_contract_ok": runtime_contract["ok"] is True,
+    }
+    ok = all(checks.values())
+    return {
+        **base,
+        "ok": ok,
+        "checks": checks,
+        "runtime_contract": runtime_contract,
+        "operator_visible_metrics": ok,
+        "rate_query_supported": ok,
+        "latency_metric_semantics": "stage_correlated_request_latency",
+        "safe_conclusion": (
+            "The public Prometheus /metrics endpoint exposes per-stage "
+            "observation counters and stage-correlated request latency "
+            "counters from sanitized route traces. It supports Prometheus "
+            "rate queries without storing raw query, profile, language, "
+            "context, or full route trace payloads."
         ),
     }
 
@@ -2962,7 +3217,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "solver-retrieval topology and a 7-cell agent-routing "
                 "topology; HTTP/WS route-stage labels are privacy-safe and "
                 "dashboard-visible, route-stage operator metrics expose "
-                "counts only, and exact runtime entry order depends on flags "
+                "counts and runtime rate/latency counters from sanitized "
+                "traces only, and exact runtime entry order depends on flags "
                 "and call path."
             ),
             status=_status_for(hex_evidence),
@@ -2975,8 +3231,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add per-stage runtime rate and latency metrics from "
-                "sanitized route traces without recording raw queries."
+                "Add p95/p99 route-stage latency panels and alert thresholds "
+                "from Prometheus queries without storing raw traces."
             ),
             proof=hex_entry_proof,
         ),

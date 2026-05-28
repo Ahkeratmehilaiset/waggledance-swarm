@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, low-risk autogrowth ticker boundary metrics, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, low-risk autogrowth ticker boundary metrics, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -80,6 +80,12 @@ waggledance_autogrowth_wakeups_total 0.0
 # TYPE waggledance_route_stage_count gauge
 waggledance_route_stage_count{group="expected"} 8.0
 waggledance_route_stage_count{group="disabled_optional"} 1.0
+# HELP waggledance_route_stage_observations_total Total sanitized chat requests where the route stage was observed.
+# TYPE waggledance_route_stage_observations_total counter
+waggledance_route_stage_observations_total{stage="language_detection"} 12.0
+# HELP waggledance_route_stage_request_latency_ms_total Total request latency in milliseconds for sanitized chat requests where the route stage was observed.
+# TYPE waggledance_route_stage_request_latency_ms_total counter
+waggledance_route_stage_request_latency_ms_total{stage="language_detection"} 320.5
 ...
 ```
 
@@ -87,6 +93,12 @@ Route-stage count groups are derived from the static chat route-stage allowlist
 and current optional component flags. They do not record query text, language
 hints, profile names, context, or route-stage trace payloads, and they do not
 enable disabled hex paths.
+
+Route-stage runtime counters are recorded only after the chat response has
+been sanitized through the route-stage allowlist. `observations_total` supports
+Prometheus `rate(...)` by stage. `request_latency_ms_total` is total request
+latency for requests where a stage was observed; divide it by
+`observations_total` for stage-correlated request latency. It is not an internal span timer and does not store raw queries, profiles, language hints, context, or full trace payloads.
 
 Low-risk autogrowth alert thresholds are documented in
 `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md`. The initial operator rules

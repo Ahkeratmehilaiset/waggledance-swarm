@@ -138,6 +138,7 @@ class _WaggleCollector:
 
         yield from self._collect_hex_metrics(container, up)
         yield from self._collect_route_stage_metrics(container)
+        yield from self._collect_route_stage_runtime_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
 
     def _collect_hex_metrics(
@@ -238,6 +239,56 @@ class _WaggleCollector:
         if component is None:
             return False
         return bool(_safe_getattr(component, "enabled", False))
+
+    def _collect_route_stage_runtime_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        runtime_metrics = _safe_getattr(container, "route_stage_runtime_metrics")
+        snapshot = {}
+        if runtime_metrics is not None:
+            snapshot_fn = _safe_getattr(runtime_metrics, "snapshot")
+            if callable(snapshot_fn):
+                try:
+                    snapshot = snapshot_fn() or {}
+                except Exception as exc:
+                    logger.warning(
+                        "metrics: route_stage_runtime_metrics.snapshot() raised: %s",
+                        exc,
+                    )
+                    snapshot = {}
+
+        observations = snapshot.get("observations_total")
+        if not isinstance(observations, dict):
+            observations = {}
+        latency_sums = snapshot.get("request_latency_ms_total")
+        if not isinstance(latency_sums, dict):
+            latency_sums = {}
+
+        observed = CounterMetricFamily(
+            "waggledance_route_stage_observations_total",
+            "Total sanitized chat requests where the route stage was observed.",
+            labels=["stage"],
+        )
+        latency = CounterMetricFamily(
+            "waggledance_route_stage_request_latency_ms_total",
+            (
+                "Total request latency in milliseconds for sanitized chat "
+                "requests where the route stage was observed."
+            ),
+            labels=["stage"],
+        )
+        for stage in CHAT_ROUTE_STAGE_ORDER:
+            observed.add_metric(
+                [stage],
+                _as_float(observations.get(stage)) or 0.0,
+            )
+            latency.add_metric(
+                [stage],
+                _as_float(latency_sums.get(stage)) or 0.0,
+            )
+        yield observed
+        yield latency
 
     def _collect_autogrowth_metrics(self, container: Any) -> Iterable[Any]:
         up = GaugeMetricFamily(

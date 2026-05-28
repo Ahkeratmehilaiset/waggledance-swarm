@@ -189,8 +189,11 @@ local validation report; it prints context only and keeps
 `automatic_release_decision=false`.
 `tools/build_magma_alert_feed_reviewer_bridge_event_template.py` can render an
 optional sanitized bridge-event template from that summary; the template is
-valid bridge `handoff` JSON but the tool does not append bridge events and
-keeps `direct_bridge_write_performed=false`, `approval_granted=false`, and
+valid bridge `handoff` JSON but the tool does not append bridge events. Its
+optional operator decision-reference slot is context only:
+`decision_reference_is_approval=false`,
+`decision_reference_is_release_decision=false`, and the template keeps
+`direct_bridge_write_performed=false`, `approval_granted=false`, and
 `release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of

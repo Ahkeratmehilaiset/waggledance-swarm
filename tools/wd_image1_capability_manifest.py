@@ -3118,6 +3118,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "release_evidence_validator_contract_present": False,
         "reviewer_handoff_summary_contract_present": False,
         "reviewer_bridge_event_template_contract_present": False,
+        "reviewer_bridge_event_template_decision_reference_slot_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -3468,6 +3469,23 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "optional bridge-event template",
         )
     )
+    reviewer_bridge_event_template_decision_reference_slot_present = all(
+        token in "\n".join((
+            bridge_template_text,
+            bridge_template_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "operator_decision_ref",
+            "decision_reference",
+            "decision_reference_is_approval",
+            "decision_reference_is_release_decision",
+            "test_reviewer_bridge_event_template_rejects_unsafe_decision_reference",
+            "operator decision-reference slot",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -3512,6 +3530,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and release_evidence_validator_contract_present
         and reviewer_handoff_summary_contract_present
         and reviewer_bridge_event_template_contract_present
+        and reviewer_bridge_event_template_decision_reference_slot_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3542,6 +3561,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_bridge_event_template_contract_present": (
             reviewer_bridge_event_template_contract_present
         ),
+        "reviewer_bridge_event_template_decision_reference_slot_present": (
+            reviewer_bridge_event_template_decision_reference_slot_present
+        ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3569,7 +3591,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "runtime controls. The optional bridge-event template validates "
             "as handoff-shaped JSON but does not append bridge events or "
             "grant approval, release authority, transport, endpoint fetches, "
-            "or runtime controls."
+            "or runtime controls; its optional operator decision-reference "
+            "slot is context only and is explicitly not approval or a "
+            "release decision."
         ),
     }
 
@@ -4453,8 +4477,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add operator decision-reference slot to reviewer "
-                "bridge-event templates without treating it as approval."
+                "Add a local reviewer handoff bundle index tying package, "
+                "validation, summary, and bridge-event template digests "
+                "without transport or approval."
             ),
             proof=magma_audit_proof,
         ),

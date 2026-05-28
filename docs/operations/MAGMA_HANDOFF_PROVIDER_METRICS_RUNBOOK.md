@@ -203,10 +203,13 @@ When a bridge handoff is useful, build an optional bridge-event template from
 the sanitized summary with
 `tools/build_magma_alert_feed_reviewer_bridge_event_template.py`. The template
 validates as a bridge `handoff` event and carries only counts,
-digest-check status, release identifiers, and fixed authority-boundary flags.
-The tool prints JSON only; it does not call `Write-AgentEvent.ps1`, append
-bridge events, transport artifacts, fetch endpoints, approve a release, merge,
-promote, or grant runtime authority.
+digest-check status, release identifiers, fixed authority-boundary flags, and
+an optional operator decision-reference slot. That reference is context only:
+`decision_reference_is_approval=false` and
+`decision_reference_is_release_decision=false`. The tool prints JSON only; it
+does not call `Write-AgentEvent.ps1`, append bridge events, transport
+artifacts, fetch endpoints, approve a release, merge, promote, or grant
+runtime authority.
 
 ```powershell
 python tools\build_magma_alert_feed_reviewer_bridge_event_template.py `
@@ -214,6 +217,7 @@ python tools\build_magma_alert_feed_reviewer_bridge_event_template.py `
   --agent codex-lead-1 `
   --task-id wd-image1-reviewer-handoff-template `
   --to operator,claude-rco-1 `
+  --operator-decision-ref bridge:operator-decision:pending-review `
   --json
 ```
 

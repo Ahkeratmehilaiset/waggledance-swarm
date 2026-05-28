@@ -363,6 +363,31 @@ class TestApiOpsExtended:
         assert "operator:decision:ops-summary" not in serialized
         assert "C:\\private" not in serialized
 
+        for path, value in [
+            (("share_id",), "C:/private/share"),
+            (
+                ("operator_ownership", "operator_agent_id"),
+                "C:/private/agent",
+            ),
+            (
+                ("operator_ownership", "decision_reason_ref"),
+                "C:/private/reason",
+            ),
+        ]:
+            tampered = json.loads(json.dumps(handoff))
+            target = tampered
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            container.magma_share_import_handoff_status = tampered
+            invalid_section = _magma_share_import_handoff_section(container)
+            assert invalid_section["source"] == (
+                "magma_share_import_handoff_invalid"
+            )
+            assert invalid_section["controls_present"] is False
+            assert invalid_section["runtime_authority_granted"] is False
+            assert value not in str(invalid_section)
+
     def test_ops_magma_handoff_failure_hides_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _magma_share_import_handoff_section,

@@ -805,6 +805,9 @@ def _ensure_import_handoff_ready_for_summary(
     ):
         if not isinstance(handoff.get(field), str):
             raise ValueError(f"import handoff is not summary-ready: {field}")
+    _parse_created_at_utc(handoff)
+    for field in ("handoff_id", "share_id", "purpose"):
+        _ensure_ref(field, handoff[field])
     for field in (
         "handoff_digest",
         "import_report_digest",
@@ -851,6 +854,7 @@ def _ensure_import_handoff_ready_for_summary(
             raise ValueError(
                 f"import handoff is not summary-ready: {field}"
             )
+        _ensure_ref(field, ownership[field])
 
     authority_required = {
         "operator_gate_required": True,

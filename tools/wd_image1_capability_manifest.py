@@ -338,12 +338,19 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
     }
     runtime_trace_smoke = _build_hex_mesh_runtime_trace_smoke_from_static(proof)
     route_stage_ui_smoke = build_hex_mesh_route_stage_ui_smoke(repo_root)
+    route_stage_operator_metrics_smoke = (
+        build_hex_mesh_route_stage_operator_metrics_smoke(repo_root)
+    )
     proof["runtime_trace_smoke"] = runtime_trace_smoke
     proof["route_stage_ui_smoke"] = route_stage_ui_smoke
+    proof["route_stage_operator_metrics_smoke"] = (
+        route_stage_operator_metrics_smoke
+    )
     proof["ok"] = bool(
         proof["ok"]
         and runtime_trace_smoke["ok"]
         and route_stage_ui_smoke["ok"]
+        and route_stage_operator_metrics_smoke["ok"]
     )
     return proof
 
@@ -379,6 +386,18 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
             "ok": False,
             "blocked_reason": "missing_required_inputs",
             "missing_inputs": missing_inputs,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
         }
 
     html = (repo_root / "web" / "hologram-brain-v6.html").read_text(
@@ -561,6 +580,190 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
             "The dashboard chat panel renders privacy-safe route-stage labels "
             "from the HTTP/WS contract via a client-side allowlist. It does "
             "not render backend-supplied free-form labels or raw trace payloads."
+        ),
+    }
+
+
+def build_hex_mesh_route_stage_operator_metrics_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Verify route-stage counts are exposed as read-only operator metrics."""
+
+    proof_id = "hex_mesh_route_stage_operator_metrics_smoke_v1"
+    repo_root = Path(root)
+    required_paths = (
+        "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/adapters/http/routes/chat.py",
+        "tests/test_metrics_endpoint.py",
+        "docs/API.md",
+    )
+    metric_groups = (
+        "expected",
+        "enabled",
+        "pre_hex",
+        "hex_backed",
+        "optional",
+        "disabled_optional",
+    )
+    missing_inputs = [
+        rel_path
+        for rel_path in required_paths
+        if not (repo_root / rel_path).exists()
+    ]
+    base = {
+        "proof_id": proof_id,
+        "metrics_endpoint": "/metrics",
+        "metric_name": "waggledance_route_stage_count",
+        "metric_groups": list(metric_groups),
+        "expected_route_stages": list(HEX_MESH_CHAT_ROUTE_ORDER),
+        "test_only_instrumentation": False,
+        "runtime_routing_changed": False,
+        "disabled_hex_paths_enabled": False,
+        "no_runtime_mutation": True,
+        "external_writes_applied": False,
+    }
+    if missing_inputs:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing_inputs,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+        }
+
+    metrics_text = (
+        repo_root / "waggledance/adapters/http/routes/metrics.py"
+    ).read_text(encoding="utf-8")
+    tests_text = (repo_root / "tests/test_metrics_endpoint.py").read_text(
+        encoding="utf-8"
+    )
+    docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
+
+    try:
+        from types import SimpleNamespace
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from waggledance.adapters.http.routes.metrics import router as metrics_router
+
+        class _MetricsHexAssist:
+            enabled = False
+
+            def get_metrics(self) -> dict:
+                return {"enabled": False}
+
+        app = FastAPI()
+        app.state.container = SimpleNamespace(
+            hex_neighbor_assist=_MetricsHexAssist(),
+            hybrid_retrieval=SimpleNamespace(enabled=True),
+            autogrowth_background_ticker=None,
+        )
+        app.include_router(metrics_router)
+        resp = TestClient(app).get("/metrics")
+        body = resp.text
+        forbidden_markers = (
+            "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+            "query=",
+            "profile=",
+            "language=",
+            "route_stage_trace",
+        )
+        expected_lines = {
+            'waggledance_route_stage_count{group="expected"} 8.0',
+            'waggledance_route_stage_count{group="enabled"} 7.0',
+            'waggledance_route_stage_count{group="pre_hex"} 5.0',
+            'waggledance_route_stage_count{group="hex_backed"} 2.0',
+            'waggledance_route_stage_count{group="optional"} 2.0',
+            'waggledance_route_stage_count{group="disabled_optional"} 1.0',
+        }
+        runtime_contract = {
+            "ok": (
+                resp.status_code == 200
+                and expected_lines.issubset(set(body.splitlines()))
+                and all(marker not in body for marker in forbidden_markers)
+            ),
+            "status_code": resp.status_code,
+            "expected_lines": sorted(expected_lines),
+            "missing_lines": sorted(
+                line for line in expected_lines if line not in body
+            ),
+            "forbidden_payload_markers_absent": all(
+                marker not in body for marker in forbidden_markers
+            ),
+        }
+    except Exception as exc:  # pragma: no cover - surfaced in proof payload
+        runtime_contract = {
+            "ok": False,
+            "error": repr(exc),
+            "status_code": None,
+            "expected_lines": [],
+            "missing_lines": [],
+            "forbidden_payload_markers_absent": False,
+        }
+
+    forbidden_mutation_tokens = (
+        "component.enabled =",
+        "hex_neighbor_assist.enabled =",
+        "hybrid_retrieval.enabled =",
+        ".resolve(",
+        ".retrieve(",
+    )
+    checks = {
+        "metrics_reuse_route_stage_allowlist": (
+            "CHAT_ROUTE_STAGE_ORDER" in metrics_text
+            and "len(CHAT_ROUTE_STAGE_ORDER)" in metrics_text
+        ),
+        "route_stage_count_metric_present": (
+            "waggledance_route_stage_count" in metrics_text
+            and "disabled_optional" in metrics_text
+            and "hex_backed" in metrics_text
+            and "pre_hex" in metrics_text
+        ),
+        "optional_component_flags_read_only": (
+            "_route_stage_component_enabled" in metrics_text
+            and "_safe_getattr(component, \"enabled\", False)" in metrics_text
+            and not any(token in metrics_text for token in forbidden_mutation_tokens)
+        ),
+        "endpoint_regression_tests_present": all(
+            token in tests_text
+            for token in (
+                "test_metrics_body_contains_route_stage_count_gauges",
+                "test_metrics_route_stage_counts_disable_missing_optional_components",
+                'waggledance_route_stage_count{group="expected"} 8.0',
+                'waggledance_route_stage_count{group="disabled_optional"} 1.0',
+            )
+        ),
+        "api_docs_present": (
+            "privacy-safe route-stage count gauges" in docs_text
+            and "waggledance_route_stage_count" in docs_text
+            and "enable disabled hex paths" in docs_text
+        ),
+        "runtime_contract_ok": runtime_contract["ok"] is True,
+    }
+    ok = all(checks.values())
+    return {
+        **base,
+        "ok": ok,
+        "checks": checks,
+        "runtime_contract": runtime_contract,
+        "operator_visible_metrics": ok,
+        "safe_conclusion": (
+            "The public Prometheus /metrics endpoint exposes route-stage "
+            "counts derived from the static stage allowlist and optional "
+            "component flags. The scrape path records no raw query/context "
+            "data and does not enable disabled hex routing paths."
         ),
     }
 
@@ -2758,8 +2961,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "WD has two independent topologies: an 8-cell "
                 "solver-retrieval topology and a 7-cell agent-routing "
                 "topology; HTTP/WS route-stage labels are privacy-safe and "
-                "dashboard-visible, while exact runtime entry order depends "
-                "on flags and call path."
+                "dashboard-visible, route-stage operator metrics expose "
+                "counts only, and exact runtime entry order depends on flags "
+                "and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -2771,8 +2975,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Expose route-stage counts in operator metrics without "
-                "changing routing order or enabling disabled hex paths."
+                "Add per-stage runtime rate and latency metrics from "
+                "sanitized route traces without recording raw queries."
             ),
             proof=hex_entry_proof,
         ),

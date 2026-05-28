@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), low-risk autogrowth ticker boundary metrics, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, low-risk autogrowth ticker boundary metrics, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -76,8 +76,17 @@ waggledance_autogrowth_background_enabled 1.0
 # HELP waggledance_autogrowth_wakeups_total low-risk autogrowth runtime-boundary counter: wakeups_total.
 # TYPE waggledance_autogrowth_wakeups_total counter
 waggledance_autogrowth_wakeups_total 0.0
+# HELP waggledance_route_stage_count Privacy-safe chat route-stage counts by group.
+# TYPE waggledance_route_stage_count gauge
+waggledance_route_stage_count{group="expected"} 8.0
+waggledance_route_stage_count{group="disabled_optional"} 1.0
 ...
 ```
+
+Route-stage count groups are derived from the static chat route-stage allowlist
+and current optional component flags. They do not record query text, language
+hints, profile names, context, or route-stage trace payloads, and they do not
+enable disabled hex paths.
 
 Low-risk autogrowth alert thresholds are documented in
 `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md`. The initial operator rules

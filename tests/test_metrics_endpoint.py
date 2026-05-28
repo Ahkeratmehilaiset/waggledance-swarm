@@ -48,9 +48,11 @@ class _FakeContainer:
         self,
         hex_neighbor_assist,
         autogrowth_background_ticker=None,
+        hybrid_retrieval=None,
     ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
         self.autogrowth_background_ticker = autogrowth_background_ticker
+        self.hybrid_retrieval = hybrid_retrieval
 
 
 def test_metrics_is_in_public_paths():
@@ -145,6 +147,41 @@ def test_metrics_body_contains_gauge_values():
     # These are instantaneous gauges, NOT counters, so no _total suffix.
     assert "waggledance_hex_cells_loaded 11.0" in body
     assert "waggledance_hex_quarantined_cells 2.0" in body
+
+
+def test_metrics_body_contains_route_stage_count_gauges():
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": False}),
+        hybrid_retrieval=types.SimpleNamespace(enabled=True),
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "# HELP waggledance_route_stage_count" in body
+    assert 'waggledance_route_stage_count{group="expected"} 8.0' in body
+    assert 'waggledance_route_stage_count{group="enabled"} 7.0' in body
+    assert 'waggledance_route_stage_count{group="pre_hex"} 5.0' in body
+    assert 'waggledance_route_stage_count{group="hex_backed"} 2.0' in body
+    assert 'waggledance_route_stage_count{group="optional"} 2.0' in body
+    assert (
+        'waggledance_route_stage_count{group="disabled_optional"} 1.0'
+        in body
+    )
+
+
+def test_metrics_route_stage_counts_disable_missing_optional_components():
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert 'waggledance_route_stage_count{group="expected"} 8.0' in body
+    assert 'waggledance_route_stage_count{group="enabled"} 6.0' in body
+    assert (
+        'waggledance_route_stage_count{group="disabled_optional"} 2.0'
+        in body
+    )
 
 
 def test_metrics_body_contains_autogrowth_boundary_gauges():

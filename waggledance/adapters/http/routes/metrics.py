@@ -16,8 +16,9 @@ Design notes
   default, which would leak file-descriptor counts and Python GC
   stats that operators haven't asked for.
 - Metrics are collected on-demand via a tiny ``Collector`` subclass
-  that reads the container's ``hex_neighbor_assist.get_metrics()`` and
-  ``autogrowth_background_ticker.stats`` each time ``/metrics`` is
+  that reads the container's ``hex_neighbor_assist.get_metrics()``,
+  route-stage component flags, and ``autogrowth_background_ticker.stats``
+  each time ``/metrics`` is
   scraped. This avoids the "metrics go stale" trap of snapshotting into
   Gauges at startup.
 - If ``hex_neighbor_assist`` is None (feature disabled) or raises,
@@ -38,6 +39,8 @@ from fastapi.responses import Response
 
 from prometheus_client import CollectorRegistry, generate_latest
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
+
+from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,22 @@ _AUTOGROWTH_COUNTER_NAMES: tuple[str, ...] = (
     "non_idle_ticks",
     "errors_total",
 )
+
+_PRE_HEX_ROUTE_STAGE_NAMES: tuple[str, ...] = (
+    "language_detection",
+    "hot_cache",
+    "memory_context",
+    "route_selection",
+    "deterministic_solver",
+)
+_HEX_BACKED_ROUTE_STAGE_NAMES: tuple[str, ...] = (
+    "hybrid_retrieval_8_cell",
+    "hex_neighbor_assist_7_cell",
+)
+_ROUTE_STAGE_COMPONENT_ATTRS: dict[str, str] = {
+    "hybrid_retrieval_8_cell": "hybrid_retrieval",
+    "hex_neighbor_assist_7_cell": "hex_neighbor_assist",
+}
 
 
 def _as_float(value: Any) -> float | None:
@@ -118,6 +137,7 @@ class _WaggleCollector:
             return
 
         yield from self._collect_hex_metrics(container, up)
+        yield from self._collect_route_stage_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
 
     def _collect_hex_metrics(
@@ -189,6 +209,35 @@ class _WaggleCollector:
                 f"v3.5.6 hex-mesh gauge: {name}",
                 value=numeric,
             )
+
+    def _collect_route_stage_metrics(self, container: Any) -> Iterable[Any]:
+        disabled_optional = [
+            stage
+            for stage, attr in _ROUTE_STAGE_COMPONENT_ATTRS.items()
+            if not self._route_stage_component_enabled(container, attr)
+        ]
+        metric = GaugeMetricFamily(
+            "waggledance_route_stage_count",
+            "Privacy-safe chat route-stage counts by group.",
+            labels=["group"],
+        )
+        metric.add_metric(["expected"], float(len(CHAT_ROUTE_STAGE_ORDER)))
+        metric.add_metric(
+            ["enabled"],
+            float(len(CHAT_ROUTE_STAGE_ORDER) - len(disabled_optional)),
+        )
+        metric.add_metric(["pre_hex"], float(len(_PRE_HEX_ROUTE_STAGE_NAMES)))
+        metric.add_metric(["hex_backed"], float(len(_HEX_BACKED_ROUTE_STAGE_NAMES)))
+        metric.add_metric(["optional"], float(len(_ROUTE_STAGE_COMPONENT_ATTRS)))
+        metric.add_metric(["disabled_optional"], float(len(disabled_optional)))
+        yield metric
+
+    @staticmethod
+    def _route_stage_component_enabled(container: Any, attr: str) -> bool:
+        component = _safe_getattr(container, attr)
+        if component is None:
+            return False
+        return bool(_safe_getattr(component, "enabled", False))
 
     def _collect_autogrowth_metrics(self, container: Any) -> Iterable[Any]:
         up = GaugeMetricFamily(

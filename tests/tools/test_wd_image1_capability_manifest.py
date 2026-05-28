@@ -38,6 +38,9 @@ from tools.wd_image1_capability_manifest import (
     build_magma_handoff_metrics_alert_state_smoke,
 )
 from tools.wd_image1_capability_manifest import (
+    build_magma_handoff_metrics_alertmanager_adapter_smoke,
+)
+from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_ops_alert_state_smoke,
 )
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
@@ -674,6 +677,45 @@ def test_magma_handoff_metrics_alert_state_smoke_blocks_missing_inputs(
     assert proof["runtime_authority_changed"] is False
 
 
+def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> None:
+    proof = build_magma_handoff_metrics_alertmanager_adapter_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == (
+        "magma_handoff_metrics_alertmanager_adapter_smoke_v1"
+    )
+    assert proof["adapter_path"] == (
+        "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
+    )
+    assert proof["settings_path"] == "configs/settings.yaml"
+    assert proof["ops_endpoint"] == "/api/ops"
+    assert proof["adapter_contract_present"] is True
+    assert proof["container_contract_present"] is True
+    assert proof["settings_contract_present"] is True
+    assert proof["test_contract_present"] is True
+    assert proof["docs_contract_present"] is True
+    assert proof["guardrails_present"] is True
+    assert proof["forbidden_controls_absent"] is True
+    assert proof["forbidden_control_tokens_found"] == []
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
+def test_magma_handoff_metrics_alertmanager_adapter_smoke_blocks_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    proof = build_magma_handoff_metrics_alertmanager_adapter_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "missing_required_inputs"
+    assert "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py" in (
+        proof["missing_inputs"]
+    )
+    assert "configs/settings.yaml" in proof["missing_inputs"]
+    assert proof["runtime_authority_changed"] is False
+
+
 def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() -> None:
     proof = build_low_risk_autogrowth_ops_alert_state_smoke(ROOT)
 
@@ -973,6 +1015,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "privacy-safe /metrics gauges" in capability["safe_statement"]
     assert "metrics runbook" in capability["safe_statement"]
     assert "metrics_alert_state" in capability["safe_statement"]
+    assert "configured adapter" in capability["safe_statement"]
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "alert_thresholds_documented"
@@ -984,8 +1027,12 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["metrics_alert_state_smoke"][
         "fixed_alert_ids_enforced"
     ] is True
+    assert capability["proof"]["metrics_alertmanager_adapter_smoke"]["ok"] is True
+    assert capability["proof"]["metrics_alertmanager_adapter_smoke"][
+        "guardrails_present"
+    ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "configured MAGMA handoff metrics Alertmanager adapter" in (
+    assert "provider health/cache metrics" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

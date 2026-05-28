@@ -156,6 +156,13 @@ numeric samples, and ISO timestamps; it drops raw Alertmanager labels,
 annotations, URLs, paths, hostnames, unknown alert IDs, resolved alerts, and
 provider exception details.
 
+The optional adapter is configured under `magma_handoff_metrics_alert_feed` in
+`configs/settings.yaml` and is disabled by default. It performs only bounded
+read-only GETs to an operator-owned Alertmanager `/api/v2/alerts` endpoint.
+URL userinfo, query strings, fragments, credential-like headers, redirects,
+oversized responses, and private or localhost hosts without an exact
+`allowed_private_hosts` entry are refused.
+
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 `source="prometheus_query_templates"`, metric names, `panels`, and

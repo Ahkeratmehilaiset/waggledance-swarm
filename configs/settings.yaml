@@ -374,3 +374,10 @@ route_stage_latency_feed:
   timeout_s: 3
   max_response_bytes: 1000000
   allowed_private_hosts: []
+magma_handoff_metrics_alert_feed:
+  enabled: false
+  alertmanager_base_url: ''
+  timeout_s: 3
+  max_response_bytes: 1000000
+  allowed_private_hosts: []
+  headers: {}

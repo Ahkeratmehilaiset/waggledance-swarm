@@ -14,8 +14,11 @@ from tools.run_runtime_receipt_emission_proof import (
 )
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.share_manifest import (
+    IMPORT_HANDOFF_VERSION,
     IMPORT_REPORT_VERSION,
+    build_magma_share_import_peer_review_handoff,
     build_magma_share_manifest_import_report,
+    write_magma_share_import_peer_review_handoff,
     write_magma_share_manifest_export,
 )
 
@@ -108,6 +111,102 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     assert not any(marker in json.dumps(report) for marker in PRIVATE_MARKERS)
 
 
+def test_importer_builds_operator_owned_peer_review_handoff_without_authority(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=report,
+        operator_decision_id="operator:decision:magma-share-import:001",
+        operator_agent_id="operator:wd-image1",
+        bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref="reason:cross_instance_replay_review",
+        now_utc=FIXED_NOW + timedelta(hours=1),
+    )
+
+    assert handoff["handoff_version"] == IMPORT_HANDOFF_VERSION
+    assert handoff["ok"] is True
+    assert handoff["share_id"] == report["share_id"]
+    assert handoff["purpose"] == report["purpose"]
+    assert handoff["import_report_digest"].startswith("sha256:")
+    assert handoff["share_manifest_digest"] == report["share_manifest_digest"]
+    assert handoff["source_manifest_digest"] == report["source_manifest_digest"]
+    assert handoff["operator_ownership"] == {
+        "operator_owned": True,
+        "operator_agent_id": "operator:wd-image1",
+        "operator_decision_ref": "<redacted>",
+        "operator_decision_id_recorded": False,
+        "bridge_event_ref": "bridge:wd-image1-magma-share-peer-review",
+        "import_decision": "accepted_for_peer_review",
+        "import_decision_recorded": True,
+        "decision_reason_ref": "reason:cross_instance_replay_review",
+    }
+    assert handoff["authority"] == {
+        "operator_gate_required": True,
+        "operator_gate_satisfied": True,
+        "handoff_scope": "peer_review_only",
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "runtime_traffic_mutation_applied": False,
+        "runtime_receipt_emission_changed": False,
+    }
+    assert handoff["privacy"] == {
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "local_paths_recorded": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+    }
+    assert handoff["replay_plan"]["entry_count"] == 1
+    assert set(handoff["replay_plan"]["entries"][0]) == {
+        "entry_id",
+        "receipt_digest",
+        "evaluation_result_digest",
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    }
+    serialized = json.dumps(handoff)
+    assert "operator:decision:magma-share-import:001" not in serialized
+    assert str(tmp_path) not in serialized
+    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+
+
+def test_peer_review_handoff_write_refuses_failed_import_report(
+    tmp_path: Path,
+) -> None:
+    bad_report = {
+        "report_version": IMPORT_REPORT_VERSION,
+        "ok": False,
+        "blockers": ["context drift"],
+    }
+
+    with pytest.raises(ValueError, match="handoff-ready"):
+        write_magma_share_import_peer_review_handoff(
+            import_report=bad_report,
+            out_path=tmp_path / "share_import_peer_review_handoff.json",
+            operator_decision_id="operator:decision:magma-share-import:bad",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+    assert not (tmp_path / "share_import_peer_review_handoff.json").exists()
+
+
 def test_importer_rejects_stale_share_manifest(tmp_path: Path) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
 
@@ -117,6 +216,19 @@ def test_importer_rejects_stale_share_manifest(tmp_path: Path) -> None:
             source_manifest_path=source_manifest,
             verify_source_manifest=verify_manifest,
             now_utc=FIXED_NOW + timedelta(hours=25),
+            max_age_hours=24,
+        )
+
+
+def test_importer_rejects_future_share_manifest(tmp_path: Path) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    with pytest.raises(ValueError, match="future"):
+        build_magma_share_manifest_import_report(
+            share_manifest_path=share_manifest,
+            source_manifest_path=source_manifest,
+            verify_source_manifest=verify_manifest,
+            now_utc=FIXED_NOW - timedelta(minutes=10),
             max_age_hours=24,
         )
 
@@ -180,6 +292,7 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
     tmp_path: Path,
 ) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
+    handoff_path = tmp_path / "share_import_peer_review_handoff.json"
 
     result = subprocess.run(
         [
@@ -198,6 +311,18 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
             "24",
             "--now",
             "2026-05-28T09:00:00Z",
+            "--peer-review-handoff-out",
+            str(handoff_path),
+            "--operator-decision-id",
+            "operator:decision:magma-share-cli",
+            "--operator-agent",
+            "operator:wd-image1",
+            "--bridge-event-ref",
+            "bridge:wd-image1-magma-share-import",
+            "--import-decision",
+            "accepted_for_peer_review",
+            "--decision-reason-ref",
+            "reason:cross_instance_replay_review",
         ],
         cwd=ROOT,
         text=True,
@@ -211,6 +336,19 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
     assert payload["no_authority_import"] is True
     assert payload["runtime_authority_granted"] is False
     assert payload["payload_files_imported"] == 0
+    handoff = payload["peer_review_handoff"]
+    assert handoff["handoff_version"] == IMPORT_HANDOFF_VERSION
+    assert handoff["operator_ownership"]["import_decision"] == (
+        "accepted_for_peer_review"
+    )
+    assert handoff["authority"]["runtime_authority_granted"] is False
+    assert handoff_path.exists()
+    written_handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert written_handoff == handoff
     assert str(tmp_path) not in result.stdout
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
-    assert not any(marker in _all_json_text(tmp_path / "share-export") for marker in PRIVATE_MARKERS)
+    assert not any(
+        marker in _all_json_text(tmp_path / "share-export")
+        for marker in PRIVATE_MARKERS
+    )
+    assert not any(marker in handoff_path.read_text(encoding="utf-8") for marker in PRIVATE_MARKERS)

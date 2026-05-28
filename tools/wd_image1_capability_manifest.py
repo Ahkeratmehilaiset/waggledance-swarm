@@ -3206,7 +3206,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "waggledance/core/magma/share_manifest.py",
-                "Operator-gated local share manifest exporter and no-authority importer validate the no-payload contract.",
+                "Operator-gated exporter, no-authority importer, and peer-review handoff helpers validate the no-payload contract.",
             ),
             (
                 "tools/export_magma_share_manifest.py",
@@ -3214,7 +3214,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tools/import_magma_share_manifest.py",
-                "Explicit CLI verifies fresh share manifests as no-authority replay metadata.",
+                "Explicit CLI verifies fresh share manifests and can write no-authority peer-review handoffs.",
             ),
             (
                 "schemas/v3_13_0/magma_share_manifest.v0.json",
@@ -3230,7 +3230,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tests/tools/test_magma_share_manifest_importer.py",
-                "Importer tests reject stale and context-drifted share manifests without importing payloads.",
+                "Importer tests reject context drift and prove peer-review handoffs do not grant authority.",
             ),
             (
                 "docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md",
@@ -3457,7 +3457,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "operator-gated local exporter validates it before writing "
                 "share metadata. A no-authority importer validates fresh "
                 "share metadata against a local receipt bundle and rejects "
-                "context drift before building a replay plan; hard "
+                "context drift before building a replay plan. An "
+                "operator-owned peer-review handoff artifact can record "
+                "import decisions without payloads, local paths, or runtime "
+                "authority; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3471,13 +3474,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "some MAGMA-backed paths.",
                 "A hardening pass is needed before literal append-only "
                 "language is safe.",
-                "The share importer is still local proof tooling; it does "
-                "not add cross-instance transport or runtime authority.",
+                "The share importer and peer-review handoff remain local "
+                "proof tooling; they do not add cross-instance transport or "
+                "runtime authority.",
             ),
             next_smallest_pr=(
-                "Wire the share importer into an operator-owned peer-review "
-                "handoff that records import decisions without granting "
-                "runtime authority."
+                "Expose peer-review handoff status in operator summaries "
+                "without adding runtime controls."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

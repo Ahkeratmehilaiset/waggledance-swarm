@@ -26,8 +26,10 @@ SCHEMA_NAME = "magma_share_manifest.v0.json"
 MANIFEST_VERSION = "magma.share_manifest.v0"
 EXPORT_REPORT_VERSION = "magma.share_manifest_export.v0"
 IMPORT_REPORT_VERSION = "magma.share_manifest_import.v0"
+IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
 SHARE_MANIFEST_NAME = "share_manifest.json"
 EXPORT_REPORT_NAME = "share_export_report.json"
+IMPORT_HANDOFF_NAME = "share_import_peer_review_handoff.json"
 DEFAULT_IMPORT_MAX_AGE_HOURS = 168
 IMPORT_CLOCK_SKEW = timedelta(minutes=5)
 FORBIDDEN_MATERIAL = (
@@ -41,6 +43,14 @@ PRODUCER_ROLES = frozenset({"lead", "tools", "rco", "operator"})
 PURPOSES = frozenset(
     {"peer_review", "rco_review", "cross_instance_replay", "operator_archive"}
 )
+IMPORT_HANDOFF_DECISIONS = frozenset(
+    {
+        "accepted_for_peer_review",
+        "deferred_for_operator_review",
+        "rejected_for_peer_review",
+    }
+)
+IMPORT_HANDOFF_SCOPE = "peer_review_only"
 _REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9:._-]{2,180}$")
 
 
@@ -331,6 +341,129 @@ def build_magma_share_manifest_import_report(
     }
 
 
+def build_magma_share_import_peer_review_handoff(
+    *,
+    import_report: Mapping[str, Any],
+    operator_decision_id: str,
+    operator_agent_id: str,
+    bridge_event_ref: str,
+    import_decision: str = "accepted_for_peer_review",
+    decision_reason_ref: str = "reason:operator_peer_review_handoff",
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Build an operator-owned peer-review handoff from an import report.
+
+    The artifact records the operator import decision and digest/categorical
+    replay references only. It never copies payloads, records local paths,
+    grants runtime authority, or changes runtime export state.
+    """
+    _ensure_import_report_ready_for_handoff(import_report)
+    _ensure_ref("operator_decision_id", operator_decision_id)
+    _ensure_ref("operator_agent_id", operator_agent_id)
+    _ensure_ref("bridge_event_ref", bridge_event_ref)
+    _ensure_ref("decision_reason_ref", decision_reason_ref)
+    if import_decision not in IMPORT_HANDOFF_DECISIONS:
+        raise ValueError("import_decision is not allowed")
+
+    replay_plan = import_report["replay_plan"]
+    entries = replay_plan["entries"]
+    replay_refs = [
+        {
+            "entry_id": entry["entry_id"],
+            "receipt_digest": entry["receipt_digest"],
+            "evaluation_result_digest": entry["evaluation_result_digest"],
+            "subject_type": entry["subject_type"],
+            "risk_class": entry["risk_class"],
+            "expected_gate": entry["expected_gate"],
+            "actual_gate": entry["actual_gate"],
+            "verdict": entry["verdict"],
+        }
+        for entry in entries
+    ]
+    payload = {
+        "handoff_version": IMPORT_HANDOFF_VERSION,
+        "ok": True,
+        "blockers": [],
+        "created_at_utc": _format_utc(now_utc or datetime.now(timezone.utc)),
+        "share_id": import_report["share_id"],
+        "purpose": import_report["purpose"],
+        "import_report_digest": sha256_digest(import_report),
+        "share_manifest_digest": import_report["share_manifest_digest"],
+        "source_manifest_digest": import_report["source_manifest_digest"],
+        "operator_ownership": {
+            "operator_owned": True,
+            "operator_agent_id": operator_agent_id,
+            "operator_decision_ref": "<redacted>",
+            "operator_decision_id_recorded": False,
+            "bridge_event_ref": bridge_event_ref,
+            "import_decision": import_decision,
+            "import_decision_recorded": True,
+            "decision_reason_ref": decision_reason_ref,
+        },
+        "authority": {
+            "operator_gate_required": True,
+            "operator_gate_satisfied": True,
+            "handoff_scope": IMPORT_HANDOFF_SCOPE,
+            "runtime_export_enabled": False,
+            "runtime_authority_granted": False,
+            "runtime_authority_changed": False,
+            "runtime_traffic_mutation_applied": False,
+            "runtime_receipt_emission_changed": False,
+        },
+        "privacy": {
+            "replay_metadata_only": True,
+            "no_authority_import": True,
+            "local_paths_recorded": False,
+            "payload_files_imported": 0,
+            "payload_digest_imported": False,
+            "raw_material_imported": False,
+            "replacement_map_imported": False,
+        },
+        "replay_plan": {
+            "mode": replay_plan["mode"],
+            "entry_count": replay_plan["entry_count"],
+            "entries": replay_refs,
+        },
+    }
+    handoff_digest = sha256_digest(payload)
+    payload["handoff_digest"] = handoff_digest
+    payload["handoff_id"] = (
+        "magma:share-import-handoff:"
+        f"{handoff_digest.removeprefix('sha256:')[:16]}"
+    )
+    return payload
+
+
+def write_magma_share_import_peer_review_handoff(
+    *,
+    import_report: Mapping[str, Any],
+    out_path: Path,
+    operator_decision_id: str,
+    operator_agent_id: str,
+    bridge_event_ref: str,
+    import_decision: str = "accepted_for_peer_review",
+    decision_reason_ref: str = "reason:operator_peer_review_handoff",
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Write a local peer-review handoff for a verified import report."""
+    out_path = out_path.resolve()
+    if out_path.exists():
+        raise ValueError(f"out_path must not exist: {out_path}")
+    if not out_path.parent.exists():
+        raise ValueError(f"out_path parent does not exist: {out_path.parent}")
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=import_report,
+        operator_decision_id=operator_decision_id,
+        operator_agent_id=operator_agent_id,
+        bridge_event_ref=bridge_event_ref,
+        import_decision=import_decision,
+        decision_reason_ref=decision_reason_ref,
+        now_utc=now_utc,
+    )
+    _write_json(out_path, handoff)
+    return handoff
+
+
 def validate_magma_share_manifest(value: dict[str, Any]) -> None:
     """Validate schema, date-time formats, and count invariants."""
     errors = redacted_schema_errors(
@@ -495,6 +628,77 @@ def _ensure_share_entry_context(
             raise ValueError(f"entry {index}: {field} context drift")
 
 
+def _ensure_import_report_ready_for_handoff(
+    import_report: Mapping[str, Any],
+) -> None:
+    required_values = {
+        "report_version": IMPORT_REPORT_VERSION,
+        "ok": True,
+        "blockers": [],
+        "source_receipt_verification_ok": True,
+        "context_verified": True,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+    }
+    for field, expected in required_values.items():
+        if import_report.get(field) != expected:
+            raise ValueError(f"import report is not handoff-ready: {field}")
+    for field in ("share_id", "purpose"):
+        if not isinstance(import_report.get(field), str):
+            raise ValueError(f"import report is not handoff-ready: {field}")
+    for field in ("share_manifest_digest", "source_manifest_digest"):
+        _ensure_sha256_digest(field, import_report.get(field))
+    replay_plan = import_report.get("replay_plan")
+    if not isinstance(replay_plan, Mapping):
+        raise ValueError("import report is not handoff-ready: replay_plan")
+    if replay_plan.get("mode") != "no_authority_metadata_replay":
+        raise ValueError("import report is not handoff-ready: replay_plan.mode")
+    entries = replay_plan.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("import report is not handoff-ready: replay_plan.entries")
+    if replay_plan.get("entry_count") != len(entries):
+        raise ValueError(
+            "import report is not handoff-ready: replay_plan.entry_count"
+        )
+    required_entry_fields = {
+        "entry_id",
+        "receipt_digest",
+        "evaluation_result_digest",
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    }
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, Mapping):
+            raise ValueError(
+                "import report is not handoff-ready: replay_plan entry"
+            )
+        missing = sorted(required_entry_fields - set(entry))
+        if missing:
+            raise ValueError(
+                "import report is not handoff-ready: "
+                f"replay_plan entry {index} missing {missing}"
+            )
+        _ensure_sha256_digest(
+            f"replay_plan entry {index} receipt_digest",
+            entry.get("receipt_digest"),
+        )
+        _ensure_sha256_digest(
+            f"replay_plan entry {index} evaluation_result_digest",
+            entry.get("evaluation_result_digest"),
+        )
+
+
 def _read_json(path: Path, label: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -507,6 +711,18 @@ def _read_json(path: Path, label: str) -> Any:
 def _ensure_ref(label: str, value: str) -> None:
     if not _REF_RE.fullmatch(value):
         raise ValueError(f"{label} must be a MAGMA ref")
+
+
+def _ensure_sha256_digest(label: str, value: Any) -> None:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("sha256:")
+        or len(value) != len("sha256:") + 64
+    ):
+        raise ValueError(f"{label} must be a sha256 digest")
+    hexdigest = value.removeprefix("sha256:")
+    if any(char not in "0123456789abcdef" for char in hexdigest):
+        raise ValueError(f"{label} must be a sha256 digest")
 
 
 def _format_utc(value: datetime) -> str:

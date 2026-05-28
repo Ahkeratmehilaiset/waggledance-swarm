@@ -3115,6 +3115,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "slo_drill_contract_present": False,
         "release_gate_examples_present": False,
         "release_evidence_package_contract_present": False,
+        "release_evidence_validator_contract_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -3140,11 +3141,15 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     ops_rel = "waggledance/adapters/http/routes/compat_dashboard.py"
     metrics_rel = "waggledance/adapters/http/routes/metrics.py"
     package_rel = "tools/package_magma_alert_feed_release_evidence.py"
+    validator_rel = "tools/validate_magma_alert_feed_release_evidence.py"
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
     package_tests_rel = (
         "tests/tools/test_magma_alert_feed_release_evidence_package.py"
+    )
+    validator_tests_rel = (
+        "tests/tools/test_magma_alert_feed_release_evidence_validator.py"
     )
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
@@ -3156,10 +3161,12 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         ops_rel,
         metrics_rel,
         package_rel,
+        validator_rel,
         settings_rel,
         tests_rel,
         metrics_tests_rel,
         package_tests_rel,
+        validator_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -3180,12 +3187,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     ops_text = (repo_root / ops_rel).read_text(encoding="utf-8")
     metrics_text = (repo_root / metrics_rel).read_text(encoding="utf-8")
     package_text = (repo_root / package_rel).read_text(encoding="utf-8")
+    validator_text = (repo_root / validator_rel).read_text(encoding="utf-8")
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
         encoding="utf-8"
     )
     package_tests_text = (repo_root / package_tests_rel).read_text(
+        encoding="utf-8"
+    )
+    validator_tests_text = (repo_root / validator_tests_rel).read_text(
         encoding="utf-8"
     )
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
@@ -3198,9 +3209,11 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         ops_text,
         metrics_text,
         package_text,
+        validator_text,
         settings_text,
         metrics_tests_text,
         package_tests_text,
+        validator_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
@@ -3339,7 +3352,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "waggledance_magma_handoff_runtime_authority_granted == 0",
             "must not auto-merge",
             "documentation-only",
-            "reviewer-side validation for packaged release evidence",
+            "operator-owned reviewer handoff summary",
         )
     )
     release_evidence_package_contract_present = all(
@@ -3360,7 +3373,27 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "no endpoint fetches",
             "test_magma_alert_feed_release_evidence_package_writes_sanitized_artifacts",
             "test_release_evidence_package_cli_json_is_path_free",
-            "reviewer-side validation for packaged release evidence",
+            "operator-owned reviewer handoff summary",
+        )
+    )
+    release_evidence_validator_contract_present = all(
+        token in "\n".join((
+            validator_text,
+            validator_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "validate_magma_alert_feed_release_evidence_package",
+            "digest_checks",
+            "release_decision_made",
+            "external_fetch_performed",
+            "transport_added",
+            "automatic_release_decision",
+            "test_release_evidence_validator_accepts_package_and_digest_inputs",
+            "test_release_evidence_validator_cli_json_is_path_free",
+            "operator-owned reviewer handoff summary",
         )
     )
     guardrails_present = all(
@@ -3404,6 +3437,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and slo_drill_contract_present
         and release_gate_examples_present
         and release_evidence_package_contract_present
+        and release_evidence_validator_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3425,6 +3459,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "release_evidence_package_contract_present": (
             release_evidence_package_contract_present
         ),
+        "release_evidence_validator_contract_present": (
+            release_evidence_validator_contract_present
+        ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3444,7 +3481,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "controls. The local evidence package tool records only explicit "
             "operator-provided /api/ops and /metrics evidence for manual "
             "review; it fetches no endpoints and makes no automatic release "
-            "decision."
+            "decision. The validator checks package structure and optional "
+            "local artifact digests for reviewers without writes, transport, "
+            "endpoint fetches, or release decisions."
         ),
     }
 
@@ -3953,6 +3992,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI packages sanitized MAGMA alert-feed release evidence from operator-provided local files.",
             ),
             (
+                "tools/validate_magma_alert_feed_release_evidence.py",
+                "Explicit CLI validates packaged MAGMA alert-feed release evidence and optional local artifact digests.",
+            ),
+            (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
@@ -3991,6 +4034,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_alert_feed_release_evidence_package.py",
                 "Evidence package tests prove sanitized artifacts, path-free CLI JSON, and no automatic release decision.",
+            ),
+            (
+                "tests/tools/test_magma_alert_feed_release_evidence_validator.py",
+                "Evidence validator tests prove digest checks, privacy/control blockers, path-free CLI JSON, and no release decision.",
             ),
             (
                 "tests/test_metrics_endpoint.py",
@@ -4280,7 +4327,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "sanitized JSON/Markdown release-review artifacts from "
                 "explicit operator-provided /api/ops and /metrics files "
                 "without endpoint fetches, transport, automatic release "
-                "decisions, or runtime controls; hard "
+                "decisions, or runtime controls. A companion validator can "
+                "check package structure and optional local artifact digests "
+                "for reviewers without writes, transport, endpoint fetches, "
+                "or release decisions; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -4301,8 +4351,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add reviewer-side validation for packaged release evidence "
-                "without adding transport or controls."
+                "Add operator-owned reviewer handoff summary for validated "
+                "evidence without adding approval automation."
             ),
             proof=magma_audit_proof,
         ),

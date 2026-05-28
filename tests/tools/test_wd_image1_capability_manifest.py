@@ -32,6 +32,9 @@ from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_alert_runbook_smoke,
 )
 from tools.wd_image1_capability_manifest import (
+    build_magma_handoff_provider_metrics_runbook_smoke,
+)
+from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_ops_alert_state_smoke,
 )
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
@@ -589,6 +592,48 @@ def test_low_risk_autogrowth_alert_runbook_smoke_blocks_missing_inputs(
     assert proof["runtime_authority_changed"] is False
 
 
+def test_magma_handoff_provider_metrics_runbook_smoke_reports_threshold_contract() -> None:
+    proof = build_magma_handoff_provider_metrics_runbook_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == (
+        "magma_handoff_provider_metrics_runbook_smoke_v1"
+    )
+    assert proof["runbook_path"] == (
+        "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
+    )
+    assert proof["api_docs_path"] == "docs/API.md"
+    assert proof["metrics_endpoint"] == "/metrics"
+    assert proof["alert_thresholds_documented"] is True
+    assert proof["missing_metric_mentions"] == []
+    assert proof["missing_threshold_rules"] == []
+    assert proof["api_docs_link_runbook"] is True
+    assert proof["source_metrics_contract_present"] is True
+    assert proof["forbidden_controls_absent"] is True
+    assert proof["forbidden_control_tokens_found"] == []
+    assert "waggledance_magma_handoff_provider_up" in proof["metric_names"]
+    assert "waggledance_magma_handoff_provider_alert_active" in (
+        proof["metric_names"]
+    )
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
+def test_magma_handoff_provider_metrics_runbook_smoke_blocks_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    proof = build_magma_handoff_provider_metrics_runbook_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "missing_required_inputs"
+    assert "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md" in (
+        proof["missing_inputs"]
+    )
+    assert "docs/API.md" in proof["missing_inputs"]
+    assert proof["runtime_authority_changed"] is False
+
+
 def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() -> None:
     proof = build_low_risk_autogrowth_ops_alert_state_smoke(ROOT)
 
@@ -886,8 +931,16 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "freshness/retention thresholds" in capability["safe_statement"]
     assert "operator-owned feed freshness source" in capability["safe_statement"]
     assert "privacy-safe /metrics gauges" in capability["safe_statement"]
+    assert "metrics runbook" in capability["safe_statement"]
+    assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
+    assert capability["proof"]["provider_metrics_runbook_smoke"][
+        "alert_thresholds_documented"
+    ] is True
+    assert capability["proof"]["provider_metrics_runbook_smoke"][
+        "forbidden_controls_absent"
+    ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "provider metrics runbook" in (
+    assert "Prometheus/Alertmanager alert-state feed" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

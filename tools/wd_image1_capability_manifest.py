@@ -2717,6 +2717,197 @@ def build_low_risk_autogrowth_alert_runbook_smoke(
     }
 
 
+def _blocked_magma_handoff_provider_metrics_runbook_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+) -> dict:
+    return {
+        "proof_id": "magma_handoff_provider_metrics_runbook_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "runbook_path": (
+            "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
+        ),
+        "api_docs_path": "docs/API.md",
+        "metrics_endpoint": "/metrics",
+        "alert_thresholds_documented": False,
+        "metric_names": [],
+        "missing_metric_mentions": [],
+        "missing_threshold_rules": [],
+        "api_docs_link_runbook": False,
+        "source_metrics_contract_present": False,
+        "forbidden_controls_absent": False,
+        "forbidden_control_tokens_found": [],
+        "guardrail_language_present": False,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required MAGMA handoff metrics runbook or API documentation "
+            "inputs are missing, so provider alert thresholds cannot be "
+            "certified for this root."
+        ),
+    }
+
+
+def build_magma_handoff_provider_metrics_runbook_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Prove MAGMA handoff provider metrics have read-only thresholds."""
+
+    repo_root = Path(root)
+    runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
+    api_rel = "docs/API.md"
+    metrics_rel = "waggledance/adapters/http/routes/metrics.py"
+    tests_rel = "tests/test_metrics_endpoint.py"
+    required = (runbook_rel, api_rel, metrics_rel, tests_rel)
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_magma_handoff_provider_metrics_runbook_smoke(
+            missing_inputs=missing,
+        )
+
+    runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
+    api_text = (repo_root / api_rel).read_text(encoding="utf-8")
+    metrics_text = (repo_root / metrics_rel).read_text(encoding="utf-8")
+    tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
+    runbook_lower = runbook_text.lower()
+    api_lower = api_text.lower()
+
+    metric_names = {
+        "waggledance_magma_handoff_provider_up",
+        "waggledance_magma_handoff_provider_configured",
+        "waggledance_magma_handoff_snapshot_valid",
+        "waggledance_magma_handoff_history_feed_present",
+        "waggledance_magma_handoff_history_retained_count",
+        "waggledance_magma_handoff_history_dropped_count",
+        "waggledance_magma_handoff_freshness_source_configured",
+        "waggledance_magma_handoff_freshness_source_valid",
+        "waggledance_magma_handoff_freshness_source_stale",
+        "waggledance_magma_handoff_active_alerts",
+        "waggledance_magma_handoff_local_paths_recorded",
+        "waggledance_magma_handoff_runtime_authority_granted",
+        "waggledance_magma_handoff_payload_files_imported",
+        "waggledance_magma_handoff_provider_status",
+        "waggledance_magma_handoff_freshness_state",
+        "waggledance_magma_handoff_provider_alert_active",
+    }
+    missing_metric_mentions = [
+        name for name in sorted(metric_names) if name not in runbook_text
+    ]
+    required_threshold_rules = {
+        "waggledance_magma_handoff_provider_up == 0",
+        "waggledance_magma_handoff_snapshot_valid == 0",
+        "waggledance_magma_handoff_freshness_source_stale == 1",
+        "waggledance_magma_handoff_history_dropped_count > 0",
+        "waggledance_magma_handoff_local_paths_recorded > 0",
+        "waggledance_magma_handoff_runtime_authority_granted > 0",
+        "waggledance_magma_handoff_payload_files_imported > 0",
+        (
+            'waggledance_magma_handoff_provider_alert_active{'
+            'alert_id="MagmaShareImportHandoffProviderUnavailable"} == 1'
+        ),
+        (
+            'waggledance_magma_handoff_provider_alert_active{'
+            'alert_id="MagmaShareImportHandoffFreshnessSourceUnavailable"} '
+            "== 1"
+        ),
+    }
+    missing_threshold_rules = [
+        rule
+        for rule in sorted(required_threshold_rules)
+        if rule not in runbook_text
+    ]
+    forbidden_control_tokens = {
+        "POST /api/magma",
+        "import_payload",
+        "payload_import",
+        "grant_runtime_authority",
+        "authority_mutation",
+        "write_config",
+        "config_write",
+        "auto_import",
+        "auto_merge",
+    }
+    forbidden_control_tokens_found = [
+        token
+        for token in sorted(forbidden_control_tokens)
+        if token.lower() in runbook_lower
+    ]
+    api_docs_link_runbook = (
+        "magma_handoff_provider_metrics_runbook.md" in api_lower
+        and "waggledance_magma_handoff_provider_up" in api_text
+        and "waggledance_magma_handoff_freshness_source_stale" in api_text
+        and "do not import payloads" in api_lower
+        and "runtime authority" in api_lower
+    )
+    source_metrics_contract_present = all(
+        token in "\n".join((metrics_text, tests_text))
+        for token in (
+            "_collect_magma_handoff_metrics",
+            "_MAGMA_HANDOFF_PROVIDER_ALERT_IDS",
+            "waggledance_magma_handoff_provider_up",
+            "waggledance_magma_handoff_provider_alert_active",
+            "MagmaShareImportHandoffProviderUnavailable",
+            "MagmaShareImportHandoffFreshnessSourceUnavailable",
+            "test_metrics_body_contains_magma_handoff_provider_health_gauges",
+            "test_metrics_magma_handoff_freshness_failure_is_sanitized",
+        )
+    )
+    guardrail_language_present = all(
+        phrase in runbook_lower
+        for phrase in (
+            "does not add import controls",
+            "does not grant runtime authority",
+            "no alert rule in this runbook should call a mutating endpoint",
+            "no alert rule should import payloads",
+            "no alert rule should auto-merge",
+        )
+    )
+    ok = (
+        not missing_metric_mentions
+        and not missing_threshold_rules
+        and api_docs_link_runbook
+        and source_metrics_contract_present
+        and not forbidden_control_tokens_found
+        and guardrail_language_present
+    )
+    return {
+        "proof_id": "magma_handoff_provider_metrics_runbook_smoke_v1",
+        "ok": ok,
+        "proof_mode": "source_doc_contract",
+        "runbook_path": runbook_rel,
+        "api_docs_path": api_rel,
+        "metrics_endpoint": "/metrics",
+        "alert_thresholds_documented": not missing_threshold_rules,
+        "metric_names": sorted(metric_names),
+        "missing_metric_mentions": missing_metric_mentions,
+        "missing_threshold_rules": missing_threshold_rules,
+        "api_docs_link_runbook": api_docs_link_runbook,
+        "source_metrics_contract_present": source_metrics_contract_present,
+        "forbidden_controls_absent": not forbidden_control_tokens_found,
+        "forbidden_control_tokens_found": forbidden_control_tokens_found,
+        "guardrail_language_present": guardrail_language_present,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The MAGMA handoff provider metrics runbook documents "
+            "conservative Prometheus alert thresholds for source health, "
+            "snapshot validity, freshness, retention drops, private-material "
+            "flags, runtime-authority flags, and payload-import flags. The "
+            "contract is read-only and does not introduce import controls or "
+            "runtime authority."
+        ),
+    }
+
+
 def _blocked_low_risk_autogrowth_ops_alert_state_smoke(
     *,
     missing_inputs: Sequence[str],
@@ -3225,6 +3416,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Prometheus metrics expose privacy-safe MAGMA handoff provider health and freshness source state without import controls.",
             ),
             (
+                "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md",
+                "Operator runbook documents read-only MAGMA handoff provider metrics alert thresholds.",
+            ),
+            (
                 "web/hologram-brain-v6.html",
                 "Hologram Ops panel renders MAGMA import handoff status/history, provider health, thresholds, and feed freshness state without controls.",
             ),
@@ -3400,6 +3595,19 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
+    magma_metrics_runbook_smoke = (
+        build_magma_handoff_provider_metrics_runbook_smoke(root)
+    )
+    magma_audit_proof = dict(
+        solver_trace_proof.get("magma_execution_receipt_proof") or {}
+    )
+    magma_audit_proof["provider_metrics_runbook_smoke"] = (
+        magma_metrics_runbook_smoke
+    )
+    magma_audit_proof["ok"] = bool(
+        magma_audit_proof.get("ok") is True
+        and magma_metrics_runbook_smoke.get("ok") is True
+    )
     future_scale_scorecard = build_future_scale_axis_scorecard(root)
 
     return (
@@ -3488,7 +3696,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "as privacy-safe /metrics gauges with fixed "
                 "status/freshness/alert labels and without disk scanning, "
                 "payload import, local path exposure, provider exception "
-                "details, or runtime controls; hard "
+                "details, or runtime controls. A read-only metrics runbook "
+                "documents conservative Prometheus alert thresholds for that "
+                "handoff provider state without adding import controls or "
+                "runtime authority; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3509,10 +3720,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a MAGMA handoff provider metrics runbook and alert "
-                "thresholds without adding import controls."
+                "Wire a read-only Prometheus/Alertmanager alert-state feed "
+                "for MAGMA handoff metrics without adding controls."
             ),
-            proof=solver_trace_proof.get("magma_execution_receipt_proof"),
+            proof=magma_audit_proof,
         ),
         Capability(
             capability_id="low_risk_autonomy_loop",

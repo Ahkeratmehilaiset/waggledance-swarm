@@ -239,6 +239,23 @@ python tools\build_magma_alert_feed_reviewer_handoff_bundle_index.py `
   --json
 ```
 
+Before handoff, verify that index against the same explicit local artifacts
+with `tools/verify_magma_alert_feed_reviewer_handoff_bundle_index.py`. The
+local reviewer handoff bundle verifier recomputes digest, size, and
+schema-version checks and still keeps `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`approval_granted=false`, and `release_decision_made=false`.
+
+```powershell
+python tools\verify_magma_alert_feed_reviewer_handoff_bundle_index.py `
+  --bundle-index-json <collected>\reviewer_handoff_bundle_index.json `
+  --package-json <new-evidence-dir>\magma_alert_feed_release_evidence.json `
+  --validation-json <collected>\validation.json `
+  --summary-json <collected>\reviewer_handoff_summary.json `
+  --bridge-template-json <collected>\reviewer_bridge_event_template.json `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

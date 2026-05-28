@@ -98,6 +98,51 @@ anything.
 | `magma_alert_feed_backoff_15m` | `max_over_time(waggledance_magma_handoff_alert_feed_backoff_active[15m])` | Bounded backoff remains inactive. |
 | `magma_alert_feed_cache_stale_15m` | `max_over_time(waggledance_magma_handoff_alert_feed_cache_stale[15m])` | Cached snapshot is not stale. |
 
+## Manual release-gate examples
+
+These examples consume the SLO panel templates and `drill_evidence` checklist
+as operator-owned review evidence only. They must not auto-merge,
+auto-promote, write configuration, restart feeds, control importers or
+exporters, acknowledge alerts, or create runtime authority.
+
+### Pre-merge MAGMA alert-feed observability gate
+
+Collect the exact commit SHA, current `/metrics` scrape, current
+`/api/ops.provider_health.metrics_alert_state.feed_health`, current
+`/api/ops.provider_health.metrics_alert_state.slo_panels`, current
+`/api/ops.provider_health.metrics_alert_state.drill_evidence`, and the CI run
+identifier before approving a MAGMA handoff release.
+
+Pass only when the operator evidence shows all of the following for the review
+window:
+
+| Evidence check | Manual pass condition |
+| --- | --- |
+| Availability | `avg_over_time(waggledance_magma_handoff_alert_feed_available[5m]) == 1` |
+| Fetch failures | `increase(waggledance_magma_handoff_alert_feed_fetch_failures_total[15m]) == 0` |
+| Bounded backoff | `max_over_time(waggledance_magma_handoff_alert_feed_backoff_active[15m]) == 0` |
+| Cache freshness | `max_over_time(waggledance_magma_handoff_alert_feed_cache_stale[15m]) == 0` |
+| Runtime authority boundary | `waggledance_magma_handoff_runtime_authority_granted == 0` |
+| Payload boundary | `waggledance_magma_handoff_payload_files_imported == 0` |
+| Local path boundary | `waggledance_magma_handoff_local_paths_recorded == 0` |
+
+Hold the release when any pass condition fails or when `drill_evidence` is
+missing during an incident review. Preserve the sanitized metric samples and
+the listed `drill_evidence` artifact classes; do not add URLs, headers,
+hostnames, filesystem paths, raw Alertmanager labels, raw annotations, payload
+material, or exception strings.
+
+### Post-failure release-hold review
+
+When `MagmaHandoffAlertFeedBackoffActive`,
+`MagmaHandoffAlertFeedFetchFailures`, `MagmaHandoffRuntimeAuthorityReported`,
+`MagmaHandoffPayloadImported`, or `MagmaHandoffPrivateMaterialRecorded` fired
+in the release window, compare the current `/api/ops` alert feed state with
+the matching `/metrics` scrape and CI commit. Keep the hold until a follow-up
+operator review records sanitized evidence that the failing metric returned to
+the manual pass condition and that no runtime-authority, payload-import, or
+local-path counter is nonzero.
+
 ## Triage flow
 
 1. Confirm the alert is from the same commit currently deployed.

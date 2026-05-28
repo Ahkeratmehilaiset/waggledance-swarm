@@ -172,6 +172,10 @@ for availability, fetch failures, active backoff, and stale cache state, plus a
 `drill_evidence` checklist naming only safe artifact classes for operator
 incident review.
 
+The metrics runbook also includes manual release-gate examples that consume
+those SLO panels and `drill_evidence`; they are documentation-only and must
+not be wired to automatic merge, promotion, configuration, or runtime controls.
+
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 `source="prometheus_query_templates"`, metric names, `panels`, and

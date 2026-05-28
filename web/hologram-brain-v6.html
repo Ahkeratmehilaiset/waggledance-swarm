@@ -1559,6 +1559,8 @@ function buildOpsPanel(el) {
   const magmaLatest = magmaHandoff.latest || {};
   const activeMagmaHandoffs = magmaHandoff.active || [];
   const magmaHistory = magmaHandoff.history || [];
+  const magmaProviderHealth = magmaHandoff.provider_health || {};
+  const activeMagmaProviderAlerts = magmaProviderHealth.active || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1703,7 +1705,20 @@ function buildOpsPanel(el) {
   html += card('Controls', magmaHandoff.controls_present ? 'Yes' : 'No');
   html += card('History', magmaHandoff.history_retained_count != null ? magmaHandoff.history_retained_count : magmaHistory.length);
   html += card('Limit', magmaHandoff.history_limit != null ? magmaHandoff.history_limit : '\u2014');
+  html += card('Provider', magmaProviderHealth.status || '\u2014');
+  html += card('Snapshot', magmaProviderHealth.snapshot_kind || '\u2014');
+  html += card('Feed', magmaProviderHealth.history_feed_present ? 'History' : 'Single');
+  html += card('Configured', magmaProviderHealth.provider_configured ? 'Yes' : 'No');
   html += `</div></div>`;
+  if (activeMagmaProviderAlerts.length) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff Provider</div><div class="p-list">`;
+    activeMagmaProviderAlerts.forEach(a => {
+      const sev = a.severity || 'warning';
+      const color = sev === 'critical' ? '#f87171' : '#facc15';
+      html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'provider')}: ${escapeHtml(a.summary || '')}</div>`;
+    });
+    html += `</div></div>`;
+  }
   if (activeMagmaHandoffs.length) {
     html += `<div class="p-section"><div class="p-section-title">MAGMA Handoffs</div><div class="p-list">`;
     activeMagmaHandoffs.forEach(h => {

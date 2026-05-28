@@ -151,12 +151,16 @@ operator summary for an explicitly supplied
 `share_import_peer_review_handoff.json` snapshot or an explicitly supplied
 bounded history of those snapshots. It reports only status/severity, digest
 refs, share ID, purpose, decision category, handoff scope, entry counts,
-retention metadata (`history_limit`, retained/dropped counts), and
-no-authority privacy flags. The default state is `source="not_configured"`.
-The summary validates every supplied history entry before truncating the
-operator-visible list. It does not scan disk, import payloads, record local
-paths, expose raw operator decision IDs, add runtime authority, or add
-dashboard controls.
+retention metadata (`history_limit`, retained/dropped counts), provider health
+for the explicit handoff/history feed, and no-authority privacy flags. The
+default state is `source="not_configured"` with
+`provider_health.source="not_configured"`. Provider health is a local
+categorical snapshot only: configured/available/valid booleans, snapshot kind
+and count, retained/dropped counts, and sanitized warning IDs when the provider
+is unavailable or invalid. The summary validates every supplied history entry
+before truncating the operator-visible list. It does not scan disk, import
+payloads, record local paths, expose raw operator decision IDs or exception
+details, add runtime authority, or add dashboard controls.
 
 ---
 

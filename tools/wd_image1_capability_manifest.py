@@ -3218,11 +3218,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
-                "Ops API exposes sanitized read-only MAGMA import handoff status and bounded history.",
+                "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, and provider health.",
             ),
             (
                 "web/hologram-brain-v6.html",
-                "Hologram Ops panel renders MAGMA import handoff status/history without controls.",
+                "Hologram Ops panel renders MAGMA import handoff status/history and provider health without controls.",
             ),
             (
                 "schemas/v3_13_0/magma_share_manifest.v0.json",
@@ -3246,7 +3246,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "docs/API.md",
-                "API contract documents read-only MAGMA import handoff status/history.",
+                "API contract documents read-only MAGMA import handoff status/history and provider health.",
             ),
             (
                 "tools/run_runtime_receipt_emission_proof.py",
@@ -3473,9 +3473,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "operator-owned peer-review handoff artifact can record "
                 "import decisions without payloads, local paths, or runtime "
                 "authority. A read-only /api/ops and hologram summary can "
-                "surface bounded handoff status history without disk "
-                "scanning, payload import, local path exposure, or runtime "
-                "controls; hard "
+                "surface bounded handoff status history plus provider health "
+                "for the explicit handoff feed without disk scanning, payload "
+                "import, local path exposure, provider exception details, or "
+                "runtime controls; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3490,13 +3491,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "A hardening pass is needed before literal append-only "
                 "language is safe.",
                 "The share importer, peer-review handoff, and bounded "
-                "operator summary history remain local proof/status tooling; "
+                "operator summary history/provider health remain local "
+                "proof/status tooling; "
                 "they do not add cross-instance transport or runtime "
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add operator-visible provider health for the peer-review "
-                "handoff history feed without adding runtime controls."
+                "Add peer-review handoff provider freshness/retention alert "
+                "thresholds without adding runtime controls."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

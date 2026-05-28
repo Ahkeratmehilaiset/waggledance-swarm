@@ -830,11 +830,127 @@ def _is_magma_share_import_handoff_history(value) -> bool:  # noqa: ANN001
     )
 
 
+def _magma_share_import_handoff_snapshot_kind(snapshot) -> str:  # noqa: ANN001
+    if snapshot is None:
+        return "none"
+    if _is_magma_share_import_handoff_history(snapshot):
+        return "history"
+    if isinstance(snapshot, Mapping):
+        for field in ("history", "handoffs"):
+            if _is_magma_share_import_handoff_history(snapshot.get(field)):
+                return "history"
+        if isinstance(snapshot.get("latest"), Mapping):
+            return "latest"
+        return "handoff"
+    return "invalid"
+
+
+def _magma_share_import_handoff_snapshot_count(snapshot) -> int:  # noqa: ANN001
+    if _is_magma_share_import_handoff_history(snapshot):
+        return len(snapshot)
+    if isinstance(snapshot, Mapping):
+        for field in ("history", "handoffs"):
+            value = snapshot.get(field)
+            if _is_magma_share_import_handoff_history(value):
+                return len(value)
+        if isinstance(snapshot.get("latest"), Mapping):
+            return 1
+        return 1
+    return 0
+
+
+def _magma_share_import_handoff_provider_health(
+    *,
+    reason: str,
+    snapshot=None,  # noqa: ANN001
+    summary: Mapping[str, object] | None = None,
+) -> dict:
+    provider_configured = reason != "not_configured"
+    snapshot_available = reason in {"valid_snapshot", "snapshot_invalid"}
+    snapshot_valid = reason == "valid_snapshot"
+    history_feed_present = (
+        snapshot_valid
+        and _magma_share_import_handoff_snapshot_kind(snapshot) == "history"
+    )
+    status = "nominal" if snapshot_valid else "not_configured"
+    severity = "none"
+    active = []
+    if reason in {"provider_unavailable", "snapshot_invalid"}:
+        status = "warning"
+        severity = "warning"
+        alert_id = (
+            "MagmaShareImportHandoffProviderUnavailable"
+            if reason == "provider_unavailable"
+            else "MagmaShareImportHandoffProviderInvalid"
+        )
+        active.append({
+            "id": alert_id,
+            "severity": "warning",
+            "summary": (
+                "MAGMA share import handoff provider is unavailable."
+                if reason == "provider_unavailable"
+                else "MAGMA share import handoff provider snapshot is invalid."
+            ),
+        })
+    return {
+        "source": "local_ops_snapshot" if provider_configured else "not_configured",
+        "status": status,
+        "severity": severity,
+        "reason": reason,
+        "provider_configured": provider_configured,
+        "snapshot_available": snapshot_available,
+        "snapshot_valid": snapshot_valid,
+        "snapshot_kind": _magma_share_import_handoff_snapshot_kind(snapshot),
+        "snapshot_count": _magma_share_import_handoff_snapshot_count(snapshot),
+        "history_feed_present": history_feed_present,
+        "history_limit": (
+            summary.get("history_limit") if summary is not None else None
+        ),
+        "history_retained_count": (
+            summary.get("history_retained_count") if summary is not None else 0
+        ),
+        "history_dropped_count": (
+            summary.get("history_dropped_count") if summary is not None else 0
+        ),
+        "history_truncated": (
+            bool(summary.get("history_truncated"))
+            if summary is not None
+            else False
+        ),
+        "active_count": len(active),
+        "active": active,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "payload_files_imported": 0,
+        "local_paths_recorded": False,
+    }
+
+
+def _with_magma_share_import_handoff_provider_health(
+    section: dict,
+    *,
+    reason: str,
+    snapshot=None,  # noqa: ANN001
+) -> dict:
+    section["provider_health"] = (
+        _magma_share_import_handoff_provider_health(
+            reason=reason,
+            snapshot=snapshot,
+            summary=section,
+        )
+    )
+    return section
+
+
 def _magma_share_import_handoff_section(container=None) -> dict:
     """Build read-only MAGMA share-import handoff status for /api/ops."""
     snapshot, state = _magma_share_import_handoff_snapshot(container)
     if state == "not_configured":
-        return build_magma_share_import_handoff_status_summary(None)
+        section = build_magma_share_import_handoff_status_summary(None)
+        return _with_magma_share_import_handoff_provider_health(
+            section,
+            reason="not_configured",
+        )
     if snapshot is None:
         invalid = state == "invalid"
         section = build_magma_share_import_handoff_status_summary(None)
@@ -863,9 +979,21 @@ def _magma_share_import_handoff_section(container=None) -> dict:
                 ),
             }],
         })
-        return section
+        return _with_magma_share_import_handoff_provider_health(
+            section,
+            reason=(
+                "snapshot_invalid"
+                if invalid
+                else "provider_unavailable"
+            ),
+        )
     try:
-        return build_magma_share_import_handoff_status_summary(snapshot)
+        section = build_magma_share_import_handoff_status_summary(snapshot)
+        return _with_magma_share_import_handoff_provider_health(
+            section,
+            reason="valid_snapshot",
+            snapshot=snapshot,
+        )
     except (TypeError, ValueError):
         section = build_magma_share_import_handoff_status_summary(None)
         section.update({
@@ -879,7 +1007,11 @@ def _magma_share_import_handoff_section(container=None) -> dict:
                 "summary": "MAGMA share import handoff snapshot is invalid.",
             }],
         })
-        return section
+        return _with_magma_share_import_handoff_provider_health(
+            section,
+            reason="snapshot_invalid",
+            snapshot=snapshot,
+        )
 
 
 @router.get("/api/ops")

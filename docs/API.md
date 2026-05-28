@@ -223,6 +223,13 @@ only as reviewer context and keeps `decision_reference_is_approval=false`,
 `decision_reference_is_release_decision=false`,
 `direct_bridge_write_performed=false`, `approval_granted=false`, and
 `release_decision_made=false`.
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary.py`
+can render that validator result as a local operator decision-reference review
+summary for reviewers. It carries `decision_reference_validated` and the
+expected operator-owned reference as context only, keeps the operator decision
+separate, and still reports `direct_bridge_write_performed=false`,
+`transport_added=false`, `approval_granted=false`, and
+`release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

@@ -135,6 +135,18 @@ publish timestamps, share IDs, operator decision IDs, local paths, URLs,
 arbitrary source labels, raw provider summaries, or exception details, and
 they do not add import controls or runtime authority.
 
+MAGMA handoff provider metrics alert thresholds are documented in
+`docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md`. The initial
+operator rules watch `waggledance_magma_handoff_provider_up`,
+`waggledance_magma_handoff_snapshot_valid`,
+`waggledance_magma_handoff_freshness_source_stale`,
+`waggledance_magma_handoff_history_dropped_count`,
+`waggledance_magma_handoff_local_paths_recorded`,
+`waggledance_magma_handoff_runtime_authority_granted`, and
+`waggledance_magma_handoff_payload_files_imported`; they are read-only
+Prometheus checks and do not import payloads, add import controls, or grant
+runtime authority.
+
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 `source="prometheus_query_templates"`, metric names, `panels`, and

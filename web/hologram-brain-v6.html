@@ -1561,6 +1561,7 @@ function buildOpsPanel(el) {
   const magmaHistory = magmaHandoff.history || [];
   const magmaProviderHealth = magmaHandoff.provider_health || {};
   const activeMagmaProviderAlerts = magmaProviderHealth.active || [];
+  const magmaProviderThresholds = magmaProviderHealth.alert_thresholds || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1709,6 +1710,9 @@ function buildOpsPanel(el) {
   html += card('Snapshot', magmaProviderHealth.snapshot_kind || '\u2014');
   html += card('Feed', magmaProviderHealth.history_feed_present ? 'History' : 'Single');
   html += card('Configured', magmaProviderHealth.provider_configured ? 'Yes' : 'No');
+  html += card('Provider Alerts', magmaProviderHealth.active_count != null ? magmaProviderHealth.active_count : activeMagmaProviderAlerts.length);
+  html += card('Freshness', magmaProviderHealth.freshness_warning_after_seconds != null ? `${magmaProviderHealth.freshness_warning_after_seconds}s` : '\u2014');
+  html += card('Dropped', magmaProviderHealth.history_dropped_count != null ? magmaProviderHealth.history_dropped_count : '0');
   html += `</div></div>`;
   if (activeMagmaProviderAlerts.length) {
     html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff Provider</div><div class="p-list">`;
@@ -1716,6 +1720,15 @@ function buildOpsPanel(el) {
       const sev = a.severity || 'warning';
       const color = sev === 'critical' ? '#f87171' : '#facc15';
       html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'provider')}: ${escapeHtml(a.summary || '')}</div>`;
+    });
+    html += `</div></div>`;
+  }
+  if (magmaProviderThresholds.length) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff Provider Thresholds</div><div class="p-list">`;
+    magmaProviderThresholds.forEach(a => {
+      const metric = a.metric || '';
+      const threshold = a.warning_after_seconds != null ? `${a.warning_after_seconds}s` : (a.warning_threshold != null ? a.warning_threshold : '');
+      html += `<div class="p-list-item"><strong>${escapeHtml(a.id || 'threshold')}</strong>: ${escapeHtml(metric)} ${escapeHtml(String(threshold))}</div>`;
     });
     html += `</div></div>`;
   }

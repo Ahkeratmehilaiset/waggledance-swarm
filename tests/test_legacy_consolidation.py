@@ -246,6 +246,14 @@ class TestApiOpsExtended:
         assert magma_handoff["provider_health"]["provider_configured"] is False
         assert magma_handoff["provider_health"]["snapshot_valid"] is False
         assert magma_handoff["provider_health"]["controls_present"] is False
+        assert {
+            item["id"]
+            for item in magma_handoff["provider_health"]["alert_thresholds"]
+        } == {
+            "MagmaShareImportHandoffProviderFreshnessWarning",
+            "MagmaShareImportHandoffProviderRetentionDropped",
+            "MagmaShareImportHandoffProviderRetentionLimitReached",
+        }
 
     def test_ops_autogrowth_section_hides_ticker_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
@@ -371,6 +379,12 @@ class TestApiOpsExtended:
         assert provider_health["history_feed_present"] is False
         assert provider_health["snapshot_kind"] == "handoff"
         assert provider_health["snapshot_count"] == 1
+        assert provider_health["active_count"] == 0
+        assert provider_health["latest_created_at_utc"] == handoff["created_at_utc"]
+        assert any(
+            item["id"] == "MagmaShareImportHandoffProviderFreshnessWarning"
+            for item in provider_health["alert_thresholds"]
+        )
         assert provider_health["controls_present"] is False
         assert provider_health["runtime_authority_granted"] is False
         assert section["latest"]["share_id"] == "magma:share:ops-summary"
@@ -495,11 +509,53 @@ class TestApiOpsExtended:
         assert provider_health["snapshot_count"] == 2
         assert provider_health["history_retained_count"] == 2
         assert provider_health["history_dropped_count"] == 0
+        assert provider_health["active_count"] == 0
         assert provider_health["controls_present"] is False
         assert provider_health["payload_files_imported"] == 0
         serialized = json.dumps(section)
         assert "operator:decision:ops-history" not in serialized
         assert "C:\\private" not in serialized
+
+        retained_source = [
+            build_magma_share_import_peer_review_handoff(
+                import_report=report,
+                operator_decision_id=f"operator:decision:ops-history:{idx}",
+                operator_agent_id=f"operator:ops-history:{idx}",
+                bridge_event_ref=f"bridge:ops-history:{idx}",
+                import_decision="accepted_for_peer_review",
+                decision_reason_ref=f"reason:ops-history:{idx}",
+                now_utc=datetime(2026, 5, 28, 10, idx, tzinfo=timezone.utc),
+            )
+            for idx in range(6)
+        ]
+
+        class RetentionContainer:
+            magma_share_import_handoff_history = retained_source
+
+        retention_section = _magma_share_import_handoff_section(
+            RetentionContainer()
+        )
+        retention_health = retention_section["provider_health"]
+        retention_alert_ids = {
+            item["id"] for item in retention_health["active"]
+        }
+
+        assert retention_section["history_retained_count"] == 5
+        assert retention_section["history_dropped_count"] == 1
+        assert retention_section["history_truncated"] is True
+        assert retention_health["status"] == "warning"
+        assert retention_health["severity"] == "warning"
+        assert retention_health["active_count"] == 1
+        assert "MagmaShareImportHandoffProviderRetentionDropped" in (
+            retention_alert_ids
+        )
+        assert retention_health["controls_present"] is False
+        assert retention_health["runtime_authority_granted"] is False
+        assert retention_health["payload_files_imported"] == 0
+        assert any(
+            item["id"] == "MagmaShareImportHandoffProviderRetentionDropped"
+            for item in retention_health["alert_thresholds"]
+        )
 
         tampered = json.loads(json.dumps(older))
         tampered["operator_ownership"]["bridge_event_ref"] = "C:/private/bridge"
@@ -1084,6 +1140,8 @@ class TestHologramOpsFlexHW:
         assert "magmaHandoff.provider_health" in html
         assert "magmaProviderHealth" in html
         assert "activeMagmaProviderAlerts" in html
+        assert "magmaProviderThresholds" in html
+        assert "MAGMA Handoff Provider Thresholds" in html
         assert "history_retained_count" in html
         assert "activeMagmaHandoffs" in html
         assert "magma_share_import_handoff_start" not in html

@@ -883,8 +883,11 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "operator-gated local exporter" in capability["safe_statement"]
     assert "no-authority importer" in capability["safe_statement"]
     assert "provider health" in capability["safe_statement"]
+    assert "freshness/retention thresholds" in capability["safe_statement"]
     assert "hard append-only" in capability["safe_statement"]
-    assert "peer-review handoff" in capability["next_smallest_pr"]
+    assert "operator-owned peer-review handoff feed" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

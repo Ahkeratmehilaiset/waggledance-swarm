@@ -166,7 +166,11 @@ TTL cache (`cache_ttl_s`) and failure backoff (`failure_backoff_s`) so repeated
 Ops scrapes can reuse the last sanitized snapshot when the operator feed is
 temporarily unavailable. The cache/backoff state appears only as sanitized
 provider-health booleans, fixed status/reason labels, counters, and byte/count
-gauges; URLs, hosts, headers, and exception text are not surfaced.
+gauges; URLs, hosts, headers, and exception text are not surfaced. The same
+`metrics_alert_state` object includes read-only `slo_panels` PromQL templates
+for availability, fetch failures, active backoff, and stale cache state, plus a
+`drill_evidence` checklist naming only safe artifact classes for operator
+incident review.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

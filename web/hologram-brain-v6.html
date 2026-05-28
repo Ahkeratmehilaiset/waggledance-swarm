@@ -1564,6 +1564,10 @@ function buildOpsPanel(el) {
   const magmaProviderThresholds = magmaProviderHealth.alert_thresholds || [];
   const magmaMetricsAlertState = magmaProviderHealth.metrics_alert_state || {};
   const activeMagmaMetricsAlerts = magmaMetricsAlertState.active || [];
+  const magmaMetricsFeedHealth = magmaMetricsAlertState.feed_health || {};
+  const magmaMetricsSloPanels = magmaMetricsAlertState.slo_panels || [];
+  const magmaMetricsDrillEvidence = magmaMetricsAlertState.drill_evidence || {};
+  const magmaMetricsDrillArtifacts = magmaMetricsDrillEvidence.required_artifacts || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1719,6 +1723,9 @@ function buildOpsPanel(el) {
   html += card('Metrics Feed', magmaMetricsAlertState.prometheus_alertmanager_feed ? 'Live' : 'Off');
   html += card('Metrics State', magmaMetricsAlertState.status || 'not_configured');
   html += card('Metrics Alerts', magmaMetricsAlertState.active_count != null ? magmaMetricsAlertState.active_count : activeMagmaMetricsAlerts.length);
+  html += card('Alert Cache', magmaMetricsFeedHealth.cache_present ? 'Warm' : 'Cold');
+  html += card('Alert Backoff', magmaMetricsFeedHealth.backoff_active ? 'Active' : 'Clear');
+  html += card('Alert SLOs', magmaMetricsSloPanels.length);
   html += card('Freshness', magmaProviderHealth.freshness_warning_after_seconds != null ? `${magmaProviderHealth.freshness_warning_after_seconds}s` : '\u2014');
   html += card('Dropped', magmaProviderHealth.history_dropped_count != null ? magmaProviderHealth.history_dropped_count : '0');
   html += `</div></div>`;
@@ -1746,6 +1753,24 @@ function buildOpsPanel(el) {
       const color = sev === 'critical' ? '#f87171' : '#facc15';
       const metric = a.metric ? ` ${a.metric}` : '';
       html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'alert')}: ${escapeHtml(a.summary || sev)}${escapeHtml(metric)}</div>`;
+    });
+    html += `</div></div>`;
+  }
+  if (magmaMetricsSloPanels.length) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Alert Feed SLOs</div><div class="p-list">`;
+    magmaMetricsSloPanels.forEach(p => {
+      const status = p.status || 'nominal';
+      const color = status === 'warning' ? '#facc15' : status === 'not_configured' ? '#94a3b8' : '#9ae6b4';
+      const value = p.current_value != null ? ` ${p.current_value}` : '';
+      html += `<div class="p-list-item" style="color:${color}"><strong>${escapeHtml(p.title || p.id || 'slo')}</strong>${escapeHtml(value)} <span style="opacity:0.65">${escapeHtml(p.window || '')} ${escapeHtml(p.objective || '')}</span></div>`;
+    });
+    html += `</div></div>`;
+  }
+  if (magmaMetricsDrillArtifacts.length) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Alert Drill Evidence</div><div class="p-list">`;
+    magmaMetricsDrillArtifacts.forEach(a => {
+      const fields = (a.fields || []).join(', ');
+      html += `<div class="p-list-item"><strong>${escapeHtml(a.id || 'artifact')}</strong>: ${escapeHtml(a.source || '')} <span style="opacity:0.65">${escapeHtml(fields)}</span></div>`;
     });
     html += `</div></div>`;
   }

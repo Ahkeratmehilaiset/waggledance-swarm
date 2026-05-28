@@ -84,6 +84,20 @@ collection, not automatic mutation.
 | `MagmaHandoffAlertFeedBackoffActive` | `waggledance_magma_handoff_alert_feed_backoff_active == 1` | `10m` | warning | Inspect the operator Alertmanager endpoint and compare the cached sanitized snapshot with current `/api/ops` before making release claims from alert state. |
 | `MagmaHandoffAlertFeedFetchFailures` | `increase(waggledance_magma_handoff_alert_feed_fetch_failures_total[15m]) > 0` | `15m` | warning | Review network reachability, response shape, content type, and size cap. Do not include URLs, headers, or exception text in alert payloads. |
 
+## SLO panel templates
+
+`/api/ops.provider_health.metrics_alert_state.slo_panels` exposes the same
+operator SLOs as read-only PromQL templates. These panels are evidence aids
+only; they do not start, stop, reconfigure, import, replay, or acknowledge
+anything.
+
+| Panel | PromQL | Objective |
+| --- | --- | --- |
+| `magma_alert_feed_availability_5m` | `avg_over_time(waggledance_magma_handoff_alert_feed_available[5m])` | Adapter availability remains `1`. |
+| `magma_alert_feed_fetch_failures_15m` | `increase(waggledance_magma_handoff_alert_feed_fetch_failures_total[15m])` | No fetch failures in the review window. |
+| `magma_alert_feed_backoff_15m` | `max_over_time(waggledance_magma_handoff_alert_feed_backoff_active[15m])` | Bounded backoff remains inactive. |
+| `magma_alert_feed_cache_stale_15m` | `max_over_time(waggledance_magma_handoff_alert_feed_cache_stale[15m])` | Cached snapshot is not stale. |
+
 ## Triage flow
 
 1. Confirm the alert is from the same commit currently deployed.
@@ -101,6 +115,9 @@ collection, not automatic mutation.
 6. For stale or unavailable source alerts, verify the operator-owned feed
    outside the application before making runtime claims from the handoff
    summary.
+7. When `drill_evidence` is present in `/api/ops`, collect only the listed
+   artifact classes. Do not add endpoint URLs, headers, hostnames, filesystem
+   paths, raw Alertmanager labels, or exception strings to incident notes.
 
 ## Guardrails
 

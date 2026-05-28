@@ -35,6 +35,9 @@ from tools.wd_image1_capability_manifest import (
     build_magma_handoff_provider_metrics_runbook_smoke,
 )
 from tools.wd_image1_capability_manifest import (
+    build_magma_handoff_metrics_alert_state_smoke,
+)
+from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_ops_alert_state_smoke,
 )
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
@@ -634,6 +637,43 @@ def test_magma_handoff_provider_metrics_runbook_smoke_blocks_missing_inputs(
     assert proof["runtime_authority_changed"] is False
 
 
+def test_magma_handoff_metrics_alert_state_smoke_reports_dashboard_contract() -> None:
+    proof = build_magma_handoff_metrics_alert_state_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == "magma_handoff_metrics_alert_state_smoke_v1"
+    assert proof["ops_endpoint"] == "/api/ops"
+    assert proof["dashboard_path"] == "web/hologram-brain-v6.html"
+    assert proof["api_contract_present"] is True
+    assert proof["ui_contract_present"] is True
+    assert proof["test_contract_present"] is True
+    assert proof["docs_contract_present"] is True
+    assert proof["runbook_contract_present"] is True
+    assert proof["fixed_alert_ids_enforced"] is True
+    assert proof["alert_state_visible"] is True
+    assert proof["forbidden_controls_absent"] is True
+    assert proof["forbidden_control_tokens_found"] == []
+    assert "MagmaHandoffRuntimeAuthorityReported" in proof["alert_ids"]
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
+def test_magma_handoff_metrics_alert_state_smoke_blocks_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    proof = build_magma_handoff_metrics_alert_state_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "missing_required_inputs"
+    assert "waggledance/adapters/http/routes/compat_dashboard.py" in (
+        proof["missing_inputs"]
+    )
+    assert "web/hologram-brain-v6.html" in proof["missing_inputs"]
+    assert "docs/API.md" in proof["missing_inputs"]
+    assert proof["runtime_authority_changed"] is False
+
+
 def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() -> None:
     proof = build_low_risk_autogrowth_ops_alert_state_smoke(ROOT)
 
@@ -932,6 +972,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "operator-owned feed freshness source" in capability["safe_statement"]
     assert "privacy-safe /metrics gauges" in capability["safe_statement"]
     assert "metrics runbook" in capability["safe_statement"]
+    assert "metrics_alert_state" in capability["safe_statement"]
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "alert_thresholds_documented"
@@ -939,8 +980,12 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "forbidden_controls_absent"
     ] is True
+    assert capability["proof"]["metrics_alert_state_smoke"]["ok"] is True
+    assert capability["proof"]["metrics_alert_state_smoke"][
+        "fixed_alert_ids_enforced"
+    ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "Prometheus/Alertmanager alert-state feed" in (
+    assert "configured MAGMA handoff metrics Alertmanager adapter" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

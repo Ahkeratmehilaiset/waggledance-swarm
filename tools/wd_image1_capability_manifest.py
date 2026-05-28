@@ -2908,6 +2908,189 @@ def build_magma_handoff_provider_metrics_runbook_smoke(
     }
 
 
+def _blocked_magma_handoff_metrics_alert_state_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+) -> dict:
+    return {
+        "proof_id": "magma_handoff_metrics_alert_state_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "ops_endpoint": "/api/ops",
+        "dashboard_path": "web/hologram-brain-v6.html",
+        "api_contract_present": False,
+        "ui_contract_present": False,
+        "test_contract_present": False,
+        "docs_contract_present": False,
+        "runbook_contract_present": False,
+        "fixed_alert_ids_enforced": False,
+        "alert_state_visible": False,
+        "forbidden_controls_absent": False,
+        "forbidden_control_tokens_found": [],
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required Ops API, dashboard, test, or documentation inputs are "
+            "missing, so the MAGMA handoff metrics alert-state feed cannot be "
+            "certified."
+        ),
+    }
+
+
+def build_magma_handoff_metrics_alert_state_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Prove the MAGMA handoff metrics alert-state feed is read-only."""
+
+    repo_root = Path(root)
+    api_rel = "waggledance/adapters/http/routes/compat_dashboard.py"
+    html_rel = "web/hologram-brain-v6.html"
+    tests_rel = "tests/test_legacy_consolidation.py"
+    docs_rel = "docs/API.md"
+    runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
+    required = (api_rel, html_rel, tests_rel, docs_rel, runbook_rel)
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_magma_handoff_metrics_alert_state_smoke(
+            missing_inputs=missing,
+        )
+
+    api_text = (repo_root / api_rel).read_text(encoding="utf-8")
+    html_text = (repo_root / html_rel).read_text(encoding="utf-8")
+    tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
+    docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
+    runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
+    combined_runtime_lower = "\n".join(
+        (api_text, html_text, docs_text, runbook_text)
+    ).lower()
+
+    alert_ids = {
+        "MagmaHandoffMetricsSourceDown",
+        "MagmaHandoffSnapshotInvalid",
+        "MagmaHandoffFreshnessStale",
+        "MagmaHandoffRetentionDropped",
+        "MagmaHandoffPrivateMaterialRecorded",
+        "MagmaHandoffRuntimeAuthorityReported",
+        "MagmaHandoffPayloadImported",
+        "MagmaHandoffProviderUnavailable",
+        "MagmaHandoffFreshnessSourceUnavailable",
+    }
+    api_contract_present = all(
+        token in api_text
+        for token in (
+            "MAGMA_HANDOFF_METRICS_ALERT_IDS",
+            "MAGMA_HANDOFF_METRICS_ALERT_METRICS",
+            "magma_share_import_handoff_metrics_alert_feed",
+            '"metrics_alert_state"',
+            '"prometheus_alertmanager_snapshot"',
+            '"controls_present"',
+            "_sanitize_magma_handoff_metrics_active_alerts",
+            "MagmaHandoffMetricsAlertFeedUnavailable",
+        )
+    )
+    ui_contract_present = all(
+        token in html_text
+        for token in (
+            "magmaProviderHealth.metrics_alert_state",
+            "activeMagmaMetricsAlerts",
+            "MAGMA Handoff Metrics Alerts",
+            "Metrics Feed",
+        )
+    )
+    test_contract_present = all(
+        token in tests_text
+        for token in (
+            "test_ops_magma_handoff_metrics_alert_state_sanitizes_snapshot",
+            "test_ops_magma_handoff_metrics_alert_feed_failure_is_sanitized",
+            "MagmaHandoffRuntimeAuthorityReported",
+            "C:/private/prometheus.yml",
+            "private operator stack trace",
+        )
+    )
+    docs_contract_present = all(
+        token in docs_text
+        for token in (
+            "provider_health.metrics_alert_state",
+            "magma_share_import_handoff_metrics_alert_feed",
+            "fixed MAGMA handoff metric alert IDs",
+            "provider exception details",
+            "do not import payloads",
+        )
+    )
+    runbook_contract_present = all(
+        token in runbook_text
+        for token in (
+            "MagmaHandoffRuntimeAuthorityReported",
+            "MagmaHandoffPrivateMaterialRecorded",
+            "Read-only alert-state",
+            "must not trigger import",
+        )
+    )
+    fixed_alert_ids_enforced = all(alert_id in api_text for alert_id in alert_ids)
+    forbidden_control_tokens = {
+        "import_payload",
+        "payload_import",
+        "grant_runtime_authority",
+        "authority_mutation",
+        "write_config",
+        "config_write",
+        "auto_import",
+        "magma_share_import_handoff_start",
+        "magma_share_import_handoff_stop",
+        "magma_handoff_metrics_alert_feed_import",
+        "start_button",
+        "stop_button",
+    }
+    forbidden_control_tokens_found = [
+        token
+        for token in sorted(forbidden_control_tokens)
+        if token.lower() in combined_runtime_lower
+    ]
+    ok = (
+        api_contract_present
+        and ui_contract_present
+        and test_contract_present
+        and docs_contract_present
+        and runbook_contract_present
+        and fixed_alert_ids_enforced
+        and not forbidden_control_tokens_found
+    )
+    return {
+        "proof_id": "magma_handoff_metrics_alert_state_smoke_v1",
+        "ok": ok,
+        "proof_mode": "source_contract",
+        "ops_endpoint": "/api/ops",
+        "dashboard_path": html_rel,
+        "api_contract_present": api_contract_present,
+        "ui_contract_present": ui_contract_present,
+        "test_contract_present": test_contract_present,
+        "docs_contract_present": docs_contract_present,
+        "runbook_contract_present": runbook_contract_present,
+        "fixed_alert_ids_enforced": fixed_alert_ids_enforced,
+        "alert_ids": sorted(alert_ids),
+        "alert_state_visible": ui_contract_present,
+        "forbidden_controls_absent": not forbidden_control_tokens_found,
+        "forbidden_control_tokens_found": forbidden_control_tokens_found,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The MAGMA handoff metrics alert-state feed is optional, "
+            "read-only, and exposed through /api/ops provider health. It "
+            "accepts only fixed runbook alert IDs, sanitized timestamps, "
+            "finite numeric samples, and WD-generated summaries; it does not "
+            "add import controls or runtime authority."
+        ),
+    }
+
+
 def _blocked_low_risk_autogrowth_ops_alert_state_smoke(
     *,
     missing_inputs: Sequence[str],
@@ -3598,15 +3781,22 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     magma_metrics_runbook_smoke = (
         build_magma_handoff_provider_metrics_runbook_smoke(root)
     )
+    magma_metrics_alert_state_smoke = (
+        build_magma_handoff_metrics_alert_state_smoke(root)
+    )
     magma_audit_proof = dict(
         solver_trace_proof.get("magma_execution_receipt_proof") or {}
     )
     magma_audit_proof["provider_metrics_runbook_smoke"] = (
         magma_metrics_runbook_smoke
     )
+    magma_audit_proof["metrics_alert_state_smoke"] = (
+        magma_metrics_alert_state_smoke
+    )
     magma_audit_proof["ok"] = bool(
         magma_audit_proof.get("ok") is True
         and magma_metrics_runbook_smoke.get("ok") is True
+        and magma_metrics_alert_state_smoke.get("ok") is True
     )
     future_scale_scorecard = build_future_scale_axis_scorecard(root)
 
@@ -3699,7 +3889,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "details, or runtime controls. A read-only metrics runbook "
                 "documents conservative Prometheus alert thresholds for that "
                 "handoff provider state without adding import controls or "
-                "runtime authority; hard "
+                "runtime authority. An optional read-only /api/ops "
+                "metrics_alert_state can surface sanitized Alertmanager "
+                "state for fixed MAGMA handoff metric alert IDs without raw "
+                "labels, annotations, URLs, paths, exception details, import "
+                "controls, or runtime authority; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3720,8 +3914,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Wire a read-only Prometheus/Alertmanager alert-state feed "
-                "for MAGMA handoff metrics without adding controls."
+                "Add a configured MAGMA handoff metrics Alertmanager adapter "
+                "with timeout, credential, and private-host guardrails."
             ),
             proof=magma_audit_proof,
         ),

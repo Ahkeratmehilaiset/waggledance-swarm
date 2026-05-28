@@ -86,5 +86,6 @@ collection, not automatic mutation.
 - Alert payloads must not include raw share IDs, operator decision IDs, raw
   source labels, URLs, hostnames, filesystem paths, payload material, or
   exception strings. Metric names, fixed labels, and numeric values are enough.
-- Recovery actions stay manual and operator-owned until a separate reviewed PR
-  adds a read-only alert-state surface or an approved operational control.
+- Recovery actions stay manual and operator-owned. Read-only alert-state
+  surfaces may display these fixed alert IDs, but they must not trigger import,
+  replay, configuration, merge, or runtime-authority actions.

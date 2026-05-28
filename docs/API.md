@@ -147,6 +147,15 @@ operator rules watch `waggledance_magma_handoff_provider_up`,
 Prometheus checks and do not import payloads, add import controls, or grant
 runtime authority.
 
+The same runbook alert IDs can be surfaced through the read-only
+`provider_health.metrics_alert_state` field in `/api/ops` when the runtime
+container supplies an explicit
+`magma_share_import_handoff_metrics_alert_feed` provider. The feed accepts only
+fixed MAGMA handoff metric alert IDs, warning/critical severities, finite
+numeric samples, and ISO timestamps; it drops raw Alertmanager labels,
+annotations, URLs, paths, hostnames, unknown alert IDs, resolved alerts, and
+provider exception details.
+
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 `source="prometheus_query_templates"`, metric names, `panels`, and
@@ -183,8 +192,12 @@ default state is `source="not_configured"` with
 categorical snapshot only: configured/available/valid booleans, snapshot kind
 and count, latest handoff timestamp, retained/dropped counts, read-only
 freshness/retention alert thresholds, optional operator-owned feed freshness
-source state, and sanitized warning IDs when the provider is unavailable,
-invalid, stale, or the retained history window drops entries. The feed
+source state, optional `metrics_alert_state` from the explicit MAGMA handoff
+metrics Alertmanager feed, and sanitized warning IDs when the provider is
+unavailable, invalid, stale, or the retained history window drops entries. The
+metrics alert-state feed is disabled by default and exposes only fixed alert
+IDs from `MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md`, WD-generated summaries,
+fixed metric names, numeric samples, and sanitized timestamps. The feed
 freshness source accepts only explicit provider snapshots, allowlisted
 timestamps/counts/window/state fields, and the fixed source label
 `operator_peer_review_handoff_feed`; raw paths, URLs, arbitrary source labels,

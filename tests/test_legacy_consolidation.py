@@ -246,6 +246,13 @@ class TestApiOpsExtended:
         assert magma_handoff["provider_health"]["provider_configured"] is False
         assert magma_handoff["provider_health"]["snapshot_valid"] is False
         assert magma_handoff["provider_health"]["controls_present"] is False
+        metrics_alert_state = (
+            magma_handoff["provider_health"]["metrics_alert_state"]
+        )
+        assert metrics_alert_state["source"] == "not_configured"
+        assert metrics_alert_state["prometheus_alertmanager_feed"] is False
+        assert metrics_alert_state["controls_present"] is False
+        assert metrics_alert_state["active_count"] == 0
         assert {
             item["id"]
             for item in magma_handoff["provider_health"]["alert_thresholds"]
@@ -681,6 +688,90 @@ class TestApiOpsExtended:
         assert section["provider_health"]["snapshot_valid"] is False
         assert section["provider_health"]["active"][0]["id"] == (
             "MagmaShareImportHandoffProviderUnavailable"
+        )
+        assert "C:\\private" not in str(section)
+
+    def test_ops_magma_handoff_metrics_alert_state_sanitizes_snapshot(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+
+        class Container:
+            magma_share_import_handoff_metrics_alert_feed = {
+                "updated_at": "2026-05-28T10:30:00Z",
+                "active_alerts": [
+                    {
+                        "labels": {
+                            "alertname": (
+                                "MagmaHandoffRuntimeAuthorityReported"
+                            ),
+                            "severity": "critical",
+                            "source": "C:/private/prometheus.yml",
+                        },
+                        "annotations": {
+                            "summary": "private operator stack trace",
+                        },
+                        "state": "firing",
+                        "value": "1",
+                    },
+                    {
+                        "id": "MagmaHandoffFreshnessStale",
+                        "state": "resolved",
+                        "summary": "private stale detail",
+                    },
+                    {
+                        "id": "UnknownMagmaAlert",
+                        "state": "firing",
+                        "summary": "private unknown detail",
+                    },
+                ],
+            }
+
+        section = _magma_share_import_handoff_section(Container())
+        alert_state = section["provider_health"]["metrics_alert_state"]
+
+        assert alert_state["source"] == "prometheus_alertmanager_snapshot"
+        assert alert_state["updated_at"] == "2026-05-28T10:30:00Z"
+        assert alert_state["status"] == "critical"
+        assert alert_state["severity"] == "critical"
+        assert alert_state["prometheus_alertmanager_feed"] is True
+        assert alert_state["controls_present"] is False
+        assert alert_state["active_count"] == 1
+        assert alert_state["active"][0]["id"] == (
+            "MagmaHandoffRuntimeAuthorityReported"
+        )
+        assert alert_state["active"][0]["metric"] == (
+            "waggledance_magma_handoff_runtime_authority_granted"
+        )
+        assert alert_state["active"][0]["value"] == 1.0
+        assert "C:/private/prometheus.yml" not in str(section)
+        assert "private operator stack trace" not in str(section)
+        assert "private stale detail" not in str(section)
+        assert "private unknown detail" not in str(section)
+        json.dumps(section, allow_nan=False)
+
+    def test_ops_magma_handoff_metrics_alert_feed_failure_is_sanitized(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+
+        class Feed:
+            def snapshot(self):
+                raise RuntimeError("C:\\private\\alertmanager\\token")
+
+        class Container:
+            magma_share_import_handoff_metrics_alert_feed = Feed()
+
+        section = _magma_share_import_handoff_section(Container())
+        alert_state = section["provider_health"]["metrics_alert_state"]
+
+        assert alert_state["source"] == "prometheus_alertmanager_unavailable"
+        assert alert_state["status"] == "warning"
+        assert alert_state["severity"] == "warning"
+        assert alert_state["controls_present"] is False
+        assert alert_state["active_count"] == 1
+        assert alert_state["active"][0]["id"] == (
+            "MagmaHandoffMetricsAlertFeedUnavailable"
         )
         assert "C:\\private" not in str(section)
 
@@ -1223,6 +1314,10 @@ class TestHologramOpsFlexHW:
         assert "magmaProviderHealth" in html
         assert "activeMagmaProviderAlerts" in html
         assert "magmaProviderThresholds" in html
+        assert "magmaProviderHealth.metrics_alert_state" in html
+        assert "activeMagmaMetricsAlerts" in html
+        assert "MAGMA Handoff Metrics Alerts" in html
+        assert "Metrics Feed" in html
         assert "MAGMA Handoff Provider Thresholds" in html
         assert "Fresh Feed" in html
         assert "feed_staleness_state" in html

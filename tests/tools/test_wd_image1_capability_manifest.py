@@ -705,6 +705,7 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
         "reviewer_bridge_event_template_decision_reference_slot_present"
     ] is True
     assert proof["reviewer_handoff_bundle_index_contract_present"] is True
+    assert proof["reviewer_handoff_bundle_verifier_contract_present"] is True
     assert proof["guardrails_present"] is True
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
@@ -1049,7 +1050,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         "guardrails_present"
     ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "bundle verifier" in (
+    assert "verification summary" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

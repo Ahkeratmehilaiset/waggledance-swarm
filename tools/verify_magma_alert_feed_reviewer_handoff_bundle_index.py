@@ -131,6 +131,7 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_index(
 
     blockers: list[str] = []
     warnings: list[str] = []
+    bridge_event_payload = _bridge_event_payload(bridge_template_report, blockers)
     if bundle_index.get("bundle_index_version") != BUNDLE_INDEX_VERSION:
         blockers.append("bundle_index_version_mismatch")
     if bundle_index.get("ok") is not True:
@@ -147,7 +148,7 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_index(
             package,
             validation_report,
             reviewer_summary,
-            bridge_template_report,
+            bridge_event_payload,
         ),
         blockers,
     )
@@ -263,6 +264,18 @@ def _load_json_artifact(path: Path, artifact_id: str) -> tuple[bytes, Mapping[st
     return raw, parsed
 
 
+def _bridge_event_payload(
+    bridge_template_report: Mapping[str, Any],
+    blockers: list[str],
+) -> Mapping[str, Any]:
+    payload = _mapping(
+        _mapping(bridge_template_report.get("bridge_event_template")).get("payload")
+    )
+    if not payload:
+        blockers.append("bridge_event_payload_missing")
+    return payload
+
+
 def _failure_report(reason: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -290,6 +303,8 @@ def _artifact_records(
     if not isinstance(raw_records, list):
         blockers.append("artifact_records_missing")
         return {}
+    if len(raw_records) != len(_REQUIRED_ARTIFACTS):
+        blockers.append("artifact_record_count_mismatch")
     records: dict[str, Mapping[str, Any]] = {}
     for raw_record in raw_records:
         if not isinstance(raw_record, Mapping):
@@ -298,6 +313,9 @@ def _artifact_records(
         artifact_id = raw_record.get("artifact_id")
         if not isinstance(artifact_id, str):
             blockers.append("artifact_record_id_missing")
+            continue
+        if artifact_id not in _REQUIRED_ARTIFACTS:
+            blockers.append(f"artifact_record_unknown:{artifact_id}")
             continue
         if artifact_id in records:
             blockers.append(f"artifact_record_duplicate:{artifact_id}")

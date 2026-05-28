@@ -243,6 +243,31 @@ def test_reviewer_handoff_bundle_verifier_rejects_artifact_count_mismatch() -> N
     assert report["artifact_count_checked"] == 4
 
 
+def test_reviewer_handoff_bundle_verifier_rejects_unknown_artifact_record() -> None:
+    artifacts = _artifact_set()
+    bundle_index = _bundle_index(artifacts)
+    extra_record = dict(bundle_index["artifacts"][0])
+    extra_record["artifact_id"] = "unexpected_local_payload"
+    bundle_index["artifacts"].append(extra_record)
+    raw = _artifact_bytes(artifacts)
+
+    report = verify_magma_alert_feed_reviewer_handoff_bundle_index(
+        bundle_index=bundle_index,
+        package=artifacts["release_evidence_package"],
+        validation_report=artifacts["validator_report"],
+        reviewer_summary=artifacts["reviewer_handoff_summary"],
+        bridge_template_report=artifacts["bridge_event_template"],
+        package_bytes=raw["release_evidence_package"],
+        validation_bytes=raw["validator_report"],
+        summary_bytes=raw["reviewer_handoff_summary"],
+        bridge_template_bytes=raw["bridge_event_template"],
+    )
+
+    assert report["ok"] is False
+    assert "artifact_record_count_mismatch" in report["blockers"]
+    assert "artifact_record_unknown:unexpected_local_payload" in report["blockers"]
+
+
 def test_reviewer_handoff_bundle_verifier_missing_input_is_path_free(
     tmp_path: Path,
 ) -> None:
@@ -309,9 +334,13 @@ def _artifact_set() -> dict[str, dict]:
         "bridge_event_template": {
             "template_version": TEMPLATE_VERSION,
             "ok": True,
-            "release_ref": "pr:759",
-            "commit_sha": COMMIT_SHA,
-            "ci_run_ref": "gh:run:bundle-verifier",
+            "bridge_event_template": {
+                "payload": {
+                    "release_ref": "pr:759",
+                    "commit_sha": COMMIT_SHA,
+                    "ci_run_ref": "gh:run:bundle-verifier",
+                }
+            },
         },
     }
 

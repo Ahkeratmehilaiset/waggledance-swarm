@@ -388,6 +388,18 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
             "missing_inputs": missing_inputs,
         }
 
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+        }
+
     html = (repo_root / "web" / "hologram-brain-v6.html").read_text(
         encoding="utf-8"
     )
@@ -616,6 +628,18 @@ def build_hex_mesh_route_stage_operator_metrics_smoke(
             "ok": False,
             "blocked_reason": "missing_required_inputs",
             "missing_inputs": missing_inputs,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
         }
 
     metrics_text = (

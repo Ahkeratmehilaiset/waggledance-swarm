@@ -595,6 +595,30 @@ def test_hex_mesh_route_stage_ui_smoke_blocks_missing_inputs(tmp_path: Path) -> 
     assert proof["external_writes_applied"] is False
 
 
+def test_hex_mesh_route_stage_ui_smoke_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "web/hologram-brain-v6.html",
+        "waggledance/adapters/http/routes/chat.py",
+        "tests/test_hologram_ui_stabilization.py",
+        "tests/integration/test_chat_api_contract.py",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_hex_mesh_route_stage_ui_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["inspected_root"] == str(tmp_path.resolve())
+    assert proof["import_root"] == str(ROOT.resolve())
+    assert proof["no_runtime_mutation"] is True
+    assert proof["external_writes_applied"] is False
+
+
 def test_hex_mesh_route_stage_operator_metrics_smoke_blocks_missing_inputs(
     tmp_path: Path,
 ) -> None:
@@ -604,6 +628,32 @@ def test_hex_mesh_route_stage_operator_metrics_smoke_blocks_missing_inputs(
     assert proof["blocked_reason"] == "missing_required_inputs"
     assert "waggledance/adapters/http/routes/metrics.py" in proof["missing_inputs"]
     assert "tests/test_metrics_endpoint.py" in proof["missing_inputs"]
+    assert proof["runtime_routing_changed"] is False
+    assert proof["disabled_hex_paths_enabled"] is False
+    assert proof["no_runtime_mutation"] is True
+    assert proof["external_writes_applied"] is False
+
+
+def test_hex_mesh_route_stage_operator_metrics_smoke_blocks_foreign_root(
+    tmp_path: Path,
+) -> None:
+    for rel_path in (
+        "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/adapters/http/routes/chat.py",
+        "tests/test_metrics_endpoint.py",
+        "docs/API.md",
+    ):
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# placeholder\n", encoding="utf-8")
+
+    proof = build_hex_mesh_route_stage_operator_metrics_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "non_current_import_root"
+    assert proof["missing_inputs"] == []
+    assert proof["inspected_root"] == str(tmp_path.resolve())
+    assert proof["import_root"] == str(ROOT.resolve())
     assert proof["runtime_routing_changed"] is False
     assert proof["disabled_hex_paths_enabled"] is False
     assert proof["no_runtime_mutation"] is True

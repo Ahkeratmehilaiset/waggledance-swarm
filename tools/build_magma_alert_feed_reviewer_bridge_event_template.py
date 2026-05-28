@@ -59,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", default="")
     parser.add_argument("--session-id", default="")
     parser.add_argument(
+        "--operator-decision-ref",
+        default="",
+        help=(
+            "Optional sanitized operator-owned decision reference. This is "
+            "context only and is never treated as approval."
+        ),
+    )
+    parser.add_argument(
         "--now",
         default=None,
         help="Optional UTC timestamp override such as 2026-05-28T08:00:00Z.",
@@ -86,6 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 role=args.role,
                 run_id=args.run_id,
                 session_id=args.session_id,
+                operator_decision_ref=args.operator_decision_ref,
                 now_utc=_parse_utc(args.now) if args.now else None,
             )
         except SafeInputError as exc:
@@ -116,6 +125,7 @@ def build_magma_alert_feed_reviewer_bridge_event_template(
     role: str = "reviewer",
     run_id: str = "",
     session_id: str = "",
+    operator_decision_ref: str = "",
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Return a valid bridge-event template without appending it."""
@@ -133,6 +143,10 @@ def build_magma_alert_feed_reviewer_bridge_event_template(
         _validate_safe_ref("run_id", run_id)
     if session_id and not _SESSION_ID_RE.match(session_id):
         raise SafeInputError("session_id_unsafe")
+    if not isinstance(operator_decision_ref, str):
+        raise SafeInputError("operator_decision_ref_unsafe")
+    if operator_decision_ref:
+        _validate_safe_ref("operator_decision_ref", operator_decision_ref)
 
     if summary.get("summary_version") != SUMMARY_VERSION:
         raise ValueError("summary_version_mismatch")
@@ -185,6 +199,10 @@ def build_magma_alert_feed_reviewer_bridge_event_template(
             "auto_merge_or_promotion_performed": False,
         },
         "operator_decision": {
+            "decision_reference": operator_decision_ref,
+            "decision_reference_present": bool(operator_decision_ref),
+            "decision_reference_is_approval": False,
+            "decision_reference_is_release_decision": False,
             "approval_granted": False,
             "release_decision_made": False,
             "automatic_release_decision": False,
@@ -209,6 +227,8 @@ def build_magma_alert_feed_reviewer_bridge_event_template(
             f"{release_ref} at {commit_sha}; manual_review_required=true; "
             "approval_granted=false; release_decision_made=false; "
             "automatic_release_decision=false; template_only=true; "
+            "decision_reference_is_approval=false; "
+            "decision_reference_is_release_decision=false; "
             "no bridge write, transport, endpoint fetch, runtime controls, "
             "merge, or promotion."
         ),

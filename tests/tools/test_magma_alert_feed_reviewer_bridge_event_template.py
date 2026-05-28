@@ -4,6 +4,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tools.build_magma_alert_feed_reviewer_bridge_event_template import (
     build_magma_alert_feed_reviewer_bridge_event_template,
 )
@@ -123,6 +125,7 @@ def test_reviewer_bridge_event_template_validates_bridge_schema() -> None:
         to="operator,claude-rco-1",
         run_id="codex-lead-1-20260528T191000Z",
         session_id="codex-lead-1-20260528T191000Z",
+        operator_decision_ref="bridge:operator-decision:hold-20260528",
         now_utc=FIXED_NOW,
     )
 
@@ -138,6 +141,18 @@ def test_reviewer_bridge_event_template_validates_bridge_schema() -> None:
     assert event["payload"]["template_only"] is True
     assert event["payload"]["direct_bridge_write_performed"] is False
     assert event["payload"]["operator_decision"]["approval_granted"] is False
+    assert event["payload"]["operator_decision"][
+        "decision_reference"
+    ] == "bridge:operator-decision:hold-20260528"
+    assert event["payload"]["operator_decision"][
+        "decision_reference_present"
+    ] is True
+    assert event["payload"]["operator_decision"][
+        "decision_reference_is_approval"
+    ] is False
+    assert event["payload"]["operator_decision"][
+        "decision_reference_is_release_decision"
+    ] is False
     assert event["payload"]["operator_decision"]["release_decision_made"] is False
     assert event["payload"]["operator_decision"][
         "automatic_release_decision"
@@ -169,6 +184,8 @@ def test_reviewer_bridge_event_template_cli_json_is_path_free(
             "codex-lead-1-20260528T191000Z",
             "--session-id",
             "codex-lead-1-20260528T191000Z",
+            "--operator-decision-ref",
+            "bridge:operator-decision:hold-20260528",
             "--now",
             "2026-05-28T19:10:00Z",
             "--json",
@@ -186,6 +203,15 @@ def test_reviewer_bridge_event_template_cli_json_is_path_free(
     assert payload["direct_bridge_write_performed"] is False
     assert payload["approval_granted"] is False
     assert payload["release_decision_made"] is False
+    assert event["payload"]["operator_decision"][
+        "decision_reference"
+    ] == "bridge:operator-decision:hold-20260528"
+    assert event["payload"]["operator_decision"][
+        "decision_reference_is_approval"
+    ] is False
+    assert event["payload"]["operator_decision"][
+        "decision_reference_is_release_decision"
+    ] is False
     assert str(tmp_path) not in result.stdout
     assert "reviewer-summary.json" not in result.stdout
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
@@ -218,6 +244,56 @@ def test_reviewer_bridge_event_template_missing_summary_is_path_free() -> None:
     assert payload["direct_bridge_write_performed"] is False
     assert "reviewer-summary" not in result.stdout
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+
+
+def test_reviewer_bridge_event_template_rejects_unsafe_decision_reference(
+    tmp_path: Path,
+) -> None:
+    summary_path = tmp_path / "reviewer-summary.json"
+    summary_path.write_text(json.dumps(_summary()), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-json",
+            str(summary_path),
+            "--agent",
+            "codex-lead-1",
+            "--task-id",
+            "wd-image1-reviewer-handoff-template",
+            "--operator-decision-ref",
+            "C:/private/operator-approval.json",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "bridge_event_template_failed:operator_decision_ref_unsafe"
+    ]
+    assert payload["approval_granted"] is False
+    assert payload["release_decision_made"] is False
+    assert str(tmp_path) not in result.stdout
+    assert "operator-approval" not in result.stdout
+    assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+
+
+def test_reviewer_bridge_event_template_rejects_non_string_decision_reference() -> None:
+    with pytest.raises(ValueError, match="operator_decision_ref_unsafe"):
+        build_magma_alert_feed_reviewer_bridge_event_template(
+            summary=_summary(),
+            agent_id="codex-lead-1",
+            task_id="wd-image1-reviewer-handoff-template",
+            to="operator,claude-rco-1",
+            operator_decision_ref=42,  # type: ignore[arg-type]
+            now_utc=FIXED_NOW,
+        )
 
 
 def test_reviewer_bridge_event_template_rejects_unsafe_bridge_fields(

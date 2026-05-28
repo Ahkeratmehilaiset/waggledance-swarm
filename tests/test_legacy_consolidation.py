@@ -253,6 +253,18 @@ class TestApiOpsExtended:
         assert metrics_alert_state["prometheus_alertmanager_feed"] is False
         assert metrics_alert_state["controls_present"] is False
         assert metrics_alert_state["active_count"] == 0
+        assert len(metrics_alert_state["slo_panels"]) == 4
+        assert metrics_alert_state["slo_panels"][0]["id"] == (
+            "magma_alert_feed_availability_5m"
+        )
+        assert metrics_alert_state["slo_panels"][0]["status"] == (
+            "not_configured"
+        )
+        assert metrics_alert_state["drill_evidence"]["controls_present"] is False
+        assert (
+            metrics_alert_state["drill_evidence"]["external_writes_applied"]
+            is False
+        )
         assert {
             item["id"]
             for item in magma_handoff["provider_health"]["alert_thresholds"]
@@ -864,6 +876,19 @@ class TestApiOpsExtended:
         assert feed_health["backoff_active"] is False
         assert feed_health["controls_present"] is False
         assert feed_health["runtime_authority_granted"] is False
+        assert [panel["id"] for panel in alert_state["slo_panels"]] == [
+            "magma_alert_feed_availability_5m",
+            "magma_alert_feed_fetch_failures_15m",
+            "magma_alert_feed_backoff_15m",
+            "magma_alert_feed_cache_stale_15m",
+        ]
+        assert alert_state["slo_panels"][0]["status"] == "nominal"
+        assert alert_state["slo_panels"][1]["current_value"] == 0.0
+        drill = alert_state["drill_evidence"]
+        assert drill["source"] == "operator_runbook"
+        assert drill["controls_present"] is False
+        assert drill["runtime_authority_granted"] is False
+        assert "exception_text" in drill["privacy_exclusions"]
         assert "PRIVATE_ANNOTATION" not in serialized
         assert "PRIVATE_UNKNOWN" not in serialized
         assert "C:/private" not in serialized
@@ -948,6 +973,14 @@ class TestApiOpsExtended:
         assert feed_health["fetch_failure_count"] == 1
         assert feed_health["backoff_skip_count"] == 1
         assert feed_health["last_failure_reason"] == "NETWORK_REQUEST_FAILED"
+        panel_status = {
+            panel["id"]: panel["status"]
+            for panel in backoff_state["slo_panels"]
+        }
+        assert panel_status["magma_alert_feed_fetch_failures_15m"] == "warning"
+        assert panel_status["magma_alert_feed_backoff_15m"] == "warning"
+        assert panel_status["magma_alert_feed_cache_stale_15m"] == "warning"
+        assert backoff_state["drill_evidence"]["controls_present"] is False
         assert "C:/private/alertmanager-token" not in serialized
         assert "127.0.0.1" not in serialized
 
@@ -1549,6 +1582,10 @@ class TestHologramOpsFlexHW:
         assert "magmaProviderThresholds" in html
         assert "magmaProviderHealth.metrics_alert_state" in html
         assert "activeMagmaMetricsAlerts" in html
+        assert "magmaMetricsSloPanels" in html
+        assert "magmaMetricsDrillEvidence" in html
+        assert "MAGMA Alert Feed SLOs" in html
+        assert "MAGMA Alert Drill Evidence" in html
         assert "MAGMA Handoff Metrics Alerts" in html
         assert "Metrics Feed" in html
         assert "MAGMA Handoff Provider Thresholds" in html

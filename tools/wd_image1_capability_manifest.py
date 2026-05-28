@@ -3133,6 +3133,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
     )
     container_rel = "waggledance/bootstrap/container.py"
+    ops_rel = "waggledance/adapters/http/routes/compat_dashboard.py"
     metrics_rel = "waggledance/adapters/http/routes/metrics.py"
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
@@ -3140,9 +3141,11 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
+    hologram_rel = "web/hologram-brain-v6.html"
     required = (
         adapter_rel,
         container_rel,
+        ops_rel,
         metrics_rel,
         settings_rel,
         tests_rel,
@@ -3150,6 +3153,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         docs_rel,
         manifest_rel,
         runbook_rel,
+        hologram_rel,
     )
     missing = [
         rel_path
@@ -3163,6 +3167,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
 
     adapter_text = (repo_root / adapter_rel).read_text(encoding="utf-8")
     container_text = (repo_root / container_rel).read_text(encoding="utf-8")
+    ops_text = (repo_root / ops_rel).read_text(encoding="utf-8")
     metrics_text = (repo_root / metrics_rel).read_text(encoding="utf-8")
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
@@ -3172,15 +3177,18 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
+    hologram_text = (repo_root / hologram_rel).read_text(encoding="utf-8")
     combined_runtime_lower = "\n".join((
         adapter_text,
         container_text,
+        ops_text,
         metrics_text,
         settings_text,
         metrics_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
+        hologram_text,
     )).lower()
 
     adapter_contract_present = all(
@@ -3235,6 +3243,8 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "test_magma_handoff_metrics_alertmanager_feed_uses_bounded_backoff",
             "test_metrics_body_contains_magma_alert_feed_cache_gauges",
             "test_metrics_magma_alert_feed_backoff_failure_is_sanitized",
+            "magma_alert_feed_availability_5m",
+            "drill_evidence",
             "test_magma_handoff_metrics_alertmanager_feed_guardrails_refuse_secrets",
             "test_container_wires_configured_magma_handoff_metrics_alert_feed",
             "MagmaHandoffRuntimeAuthorityReported",
@@ -3253,11 +3263,14 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "private or localhost hosts",
             "bounded failure backoff",
             "cache/backoff",
+            "slo_panels",
+            "drill_evidence",
         )
     )
     cache_backoff_contract_present = all(
         token in "\n".join((
             adapter_text,
+            ops_text,
             metrics_text,
             settings_text,
             tests_text,
@@ -3265,6 +3278,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             docs_text,
             manifest_text,
             runbook_text,
+            hologram_text,
         ))
         for token in (
             "cache_ttl_s",
@@ -3275,6 +3289,27 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "waggledance_magma_handoff_alert_feed_backoff_active",
             "metrics_alert_state",
             "feed_health",
+        )
+    )
+    slo_drill_contract_present = all(
+        token in "\n".join((
+            ops_text,
+            metrics_text,
+            tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+            hologram_text,
+        ))
+        for token in (
+            "MAGMA_HANDOFF_METRICS_ALERT_FEED_SLO_PANELS",
+            "magma_alert_feed_availability_5m",
+            "magma_alert_feed_fetch_failures_15m",
+            "drill_evidence",
+            "required_artifacts",
+            "MAGMA Alert Feed SLOs",
+            "MAGMA Alert Drill Evidence",
+            "SLO panel templates",
         )
     )
     guardrails_present = all(
@@ -3315,6 +3350,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and test_contract_present
         and docs_contract_present
         and cache_backoff_contract_present
+        and slo_drill_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3331,6 +3367,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "test_contract_present": test_contract_present,
         "docs_contract_present": docs_contract_present,
         "cache_backoff_contract_present": cache_backoff_contract_present,
+        "slo_drill_contract_present": slo_drill_contract_present,
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3343,8 +3380,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "uses bounded GETs to /api/v2/alerts and refuses credential, "
             "query, redirect, oversized response, and non-allowlisted "
             "private-host shapes. Its TTL cache and bounded failure backoff "
-            "surface only sanitized provider-health metrics without adding "
-            "import controls or runtime authority."
+            "surface only sanitized provider-health metrics and read-only "
+            "SLO/drill-evidence templates without adding import controls or "
+            "runtime authority."
         ),
     }
 
@@ -4165,8 +4203,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "controls, or runtime authority. A configured adapter can "
                 "fetch that state from an operator-owned Alertmanager with "
                 "timeout, credential, private-host, TTL cache, and bounded "
-                "failure-backoff guardrails; hard append-only/default "
-                "enforcement is still not yet safe to claim."
+                "failure-backoff guardrails. The Ops/hologram surface now "
+                "adds read-only freshness/error SLO panels and drill-evidence "
+                "artifact classes for operator review; hard "
+                "append-only/default enforcement is still not yet safe to "
+                "claim."
             ),
             status=_status_for(magma_evidence),
             claim_safe=False,
@@ -4185,8 +4226,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add operator-visible adapter freshness/error SLO panels "
-                "and drill evidence without adding controls."
+                "Add release-gate examples that consume the SLO evidence "
+                "manually without adding controls."
             ),
             proof=magma_audit_proof,
         ),

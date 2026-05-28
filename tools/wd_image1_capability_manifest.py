@@ -3206,11 +3206,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "waggledance/core/magma/share_manifest.py",
-                "Operator-gated local share manifest exporter validates the no-payload contract.",
+                "Operator-gated local share manifest exporter and no-authority importer validate the no-payload contract.",
             ),
             (
                 "tools/export_magma_share_manifest.py",
                 "Explicit CLI writes payload-free share manifests from verified receipt bundles.",
+            ),
+            (
+                "tools/import_magma_share_manifest.py",
+                "Explicit CLI verifies fresh share manifests as no-authority replay metadata.",
             ),
             (
                 "schemas/v3_13_0/magma_share_manifest.v0.json",
@@ -3223,6 +3227,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_share_manifest_exporter.py",
                 "Exporter tests require operator approval, source verification, count consistency, and payload-marker absence.",
+            ),
+            (
+                "tests/tools/test_magma_share_manifest_importer.py",
+                "Importer tests reject stale and context-drifted share manifests without importing payloads.",
             ),
             (
                 "docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md",
@@ -3447,7 +3455,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "contract-first cross-instance share manifest also defines a "
                 "no-payload/no-raw-material export boundary, and an explicit "
                 "operator-gated local exporter validates it before writing "
-                "share metadata; hard "
+                "share metadata. A no-authority importer validates fresh "
+                "share metadata against a local receipt bundle and rejects "
+                "context drift before building a replay plan; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3461,11 +3471,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "some MAGMA-backed paths.",
                 "A hardening pass is needed before literal append-only "
                 "language is safe.",
+                "The share importer is still local proof tooling; it does "
+                "not add cross-instance transport or runtime authority.",
             ),
             next_smallest_pr=(
-                "Add a verifier/importer that consumes magma.share_manifest.v0 "
-                "as no-authority replay metadata and rejects stale or "
-                "context-drifted receipt references."
+                "Wire the share importer into an operator-owned peer-review "
+                "handoff that records import decisions without granting "
+                "runtime authority."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

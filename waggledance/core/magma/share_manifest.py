@@ -8,7 +8,7 @@ runtime receipt emission or cross-instance transport.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
@@ -25,8 +25,11 @@ SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
 SCHEMA_NAME = "magma_share_manifest.v0.json"
 MANIFEST_VERSION = "magma.share_manifest.v0"
 EXPORT_REPORT_VERSION = "magma.share_manifest_export.v0"
+IMPORT_REPORT_VERSION = "magma.share_manifest_import.v0"
 SHARE_MANIFEST_NAME = "share_manifest.json"
 EXPORT_REPORT_NAME = "share_export_report.json"
+DEFAULT_IMPORT_MAX_AGE_HOURS = 168
+IMPORT_CLOCK_SKEW = timedelta(minutes=5)
 FORBIDDEN_MATERIAL = (
     "raw_payload",
     "replacement_map",
@@ -190,6 +193,144 @@ def write_magma_share_manifest_export(
     return report
 
 
+def build_magma_share_manifest_import_report(
+    *,
+    share_manifest_path: Path,
+    source_manifest_path: Path,
+    verify_source_manifest: VerifySourceManifest,
+    now_utc: datetime | None = None,
+    max_age_hours: int = DEFAULT_IMPORT_MAX_AGE_HOURS,
+    expected_share_id: str | None = None,
+    expected_purpose: str | None = None,
+) -> dict[str, Any]:
+    """Verify a share manifest as no-authority replay metadata.
+
+    The importer does not copy payloads, grant runtime authority, or rebuild a
+    receipt bundle. It proves that the payload-free share manifest is fresh
+    enough for local review and that its digest/categorical references still
+    match a separately supplied local receipt-bundle manifest.
+    """
+    if max_age_hours <= 0:
+        raise ValueError("max_age_hours must be positive")
+    if expected_share_id is not None:
+        _ensure_ref("expected_share_id", expected_share_id)
+    if expected_purpose is not None and expected_purpose not in PURPOSES:
+        raise ValueError("expected_purpose is not allowed")
+
+    now = _ensure_utc(now_utc or datetime.now(timezone.utc), "now_utc")
+    share_manifest_path = share_manifest_path.resolve()
+    source_manifest_path = source_manifest_path.resolve()
+
+    share_manifest = _read_json(share_manifest_path, "share manifest")
+    if not isinstance(share_manifest, dict):
+        raise ValueError("share manifest must be a JSON object")
+    validate_magma_share_manifest(share_manifest)
+    if (
+        expected_share_id is not None
+        and share_manifest.get("share_id") != expected_share_id
+    ):
+        raise ValueError("expected_share_id mismatch")
+    if (
+        expected_purpose is not None
+        and share_manifest.get("purpose") != expected_purpose
+    ):
+        raise ValueError("expected_purpose mismatch")
+
+    created_at = _parse_created_at_utc(share_manifest)
+    age = now - created_at
+    max_age = timedelta(hours=max_age_hours)
+    if age < -IMPORT_CLOCK_SKEW:
+        raise ValueError("share manifest timestamp is in the future")
+    if age > max_age:
+        raise ValueError("share manifest is stale")
+
+    verification = dict(verify_source_manifest(source_manifest_path))
+    if verification.get("ok") is not True:
+        error_count = len(list(verification.get("errors") or []))
+        raise ValueError(
+            "source receipt manifest verification failed"
+            f" ({error_count} redacted errors)"
+        )
+
+    source_manifest = _read_json(source_manifest_path, "source manifest")
+    source_entries = _load_source_entries(source_manifest_path, source_manifest)
+    if int(verification.get("receipt_count", 0) or 0) != len(source_entries):
+        raise ValueError("source receipt manifest count mismatch")
+    if (
+        sha256_digest(source_manifest)
+        != share_manifest["sanitized_source_manifest_digest"]
+    ):
+        raise ValueError("sanitized_source_manifest_digest context drift")
+
+    share_entries = share_manifest["entries"]
+    if len(source_entries) != len(share_entries):
+        raise ValueError("share manifest entry count context drift")
+
+    replay_entries: list[dict[str, Any]] = []
+    for index, (share_entry, source_entry) in enumerate(
+        zip(share_entries, source_entries, strict=True),
+        1,
+    ):
+        receipt = _read_json(source_entry["receipt"], f"entry {index} receipt")
+        evaluation = _read_json(
+            source_entry["evaluation_result"],
+            f"entry {index} evaluation_result",
+        )
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(evaluation, dict)
+            or not isinstance(share_entry, dict)
+        ):
+            raise ValueError(f"entry {index}: replay references must be objects")
+        _ensure_receipt_evaluation_consistency(receipt, evaluation, index)
+        _ensure_share_entry_context(share_entry, receipt, evaluation, index)
+        replay_entries.append(
+            {
+                "entry_id": share_entry["entry_id"],
+                "receipt_digest": share_entry["receipt_digest"],
+                "evaluation_result_digest": share_entry[
+                    "evaluation_result_digest"
+                ],
+                "subject_type": share_entry["subject_type"],
+                "risk_class": share_entry["risk_class"],
+                "expected_gate": share_entry["expected_gate"],
+                "actual_gate": share_entry["actual_gate"],
+                "verdict": share_entry["verdict"],
+            }
+        )
+
+    return {
+        "report_version": IMPORT_REPORT_VERSION,
+        "ok": True,
+        "blockers": [],
+        "share_id": share_manifest["share_id"],
+        "purpose": share_manifest["purpose"],
+        "created_at_utc": share_manifest["created_at_utc"],
+        "max_age_hours": max_age_hours,
+        "age_seconds": max(0, int(age.total_seconds())),
+        "share_manifest_digest": sha256_digest(share_manifest),
+        "source_manifest_digest": sha256_digest(source_manifest),
+        "source_receipt_verification_ok": True,
+        "context_verified": True,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "artifact_counts": dict(share_manifest["artifact_counts"]),
+        "replay_plan": {
+            "mode": "no_authority_metadata_replay",
+            "entry_count": len(replay_entries),
+            "entries": replay_entries,
+        },
+    }
+
+
 def validate_magma_share_manifest(value: dict[str, Any]) -> None:
     """Validate schema, date-time formats, and count invariants."""
     errors = redacted_schema_errors(
@@ -232,13 +373,8 @@ def _date_time_errors(value: Mapping[str, Any]) -> list[str]:
     if not isinstance(raw, str):
         return []
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = _parse_created_at_utc(value)
     except ValueError:
-        return ["magma_share_manifest: schema error at created_at_utc"]
-    if (
-        parsed.tzinfo is None
-        or parsed.utcoffset() != timezone.utc.utcoffset(parsed)
-    ):
         return ["magma_share_manifest: schema error at created_at_utc"]
     return []
 
@@ -338,6 +474,27 @@ def _ensure_receipt_evaluation_consistency(
         raise ValueError(f"entry {index}: risk_class mismatch")
 
 
+def _ensure_share_entry_context(
+    share_entry: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    evaluation: Mapping[str, Any],
+    index: int,
+) -> None:
+    if share_entry.get("receipt_digest") != sha256_digest(receipt):
+        raise ValueError(f"entry {index}: receipt_digest context drift")
+    if share_entry.get("evaluation_result_digest") != sha256_digest(evaluation):
+        raise ValueError(f"entry {index}: evaluation_result_digest context drift")
+    for field in (
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    ):
+        if share_entry.get(field) != evaluation.get(field):
+            raise ValueError(f"entry {index}: {field} context drift")
+
+
 def _read_json(path: Path, label: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -353,12 +510,32 @@ def _ensure_ref(label: str, value: str) -> None:
 
 
 def _format_utc(value: datetime) -> str:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("timestamp must be timezone-aware UTC")
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+    return _ensure_utc(value, "timestamp").replace(microsecond=0).isoformat().replace(
         "+00:00",
         "Z",
     )
+
+
+def _ensure_utc(value: datetime, label: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware UTC")
+    return value.astimezone(timezone.utc)
+
+
+def _parse_created_at_utc(value: Mapping[str, Any]) -> datetime:
+    raw = value.get("created_at_utc")
+    if not isinstance(raw, str):
+        raise ValueError("created_at_utc must be a string")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("created_at_utc must be a UTC date-time") from exc
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() != timezone.utc.utcoffset(parsed)
+    ):
+        raise ValueError("created_at_utc must be UTC")
+    return parsed.astimezone(timezone.utc)
 
 
 def _write_json(path: Path, value: object) -> None:

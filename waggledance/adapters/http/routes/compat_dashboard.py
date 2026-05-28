@@ -859,6 +859,89 @@ def _magma_share_import_handoff_snapshot_count(snapshot) -> int:  # noqa: ANN001
     return 0
 
 
+MAGMA_HANDOFF_PROVIDER_FRESHNESS_WARNING_SECONDS = 24 * 60 * 60
+MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT = 1
+
+
+def _magma_share_import_handoff_latest_created_at(
+    summary: Mapping[str, object] | None,
+) -> str | None:
+    latest = summary.get("latest") if summary is not None else None
+    if isinstance(latest, Mapping):
+        value = latest.get("created_at_utc")
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _magma_share_import_handoff_provider_alert_thresholds(
+    summary: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    history_limit = summary.get("history_limit") if summary is not None else None
+    return [
+        {
+            "id": "MagmaShareImportHandoffProviderFreshnessWarning",
+            "severity": "warning",
+            "metric": "latest_handoff_age_seconds",
+            "source": "latest.created_at_utc",
+            "warning_after_seconds": (
+                MAGMA_HANDOFF_PROVIDER_FRESHNESS_WARNING_SECONDS
+            ),
+            "latest_created_at_utc": (
+                _magma_share_import_handoff_latest_created_at(summary)
+            ),
+            "wall_clock_dependent": True,
+        },
+        {
+            "id": "MagmaShareImportHandoffProviderRetentionDropped",
+            "severity": "warning",
+            "metric": "history_dropped_count",
+            "warning_threshold": (
+                MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT
+            ),
+        },
+        {
+            "id": "MagmaShareImportHandoffProviderRetentionLimitReached",
+            "severity": "warning",
+            "metric": "history_retained_count",
+            "warning_threshold": history_limit,
+        },
+    ]
+
+
+def _magma_share_import_handoff_provider_retention_alerts(
+    summary: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if summary is None:
+        return []
+    history_limit = _int_or_zero(summary.get("history_limit"))
+    retained = _int_or_zero(summary.get("history_retained_count"))
+    dropped = _int_or_zero(summary.get("history_dropped_count"))
+    truncated = bool(summary.get("history_truncated"))
+    alerts: list[dict[str, object]] = []
+    if dropped >= MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT:
+        alerts.append({
+            "id": "MagmaShareImportHandoffProviderRetentionDropped",
+            "severity": "warning",
+            "summary": "MAGMA handoff history exceeded the retained summary window.",
+            "history_dropped_count": dropped,
+        })
+    if not alerts and truncated:
+        alerts.append({
+            "id": "MagmaShareImportHandoffProviderRetentionTruncated",
+            "severity": "warning",
+            "summary": "MAGMA handoff history was truncated for the Ops summary.",
+        })
+    if not alerts and history_limit > 0 and retained >= history_limit:
+        alerts.append({
+            "id": "MagmaShareImportHandoffProviderRetentionLimitReached",
+            "severity": "warning",
+            "summary": "MAGMA handoff history is at the retained summary limit.",
+            "history_limit": history_limit,
+        })
+    return alerts
+
+
 def _magma_share_import_handoff_provider_health(
     *,
     reason: str,
@@ -892,6 +975,13 @@ def _magma_share_import_handoff_provider_health(
                 else "MAGMA share import handoff provider snapshot is invalid."
             ),
         })
+    if snapshot_valid:
+        active.extend(
+            _magma_share_import_handoff_provider_retention_alerts(summary)
+        )
+    if active:
+        status = "warning" if snapshot_valid else status
+        severity = "warning"
     return {
         "source": "local_ops_snapshot" if provider_configured else "not_configured",
         "status": status,
@@ -916,6 +1006,18 @@ def _magma_share_import_handoff_provider_health(
             bool(summary.get("history_truncated"))
             if summary is not None
             else False
+        ),
+        "latest_created_at_utc": (
+            _magma_share_import_handoff_latest_created_at(summary)
+        ),
+        "freshness_warning_after_seconds": (
+            MAGMA_HANDOFF_PROVIDER_FRESHNESS_WARNING_SECONDS
+        ),
+        "retention_dropped_warning_count": (
+            MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT
+        ),
+        "alert_thresholds": (
+            _magma_share_import_handoff_provider_alert_thresholds(summary)
         ),
         "active_count": len(active),
         "active": active,

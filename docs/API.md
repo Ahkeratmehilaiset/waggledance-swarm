@@ -157,14 +157,18 @@ default state is `source="not_configured"` with
 `provider_health.source="not_configured"`. Provider health is a local
 categorical snapshot only: configured/available/valid booleans, snapshot kind
 and count, latest handoff timestamp, retained/dropped counts, read-only
-freshness/retention alert thresholds, and sanitized warning IDs when the
-provider is unavailable, invalid, or the retained history window drops entries.
-The freshness threshold is operator-clock dependent metadata; the API does not
-perform mutating refreshes or runtime control actions. The summary validates
-every supplied history entry before truncating the operator-visible list. It
-does not scan disk, import payloads, record local paths, expose raw operator
-decision IDs or exception details, add runtime authority, or add dashboard
-controls.
+freshness/retention alert thresholds, optional operator-owned feed freshness
+source state, and sanitized warning IDs when the provider is unavailable,
+invalid, stale, or the retained history window drops entries. The feed
+freshness source accepts only explicit provider snapshots, allowlisted
+timestamps/counts/window/state fields, and the fixed source label
+`operator_peer_review_handoff_feed`; raw paths, URLs, arbitrary source labels,
+and exception details are not exposed. The freshness threshold remains
+operator-clock dependent metadata; the API does not perform mutating refreshes
+or runtime control actions. The summary validates every supplied history entry
+before truncating the operator-visible list. It does not scan disk, import
+payloads, record local paths, expose raw operator decision IDs or exception
+details, add runtime authority, or add dashboard controls.
 
 ---
 

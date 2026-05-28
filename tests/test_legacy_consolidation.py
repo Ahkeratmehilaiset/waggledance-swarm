@@ -381,6 +381,10 @@ class TestApiOpsExtended:
         assert provider_health["snapshot_count"] == 1
         assert provider_health["active_count"] == 0
         assert provider_health["latest_created_at_utc"] == handoff["created_at_utc"]
+        assert provider_health["freshness_source"] == "not_configured"
+        assert provider_health["freshness_source_configured"] is False
+        assert provider_health["freshness_source_valid"] is False
+        assert provider_health["feed_staleness_state"] == "unknown"
         assert any(
             item["id"] == "MagmaShareImportHandoffProviderFreshnessWarning"
             for item in provider_health["alert_thresholds"]
@@ -488,6 +492,14 @@ class TestApiOpsExtended:
 
         class Container:
             magma_share_import_handoff_history = [older, newer]
+            magma_share_import_handoff_feed_freshness = {
+                "latest_created_at_utc": newer["created_at_utc"],
+                "observed_at_utc": "2026-05-28T09:05:00Z",
+                "item_count": 2,
+                "window_seconds": 300,
+                "staleness_state": "fresh",
+                "source": "C:/private/operator-feed.json",
+            }
 
         section = _magma_share_import_handoff_section(Container())
 
@@ -510,11 +522,81 @@ class TestApiOpsExtended:
         assert provider_health["history_retained_count"] == 2
         assert provider_health["history_dropped_count"] == 0
         assert provider_health["active_count"] == 0
+        assert provider_health["freshness_source"] == (
+            "operator_peer_review_handoff_feed"
+        )
+        assert provider_health["freshness_source_configured"] is True
+        assert provider_health["freshness_source_available"] is True
+        assert provider_health["freshness_source_valid"] is True
+        assert provider_health["freshness_source_precedence"] == "operator_feed"
+        assert provider_health["feed_latest_created_at_utc"] == (
+            newer["created_at_utc"]
+        )
+        assert provider_health["feed_observed_at_utc"] == "2026-05-28T09:05:00Z"
+        assert provider_health["feed_item_count"] == 2
+        assert provider_health["feed_window_seconds"] == 300
+        assert provider_health["feed_staleness_state"] == "fresh"
+        freshness_threshold = next(
+            item for item in provider_health["alert_thresholds"]
+            if item["id"] == "MagmaShareImportHandoffProviderFreshnessWarning"
+        )
+        assert freshness_threshold["source"] == (
+            "operator_peer_review_handoff_feed.latest_created_at_utc"
+        )
+        assert freshness_threshold["latest_created_at_utc"] == (
+            newer["created_at_utc"]
+        )
         assert provider_health["controls_present"] is False
         assert provider_health["payload_files_imported"] == 0
         serialized = json.dumps(section)
         assert "operator:decision:ops-history" not in serialized
         assert "C:\\private" not in serialized
+        assert "C:/private/operator-feed.json" not in serialized
+
+        class StaleFreshnessContainer:
+            magma_share_import_handoff_history = [older, newer]
+            magma_share_import_handoff_feed_freshness = {
+                "latest_created_at_utc": older["created_at_utc"],
+                "observed_at_utc": "2026-05-28T09:05:00Z",
+                "item_count": 2,
+                "staleness_state": "stale",
+            }
+
+        stale_section = _magma_share_import_handoff_section(
+            StaleFreshnessContainer()
+        )
+        stale_health = stale_section["provider_health"]
+        stale_alert_ids = {item["id"] for item in stale_health["active"]}
+
+        assert stale_health["status"] == "warning"
+        assert stale_health["severity"] == "warning"
+        assert "MagmaShareImportHandoffProviderFreshnessWarning" in (
+            stale_alert_ids
+        )
+        assert stale_health["controls_present"] is False
+        assert stale_health["runtime_authority_granted"] is False
+
+        class InvalidFreshnessContainer:
+            magma_share_import_handoff_history = [older, newer]
+            magma_share_import_handoff_feed_freshness = {
+                "latest_created_at_utc": "C:/private/feed.json",
+                "observed_at_utc": "2026-05-28T09:05:00Z",
+                "staleness_state": "fresh",
+            }
+
+        invalid_freshness_section = _magma_share_import_handoff_section(
+            InvalidFreshnessContainer()
+        )
+        invalid_freshness_health = invalid_freshness_section["provider_health"]
+
+        assert invalid_freshness_health["status"] == "warning"
+        assert invalid_freshness_health["freshness_source_configured"] is True
+        assert invalid_freshness_health["freshness_source_valid"] is False
+        assert invalid_freshness_health["active"][0]["id"] == (
+            "MagmaShareImportHandoffFreshnessSourceInvalid"
+        )
+        assert invalid_freshness_health["controls_present"] is False
+        assert "C:/private/feed.json" not in str(invalid_freshness_section)
 
         retained_source = [
             build_magma_share_import_peer_review_handoff(
@@ -1142,6 +1224,9 @@ class TestHologramOpsFlexHW:
         assert "activeMagmaProviderAlerts" in html
         assert "magmaProviderThresholds" in html
         assert "MAGMA Handoff Provider Thresholds" in html
+        assert "Fresh Feed" in html
+        assert "feed_staleness_state" in html
+        assert "MAGMA Handoff Freshness Feed" in html
         assert "history_retained_count" in html
         assert "activeMagmaHandoffs" in html
         assert "magma_share_import_handoff_start" not in html

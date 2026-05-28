@@ -256,6 +256,24 @@ python tools\verify_magma_alert_feed_reviewer_handoff_bundle_index.py `
   --json
 ```
 
+After verification, render a local reviewer handoff bundle verification
+summary with
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py`.
+The summary reads only the explicit local verifier JSON, carries
+`verification_ok`, digest/size/schema status, sanitized blockers, and the
+operator handoff reference, and keeps `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `direct_bridge_write_performed=false`,
+`transport_added=false`, `approval_granted=false`, and
+`release_decision_made=false`.
+
+```powershell
+python tools\build_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py `
+  --verification-json <collected>\bundle_verification.json `
+  --reviewer-agent claude-rco-1 `
+  --handoff-ref bridge:handoff:bundle-verification `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

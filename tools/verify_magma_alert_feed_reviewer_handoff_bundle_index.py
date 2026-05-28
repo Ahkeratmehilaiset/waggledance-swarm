@@ -135,7 +135,22 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_index(
         blockers.append("bundle_index_version_mismatch")
     if bundle_index.get("ok") is not True:
         blockers.append("bundle_index_not_ok")
+    if (
+        not isinstance(bundle_index.get("artifact_count"), int)
+        or bundle_index.get("artifact_count") != len(_REQUIRED_ARTIFACTS)
+    ):
+        blockers.append("artifact_count_mismatch")
     _collect_boundary_blockers(bundle_index, blockers)
+    identity = _verified_identity(
+        (
+            bundle_index,
+            package,
+            validation_report,
+            reviewer_summary,
+            bridge_template_report,
+        ),
+        blockers,
+    )
 
     records = _artifact_records(bundle_index, blockers)
     digest_checks: dict[str, str] = {}
@@ -176,9 +191,9 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_index(
         "ok": not blockers,
         "verification_version": VERIFICATION_VERSION,
         "bundle_index_version": bundle_index.get("bundle_index_version"),
-        "release_ref": _safe_text(bundle_index.get("release_ref")),
-        "commit_sha": _safe_text(bundle_index.get("commit_sha")),
-        "ci_run_ref": _safe_text(bundle_index.get("ci_run_ref")),
+        "release_ref": identity["release_ref"],
+        "commit_sha": identity["commit_sha"],
+        "ci_run_ref": identity["ci_run_ref"],
         "artifact_count_checked": len(_REQUIRED_ARTIFACTS),
         "digest_checks": digest_checks,
         "size_checks": size_checks,
@@ -198,6 +213,38 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_index(
     }
     _assert_no_forbidden_output(json.dumps(report, allow_nan=False, sort_keys=True))
     return report
+
+
+def _verified_identity(
+    artifacts: Sequence[Mapping[str, Any]],
+    blockers: list[str],
+) -> dict[str, str]:
+    return {
+        field: _required_matching_identity(artifacts, field, blockers)
+        for field in ("release_ref", "commit_sha", "ci_run_ref")
+    }
+
+
+def _required_matching_identity(
+    artifacts: Sequence[Mapping[str, Any]],
+    field: str,
+    blockers: list[str],
+) -> str:
+    values: set[str] = set()
+    missing = False
+    for artifact in artifacts:
+        value = artifact.get(field)
+        if not isinstance(value, str) or not value:
+            missing = True
+            continue
+        values.add(value)
+    if missing:
+        blockers.append(f"artifact_identity_{field}_missing")
+    if len(values) != 1:
+        if values:
+            blockers.append(f"artifact_identity_{field}_mismatch")
+        return "invalid_ref"
+    return next(iter(values)) if not missing else "invalid_ref"
 
 
 def _load_json_artifact(path: Path, artifact_id: str) -> tuple[bytes, Mapping[str, Any]]:
@@ -316,10 +363,6 @@ def _assert_mapping(artifact_id: str, value: Mapping[str, Any]) -> None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _safe_text(value: Any) -> str:
-    return value if isinstance(value, str) and value else "invalid_ref"
 
 
 def _sha256_hex(data: bytes) -> str:

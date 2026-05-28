@@ -169,6 +169,80 @@ def test_reviewer_handoff_bundle_verifier_rejects_missing_record() -> None:
     assert report["release_decision_made"] is False
 
 
+def test_reviewer_handoff_bundle_verifier_rejects_missing_identity() -> None:
+    artifacts = _artifact_set()
+    bundle_index = _bundle_index(artifacts)
+    for field in ("release_ref", "commit_sha", "ci_run_ref"):
+        bundle_index.pop(field, None)
+    raw = _artifact_bytes(artifacts)
+
+    report = verify_magma_alert_feed_reviewer_handoff_bundle_index(
+        bundle_index=bundle_index,
+        package=artifacts["release_evidence_package"],
+        validation_report=artifacts["validator_report"],
+        reviewer_summary=artifacts["reviewer_handoff_summary"],
+        bridge_template_report=artifacts["bridge_event_template"],
+        package_bytes=raw["release_evidence_package"],
+        validation_bytes=raw["validator_report"],
+        summary_bytes=raw["reviewer_handoff_summary"],
+        bridge_template_bytes=raw["bridge_event_template"],
+    )
+
+    assert report["ok"] is False
+    assert "artifact_identity_release_ref_missing" in report["blockers"]
+    assert "artifact_identity_commit_sha_missing" in report["blockers"]
+    assert "artifact_identity_ci_run_ref_missing" in report["blockers"]
+    assert report["release_ref"] == "invalid_ref"
+    assert report["commit_sha"] == "invalid_ref"
+    assert report["ci_run_ref"] == "invalid_ref"
+
+
+def test_reviewer_handoff_bundle_verifier_rejects_identity_mismatch() -> None:
+    artifacts = _artifact_set()
+    bundle_index = _bundle_index(artifacts)
+    bundle_index["release_ref"] = "pr:other"
+    raw = _artifact_bytes(artifacts)
+
+    report = verify_magma_alert_feed_reviewer_handoff_bundle_index(
+        bundle_index=bundle_index,
+        package=artifacts["release_evidence_package"],
+        validation_report=artifacts["validator_report"],
+        reviewer_summary=artifacts["reviewer_handoff_summary"],
+        bridge_template_report=artifacts["bridge_event_template"],
+        package_bytes=raw["release_evidence_package"],
+        validation_bytes=raw["validator_report"],
+        summary_bytes=raw["reviewer_handoff_summary"],
+        bridge_template_bytes=raw["bridge_event_template"],
+    )
+
+    assert report["ok"] is False
+    assert "artifact_identity_release_ref_mismatch" in report["blockers"]
+    assert report["release_ref"] == "invalid_ref"
+
+
+def test_reviewer_handoff_bundle_verifier_rejects_artifact_count_mismatch() -> None:
+    artifacts = _artifact_set()
+    bundle_index = _bundle_index(artifacts)
+    bundle_index["artifact_count"] = 999
+    raw = _artifact_bytes(artifacts)
+
+    report = verify_magma_alert_feed_reviewer_handoff_bundle_index(
+        bundle_index=bundle_index,
+        package=artifacts["release_evidence_package"],
+        validation_report=artifacts["validator_report"],
+        reviewer_summary=artifacts["reviewer_handoff_summary"],
+        bridge_template_report=artifacts["bridge_event_template"],
+        package_bytes=raw["release_evidence_package"],
+        validation_bytes=raw["validator_report"],
+        summary_bytes=raw["reviewer_handoff_summary"],
+        bridge_template_bytes=raw["bridge_event_template"],
+    )
+
+    assert report["ok"] is False
+    assert "artifact_count_mismatch" in report["blockers"]
+    assert report["artifact_count_checked"] == 4
+
+
 def test_reviewer_handoff_bundle_verifier_missing_input_is_path_free(
     tmp_path: Path,
 ) -> None:

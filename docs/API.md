@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, low-risk autogrowth ticker boundary metrics, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, low-risk autogrowth ticker boundary metrics, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -92,6 +92,11 @@ waggledance_route_stage_request_latency_histogram_ms_bucket{le="250",stage="lang
 waggledance_route_stage_request_latency_histogram_ms_bucket{le="+Inf",stage="language_detection"} 12.0
 waggledance_route_stage_request_latency_histogram_ms_count{stage="language_detection"} 12.0
 waggledance_route_stage_request_latency_histogram_ms_sum{stage="language_detection"} 320.5
+# HELP waggledance_magma_handoff_provider_up 1 if the metrics collector could build MAGMA handoff provider health this scrape.
+# TYPE waggledance_magma_handoff_provider_up gauge
+waggledance_magma_handoff_provider_up 1.0
+waggledance_magma_handoff_provider_status{status="warning"} 1.0
+waggledance_magma_handoff_freshness_state{state="stale"} 1.0
 ...
 ```
 
@@ -121,6 +126,14 @@ watch `waggledance_autogrowth_up`, `waggledance_autogrowth_errors_total`,
 `waggledance_autogrowth_wakeups_total`, and
 `waggledance_autogrowth_non_idle_ticks_total`; they are read-only Prometheus
 checks and do not add start/stop or configuration controls.
+
+MAGMA handoff provider-health metrics are also emitted from the same
+sanitized `/api/ops` summary. They use the `waggledance_magma_handoff_*`
+namespace for configured/valid/history/freshness/count gauges, fixed-state
+status labels, fixed-state freshness labels, and fixed alert IDs. They do not
+publish timestamps, share IDs, operator decision IDs, local paths, URLs,
+arbitrary source labels, raw provider summaries, or exception details, and
+they do not add import controls or runtime authority.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

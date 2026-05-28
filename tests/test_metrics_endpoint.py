@@ -15,6 +15,7 @@ Verifies:
 from __future__ import annotations
 
 import types
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -23,6 +24,10 @@ from fastapi.testclient import TestClient
 from waggledance.adapters.http.middleware.auth import PUBLIC_PATHS, BearerAuthMiddleware
 from waggledance.adapters.http.routes.chat import RouteStageRuntimeMetrics
 from waggledance.adapters.http.routes.metrics import router as metrics_router
+from waggledance.core.magma.share_manifest import (
+    IMPORT_REPORT_VERSION,
+    build_magma_share_import_peer_review_handoff,
+)
 
 
 API_KEY = "f5002-metrics-sentinel-DO-NOT-LEAK"
@@ -56,6 +61,56 @@ class _FakeContainer:
         self.autogrowth_background_ticker = autogrowth_background_ticker
         self.hybrid_retrieval = hybrid_retrieval
         self.route_stage_runtime_metrics = route_stage_runtime_metrics
+
+
+def _magma_import_report(share_id: str = "magma:share:metrics") -> dict:
+    return {
+        "report_version": IMPORT_REPORT_VERSION,
+        "ok": True,
+        "blockers": [],
+        "source_receipt_verification_ok": True,
+        "context_verified": True,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "share_id": share_id,
+        "purpose": "cross_instance_replay",
+        "share_manifest_digest": "sha256:" + "a" * 64,
+        "source_manifest_digest": "sha256:" + "b" * 64,
+        "replay_plan": {
+            "mode": "no_authority_metadata_replay",
+            "entry_count": 1,
+            "entries": [{
+                "entry_id": "entry-001",
+                "receipt_digest": "sha256:" + "c" * 64,
+                "evaluation_result_digest": "sha256:" + "d" * 64,
+                "subject_type": "solver_trace",
+                "risk_class": "low",
+                "expected_gate": "review",
+                "actual_gate": "review",
+                "verdict": "accepted",
+            }],
+        },
+    }
+
+
+def _magma_handoff(label: str, minute: int) -> dict:
+    return build_magma_share_import_peer_review_handoff(
+        import_report=_magma_import_report(),
+        operator_decision_id=f"operator:decision:metrics:{label}",
+        operator_agent_id=f"operator:metrics:{label}",
+        bridge_event_ref=f"bridge:metrics:{label}",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref=f"reason:metrics:{label}",
+        now_utc=datetime(2026, 5, 28, 9, minute, tzinfo=timezone.utc),
+    )
 
 
 def test_metrics_is_in_public_paths():
@@ -335,6 +390,80 @@ def test_metrics_body_contains_autogrowth_boundary_counters():
     assert "waggledance_autogrowth_non_idle_ticks_total 3.0" in body
     assert "waggledance_autogrowth_errors_total 1.0" in body
     assert "autogrowth_wakeups_total_total" not in body
+
+
+def test_metrics_body_contains_magma_handoff_provider_health_gauges():
+    older = _magma_handoff("older", 0)
+    newer = _magma_handoff("newer", 5)
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.magma_share_import_handoff_history = [older, newer]
+    container.magma_share_import_handoff_feed_freshness = {
+        "latest_created_at_utc": older["created_at_utc"],
+        "observed_at_utc": "2026-05-28T09:10:00Z",
+        "item_count": 2,
+        "window_seconds": 300,
+        "staleness_state": "stale",
+        "source": "C:/private/operator-feed.json",
+    }
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_magma_handoff_provider_up 1.0" in body
+    assert "waggledance_magma_handoff_provider_configured 1.0" in body
+    assert "waggledance_magma_handoff_snapshot_valid 1.0" in body
+    assert "waggledance_magma_handoff_history_feed_present 1.0" in body
+    assert "waggledance_magma_handoff_history_retained_count 2.0" in body
+    assert "waggledance_magma_handoff_history_dropped_count 0.0" in body
+    assert "waggledance_magma_handoff_freshness_source_configured 1.0" in body
+    assert "waggledance_magma_handoff_freshness_source_valid 1.0" in body
+    assert "waggledance_magma_handoff_freshness_source_stale 1.0" in body
+    assert "waggledance_magma_handoff_freshness_source_item_count 2.0" in body
+    assert "waggledance_magma_handoff_freshness_source_window_seconds 300.0" in body
+    assert "waggledance_magma_handoff_controls_present 0.0" in body
+    assert "waggledance_magma_handoff_runtime_authority_granted 0.0" in body
+    assert "waggledance_magma_handoff_payload_files_imported 0.0" in body
+    assert (
+        'waggledance_magma_handoff_provider_status{status="warning"} 1.0'
+        in body
+    )
+    assert (
+        'waggledance_magma_handoff_provider_snapshot_kind{kind="history"} 1.0'
+        in body
+    )
+    assert 'waggledance_magma_handoff_freshness_state{state="stale"} 1.0' in body
+    assert (
+        'waggledance_magma_handoff_provider_alert_active{'
+        'alert_id="MagmaShareImportHandoffProviderFreshnessWarning"} 1.0'
+    ) in body
+    assert "operator:decision:metrics" not in body
+    assert "C:/private/operator-feed.json" not in body
+
+
+def test_metrics_magma_handoff_freshness_failure_is_sanitized():
+    handoff = _magma_handoff("unavailable", 15)
+
+    class Feed:
+        def snapshot(self):
+            raise RuntimeError("C:/private/feed-state.json")
+
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.magma_share_import_handoff_status = handoff
+    container.magma_share_import_handoff_feed_freshness = Feed()
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_magma_handoff_provider_up 1.0" in body
+    assert "waggledance_magma_handoff_freshness_source_configured 1.0" in body
+    assert "waggledance_magma_handoff_freshness_source_available 0.0" in body
+    assert "waggledance_magma_handoff_freshness_source_valid 0.0" in body
+    assert (
+        'waggledance_magma_handoff_provider_alert_active{'
+        'alert_id="MagmaShareImportHandoffFreshnessSourceUnavailable"} 1.0'
+    ) in body
+    assert "C:/private/feed-state.json" not in body
+    assert "operator:decision:metrics" not in body
 
 
 def test_metrics_reports_autogrowth_disabled_when_ticker_missing():

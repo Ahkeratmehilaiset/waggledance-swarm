@@ -3117,6 +3117,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "release_evidence_package_contract_present": False,
         "release_evidence_validator_contract_present": False,
         "reviewer_handoff_summary_contract_present": False,
+        "reviewer_bridge_event_template_contract_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -3144,6 +3145,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     package_rel = "tools/package_magma_alert_feed_release_evidence.py"
     validator_rel = "tools/validate_magma_alert_feed_release_evidence.py"
     summary_rel = "tools/build_magma_alert_feed_reviewer_handoff_summary.py"
+    bridge_template_rel = (
+        "tools/build_magma_alert_feed_reviewer_bridge_event_template.py"
+    )
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
@@ -3155,6 +3159,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     )
     summary_tests_rel = (
         "tests/tools/test_magma_alert_feed_reviewer_handoff_summary.py"
+    )
+    bridge_template_tests_rel = (
+        "tests/tools/test_magma_alert_feed_reviewer_bridge_event_template.py"
     )
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
@@ -3168,12 +3175,14 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         package_rel,
         validator_rel,
         summary_rel,
+        bridge_template_rel,
         settings_rel,
         tests_rel,
         metrics_tests_rel,
         package_tests_rel,
         validator_tests_rel,
         summary_tests_rel,
+        bridge_template_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -3196,6 +3205,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     package_text = (repo_root / package_rel).read_text(encoding="utf-8")
     validator_text = (repo_root / validator_rel).read_text(encoding="utf-8")
     summary_text = (repo_root / summary_rel).read_text(encoding="utf-8")
+    bridge_template_text = (repo_root / bridge_template_rel).read_text(
+        encoding="utf-8"
+    )
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
@@ -3210,6 +3222,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     summary_tests_text = (repo_root / summary_tests_rel).read_text(
         encoding="utf-8"
     )
+    bridge_template_tests_text = (repo_root / bridge_template_tests_rel).read_text(
+        encoding="utf-8"
+    )
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
@@ -3222,11 +3237,13 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         package_text,
         validator_text,
         summary_text,
+        bridge_template_text,
         settings_text,
         metrics_tests_text,
         package_tests_text,
         validator_tests_text,
         summary_tests_text,
+        bridge_template_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
@@ -3430,6 +3447,27 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "operator-owned reviewer handoff summary",
         )
     )
+    reviewer_bridge_event_template_contract_present = all(
+        token in "\n".join((
+            bridge_template_text,
+            bridge_template_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "magma_alert_feed_reviewer_bridge_event_template.v1",
+            "build_magma_alert_feed_reviewer_bridge_event_template",
+            "template_only",
+            "direct_bridge_write_performed",
+            "approval_granted",
+            "release_decision_made",
+            "automatic_release_decision",
+            "test_reviewer_bridge_event_template_validates_bridge_schema",
+            "test_reviewer_bridge_event_template_cli_json_is_path_free",
+            "optional bridge-event template",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -3473,6 +3511,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and release_evidence_package_contract_present
         and release_evidence_validator_contract_present
         and reviewer_handoff_summary_contract_present
+        and reviewer_bridge_event_template_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3500,6 +3539,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_handoff_summary_contract_present": (
             reviewer_handoff_summary_contract_present
         ),
+        "reviewer_bridge_event_template_contract_present": (
+            reviewer_bridge_event_template_contract_present
+        ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3524,7 +3566,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "endpoint fetches, or release decisions. The reviewer handoff "
             "summary renders validated evidence context without approval, "
             "release-decision automation, transport, endpoint fetches, or "
-            "runtime controls."
+            "runtime controls. The optional bridge-event template validates "
+            "as handoff-shaped JSON but does not append bridge events or "
+            "grant approval, release authority, transport, endpoint fetches, "
+            "or runtime controls."
         ),
     }
 
@@ -4041,6 +4086,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI renders sanitized reviewer handoff context from a local evidence package and local validation report.",
             ),
             (
+                "tools/build_magma_alert_feed_reviewer_bridge_event_template.py",
+                "Explicit CLI renders a sanitized bridge-event template from a local reviewer handoff summary without appending it.",
+            ),
+            (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
@@ -4087,6 +4136,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_alert_feed_reviewer_handoff_summary.py",
                 "Reviewer handoff summary tests prove sanitized context, path-free CLI JSON, and no approval automation.",
+            ),
+            (
+                "tests/tools/test_magma_alert_feed_reviewer_bridge_event_template.py",
+                "Reviewer bridge-event template tests prove schema-valid handoff JSON, path-free CLI output, and no direct bridge write.",
             ),
             (
                 "tests/test_metrics_endpoint.py",
@@ -4400,8 +4453,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add optional bridge-event template for reviewer handoff "
-                "summaries without automatic approval or release actions."
+                "Add operator decision-reference slot to reviewer "
+                "bridge-event templates without treating it as approval."
             ),
             proof=magma_audit_proof,
         ),

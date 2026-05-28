@@ -187,6 +187,11 @@ sanitized operator-owned reviewer handoff summary from the local package and
 local validation report; it prints context only and keeps
 `approval_granted=false`, `release_decision_made=false`, and
 `automatic_release_decision=false`.
+`tools/build_magma_alert_feed_reviewer_bridge_event_template.py` can render an
+optional sanitized bridge-event template from that summary; the template is
+valid bridge `handoff` JSON but the tool does not append bridge events and
+keeps `direct_bridge_write_performed=false`, `approval_granted=false`, and
+`release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

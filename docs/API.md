@@ -179,6 +179,9 @@ For operator-owned release review, `tools/package_magma_alert_feed_release_evide
 can package an explicit local `/api/ops` JSON snapshot and explicit local
 `/metrics` scrape into sanitized JSON/Markdown evidence artifacts; it performs
 no endpoint fetches and makes no automatic release decision.
+`tools/validate_magma_alert_feed_release_evidence.py` can validate that package
+and optional local artifact digests for reviewer-side checks; it writes nothing
+and also makes no automatic release decision.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

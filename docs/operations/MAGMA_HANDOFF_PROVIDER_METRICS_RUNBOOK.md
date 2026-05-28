@@ -163,6 +163,21 @@ The package is evidence for a human/operator release review only. Its
 be wired to automatic merge, promotion, configuration, importer/exporter, feed
 control, or runtime-authority actions.
 
+Reviewers can validate a package with
+`tools/validate_magma_alert_feed_release_evidence.py`. The validator reads an
+explicit local package JSON and, optionally, the same explicit local
+`/api/ops` JSON and `/metrics` scrape to confirm their SHA-256 digests. It
+writes nothing, fetches no endpoints, does not transport artifacts, and still
+reports `automatic_release_decision=false`.
+
+```powershell
+python tools\validate_magma_alert_feed_release_evidence.py `
+  --package-json <new-evidence-dir>\magma_alert_feed_release_evidence.json `
+  --ops-json <collected>\ops.json `
+  --metrics-scrape <collected>\metrics.prom `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

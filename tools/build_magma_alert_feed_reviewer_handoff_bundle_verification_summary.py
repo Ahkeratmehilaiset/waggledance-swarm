@@ -18,6 +18,9 @@ if str(ROOT) not in sys.path:
 from tools.package_magma_alert_feed_release_evidence import (  # noqa: E402
     FORBIDDEN_OUTPUT_MARKERS,
 )
+from tools.build_magma_alert_feed_reviewer_handoff_bundle_index import (  # noqa: E402
+    BUNDLE_INDEX_VERSION,
+)
 from tools.verify_magma_alert_feed_reviewer_handoff_bundle_index import (  # noqa: E402
     VERIFICATION_VERSION,
 )
@@ -132,7 +135,8 @@ def build_magma_alert_feed_reviewer_handoff_bundle_verification_summary(
     report_blockers = _safe_token_list(verification_report.get("blockers"))
     report_warnings = _safe_token_list(verification_report.get("warnings"))
     boundary_blockers = _boundary_blockers(verification_report)
-    blockers = sorted(set(report_blockers + boundary_blockers))
+    contract_blockers = _verification_report_contract_blockers(verification_report)
+    blockers = sorted(set(report_blockers + boundary_blockers + contract_blockers))
     verification_ok = (
         verification_report.get("ok") is True
         and verification_report.get("verification_version") == VERIFICATION_VERSION
@@ -177,8 +181,10 @@ def build_magma_alert_feed_reviewer_handoff_bundle_verification_summary(
             "warnings": report_warnings,
         },
         "operator_boundary": {
-            "verification_report_boundary_ok": not boundary_blockers,
-            "boundary_blockers": boundary_blockers,
+            "verification_report_boundary_ok": not (
+                boundary_blockers or contract_blockers
+            ),
+            "boundary_blockers": sorted(set(boundary_blockers + contract_blockers)),
             "manual_review_required": True,
             "approval_granted": False,
             "release_decision_made": False,
@@ -294,6 +300,21 @@ def _boundary_blockers(report: Mapping[str, Any]) -> list[str]:
     for field in _AUTHORITY_FALSE_FIELDS:
         if report.get(field) is not False:
             blockers.append(f"verification_report_{field}_not_false")
+    return sorted(blockers)
+
+
+def _verification_report_contract_blockers(report: Mapping[str, Any]) -> list[str]:
+    blockers = []
+    if _safe_ref_or_invalid(report.get("release_ref")) == "invalid_ref":
+        blockers.append("verification_report_release_ref_invalid")
+    if _commit_or_invalid(report.get("commit_sha")) == "invalid_commit":
+        blockers.append("verification_report_commit_sha_invalid")
+    if _safe_ref_or_invalid(report.get("ci_run_ref")) == "invalid_ref":
+        blockers.append("verification_report_ci_run_ref_invalid")
+    if report.get("verification_version") != VERIFICATION_VERSION:
+        blockers.append("verification_report_verification_version_mismatch")
+    if report.get("bundle_index_version") != BUNDLE_INDEX_VERSION:
+        blockers.append("verification_report_bundle_index_version_mismatch")
     return sorted(blockers)
 
 

@@ -105,6 +105,63 @@ def test_reviewer_handoff_bundle_verification_summary_blocks_authority_flags() -
     assert summary["approval_granted"] is False
 
 
+def test_reviewer_handoff_bundle_verification_summary_blocks_invalid_contract_fields() -> None:
+    cases = (
+        (
+            "missing_release_ref",
+            lambda report: report.pop("release_ref", None),
+            "verification_report_release_ref_invalid",
+        ),
+        (
+            "invalid_release_ref",
+            lambda report: report.__setitem__("release_ref", "bad ref"),
+            "verification_report_release_ref_invalid",
+        ),
+        (
+            "missing_commit_sha",
+            lambda report: report.pop("commit_sha", None),
+            "verification_report_commit_sha_invalid",
+        ),
+        (
+            "invalid_commit_sha",
+            lambda report: report.__setitem__("commit_sha", "not-a-sha"),
+            "verification_report_commit_sha_invalid",
+        ),
+        (
+            "missing_ci_run_ref",
+            lambda report: report.pop("ci_run_ref", None),
+            "verification_report_ci_run_ref_invalid",
+        ),
+        (
+            "missing_verification_version",
+            lambda report: report.pop("verification_version", None),
+            "verification_report_verification_version_mismatch",
+        ),
+        (
+            "missing_bundle_index_version",
+            lambda report: report.pop("bundle_index_version", None),
+            "verification_report_bundle_index_version_mismatch",
+        ),
+    )
+
+    for label, mutate, expected_blocker in cases:
+        report = _verification_report()
+        mutate(report)
+
+        summary = build_magma_alert_feed_reviewer_handoff_bundle_verification_summary(
+            verification_report=report,
+            reviewer_agent_id="claude-rco-1",
+            handoff_ref="bridge:handoff:bundle-verification",
+            now_utc=datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc),
+        )
+
+        assert summary["ok"] is False, label
+        assert expected_blocker in summary["blockers"], label
+        assert expected_blocker in summary["operator_boundary"]["boundary_blockers"]
+        assert summary["approval_granted"] is False
+        assert summary["release_decision_made"] is False
+
+
 def test_reviewer_handoff_bundle_verification_summary_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

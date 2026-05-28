@@ -277,6 +277,8 @@ def _collect_verification_summary_blockers(
         if summary.get(field) is not False:
             blockers.append(f"verification_summary_{field}_not_false")
     boundary = _mapping(summary.get("operator_boundary"))
+    if _has_reported_items(boundary.get("boundary_blockers")):
+        blockers.append("verification_summary_operator_boundary_blockers_present")
     for field in _SUMMARY_FALSE_FIELDS:
         if boundary.get(field) is not False:
             blockers.append(f"verification_summary_operator_boundary_{field}_not_false")
@@ -294,6 +296,8 @@ def _collect_bridge_template_blockers(
         blockers.append("bridge_event_template_not_ok")
     if report.get("template_only") is not True:
         blockers.append("bridge_event_template_not_template_only")
+    if _has_reported_items(report.get("blockers")):
+        blockers.append("bridge_event_template_blockers_present")
     for field in _BRIDGE_REPORT_FALSE_FIELDS:
         if report.get(field) is not False:
             blockers.append(f"bridge_event_template_{field}_not_false")

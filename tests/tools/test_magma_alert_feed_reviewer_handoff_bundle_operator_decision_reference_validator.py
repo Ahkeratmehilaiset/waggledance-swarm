@@ -179,6 +179,14 @@ def test_operator_decision_reference_validator_blocks_forged_verification_summar
             "verification_summary_report_blockers_present",
         ),
         (
+            "operator_boundary_blocker",
+            lambda summary: summary["operator_boundary"].__setitem__(
+                "boundary_blockers",
+                ["verification_report_transport_added_not_false"],
+            ),
+            "verification_summary_operator_boundary_blockers_present",
+        ),
+        (
             "digest_mismatch",
             lambda summary: summary["bundle_verification"]["digest_checks"].__setitem__(
                 "reviewer_handoff_summary",
@@ -227,6 +235,24 @@ def test_operator_decision_reference_validator_blocks_forged_verification_summar
         ] is False
         assert report["approval_granted"] is False
         assert report["release_decision_made"] is False
+
+
+def test_operator_decision_reference_validator_blocks_forged_bridge_template_blockers() -> None:
+    bridge_template = _bridge_template_report()
+    bridge_template["blockers"] = ["operator_decision_reference_mismatch"]
+
+    report = validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference(
+        verification_summary=_verification_summary(),
+        bridge_template_report=bridge_template,
+        expected_decision_ref=DECISION_REF,
+        now_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template_blockers_present" in report["blockers"]
+    assert report["operator_decision_reference"]["decision_reference_validated"] is False
+    assert report["approval_granted"] is False
+    assert report["release_decision_made"] is False
 
 
 def test_operator_decision_reference_validator_cli_json_is_path_free(

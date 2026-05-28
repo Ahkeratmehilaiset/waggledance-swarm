@@ -342,24 +342,15 @@ def _matching_identity(
     reviewer_summary: Mapping[str, Any],
     bridge_event_payload: Mapping[str, Any],
 ) -> dict[str, str]:
-    release_refs = {
-        _safe_text(package.get("release_ref")),
-        _safe_text(validation_report.get("release_ref")),
-        _safe_text(reviewer_summary.get("release_ref")),
-        _safe_text(bridge_event_payload.get("release_ref")),
-    }
-    commit_shas = {
-        _safe_text(package.get("commit_sha")),
-        _safe_text(validation_report.get("commit_sha")),
-        _safe_text(reviewer_summary.get("commit_sha")),
-        _safe_text(bridge_event_payload.get("commit_sha")),
-    }
-    ci_run_refs = {
-        _safe_text(package.get("ci_run_ref")),
-        _safe_text(validation_report.get("ci_run_ref")),
-        _safe_text(reviewer_summary.get("ci_run_ref")),
-        _safe_text(bridge_event_payload.get("ci_run_ref")),
-    }
+    artifacts = (
+        package,
+        validation_report,
+        reviewer_summary,
+        bridge_event_payload,
+    )
+    release_refs = _required_identity_values(artifacts, "release_ref")
+    commit_shas = _required_identity_values(artifacts, "commit_sha")
+    ci_run_refs = _required_identity_values(artifacts, "ci_run_ref")
     if len(release_refs) != 1 or len(commit_shas) != 1 or len(ci_run_refs) != 1:
         raise BundleIndexError("artifact_identity_mismatch")
     return {
@@ -367,6 +358,19 @@ def _matching_identity(
         "commit_sha": next(iter(commit_shas)),
         "ci_run_ref": next(iter(ci_run_refs)),
     }
+
+
+def _required_identity_values(
+    artifacts: Sequence[Mapping[str, Any]],
+    field: str,
+) -> set[str]:
+    values: set[str] = set()
+    for artifact in artifacts:
+        value = artifact.get(field)
+        if not isinstance(value, str) or not value:
+            raise BundleIndexError(f"artifact_identity_{field}_missing")
+        values.add(value)
+    return values
 
 
 def _artifact_record(
@@ -401,10 +405,6 @@ def _expect_false(artifact: Mapping[str, Any], field: str, label: str) -> None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _safe_text(value: Any) -> str:
-    return value if isinstance(value, str) and value else "invalid_ref"
 
 
 def _parse_utc(raw: str) -> datetime:

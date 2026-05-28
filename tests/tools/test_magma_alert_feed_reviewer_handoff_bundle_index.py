@@ -261,6 +261,52 @@ def test_reviewer_handoff_bundle_index_rejects_mismatched_identity_path_free(
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
 
 
+def test_reviewer_handoff_bundle_index_rejects_missing_identity_path_free(
+    tmp_path: Path,
+) -> None:
+    artifacts = _artifact_set()
+    identity_fields = ("release_ref", "commit_sha", "ci_run_ref")
+    for artifact_id in ("package", "validation", "summary"):
+        for field in identity_fields:
+            artifacts[artifact_id].pop(field, None)
+    bridge_payload = artifacts["bridge_template"]["bridge_event_template"]["payload"]
+    for field in identity_fields:
+        bridge_payload.pop(field, None)
+    paths = _write_artifacts(tmp_path, artifacts)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--package-json",
+            str(paths["package"]),
+            "--validation-json",
+            str(paths["validation"]),
+            "--summary-json",
+            str(paths["summary"]),
+            "--bridge-template-json",
+            str(paths["bridge_template"]),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "handoff_bundle_index_failed:artifact_identity_release_ref_missing"
+    ]
+    assert payload["approval_granted"] is False
+    assert payload["release_decision_made"] is False
+    assert str(tmp_path) not in result.stdout
+    for path in paths.values():
+        assert path.name not in result.stdout
+    assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+
+
 def test_reviewer_handoff_bundle_index_missing_input_is_path_free(
     tmp_path: Path,
 ) -> None:

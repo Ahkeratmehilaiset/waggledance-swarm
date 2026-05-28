@@ -6,6 +6,7 @@ Phase 3: MAGMA/graph/trust/cross-agent/analytics endpoints
 Phase 4: Backend archival verification
 """
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -386,6 +387,51 @@ class TestApiOpsExtended:
         assert "PRIVATE_QUERY_MARKER" not in str(section)
         assert "private stack trace" not in str(section)
 
+    def test_ops_route_stage_latency_feed_state_rejects_non_finite_numbers(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [
+                        {
+                            "id": "route_stage_latency_p95_ms",
+                            "stage": "language_detection",
+                            "value": float("nan"),
+                        },
+                        {
+                            "id": "route_stage_latency_p99_ms",
+                            "stage": "hot_cache",
+                            "value": "Inf",
+                        },
+                        {
+                            "id": "route_stage_request_rate",
+                            "stage": "memory_context",
+                            "current_value": "-Inf",
+                        },
+                    ],
+                    "active_alerts": [{
+                        "id": "RouteStageLatencyP99Critical",
+                        "stage": "hot_cache",
+                        "severity": "critical",
+                        "value": "NaN",
+                    }],
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+
+        assert feed_state["panel_values"] == []
+        assert feed_state["active_count"] == 1
+        assert "value_ms" not in feed_state["active"][0]
+        json.dumps(section, allow_nan=False)
+
     def test_ops_route_stage_latency_feed_state_rejects_raw_updated_at(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _route_stage_latency_panels,
@@ -442,6 +488,194 @@ class TestApiOpsExtended:
         assert feed_state["active"][0]["id"] == "RouteStageLatencyFeedUnavailable"
         assert "private query=secret" not in str(section)
         assert "query=" not in str(section)
+
+    def test_route_stage_latency_feed_provider_reads_operator_endpoints(self):
+        from waggledance.adapters.http.route_stage_latency_feed import (
+            RouteStageLatencyFeedHttpResponse,
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        calls = []
+
+        def transport(url, headers, timeout_seconds, params):
+            calls.append((url, dict(headers), timeout_seconds, dict(params)))
+            if url.endswith("/api/v1/query"):
+                body = {
+                    "status": "success",
+                    "data": {
+                        "result": [{
+                            "metric": {
+                                "stage": "language_detection",
+                                "query": "PRIVATE_QUERY_MARKER",
+                            },
+                            "value": [1_716_888_000, "3123.4567"],
+                        }],
+                    },
+                }
+            else:
+                body = [{
+                    "labels": {
+                        "alertname": "RouteStageLatencyP99Critical",
+                        "stage": "hot_cache",
+                        "severity": "critical",
+                        "host": "prod-db",
+                    },
+                    "status": {"state": "active"},
+                    "annotations": {
+                        "summary": "PRIVATE_ANNOTATION query=secret",
+                    },
+                    "generatorURL": "http://alertmanager/private",
+                }]
+            return RouteStageLatencyFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json; charset=utf-8",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+            prometheus_base_url="http://127.0.0.1:9090",
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            transport=transport,
+        )
+
+        class Container:
+            route_stage_latency_feed = feed
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+        serialized = str(section)
+
+        assert len([call for call in calls if call[0].endswith("/api/v1/query")]) == 3
+        assert calls[-1][0].endswith("/api/v2/alerts")
+        assert feed_state["source"] == "prometheus_alertmanager_snapshot"
+        assert feed_state["prometheus_alertmanager_feed"] is True
+        assert feed_state["updated_at"].endswith("Z")
+        assert feed_state["panel_values"][0]["id"] == "route_stage_latency_p95_ms"
+        assert feed_state["panel_values"][0]["stage"] == "language_detection"
+        assert feed_state["panel_values"][0]["value"] == 3123.457
+        assert feed_state["panel_values"][0]["status"] == "warning"
+        assert feed_state["active"][0]["id"] == "RouteStageLatencyP99Critical"
+        assert feed_state["active"][0]["summary"] == (
+            "RouteStageLatencyP99Critical active for hot_cache."
+        )
+        assert "PRIVATE_QUERY_MARKER" not in serialized
+        assert "PRIVATE_ANNOTATION" not in serialized
+        assert "query=secret" not in serialized
+        assert "prod-db" not in serialized
+        assert "generatorURL" not in serialized
+
+    def test_route_stage_latency_feed_provider_rejects_non_finite_numbers(self):
+        from waggledance.adapters.http.route_stage_latency_feed import (
+            RouteStageLatencyFeedHttpResponse,
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
+
+        def transport(url, headers, timeout_seconds, params):
+            if url.endswith("/api/v1/query"):
+                body = {
+                    "status": "success",
+                    "data": {
+                        "result": [
+                            {
+                                "metric": {"stage": "language_detection"},
+                                "value": [1_716_888_000, "NaN"],
+                            },
+                            {
+                                "metric": {"stage": "hot_cache"},
+                                "value": [1_716_888_000, "+Inf"],
+                            },
+                            {
+                                "metric": {"stage": "memory_context"},
+                                "value": [1_716_888_000, "-Inf"],
+                            },
+                        ],
+                    },
+                }
+            else:
+                body = [{
+                    "labels": {
+                        "alertname": "RouteStageLatencyP99Critical",
+                        "stage": "hot_cache",
+                        "severity": "critical",
+                    },
+                    "status": {"state": "active"},
+                    "value": "NaN",
+                }]
+            return RouteStageLatencyFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+            prometheus_base_url="http://127.0.0.1:9090",
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            transport=transport,
+        )
+
+        snapshot = feed.snapshot()
+
+        assert snapshot["panel_values"] == []
+        assert snapshot["active_alerts"][0]["value"] is None
+        json.dumps(snapshot, allow_nan=False)
+
+    def test_route_stage_latency_feed_provider_guardrails_refuse_secrets(self):
+        from waggledance.adapters.http.route_stage_latency_feed import (
+            RouteStageLatencyFeedError,
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
+
+        with pytest.raises(RouteStageLatencyFeedError) as private_host:
+            RouteStageLatencyPrometheusAlertmanagerFeed(
+                prometheus_base_url="http://127.0.0.1:9090",
+            )
+        assert "LOCAL_HOST_REFUSED" in str(private_host.value)
+
+        with pytest.raises(RouteStageLatencyFeedError) as query_secret:
+            RouteStageLatencyPrometheusAlertmanagerFeed(
+                prometheus_base_url=(
+                    "https://prometheus.example/api?api_key=SECRET"
+                ),
+            )
+        assert "URL_QUERY_REFUSED" in str(query_secret.value)
+
+        with pytest.raises(RouteStageLatencyFeedError) as userinfo:
+            RouteStageLatencyPrometheusAlertmanagerFeed(
+                prometheus_base_url="https://user:pass@prometheus.example",
+            )
+        assert "URL_USERINFO_REFUSED" in str(userinfo.value)
+
+    def test_container_wires_configured_route_stage_latency_feed(self):
+        from waggledance.adapters.http.route_stage_latency_feed import (
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
+
+        settings = WaggleSettings(
+            profile="HOME",
+            api_key="test-key-123",
+            _extras={
+                "route_stage_latency_feed": {
+                    "enabled": True,
+                    "prometheus_base_url": "https://prometheus.example",
+                    "alertmanager_base_url": "https://alerts.example",
+                    "timeout_s": 2,
+                    "max_response_bytes": 1000,
+                },
+            },
+        )
+        container = Container(settings=settings, stub=True)
+
+        assert isinstance(
+            container.route_stage_latency_feed,
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
 
     def test_ops_still_has_status_and_recommendation(self):
         """Existing fields must not break."""

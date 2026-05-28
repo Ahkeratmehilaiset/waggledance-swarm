@@ -63,6 +63,36 @@ It intentionally does not forward Alertmanager annotations, descriptions,
 external URLs, raw label sets, raw query text, hostnames, filesystem paths, or
 exception strings.
 
+## Optional feed provider
+
+`configs/settings.yaml` includes a disabled-by-default
+`route_stage_latency_feed` section. When an operator enables it, the runtime
+container builds a read-only provider that performs bounded GET requests to:
+
+- Prometheus `GET /api/v1/query` for the fixed p95, p99, and request-rate
+  PromQL templates in this runbook.
+- Alertmanager `GET /api/v2/alerts` for active alert labels.
+
+The provider does not accept credentials, custom authorization headers,
+userinfo URLs, query-string URLs, redirects, or unbounded responses. Private,
+loopback, and localhost targets are refused unless the exact hostname is listed
+in `allowed_private_hosts`. Provider failures are collapsed to
+`prometheus_alertmanager_unavailable`; exception details are not forwarded to
+the Ops API or dashboard.
+
+Example local operator config:
+
+```yaml
+route_stage_latency_feed:
+  enabled: true
+  prometheus_base_url: "http://127.0.0.1:9090"
+  alertmanager_base_url: "http://127.0.0.1:9093"
+  timeout_s: 3
+  max_response_bytes: 1000000
+  allowed_private_hosts:
+    - "127.0.0.1"
+```
+
 ## Guardrails
 
 - No panel or alert rule should call a mutating endpoint.

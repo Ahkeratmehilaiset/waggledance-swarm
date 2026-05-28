@@ -786,7 +786,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "waggledance/adapters/http/routes/chat.py",
         "waggledance/adapters/http/routes/metrics.py",
         "waggledance/adapters/http/routes/compat_dashboard.py",
+        "waggledance/adapters/http/route_stage_latency_feed.py",
+        "waggledance/bootstrap/container.py",
         "web/hologram-brain-v6.html",
+        "configs/settings.yaml",
         "tests/test_metrics_endpoint.py",
         "tests/integration/test_chat_api_contract.py",
         "tests/test_legacy_consolidation.py",
@@ -844,7 +847,16 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     ops_text = (
         repo_root / "waggledance/adapters/http/routes/compat_dashboard.py"
     ).read_text(encoding="utf-8")
+    provider_text = (
+        repo_root / "waggledance/adapters/http/route_stage_latency_feed.py"
+    ).read_text(encoding="utf-8")
+    container_text = (
+        repo_root / "waggledance/bootstrap/container.py"
+    ).read_text(encoding="utf-8")
     html_text = (repo_root / "web/hologram-brain-v6.html").read_text(
+        encoding="utf-8"
+    )
+    settings_text = (repo_root / "configs/settings.yaml").read_text(
         encoding="utf-8"
     )
     metrics_tests_text = (
@@ -1040,17 +1052,52 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         ),
         "ops_latency_feed_state_present": all(
             token in "\n".join(
-                (ops_text, html_text, ops_tests_text, docs_text, runbook_text)
+                (
+                    ops_text,
+                    provider_text,
+                    html_text,
+                    ops_tests_text,
+                    docs_text,
+                    runbook_text,
+                )
             )
             for token in (
                 "route_stage_latency_feed",
                 "feed_state",
                 "prometheus_alertmanager_snapshot",
+                "RouteStageLatencyPrometheusAlertmanagerFeed",
                 "RouteStageLatencyFeedUnavailable",
                 "panel_values",
                 "activeRouteStageLatencyAlerts",
                 "test_ops_route_stage_latency_feed_state_sanitizes_snapshot",
+                "test_ops_route_stage_latency_feed_state_rejects_non_finite_numbers",
+                "test_route_stage_latency_feed_provider_rejects_non_finite_numbers",
                 "It intentionally does not forward Alertmanager annotations",
+                "math.isfinite",
+            )
+        ),
+        "ops_latency_feed_provider_wired": all(
+            token in "\n".join((provider_text, container_text, settings_text))
+            for token in (
+                "def route_stage_latency_feed",
+                "RouteStageLatencyPrometheusAlertmanagerFeed.from_config",
+                "prometheus_base_url",
+                "alertmanager_base_url",
+                "allowed_private_hosts",
+                "enabled: false",
+            )
+        ),
+        "ops_latency_feed_provider_guardrails_present": all(
+            token in provider_text
+            for token in (
+                "URL_USERINFO_REFUSED",
+                "URL_QUERY_REFUSED",
+                "URL_SECRET_REFUSED",
+                "URL_PRIVATE_HOST_REFUSED",
+                "CREDENTIAL_HEADER_REFUSED",
+                "follow_redirects=False",
+                "MAX_TIMEOUT_SECONDS",
+                "MAX_RESPONSE_BYTES",
             )
         ),
         "latency_runbook_present": all(
@@ -1062,6 +1109,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "RouteStageLatencyP99Critical",
                 "histogram_quantile(0.95",
                 "histogram_quantile(0.99",
+                "Optional feed provider",
+                "allowed_private_hosts",
                 "No panel or alert rule should call a mutating endpoint",
             )
         ),
@@ -1072,6 +1121,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             and "waggledance_route_stage_request_latency_histogram_ms_bucket" in docs_text
             and "ROUTE_STAGE_LATENCY_RUNBOOK.md" in docs_text
             and "It is not an internal span timer" in docs_text
+            and "route_stage_latency_feed" in docs_text
+            and "allowed_private_hosts" in docs_text
         ),
         "runtime_contract_ok": runtime_contract["ok"] is True,
     }
@@ -1086,6 +1137,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "histogram_quantile_supported": ok,
         "latency_panel_templates_visible": ok,
         "prometheus_alertmanager_feed_supported": ok,
+        "prometheus_alertmanager_feed_provider_configured": ok,
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
         "latency_metric_semantics": "stage_correlated_request_latency",
@@ -3107,6 +3159,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Ops API exposes read-only route-stage latency panel templates.",
             ),
             (
+                "waggledance/adapters/http/route_stage_latency_feed.py",
+                "Optional operator-owned Prometheus/Alertmanager feed provider.",
+            ),
+            (
                 "web/hologram-brain-v6.html",
                 "Dashboard chat route-stage labels and Ops latency panels.",
             ),
@@ -3309,8 +3365,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "dashboard-visible, route-stage operator metrics expose "
                 "counts and runtime rate/latency counters from sanitized "
                 "traces plus p95/p99 PromQL latency panel templates and "
-                "optional sanitized read-only feed state, and exact runtime "
-                "entry order depends on flags and call path."
+                "an optional sanitized read-only Prometheus/Alertmanager "
+                "feed provider with timeout, credential, and private-host "
+                "guardrails; exact runtime entry order depends on flags and "
+                "call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -3322,9 +3380,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Bind the route-stage latency feed provider to operator-owned "
-                "Prometheus/Alertmanager endpoint configuration with timeout "
-                "and credential guardrails."
+                "Add provider health/cache metrics and bounded backoff "
+                "without adding route controls."
             ),
             proof=hex_entry_proof,
         ),

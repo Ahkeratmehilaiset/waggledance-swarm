@@ -7,6 +7,7 @@ so that the hologram-brain-v6 HTML menus populate correctly.
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -372,9 +373,10 @@ def _safe_getattr(obj, name: str, default=None):  # noqa: ANN001
 
 def _number_or_none(value):  # noqa: ANN001
     try:
-        return float(value)
+        normalized = float(value)
     except (TypeError, ValueError):
         return None
+    return normalized if math.isfinite(normalized) else None
 
 
 def _int_or_zero(value) -> int:  # noqa: ANN001

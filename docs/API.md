@@ -132,6 +132,13 @@ IDs, known alert IDs, fixed route-stage labels, numeric values, and timestamps;
 it drops raw summaries, invalid labels, and unknown fields. The feed state does
 not add mutating endpoints or runtime routing controls.
 
+The optional provider is configured under `route_stage_latency_feed` in
+`configs/settings.yaml` and is disabled by default. It only performs bounded
+read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager
+`/api/v2/alerts` endpoints. URL userinfo, query-string URLs, credential-like
+headers, redirects, and private/localhost hosts without an exact
+`allowed_private_hosts` entry are refused.
+
 `GET /api/ops` also includes `autogrowth.alert_state`, a read-only local
 snapshot for the hologram Ops panel. It reports `status`, `severity`,
 `source="local_ops_snapshot"`, `active` alert summaries, and `deferred_rules`

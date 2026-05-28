@@ -710,6 +710,12 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
         proof["reviewer_handoff_bundle_verification_summary_contract_present"]
         is True
     )
+    assert (
+        proof[
+            "reviewer_handoff_bundle_operator_decision_reference_validator_contract_present"
+        ]
+        is True
+    )
     assert proof["guardrails_present"] is True
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
@@ -1039,6 +1045,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "evidence package tool" in capability["safe_statement"]
     assert "companion validator" in capability["safe_statement"]
     assert "verification summary renderer" in capability["safe_statement"]
+    assert "operator decision-reference validator" in capability["safe_statement"]
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "alert_thresholds_documented"
@@ -1055,7 +1062,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         "guardrails_present"
     ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "decision-reference validator" in (
+    assert "decision-reference review summary renderer" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

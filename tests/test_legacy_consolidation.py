@@ -242,6 +242,10 @@ class TestApiOpsExtended:
         assert magma_handoff["runtime_authority_granted"] is False
         assert magma_handoff["payload_files_imported"] == 0
         assert magma_handoff["active_count"] == 0
+        assert magma_handoff["provider_health"]["source"] == "not_configured"
+        assert magma_handoff["provider_health"]["provider_configured"] is False
+        assert magma_handoff["provider_health"]["snapshot_valid"] is False
+        assert magma_handoff["provider_health"]["controls_present"] is False
 
     def test_ops_autogrowth_section_hides_ticker_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
@@ -358,6 +362,17 @@ class TestApiOpsExtended:
         assert section["payload_files_imported"] == 0
         assert section["local_paths_recorded"] is False
         assert section["active_count"] == 1
+        provider_health = section["provider_health"]
+        assert provider_health["source"] == "local_ops_snapshot"
+        assert provider_health["status"] == "nominal"
+        assert provider_health["provider_configured"] is True
+        assert provider_health["snapshot_available"] is True
+        assert provider_health["snapshot_valid"] is True
+        assert provider_health["history_feed_present"] is False
+        assert provider_health["snapshot_kind"] == "handoff"
+        assert provider_health["snapshot_count"] == 1
+        assert provider_health["controls_present"] is False
+        assert provider_health["runtime_authority_granted"] is False
         assert section["latest"]["share_id"] == "magma:share:ops-summary"
         assert section["latest"]["entry_count"] == 1
         serialized = json.dumps(section)
@@ -387,6 +402,11 @@ class TestApiOpsExtended:
             )
             assert invalid_section["controls_present"] is False
             assert invalid_section["runtime_authority_granted"] is False
+            assert invalid_section["provider_health"]["reason"] == (
+                "snapshot_invalid"
+            )
+            assert invalid_section["provider_health"]["snapshot_valid"] is False
+            assert invalid_section["provider_health"]["controls_present"] is False
             assert value not in str(invalid_section)
 
     def test_ops_magma_handoff_section_accepts_bounded_history(self):
@@ -468,6 +488,15 @@ class TestApiOpsExtended:
         assert section["controls_present"] is False
         assert section["runtime_authority_granted"] is False
         assert section["payload_files_imported"] == 0
+        provider_health = section["provider_health"]
+        assert provider_health["status"] == "nominal"
+        assert provider_health["history_feed_present"] is True
+        assert provider_health["snapshot_kind"] == "history"
+        assert provider_health["snapshot_count"] == 2
+        assert provider_health["history_retained_count"] == 2
+        assert provider_health["history_dropped_count"] == 0
+        assert provider_health["controls_present"] is False
+        assert provider_health["payload_files_imported"] == 0
         serialized = json.dumps(section)
         assert "operator:decision:ops-history" not in serialized
         assert "C:\\private" not in serialized
@@ -482,6 +511,12 @@ class TestApiOpsExtended:
         assert invalid_section["source"] == "magma_share_import_handoff_invalid"
         assert invalid_section["controls_present"] is False
         assert invalid_section["runtime_authority_granted"] is False
+        assert invalid_section["provider_health"]["reason"] == "snapshot_invalid"
+        assert invalid_section["provider_health"]["snapshot_kind"] == "history"
+        assert invalid_section["provider_health"]["snapshot_count"] == 2
+        assert invalid_section["provider_health"]["active"][0]["id"] == (
+            "MagmaShareImportHandoffProviderInvalid"
+        )
         assert "C:/private/bridge" not in str(invalid_section)
 
     def test_ops_magma_handoff_failure_hides_exception_details(self):
@@ -503,6 +538,12 @@ class TestApiOpsExtended:
         assert section["controls_present"] is False
         assert section["runtime_authority_granted"] is False
         assert section["active"][0]["id"] == "MagmaShareImportHandoffUnavailable"
+        assert section["provider_health"]["reason"] == "provider_unavailable"
+        assert section["provider_health"]["snapshot_available"] is False
+        assert section["provider_health"]["snapshot_valid"] is False
+        assert section["provider_health"]["active"][0]["id"] == (
+            "MagmaShareImportHandoffProviderUnavailable"
+        )
         assert "C:\\private" not in str(section)
 
     def test_ops_route_stage_latency_panels_are_read_only_promql_templates(self):
@@ -1040,6 +1081,9 @@ class TestHologramOpsFlexHW:
         assert "magmaHandoff.controls_present" in html
         assert "magmaHandoff.history" in html
         assert "magmaHistory" in html
+        assert "magmaHandoff.provider_health" in html
+        assert "magmaProviderHealth" in html
+        assert "activeMagmaProviderAlerts" in html
         assert "history_retained_count" in html
         assert "activeMagmaHandoffs" in html
         assert "magma_share_import_handoff_start" not in html

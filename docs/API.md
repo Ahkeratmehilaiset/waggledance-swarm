@@ -208,6 +208,13 @@ schema-version checks from explicit local artifacts. The verifier records
 `artifact_payloads_included=false`, `local_paths_recorded=false`,
 `transport_added=false`, `approval_granted=false`, and
 `release_decision_made=false`.
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py`
+can render a local reviewer handoff bundle verification summary from that
+verifier JSON. It carries `verification_ok`, digest/size/schema status, and
+sanitized blocker tokens for reviewer handoff while keeping
+`direct_bridge_write_performed=false`, `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`approval_granted=false`, and `release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

@@ -218,6 +218,9 @@ class TestApiOpsExtended:
         assert route_stage_latency["source"] == "prometheus_query_templates"
         assert route_stage_latency["controls_present"] is False
         assert route_stage_latency["prometheus_alertmanager_feed"] is False
+        assert route_stage_latency["feed_state"]["source"] == "not_configured"
+        assert route_stage_latency["feed_state"]["controls_present"] is False
+        assert route_stage_latency["feed_state"]["active_count"] == 0
         assert "waggledance_route_stage_request_latency_histogram_ms_bucket" in (
             route_stage_latency["metrics"]
         )
@@ -295,6 +298,8 @@ class TestApiOpsExtended:
         assert section["source"] == "prometheus_query_templates"
         assert section["controls_present"] is False
         assert section["prometheus_alertmanager_feed"] is False
+        assert section["feed_state"]["source"] == "not_configured"
+        assert section["feed_state"]["panel_values"] == []
         assert "waggledance_route_stage_request_latency_histogram_ms_bucket" in (
             section["metrics"]
         )
@@ -307,6 +312,99 @@ class TestApiOpsExtended:
         assert "RouteStageLatencyP95Warning" in alert_exprs
         assert "RouteStageLatencyP99Critical" in alert_exprs
         assert "route_stage_trace" not in str(section)
+        assert "query=" not in str(section)
+
+    def test_ops_route_stage_latency_feed_state_sanitizes_snapshot(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [
+                        {
+                            "id": "route_stage_latency_p95_ms",
+                            "stage": "language_detection",
+                            "value": 3123.456,
+                            "query": "PRIVATE_QUERY_MARKER",
+                        },
+                        {
+                            "id": "route_stage_latency_p99_ms",
+                            "labels": {"stage": "hot_cache"},
+                            "value_ms": 6100,
+                        },
+                        {
+                            "id": "route_stage_request_rate",
+                            "stage": "memory_context",
+                            "value": 2.5,
+                        },
+                        {
+                            "id": "route_stage_latency_p95_ms",
+                            "stage": "raw_query",
+                            "value": 9999,
+                        },
+                    ],
+                    "active_alerts": [
+                        {
+                            "labels": {
+                                "alertname": "RouteStageLatencyP99Critical",
+                                "stage": "hot_cache",
+                                "severity": "critical",
+                            },
+                            "value_ms": 6100,
+                            "summary": "private stack trace",
+                        },
+                        {
+                            "id": "RouteStageLatencyP95Warning",
+                            "stage": "raw_query",
+                            "value": 9999,
+                        },
+                    ],
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+
+        assert section["prometheus_alertmanager_feed"] is True
+        assert feed_state["source"] == "prometheus_alertmanager_snapshot"
+        assert feed_state["status"] == "critical"
+        assert feed_state["severity"] == "critical"
+        assert feed_state["controls_present"] is False
+        assert len(feed_state["panel_values"]) == 3
+        assert feed_state["panel_values"][0]["value"] == 3123.456
+        assert feed_state["panel_values"][0]["status"] == "warning"
+        assert feed_state["active_count"] == 1
+        assert feed_state["active"][0]["id"] == "RouteStageLatencyP99Critical"
+        assert feed_state["active"][0]["stage"] == "hot_cache"
+        assert "raw_query" not in str(section)
+        assert "PRIVATE_QUERY_MARKER" not in str(section)
+        assert "private stack trace" not in str(section)
+
+    def test_ops_route_stage_latency_feed_failure_hides_exception_details(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                raise RuntimeError("private query=secret")
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+
+        assert section["prometheus_alertmanager_feed"] is False
+        assert feed_state["source"] == "prometheus_alertmanager_unavailable"
+        assert feed_state["status"] == "warning"
+        assert feed_state["active"][0]["id"] == "RouteStageLatencyFeedUnavailable"
+        assert "private query=secret" not in str(section)
         assert "query=" not in str(section)
 
     def test_ops_still_has_status_and_recommendation(self):
@@ -437,6 +535,9 @@ class TestHologramOpsFlexHW:
         assert "ops_route_stage_latency" in html
         assert "routeStagePanels" in html
         assert "routeStageAlerts" in html
+        assert "routeStageFeed" in html
+        assert "routeStagePanelValues" in html
+        assert "activeRouteStageLatencyAlerts" in html
         assert "route_stage_latency_start" not in html
         assert "route_stage_latency_stop" not in html
 

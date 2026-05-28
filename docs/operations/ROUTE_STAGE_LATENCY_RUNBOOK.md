@@ -13,8 +13,10 @@ paths, or exception strings.
 
 The metric source is the auth-exempt `/metrics` endpoint. `/api/ops` and the
 hologram Ops panel expose the PromQL templates as read-only metadata for
-operator dashboards; they do not connect to Prometheus directly and do not add
-runtime controls.
+operator dashboards. When the runtime container provides a
+`route_stage_latency_feed` snapshot provider, `/api/ops` also exposes sanitized
+Prometheus/Alertmanager panel values and active alerts under `feed_state`; it
+does not add runtime controls.
 
 ## Metrics
 
@@ -45,6 +47,21 @@ conservative and read-only.
 | --- | --- | --- | --- | --- |
 | `RouteStageLatencyP95Warning` | `histogram_quantile(0.95, sum by (le, stage) (rate(waggledance_route_stage_request_latency_histogram_ms_bucket[5m]))) > 2500` | `10m` | warning | Inspect the slow stage, current release, and upstream model/runtime logs. |
 | `RouteStageLatencyP99Critical` | `histogram_quantile(0.99, sum by (le, stage) (rate(waggledance_route_stage_request_latency_histogram_ms_bucket[5m]))) > 5000` | `10m` | critical | Hold latency-sensitive releases and capture metrics/log evidence before more routing changes. |
+
+## Read-only feed state
+
+The optional `/api/ops.route_stage_latency.feed_state` object is a sanitized
+view of a container-provided Prometheus/Alertmanager snapshot. It may include:
+
+- `panel_values`: known panel IDs, fixed route-stage labels, numeric values,
+  units, and derived nominal/warning/critical status.
+- `active`: known alert IDs, fixed route-stage labels, severity, numeric
+  values, and WD-generated summaries.
+- `updated_at`: the provider timestamp when it is a string.
+
+It intentionally does not forward Alertmanager annotations, descriptions,
+external URLs, raw label sets, raw query text, hostnames, filesystem paths, or
+exception strings.
 
 ## Guardrails
 

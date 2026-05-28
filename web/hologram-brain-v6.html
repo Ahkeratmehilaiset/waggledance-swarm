@@ -1631,13 +1631,39 @@ function buildOpsPanel(el) {
   // ── Route-stage latency panel templates ──
   const routeStagePanels = rsl.panels || [];
   const routeStageAlerts = rsl.alert_thresholds || [];
+  const routeStageFeed = rsl.feed_state || {};
+  const routeStagePanelValues = routeStageFeed.panel_values || [];
+  const activeRouteStageLatencyAlerts = routeStageFeed.active || [];
   html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_route_stage_latency')}</div>`;
   html += `<div class="p-grid">`;
   html += card('Source', rsl.source || '\u2014');
   html += card('Feed', rsl.prometheus_alertmanager_feed ? 'Live' : 'Template');
+  html += card('State', routeStageFeed.status || '\u2014');
+  html += card('Severity', routeStageFeed.severity || 'none');
+  html += card('Active', routeStageFeed.active_count != null ? routeStageFeed.active_count : activeRouteStageLatencyAlerts.length);
   html += card('Panels', routeStagePanels.length);
   html += card('Alerts', routeStageAlerts.length);
   html += `</div></div>`;
+  if (routeStagePanelValues.length) {
+    html += `<div class="p-section"><div class="p-section-title">Latency Feed</div><div class="p-list">`;
+    routeStagePanelValues.forEach(p => {
+      const sev = p.status || 'nominal';
+      const color = sev === 'critical' ? '#f87171' : sev === 'warning' ? '#facc15' : '#9ae6b4';
+      const value = p.value != null ? `${p.value} ${p.unit || ''}` : '\u2014';
+      html += `<div class="p-list-item" style="color:${color}"><strong>${escapeHtml(p.stage || '')}</strong> ${escapeHtml(p.id || 'panel')}: ${escapeHtml(value)} (${escapeHtml(sev)})</div>`;
+    });
+    html += `</div></div>`;
+  }
+  if (activeRouteStageLatencyAlerts.length) {
+    html += `<div class="p-section"><div class="p-section-title">Active Latency Alerts</div><div class="p-list">`;
+    activeRouteStageLatencyAlerts.forEach(a => {
+      const sev = a.severity || 'warning';
+      const color = sev === 'critical' ? '#f87171' : '#facc15';
+      const value = a.value_ms != null ? ` ${a.value_ms} ms` : '';
+      html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'alert')}: ${escapeHtml(a.stage || '')}${escapeHtml(value)}</div>`;
+    });
+    html += `</div></div>`;
+  }
   if (routeStagePanels.length) {
     html += `<div class="p-section"><div class="p-section-title">Latency Panels</div><div class="p-list">`;
     routeStagePanels.forEach(p => {

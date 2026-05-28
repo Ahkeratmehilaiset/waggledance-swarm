@@ -125,8 +125,12 @@ checks and do not add start/stop or configuration controls.
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 `source="prometheus_query_templates"`, metric names, `panels`, and
-`alert_thresholds`; it does not fetch Prometheus directly and does not add
-controls.
+`alert_thresholds`. It also reports `feed_state`, a sanitized read-only
+Prometheus/Alertmanager snapshot when the runtime container provides a
+`route_stage_latency_feed` provider. The live feed accepts only known panel
+IDs, known alert IDs, fixed route-stage labels, numeric values, and timestamps;
+it drops raw summaries, invalid labels, and unknown fields. The feed state does
+not add mutating endpoints or runtime routing controls.
 
 `GET /api/ops` also includes `autogrowth.alert_state`, a read-only local
 snapshot for the hologram Ops panel. It reports `status`, `severity`,

@@ -3205,6 +3205,18 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Opt-in runtime summary receipt binds sanitized query-path payloads.",
             ),
             (
+                "schemas/v3_13_0/magma_share_manifest.v0.json",
+                "Contract-first cross-instance MAGMA share manifest forbids raw material exports.",
+            ),
+            (
+                "tests/contracts/test_magma_share_manifest_schema.py",
+                "Schema regression tests reject raw payloads, replacement maps, raw context, solver output, and raw-query digests.",
+            ),
+            (
+                "docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md",
+                "Architecture doc records the no-runtime-export share boundary.",
+            ),
+            (
                 "tools/run_runtime_receipt_emission_proof.py",
                 "Executable proof for verified runtime receipt emission.",
             ),
@@ -3419,8 +3431,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             image_claim="MAGMA is an append-only provenance trail.",
             safe_statement=(
                 "MAGMA audit/provenance wrappers, receipt bundles, and an "
-                "opt-in solver-trace runtime receipt proof exist; hard "
-                "append-only/default enforcement is not yet safe to claim."
+                "opt-in solver-trace runtime receipt proof exist. A "
+                "contract-first cross-instance share manifest also defines a "
+                "no-payload/no-raw-material export boundary; hard "
+                "append-only/default enforcement is still not yet safe to "
+                "claim."
             ),
             status=_status_for(magma_evidence),
             claim_safe=False,
@@ -3434,8 +3449,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "language is safe.",
             ),
             next_smallest_pr=(
-                "Promote the runtime receipt sink to configured append-only "
-                "storage coverage or keep default wording at opt-in proof level."
+                "Add an operator-gated exporter that validates "
+                "magma.share_manifest.v0 without enabling default runtime "
+                "receipt emission."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

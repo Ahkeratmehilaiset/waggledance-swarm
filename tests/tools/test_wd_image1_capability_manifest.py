@@ -217,6 +217,7 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["metric_names"] == [
         "waggledance_route_stage_observations_total",
         "waggledance_route_stage_request_latency_ms_total",
+        "waggledance_route_stage_request_latency_histogram_ms",
     ]
     assert all(smoke["checks"].values())
     assert smoke["runtime_contract"]["ok"] is True
@@ -224,6 +225,12 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["runtime_contract"]["forbidden_payload_markers_absent"] is True
     assert smoke["operator_visible_metrics"] is True
     assert smoke["rate_query_supported"] is True
+    assert smoke["histogram_quantile_supported"] is True
+    assert smoke["latency_panel_templates_visible"] is True
+    assert smoke["alert_thresholds_documented"] is True
+    assert smoke["runbook_path"] == (
+        "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md"
+    )
     assert smoke["latency_metric_semantics"] == (
         "stage_correlated_request_latency"
     )
@@ -701,6 +708,9 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_missing_inputs(
     assert proof["blocked_reason"] == "missing_required_inputs"
     assert "waggledance/adapters/http/routes/chat.py" in proof["missing_inputs"]
     assert "waggledance/adapters/http/routes/metrics.py" in proof["missing_inputs"]
+    assert "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md" in (
+        proof["missing_inputs"]
+    )
     assert proof["runtime_routing_changed"] is False
     assert proof["disabled_hex_paths_enabled"] is False
     assert proof["raw_payload_recorded"] is False
@@ -714,9 +724,13 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
     for rel_path in (
         "waggledance/adapters/http/routes/chat.py",
         "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/adapters/http/routes/compat_dashboard.py",
+        "web/hologram-brain-v6.html",
         "tests/test_metrics_endpoint.py",
         "tests/integration/test_chat_api_contract.py",
+        "tests/test_legacy_consolidation.py",
         "docs/API.md",
+        "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -820,10 +834,17 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["route_stage_ui_smoke"]["ok"] is True
     assert capability["proof"]["route_stage_operator_metrics_smoke"]["ok"] is True
     assert capability["proof"]["route_stage_runtime_metrics_smoke"]["ok"] is True
+    assert capability["proof"]["route_stage_runtime_metrics_smoke"][
+        "histogram_quantile_supported"
+    ] is True
+    assert capability["proof"]["route_stage_runtime_metrics_smoke"][
+        "latency_panel_templates_visible"
+    ] is True
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
-    assert "p95" in capability["next_smallest_pr"]
+    assert "p95/p99" in capability["safe_statement"]
+    assert "Prometheus/Alertmanager feed" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

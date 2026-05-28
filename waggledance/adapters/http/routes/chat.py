@@ -88,6 +88,29 @@ ROUTE_STAGE_TRACE_ALLOWED_FIELDS = {
     },
 }
 
+ROUTE_STAGE_LATENCY_BUCKETS_MS: tuple[float, ...] = (
+    50.0,
+    100.0,
+    250.0,
+    500.0,
+    1000.0,
+    2500.0,
+    5000.0,
+    10000.0,
+)
+
+ROUTE_STAGE_LATENCY_BUCKET_LABELS: tuple[str, ...] = (
+    "50",
+    "100",
+    "250",
+    "500",
+    "1000",
+    "2500",
+    "5000",
+    "10000",
+    "+Inf",
+)
+
 
 class RouteStageRuntimeMetrics:
     """In-memory counters for sanitized chat route-stage observations."""
@@ -100,6 +123,10 @@ class RouteStageRuntimeMetrics:
         }
         self._request_latency_ms_total = {
             stage: 0.0 for stage in self._stage_order
+        }
+        self._request_latency_ms_buckets = {
+            stage: {label: 0 for label in ROUTE_STAGE_LATENCY_BUCKET_LABELS}
+            for stage in self._stage_order
         }
         self._lock = Lock()
 
@@ -139,6 +166,14 @@ class RouteStageRuntimeMetrics:
             for stage in observed:
                 self._observations_total[stage] += 1
                 self._request_latency_ms_total[stage] += latency_ms
+                for upper_bound, label in zip(
+                    ROUTE_STAGE_LATENCY_BUCKETS_MS,
+                    ROUTE_STAGE_LATENCY_BUCKET_LABELS[:-1],
+                    strict=True,
+                ):
+                    if latency_ms <= upper_bound:
+                        self._request_latency_ms_buckets[stage][label] += 1
+                self._request_latency_ms_buckets[stage]["+Inf"] += 1
 
     def snapshot(self) -> dict[str, dict[str, float] | list[str]]:
         with self._lock:
@@ -151,6 +186,16 @@ class RouteStageRuntimeMetrics:
                 "request_latency_ms_total": dict(
                     self._request_latency_ms_total
                 ),
+                "request_latency_ms_bucket_labels": list(
+                    ROUTE_STAGE_LATENCY_BUCKET_LABELS
+                ),
+                "request_latency_ms_buckets": {
+                    stage: {
+                        label: float(value)
+                        for label, value in buckets.items()
+                    }
+                    for stage, buckets in self._request_latency_ms_buckets.items()
+                },
             }
 
 

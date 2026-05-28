@@ -86,6 +86,12 @@ waggledance_route_stage_observations_total{stage="language_detection"} 12.0
 # HELP waggledance_route_stage_request_latency_ms_total Total request latency in milliseconds for sanitized chat requests where the route stage was observed.
 # TYPE waggledance_route_stage_request_latency_ms_total counter
 waggledance_route_stage_request_latency_ms_total{stage="language_detection"} 320.5
+# HELP waggledance_route_stage_request_latency_histogram_ms Histogram of request latency in milliseconds for sanitized chat requests where the route stage was observed.
+# TYPE waggledance_route_stage_request_latency_histogram_ms histogram
+waggledance_route_stage_request_latency_histogram_ms_bucket{le="250",stage="language_detection"} 11.0
+waggledance_route_stage_request_latency_histogram_ms_bucket{le="+Inf",stage="language_detection"} 12.0
+waggledance_route_stage_request_latency_histogram_ms_count{stage="language_detection"} 12.0
+waggledance_route_stage_request_latency_histogram_ms_sum{stage="language_detection"} 320.5
 ...
 ```
 
@@ -98,7 +104,16 @@ Route-stage runtime counters are recorded only after the chat response has
 been sanitized through the route-stage allowlist. `observations_total` supports
 Prometheus `rate(...)` by stage. `request_latency_ms_total` is total request
 latency for requests where a stage was observed; divide it by
-`observations_total` for stage-correlated request latency. It is not an internal span timer and does not store raw queries, profiles, language hints, context, or full trace payloads.
+`observations_total` for stage-correlated request latency. The
+`waggledance_route_stage_request_latency_histogram_ms` histogram supports p95/p99
+Prometheus panels with `histogram_quantile(...)`. It is not an internal span timer and does not store raw queries, profiles, language hints, context, or full trace payloads.
+
+Route-stage latency panel and alert templates are documented in
+`docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md`. The initial operator rules
+watch p95 and p99 request latency by route-stage label using
+`waggledance_route_stage_request_latency_histogram_ms_bucket`; they are read-only
+Prometheus checks and do not add mutating endpoints or runtime routing
+authority.
 
 Low-risk autogrowth alert thresholds are documented in
 `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md`. The initial operator rules
@@ -106,6 +121,12 @@ watch `waggledance_autogrowth_up`, `waggledance_autogrowth_errors_total`,
 `waggledance_autogrowth_wakeups_total`, and
 `waggledance_autogrowth_non_idle_ticks_total`; they are read-only Prometheus
 checks and do not add start/stop or configuration controls.
+
+`GET /api/ops` also includes `route_stage_latency`, a read-only list of
+PromQL panel and alert templates for route-stage p95/p99 latency. It reports
+`source="prometheus_query_templates"`, metric names, `panels`, and
+`alert_thresholds`; it does not fetch Prometheus directly and does not add
+controls.
 
 `GET /api/ops` also includes `autogrowth.alert_state`, a read-only local
 snapshot for the hologram Ops panel. It reports `status`, `severity`,
@@ -256,7 +277,7 @@ query, response, confidence, source, and route type for downstream night learnin
 | `GET /api/learning/state-machine` | GET | Current learning lifecycle state (awake/replay/consolidation/dream/training/canary/morning_report) |
 | `GET /api/swarm/scores` | GET | SwarmScheduler agent scores |
 | `GET /api/learning` | GET | LearningEngine status + leaderboard |
-| `GET /api/ops` | GET | OpsAgent status, model recommendations, and read-only autogrowth alert state |
+| `GET /api/ops` | GET | OpsAgent status, model recommendations, read-only route-stage latency panel templates, and read-only autogrowth alert state |
 | `GET /api/micro_model` | GET | MicroModel V1/V2 status and promotion stats |
 
 ---

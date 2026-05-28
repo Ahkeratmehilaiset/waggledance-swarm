@@ -785,13 +785,18 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     required_paths = (
         "waggledance/adapters/http/routes/chat.py",
         "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/adapters/http/routes/compat_dashboard.py",
+        "web/hologram-brain-v6.html",
         "tests/test_metrics_endpoint.py",
         "tests/integration/test_chat_api_contract.py",
+        "tests/test_legacy_consolidation.py",
         "docs/API.md",
+        "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
     )
     metric_names = (
         "waggledance_route_stage_observations_total",
         "waggledance_route_stage_request_latency_ms_total",
+        "waggledance_route_stage_request_latency_histogram_ms",
     )
     missing_inputs = [
         rel_path
@@ -836,13 +841,25 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     metrics_text = (
         repo_root / "waggledance/adapters/http/routes/metrics.py"
     ).read_text(encoding="utf-8")
+    ops_text = (
+        repo_root / "waggledance/adapters/http/routes/compat_dashboard.py"
+    ).read_text(encoding="utf-8")
+    html_text = (repo_root / "web/hologram-brain-v6.html").read_text(
+        encoding="utf-8"
+    )
     metrics_tests_text = (
         repo_root / "tests/test_metrics_endpoint.py"
     ).read_text(encoding="utf-8")
     chat_tests_text = (
         repo_root / "tests/integration/test_chat_api_contract.py"
     ).read_text(encoding="utf-8")
+    ops_tests_text = (repo_root / "tests/test_legacy_consolidation.py").read_text(
+        encoding="utf-8"
+    )
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
+    runbook_text = (
+        repo_root / "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
 
     try:
         from types import SimpleNamespace
@@ -919,6 +936,12 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             'stage="hot_cache"} 20.0',
             'waggledance_route_stage_request_latency_ms_total{'
             'stage="orchestrator_llm_fallback"} 12.5',
+            'waggledance_route_stage_request_latency_histogram_ms_bucket{'
+            'le="50",stage="language_detection"} 2.0',
+            'waggledance_route_stage_request_latency_histogram_ms_count{'
+            'stage="language_detection"} 2.0',
+            'waggledance_route_stage_request_latency_histogram_ms_sum{'
+            'stage="language_detection"} 20.0',
         }
         runtime_contract = {
             "ok": (
@@ -966,6 +989,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "stage in self._allowed_stages" in chat_text
             and "observations_total" in chat_text
             and "request_latency_ms_total" in chat_text
+            and "request_latency_ms_buckets" in chat_text
         ),
         "metrics_export_counters_present": all(
             token in metrics_text
@@ -973,6 +997,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "_collect_route_stage_runtime_metrics",
                 "waggledance_route_stage_observations_total",
                 "waggledance_route_stage_request_latency_ms_total",
+                "waggledance_route_stage_request_latency_histogram_ms",
+                "HistogramMetricFamily",
                 "CHAT_ROUTE_STAGE_ORDER",
             )
         ),
@@ -986,6 +1012,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "test_metrics_route_stage_runtime_counters_default_to_zero",
                 "WD_IMAGE1_PRIVATE_QUERY_MARKER",
                 "not_an_allowed_stage",
+                "request_latency_histogram_ms_bucket",
+                "request_latency_histogram_ms_count",
             )
         ),
         "chat_contract_records_metrics_after_request": all(
@@ -993,13 +1021,41 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             for token in (
                 "test_chat_request_updates_privacy_safe_route_stage_runtime_metrics",
                 "waggledance_route_stage_observations_total",
+                "waggledance_route_stage_request_latency_histogram_ms_bucket",
                 "PRIVATE_QUERY_MARKER_METRICS",
+            )
+        ),
+        "ops_latency_panel_templates_present": all(
+            token in "\n".join((ops_text, html_text, ops_tests_text))
+            for token in (
+                "route_stage_latency",
+                "routeStagePanels",
+                "RouteStageLatencyP95Warning",
+                "RouteStageLatencyP99Critical",
+                "histogram_quantile(0.95",
+                "histogram_quantile(0.99",
+                "prometheus_query_templates",
+                "controls_present",
+            )
+        ),
+        "latency_runbook_present": all(
+            token in runbook_text
+            for token in (
+                "Route-stage latency operator runbook",
+                "waggledance_route_stage_request_latency_histogram_ms_bucket",
+                "RouteStageLatencyP95Warning",
+                "RouteStageLatencyP99Critical",
+                "histogram_quantile(0.95",
+                "histogram_quantile(0.99",
+                "No panel or alert rule should call a mutating endpoint",
             )
         ),
         "api_docs_present": (
             "route-stage runtime observation/latency counters" in docs_text
             and "waggledance_route_stage_observations_total" in docs_text
             and "waggledance_route_stage_request_latency_ms_total" in docs_text
+            and "waggledance_route_stage_request_latency_histogram_ms_bucket" in docs_text
+            and "ROUTE_STAGE_LATENCY_RUNBOOK.md" in docs_text
             and "It is not an internal span timer" in docs_text
         ),
         "runtime_contract_ok": runtime_contract["ok"] is True,
@@ -1012,13 +1068,18 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "runtime_contract": runtime_contract,
         "operator_visible_metrics": ok,
         "rate_query_supported": ok,
+        "histogram_quantile_supported": ok,
+        "latency_panel_templates_visible": ok,
+        "alert_thresholds_documented": ok,
         "latency_metric_semantics": "stage_correlated_request_latency",
+        "runbook_path": "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
         "safe_conclusion": (
             "The public Prometheus /metrics endpoint exposes per-stage "
             "observation counters and stage-correlated request latency "
-            "counters from sanitized route traces. It supports Prometheus "
-            "rate queries without storing raw query, profile, language, "
-            "context, or full route trace payloads."
+            "counters and histograms from sanitized route traces. It supports "
+            "Prometheus rate and p95/p99 histogram_quantile panels without "
+            "storing raw query, profile, language, context, or full route "
+            "trace payloads."
         ),
     }
 
@@ -3021,8 +3082,20 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Privacy-safe HTTP/WS route-stage trace boundary.",
             ),
             (
+                "waggledance/adapters/http/routes/metrics.py",
+                "Prometheus route-stage counters and latency histogram.",
+            ),
+            (
+                "waggledance/adapters/http/routes/compat_dashboard.py",
+                "Ops API exposes read-only route-stage latency panel templates.",
+            ),
+            (
                 "web/hologram-brain-v6.html",
-                "Dashboard chat route-stage label rendering.",
+                "Dashboard chat route-stage labels and Ops latency panels.",
+            ),
+            (
+                "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
+                "Operator p95/p99 latency panel and alert thresholds.",
             ),
         ),
     )
@@ -3218,8 +3291,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "topology; HTTP/WS route-stage labels are privacy-safe and "
                 "dashboard-visible, route-stage operator metrics expose "
                 "counts and runtime rate/latency counters from sanitized "
-                "traces only, and exact runtime entry order depends on flags "
-                "and call path."
+                "traces plus p95/p99 PromQL latency panel templates only, "
+                "and exact runtime entry order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -3231,8 +3304,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add p95/p99 route-stage latency panels and alert thresholds "
-                "from Prometheus queries without storing raw traces."
+                "Wire a real Prometheus/Alertmanager feed into the read-only "
+                "route-stage latency panel state without adding controls."
             ),
             proof=hex_entry_proof,
         ),

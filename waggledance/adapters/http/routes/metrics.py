@@ -38,7 +38,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from prometheus_client import CollectorRegistry, generate_latest
-from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
+from prometheus_client.core import (
+    CounterMetricFamily,
+    GaugeMetricFamily,
+    HistogramMetricFamily,
+)
 
 from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
 
@@ -264,6 +268,22 @@ class _WaggleCollector:
         latency_sums = snapshot.get("request_latency_ms_total")
         if not isinstance(latency_sums, dict):
             latency_sums = {}
+        bucket_labels = snapshot.get("request_latency_ms_bucket_labels")
+        if not isinstance(bucket_labels, list) or not bucket_labels:
+            bucket_labels = [
+                "50",
+                "100",
+                "250",
+                "500",
+                "1000",
+                "2500",
+                "5000",
+                "10000",
+                "+Inf",
+            ]
+        buckets_by_stage = snapshot.get("request_latency_ms_buckets")
+        if not isinstance(buckets_by_stage, dict):
+            buckets_by_stage = {}
 
         observed = CounterMetricFamily(
             "waggledance_route_stage_observations_total",
@@ -278,17 +298,35 @@ class _WaggleCollector:
             ),
             labels=["stage"],
         )
+        latency_histogram = HistogramMetricFamily(
+            "waggledance_route_stage_request_latency_histogram_ms",
+            (
+                "Histogram of request latency in milliseconds for sanitized "
+                "chat requests where the route stage was observed."
+            ),
+            labels=["stage"],
+        )
         for stage in CHAT_ROUTE_STAGE_ORDER:
+            latency_sum = _as_float(latency_sums.get(stage)) or 0.0
             observed.add_metric(
                 [stage],
                 _as_float(observations.get(stage)) or 0.0,
             )
-            latency.add_metric(
+            latency.add_metric([stage], latency_sum)
+            stage_buckets = buckets_by_stage.get(stage)
+            if not isinstance(stage_buckets, dict):
+                stage_buckets = {}
+            latency_histogram.add_metric(
                 [stage],
-                _as_float(latency_sums.get(stage)) or 0.0,
+                [
+                    (str(label), _as_float(stage_buckets.get(label)) or 0.0)
+                    for label in bucket_labels
+                ],
+                sum_value=latency_sum,
             )
         yield observed
         yield latency
+        yield latency_histogram
 
     def _collect_autogrowth_metrics(self, container: Any) -> Iterable[Any]:
         up = GaugeMetricFamily(

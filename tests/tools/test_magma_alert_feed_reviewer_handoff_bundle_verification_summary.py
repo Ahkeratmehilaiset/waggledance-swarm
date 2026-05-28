@@ -162,6 +162,46 @@ def test_reviewer_handoff_bundle_verification_summary_blocks_invalid_contract_fi
         assert summary["release_decision_made"] is False
 
 
+def test_reviewer_handoff_bundle_verification_summary_blocks_nonmatching_checks() -> None:
+    cases = (
+        (
+            "digest_checks",
+            "reviewer_handoff_summary",
+            "mismatch",
+            "verification_check_not_match:digest_checks:reviewer_handoff_summary",
+        ),
+        (
+            "size_checks",
+            "validator_report",
+            "missing_index_record",
+            "verification_check_not_match:size_checks:validator_report",
+        ),
+        (
+            "schema_version_checks",
+            "bridge_event_template",
+            "unknown",
+            "verification_check_not_match:schema_version_checks:bridge_event_template",
+        ),
+    )
+
+    for check_name, artifact_id, status, expected_blocker in cases:
+        report = _verification_report()
+        report[check_name][artifact_id] = status
+
+        summary = build_magma_alert_feed_reviewer_handoff_bundle_verification_summary(
+            verification_report=report,
+            reviewer_agent_id="claude-rco-1",
+            handoff_ref="bridge:handoff:bundle-verification",
+            now_utc=datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc),
+        )
+
+        assert summary["ok"] is False, check_name
+        assert expected_blocker in summary["blockers"], check_name
+        assert expected_blocker in summary["operator_boundary"]["boundary_blockers"]
+        assert summary["approval_granted"] is False
+        assert summary["transport_added"] is False
+
+
 def test_reviewer_handoff_bundle_verification_summary_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

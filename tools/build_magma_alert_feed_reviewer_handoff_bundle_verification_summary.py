@@ -315,6 +315,13 @@ def _verification_report_contract_blockers(report: Mapping[str, Any]) -> list[st
         blockers.append("verification_report_verification_version_mismatch")
     if report.get("bundle_index_version") != BUNDLE_INDEX_VERSION:
         blockers.append("verification_report_bundle_index_version_mismatch")
+    for check_name in ("digest_checks", "size_checks", "schema_version_checks"):
+        checks = _check_statuses(_mapping(report.get(check_name)))
+        for artifact_id, status in checks.items():
+            if status != "match":
+                blockers.append(
+                    f"verification_check_not_match:{check_name}:{artifact_id}"
+                )
     return sorted(blockers)
 
 

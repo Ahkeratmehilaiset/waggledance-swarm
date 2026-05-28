@@ -221,6 +221,24 @@ python tools\build_magma_alert_feed_reviewer_bridge_event_template.py `
   --json
 ```
 
+To bind the local review artifacts together for handoff, build a local
+reviewer handoff bundle index with
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_index.py`. The index
+records only digest, size, role, and schema metadata for the release evidence
+package, validator report, reviewer summary, and bridge-event template. It
+keeps `artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `approval_granted=false`, and
+`release_decision_made=false`.
+
+```powershell
+python tools\build_magma_alert_feed_reviewer_handoff_bundle_index.py `
+  --package-json <new-evidence-dir>\magma_alert_feed_release_evidence.json `
+  --validation-json <collected>\validation.json `
+  --summary-json <collected>\reviewer_handoff_summary.json `
+  --bridge-template-json <collected>\reviewer_bridge_event_template.json `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

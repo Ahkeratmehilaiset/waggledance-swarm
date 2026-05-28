@@ -881,8 +881,9 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["ok"] is True
     assert capability["proof"]["solver_call_trace_receipt_bound"] is True
     assert "operator-gated local exporter" in capability["safe_statement"]
+    assert "no-authority importer" in capability["safe_statement"]
     assert "hard append-only" in capability["safe_statement"]
-    assert "verifier/importer" in capability["next_smallest_pr"]
+    assert "peer-review handoff" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

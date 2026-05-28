@@ -59,11 +59,38 @@ python tools\export_magma_share_manifest.py `
   --json
 ```
 
+## No-Authority Importer
+
+`tools/import_magma_share_manifest.py` verifies a received
+`share_manifest.json` as replay metadata only. It requires a local
+receipt-bundle `manifest.json` so the receiver can prove the share manifest's
+receipt and EvaluationResult digests still match the review context. The
+importer rejects stale manifests and context drift, including a changed source
+manifest digest or changed per-entry receipt/EvaluationResult references.
+
+The importer does not copy payload files, does not reconstruct a receipt
+bundle, does not grant runtime authority, and does not enable runtime export.
+Its report contains a no-authority replay plan with digest and categorical
+review fields only.
+
+Example:
+
+```powershell
+python tools\import_magma_share_manifest.py `
+  --share-manifest <share-export-dir>\share_manifest.json `
+  --source-manifest <receipt-bundle>\manifest.json `
+  --expected-share-id magma:share:example:001 `
+  --expected-purpose cross_instance_replay `
+  --max-age-hours 168 `
+  --json
+```
+
 ## Non-Goals
 
 This contract does not make MAGMA append-only by default, does not export full
 receipt bundles, does not add cross-instance transport, and does not grant any
-runtime authority. The exporter emits a local metadata artifact only.
+runtime authority. The exporter emits a local metadata artifact only, and the
+importer consumes that artifact only as local no-authority replay metadata.
 
 ## Validation
 
@@ -72,6 +99,7 @@ Run:
 ```powershell
 python -m pytest tests\contracts\test_magma_share_manifest_schema.py -q
 python -m pytest tests\tools\test_magma_share_manifest_exporter.py -q
+python -m pytest tests\tools\test_magma_share_manifest_importer.py -q
 ```
 
 The regression tests prove the good fixture validates and that raw payloads,
@@ -79,4 +107,8 @@ payload digests, replacement maps, raw context, raw solver output, raw-query
 digests, payload files, invalid timestamps, and runtime export enablement are
 rejected. The exporter tests prove that source receipt bundles are verified
 fail-closed, an operator approval ref is required, artifact counts must match,
-and private payload markers do not appear in exported JSON.
+and private payload markers do not appear in exported JSON. The importer tests
+prove that fresh share manifests build no-authority replay plans, stale
+manifests are rejected, context-drifted receipt references are rejected, source
+receipt verification remains fail-closed, and CLI output does not echo private
+payload markers or local paths.

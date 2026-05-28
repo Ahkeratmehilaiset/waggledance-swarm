@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -335,7 +336,8 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
-        return float(value) != 0.0
+        numeric = float(value)
+        return math.isfinite(numeric) and numeric != 0.0
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in {"true", "1", "yes"}:
@@ -350,7 +352,7 @@ def _as_nonnegative_float(value: Any) -> float | None:
         numeric = float(value)
     except (TypeError, ValueError):
         return None
-    if numeric < 0:
+    if not math.isfinite(numeric) or numeric < 0:
         return None
     return numeric
 

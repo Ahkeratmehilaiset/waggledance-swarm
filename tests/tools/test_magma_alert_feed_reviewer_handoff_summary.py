@@ -240,6 +240,8 @@ def test_reviewer_handoff_summary_cli_malformed_validation_lists_are_path_free(
     report["ok"] = False
     report["blockers"] = 123
     report["warnings"] = {"path": "C:/private/validation.json"}
+    package["manual_gate"]["current_sample_hold_reasons"] = 42
+    package["manual_gate"]["missing_required_samples"] = False
     package_path = tmp_path / "magma_alert_feed_release_evidence.json"
     report_path = tmp_path / "validation.json"
     package_path.write_text(json.dumps(package), encoding="utf-8")
@@ -274,10 +276,39 @@ def test_reviewer_handoff_summary_cli_malformed_validation_lists_are_path_free(
     assert payload["validated_evidence"]["warnings"] == [
         "unsafe_marker_redacted"
     ]
+    assert payload["manual_gate_snapshot"]["hold_reasons"] == [
+        "unsafe_marker_redacted"
+    ]
+    assert payload["manual_gate_snapshot"]["missing_required_samples"] == [
+        "unsafe_marker_redacted"
+    ]
     assert "Traceback" not in result.stderr
     assert str(tmp_path) not in result.stdout
     assert "validation.json" not in result.stdout
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+
+
+def test_reviewer_handoff_summary_rejects_non_finite_payload_values() -> None:
+    package, report = _package_and_validation_report()
+
+    for raw_value in ("NaN", "Inf", "-Inf", float("nan"), float("inf")):
+        package["authority"]["payload_files_imported"] = raw_value
+        package["authority"]["runtime_authority_granted"] = raw_value
+        summary = build_magma_alert_feed_reviewer_handoff_summary(
+            package=package,
+            validation_report=report,
+            reviewer_agent_id="reviewer:wd-image1",
+            bridge_event_ref="bridge:wd-image1-reviewer-handoff",
+            now_utc=FIXED_NOW,
+        )
+
+        assert summary["authority_boundary"][
+            "observed_payload_files_imported"
+        ] == 0.0
+        assert summary["authority_boundary"][
+            "observed_runtime_authority_granted"
+        ] is False
+        json.dumps(summary, allow_nan=False)
 
 
 def _sha256_hex(data: bytes) -> str:

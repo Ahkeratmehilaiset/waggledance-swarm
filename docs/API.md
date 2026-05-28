@@ -148,12 +148,15 @@ configuration controls.
 
 `GET /api/ops` also includes `magma_share_import_handoff`, a read-only
 operator summary for an explicitly supplied
-`share_import_peer_review_handoff.json` snapshot. It reports only
-status/severity, digest refs, share ID, purpose, decision category, handoff
-scope, entry counts, and no-authority privacy flags. The default state is
-`source="not_configured"`. The summary does not scan disk, import payloads,
-record local paths, expose raw operator decision IDs, add runtime authority, or
-add dashboard controls.
+`share_import_peer_review_handoff.json` snapshot or an explicitly supplied
+bounded history of those snapshots. It reports only status/severity, digest
+refs, share ID, purpose, decision category, handoff scope, entry counts,
+retention metadata (`history_limit`, retained/dropped counts), and
+no-authority privacy flags. The default state is `source="not_configured"`.
+The summary validates every supplied history entry before truncating the
+operator-visible list. It does not scan disk, import payloads, record local
+paths, expose raw operator decision IDs, add runtime authority, or add
+dashboard controls.
 
 ---
 

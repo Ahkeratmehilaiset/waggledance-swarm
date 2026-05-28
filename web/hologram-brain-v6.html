@@ -1558,6 +1558,7 @@ function buildOpsPanel(el) {
   const activeAutogrowthAlerts = agAlert.active || [];
   const magmaLatest = magmaHandoff.latest || {};
   const activeMagmaHandoffs = magmaHandoff.active || [];
+  const magmaHistory = magmaHandoff.history || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1700,6 +1701,8 @@ function buildOpsPanel(el) {
   html += card('Payloads', magmaHandoff.payload_files_imported != null ? magmaHandoff.payload_files_imported : '0');
   html += card('Paths', magmaHandoff.local_paths_recorded ? 'Recorded' : 'No');
   html += card('Controls', magmaHandoff.controls_present ? 'Yes' : 'No');
+  html += card('History', magmaHandoff.history_retained_count != null ? magmaHandoff.history_retained_count : magmaHistory.length);
+  html += card('Limit', magmaHandoff.history_limit != null ? magmaHandoff.history_limit : '\u2014');
   html += `</div></div>`;
   if (activeMagmaHandoffs.length) {
     html += `<div class="p-section"><div class="p-section-title">MAGMA Handoffs</div><div class="p-list">`;
@@ -1707,6 +1710,17 @@ function buildOpsPanel(el) {
       const decision = h.import_decision || 'peer_review';
       const share = h.share_id || '';
       html += `<div class="p-list-item"><strong>${escapeHtml(h.handoff_id || 'handoff')}</strong>: ${escapeHtml(decision)} ${escapeHtml(share)}</div>`;
+    });
+    html += `</div></div>`;
+  }
+  if (magmaHistory.length) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff History</div><div class="p-list">`;
+    magmaHistory.forEach(h => {
+      const decision = h.import_decision || 'peer_review';
+      const status = h.status || '';
+      const share = h.share_id || '';
+      const created = h.created_at_utc || '';
+      html += `<div class="p-list-item"><strong>${escapeHtml(h.handoff_id || 'handoff')}</strong>: ${escapeHtml(decision)} ${escapeHtml(status)} ${escapeHtml(share)} <span style="opacity:0.65">${escapeHtml(created)}</span></div>`;
     });
     html += `</div></div>`;
   }

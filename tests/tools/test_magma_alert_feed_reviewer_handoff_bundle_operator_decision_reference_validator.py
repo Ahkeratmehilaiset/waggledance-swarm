@@ -160,6 +160,75 @@ def test_operator_decision_reference_validator_blocks_unverified_or_mismatched_b
     assert report["transport_added"] is False
 
 
+def test_operator_decision_reference_validator_blocks_forged_verification_summary() -> None:
+    cases = (
+        (
+            "top_level_blocker",
+            lambda summary: summary.__setitem__(
+                "blockers",
+                ["digest_mismatch:reviewer_handoff_summary"],
+            ),
+            "verification_summary_blockers_present",
+        ),
+        (
+            "verification_blocker",
+            lambda summary: summary["bundle_verification"].__setitem__(
+                "blockers",
+                ["size_mismatch:bridge_event_template"],
+            ),
+            "verification_summary_report_blockers_present",
+        ),
+        (
+            "digest_mismatch",
+            lambda summary: summary["bundle_verification"]["digest_checks"].__setitem__(
+                "reviewer_handoff_summary",
+                "mismatch",
+            ),
+            (
+                "verification_summary_check_not_match:"
+                "digest_checks:reviewer_handoff_summary"
+            ),
+        ),
+        (
+            "size_missing_record",
+            lambda summary: summary["bundle_verification"]["size_checks"].__setitem__(
+                "validator_report",
+                "missing_index_record",
+            ),
+            "verification_summary_check_not_match:size_checks:validator_report",
+        ),
+        (
+            "schema_unknown",
+            lambda summary: summary["bundle_verification"][
+                "schema_version_checks"
+            ].__setitem__("bridge_event_template", "unknown"),
+            (
+                "verification_summary_check_not_match:"
+                "schema_version_checks:bridge_event_template"
+            ),
+        ),
+    )
+
+    for label, mutate, expected_blocker in cases:
+        verification_summary = _verification_summary()
+        mutate(verification_summary)
+
+        report = validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference(
+            verification_summary=verification_summary,
+            bridge_template_report=_bridge_template_report(),
+            expected_decision_ref=DECISION_REF,
+            now_utc=FIXED_NOW,
+        )
+
+        assert report["ok"] is False, label
+        assert expected_blocker in report["blockers"], label
+        assert report["operator_decision_reference"][
+            "decision_reference_validated"
+        ] is False
+        assert report["approval_granted"] is False
+        assert report["release_decision_made"] is False
+
+
 def test_operator_decision_reference_validator_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

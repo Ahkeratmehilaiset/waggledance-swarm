@@ -33,6 +33,17 @@ VALIDATION_VERSION = (
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
 
+_ARTIFACT_IDS = (
+    "release_evidence_package",
+    "validator_report",
+    "reviewer_handoff_summary",
+    "bridge_event_template",
+)
+_VERIFICATION_CHECK_NAMES = (
+    "digest_checks",
+    "size_checks",
+    "schema_version_checks",
+)
 _SUMMARY_FALSE_FIELDS = (
     "approval_granted",
     "release_decision_made",
@@ -250,6 +261,18 @@ def _collect_verification_summary_blockers(
     verification = _mapping(summary.get("bundle_verification"))
     if verification.get("verification_ok") is not True:
         blockers.append("verification_summary_verification_not_ok")
+    if _has_reported_items(summary.get("blockers")):
+        blockers.append("verification_summary_blockers_present")
+    if _has_reported_items(verification.get("blockers")):
+        blockers.append("verification_summary_report_blockers_present")
+    for check_name in _VERIFICATION_CHECK_NAMES:
+        checks = _mapping(verification.get(check_name))
+        for artifact_id in _ARTIFACT_IDS:
+            if checks.get(artifact_id) != "match":
+                blockers.append(
+                    "verification_summary_check_not_match:"
+                    f"{check_name}:{artifact_id}"
+                )
     for field in _SUMMARY_FALSE_FIELDS:
         if summary.get(field) is not False:
             blockers.append(f"verification_summary_{field}_not_false")
@@ -421,6 +444,14 @@ def _assert_mapping(artifact_id: str, value: Mapping[str, Any]) -> None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _has_reported_items(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return len(value) > 0
+    return True
 
 
 def _safe_ref_or_invalid(value: Any) -> str:

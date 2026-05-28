@@ -73,6 +73,14 @@ bundle, does not grant runtime authority, and does not enable runtime export.
 Its report contains a no-authority replay plan with digest and categorical
 review fields only.
 
+When an operator wants to hand a verified import to a peer-review lane, the
+same CLI can write a local `share_import_peer_review_handoff.json` artifact via
+`--peer-review-handoff-out` into an existing directory. That handoff requires
+an operator decision ref, operator agent ref, and bridge event ref. It records
+the import decision, digest bindings, replay metadata refs, and
+authority/privacy flags, while redacting the operator decision id and recording
+no local paths.
+
 Example:
 
 ```powershell
@@ -82,6 +90,10 @@ python tools\import_magma_share_manifest.py `
   --expected-share-id magma:share:example:001 `
   --expected-purpose cross_instance_replay `
   --max-age-hours 168 `
+  --peer-review-handoff-out <existing-dir>\share_import_peer_review_handoff.json `
+  --operator-decision-id operator:decision:example `
+  --operator-agent operator:wd-image1 `
+  --bridge-event-ref bridge:example `
   --json
 ```
 
@@ -90,7 +102,9 @@ python tools\import_magma_share_manifest.py `
 This contract does not make MAGMA append-only by default, does not export full
 receipt bundles, does not add cross-instance transport, and does not grant any
 runtime authority. The exporter emits a local metadata artifact only, and the
-importer consumes that artifact only as local no-authority replay metadata.
+importer consumes that artifact only as local no-authority replay metadata. The
+peer-review handoff is also a local operator-owned record; it is not an
+activation approval, transport mechanism, or runtime mutation path.
 
 ## Validation
 
@@ -110,5 +124,6 @@ fail-closed, an operator approval ref is required, artifact counts must match,
 and private payload markers do not appear in exported JSON. The importer tests
 prove that fresh share manifests build no-authority replay plans, stale
 manifests are rejected, context-drifted receipt references are rejected, source
-receipt verification remains fail-closed, and CLI output does not echo private
-payload markers or local paths.
+receipt verification remains fail-closed, operator-owned peer-review handoffs
+record import decisions without runtime authority, and CLI output does not echo
+private payload markers or local paths.

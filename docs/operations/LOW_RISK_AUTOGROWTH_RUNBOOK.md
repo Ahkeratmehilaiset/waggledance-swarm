@@ -65,4 +65,3 @@ be evidence collection, not automatic mutation.
   paths, or exception strings. Metric names and numeric values are enough.
 - Recovery actions stay manual and operator-owned until a separate reviewed PR
   adds a read-only alert-state surface or an approved operational control.
-

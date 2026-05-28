@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/magma_share_manifest.v0.json",
+  "title": "MAGMA Share Manifest v0",
+  "description": "Contract-first manifest for cross-instance MAGMA sharing. It exports only sanitized receipt/evaluation references and an explicit raw-material absence inventory; it does not export payloads, replacement maps, raw context, raw solver outputs, or deterministic raw-query digests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "share_id",
+    "created_at_utc",
+    "producer",
+    "purpose",
+    "runtime_export_enabled",
+    "sanitized_source_manifest_digest",
+    "export_policy",
+    "artifact_counts",
+    "forbidden_material_absent",
+    "entries"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": "magma.share_manifest.v0"
+    },
+    "share_id": {
+      "$ref": "#/definitions/ref"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "role", "bridge_event_ref"],
+      "properties": {
+        "agent_id": {
+          "$ref": "#/definitions/ref"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["lead", "tools", "rco", "operator"]
+        },
+        "bridge_event_ref": {
+          "$ref": "#/definitions/ref"
+        }
+      }
+    },
+    "purpose": {
+      "type": "string",
+      "enum": [
+        "peer_review",
+        "rco_review",
+        "cross_instance_replay",
+        "operator_archive"
+      ]
+    },
+    "runtime_export_enabled": {
+      "description": "This v0 contract is schema/doc/test only. Runtime export requires a later operator-gated PR.",
+      "const": false
+    },
+    "sanitized_source_manifest_digest": {
+      "description": "Digest of the sanitized local source manifest, not a raw payload/query digest.",
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "export_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "payload_visibility",
+        "allow_payload_digests",
+        "allow_raw_payloads",
+        "allow_replacement_maps",
+        "allow_raw_context",
+        "allow_raw_solver_outputs",
+        "allow_deterministic_query_digests"
+      ],
+      "properties": {
+        "contract": {
+          "const": "sanitization_v0"
+        },
+        "payload_visibility": {
+          "const": "no_payload"
+        },
+        "allow_payload_digests": {
+          "const": false
+        },
+        "allow_raw_payloads": {
+          "const": false
+        },
+        "allow_replacement_maps": {
+          "const": false
+        },
+        "allow_raw_context": {
+          "const": false
+        },
+        "allow_raw_solver_outputs": {
+          "const": false
+        },
+        "allow_deterministic_query_digests": {
+          "const": false
+        }
+      }
+    },
+    "artifact_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "receipts", "evaluation_results", "payload_files"],
+      "properties": {
+        "entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "receipts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "evaluation_results": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "payload_files": {
+          "const": 0
+        }
+      }
+    },
+    "forbidden_material_absent": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "raw_payload",
+          "replacement_map",
+          "raw_context",
+          "raw_solver_output",
+          "raw_query_digest"
+        ]
+      }
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entry_id",
+          "receipt_digest",
+          "evaluation_result_digest",
+          "subject_type",
+          "risk_class",
+          "expected_gate",
+          "actual_gate",
+          "verdict",
+          "sanitization"
+        ],
+        "properties": {
+          "entry_id": {
+            "$ref": "#/definitions/ref"
+          },
+          "receipt_digest": {
+            "$ref": "#/definitions/sha256_digest"
+          },
+          "evaluation_result_digest": {
+            "$ref": "#/definitions/sha256_digest"
+          },
+          "subject_type": {
+            "type": "string",
+            "enum": ["solver", "policy", "counterfactual", "promotion", "peer_review"]
+          },
+          "risk_class": {
+            "$ref": "#/definitions/risk_class"
+          },
+          "expected_gate": {
+            "$ref": "#/definitions/gate_decision"
+          },
+          "actual_gate": {
+            "$ref": "#/definitions/gate_decision"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["pass", "fail", "review", "refuse", "insufficient_evidence", "abstain"]
+          },
+          "sanitization": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "contract",
+              "redaction_count",
+              "raw_material_removed",
+              "payload_digest_exported",
+              "replacement_map_exported"
+            ],
+            "properties": {
+              "contract": {
+                "const": "sanitization_v0"
+              },
+              "redaction_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000
+              },
+              "raw_material_removed": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/definitions/forbidden_material"
+                }
+              },
+              "payload_digest_exported": {
+                "const": false
+              },
+              "replacement_map_exported": {
+                "const": false
+              }
+            },
+            "allOf": [
+              {
+                "properties": {
+                  "raw_material_removed": {
+                    "contains": { "const": "raw_payload" }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "raw_material_removed": {
+                    "contains": { "const": "replacement_map" }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "raw_material_removed": {
+                    "contains": { "const": "raw_context" }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "raw_material_removed": {
+                    "contains": { "const": "raw_solver_output" }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "raw_material_removed": {
+                    "contains": { "const": "raw_query_digest" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "properties": {
+        "forbidden_material_absent": {
+          "contains": { "const": "raw_payload" }
+        }
+      }
+    },
+    {
+      "properties": {
+        "forbidden_material_absent": {
+          "contains": { "const": "replacement_map" }
+        }
+      }
+    },
+    {
+      "properties": {
+        "forbidden_material_absent": {
+          "contains": { "const": "raw_context" }
+        }
+      }
+    },
+    {
+      "properties": {
+        "forbidden_material_absent": {
+          "contains": { "const": "raw_solver_output" }
+        }
+      }
+    },
+    {
+      "properties": {
+        "forbidden_material_absent": {
+          "contains": { "const": "raw_query_digest" }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{2,180}$"
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "informational",
+        "internal_memory",
+        "local_artifact",
+        "external_effect"
+      ]
+    },
+    "gate_decision": {
+      "type": "string",
+      "enum": ["allow", "refuse", "review", "require_approval"]
+    },
+    "forbidden_material": {
+      "type": "string",
+      "enum": [
+        "raw_payload",
+        "replacement_map",
+        "raw_context",
+        "raw_solver_output",
+        "raw_query_digest"
+      ]
+    }
+  }
+}

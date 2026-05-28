@@ -89,6 +89,8 @@ PINNED_CACHED_PROPERTIES: frozenset[str] = frozenset(
         # Feed ingest
         "feed_ingest_sink",
         "data_feed_scheduler",
+        # Operator metric feeds
+        "route_stage_latency_feed",
     }
 )
 

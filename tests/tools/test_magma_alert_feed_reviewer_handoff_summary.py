@@ -233,6 +233,53 @@ def test_reviewer_handoff_summary_cli_missing_input_is_path_free() -> None:
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
 
 
+def test_reviewer_handoff_summary_cli_malformed_validation_lists_are_path_free(
+    tmp_path: Path,
+) -> None:
+    package, report = _package_and_validation_report()
+    report["ok"] = False
+    report["blockers"] = 123
+    report["warnings"] = {"path": "C:/private/validation.json"}
+    package_path = tmp_path / "magma_alert_feed_release_evidence.json"
+    report_path = tmp_path / "validation.json"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--package-json",
+            str(package_path),
+            "--validation-json",
+            str(report_path),
+            "--reviewer-agent",
+            "reviewer:wd-image1",
+            "--bridge-event-ref",
+            "bridge:wd-image1-reviewer-handoff",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["validated_evidence"]["package_validation_ok"] is False
+    assert payload["validated_evidence"]["blockers"] == [
+        "unsafe_marker_redacted"
+    ]
+    assert payload["validated_evidence"]["warnings"] == [
+        "unsafe_marker_redacted"
+    ]
+    assert "Traceback" not in result.stderr
+    assert str(tmp_path) not in result.stdout
+    assert "validation.json" not in result.stdout
+    assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+
+
 def _sha256_hex(data: bytes) -> str:
     import hashlib
 

@@ -307,9 +307,13 @@ def _safe_token(value: Any, fallback: str = "unsafe_marker_redacted") -> str:
 def _safe_token_list(value: Any) -> list[str]:
     if value is None:
         return []
-    if not isinstance(value, list):
-        value = list(value) if not isinstance(value, str) else [value]
-    tokens = [_safe_token(item) for item in value]
+    if isinstance(value, list):
+        raw_values = value
+    elif isinstance(value, (set, tuple)):
+        raw_values = list(value)
+    else:
+        raw_values = [value]
+    tokens = [_safe_token(item) for item in raw_values]
     return sorted(set(tokens))
 
 

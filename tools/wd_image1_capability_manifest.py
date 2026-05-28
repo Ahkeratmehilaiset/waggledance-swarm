@@ -1070,7 +1070,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "panel_values",
                 "activeRouteStageLatencyAlerts",
                 "test_ops_route_stage_latency_feed_state_sanitizes_snapshot",
+                "test_ops_route_stage_latency_feed_state_rejects_non_finite_numbers",
+                "test_route_stage_latency_feed_provider_rejects_non_finite_numbers",
                 "It intentionally does not forward Alertmanager annotations",
+                "math.isfinite",
             )
         ),
         "ops_latency_feed_provider_wired": all(

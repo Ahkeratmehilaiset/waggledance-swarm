@@ -387,6 +387,51 @@ class TestApiOpsExtended:
         assert "PRIVATE_QUERY_MARKER" not in str(section)
         assert "private stack trace" not in str(section)
 
+    def test_ops_route_stage_latency_feed_state_rejects_non_finite_numbers(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [
+                        {
+                            "id": "route_stage_latency_p95_ms",
+                            "stage": "language_detection",
+                            "value": float("nan"),
+                        },
+                        {
+                            "id": "route_stage_latency_p99_ms",
+                            "stage": "hot_cache",
+                            "value": "Inf",
+                        },
+                        {
+                            "id": "route_stage_request_rate",
+                            "stage": "memory_context",
+                            "current_value": "-Inf",
+                        },
+                    ],
+                    "active_alerts": [{
+                        "id": "RouteStageLatencyP99Critical",
+                        "stage": "hot_cache",
+                        "severity": "critical",
+                        "value": "NaN",
+                    }],
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+
+        assert feed_state["panel_values"] == []
+        assert feed_state["active_count"] == 1
+        assert "value_ms" not in feed_state["active"][0]
+        json.dumps(section, allow_nan=False)
+
     def test_ops_route_stage_latency_feed_state_rejects_raw_updated_at(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _route_stage_latency_panels,
@@ -523,6 +568,63 @@ class TestApiOpsExtended:
         assert "query=secret" not in serialized
         assert "prod-db" not in serialized
         assert "generatorURL" not in serialized
+
+    def test_route_stage_latency_feed_provider_rejects_non_finite_numbers(self):
+        from waggledance.adapters.http.route_stage_latency_feed import (
+            RouteStageLatencyFeedHttpResponse,
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
+
+        def transport(url, headers, timeout_seconds, params):
+            if url.endswith("/api/v1/query"):
+                body = {
+                    "status": "success",
+                    "data": {
+                        "result": [
+                            {
+                                "metric": {"stage": "language_detection"},
+                                "value": [1_716_888_000, "NaN"],
+                            },
+                            {
+                                "metric": {"stage": "hot_cache"},
+                                "value": [1_716_888_000, "+Inf"],
+                            },
+                            {
+                                "metric": {"stage": "memory_context"},
+                                "value": [1_716_888_000, "-Inf"],
+                            },
+                        ],
+                    },
+                }
+            else:
+                body = [{
+                    "labels": {
+                        "alertname": "RouteStageLatencyP99Critical",
+                        "stage": "hot_cache",
+                        "severity": "critical",
+                    },
+                    "status": {"state": "active"},
+                    "value": "NaN",
+                }]
+            return RouteStageLatencyFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+            prometheus_base_url="http://127.0.0.1:9090",
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            transport=transport,
+        )
+
+        snapshot = feed.snapshot()
+
+        assert snapshot["panel_values"] == []
+        assert snapshot["active_alerts"][0]["value"] is None
+        json.dumps(snapshot, allow_nan=False)
 
     def test_route_stage_latency_feed_provider_guardrails_refuse_secrets(self):
         from waggledance.adapters.http.route_stage_latency_feed import (

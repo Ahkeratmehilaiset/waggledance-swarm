@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from ipaddress import ip_address
 import json
+import math
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -314,7 +315,11 @@ def _validate_timeout(timeout_seconds: float) -> float:
     ):
         raise RouteStageLatencyFeedError("TIMEOUT_OUT_OF_RANGE")
     normalized = float(timeout_seconds)
-    if normalized <= 0 or normalized > MAX_TIMEOUT_SECONDS:
+    if (
+        not math.isfinite(normalized)
+        or normalized <= 0
+        or normalized > MAX_TIMEOUT_SECONDS
+    ):
         raise RouteStageLatencyFeedError("TIMEOUT_OUT_OF_RANGE")
     return normalized
 
@@ -424,9 +429,10 @@ def _alertmanager_active_alerts(payload: Any) -> list[dict[str, Any]]:
 
 def _number_or_none(value: Any) -> float | None:
     try:
-        return float(value)
+        normalized = float(value)
     except (TypeError, ValueError):
         return None
+    return normalized if math.isfinite(normalized) else None
 
 
 def _string_or_none(value: Any) -> str | None:

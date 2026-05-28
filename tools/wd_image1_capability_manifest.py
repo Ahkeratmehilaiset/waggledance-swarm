@@ -3116,6 +3116,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "release_gate_examples_present": False,
         "release_evidence_package_contract_present": False,
         "release_evidence_validator_contract_present": False,
+        "reviewer_handoff_summary_contract_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -3142,6 +3143,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     metrics_rel = "waggledance/adapters/http/routes/metrics.py"
     package_rel = "tools/package_magma_alert_feed_release_evidence.py"
     validator_rel = "tools/validate_magma_alert_feed_release_evidence.py"
+    summary_rel = "tools/build_magma_alert_feed_reviewer_handoff_summary.py"
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
@@ -3150,6 +3152,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     )
     validator_tests_rel = (
         "tests/tools/test_magma_alert_feed_release_evidence_validator.py"
+    )
+    summary_tests_rel = (
+        "tests/tools/test_magma_alert_feed_reviewer_handoff_summary.py"
     )
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
@@ -3162,11 +3167,13 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         metrics_rel,
         package_rel,
         validator_rel,
+        summary_rel,
         settings_rel,
         tests_rel,
         metrics_tests_rel,
         package_tests_rel,
         validator_tests_rel,
+        summary_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -3188,6 +3195,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     metrics_text = (repo_root / metrics_rel).read_text(encoding="utf-8")
     package_text = (repo_root / package_rel).read_text(encoding="utf-8")
     validator_text = (repo_root / validator_rel).read_text(encoding="utf-8")
+    summary_text = (repo_root / summary_rel).read_text(encoding="utf-8")
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
@@ -3197,6 +3205,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         encoding="utf-8"
     )
     validator_tests_text = (repo_root / validator_tests_rel).read_text(
+        encoding="utf-8"
+    )
+    summary_tests_text = (repo_root / summary_tests_rel).read_text(
         encoding="utf-8"
     )
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
@@ -3210,10 +3221,12 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         metrics_text,
         package_text,
         validator_text,
+        summary_text,
         settings_text,
         metrics_tests_text,
         package_tests_text,
         validator_tests_text,
+        summary_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
@@ -3396,6 +3409,27 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "operator-owned reviewer handoff summary",
         )
     )
+    reviewer_handoff_summary_contract_present = all(
+        token in "\n".join((
+            summary_text,
+            summary_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "magma_alert_feed_reviewer_handoff_summary.v1",
+            "build_magma_alert_feed_reviewer_handoff_summary",
+            "approval_granted",
+            "release_decision_made",
+            "automatic_release_decision",
+            "external_fetch_performed",
+            "transport_added",
+            "test_reviewer_handoff_summary_carries_validated_evidence_without_decision",
+            "test_reviewer_handoff_summary_cli_json_is_path_free",
+            "operator-owned reviewer handoff summary",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -3438,6 +3472,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and release_gate_examples_present
         and release_evidence_package_contract_present
         and release_evidence_validator_contract_present
+        and reviewer_handoff_summary_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3462,6 +3497,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "release_evidence_validator_contract_present": (
             release_evidence_validator_contract_present
         ),
+        "reviewer_handoff_summary_contract_present": (
+            reviewer_handoff_summary_contract_present
+        ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3483,7 +3521,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "review; it fetches no endpoints and makes no automatic release "
             "decision. The validator checks package structure and optional "
             "local artifact digests for reviewers without writes, transport, "
-            "endpoint fetches, or release decisions."
+            "endpoint fetches, or release decisions. The reviewer handoff "
+            "summary renders validated evidence context without approval, "
+            "release-decision automation, transport, endpoint fetches, or "
+            "runtime controls."
         ),
     }
 
@@ -3996,6 +4037,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI validates packaged MAGMA alert-feed release evidence and optional local artifact digests.",
             ),
             (
+                "tools/build_magma_alert_feed_reviewer_handoff_summary.py",
+                "Explicit CLI renders sanitized reviewer handoff context from a local evidence package and local validation report.",
+            ),
+            (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
@@ -4038,6 +4083,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_alert_feed_release_evidence_validator.py",
                 "Evidence validator tests prove digest checks, privacy/control blockers, path-free CLI JSON, and no release decision.",
+            ),
+            (
+                "tests/tools/test_magma_alert_feed_reviewer_handoff_summary.py",
+                "Reviewer handoff summary tests prove sanitized context, path-free CLI JSON, and no approval automation.",
             ),
             (
                 "tests/test_metrics_endpoint.py",
@@ -4351,8 +4400,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add operator-owned reviewer handoff summary for validated "
-                "evidence without adding approval automation."
+                "Add optional bridge-event template for reviewer handoff "
+                "summaries without automatic approval or release actions."
             ),
             proof=magma_audit_proof,
         ),

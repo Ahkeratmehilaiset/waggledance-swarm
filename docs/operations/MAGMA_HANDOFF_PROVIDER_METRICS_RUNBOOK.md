@@ -178,6 +178,27 @@ python tools\validate_magma_alert_feed_release_evidence.py `
   --json
 ```
 
+After validation, the operator can build a sanitized reviewer handoff summary
+with `tools/build_magma_alert_feed_reviewer_handoff_summary.py`. The summary
+reads only the explicit local evidence package and explicit local validator
+JSON report, then prints reviewer context to stdout. It carries validation
+status, digest-check status, manual-gate hold reasons, and authority-boundary
+observations, but always reports `approval_granted=false`,
+`release_decision_made=false`, and `automatic_release_decision=false`.
+
+```powershell
+python tools\build_magma_alert_feed_reviewer_handoff_summary.py `
+  --package-json <new-evidence-dir>\magma_alert_feed_release_evidence.json `
+  --validation-json <collected>\validation.json `
+  --reviewer-agent reviewer:wd-image1 `
+  --bridge-event-ref bridge:wd-image1-reviewer-handoff `
+  --json
+```
+
+The handoff summary is not an approval artifact. It must not be wired to
+automatic merge, promotion, configuration, importer/exporter, feed control,
+artifact transport, endpoint fetches, or runtime-authority actions.
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

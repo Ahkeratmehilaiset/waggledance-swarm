@@ -182,6 +182,11 @@ no endpoint fetches and makes no automatic release decision.
 `tools/validate_magma_alert_feed_release_evidence.py` can validate that package
 and optional local artifact digests for reviewer-side checks; it writes nothing
 and also makes no automatic release decision.
+`tools/build_magma_alert_feed_reviewer_handoff_summary.py` can then render a
+sanitized operator-owned reviewer handoff summary from the local package and
+local validation report; it prints context only and keeps
+`approval_granted=false`, `release_decision_made=false`, and
+`automatic_release_decision=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

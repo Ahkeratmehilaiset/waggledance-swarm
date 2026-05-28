@@ -3217,6 +3217,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI verifies fresh share manifests and can write no-authority peer-review handoffs.",
             ),
             (
+                "waggledance/adapters/http/routes/compat_dashboard.py",
+                "Ops API exposes sanitized read-only MAGMA import handoff status.",
+            ),
+            (
+                "web/hologram-brain-v6.html",
+                "Hologram Ops panel renders MAGMA import handoff status without controls.",
+            ),
+            (
                 "schemas/v3_13_0/magma_share_manifest.v0.json",
                 "Contract-first cross-instance MAGMA share manifest forbids raw material exports.",
             ),
@@ -3235,6 +3243,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md",
                 "Architecture doc records the no-default-runtime-export share boundary.",
+            ),
+            (
+                "docs/API.md",
+                "API contract documents read-only MAGMA import handoff status.",
             ),
             (
                 "tools/run_runtime_receipt_emission_proof.py",
@@ -3460,7 +3472,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "context drift before building a replay plan. An "
                 "operator-owned peer-review handoff artifact can record "
                 "import decisions without payloads, local paths, or runtime "
-                "authority; hard "
+                "authority. A read-only /api/ops and hologram summary can "
+                "surface handoff status without disk scanning, payload "
+                "import, local path exposure, or runtime controls; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3474,13 +3488,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "some MAGMA-backed paths.",
                 "A hardening pass is needed before literal append-only "
                 "language is safe.",
-                "The share importer and peer-review handoff remain local "
-                "proof tooling; they do not add cross-instance transport or "
-                "runtime authority.",
+                "The share importer, peer-review handoff, and operator "
+                "summary remain local proof/status tooling; they do not add "
+                "cross-instance transport or runtime authority.",
             ),
             next_smallest_pr=(
-                "Expose peer-review handoff status in operator summaries "
-                "without adding runtime controls."
+                "Add bounded operator retention/history for peer-review "
+                "handoff summaries without adding runtime controls."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

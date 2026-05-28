@@ -5,6 +5,7 @@ so that the hologram-brain-v6 HTML menus populate correctly.
 """
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
 import math
@@ -22,6 +23,9 @@ from waggledance.adapters.http.routes._capability_state import derive_capability
 from waggledance.adapters.http.routes._dashboard_shared import _ws_clients
 from waggledance.adapters.http.routes.auth_session import validate_session
 from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
+from waggledance.core.magma.share_manifest import (
+    build_magma_share_import_handoff_status_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -781,6 +785,82 @@ def _autogrowth_section(container) -> dict:
     return _with_autogrowth_alert_state(section)
 
 
+def _magma_share_import_handoff_snapshot(container):  # noqa: ANN001
+    for name in (
+        "magma_share_import_handoff_status",
+        "magma_share_import_peer_review_handoff_status",
+        "magma_share_import_peer_review_handoff",
+    ):
+        provider = _safe_getattr(container, name, None)
+        if provider is not None:
+            break
+    else:
+        return None, "not_configured"
+    if isinstance(provider, Mapping):
+        return dict(provider), ""
+    for method_name in ("snapshot", "get_status", "status"):
+        method = _safe_getattr(provider, method_name, None)
+        if callable(method):
+            try:
+                snapshot = method()
+            except Exception:
+                return None, "unavailable"
+            return snapshot if isinstance(snapshot, Mapping) else None, "invalid"
+    return None, "invalid"
+
+
+def _magma_share_import_handoff_section(container=None) -> dict:
+    """Build read-only MAGMA share-import handoff status for /api/ops."""
+    snapshot, state = _magma_share_import_handoff_snapshot(container)
+    if state == "not_configured":
+        return build_magma_share_import_handoff_status_summary(None)
+    if snapshot is None:
+        invalid = state == "invalid"
+        section = build_magma_share_import_handoff_status_summary(None)
+        section.update({
+            "source": (
+                "magma_share_import_handoff_invalid"
+                if invalid
+                else "magma_share_import_handoff_unavailable"
+            ),
+            "status": "warning",
+            "severity": "warning",
+            "active_count": 1,
+            "active": [{
+                "id": (
+                    "MagmaShareImportHandoffInvalid"
+                    if invalid
+                    else "MagmaShareImportHandoffUnavailable"
+                ),
+                "severity": "warning",
+                "summary": (
+                    "MAGMA share import handoff snapshot is invalid."
+                    if invalid
+                    else (
+                        "MAGMA share import handoff snapshot is unavailable."
+                    )
+                ),
+            }],
+        })
+        return section
+    try:
+        return build_magma_share_import_handoff_status_summary(snapshot)
+    except (TypeError, ValueError):
+        section = build_magma_share_import_handoff_status_summary(None)
+        section.update({
+            "source": "magma_share_import_handoff_invalid",
+            "status": "warning",
+            "severity": "warning",
+            "active_count": 1,
+            "active": [{
+                "id": "MagmaShareImportHandoffInvalid",
+                "severity": "warning",
+                "summary": "MAGMA share import handoff snapshot is invalid.",
+            }],
+        })
+        return section
+
+
 @router.get("/api/ops")
 def api_ops(service=Depends(get_autonomy_service),
             container=Depends(get_container)):
@@ -823,6 +903,9 @@ def api_ops(service=Depends(get_autonomy_service),
         "accelerator": accelerator_metrics,
         "autogrowth": _autogrowth_section(container),
         "route_stage_latency": _route_stage_latency_panels(container),
+        "magma_share_import_handoff": (
+            _magma_share_import_handoff_section(container)
+        ),
         "gemma_profiles": gemma_metrics,
         "llm_parallel": parallel_metrics,
         "hex_mesh": _safe(

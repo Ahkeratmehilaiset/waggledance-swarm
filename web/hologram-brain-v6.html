@@ -444,6 +444,7 @@ const LANG = {
       ops_flexhw: "FlexHW Tier", ops_throttle: "AutoThrottle",
       ops_autogrowth: "Low-risk Autogrowth",
       ops_route_stage_latency: "Route-stage Latency",
+      ops_magma_handoff: "MAGMA Handoff",
       chat_route: "Route", chat_explain: "Explainability"
     },
     chat: {
@@ -516,6 +517,7 @@ const LANG = {
       ops_flexhw: "FlexHW-taso", ops_throttle: "Automaattisaato",
       ops_autogrowth: "Matalariskinen autokasvu",
       ops_route_stage_latency: "Reittivaiheiden latenssi",
+      ops_magma_handoff: "MAGMA-luovutus",
       chat_route: "Reitti", chat_explain: "Selitettavyys"
     },
     chat: {
@@ -1551,8 +1553,11 @@ function buildOpsPanel(el) {
   const thr = ops.throttle || {};
   const ag = ops.autogrowth || {};
   const rsl = ops.route_stage_latency || {};
+  const magmaHandoff = ops.magma_share_import_handoff || {};
   const agAlert = ag.alert_state || {};
   const activeAutogrowthAlerts = agAlert.active || [];
+  const magmaLatest = magmaHandoff.latest || {};
+  const activeMagmaHandoffs = magmaHandoff.active || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1678,6 +1683,30 @@ function buildOpsPanel(el) {
       const sev = a.severity || 'warning';
       const color = sev === 'critical' ? '#f87171' : '#facc15';
       html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'alert')}: ${escapeHtml(a.expr || '')}</div>`;
+    });
+    html += `</div></div>`;
+  }
+  // ── MAGMA share-import peer-review handoff status ──
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_magma_handoff')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Status', magmaHandoff.status || '\u2014');
+  html += card('Severity', magmaHandoff.severity || 'none');
+  html += card('Source', magmaHandoff.source || '\u2014');
+  html += card('Active', magmaHandoff.active_count != null ? magmaHandoff.active_count : activeMagmaHandoffs.length);
+  html += card('Decision', magmaLatest.import_decision || '\u2014');
+  html += card('Scope', magmaLatest.handoff_scope || '\u2014');
+  html += card('Entries', magmaLatest.entry_count != null ? magmaLatest.entry_count : '0');
+  html += card('Authority', magmaHandoff.runtime_authority_granted ? 'Granted' : 'None');
+  html += card('Payloads', magmaHandoff.payload_files_imported != null ? magmaHandoff.payload_files_imported : '0');
+  html += card('Paths', magmaHandoff.local_paths_recorded ? 'Recorded' : 'No');
+  html += card('Controls', magmaHandoff.controls_present ? 'Yes' : 'No');
+  html += `</div></div>`;
+  if (activeMagmaHandoffs.length) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Handoffs</div><div class="p-list">`;
+    activeMagmaHandoffs.forEach(h => {
+      const decision = h.import_decision || 'peer_review';
+      const share = h.share_id || '';
+      html += `<div class="p-list-item"><strong>${escapeHtml(h.handoff_id || 'handoff')}</strong>: ${escapeHtml(decision)} ${escapeHtml(share)}</div>`;
     });
     html += `</div></div>`;
   }

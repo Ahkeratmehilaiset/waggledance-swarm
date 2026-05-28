@@ -1914,6 +1914,157 @@ def build_low_risk_autogrowth_alert_runbook_smoke(
     }
 
 
+def _blocked_low_risk_autogrowth_ops_alert_state_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+) -> dict:
+    return {
+        "proof_id": "low_risk_autogrowth_ops_alert_state_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "ops_endpoint": "/api/ops",
+        "dashboard_path": "web/hologram-brain-v6.html",
+        "alert_state_visible": False,
+        "local_snapshot_source": False,
+        "rate_rules_deferred": False,
+        "forbidden_controls_absent": False,
+        "forbidden_control_tokens_found": [],
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required Ops API or dashboard inputs are missing, so the "
+            "read-only autogrowth alert state cannot be certified."
+        ),
+    }
+
+
+def build_low_risk_autogrowth_ops_alert_state_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Prove the Ops dashboard exposes read-only autogrowth alert state."""
+
+    repo_root = Path(root)
+    api_rel = "waggledance/adapters/http/routes/compat_dashboard.py"
+    html_rel = "web/hologram-brain-v6.html"
+    tests_rel = "tests/test_legacy_consolidation.py"
+    docs_rel = "docs/API.md"
+    required = (api_rel, html_rel, tests_rel, docs_rel)
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_low_risk_autogrowth_ops_alert_state_smoke(
+            missing_inputs=missing,
+        )
+
+    api_text = (repo_root / api_rel).read_text(encoding="utf-8")
+    html_text = (repo_root / html_rel).read_text(encoding="utf-8")
+    tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
+    docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
+    combined_runtime_lower = "\n".join(
+        (api_text, html_text, docs_text)
+    ).lower()
+
+    api_contract_present = all(
+        token in api_text
+        for token in (
+            '"alert_state"',
+            '"local_ops_snapshot"',
+            '"prometheus_alertmanager_feed"',
+            '"deferred_rules"',
+            '"controls_present"',
+            "AutogrowthSourceDown",
+            "AutogrowthErrorsObserved",
+        )
+    )
+    ui_contract_present = all(
+        token in html_text
+        for token in (
+            "ag.alert_state",
+            "activeAutogrowthAlerts",
+            "Autogrowth Alerts",
+        )
+    )
+    test_contract_present = all(
+        token in tests_text
+        for token in (
+            "test_ops_autogrowth_alert_state_reports_errors_without_details",
+            "AutogrowthErrorsObserved",
+            "private stack trace",
+            "activeAutogrowthAlerts",
+        )
+    )
+    docs_contract_present = (
+        "autogrowth.alert_state" in docs_text
+        and 'source="local_ops_snapshot"' in docs_text
+        and "Prometheus/Alertmanager" in docs_text
+        and "does not add mutating endpoints" in docs_text
+    )
+    rate_rules_deferred = all(
+        token in api_text
+        for token in (
+            "AutogrowthErrorBurst",
+            "AutogrowthWakeupStalled",
+            "AutogrowthWakeupBurst",
+            "AutogrowthNonIdleBurst",
+        )
+    )
+    forbidden_control_tokens = {
+        "POST /api/autogrowth",
+        "/api/autogrowth/start",
+        "/api/autogrowth/stop",
+        "autogrowth_start",
+        "autogrowth_stop",
+        "start_button",
+        "stop_button",
+        "config_write",
+        "write_config",
+    }
+    forbidden_control_tokens_found = [
+        token
+        for token in sorted(forbidden_control_tokens)
+        if token.lower() in combined_runtime_lower
+    ]
+    ok = (
+        api_contract_present
+        and ui_contract_present
+        and test_contract_present
+        and docs_contract_present
+        and rate_rules_deferred
+        and not forbidden_control_tokens_found
+    )
+    return {
+        "proof_id": "low_risk_autogrowth_ops_alert_state_smoke_v1",
+        "ok": ok,
+        "proof_mode": "source_contract",
+        "ops_endpoint": "/api/ops",
+        "dashboard_path": html_rel,
+        "api_contract_present": api_contract_present,
+        "ui_contract_present": ui_contract_present,
+        "test_contract_present": test_contract_present,
+        "docs_contract_present": docs_contract_present,
+        "alert_state_visible": ui_contract_present,
+        "local_snapshot_source": '"local_ops_snapshot"' in api_text,
+        "rate_rules_deferred": rate_rules_deferred,
+        "forbidden_controls_absent": not forbidden_control_tokens_found,
+        "forbidden_control_tokens_found": forbidden_control_tokens_found,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The Ops API and hologram dashboard expose a read-only local "
+            "autogrowth alert snapshot. Time-window alert rules remain "
+            "deferred to Prometheus/Alertmanager data and no controls or "
+            "runtime growth authority are added."
+        ),
+    }
+
+
 def _scalar_unit_seed(name: str) -> dict:
     return {
         "spec": {
@@ -2265,11 +2416,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
-                "Ops API exposes read-only autogrowth ticker status.",
+                "Ops API exposes read-only autogrowth ticker and alert status.",
             ),
             (
                 "web/hologram-brain-v6.html",
-                "Hologram Ops panel renders the autogrowth status cards.",
+                "Hologram Ops panel renders autogrowth status and alerts.",
             ),
             (
                 "docs/API.md",
@@ -2346,6 +2497,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_alert_runbook_smoke = (
         build_low_risk_autogrowth_alert_runbook_smoke(root)
     )
+    low_risk_ops_alert_state_smoke = (
+        build_low_risk_autogrowth_ops_alert_state_smoke(root)
+    )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = (
         low_risk_runtime_boundary_smoke
     )
@@ -2355,11 +2509,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_autonomy_proof["alert_runbook_smoke"] = (
         low_risk_alert_runbook_smoke
     )
+    low_risk_autonomy_proof["ops_alert_state_smoke"] = (
+        low_risk_ops_alert_state_smoke
+    )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
         and low_risk_runtime_boundary_smoke.get("ok") is True
         and low_risk_operator_metrics_smoke.get("ok") is True
         and low_risk_alert_runbook_smoke.get("ok") is True
+        and low_risk_ops_alert_state_smoke.get("ok") is True
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
@@ -2459,9 +2617,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "A bounded low-risk autogrowth substrate exists with an "
                 "allowlist, runtime gap seam, scheduler ticks, a runtime "
                 "ticker boundary smoke, Prometheus operator metrics, a "
-                "read-only dashboard ops overlay, operator alert thresholds, "
-                "and proof fixtures; unrestricted runtime authority is not "
-                "claimed."
+                "read-only dashboard ops overlay with local alert state, "
+                "operator alert thresholds, and proof fixtures; unrestricted "
+                "runtime authority is not claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -2479,14 +2637,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "new mutation authority.",
                 "The dashboard overlay is read-only status; it adds no "
                 "start/stop or configuration controls.",
+                "The dashboard alert state is a local snapshot; "
+                "time-window rules remain delegated to the operator "
+                "Prometheus/Alertmanager feed.",
                 "The alert thresholds are read-only Prometheus/operator "
                 "runbook guidance; they add no mutating endpoints or runtime "
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add read-only alert state to the Ops dashboard once a "
-                "Prometheus/Alertmanager feed exists, without adding "
-                "controls."
+                "Wire a real Prometheus/Alertmanager feed into the read-only "
+                "Ops alert state without adding controls."
             ),
             proof=low_risk_autonomy_proof,
         ),

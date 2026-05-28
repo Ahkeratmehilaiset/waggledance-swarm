@@ -22,8 +22,8 @@ Use the safest true wording until the proof tool reports otherwise:
   scalability work, not an unbounded guarantee.
 - Low-risk autogrowth may be described as a bounded substrate with an
   allowlist, queue, scheduler, operator metrics, a read-only dashboard ops
-  overlay, operator alert thresholds, and proof fixtures; do not imply
-  unrestricted runtime authority.
+  overlay with local alert state, operator alert thresholds, and proof
+  fixtures; do not imply unrestricted runtime authority.
 
 ## Capability Matrix
 
@@ -32,7 +32,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | Hex-mesh routing | Partial, with route-order proof and HTTP/WS trace contract | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md` | Render the WS route-stage labels in the dashboard UI and add a visual contract smoke. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
-| Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, operator metrics, a read-only dashboard ops overlay, and operator alert thresholds | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html`, `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md` | Add read-only alert state to the Ops dashboard once a Prometheus/Alertmanager feed exists, without adding controls. |
+| Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, operator metrics, a read-only dashboard ops overlay with local alert state, and operator alert thresholds | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html`, `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md` | Wire a real Prometheus/Alertmanager feed into the read-only Ops alert state without adding controls. |
 | Hexagonal upgrades | Partial, with in-memory proof and runtime-boundary smoke | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py`, `waggledance/bootstrap/container.py`, `hex_topology_registry.py`, `hex_neighbor_assist.py` | Promote hexagonal topology boundary reporting into operator-visible metrics without enabling runtime mutation. |
 | Future swarm scalability | Partial, with scale-axis scorecard proof | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`, `tools/wd_image1_capability_manifest.py` | Populate the scale-axis scorecard from runtime metrics and benchmark artifacts. |
 
@@ -106,10 +106,13 @@ do not enable additional runtime mutation or solver growth authority. The
 hologram Ops panel also renders the same ticker boundary as read-only status
 cards from `/api/ops`; it exposes enabled/running state, cadence, max ticks per
 wake, wakeups, non-idle ticks, and errors without start/stop or configuration
-controls. The operator runbook defines conservative Prometheus thresholds for
-source health, error increases, wakeup stalls, wakeup bursts, and non-idle burst
-rates; those alerts are evidence-collection triggers and do not call mutating
-endpoints or grant runtime authority.
+controls. `/api/ops` also exposes `autogrowth.alert_state`, a read-only local
+snapshot for the dashboard. It can flag source-down and observed-error states
+from the current Ops counters, while time-window rules remain deferred to a
+Prometheus/Alertmanager feed. The operator runbook defines conservative
+Prometheus thresholds for source health, error increases, wakeup stalls, wakeup
+bursts, and non-idle burst rates; those alerts are evidence-collection triggers
+and do not call mutating endpoints or grant runtime authority.
 
 The solver/MAGMA receipt proof is also local and opt-in. It runs
 `AutonomyRuntime.handle_query` with a runtime receipt sink, writes a temporary

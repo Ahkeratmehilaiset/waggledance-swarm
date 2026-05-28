@@ -347,7 +347,7 @@ def _throttle_section(container) -> dict:
 
 
 def _autogrowth_disabled_section() -> dict:
-    return {
+    section = {
         "enabled": False,
         "up": False,
         "running": False,
@@ -357,6 +357,7 @@ def _autogrowth_disabled_section() -> dict:
         "non_idle_ticks": 0,
         "errors_total": 0,
     }
+    return _with_autogrowth_alert_state(section)
 
 
 def _safe_getattr(obj, name: str, default=None):  # noqa: ANN001
@@ -378,6 +379,47 @@ def _int_or_zero(value) -> int:  # noqa: ANN001
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _autogrowth_alert_state(section: dict) -> dict:
+    """Build read-only alert status from the local Ops snapshot."""
+
+    active_alerts = []
+    if not section.get("up", False):
+        active_alerts.append({
+            "id": "AutogrowthSourceDown",
+            "severity": "warning",
+            "summary": "Autogrowth metrics source is unavailable.",
+        })
+
+    if _int_or_zero(section.get("errors_total", 0)) > 0:
+        active_alerts.append({
+            "id": "AutogrowthErrorsObserved",
+            "severity": "warning",
+            "summary": "Autogrowth ticker errors have been observed.",
+        })
+
+    return {
+        "status": "warning" if active_alerts else "nominal",
+        "severity": "warning" if active_alerts else "none",
+        "source": "local_ops_snapshot",
+        "prometheus_alertmanager_feed": False,
+        "active_count": len(active_alerts),
+        "active": active_alerts,
+        "deferred_rules": [
+            "AutogrowthErrorBurst",
+            "AutogrowthWakeupStalled",
+            "AutogrowthWakeupBurst",
+            "AutogrowthNonIdleBurst",
+        ],
+        "controls_present": False,
+    }
+
+
+def _with_autogrowth_alert_state(section: dict) -> dict:
+    section = dict(section)
+    section["alert_state"] = _autogrowth_alert_state(section)
+    return section
 
 
 def _autogrowth_section(container) -> dict:
@@ -403,7 +445,7 @@ def _autogrowth_section(container) -> dict:
 
     stats = _safe_getattr(ticker, "stats", None)
     if stats is None:
-        return section
+        return _with_autogrowth_alert_state(section)
 
     section["up"] = True
     section["wakeups_total"] = _int_or_zero(
@@ -415,7 +457,7 @@ def _autogrowth_section(container) -> dict:
     section["errors_total"] = _int_or_zero(
         _safe_getattr(stats, "errors_total", 0)
     )
-    return section
+    return _with_autogrowth_alert_state(section)
 
 
 @router.get("/api/ops")

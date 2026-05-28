@@ -86,6 +86,13 @@ watch `waggledance_autogrowth_up`, `waggledance_autogrowth_errors_total`,
 `waggledance_autogrowth_non_idle_ticks_total`; they are read-only Prometheus
 checks and do not add start/stop or configuration controls.
 
+`GET /api/ops` also includes `autogrowth.alert_state`, a read-only local
+snapshot for the hologram Ops panel. It reports `status`, `severity`,
+`source="local_ops_snapshot"`, `active` alert summaries, and `deferred_rules`
+that require a Prometheus/Alertmanager time-window feed. The field is derived
+from existing Ops counters only and does not add mutating endpoints or
+configuration controls.
+
 ---
 
 ## Core
@@ -228,7 +235,7 @@ query, response, confidence, source, and route type for downstream night learnin
 | `GET /api/learning/state-machine` | GET | Current learning lifecycle state (awake/replay/consolidation/dream/training/canary/morning_report) |
 | `GET /api/swarm/scores` | GET | SwarmScheduler agent scores |
 | `GET /api/learning` | GET | LearningEngine status + leaderboard |
-| `GET /api/ops` | GET | OpsAgent status + model recommendations |
+| `GET /api/ops` | GET | OpsAgent status, model recommendations, and read-only autogrowth alert state |
 | `GET /api/micro_model` | GET | MicroModel V1/V2 status and promotion stats |
 
 ---

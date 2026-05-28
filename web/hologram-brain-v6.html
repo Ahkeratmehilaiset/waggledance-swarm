@@ -1548,6 +1548,8 @@ function buildOpsPanel(el) {
   const fhw = ops.flexhw || {};
   const thr = ops.throttle || {};
   const ag = ops.autogrowth || {};
+  const agAlert = ag.alert_state || {};
+  const activeAutogrowthAlerts = agAlert.active || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1609,7 +1611,20 @@ function buildOpsPanel(el) {
   html += card('Wakeups', ag.wakeups_total != null ? ag.wakeups_total : '0');
   html += card('Non-idle', ag.non_idle_ticks != null ? ag.non_idle_ticks : '0');
   html += card('Errors', ag.errors_total != null ? ag.errors_total : '0');
+  html += card('Alert', agAlert.status || '\u2014');
+  html += card('Severity', agAlert.severity || 'none');
+  html += card('Active Alerts', agAlert.active_count != null ? agAlert.active_count : activeAutogrowthAlerts.length);
+  html += card('Alert Source', agAlert.source || '\u2014');
   html += `</div></div>`;
+  if (activeAutogrowthAlerts.length) {
+    html += `<div class="p-section"><div class="p-section-title">Autogrowth Alerts</div><div class="p-list">`;
+    activeAutogrowthAlerts.forEach(a => {
+      const sev = a.severity || 'warning';
+      const color = sev === 'critical' ? '#f87171' : '#facc15';
+      html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'alert')}: ${escapeHtml(a.summary || sev)}</div>`;
+    });
+    html += `</div></div>`;
+  }
   el.innerHTML = html;
 }
 

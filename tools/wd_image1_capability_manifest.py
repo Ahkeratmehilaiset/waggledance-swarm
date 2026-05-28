@@ -65,6 +65,16 @@ VALID_STATUSES = {
     STATUS_PLANNED,
     STATUS_BLOCKED,
 }
+HEX_MESH_CHAT_ROUTE_ORDER = (
+    "language_detection",
+    "hot_cache",
+    "memory_context",
+    "route_selection",
+    "deterministic_solver",
+    "hybrid_retrieval_8_cell",
+    "hex_neighbor_assist_7_cell",
+    "orchestrator_llm_fallback",
+)
 
 
 @dataclass(frozen=True)
@@ -134,16 +144,7 @@ def _blocked_hex_mesh_entry_proof(
     missing_inputs: Sequence[str],
     current_config: dict | None = None,
 ) -> dict:
-    route_order = [
-        "language_detection",
-        "hot_cache",
-        "memory_context",
-        "route_selection",
-        "deterministic_solver",
-        "hybrid_retrieval_8_cell",
-        "hex_neighbor_assist_7_cell",
-        "orchestrator_llm_fallback",
-    ]
+    route_order = list(HEX_MESH_CHAT_ROUTE_ORDER)
     return {
         "proof_id": "hex_mesh_entry_route_order_v1",
         "ok": False,
@@ -292,16 +293,7 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
             "matched_expected": cell_id == sample["expected_cell"],
         })
 
-    route_order = [
-        "language_detection",
-        "hot_cache",
-        "memory_context",
-        "route_selection",
-        "deterministic_solver",
-        "hybrid_retrieval_8_cell",
-        "hex_neighbor_assist_7_cell",
-        "orchestrator_llm_fallback",
-    ]
+    route_order = list(HEX_MESH_CHAT_ROUTE_ORDER)
     pre_hex_steps = route_order[:5]
     ok = (
         len(ALL_CELLS) == 8
@@ -345,9 +337,232 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
         ),
     }
     runtime_trace_smoke = _build_hex_mesh_runtime_trace_smoke_from_static(proof)
+    route_stage_ui_smoke = build_hex_mesh_route_stage_ui_smoke(repo_root)
     proof["runtime_trace_smoke"] = runtime_trace_smoke
-    proof["ok"] = bool(proof["ok"] and runtime_trace_smoke["ok"])
+    proof["route_stage_ui_smoke"] = route_stage_ui_smoke
+    proof["ok"] = bool(
+        proof["ok"]
+        and runtime_trace_smoke["ok"]
+        and route_stage_ui_smoke["ok"]
+    )
     return proof
+
+
+def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
+    """Verify that sanitized route-stage labels are visible in the dashboard."""
+
+    proof_id = "hex_mesh_route_stage_ui_smoke_v1"
+    repo_root = Path(root)
+    required_paths = (
+        "web/hologram-brain-v6.html",
+        "waggledance/adapters/http/routes/chat.py",
+        "tests/test_hologram_ui_stabilization.py",
+        "tests/integration/test_chat_api_contract.py",
+    )
+    missing_inputs = [
+        rel_path
+        for rel_path in required_paths
+        if not (repo_root / rel_path).exists()
+    ]
+    base = {
+        "proof_id": proof_id,
+        "expected_route_stages": list(HEX_MESH_CHAT_ROUTE_ORDER),
+        "dashboard_path": "web/hologram-brain-v6.html",
+        "event_builder_path": "waggledance/adapters/http/routes/chat.py",
+        "test_only_instrumentation": False,
+        "no_runtime_mutation": True,
+        "external_writes_applied": False,
+    }
+    if missing_inputs:
+        return {
+            **base,
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing_inputs,
+        }
+
+    html = (repo_root / "web" / "hologram-brain-v6.html").read_text(
+        encoding="utf-8"
+    )
+    chat_route_source = (
+        repo_root / "waggledance" / "adapters" / "http" / "routes" / "chat.py"
+    ).read_text(encoding="utf-8")
+    ui_test_source = (
+        repo_root / "tests" / "test_hologram_ui_stabilization.py"
+    ).read_text(encoding="utf-8")
+    api_contract_source = (
+        repo_root / "tests" / "integration" / "test_chat_api_contract.py"
+    ).read_text(encoding="utf-8")
+
+    try:
+        from types import SimpleNamespace
+
+        from waggledance.adapters.http.routes.chat import (
+            ChatHttpResponse,
+            _build_chat_route_ws_event,
+        )
+
+        raw_markers = {
+            "query": "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+            "language": "WD_IMAGE1_PRIVATE_LANGUAGE_MARKER",
+            "profile": "WD_IMAGE1_PRIVATE_PROFILE_MARKER",
+            "session": "WD_IMAGE1_PRIVATE_SESSION_MARKER",
+        }
+        resp = ChatHttpResponse(
+            response="route-stage ui smoke",
+            source="llm",
+            confidence=0.8,
+            latency_ms=1.0,
+            cached=False,
+            language="en",
+            agent_id="wd_image1_route_stage_ui_smoke",
+            round_table=False,
+            route_stage_trace=[
+                {
+                    "stage": "language_detection",
+                    "explicit_hint": True,
+                    "detected_language": raw_markers["language"],
+                    "query": raw_markers["query"],
+                },
+                {
+                    "stage": "hot_cache",
+                    "hit": False,
+                    "cache_key": raw_markers["session"],
+                },
+                {
+                    "stage": "hybrid_retrieval_8_cell",
+                    "enabled": True,
+                    "mode": "candidate",
+                    "cell_id": "math",
+                    "profile": raw_markers["profile"],
+                },
+            ],
+        )
+        service = SimpleNamespace(
+            _hybrid_retrieval=SimpleNamespace(enabled=True),
+            _hex_neighbor_assist=SimpleNamespace(enabled=False),
+        )
+        event = _build_chat_route_ws_event(resp, service)
+        data = event.get("data") if isinstance(event, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        labels = data.get("route_stage_labels")
+        labels = labels if isinstance(labels, list) else []
+        serialized = json.dumps(data, sort_keys=True)
+        forbidden_raw_markers_absent = all(
+            marker not in serialized for marker in raw_markers.values()
+        )
+        disabled_route_stages = data.get("disabled_route_stages")
+        disabled_route_stages = (
+            disabled_route_stages
+            if isinstance(disabled_route_stages, list)
+            else []
+        )
+        ws_event_contract = {
+            "ok": (
+                event.get("type") == "chat_route"
+                and "query" not in data
+                and "language" not in data
+                and "profile" not in data
+                and isinstance(data.get("route_stage_trace"), list)
+                and isinstance(data.get("route_stage_labels"), list)
+                and "hex_neighbor_assist_7_cell" in disabled_route_stages
+                and forbidden_raw_markers_absent
+            ),
+            "event_type": event.get("type"),
+            "data_keys": sorted(data.keys()),
+            "label_stages": [
+                item.get("stage")
+                for item in labels
+                if isinstance(item, dict)
+            ],
+            "disabled_route_stages": disabled_route_stages,
+            "forbidden_raw_markers_absent": forbidden_raw_markers_absent,
+        }
+    except Exception as exc:  # pragma: no cover - surfaced in proof payload
+        ws_event_contract = {
+            "ok": False,
+            "error": repr(exc),
+            "data_keys": [],
+            "label_stages": [],
+            "disabled_route_stages": [],
+            "forbidden_raw_markers_absent": False,
+        }
+
+    checks = {
+        "dashboard_stage_allowlist_present": (
+            "const CHAT_ROUTE_STAGE_NAMES" in html
+            and all(stage in html for stage in HEX_MESH_CHAT_ROUTE_ORDER)
+        ),
+        "dashboard_stage_container_present": (
+            "data-route-stage-list" in html
+            and "route-stage-chip" in html
+            and "route-stage-observed" in html
+            and "route-stage-disabled" in html
+            and "t('chat.route_stages_label')" in html
+        ),
+        "dashboard_uses_client_allowlist": (
+            "CHAT_ROUTE_STAGE_NAMES[stage]" in html
+            and "if (!name || seen.has(stage)) return;" in html
+            and "item.label" not in html
+            and "route_stage_trace" not in html
+        ),
+        "dashboard_escapes_stage_rendering": all(
+            token in html
+            for token in (
+                "escapeHtml(row.stage)",
+                "escapeHtml(row.name)",
+                "escapeHtml(statusLabel)",
+            )
+        ),
+        "dashboard_ws_event_handler_present": (
+            "msg.type === 'chat_route'" in html
+            and "_mergeChatRouteInfo(msg.data, false)" in html
+            and "_mergeChatRouteInfo(data, true)" in html
+        ),
+        "ws_event_builder_exposes_safe_labels": all(
+            token in chat_route_source
+            for token in (
+                '"route_stage_trace": trace',
+                '"route_stage_labels": labels',
+                '"disabled_route_stages": disabled_route_stages',
+                "_sanitize_route_stage_trace(resp.route_stage_trace)",
+            )
+        ),
+        "ui_regression_test_present": all(
+            token in ui_test_source
+            for token in (
+                "test_hologram_chat_renders_ws_route_stage_labels",
+                "test_hologram_route_stage_renderer_uses_client_allowlist",
+                "test_chat_route_http_response_does_not_clobber_ws_stage_details",
+            )
+        ),
+        "api_contract_privacy_test_present": all(
+            token in api_contract_source
+            for token in (
+                "test_success_response_includes_privacy_safe_route_stage_trace",
+                "test_route_stage_trace_boundary_drops_unsafe_trace_keys",
+                "raw_query not in event_json",
+                "raw_language not in event_json",
+                "raw_profile not in event_json",
+            )
+        ),
+        "ws_event_contract_runtime_ok": ws_event_contract["ok"] is True,
+    }
+    ok = all(checks.values())
+    return {
+        **base,
+        "ok": ok,
+        "checks": checks,
+        "ws_event_contract": ws_event_contract,
+        "observed_ui_stage_names": [
+            stage for stage in HEX_MESH_CHAT_ROUTE_ORDER if stage in html
+        ],
+        "safe_conclusion": (
+            "The dashboard chat panel renders privacy-safe route-stage labels "
+            "from the HTTP/WS contract via a client-side allowlist. It does "
+            "not render backend-supplied free-form labels or raw trace payloads."
+        ),
+    }
 
 
 def _load_yaml_mapping(path: Path) -> dict:
@@ -2343,6 +2558,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "docs/architecture/HEX_TOPOLOGIES.md",
                 "Disambiguates the two independent hex topologies.",
             ),
+            (
+                "waggledance/adapters/http/routes/chat.py",
+                "Privacy-safe HTTP/WS route-stage trace boundary.",
+            ),
+            (
+                "web/hologram-brain-v6.html",
+                "Dashboard chat route-stage label rendering.",
+            ),
         ),
     )
     solver_evidence = _evidence(
@@ -2534,8 +2757,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "WD has two independent topologies: an 8-cell "
                 "solver-retrieval topology and a 7-cell agent-routing "
-                "topology; exact runtime entry order depends on flags and "
-                "call path."
+                "topology; HTTP/WS route-stage labels are privacy-safe and "
+                "dashboard-visible, while exact runtime entry order depends "
+                "on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -2547,8 +2771,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Render the WS route-stage labels in the dashboard UI and "
-                "add a visual contract smoke."
+                "Expose route-stage counts in operator metrics without "
+                "changing routing order or enabling disabled hex paths."
             ),
             proof=hex_entry_proof,
         ),

@@ -951,6 +951,46 @@ class TestApiOpsExtended:
         assert "C:/private/alertmanager-token" not in serialized
         assert "127.0.0.1" not in serialized
 
+    def test_magma_handoff_metrics_alert_feed_preserves_fixed_refusal_reason(self):
+        from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+            MagmaHandoffMetricsAlertFeedHttpResponse,
+            MagmaHandoffMetricsAlertmanagerFeed,
+        )
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+
+        def transport(url, headers, timeout_seconds, params):
+            return MagmaHandoffMetricsAlertFeedHttpResponse(
+                body=b"[]",
+                content_type="application/json",
+                status_code=200,
+                source_url=f"{url}/redirected",
+            )
+
+        feed = MagmaHandoffMetricsAlertmanagerFeed(
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            cache_ttl_seconds=1,
+            failure_backoff_seconds=10,
+            transport=transport,
+        )
+
+        class Container:
+            magma_share_import_handoff_metrics_alert_feed = feed
+
+        section = _magma_share_import_handoff_section(Container())
+        alert_state = section["provider_health"]["metrics_alert_state"]
+        feed_health = alert_state["feed_health"]
+        serialized = str(section)
+
+        assert alert_state["source"] == "prometheus_alertmanager_unavailable"
+        assert feed_health["status"] == "warning"
+        assert feed_health["fetch_failure_count"] == 1
+        assert feed_health["last_failure_reason"] == "RESPONSE_SOURCE_URL_REFUSED"
+        assert "redirected" not in serialized
+        assert "127.0.0.1" not in serialized
+
     def test_magma_handoff_metrics_alertmanager_feed_guardrails_refuse_secrets(self):
         from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
             MagmaHandoffMetricsAlertFeedError,

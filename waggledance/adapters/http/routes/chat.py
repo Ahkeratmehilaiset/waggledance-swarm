@@ -1,8 +1,9 @@
 """Chat HTTP route -- thin wrapper around ChatService."""
 
+from threading import Lock
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator, model_validator
 
 from waggledance.adapters.http.deps import get_chat_service
@@ -86,6 +87,71 @@ ROUTE_STAGE_TRACE_ALLOWED_FIELDS = {
         "round_table_used",
     },
 }
+
+
+class RouteStageRuntimeMetrics:
+    """In-memory counters for sanitized chat route-stage observations."""
+
+    def __init__(self, stage_order: tuple[str, ...] = CHAT_ROUTE_STAGE_ORDER):
+        self._stage_order = tuple(stage_order)
+        self._allowed_stages = set(self._stage_order)
+        self._observations_total = {
+            stage: 0 for stage in self._stage_order
+        }
+        self._request_latency_ms_total = {
+            stage: 0.0 for stage in self._stage_order
+        }
+        self._lock = Lock()
+
+    def record(
+        self,
+        trace: list[dict[str, Any]] | None,
+        request_latency_ms: float,
+    ) -> None:
+        """Record one sanitized route trace without storing payload fields."""
+
+        if not trace:
+            return
+        try:
+            latency_ms = float(request_latency_ms)
+        except (TypeError, ValueError):
+            latency_ms = 0.0
+        if latency_ms < 0:
+            latency_ms = 0.0
+
+        observed: list[str] = []
+        seen: set[str] = set()
+        for event in trace:
+            if not isinstance(event, dict):
+                continue
+            stage = event.get("stage")
+            if (
+                isinstance(stage, str)
+                and stage in self._allowed_stages
+                and stage not in seen
+            ):
+                observed.append(stage)
+                seen.add(stage)
+
+        if not observed:
+            return
+        with self._lock:
+            for stage in observed:
+                self._observations_total[stage] += 1
+                self._request_latency_ms_total[stage] += latency_ms
+
+    def snapshot(self) -> dict[str, dict[str, float] | list[str]]:
+        with self._lock:
+            return {
+                "stage_order": list(self._stage_order),
+                "observations_total": {
+                    stage: float(value)
+                    for stage, value in self._observations_total.items()
+                },
+                "request_latency_ms_total": dict(
+                    self._request_latency_ms_total
+                ),
+            }
 
 
 def _route_stage_value_is_json_scalar(value: Any) -> bool:
@@ -195,6 +261,26 @@ def _build_chat_route_ws_event(
     }
 
 
+def _route_stage_runtime_metrics(container: Any) -> RouteStageRuntimeMetrics:
+    metrics = getattr(container, "route_stage_runtime_metrics", None)
+    if metrics is None:
+        metrics = RouteStageRuntimeMetrics()
+        setattr(container, "route_stage_runtime_metrics", metrics)
+    return metrics
+
+
+def _record_route_stage_runtime_metrics(
+    container: Any,
+    trace: list[dict[str, Any]] | None,
+    request_latency_ms: float,
+) -> None:
+    try:
+        metrics = _route_stage_runtime_metrics(container)
+        metrics.record(trace, request_latency_ms)
+    except Exception:
+        pass
+
+
 class ChatHttpRequest(BaseModel):
     """Pydantic model for incoming chat HTTP requests."""
 
@@ -283,11 +369,17 @@ class ChatHttpResponse(BaseModel):
 @router.post("/chat")
 async def chat_endpoint(
     request: ChatHttpRequest,
+    http_request: Request,
     chat_service=Depends(get_chat_service),
 ) -> ChatHttpResponse:
     """Handle a chat request.  No business logic here -- delegates entirely."""
     result = await chat_service.handle(request.to_dto())
     resp = ChatHttpResponse.from_result(result)
+    _record_route_stage_runtime_metrics(
+        getattr(http_request.app.state, "container", None),
+        resp.route_stage_trace,
+        resp.latency_ms,
+    )
 
     # Broadcast chat_route event to WS clients (fire-and-forget)
     try:

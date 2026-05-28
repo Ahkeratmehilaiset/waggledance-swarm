@@ -81,6 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except OSError:
         summary = _failure_summary("decision_validation_report_unreadable")
+    except UnicodeDecodeError:
+        summary = _failure_summary("decision_validation_report_decode_error")
     except json.JSONDecodeError:
         summary = _failure_summary("decision_validation_report_json_error")
     else:

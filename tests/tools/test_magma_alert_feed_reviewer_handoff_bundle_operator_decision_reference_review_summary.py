@@ -290,6 +290,45 @@ def test_operator_decision_reference_review_summary_missing_input_is_path_free()
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
 
 
+def test_operator_decision_reference_review_summary_non_utf8_input_is_path_free(
+    tmp_path: Path,
+) -> None:
+    validation_path = tmp_path / "decision_validation_report.json"
+    validation_path.write_bytes(b"\xff\xfe\xff")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--decision-validation-json",
+            str(validation_path),
+            "--reviewer-agent",
+            "claude-rco-1",
+            "--handoff-ref",
+            "bridge:handoff:decision-reference-review",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "operator_decision_reference_review_summary_failed:"
+        "decision_validation_report_decode_error"
+    ]
+    assert payload["approval_granted"] is False
+    assert payload["local_paths_recorded"] is False
+    combined = result.stdout + result.stderr
+    assert "Traceback" not in combined
+    assert str(tmp_path) not in combined
+    assert validation_path.name not in combined
+    assert not any(marker in combined for marker in PRIVATE_MARKERS)
+
+
 def test_operator_decision_reference_review_summary_rejects_unsafe_reviewer_ref(
     tmp_path: Path,
 ) -> None:

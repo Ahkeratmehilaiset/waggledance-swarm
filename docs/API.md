@@ -195,6 +195,12 @@ optional operator decision-reference slot is context only:
 `decision_reference_is_release_decision=false`, and the template keeps
 `direct_bridge_write_performed=false`, `approval_granted=false`, and
 `release_decision_made=false`.
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_index.py` can then build
+a local reviewer handoff bundle index tying the package, validation report,
+reviewer summary, and bridge-event template digests. The index records
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `approval_granted=false`, and
+`release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

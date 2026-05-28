@@ -3119,6 +3119,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_handoff_summary_contract_present": False,
         "reviewer_bridge_event_template_contract_present": False,
         "reviewer_bridge_event_template_decision_reference_slot_present": False,
+        "reviewer_handoff_bundle_index_contract_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -3149,6 +3150,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bridge_template_rel = (
         "tools/build_magma_alert_feed_reviewer_bridge_event_template.py"
     )
+    bundle_index_rel = (
+        "tools/build_magma_alert_feed_reviewer_handoff_bundle_index.py"
+    )
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
@@ -3164,6 +3168,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bridge_template_tests_rel = (
         "tests/tools/test_magma_alert_feed_reviewer_bridge_event_template.py"
     )
+    bundle_index_tests_rel = (
+        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_index.py"
+    )
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
@@ -3177,6 +3184,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         validator_rel,
         summary_rel,
         bridge_template_rel,
+        bundle_index_rel,
         settings_rel,
         tests_rel,
         metrics_tests_rel,
@@ -3184,6 +3192,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         validator_tests_rel,
         summary_tests_rel,
         bridge_template_tests_rel,
+        bundle_index_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -3209,6 +3218,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bridge_template_text = (repo_root / bridge_template_rel).read_text(
         encoding="utf-8"
     )
+    bundle_index_text = (repo_root / bundle_index_rel).read_text(
+        encoding="utf-8"
+    )
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
@@ -3226,6 +3238,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bridge_template_tests_text = (repo_root / bridge_template_tests_rel).read_text(
         encoding="utf-8"
     )
+    bundle_index_tests_text = (repo_root / bundle_index_tests_rel).read_text(
+        encoding="utf-8"
+    )
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
@@ -3239,12 +3254,14 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         validator_text,
         summary_text,
         bridge_template_text,
+        bundle_index_text,
         settings_text,
         metrics_tests_text,
         package_tests_text,
         validator_tests_text,
         summary_tests_text,
         bridge_template_tests_text,
+        bundle_index_tests_text,
         docs_text,
         manifest_text,
         runbook_text,
@@ -3486,6 +3503,25 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "operator decision-reference slot",
         )
     )
+    reviewer_handoff_bundle_index_contract_present = all(
+        token in "\n".join((
+            bundle_index_text,
+            bundle_index_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+        ))
+        for token in (
+            "magma_alert_feed_reviewer_handoff_bundle_index.v1",
+            "build_magma_alert_feed_reviewer_handoff_bundle_index",
+            "all_artifact_digests_recorded",
+            "artifact_payloads_included",
+            "local_paths_recorded",
+            "test_reviewer_handoff_bundle_index_ties_digests_without_authority",
+            "test_reviewer_handoff_bundle_index_cli_json_is_path_free",
+            "local reviewer handoff bundle index",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -3531,6 +3567,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and reviewer_handoff_summary_contract_present
         and reviewer_bridge_event_template_contract_present
         and reviewer_bridge_event_template_decision_reference_slot_present
+        and reviewer_handoff_bundle_index_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -3564,6 +3601,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_bridge_event_template_decision_reference_slot_present": (
             reviewer_bridge_event_template_decision_reference_slot_present
         ),
+        "reviewer_handoff_bundle_index_contract_present": (
+            reviewer_handoff_bundle_index_contract_present
+        ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
         "forbidden_control_tokens_found": forbidden_control_tokens_found,
@@ -3593,7 +3633,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "grant approval, release authority, transport, endpoint fetches, "
             "or runtime controls; its optional operator decision-reference "
             "slot is context only and is explicitly not approval or a "
-            "release decision."
+            "release decision. The local reviewer handoff bundle index ties "
+            "the package, validation report, summary, and bridge-event "
+            "template digests without including payloads, recording paths, "
+            "transporting artifacts, or making approval/release decisions."
         ),
     }
 
@@ -4114,6 +4157,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI renders a sanitized bridge-event template from a local reviewer handoff summary without appending it.",
             ),
             (
+                "tools/build_magma_alert_feed_reviewer_handoff_bundle_index.py",
+                "Explicit CLI builds a local reviewer handoff bundle index from package, validation, summary, and bridge-template digests without payload transport.",
+            ),
+            (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
@@ -4164,6 +4211,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_alert_feed_reviewer_bridge_event_template.py",
                 "Reviewer bridge-event template tests prove schema-valid handoff JSON, path-free CLI output, and no direct bridge write.",
+            ),
+            (
+                "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_index.py",
+                "Reviewer handoff bundle index tests prove digest binding, path-free CLI output, no payload inclusion, and no approval automation.",
             ),
             (
                 "tests/test_metrics_endpoint.py",
@@ -4456,7 +4507,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "decisions, or runtime controls. A companion validator can "
                 "check package structure and optional local artifact digests "
                 "for reviewers without writes, transport, endpoint fetches, "
-                "or release decisions; hard "
+                "or release decisions. A local reviewer handoff bundle index "
+                "can bind the package, validation report, handoff summary, "
+                "and bridge-event template digests without including "
+                "payloads, recording paths, transport, or approval "
+                "automation; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -4477,9 +4532,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local reviewer handoff bundle index tying package, "
-                "validation, summary, and bridge-event template digests "
-                "without transport or approval."
+                "Add a local reviewer handoff bundle verifier that recomputes "
+                "bundle index digests without transport or approval."
             ),
             proof=magma_audit_proof,
         ),

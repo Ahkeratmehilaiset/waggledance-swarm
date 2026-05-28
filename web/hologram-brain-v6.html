@@ -1708,12 +1708,23 @@ function buildOpsPanel(el) {
   html += card('Limit', magmaHandoff.history_limit != null ? magmaHandoff.history_limit : '\u2014');
   html += card('Provider', magmaProviderHealth.status || '\u2014');
   html += card('Snapshot', magmaProviderHealth.snapshot_kind || '\u2014');
-  html += card('Feed', magmaProviderHealth.history_feed_present ? 'History' : 'Single');
+  html += card('History Feed', magmaProviderHealth.history_feed_present ? 'History' : 'Single');
+  html += card('Fresh Feed', magmaProviderHealth.freshness_source_configured ? 'Live' : 'Off');
+  html += card('Feed State', magmaProviderHealth.feed_staleness_state || 'unknown');
+  html += card('Feed Items', magmaProviderHealth.feed_item_count != null ? magmaProviderHealth.feed_item_count : '\u2014');
   html += card('Configured', magmaProviderHealth.provider_configured ? 'Yes' : 'No');
   html += card('Provider Alerts', magmaProviderHealth.active_count != null ? magmaProviderHealth.active_count : activeMagmaProviderAlerts.length);
   html += card('Freshness', magmaProviderHealth.freshness_warning_after_seconds != null ? `${magmaProviderHealth.freshness_warning_after_seconds}s` : '\u2014');
   html += card('Dropped', magmaProviderHealth.history_dropped_count != null ? magmaProviderHealth.history_dropped_count : '0');
   html += `</div></div>`;
+  if (magmaProviderHealth.freshness_source_configured) {
+    html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff Freshness Feed</div><div class="p-list">`;
+    html += `<div class="p-list-item"><strong>Source</strong>: ${escapeHtml(magmaProviderHealth.freshness_source || '')} (${escapeHtml(magmaProviderHealth.freshness_source_reason || '')})</div>`;
+    html += `<div class="p-list-item"><strong>Latest</strong>: ${escapeHtml(magmaProviderHealth.feed_latest_created_at_utc || '\u2014')}</div>`;
+    html += `<div class="p-list-item"><strong>Observed</strong>: ${escapeHtml(magmaProviderHealth.feed_observed_at_utc || '\u2014')}</div>`;
+    html += `<div class="p-list-item"><strong>Window</strong>: ${escapeHtml(magmaProviderHealth.feed_window_seconds != null ? `${magmaProviderHealth.feed_window_seconds}s` : '\u2014')}</div>`;
+    html += `</div></div>`;
+  }
   if (activeMagmaProviderAlerts.length) {
     html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff Provider</div><div class="p-list">`;
     activeMagmaProviderAlerts.forEach(a => {
@@ -1727,8 +1738,9 @@ function buildOpsPanel(el) {
     html += `<div class="p-section"><div class="p-section-title">MAGMA Handoff Provider Thresholds</div><div class="p-list">`;
     magmaProviderThresholds.forEach(a => {
       const metric = a.metric || '';
+      const source = a.source ? ` ${a.source}` : '';
       const threshold = a.warning_after_seconds != null ? `${a.warning_after_seconds}s` : (a.warning_threshold != null ? a.warning_threshold : '');
-      html += `<div class="p-list-item"><strong>${escapeHtml(a.id || 'threshold')}</strong>: ${escapeHtml(metric)} ${escapeHtml(String(threshold))}</div>`;
+      html += `<div class="p-list-item"><strong>${escapeHtml(a.id || 'threshold')}</strong>: ${escapeHtml(metric)}${escapeHtml(source)} ${escapeHtml(String(threshold))}</div>`;
     });
     html += `</div></div>`;
   }

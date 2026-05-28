@@ -861,6 +861,191 @@ def _magma_share_import_handoff_snapshot_count(snapshot) -> int:  # noqa: ANN001
 
 MAGMA_HANDOFF_PROVIDER_FRESHNESS_WARNING_SECONDS = 24 * 60 * 60
 MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT = 1
+MAGMA_HANDOFF_FRESHNESS_SOURCE = "operator_peer_review_handoff_feed"
+MAGMA_HANDOFF_FRESHNESS_STATES = frozenset({"fresh", "stale", "unknown"})
+
+
+def _magma_share_import_handoff_freshness_snapshot(container):  # noqa: ANN001
+    for name in (
+        "magma_share_import_handoff_feed_freshness",
+        "magma_share_import_peer_review_handoff_feed_freshness",
+        "magma_share_import_handoff_freshness_source",
+        "magma_share_import_peer_review_handoff_freshness_source",
+        "magma_share_import_handoff_feed_state",
+        "magma_share_import_peer_review_handoff_feed_state",
+    ):
+        provider = _safe_getattr(container, name, None)
+        if provider is not None:
+            break
+    else:
+        return None, "not_configured"
+    if isinstance(provider, Mapping):
+        return dict(provider), ""
+    for method_name in (
+        "snapshot",
+        "freshness",
+        "get_freshness",
+        "get_status",
+        "status",
+        "state",
+    ):
+        method = _safe_getattr(provider, method_name, None)
+        if callable(method):
+            try:
+                snapshot = method()
+            except Exception:
+                return None, "unavailable"
+            if isinstance(snapshot, Mapping):
+                return dict(snapshot), ""
+            return None, "invalid"
+    return None, "invalid"
+
+
+def _magma_share_import_handoff_valid_timestamp(value) -> str | None:  # noqa: ANN001
+    if not isinstance(value, str) or len(value) > 40 or value.strip() != value:
+        return None
+    if ROUTE_STAGE_LATENCY_UPDATED_AT_RE.fullmatch(value) is None:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
+
+
+def _magma_share_import_handoff_first_timestamp(
+    snapshot: Mapping[str, object],
+    keys: Sequence[str],
+) -> str | None:
+    for key in keys:
+        value = snapshot.get(key)
+        if value is None:
+            continue
+        timestamp = _magma_share_import_handoff_valid_timestamp(value)
+        if timestamp is None:
+            return None
+        return timestamp
+    return None
+
+
+def _magma_share_import_handoff_nonnegative_int(value) -> int | None:  # noqa: ANN001
+    normalized = _number_or_none(value)
+    if normalized is None or normalized < 0 or not normalized.is_integer():
+        return None
+    return int(normalized)
+
+
+def _magma_share_import_handoff_nonnegative_number(value):  # noqa: ANN001
+    normalized = _number_or_none(value)
+    if normalized is None or normalized < 0:
+        return None
+    return int(normalized) if normalized.is_integer() else round(normalized, 3)
+
+
+def _sanitize_magma_share_import_handoff_freshness_snapshot(
+    snapshot: Mapping[str, object],
+) -> dict | None:
+    latest = _magma_share_import_handoff_first_timestamp(
+        snapshot,
+        (
+            "feed_latest_created_at_utc",
+            "latest_created_at_utc",
+            "latest_handoff_created_at_utc",
+            "created_at_utc",
+        ),
+    )
+    observed = _magma_share_import_handoff_first_timestamp(
+        snapshot,
+        (
+            "feed_observed_at_utc",
+            "observed_at_utc",
+            "updated_at_utc",
+            "updated_at",
+        ),
+    )
+    latest_obj = snapshot.get("latest")
+    if latest is None and isinstance(latest_obj, Mapping):
+        value = latest_obj.get("created_at_utc")
+        if value is not None:
+            latest = _magma_share_import_handoff_valid_timestamp(value)
+            if latest is None:
+                return None
+
+    for key in (
+        "feed_latest_created_at_utc",
+        "latest_created_at_utc",
+        "latest_handoff_created_at_utc",
+        "created_at_utc",
+    ):
+        if key in snapshot and snapshot.get(key) is not None and latest is None:
+            return None
+    for key in (
+        "feed_observed_at_utc",
+        "observed_at_utc",
+        "updated_at_utc",
+        "updated_at",
+    ):
+        if key in snapshot and snapshot.get(key) is not None and observed is None:
+            return None
+
+    raw_state = snapshot.get(
+        "staleness_state",
+        snapshot.get("freshness_state", snapshot.get("state")),
+    )
+    if raw_state is None:
+        staleness_state = "unknown"
+    elif isinstance(raw_state, str) and raw_state in MAGMA_HANDOFF_FRESHNESS_STATES:
+        staleness_state = raw_state
+    else:
+        return None
+
+    item_count = None
+    for key in ("feed_item_count", "item_count", "handoff_count", "history_count"):
+        if key in snapshot:
+            item_count = _magma_share_import_handoff_nonnegative_int(
+                snapshot.get(key)
+            )
+            if item_count is None:
+                return None
+            break
+
+    window_seconds = None
+    for key in (
+        "feed_window_seconds",
+        "window_seconds",
+        "freshness_window_seconds",
+    ):
+        if key in snapshot:
+            window_seconds = _magma_share_import_handoff_nonnegative_number(
+                snapshot.get(key)
+            )
+            if window_seconds is None:
+                return None
+            break
+
+    if latest is None and observed is None and item_count is None:
+        return None
+
+    return {
+        "source": MAGMA_HANDOFF_FRESHNESS_SOURCE,
+        "latest_created_at_utc": latest,
+        "observed_at_utc": observed,
+        "item_count": item_count,
+        "window_seconds": window_seconds,
+        "staleness_state": staleness_state,
+    }
+
+
+def _magma_share_import_handoff_freshness_source(container):  # noqa: ANN001
+    snapshot, state = _magma_share_import_handoff_freshness_snapshot(container)
+    if state == "not_configured":
+        return None, "not_configured"
+    if snapshot is None:
+        return None, state or "invalid"
+    sanitized = _sanitize_magma_share_import_handoff_freshness_snapshot(snapshot)
+    if sanitized is None:
+        return None, "invalid"
+    return sanitized, "valid"
 
 
 def _magma_share_import_handoff_latest_created_at(
@@ -876,20 +1061,34 @@ def _magma_share_import_handoff_latest_created_at(
 
 def _magma_share_import_handoff_provider_alert_thresholds(
     summary: Mapping[str, object] | None,
+    freshness_source: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     history_limit = summary.get("history_limit") if summary is not None else None
+    feed_latest = (
+        freshness_source.get("latest_created_at_utc")
+        if freshness_source is not None
+        else None
+    )
+    latest_created_at = (
+        feed_latest
+        if isinstance(feed_latest, str)
+        else _magma_share_import_handoff_latest_created_at(summary)
+    )
+    freshness_metric_source = (
+        f"{MAGMA_HANDOFF_FRESHNESS_SOURCE}.latest_created_at_utc"
+        if isinstance(feed_latest, str)
+        else "latest.created_at_utc"
+    )
     return [
         {
             "id": "MagmaShareImportHandoffProviderFreshnessWarning",
             "severity": "warning",
             "metric": "latest_handoff_age_seconds",
-            "source": "latest.created_at_utc",
+            "source": freshness_metric_source,
             "warning_after_seconds": (
                 MAGMA_HANDOFF_PROVIDER_FRESHNESS_WARNING_SECONDS
             ),
-            "latest_created_at_utc": (
-                _magma_share_import_handoff_latest_created_at(summary)
-            ),
+            "latest_created_at_utc": latest_created_at,
             "wall_clock_dependent": True,
         },
         {
@@ -947,10 +1146,40 @@ def _magma_share_import_handoff_provider_health(
     reason: str,
     snapshot=None,  # noqa: ANN001
     summary: Mapping[str, object] | None = None,
+    freshness_source: Mapping[str, object] | None = None,
+    freshness_state: str = "not_configured",
 ) -> dict:
     provider_configured = reason != "not_configured"
     snapshot_available = reason in {"valid_snapshot", "snapshot_invalid"}
     snapshot_valid = reason == "valid_snapshot"
+    freshness_source_configured = freshness_state != "not_configured"
+    freshness_source_available = freshness_state in {"valid", "invalid"}
+    freshness_source_valid = freshness_state == "valid"
+    feed_latest_created_at = (
+        freshness_source.get("latest_created_at_utc")
+        if freshness_source_valid and freshness_source is not None
+        else None
+    )
+    feed_observed_at = (
+        freshness_source.get("observed_at_utc")
+        if freshness_source_valid and freshness_source is not None
+        else None
+    )
+    feed_item_count = (
+        freshness_source.get("item_count")
+        if freshness_source_valid and freshness_source is not None
+        else None
+    )
+    feed_window_seconds = (
+        freshness_source.get("window_seconds")
+        if freshness_source_valid and freshness_source is not None
+        else None
+    )
+    feed_staleness_state = (
+        freshness_source.get("staleness_state")
+        if freshness_source_valid and freshness_source is not None
+        else "unknown"
+    )
     history_feed_present = (
         snapshot_valid
         and _magma_share_import_handoff_snapshot_kind(snapshot) == "history"
@@ -979,8 +1208,35 @@ def _magma_share_import_handoff_provider_health(
         active.extend(
             _magma_share_import_handoff_provider_retention_alerts(summary)
         )
+    if freshness_source_configured:
+        if freshness_state == "unavailable":
+            active.append({
+                "id": "MagmaShareImportHandoffFreshnessSourceUnavailable",
+                "severity": "warning",
+                "summary": (
+                    "MAGMA handoff freshness source is unavailable."
+                ),
+            })
+        elif not freshness_source_valid:
+            active.append({
+                "id": "MagmaShareImportHandoffFreshnessSourceInvalid",
+                "severity": "warning",
+                "summary": "MAGMA handoff freshness source is invalid.",
+            })
+        elif feed_staleness_state == "stale":
+            active.append({
+                "id": "MagmaShareImportHandoffProviderFreshnessWarning",
+                "severity": "warning",
+                "summary": "MAGMA handoff feed freshness source is stale.",
+                "feed_latest_created_at_utc": feed_latest_created_at,
+                "feed_observed_at_utc": feed_observed_at,
+            })
     if active:
-        status = "warning" if snapshot_valid else status
+        status = (
+            "warning"
+            if snapshot_valid or freshness_source_configured
+            else status
+        )
         severity = "warning"
     return {
         "source": "local_ops_snapshot" if provider_configured else "not_configured",
@@ -993,6 +1249,26 @@ def _magma_share_import_handoff_provider_health(
         "snapshot_kind": _magma_share_import_handoff_snapshot_kind(snapshot),
         "snapshot_count": _magma_share_import_handoff_snapshot_count(snapshot),
         "history_feed_present": history_feed_present,
+        "freshness_source": (
+            MAGMA_HANDOFF_FRESHNESS_SOURCE
+            if freshness_source_configured
+            else "not_configured"
+        ),
+        "freshness_source_configured": freshness_source_configured,
+        "freshness_source_available": freshness_source_available,
+        "freshness_source_valid": freshness_source_valid,
+        "freshness_source_reason": freshness_state,
+        "freshness_source_precedence": (
+            "operator_feed"
+            if freshness_source_valid
+            and isinstance(feed_latest_created_at, str)
+            else "latest.created_at_utc"
+        ),
+        "feed_latest_created_at_utc": feed_latest_created_at,
+        "feed_observed_at_utc": feed_observed_at,
+        "feed_item_count": feed_item_count,
+        "feed_window_seconds": feed_window_seconds,
+        "feed_staleness_state": feed_staleness_state,
         "history_limit": (
             summary.get("history_limit") if summary is not None else None
         ),
@@ -1017,7 +1293,10 @@ def _magma_share_import_handoff_provider_health(
             MAGMA_HANDOFF_PROVIDER_RETENTION_DROPPED_WARNING_COUNT
         ),
         "alert_thresholds": (
-            _magma_share_import_handoff_provider_alert_thresholds(summary)
+            _magma_share_import_handoff_provider_alert_thresholds(
+                summary,
+                freshness_source if freshness_source_valid else None,
+            )
         ),
         "active_count": len(active),
         "active": active,
@@ -1033,12 +1312,16 @@ def _with_magma_share_import_handoff_provider_health(
     *,
     reason: str,
     snapshot=None,  # noqa: ANN001
+    freshness_source: Mapping[str, object] | None = None,
+    freshness_state: str = "not_configured",
 ) -> dict:
     section["provider_health"] = (
         _magma_share_import_handoff_provider_health(
             reason=reason,
             snapshot=snapshot,
             summary=section,
+            freshness_source=freshness_source,
+            freshness_state=freshness_state,
         )
     )
     return section
@@ -1047,11 +1330,16 @@ def _with_magma_share_import_handoff_provider_health(
 def _magma_share_import_handoff_section(container=None) -> dict:
     """Build read-only MAGMA share-import handoff status for /api/ops."""
     snapshot, state = _magma_share_import_handoff_snapshot(container)
+    freshness_source, freshness_state = (
+        _magma_share_import_handoff_freshness_source(container)
+    )
     if state == "not_configured":
         section = build_magma_share_import_handoff_status_summary(None)
         return _with_magma_share_import_handoff_provider_health(
             section,
             reason="not_configured",
+            freshness_source=freshness_source,
+            freshness_state=freshness_state,
         )
     if snapshot is None:
         invalid = state == "invalid"
@@ -1088,6 +1376,8 @@ def _magma_share_import_handoff_section(container=None) -> dict:
                 if invalid
                 else "provider_unavailable"
             ),
+            freshness_source=freshness_source,
+            freshness_state=freshness_state,
         )
     try:
         section = build_magma_share_import_handoff_status_summary(snapshot)
@@ -1095,6 +1385,8 @@ def _magma_share_import_handoff_section(container=None) -> dict:
             section,
             reason="valid_snapshot",
             snapshot=snapshot,
+            freshness_source=freshness_source,
+            freshness_state=freshness_state,
         )
     except (TypeError, ValueError):
         section = build_magma_share_import_handoff_status_summary(None)
@@ -1113,6 +1405,8 @@ def _magma_share_import_handoff_section(container=None) -> dict:
             section,
             reason="snapshot_invalid",
             snapshot=snapshot,
+            freshness_source=freshness_source,
+            freshness_state=freshness_state,
         )
 
 

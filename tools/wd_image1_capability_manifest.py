@@ -3218,11 +3218,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
-                "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, and thresholds.",
+                "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, and operator-owned feed freshness source state.",
             ),
             (
                 "web/hologram-brain-v6.html",
-                "Hologram Ops panel renders MAGMA import handoff status/history, provider health, and thresholds without controls.",
+                "Hologram Ops panel renders MAGMA import handoff status/history, provider health, thresholds, and feed freshness state without controls.",
             ),
             (
                 "schemas/v3_13_0/magma_share_manifest.v0.json",
@@ -3246,7 +3246,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "docs/API.md",
-                "API contract documents read-only MAGMA import handoff status/history, provider health, and thresholds.",
+                "API contract documents read-only MAGMA import handoff status/history, provider health, thresholds, and feed freshness state.",
             ),
             (
                 "tools/run_runtime_receipt_emission_proof.py",
@@ -3474,7 +3474,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "import decisions without payloads, local paths, or runtime "
                 "authority. A read-only /api/ops and hologram summary can "
                 "surface bounded handoff status history plus provider health "
-                "and read-only freshness/retention thresholds for the "
+                "with read-only freshness/retention thresholds plus a "
+                "sanitized operator-owned feed freshness source for the "
                 "explicit handoff feed without disk scanning, payload import, "
                 "local path exposure, provider exception details, or runtime "
                 "controls; hard "
@@ -3498,8 +3499,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Wire an operator-owned peer-review handoff feed freshness "
-                "source into provider health without adding import controls."
+                "Promote MAGMA handoff provider health and freshness source "
+                "state into privacy-safe operator metrics without adding "
+                "import controls."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

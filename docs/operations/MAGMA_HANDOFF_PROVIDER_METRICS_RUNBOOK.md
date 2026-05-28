@@ -132,6 +132,37 @@ the listed `drill_evidence` artifact classes; do not add URLs, headers,
 hostnames, filesystem paths, raw Alertmanager labels, raw annotations, payload
 material, or exception strings.
 
+The operator can package the collected local evidence with
+`tools/package_magma_alert_feed_release_evidence.py`. The tool reads only an
+explicit local `/api/ops` JSON snapshot and an explicit local `/metrics` scrape,
+then writes `magma_alert_feed_release_evidence.json` and
+`magma_alert_feed_release_evidence.md` into a new operator-specified directory.
+The package stores artifact SHA-256 digests, allowlisted SLO panel metadata,
+current metric samples, active alert IDs, and the manual hold reasons inferred
+from current samples. It does not include raw payloads, raw scrapes, raw
+Alertmanager labels, URLs, headers, hostnames, filesystem paths, payload
+material, or exception strings, and it does not fetch endpoints.
+
+Example:
+
+```powershell
+python tools\package_magma_alert_feed_release_evidence.py `
+  --ops-json <collected>\ops.json `
+  --metrics-scrape <collected>\metrics.prom `
+  --out-dir <new-evidence-dir> `
+  --release-ref pr:753 `
+  --commit-sha <40-hex-commit-sha> `
+  --operator-agent operator:wd-image1 `
+  --bridge-event-ref bridge:wd-image1-magma-alert-feed-release `
+  --ci-run-ref gh:run:example `
+  --json
+```
+
+The package is evidence for a human/operator release review only. Its
+`manual_gate.automatic_release_decision` field is always `false`; it must not
+be wired to automatic merge, promotion, configuration, importer/exporter, feed
+control, or runtime-authority actions.
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

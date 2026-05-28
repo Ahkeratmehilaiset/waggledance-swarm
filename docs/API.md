@@ -175,6 +175,10 @@ incident review.
 The metrics runbook also includes manual release-gate examples that consume
 those SLO panels and `drill_evidence`; they are documentation-only and must
 not be wired to automatic merge, promotion, configuration, or runtime controls.
+For operator-owned release review, `tools/package_magma_alert_feed_release_evidence.py`
+can package an explicit local `/api/ops` JSON snapshot and explicit local
+`/metrics` scrape into sanitized JSON/Markdown evidence artifacts; it performs
+no endpoint fetches and makes no automatic release decision.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

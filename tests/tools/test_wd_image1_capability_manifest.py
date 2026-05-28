@@ -697,6 +697,7 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
     assert proof["cache_backoff_contract_present"] is True
     assert proof["slo_drill_contract_present"] is True
     assert proof["release_gate_examples_present"] is True
+    assert proof["release_evidence_package_contract_present"] is True
     assert proof["guardrails_present"] is True
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
@@ -1023,6 +1024,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "SLO panels" in capability["safe_statement"]
     assert "drill-evidence" in capability["safe_statement"]
     assert "manual release-gate examples" in capability["safe_statement"]
+    assert "evidence package tool" in capability["safe_statement"]
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "alert_thresholds_documented"
@@ -1039,7 +1041,7 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         "guardrails_present"
     ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "evidence export packaging" in (
+    assert "reviewer-side validation" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

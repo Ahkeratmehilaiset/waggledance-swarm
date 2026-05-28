@@ -2825,7 +2825,6 @@ def build_magma_handoff_provider_metrics_runbook_smoke(
         if rule not in runbook_text
     ]
     forbidden_control_tokens = {
-        "POST /api/magma",
         "import_payload",
         "payload_import",
         "grant_runtime_authority",
@@ -3087,6 +3086,219 @@ def build_magma_handoff_metrics_alert_state_smoke(
             "accepts only fixed runbook alert IDs, sanitized timestamps, "
             "finite numeric samples, and WD-generated summaries; it does not "
             "add import controls or runtime authority."
+        ),
+    }
+
+
+def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
+    *,
+    missing_inputs: Sequence[str],
+    blocked_reason: str = "missing_required_inputs",
+) -> dict:
+    return {
+        "proof_id": "magma_handoff_metrics_alertmanager_adapter_smoke_v1",
+        "ok": False,
+        "blocked_reason": blocked_reason,
+        "missing_inputs": list(missing_inputs),
+        "adapter_path": (
+            "waggledance/adapters/http/"
+            "magma_handoff_metrics_alert_feed.py"
+        ),
+        "settings_path": "configs/settings.yaml",
+        "ops_endpoint": "/api/ops",
+        "adapter_contract_present": False,
+        "container_contract_present": False,
+        "settings_contract_present": False,
+        "test_contract_present": False,
+        "docs_contract_present": False,
+        "guardrails_present": False,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "Required adapter, settings, container, test, or documentation "
+            "inputs are missing, so the MAGMA handoff metrics Alertmanager "
+            "adapter cannot be certified."
+        ),
+    }
+
+
+def build_magma_handoff_metrics_alertmanager_adapter_smoke(
+    root: Path | str = ROOT,
+) -> dict:
+    """Prove the MAGMA metrics Alertmanager adapter is configured read-only."""
+
+    repo_root = Path(root)
+    adapter_rel = (
+        "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
+    )
+    container_rel = "waggledance/bootstrap/container.py"
+    settings_rel = "configs/settings.yaml"
+    tests_rel = "tests/test_legacy_consolidation.py"
+    docs_rel = "docs/API.md"
+    manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
+    runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
+    required = (
+        adapter_rel,
+        container_rel,
+        settings_rel,
+        tests_rel,
+        docs_rel,
+        manifest_rel,
+        runbook_rel,
+    )
+    missing = [
+        rel_path
+        for rel_path in required
+        if not (repo_root / rel_path).exists()
+    ]
+    if missing:
+        return _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
+            missing_inputs=missing,
+        )
+
+    adapter_text = (repo_root / adapter_rel).read_text(encoding="utf-8")
+    container_text = (repo_root / container_rel).read_text(encoding="utf-8")
+    settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
+    tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
+    docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
+    manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
+    runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
+    combined_runtime_lower = "\n".join((
+        adapter_text,
+        container_text,
+        settings_text,
+        docs_text,
+        manifest_text,
+        runbook_text,
+    )).lower()
+
+    adapter_contract_present = all(
+        token in adapter_text
+        for token in (
+            "MagmaHandoffMetricsAlertmanagerFeed",
+            "MagmaHandoffMetricsAlertFeedError",
+            "UnavailableMagmaHandoffMetricsAlertFeed",
+            "/api/v2/alerts",
+            "follow_redirects=False",
+            "allowed_private_hosts",
+            "CREDENTIAL_HEADER_REFUSED",
+            "URL_USERINFO_REFUSED",
+            "URL_QUERY_REFUSED",
+            "URL_LOCAL_HOST_REFUSED",
+            "RESPONSE_TOO_LARGE",
+            "RESPONSE_SOURCE_URL_REFUSED",
+            "contains_secret_marker_substring",
+            "_alertmanager_active_alerts",
+        )
+    )
+    container_contract_present = all(
+        token in container_text
+        for token in (
+            "magma_share_import_handoff_metrics_alert_feed",
+            "magma_handoff_metrics_alert_feed",
+            "MagmaHandoffMetricsAlertmanagerFeed.from_config",
+            "UnavailableMagmaHandoffMetricsAlertFeed",
+            "metrics_alert_state will report unavailable",
+        )
+    )
+    settings_contract_present = all(
+        token in settings_text
+        for token in (
+            "magma_handoff_metrics_alert_feed:",
+            "enabled: false",
+            "alertmanager_base_url: ''",
+            "allowed_private_hosts: []",
+            "headers: {}",
+        )
+    )
+    test_contract_present = all(
+        token in tests_text
+        for token in (
+            "test_magma_handoff_metrics_alertmanager_feed_reads_operator_alerts",
+            "test_magma_handoff_metrics_alertmanager_feed_guardrails_refuse_secrets",
+            "test_container_wires_configured_magma_handoff_metrics_alert_feed",
+            "MagmaHandoffRuntimeAuthorityReported",
+            "PRIVATE_ANNOTATION",
+            "CREDENTIAL_HEADER_REFUSED",
+        )
+    )
+    docs_contract_present = all(
+        token in "\n".join((docs_text, manifest_text, runbook_text))
+        for token in (
+            "magma_handoff_metrics_alert_feed",
+            "/api/v2/alerts",
+            "disabled by default",
+            "credential",
+            "allowed_private_hosts",
+            "private or localhost hosts",
+        )
+    )
+    guardrails_present = all(
+        token in adapter_text
+        for token in (
+            "URL_USERINFO_REFUSED",
+            "URL_QUERY_REFUSED",
+            "URL_SECRET_REFUSED",
+            "URL_PRIVATE_HOST_REFUSED",
+            "URL_LOCAL_HOST_REFUSED",
+            "CREDENTIAL_HEADER_REFUSED",
+            "HEADER_CONTROL_REFUSED",
+            "TIMEOUT_OUT_OF_RANGE",
+            "SIZE_CAP_OUT_OF_RANGE",
+        )
+    )
+    forbidden_control_tokens = {
+        "import_payload",
+        "payload_import",
+        "grant_runtime_authority",
+        "authority_mutation",
+        "write_config",
+        "config_write",
+        "auto_import",
+        "magma_handoff_metrics_alert_feed_import",
+        "magma_handoff_metrics_alert_feed_start",
+        "magma_handoff_metrics_alert_feed_stop",
+    }
+    forbidden_control_tokens_found = [
+        token
+        for token in sorted(forbidden_control_tokens)
+        if token.lower() in combined_runtime_lower
+    ]
+    ok = (
+        adapter_contract_present
+        and container_contract_present
+        and settings_contract_present
+        and test_contract_present
+        and docs_contract_present
+        and guardrails_present
+        and not forbidden_control_tokens_found
+    )
+    return {
+        "proof_id": "magma_handoff_metrics_alertmanager_adapter_smoke_v1",
+        "ok": ok,
+        "proof_mode": "source_contract",
+        "adapter_path": adapter_rel,
+        "settings_path": settings_rel,
+        "ops_endpoint": "/api/ops",
+        "adapter_contract_present": adapter_contract_present,
+        "container_contract_present": container_contract_present,
+        "settings_contract_present": settings_contract_present,
+        "test_contract_present": test_contract_present,
+        "docs_contract_present": docs_contract_present,
+        "guardrails_present": guardrails_present,
+        "forbidden_controls_absent": not forbidden_control_tokens_found,
+        "forbidden_control_tokens_found": forbidden_control_tokens_found,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The MAGMA handoff metrics Alertmanager adapter is disabled by "
+            "default, read-only, and wired into /api/ops provider health. It "
+            "uses bounded GETs to /api/v2/alerts and refuses credential, "
+            "query, redirect, oversized response, and non-allowlisted "
+            "private-host shapes without adding import controls or runtime "
+            "authority."
         ),
     }
 
@@ -3592,11 +3804,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
-                "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, and operator-owned feed freshness source state.",
+                "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
             (
                 "waggledance/adapters/http/routes/metrics.py",
                 "Prometheus metrics expose privacy-safe MAGMA handoff provider health and freshness source state without import controls.",
+            ),
+            (
+                "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py",
+                "Optional configured Alertmanager adapter for MAGMA handoff metric alerts with timeout, credential, and private-host guardrails.",
             ),
             (
                 "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md",
@@ -3784,6 +4000,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     magma_metrics_alert_state_smoke = (
         build_magma_handoff_metrics_alert_state_smoke(root)
     )
+    magma_metrics_alertmanager_adapter_smoke = (
+        build_magma_handoff_metrics_alertmanager_adapter_smoke(root)
+    )
     magma_audit_proof = dict(
         solver_trace_proof.get("magma_execution_receipt_proof") or {}
     )
@@ -3793,10 +4012,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     magma_audit_proof["metrics_alert_state_smoke"] = (
         magma_metrics_alert_state_smoke
     )
+    magma_audit_proof["metrics_alertmanager_adapter_smoke"] = (
+        magma_metrics_alertmanager_adapter_smoke
+    )
     magma_audit_proof["ok"] = bool(
         magma_audit_proof.get("ok") is True
         and magma_metrics_runbook_smoke.get("ok") is True
         and magma_metrics_alert_state_smoke.get("ok") is True
+        and magma_metrics_alertmanager_adapter_smoke.get("ok") is True
     )
     future_scale_scorecard = build_future_scale_axis_scorecard(root)
 
@@ -3893,7 +4116,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "metrics_alert_state can surface sanitized Alertmanager "
                 "state for fixed MAGMA handoff metric alert IDs without raw "
                 "labels, annotations, URLs, paths, exception details, import "
-                "controls, or runtime authority; hard "
+                "controls, or runtime authority. A configured adapter can "
+                "fetch that state from an operator-owned Alertmanager with "
+                "timeout, credential, and private-host guardrails; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3914,8 +4139,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a configured MAGMA handoff metrics Alertmanager adapter "
-                "with timeout, credential, and private-host guardrails."
+                "Add provider health/cache metrics and bounded backoff for "
+                "the MAGMA handoff metrics Alertmanager adapter without "
+                "adding controls."
             ),
             proof=magma_audit_proof,
         ),

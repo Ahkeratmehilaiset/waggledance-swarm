@@ -809,6 +809,30 @@ class Container:
 
             return UnavailableRouteStageLatencyFeed()
 
+    @cached_property
+    def magma_share_import_handoff_metrics_alert_feed(self):
+        """Optional read-only Alertmanager feed for MAGMA handoff metrics."""
+        cfg = self._settings.get("magma_handoff_metrics_alert_feed", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return None
+        try:
+            from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+                MagmaHandoffMetricsAlertmanagerFeed,
+            )
+
+            return MagmaHandoffMetricsAlertmanagerFeed.from_config(cfg)
+        except Exception as exc:
+            log.error(
+                "MAGMA handoff metrics alert feed configuration refused; "
+                "metrics_alert_state will report unavailable: %s",
+                exc,
+            )
+            from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+                UnavailableMagmaHandoffMetricsAlertFeed,
+            )
+
+            return UnavailableMagmaHandoffMetricsAlertFeed()
+
     def build_app(self):
         """Build FastAPI application."""
         from waggledance.adapters.http.api import create_app

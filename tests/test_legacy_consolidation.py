@@ -775,6 +775,143 @@ class TestApiOpsExtended:
         )
         assert "C:\\private" not in str(section)
 
+    def test_magma_handoff_metrics_alertmanager_feed_reads_operator_alerts(self):
+        from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+            MagmaHandoffMetricsAlertFeedHttpResponse,
+            MagmaHandoffMetricsAlertmanagerFeed,
+        )
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+
+        calls = []
+
+        def transport(url, headers, timeout_seconds, params):
+            calls.append((url, dict(headers), timeout_seconds, dict(params)))
+            body = [
+                {
+                    "labels": {
+                        "alertname": "MagmaHandoffRuntimeAuthorityReported",
+                        "severity": "critical",
+                        "host": "prod-db",
+                    },
+                    "status": {"state": "active"},
+                    "annotations": {
+                        "summary": "PRIVATE_ANNOTATION path=C:/private",
+                    },
+                    "generatorURL": "http://alertmanager/private",
+                    "value": "1",
+                },
+                {
+                    "labels": {"alertname": "UnknownMagmaAlert"},
+                    "status": {"state": "active"},
+                    "annotations": {"summary": "PRIVATE_UNKNOWN"},
+                },
+                {
+                    "labels": {"alertname": "MagmaHandoffFreshnessStale"},
+                    "status": {"state": "resolved"},
+                },
+            ]
+            return MagmaHandoffMetricsAlertFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json; charset=utf-8",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = MagmaHandoffMetricsAlertmanagerFeed(
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            timeout_seconds=2,
+            transport=transport,
+        )
+
+        class Container:
+            magma_share_import_handoff_metrics_alert_feed = feed
+
+        section = _magma_share_import_handoff_section(Container())
+        alert_state = section["provider_health"]["metrics_alert_state"]
+        serialized = str(section)
+
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/api/v2/alerts")
+        assert calls[0][1]["Accept"] == "application/json"
+        assert calls[0][2] == 2
+        assert calls[0][3] == {}
+        assert alert_state["source"] == "prometheus_alertmanager_snapshot"
+        assert alert_state["prometheus_alertmanager_feed"] is True
+        assert alert_state["updated_at"].endswith("Z")
+        assert alert_state["status"] == "critical"
+        assert alert_state["active_count"] == 1
+        assert alert_state["active"][0]["id"] == (
+            "MagmaHandoffRuntimeAuthorityReported"
+        )
+        assert alert_state["active"][0]["metric"] == (
+            "waggledance_magma_handoff_runtime_authority_granted"
+        )
+        assert "PRIVATE_ANNOTATION" not in serialized
+        assert "PRIVATE_UNKNOWN" not in serialized
+        assert "C:/private" not in serialized
+        assert "prod-db" not in serialized
+        assert "generatorURL" not in serialized
+
+    def test_magma_handoff_metrics_alertmanager_feed_guardrails_refuse_secrets(self):
+        from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+            MagmaHandoffMetricsAlertFeedError,
+            MagmaHandoffMetricsAlertmanagerFeed,
+        )
+
+        with pytest.raises(MagmaHandoffMetricsAlertFeedError) as private_host:
+            MagmaHandoffMetricsAlertmanagerFeed(
+                alertmanager_base_url="http://127.0.0.1:9093",
+            )
+        assert "LOCAL_HOST_REFUSED" in str(private_host.value)
+
+        with pytest.raises(MagmaHandoffMetricsAlertFeedError) as query_secret:
+            MagmaHandoffMetricsAlertmanagerFeed(
+                alertmanager_base_url=(
+                    "https://alerts.example/api?api_key=SECRET"
+                ),
+            )
+        assert "URL_QUERY_REFUSED" in str(query_secret.value)
+
+        with pytest.raises(MagmaHandoffMetricsAlertFeedError) as userinfo:
+            MagmaHandoffMetricsAlertmanagerFeed(
+                alertmanager_base_url="https://user:pass@alerts.example",
+            )
+        assert "URL_USERINFO_REFUSED" in str(userinfo.value)
+
+        with pytest.raises(MagmaHandoffMetricsAlertFeedError) as header_secret:
+            MagmaHandoffMetricsAlertmanagerFeed.from_config({
+                "alertmanager_base_url": "https://alerts.example",
+                "headers": {"Authorization": "Bearer abc"},
+            })
+        assert "CREDENTIAL_HEADER_REFUSED" in str(header_secret.value)
+
+    def test_container_wires_configured_magma_handoff_metrics_alert_feed(self):
+        from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+            MagmaHandoffMetricsAlertmanagerFeed,
+        )
+
+        settings = WaggleSettings(
+            profile="HOME",
+            api_key="test-key-123",
+            _extras={
+                "magma_handoff_metrics_alert_feed": {
+                    "enabled": True,
+                    "alertmanager_base_url": "https://alerts.example",
+                    "timeout_s": 2,
+                    "max_response_bytes": 1000,
+                },
+            },
+        )
+        container = Container(settings=settings, stub=True)
+
+        assert isinstance(
+            container.magma_share_import_handoff_metrics_alert_feed,
+            MagmaHandoffMetricsAlertmanagerFeed,
+        )
+
     def test_ops_route_stage_latency_panels_are_read_only_promql_templates(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _route_stage_latency_panels,

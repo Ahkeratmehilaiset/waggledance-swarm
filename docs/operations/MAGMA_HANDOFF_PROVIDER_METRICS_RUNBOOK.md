@@ -16,6 +16,13 @@ The metric source is the auth-exempt `/metrics` endpoint. The gauges are
 derived from the same sanitized `/api/ops.magma_share_import_handoff`
 provider-health summary used by the hologram Ops panel.
 
+`/api/ops.provider_health.metrics_alert_state` can also consume the optional
+`magma_handoff_metrics_alert_feed` adapter. The adapter is disabled by default
+and reads only the operator-owned Alertmanager `/api/v2/alerts` endpoint. It
+refuses URL userinfo, query strings, fragments, credential-like headers,
+redirects, oversized responses, and private or localhost hosts unless the host
+appears exactly in `allowed_private_hosts`.
+
 ## Metrics
 
 | Metric | Meaning |

@@ -18,6 +18,7 @@ from waggledance.adapters.http.deps import get_autonomy_service, get_container
 from waggledance.adapters.http.routes._capability_state import derive_capability_state
 from waggledance.adapters.http.routes._dashboard_shared import _ws_clients
 from waggledance.adapters.http.routes.auth_session import validate_session
+from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -437,8 +438,248 @@ ROUTE_STAGE_LATENCY_PANEL_QUERIES = {
     ),
 }
 
+ROUTE_STAGE_LATENCY_PANEL_META = {
+    "route_stage_latency_p95_ms": {
+        "title": "Route-stage p95 latency",
+        "unit": "ms",
+        "warning_ms": 2500.0,
+    },
+    "route_stage_latency_p99_ms": {
+        "title": "Route-stage p99 latency",
+        "unit": "ms",
+        "critical_ms": 5000.0,
+    },
+    "route_stage_request_rate": {
+        "title": "Route-stage request rate",
+        "unit": "requests/s",
+    },
+}
 
-def _route_stage_latency_panels() -> dict:
+ROUTE_STAGE_LATENCY_ALERT_IDS = {
+    "RouteStageLatencyP95Warning": "warning",
+    "RouteStageLatencyP99Critical": "critical",
+}
+
+ROUTE_STAGE_LATENCY_SEVERITY_RANK = {
+    "none": 0,
+    "nominal": 0,
+    "warning": 1,
+    "critical": 2,
+}
+
+
+def _route_stage_latency_empty_feed_state(source: str) -> dict:
+    return {
+        "source": source,
+        "status": "not_configured",
+        "severity": "none",
+        "prometheus_alertmanager_feed": False,
+        "updated_at": None,
+        "panel_values": [],
+        "active_count": 0,
+        "active": [],
+        "controls_present": False,
+    }
+
+
+def _route_stage_latency_feed_provider(container):  # noqa: ANN001
+    for name in (
+        "route_stage_latency_feed",
+        "route_stage_latency_alert_feed",
+        "prometheus_alertmanager_feed",
+    ):
+        provider = _safe_getattr(container, name, None)
+        if provider is not None:
+            return provider
+    return None
+
+
+def _route_stage_latency_feed_snapshot(container):  # noqa: ANN001
+    provider = _route_stage_latency_feed_provider(container)
+    if provider is None:
+        return None, "not_configured"
+    if isinstance(provider, dict):
+        return provider, ""
+    for method_name in ("snapshot", "get_status", "status"):
+        method = _safe_getattr(provider, method_name, None)
+        if callable(method):
+            try:
+                snapshot = method()
+            except Exception:
+                return None, "unavailable"
+            return snapshot if isinstance(snapshot, dict) else None, "invalid"
+    return None, "invalid"
+
+
+def _route_stage_latency_stage(item: dict) -> str | None:
+    labels = item.get("labels")
+    if not isinstance(labels, dict):
+        labels = {}
+    stage = item.get("stage", labels.get("stage"))
+    if isinstance(stage, str) and stage in CHAT_ROUTE_STAGE_ORDER:
+        return stage
+    return None
+
+
+def _route_stage_latency_value(item: dict) -> float | None:
+    for key in ("value_ms", "value", "current_value"):
+        value = _number_or_none(item.get(key))
+        if value is not None:
+            return round(value, 3)
+    return None
+
+
+def _route_stage_latency_updated_at(snapshot: dict) -> str | None:
+    value = snapshot.get("updated_at")
+    if not isinstance(value, str) or len(value) > 80:
+        return None
+    lowered = value.lower()
+    forbidden = (
+        "private",
+        "query=",
+        "profile=",
+        "language=",
+        "route_stage_trace",
+        "\\",
+        "/",
+    )
+    if any(token in lowered for token in forbidden):
+        return None
+    return value
+
+
+def _route_stage_latency_panel_status(panel_id: str, value: float) -> str:
+    meta = ROUTE_STAGE_LATENCY_PANEL_META.get(panel_id, {})
+    critical = _number_or_none(meta.get("critical_ms"))
+    if critical is not None and value > critical:
+        return "critical"
+    warning = _number_or_none(meta.get("warning_ms"))
+    if warning is not None and value > warning:
+        return "warning"
+    return "nominal"
+
+
+def _sanitize_route_stage_latency_panel_values(snapshot: dict) -> list[dict]:
+    raw_items = snapshot.get("panel_values", snapshot.get("panels", []))
+    if not isinstance(raw_items, list):
+        return []
+    items = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        panel_id = raw.get("id", raw.get("panel_id"))
+        if (
+            not isinstance(panel_id, str)
+            or panel_id not in ROUTE_STAGE_LATENCY_PANEL_META
+        ):
+            continue
+        stage = _route_stage_latency_stage(raw)
+        value = _route_stage_latency_value(raw)
+        if stage is None or value is None:
+            continue
+        meta = ROUTE_STAGE_LATENCY_PANEL_META[panel_id]
+        items.append({
+            "id": panel_id,
+            "title": meta["title"],
+            "stage": stage,
+            "value": value,
+            "unit": meta["unit"],
+            "status": _route_stage_latency_panel_status(panel_id, value),
+        })
+    return items
+
+
+def _sanitize_route_stage_latency_active_alerts(snapshot: dict) -> list[dict]:
+    raw_alerts = snapshot.get(
+        "active",
+        snapshot.get("active_alerts", snapshot.get("alerts", [])),
+    )
+    if not isinstance(raw_alerts, list):
+        return []
+    alerts = []
+    for raw in raw_alerts:
+        if not isinstance(raw, dict):
+            continue
+        labels = raw.get("labels")
+        if not isinstance(labels, dict):
+            labels = {}
+        alert_id = raw.get("id", raw.get("alertname", labels.get("alertname")))
+        if (
+            not isinstance(alert_id, str)
+            or alert_id not in ROUTE_STAGE_LATENCY_ALERT_IDS
+        ):
+            continue
+        state = raw.get("state", raw.get("status", raw.get("alert_state")))
+        if isinstance(state, str) and state.lower() not in {"active", "firing"}:
+            continue
+        stage = _route_stage_latency_stage(raw)
+        if stage is None:
+            continue
+        severity = raw.get("severity", labels.get("severity"))
+        if severity not in {"warning", "critical"}:
+            severity = ROUTE_STAGE_LATENCY_ALERT_IDS[alert_id]
+        value = _route_stage_latency_value(raw)
+        item = {
+            "id": alert_id,
+            "stage": stage,
+            "severity": severity,
+            "summary": f"{alert_id} active for {stage}.",
+        }
+        if value is not None:
+            item["value_ms"] = value
+        alerts.append(item)
+    return alerts
+
+
+def _route_stage_latency_max_severity(items: list[dict]) -> str:
+    severity = "none"
+    for item in items:
+        candidate = item.get("severity", item.get("status", "none"))
+        if (
+            isinstance(candidate, str)
+            and ROUTE_STAGE_LATENCY_SEVERITY_RANK.get(candidate, 0)
+            > ROUTE_STAGE_LATENCY_SEVERITY_RANK.get(severity, 0)
+        ):
+            severity = candidate
+    return severity
+
+
+def _route_stage_latency_feed_state(container) -> dict:  # noqa: ANN001
+    snapshot, state = _route_stage_latency_feed_snapshot(container)
+    if state == "not_configured":
+        return _route_stage_latency_empty_feed_state("not_configured")
+    if snapshot is None:
+        return {
+            **_route_stage_latency_empty_feed_state(
+                "prometheus_alertmanager_unavailable"
+            ),
+            "status": "warning",
+            "severity": "warning",
+            "active_count": 1,
+            "active": [{
+                "id": "RouteStageLatencyFeedUnavailable",
+                "severity": "warning",
+                "summary": "Route-stage latency feed snapshot is unavailable.",
+            }],
+        }
+
+    panel_values = _sanitize_route_stage_latency_panel_values(snapshot)
+    active = _sanitize_route_stage_latency_active_alerts(snapshot)
+    severity = _route_stage_latency_max_severity(active + panel_values)
+    return {
+        "source": "prometheus_alertmanager_snapshot",
+        "status": severity if severity != "none" else "nominal",
+        "severity": severity,
+        "prometheus_alertmanager_feed": True,
+        "updated_at": _route_stage_latency_updated_at(snapshot),
+        "panel_values": panel_values,
+        "active_count": len(active),
+        "active": active,
+        "controls_present": False,
+    }
+
+
+def _route_stage_latency_panels(container=None) -> dict:
     """Read-only PromQL panel and alert templates for route-stage latency."""
 
     p95_query = ROUTE_STAGE_LATENCY_PANEL_QUERIES[
@@ -447,10 +688,14 @@ def _route_stage_latency_panels() -> dict:
     p99_query = ROUTE_STAGE_LATENCY_PANEL_QUERIES[
         "route_stage_latency_p99_ms"
     ]
+    feed_state = _route_stage_latency_feed_state(container)
     return {
         "source": "prometheus_query_templates",
-        "prometheus_alertmanager_feed": False,
+        "prometheus_alertmanager_feed": feed_state[
+            "prometheus_alertmanager_feed"
+        ],
         "controls_present": False,
+        "feed_state": feed_state,
         "metrics": [
             "waggledance_route_stage_request_latency_histogram_ms_bucket",
             "waggledance_route_stage_request_latency_histogram_ms_sum",
@@ -575,7 +820,7 @@ def api_ops(service=Depends(get_autonomy_service),
         "backfill": backfill_metrics,
         "accelerator": accelerator_metrics,
         "autogrowth": _autogrowth_section(container),
-        "route_stage_latency": _route_stage_latency_panels(),
+        "route_stage_latency": _route_stage_latency_panels(container),
         "gemma_profiles": gemma_metrics,
         "llm_parallel": parallel_metrics,
         "hex_mesh": _safe(

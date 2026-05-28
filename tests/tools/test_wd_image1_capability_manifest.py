@@ -227,6 +227,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["rate_query_supported"] is True
     assert smoke["histogram_quantile_supported"] is True
     assert smoke["latency_panel_templates_visible"] is True
+    assert smoke["prometheus_alertmanager_feed_supported"] is True
+    assert smoke["latency_feed_state_visible"] is True
     assert smoke["alert_thresholds_documented"] is True
     assert smoke["runbook_path"] == (
         "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md"
@@ -840,11 +842,15 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["route_stage_runtime_metrics_smoke"][
         "latency_panel_templates_visible"
     ] is True
+    assert capability["proof"]["route_stage_runtime_metrics_smoke"][
+        "latency_feed_state_visible"
+    ] is True
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
     assert "p95/p99" in capability["safe_statement"]
-    assert "Prometheus/Alertmanager feed" in capability["next_smallest_pr"]
+    assert "read-only feed state" in capability["safe_statement"]
+    assert "endpoint configuration" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

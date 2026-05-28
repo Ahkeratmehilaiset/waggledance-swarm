@@ -1038,6 +1038,21 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "controls_present",
             )
         ),
+        "ops_latency_feed_state_present": all(
+            token in "\n".join(
+                (ops_text, html_text, ops_tests_text, docs_text, runbook_text)
+            )
+            for token in (
+                "route_stage_latency_feed",
+                "feed_state",
+                "prometheus_alertmanager_snapshot",
+                "RouteStageLatencyFeedUnavailable",
+                "panel_values",
+                "activeRouteStageLatencyAlerts",
+                "test_ops_route_stage_latency_feed_state_sanitizes_snapshot",
+                "It intentionally does not forward Alertmanager annotations",
+            )
+        ),
         "latency_runbook_present": all(
             token in runbook_text
             for token in (
@@ -1070,6 +1085,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "rate_query_supported": ok,
         "histogram_quantile_supported": ok,
         "latency_panel_templates_visible": ok,
+        "prometheus_alertmanager_feed_supported": ok,
+        "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
         "latency_metric_semantics": "stage_correlated_request_latency",
         "runbook_path": "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
@@ -1077,9 +1094,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "The public Prometheus /metrics endpoint exposes per-stage "
             "observation counters and stage-correlated request latency "
             "counters and histograms from sanitized route traces. It supports "
-            "Prometheus rate and p95/p99 histogram_quantile panels without "
-            "storing raw query, profile, language, context, or full route "
-            "trace payloads."
+            "Prometheus rate, p95/p99 histogram_quantile panels, and optional "
+            "sanitized Prometheus/Alertmanager feed state without storing raw "
+            "query, profile, language, context, or full route trace payloads."
         ),
     }
 
@@ -3291,8 +3308,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "topology; HTTP/WS route-stage labels are privacy-safe and "
                 "dashboard-visible, route-stage operator metrics expose "
                 "counts and runtime rate/latency counters from sanitized "
-                "traces plus p95/p99 PromQL latency panel templates only, "
-                "and exact runtime entry order depends on flags and call path."
+                "traces plus p95/p99 PromQL latency panel templates and "
+                "optional sanitized read-only feed state, and exact runtime "
+                "entry order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -3304,8 +3322,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Wire a real Prometheus/Alertmanager feed into the read-only "
-                "route-stage latency panel state without adding controls."
+                "Bind the route-stage latency feed provider to operator-owned "
+                "Prometheus/Alertmanager endpoint configuration with timeout "
+                "and credential guardrails."
             ),
             proof=hex_entry_proof,
         ),

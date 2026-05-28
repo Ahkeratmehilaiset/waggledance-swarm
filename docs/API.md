@@ -161,7 +161,12 @@ The optional adapter is configured under `magma_handoff_metrics_alert_feed` in
 read-only GETs to an operator-owned Alertmanager `/api/v2/alerts` endpoint.
 URL userinfo, query strings, fragments, credential-like headers, redirects,
 oversized responses, and private or localhost hosts without an exact
-`allowed_private_hosts` entry are refused.
+`allowed_private_hosts` entry are refused. It also keeps a bounded in-process
+TTL cache (`cache_ttl_s`) and failure backoff (`failure_backoff_s`) so repeated
+Ops scrapes can reuse the last sanitized snapshot when the operator feed is
+temporarily unavailable. The cache/backoff state appears only as sanitized
+provider-health booleans, fixed status/reason labels, counters, and byte/count
+gauges; URLs, hosts, headers, and exception text are not surfaced.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

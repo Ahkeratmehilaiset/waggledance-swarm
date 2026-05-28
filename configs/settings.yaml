@@ -379,5 +379,7 @@ magma_handoff_metrics_alert_feed:
   alertmanager_base_url: ''
   timeout_s: 3
   max_response_bytes: 1000000
+  cache_ttl_s: 30
+  failure_backoff_s: 30
   allowed_private_hosts: []
   headers: {}

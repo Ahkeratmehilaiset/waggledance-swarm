@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from ipaddress import ip_address
 import json
 import math
+import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -22,6 +23,10 @@ DEFAULT_TIMEOUT_SECONDS = 3.0
 MAX_TIMEOUT_SECONDS = 15.0
 DEFAULT_MAX_RESPONSE_BYTES = 1_000_000
 MAX_RESPONSE_BYTES = 5_000_000
+DEFAULT_CACHE_TTL_SECONDS = 30.0
+MAX_CACHE_TTL_SECONDS = 300.0
+DEFAULT_FAILURE_BACKOFF_SECONDS = 30.0
+MAX_FAILURE_BACKOFF_SECONDS = 300.0
 DEFAULT_ACCEPT_HEADER = "application/json"
 DEFAULT_USER_AGENT = "waggledance-magma-handoff-metrics-alert-feed/3.8"
 
@@ -61,6 +66,36 @@ class UnavailableMagmaHandoffMetricsAlertFeed:
             "MAGMA_HANDOFF_METRICS_ALERT_FEED_UNAVAILABLE"
         )
 
+    def provider_health(self) -> dict[str, Any]:
+        return {
+            "source": "alertmanager_adapter",
+            "status": "warning",
+            "configured": True,
+            "available": False,
+            "cache_enabled": False,
+            "cache_present": False,
+            "cache_stale": False,
+            "backoff_active": False,
+            "cache_ttl_seconds": 0.0,
+            "failure_backoff_seconds": 0.0,
+            "timeout_seconds": 0.0,
+            "max_response_bytes": 0,
+            "last_response_bytes": 0,
+            "cache_hit_count": 0,
+            "cache_miss_count": 0,
+            "fetch_success_count": 0,
+            "fetch_failure_count": 0,
+            "backoff_skip_count": 0,
+            "last_success_at": None,
+            "last_failure_at": None,
+            "last_failure_reason": (
+                "MAGMA_HANDOFF_METRICS_ALERT_FEED_UNAVAILABLE"
+            ),
+            "controls_present": False,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+        }
+
 
 class MagmaHandoffMetricsAlertmanagerFeed:
     """Fetch MAGMA handoff metric alert state from an operator Alertmanager."""
@@ -71,9 +106,13 @@ class MagmaHandoffMetricsAlertmanagerFeed:
         alertmanager_base_url: str | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        cache_ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS,
+        failure_backoff_seconds: float = DEFAULT_FAILURE_BACKOFF_SECONDS,
         allowed_private_hosts: Sequence[str] = (),
         headers: Mapping[str, str] | None = None,
         transport: MagmaHandoffMetricsAlertFeedTransport | None = None,
+        monotonic: Callable[[], float] | None = None,
+        utc_now: Callable[[], datetime] | None = None,
     ) -> None:
         allowed_hosts = _normalize_allowed_hosts(allowed_private_hosts)
         self._alertmanager_alerts_url = _endpoint_url(
@@ -85,8 +124,32 @@ class MagmaHandoffMetricsAlertmanagerFeed:
             raise MagmaHandoffMetricsAlertFeedError("ENDPOINT_EMPTY")
         self._timeout_seconds = _validate_timeout(timeout_seconds)
         self._max_response_bytes = _validate_size_cap(max_response_bytes)
+        self._cache_ttl_seconds = _validate_interval(
+            cache_ttl_seconds,
+            max_seconds=MAX_CACHE_TTL_SECONDS,
+            error_code="CACHE_TTL_OUT_OF_RANGE",
+        )
+        self._failure_backoff_seconds = _validate_interval(
+            failure_backoff_seconds,
+            max_seconds=MAX_FAILURE_BACKOFF_SECONDS,
+            error_code="BACKOFF_OUT_OF_RANGE",
+        )
         self._transport = transport or _httpx_transport
         self._headers = _validate_headers(headers)
+        self._monotonic = monotonic or time.monotonic
+        self._utc_now = utc_now or _utc_now
+        self._cached_snapshot: dict[str, Any] | None = None
+        self._cache_expires_at = 0.0
+        self._backoff_until = 0.0
+        self._cache_hit_count = 0
+        self._cache_miss_count = 0
+        self._fetch_success_count = 0
+        self._fetch_failure_count = 0
+        self._backoff_skip_count = 0
+        self._last_success_at: str | None = None
+        self._last_failure_at: str | None = None
+        self._last_failure_reason: str | None = None
+        self._last_response_bytes = 0
 
     @classmethod
     def from_config(
@@ -107,17 +170,103 @@ class MagmaHandoffMetricsAlertmanagerFeed:
                 "max_response_bytes",
                 DEFAULT_MAX_RESPONSE_BYTES,
             ),
+            cache_ttl_seconds=config.get(
+                "cache_ttl_s",
+                config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL_SECONDS),
+            ),
+            failure_backoff_seconds=config.get(
+                "failure_backoff_s",
+                config.get(
+                    "failure_backoff_seconds",
+                    DEFAULT_FAILURE_BACKOFF_SECONDS,
+                ),
+            ),
             allowed_private_hosts=config.get("allowed_private_hosts", ()),
             headers=config.get("headers"),
             transport=transport,
         )
 
     def snapshot(self) -> dict[str, Any]:
-        payload = self._get_json(self._alertmanager_alerts_url, {})
-        return {
-            "updated_at": _utc_now_rfc3339(),
+        now = self._monotonic()
+        if self._cached_snapshot is not None and now < self._cache_expires_at:
+            self._cache_hit_count += 1
+            return self._snapshot_with_health(self._cached_snapshot)
+        if now < self._backoff_until:
+            self._backoff_skip_count += 1
+            if self._cached_snapshot is not None:
+                return self._snapshot_with_health(self._cached_snapshot)
+            raise MagmaHandoffMetricsAlertFeedError("BACKOFF_ACTIVE")
+
+        self._cache_miss_count += 1
+        try:
+            payload = self._get_json(self._alertmanager_alerts_url, {})
+        except MagmaHandoffMetricsAlertFeedError as exc:
+            self._record_failure(str(exc) or "FEED_READ_FAILED")
+            if self._cached_snapshot is not None:
+                return self._snapshot_with_health(self._cached_snapshot)
+            raise
+        snapshot = {
+            "updated_at": _utc_now_rfc3339(self._utc_now),
             "active_alerts": _alertmanager_active_alerts(payload),
         }
+        self._cached_snapshot = snapshot
+        self._cache_expires_at = now + self._cache_ttl_seconds
+        self._fetch_success_count += 1
+        self._last_success_at = snapshot["updated_at"]
+        self._last_failure_reason = None
+        return self._snapshot_with_health(snapshot)
+
+    def provider_health(self) -> dict[str, Any]:
+        now = self._monotonic()
+        cache_present = self._cached_snapshot is not None
+        cache_stale = cache_present and now >= self._cache_expires_at
+        backoff_active = now < self._backoff_until
+        available = cache_present or (
+            self._fetch_success_count > 0 and self._last_failure_reason is None
+        )
+        status = "nominal"
+        if backoff_active or self._last_failure_reason is not None:
+            status = "warning"
+        return {
+            "source": "alertmanager_adapter",
+            "status": status,
+            "configured": True,
+            "available": available,
+            "cache_enabled": True,
+            "cache_present": cache_present,
+            "cache_stale": cache_stale,
+            "backoff_active": backoff_active,
+            "cache_ttl_seconds": self._cache_ttl_seconds,
+            "failure_backoff_seconds": self._failure_backoff_seconds,
+            "timeout_seconds": self._timeout_seconds,
+            "max_response_bytes": self._max_response_bytes,
+            "last_response_bytes": self._last_response_bytes,
+            "cache_hit_count": self._cache_hit_count,
+            "cache_miss_count": self._cache_miss_count,
+            "fetch_success_count": self._fetch_success_count,
+            "fetch_failure_count": self._fetch_failure_count,
+            "backoff_skip_count": self._backoff_skip_count,
+            "last_success_at": self._last_success_at,
+            "last_failure_at": self._last_failure_at,
+            "last_failure_reason": self._last_failure_reason,
+            "controls_present": False,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+        }
+
+    def _record_failure(self, reason: str) -> None:
+        self._fetch_failure_count += 1
+        self._last_failure_at = _utc_now_rfc3339(self._utc_now)
+        self._last_failure_reason = _safe_reason(reason)
+        self._backoff_until = self._monotonic() + self._failure_backoff_seconds
+
+    def _snapshot_with_health(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        result = {
+            "updated_at": snapshot.get("updated_at"),
+            "active_alerts": list(snapshot.get("active_alerts", [])),
+        }
+        result["provider_health"] = self.provider_health()
+        return result
 
     def _get_json(self, url: str, params: Mapping[str, str]) -> Any:
         try:
@@ -145,6 +294,7 @@ class MagmaHandoffMetricsAlertmanagerFeed:
                 "NETWORK_REQUEST_FAILED"
             ) from exc
         response = _validate_response(response, url, self._max_response_bytes)
+        self._last_response_bytes = len(response.body)
         try:
             return json.loads(response.body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -307,6 +457,24 @@ def _validate_size_cap(max_response_bytes: int) -> int:
     return max_response_bytes
 
 
+def _validate_interval(
+    seconds: float,
+    *,
+    max_seconds: float,
+    error_code: str,
+) -> float:
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise MagmaHandoffMetricsAlertFeedError(error_code)
+    normalized = float(seconds)
+    if (
+        not math.isfinite(normalized)
+        or normalized <= 0
+        or normalized > max_seconds
+    ):
+        raise MagmaHandoffMetricsAlertFeedError(error_code)
+    return normalized
+
+
 def _validate_response(
     response: MagmaHandoffMetricsAlertFeedHttpResponse,
     expected_url: str,
@@ -378,13 +546,26 @@ def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _utc_now_rfc3339() -> str:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_rfc3339(now: Callable[[], datetime] = _utc_now) -> str:
     return (
-        datetime.now(timezone.utc)
+        now()
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
     )
+
+
+def _safe_reason(reason: str) -> str:
+    if not isinstance(reason, str):
+        return "FEED_READ_FAILED"
+    clean = reason.strip().upper()
+    if not clean or len(clean) > 80 or contains_secret_marker_substring(clean):
+        return "FEED_READ_FAILED"
+    return "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in clean)
 
 
 def _has_header_injection(value: str) -> bool:

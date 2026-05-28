@@ -5,7 +5,7 @@ so that the hologram-brain-v6 HTML menus populate correctly.
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 import logging
 import math
@@ -787,6 +787,8 @@ def _autogrowth_section(container) -> dict:
 
 def _magma_share_import_handoff_snapshot(container):  # noqa: ANN001
     for name in (
+        "magma_share_import_handoff_history",
+        "magma_share_import_peer_review_handoff_history",
         "magma_share_import_handoff_status",
         "magma_share_import_peer_review_handoff_status",
         "magma_share_import_peer_review_handoff",
@@ -798,15 +800,34 @@ def _magma_share_import_handoff_snapshot(container):  # noqa: ANN001
         return None, "not_configured"
     if isinstance(provider, Mapping):
         return dict(provider), ""
-    for method_name in ("snapshot", "get_status", "status"):
+    if _is_magma_share_import_handoff_history(provider):
+        return list(provider), ""
+    for method_name in (
+        "snapshot",
+        "get_status",
+        "status",
+        "history",
+        "get_history",
+    ):
         method = _safe_getattr(provider, method_name, None)
         if callable(method):
             try:
                 snapshot = method()
             except Exception:
                 return None, "unavailable"
-            return snapshot if isinstance(snapshot, Mapping) else None, "invalid"
+            if isinstance(snapshot, Mapping):
+                return snapshot, ""
+            if _is_magma_share_import_handoff_history(snapshot):
+                return list(snapshot), ""
+            return None, "invalid"
     return None, "invalid"
+
+
+def _is_magma_share_import_handoff_history(value) -> bool:  # noqa: ANN001
+    return isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    )
 
 
 def _magma_share_import_handoff_section(container=None) -> dict:

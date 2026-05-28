@@ -8,6 +8,7 @@ Phase 4: Backend archival verification
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -387,6 +388,101 @@ class TestApiOpsExtended:
             assert invalid_section["controls_present"] is False
             assert invalid_section["runtime_authority_granted"] is False
             assert value not in str(invalid_section)
+
+    def test_ops_magma_handoff_section_accepts_bounded_history(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+        from waggledance.core.magma.share_manifest import (
+            IMPORT_REPORT_VERSION,
+            build_magma_share_import_peer_review_handoff,
+        )
+
+        report = {
+            "report_version": IMPORT_REPORT_VERSION,
+            "ok": True,
+            "blockers": [],
+            "source_receipt_verification_ok": True,
+            "context_verified": True,
+            "context_drift_detected": False,
+            "replay_metadata_only": True,
+            "no_authority_import": True,
+            "runtime_export_enabled": False,
+            "runtime_authority_granted": False,
+            "runtime_authority_changed": False,
+            "payload_files_imported": 0,
+            "payload_digest_imported": False,
+            "raw_material_imported": False,
+            "replacement_map_imported": False,
+            "share_id": "magma:share:ops-history",
+            "purpose": "cross_instance_replay",
+            "share_manifest_digest": "sha256:" + "a" * 64,
+            "source_manifest_digest": "sha256:" + "b" * 64,
+            "replay_plan": {
+                "mode": "no_authority_metadata_replay",
+                "entry_count": 1,
+                "entries": [{
+                    "entry_id": "entry-001",
+                    "receipt_digest": "sha256:" + "c" * 64,
+                    "evaluation_result_digest": "sha256:" + "d" * 64,
+                    "subject_type": "solver_trace",
+                    "risk_class": "low",
+                    "expected_gate": "review",
+                    "actual_gate": "review",
+                    "verdict": "accepted",
+                }],
+            },
+        }
+        older = build_magma_share_import_peer_review_handoff(
+            import_report=report,
+            operator_decision_id="operator:decision:ops-history:older",
+            operator_agent_id="operator:ops-history:older",
+            bridge_event_ref="bridge:ops-history:older",
+            import_decision="deferred_for_operator_review",
+            decision_reason_ref="reason:ops-history:older",
+            now_utc=datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc),
+        )
+        newer = build_magma_share_import_peer_review_handoff(
+            import_report=report,
+            operator_decision_id="operator:decision:ops-history:newer",
+            operator_agent_id="operator:ops-history:newer",
+            bridge_event_ref="bridge:ops-history:newer",
+            import_decision="accepted_for_peer_review",
+            decision_reason_ref="reason:ops-history:newer",
+            now_utc=datetime(2026, 5, 28, 9, 0, tzinfo=timezone.utc),
+        )
+
+        class Container:
+            magma_share_import_handoff_history = [older, newer]
+
+        section = _magma_share_import_handoff_section(Container())
+
+        assert section["handoff_count"] == 2
+        assert section["history_retained_count"] == 2
+        assert section["history_truncated"] is False
+        assert section["latest"]["handoff_id"] == newer["handoff_id"]
+        assert [item["handoff_id"] for item in section["history"]] == [
+            newer["handoff_id"],
+            older["handoff_id"],
+        ]
+        assert section["controls_present"] is False
+        assert section["runtime_authority_granted"] is False
+        assert section["payload_files_imported"] == 0
+        serialized = json.dumps(section)
+        assert "operator:decision:ops-history" not in serialized
+        assert "C:\\private" not in serialized
+
+        tampered = json.loads(json.dumps(older))
+        tampered["operator_ownership"]["bridge_event_ref"] = "C:/private/bridge"
+
+        class TamperedContainer:
+            magma_share_import_handoff_history = [newer, tampered]
+
+        invalid_section = _magma_share_import_handoff_section(TamperedContainer())
+        assert invalid_section["source"] == "magma_share_import_handoff_invalid"
+        assert invalid_section["controls_present"] is False
+        assert invalid_section["runtime_authority_granted"] is False
+        assert "C:/private/bridge" not in str(invalid_section)
 
     def test_ops_magma_handoff_failure_hides_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
@@ -942,6 +1038,9 @@ class TestHologramOpsFlexHW:
         assert "ops_magma_handoff" in html
         assert "magmaHandoff.runtime_authority_granted" in html
         assert "magmaHandoff.controls_present" in html
+        assert "magmaHandoff.history" in html
+        assert "magmaHistory" in html
+        assert "history_retained_count" in html
         assert "activeMagmaHandoffs" in html
         assert "magma_share_import_handoff_start" not in html
         assert "magma_share_import_handoff_stop" not in html

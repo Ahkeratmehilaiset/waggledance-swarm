@@ -7,7 +7,7 @@ runtime receipt emission or cross-instance transport.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -59,6 +59,8 @@ IMPORT_HANDOFF_DECISION_STATUS = {
     "deferred_for_operator_review": "operator_review_deferred",
     "rejected_for_peer_review": "operator_rejected",
 }
+IMPORT_HANDOFF_HISTORY_LIMIT = 5
+IMPORT_HANDOFF_HISTORY_MAX_SNAPSHOT = 20
 _REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9:._-]{2,180}$")
 
 
@@ -473,12 +475,66 @@ def write_magma_share_import_peer_review_handoff(
 
 
 def build_magma_share_import_handoff_status_summary(
-    handoff: Mapping[str, Any] | None = None,
+    handoff: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    *,
+    history_limit: int = IMPORT_HANDOFF_HISTORY_LIMIT,
 ) -> dict[str, Any]:
     """Return a sanitized read-only operator summary for an import handoff."""
     if handoff is None:
         return _empty_import_handoff_status_summary("not_configured")
 
+    limit = _ensure_import_handoff_history_limit(history_limit)
+    handoffs = _coerce_import_handoff_history(handoff)
+    if not handoffs:
+        return _empty_import_handoff_status_summary(
+            "magma_share_import_peer_review_handoff"
+        )
+
+    entries = [_import_handoff_status_entry(item) for item in handoffs]
+    entries.sort(
+        key=lambda item: (item["created_at_utc"], item["handoff_digest"]),
+        reverse=True,
+    )
+    retained = entries[:limit]
+    latest = retained[0]
+    active = [
+        item
+        for item in retained
+        if item["import_decision"] == "accepted_for_peer_review"
+    ]
+    severity = (
+        "warning"
+        if any(item["severity"] == "warning" for item in retained)
+        else "none"
+    )
+    return {
+        "summary_version": IMPORT_HANDOFF_STATUS_VERSION,
+        "source": "magma_share_import_peer_review_handoff",
+        "status": latest["status"],
+        "severity": severity,
+        "controls_present": False,
+        "operator_owned": True,
+        "handoff_count": len(entries),
+        "active_count": len(active),
+        "history_limit": limit,
+        "history_retained_count": len(retained),
+        "history_dropped_count": max(0, len(entries) - len(retained)),
+        "history_truncated": len(entries) > len(retained),
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+        "latest": latest,
+        "active": active,
+        "history": retained,
+    }
+
+
+def _import_handoff_status_entry(handoff: Mapping[str, Any]) -> dict[str, Any]:
     _ensure_import_handoff_ready_for_summary(handoff)
     ownership = handoff["operator_ownership"]
     authority = handoff["authority"]
@@ -487,12 +543,14 @@ def build_magma_share_import_handoff_status_summary(
     decision = ownership["import_decision"]
     status = IMPORT_HANDOFF_DECISION_STATUS[decision]
     severity = "none" if decision == "accepted_for_peer_review" else "warning"
-    latest = {
+    return {
         "handoff_id": handoff["handoff_id"],
         "handoff_digest": handoff["handoff_digest"],
         "created_at_utc": handoff["created_at_utc"],
         "share_id": handoff["share_id"],
         "purpose": handoff["purpose"],
+        "status": status,
+        "severity": severity,
         "handoff_scope": authority["handoff_scope"],
         "import_decision": decision,
         "entry_count": replay_plan["entry_count"],
@@ -505,26 +563,6 @@ def build_magma_share_import_handoff_status_summary(
         "runtime_authority_changed": authority["runtime_authority_changed"],
         "payload_files_imported": privacy["payload_files_imported"],
         "local_paths_recorded": privacy["local_paths_recorded"],
-    }
-    return {
-        "summary_version": IMPORT_HANDOFF_STATUS_VERSION,
-        "source": "magma_share_import_peer_review_handoff",
-        "status": status,
-        "severity": severity,
-        "controls_present": False,
-        "operator_owned": True,
-        "handoff_count": 1,
-        "active_count": 1 if decision == "accepted_for_peer_review" else 0,
-        "runtime_export_enabled": authority["runtime_export_enabled"],
-        "runtime_authority_granted": authority["runtime_authority_granted"],
-        "runtime_authority_changed": authority["runtime_authority_changed"],
-        "payload_files_imported": privacy["payload_files_imported"],
-        "payload_digest_imported": privacy["payload_digest_imported"],
-        "raw_material_imported": privacy["raw_material_imported"],
-        "replacement_map_imported": privacy["replacement_map_imported"],
-        "local_paths_recorded": privacy["local_paths_recorded"],
-        "latest": latest,
-        "active": [latest] if decision == "accepted_for_peer_review" else [],
     }
 
 
@@ -773,6 +811,10 @@ def _empty_import_handoff_status_summary(source: str) -> dict[str, Any]:
         "operator_owned": False,
         "handoff_count": 0,
         "active_count": 0,
+        "history_limit": IMPORT_HANDOFF_HISTORY_LIMIT,
+        "history_retained_count": 0,
+        "history_dropped_count": 0,
+        "history_truncated": False,
         "runtime_export_enabled": False,
         "runtime_authority_granted": False,
         "runtime_authority_changed": False,
@@ -783,7 +825,54 @@ def _empty_import_handoff_status_summary(source: str) -> dict[str, Any]:
         "local_paths_recorded": False,
         "latest": None,
         "active": [],
+        "history": [],
     }
+
+
+def _coerce_import_handoff_history(
+    snapshot: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    if isinstance(snapshot, Mapping):
+        if snapshot.get("handoff_version") == IMPORT_HANDOFF_VERSION:
+            return [snapshot]
+        for field in ("history", "handoffs"):
+            value = snapshot.get(field)
+            if value is not None:
+                return _bounded_import_handoff_history_items(value)
+        latest = snapshot.get("latest")
+        if (
+            isinstance(latest, Mapping)
+            and latest.get("handoff_version") == IMPORT_HANDOFF_VERSION
+        ):
+            return [latest]
+        raise TypeError("import handoff snapshot must be a handoff or history")
+    return _bounded_import_handoff_history_items(snapshot)
+
+
+def _bounded_import_handoff_history_items(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        raise TypeError("import handoff history must be a bounded sequence")
+    items = list(value)
+    if len(items) > IMPORT_HANDOFF_HISTORY_MAX_SNAPSHOT:
+        raise ValueError("import handoff history exceeds bounded snapshot limit")
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise TypeError("import handoff history entries must be objects")
+    return items
+
+
+def _ensure_import_handoff_history_limit(value: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > IMPORT_HANDOFF_HISTORY_MAX_SNAPSHOT
+    ):
+        raise ValueError("import handoff history_limit is out of bounds")
+    return value
 
 
 def _ensure_import_handoff_ready_for_summary(

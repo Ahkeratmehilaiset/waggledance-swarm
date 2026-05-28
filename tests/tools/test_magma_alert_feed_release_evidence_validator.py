@@ -199,6 +199,31 @@ def test_release_evidence_validator_cli_json_is_path_free(tmp_path: Path) -> Non
     assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
 
 
+def test_release_evidence_validator_cli_missing_package_is_path_free() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--package-json",
+            "C:/private/missing-package.json",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["blockers"] == [
+        "read_or_parse_failed:package_json_unreadable"
+    ]
+    assert "missing-package" not in result.stdout
+    assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+
+
 def _sha256_hex(data: bytes) -> str:
     import hashlib
 

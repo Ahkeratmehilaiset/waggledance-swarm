@@ -49,17 +49,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         package = json.loads(args.package_json.read_text(encoding="utf-8"))
-        ops_bytes = args.ops_json.read_bytes() if args.ops_json else None
-        metrics_bytes = (
-            args.metrics_scrape.read_bytes() if args.metrics_scrape else None
-        )
-        report = validate_magma_alert_feed_release_evidence_package(
-            package,
-            ops_bytes=ops_bytes,
-            metrics_bytes=metrics_bytes,
-        )
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        report = _failure_report(str(exc))
+    except OSError:
+        report = _failure_report("package_json_unreadable")
+    except json.JSONDecodeError:
+        report = _failure_report("package_json_decode_error")
+    else:
+        try:
+            ops_bytes = args.ops_json.read_bytes() if args.ops_json else None
+            metrics_bytes = (
+                args.metrics_scrape.read_bytes() if args.metrics_scrape else None
+            )
+        except OSError:
+            report = _failure_report("digest_artifact_unreadable")
+        else:
+            report = validate_magma_alert_feed_release_evidence_package(
+                package,
+                ops_bytes=ops_bytes,
+                metrics_bytes=metrics_bytes,
+            )
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -285,7 +292,7 @@ def _failure_report(reason: str) -> dict[str, Any]:
         "runtime_controls_added": False,
         "transport_added": False,
         "external_fetch_performed": False,
-        "blockers": [f"read_or_parse_failed:{_safe_reason(reason)}"],
+        "blockers": [f"read_or_parse_failed:{reason}"],
         "warnings": [],
     }
 
@@ -296,11 +303,6 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _safe_ref(value: Any) -> bool:
     return isinstance(value, str) and bool(_SAFE_REF_RE.match(value))
-
-
-def _safe_reason(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.:-]+", "_", value)
-    return cleaned[:96] or "unknown"
 
 
 def _sha256_hex(data: bytes) -> str:

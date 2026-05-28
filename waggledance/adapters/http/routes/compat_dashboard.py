@@ -7,7 +7,9 @@ so that the hologram-brain-v6 HTML menus populate correctly.
 import asyncio
 import json
 import logging
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 import psutil
@@ -466,6 +468,10 @@ ROUTE_STAGE_LATENCY_SEVERITY_RANK = {
     "warning": 1,
     "critical": 2,
 }
+ROUTE_STAGE_LATENCY_UPDATED_AT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 def _route_stage_latency_empty_feed_state(source: str) -> dict:
@@ -531,19 +537,13 @@ def _route_stage_latency_value(item: dict) -> float | None:
 
 def _route_stage_latency_updated_at(snapshot: dict) -> str | None:
     value = snapshot.get("updated_at")
-    if not isinstance(value, str) or len(value) > 80:
+    if not isinstance(value, str) or len(value) > 40 or value.strip() != value:
         return None
-    lowered = value.lower()
-    forbidden = (
-        "private",
-        "query=",
-        "profile=",
-        "language=",
-        "route_stage_trace",
-        "\\",
-        "/",
-    )
-    if any(token in lowered for token in forbidden):
+    if ROUTE_STAGE_LATENCY_UPDATED_AT_RE.fullmatch(value) is None:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
         return None
     return value
 

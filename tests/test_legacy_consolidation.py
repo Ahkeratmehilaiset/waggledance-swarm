@@ -372,6 +372,7 @@ class TestApiOpsExtended:
 
         assert section["prometheus_alertmanager_feed"] is True
         assert feed_state["source"] == "prometheus_alertmanager_snapshot"
+        assert feed_state["updated_at"] == "2026-05-28T04:15:00Z"
         assert feed_state["status"] == "critical"
         assert feed_state["severity"] == "critical"
         assert feed_state["controls_present"] is False
@@ -384,6 +385,41 @@ class TestApiOpsExtended:
         assert "raw_query" not in str(section)
         assert "PRIVATE_QUERY_MARKER" not in str(section)
         assert "private stack trace" not in str(section)
+
+    def test_ops_route_stage_latency_feed_state_rejects_raw_updated_at(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+            _route_stage_latency_updated_at,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": (
+                        "user_id=alice api_key=SECRET host=prod-db exception=boom"
+                    ),
+                    "panel_values": [{
+                        "id": "route_stage_latency_p95_ms",
+                        "stage": "language_detection",
+                        "value": 100.0,
+                    }],
+                    "active": [],
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+
+        assert feed_state["updated_at"] is None
+        assert _route_stage_latency_updated_at({
+            "updated_at": "2026-13-99T99:99:99Z",
+        }) is None
+        assert "user_id=alice" not in str(section)
+        assert "api_key=SECRET" not in str(section)
+        assert "host=prod-db" not in str(section)
+        assert "exception=boom" not in str(section)
 
     def test_ops_route_stage_latency_feed_failure_hides_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (

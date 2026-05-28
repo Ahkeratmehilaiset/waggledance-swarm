@@ -237,6 +237,26 @@ def test_metrics_body_contains_route_stage_runtime_counters():
         'waggledance_route_stage_request_latency_ms_total{'
         'stage="hot_cache"} 12.5'
     ) in body
+    assert (
+        "# HELP waggledance_route_stage_request_latency_histogram_ms"
+        in body
+    )
+    assert (
+        'waggledance_route_stage_request_latency_histogram_ms_bucket{'
+        'le="50",stage="language_detection"} 2.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_histogram_ms_bucket{'
+        'le="50",stage="orchestrator_llm_fallback"} 1.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_histogram_ms_count{'
+        'stage="language_detection"} 2.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_histogram_ms_sum{'
+        'stage="language_detection"} 32.5'
+    ) in body
     assert "not_an_allowed_stage" not in body
     assert "WD_IMAGE1_PRIVATE_QUERY_MARKER" not in body
     assert "query=" not in body
@@ -254,6 +274,14 @@ def test_metrics_route_stage_runtime_counters_default_to_zero():
     ) in body
     assert (
         'waggledance_route_stage_request_latency_ms_total{'
+        'stage="language_detection"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_histogram_ms_bucket{'
+        'le="+Inf",stage="language_detection"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_request_latency_histogram_ms_count{'
         'stage="language_detection"} 0.0'
     ) in body
 

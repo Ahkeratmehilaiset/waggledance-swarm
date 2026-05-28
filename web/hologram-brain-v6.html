@@ -443,6 +443,7 @@ const LANG = {
       ops_auth: "Auth", ops_ws: "WebSocket", ops_queues: "Queues",
       ops_flexhw: "FlexHW Tier", ops_throttle: "AutoThrottle",
       ops_autogrowth: "Low-risk Autogrowth",
+      ops_route_stage_latency: "Route-stage Latency",
       chat_route: "Route", chat_explain: "Explainability"
     },
     chat: {
@@ -514,6 +515,7 @@ const LANG = {
       ops_auth: "Tunnistautuminen", ops_ws: "WebSocket", ops_queues: "Jonot",
       ops_flexhw: "FlexHW-taso", ops_throttle: "Automaattisaato",
       ops_autogrowth: "Matalariskinen autokasvu",
+      ops_route_stage_latency: "Reittivaiheiden latenssi",
       chat_route: "Reitti", chat_explain: "Selitettavyys"
     },
     chat: {
@@ -1548,6 +1550,7 @@ function buildOpsPanel(el) {
   const fhw = ops.flexhw || {};
   const thr = ops.throttle || {};
   const ag = ops.autogrowth || {};
+  const rsl = ops.route_stage_latency || {};
   const agAlert = ag.alert_state || {};
   const activeAutogrowthAlerts = agAlert.active || [];
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
@@ -1622,6 +1625,33 @@ function buildOpsPanel(el) {
       const sev = a.severity || 'warning';
       const color = sev === 'critical' ? '#f87171' : '#facc15';
       html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'alert')}: ${escapeHtml(a.summary || sev)}</div>`;
+    });
+    html += `</div></div>`;
+  }
+  // ── Route-stage latency panel templates ──
+  const routeStagePanels = rsl.panels || [];
+  const routeStageAlerts = rsl.alert_thresholds || [];
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_route_stage_latency')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Source', rsl.source || '\u2014');
+  html += card('Feed', rsl.prometheus_alertmanager_feed ? 'Live' : 'Template');
+  html += card('Panels', routeStagePanels.length);
+  html += card('Alerts', routeStageAlerts.length);
+  html += `</div></div>`;
+  if (routeStagePanels.length) {
+    html += `<div class="p-section"><div class="p-section-title">Latency Panels</div><div class="p-list">`;
+    routeStagePanels.forEach(p => {
+      html += `<div class="p-list-item"><strong>${escapeHtml(p.title || p.id || 'panel')}</strong>`;
+      html += `<div style="opacity:0.65;margin-top:3px">${escapeHtml(p.unit || '')} · ${escapeHtml(p.query || '')}</div></div>`;
+    });
+    html += `</div></div>`;
+  }
+  if (routeStageAlerts.length) {
+    html += `<div class="p-section"><div class="p-section-title">Latency Alerts</div><div class="p-list">`;
+    routeStageAlerts.forEach(a => {
+      const sev = a.severity || 'warning';
+      const color = sev === 'critical' ? '#f87171' : '#facc15';
+      html += `<div class="p-list-item" style="color:${color}">${escapeHtml(a.id || 'alert')}: ${escapeHtml(a.expr || '')}</div>`;
     });
     html += `</div></div>`;
   }

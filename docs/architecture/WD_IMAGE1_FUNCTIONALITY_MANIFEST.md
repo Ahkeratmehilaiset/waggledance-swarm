@@ -29,7 +29,7 @@ Use the safest true wording until the proof tool reports otherwise:
 
 | Capability | Safe status | Repo evidence | Smallest next work |
 | --- | --- | --- | --- |
-| Hex-mesh routing | Partial, with route-order proof, HTTP/WS trace contract, dashboard route-stage label smoke, operator route-stage count metrics, and runtime rate/latency counters from sanitized traces | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md`, `waggledance/adapters/http/routes/chat.py`, `waggledance/adapters/http/routes/metrics.py`, `web/hologram-brain-v6.html` | Add p95/p99 route-stage latency panels and alert thresholds from Prometheus queries without storing raw traces. |
+| Hex-mesh routing | Partial, with route-order proof, HTTP/WS trace contract, dashboard route-stage label smoke, operator route-stage count metrics, runtime rate/latency counters, and p95/p99 PromQL panel templates from sanitized histograms | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md`, `waggledance/adapters/http/routes/chat.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html` | Wire a real Prometheus/Alertmanager feed into the read-only route-stage latency panel state without adding controls. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
 | MAGMA audit log | Partial, with opt-in solver-trace receipt proof | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Harden append-only/default enforcement or keep user-facing wording at opt-in audit/provenance wrappers. |
 | Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, operator metrics, a read-only dashboard ops overlay with local alert state, and operator alert thresholds | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html`, `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md` | Wire a real Prometheus/Alertmanager feed into the read-only Ops alert state without adding controls. |
@@ -84,11 +84,17 @@ labels or raw route trace payloads. `/metrics` also exposes
 route-stage allowlist and optional component flags, plus
 `waggledance_route_stage_observations_total{stage=...}` and
 `waggledance_route_stage_request_latency_ms_total{stage=...}` counters recorded
-only after the HTTP chat response has been sanitized. The observation counter
-supports Prometheus `rate(...)` by stage. The latency counter is a
-stage-correlated request-latency sum, not an internal span timer; divide it by
-observations for an average per observed stage. These metrics do not record raw
-query/context/profile/language data and do not enable disabled hex paths.
+only after the HTTP chat response has been sanitized. The route-stage latency
+histogram `waggledance_route_stage_request_latency_histogram_ms_bucket{stage=...,le=...}`
+uses the same whitelisted stage labels and supports p95/p99
+`histogram_quantile(...)` panels. The observation counter supports Prometheus
+`rate(...)` by stage. The latency metrics are stage-correlated request-latency
+measurements, not internal span timers; divide the sum by observations for an
+average per observed stage. `/api/ops` and the hologram Ops panel expose the
+p95/p99 panel and alert PromQL as read-only templates, while the operator
+runbook defines conservative p95/p99 thresholds. These metrics and templates do
+not record raw query/context/profile/language data and do not enable disabled
+hex paths.
 Current settings have `hybrid_retrieval.enabled=true` in `candidate` mode and
 `hex_mesh.enabled=false`, so the literal "every query first enters the mesh"
 wording remains unsafe.

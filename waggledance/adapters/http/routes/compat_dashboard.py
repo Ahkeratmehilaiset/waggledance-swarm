@@ -422,6 +422,80 @@ def _with_autogrowth_alert_state(section: dict) -> dict:
     return section
 
 
+ROUTE_STAGE_LATENCY_PANEL_QUERIES = {
+    "route_stage_latency_p95_ms": (
+        "histogram_quantile(0.95, sum by (le, stage) "
+        "(rate(waggledance_route_stage_request_latency_histogram_ms_bucket[5m])))"
+    ),
+    "route_stage_latency_p99_ms": (
+        "histogram_quantile(0.99, sum by (le, stage) "
+        "(rate(waggledance_route_stage_request_latency_histogram_ms_bucket[5m])))"
+    ),
+    "route_stage_request_rate": (
+        "sum by (stage) "
+        "(rate(waggledance_route_stage_observations_total[5m]))"
+    ),
+}
+
+
+def _route_stage_latency_panels() -> dict:
+    """Read-only PromQL panel and alert templates for route-stage latency."""
+
+    p95_query = ROUTE_STAGE_LATENCY_PANEL_QUERIES[
+        "route_stage_latency_p95_ms"
+    ]
+    p99_query = ROUTE_STAGE_LATENCY_PANEL_QUERIES[
+        "route_stage_latency_p99_ms"
+    ]
+    return {
+        "source": "prometheus_query_templates",
+        "prometheus_alertmanager_feed": False,
+        "controls_present": False,
+        "metrics": [
+            "waggledance_route_stage_request_latency_histogram_ms_bucket",
+            "waggledance_route_stage_request_latency_histogram_ms_sum",
+            "waggledance_route_stage_request_latency_histogram_ms_count",
+            "waggledance_route_stage_observations_total",
+        ],
+        "panels": [
+            {
+                "id": "route_stage_latency_p95_ms",
+                "title": "Route-stage p95 latency",
+                "unit": "ms",
+                "query": p95_query,
+            },
+            {
+                "id": "route_stage_latency_p99_ms",
+                "title": "Route-stage p99 latency",
+                "unit": "ms",
+                "query": p99_query,
+            },
+            {
+                "id": "route_stage_request_rate",
+                "title": "Route-stage request rate",
+                "unit": "requests/s",
+                "query": ROUTE_STAGE_LATENCY_PANEL_QUERIES[
+                    "route_stage_request_rate"
+                ],
+            },
+        ],
+        "alert_thresholds": [
+            {
+                "id": "RouteStageLatencyP95Warning",
+                "expr": f"{p95_query} > 2500",
+                "for": "10m",
+                "severity": "warning",
+            },
+            {
+                "id": "RouteStageLatencyP99Critical",
+                "expr": f"{p99_query} > 5000",
+                "for": "10m",
+                "severity": "critical",
+            },
+        ],
+    }
+
+
 def _autogrowth_section(container) -> dict:
     """Build read-only low-risk autogrowth status for the Ops panel."""
     try:
@@ -501,6 +575,7 @@ def api_ops(service=Depends(get_autonomy_service),
         "backfill": backfill_metrics,
         "accelerator": accelerator_metrics,
         "autogrowth": _autogrowth_section(container),
+        "route_stage_latency": _route_stage_latency_panels(),
         "gemma_profiles": gemma_metrics,
         "llm_parallel": parallel_metrics,
         "hex_mesh": _safe(

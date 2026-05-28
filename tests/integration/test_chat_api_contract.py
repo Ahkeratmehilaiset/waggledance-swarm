@@ -153,6 +153,10 @@ def test_chat_request_updates_privacy_safe_route_stage_runtime_metrics():
 
     assert "# HELP waggledance_route_stage_observations_total" in body
     assert "# HELP waggledance_route_stage_request_latency_ms_total" in body
+    assert (
+        "# HELP waggledance_route_stage_request_latency_histogram_ms"
+        in body
+    )
     assert re.search(
         r'waggledance_route_stage_observations_total\{'
         r'stage="language_detection"\} [1-9]\d*\.0',
@@ -161,6 +165,11 @@ def test_chat_request_updates_privacy_safe_route_stage_runtime_metrics():
     assert re.search(
         r'waggledance_route_stage_request_latency_ms_total\{'
         r'stage="language_detection"\} (?!0\.0)\d+(?:\.\d+)?',
+        body,
+    )
+    assert re.search(
+        r'waggledance_route_stage_request_latency_histogram_ms_bucket\{'
+        r'le="\+Inf",stage="language_detection"\} [1-9]\d*\.0',
         body,
     )
     assert raw_query not in body

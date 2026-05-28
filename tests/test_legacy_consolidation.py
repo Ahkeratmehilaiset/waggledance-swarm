@@ -214,6 +214,22 @@ class TestApiOpsExtended:
         assert autogrowth["alert_state"]["source"] == "local_ops_snapshot"
         assert autogrowth["alert_state"]["controls_present"] is False
         assert "last_error" not in autogrowth
+        route_stage_latency = data["route_stage_latency"]
+        assert route_stage_latency["source"] == "prometheus_query_templates"
+        assert route_stage_latency["controls_present"] is False
+        assert route_stage_latency["prometheus_alertmanager_feed"] is False
+        assert "waggledance_route_stage_request_latency_histogram_ms_bucket" in (
+            route_stage_latency["metrics"]
+        )
+        assert any(
+            "histogram_quantile(0.95" in panel["query"]
+            for panel in route_stage_latency["panels"]
+        )
+        assert any(
+            item["id"] == "RouteStageLatencyP99Critical"
+            for item in route_stage_latency["alert_thresholds"]
+        )
+        assert "route_stage_trace" not in str(route_stage_latency)
 
     def test_ops_autogrowth_section_hides_ticker_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
@@ -263,6 +279,35 @@ class TestApiOpsExtended:
         assert "AutogrowthErrorsObserved" in alert_ids
         assert "AutogrowthSourceDown" not in alert_ids
         assert "private stack trace" not in str(section)
+
+    def test_ops_route_stage_latency_panels_are_read_only_promql_templates(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        section = _route_stage_latency_panels()
+        panel_queries = {panel["id"]: panel["query"] for panel in section["panels"]}
+        alert_exprs = {
+            alert["id"]: alert["expr"]
+            for alert in section["alert_thresholds"]
+        }
+
+        assert section["source"] == "prometheus_query_templates"
+        assert section["controls_present"] is False
+        assert section["prometheus_alertmanager_feed"] is False
+        assert "waggledance_route_stage_request_latency_histogram_ms_bucket" in (
+            section["metrics"]
+        )
+        assert "histogram_quantile(0.95" in (
+            panel_queries["route_stage_latency_p95_ms"]
+        )
+        assert "histogram_quantile(0.99" in (
+            panel_queries["route_stage_latency_p99_ms"]
+        )
+        assert "RouteStageLatencyP95Warning" in alert_exprs
+        assert "RouteStageLatencyP99Critical" in alert_exprs
+        assert "route_stage_trace" not in str(section)
+        assert "query=" not in str(section)
 
     def test_ops_still_has_status_and_recommendation(self):
         """Existing fields must not break."""
@@ -385,6 +430,15 @@ class TestHologramOpsFlexHW:
         assert "activeAutogrowthAlerts" in html
         assert "autogrowth_start" not in html
         assert "autogrowth_stop" not in html
+
+    def test_hologram_ops_renders_route_stage_latency_templates(self):
+        html = _read_html()
+        assert "ops.route_stage_latency" in html
+        assert "ops_route_stage_latency" in html
+        assert "routeStagePanels" in html
+        assert "routeStageAlerts" in html
+        assert "route_stage_latency_start" not in html
+        assert "route_stage_latency_stop" not in html
 
     def test_hologram_ops_has_flexhw_en_labels(self):
         html = _read_html()

@@ -27,6 +27,9 @@ MANIFEST_VERSION = "magma.share_manifest.v0"
 EXPORT_REPORT_VERSION = "magma.share_manifest_export.v0"
 IMPORT_REPORT_VERSION = "magma.share_manifest_import.v0"
 IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
+IMPORT_HANDOFF_STATUS_VERSION = (
+    "magma.share_manifest_import_handoff_status.v0"
+)
 SHARE_MANIFEST_NAME = "share_manifest.json"
 EXPORT_REPORT_NAME = "share_export_report.json"
 IMPORT_HANDOFF_NAME = "share_import_peer_review_handoff.json"
@@ -51,6 +54,11 @@ IMPORT_HANDOFF_DECISIONS = frozenset(
     }
 )
 IMPORT_HANDOFF_SCOPE = "peer_review_only"
+IMPORT_HANDOFF_DECISION_STATUS = {
+    "accepted_for_peer_review": "ready_for_peer_review",
+    "deferred_for_operator_review": "operator_review_deferred",
+    "rejected_for_peer_review": "operator_rejected",
+}
 _REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9:._-]{2,180}$")
 
 
@@ -464,6 +472,62 @@ def write_magma_share_import_peer_review_handoff(
     return handoff
 
 
+def build_magma_share_import_handoff_status_summary(
+    handoff: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a sanitized read-only operator summary for an import handoff."""
+    if handoff is None:
+        return _empty_import_handoff_status_summary("not_configured")
+
+    _ensure_import_handoff_ready_for_summary(handoff)
+    ownership = handoff["operator_ownership"]
+    authority = handoff["authority"]
+    privacy = handoff["privacy"]
+    replay_plan = handoff["replay_plan"]
+    decision = ownership["import_decision"]
+    status = IMPORT_HANDOFF_DECISION_STATUS[decision]
+    severity = "none" if decision == "accepted_for_peer_review" else "warning"
+    latest = {
+        "handoff_id": handoff["handoff_id"],
+        "handoff_digest": handoff["handoff_digest"],
+        "created_at_utc": handoff["created_at_utc"],
+        "share_id": handoff["share_id"],
+        "purpose": handoff["purpose"],
+        "handoff_scope": authority["handoff_scope"],
+        "import_decision": decision,
+        "entry_count": replay_plan["entry_count"],
+        "operator_owned": ownership["operator_owned"],
+        "operator_agent_id": ownership["operator_agent_id"],
+        "bridge_event_ref": ownership["bridge_event_ref"],
+        "decision_reason_ref": ownership["decision_reason_ref"],
+        "runtime_export_enabled": authority["runtime_export_enabled"],
+        "runtime_authority_granted": authority["runtime_authority_granted"],
+        "runtime_authority_changed": authority["runtime_authority_changed"],
+        "payload_files_imported": privacy["payload_files_imported"],
+        "local_paths_recorded": privacy["local_paths_recorded"],
+    }
+    return {
+        "summary_version": IMPORT_HANDOFF_STATUS_VERSION,
+        "source": "magma_share_import_peer_review_handoff",
+        "status": status,
+        "severity": severity,
+        "controls_present": False,
+        "operator_owned": True,
+        "handoff_count": 1,
+        "active_count": 1 if decision == "accepted_for_peer_review" else 0,
+        "runtime_export_enabled": authority["runtime_export_enabled"],
+        "runtime_authority_granted": authority["runtime_authority_granted"],
+        "runtime_authority_changed": authority["runtime_authority_changed"],
+        "payload_files_imported": privacy["payload_files_imported"],
+        "payload_digest_imported": privacy["payload_digest_imported"],
+        "raw_material_imported": privacy["raw_material_imported"],
+        "replacement_map_imported": privacy["replacement_map_imported"],
+        "local_paths_recorded": privacy["local_paths_recorded"],
+        "latest": latest,
+        "active": [latest] if decision == "accepted_for_peer_review" else [],
+    }
+
+
 def validate_magma_share_manifest(value: dict[str, Any]) -> None:
     """Validate schema, date-time formats, and count invariants."""
     errors = redacted_schema_errors(
@@ -687,6 +751,172 @@ def _ensure_import_report_ready_for_handoff(
         if missing:
             raise ValueError(
                 "import report is not handoff-ready: "
+                f"replay_plan entry {index} missing {missing}"
+            )
+        _ensure_sha256_digest(
+            f"replay_plan entry {index} receipt_digest",
+            entry.get("receipt_digest"),
+        )
+        _ensure_sha256_digest(
+            f"replay_plan entry {index} evaluation_result_digest",
+            entry.get("evaluation_result_digest"),
+        )
+
+
+def _empty_import_handoff_status_summary(source: str) -> dict[str, Any]:
+    return {
+        "summary_version": IMPORT_HANDOFF_STATUS_VERSION,
+        "source": source,
+        "status": "not_configured",
+        "severity": "none",
+        "controls_present": False,
+        "operator_owned": False,
+        "handoff_count": 0,
+        "active_count": 0,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+        "latest": None,
+        "active": [],
+    }
+
+
+def _ensure_import_handoff_ready_for_summary(
+    handoff: Mapping[str, Any],
+) -> None:
+    required_values = {
+        "handoff_version": IMPORT_HANDOFF_VERSION,
+        "ok": True,
+        "blockers": [],
+    }
+    for field, expected in required_values.items():
+        if handoff.get(field) != expected:
+            raise ValueError(f"import handoff is not summary-ready: {field}")
+    for field in (
+        "handoff_id",
+        "created_at_utc",
+        "share_id",
+        "purpose",
+    ):
+        if not isinstance(handoff.get(field), str):
+            raise ValueError(f"import handoff is not summary-ready: {field}")
+    _parse_created_at_utc(handoff)
+    for field in ("handoff_id", "share_id", "purpose"):
+        _ensure_ref(field, handoff[field])
+    for field in (
+        "handoff_digest",
+        "import_report_digest",
+        "share_manifest_digest",
+        "source_manifest_digest",
+    ):
+        _ensure_sha256_digest(field, handoff.get(field))
+
+    ownership = handoff.get("operator_ownership")
+    authority = handoff.get("authority")
+    privacy = handoff.get("privacy")
+    replay_plan = handoff.get("replay_plan")
+    if not isinstance(ownership, Mapping):
+        raise ValueError(
+            "import handoff is not summary-ready: operator_ownership"
+        )
+    if not isinstance(authority, Mapping):
+        raise ValueError("import handoff is not summary-ready: authority")
+    if not isinstance(privacy, Mapping):
+        raise ValueError("import handoff is not summary-ready: privacy")
+    if not isinstance(replay_plan, Mapping):
+        raise ValueError("import handoff is not summary-ready: replay_plan")
+
+    ownership_required = {
+        "operator_owned": True,
+        "operator_decision_ref": "<redacted>",
+        "operator_decision_id_recorded": False,
+        "import_decision_recorded": True,
+    }
+    for field, expected in ownership_required.items():
+        if ownership.get(field) != expected:
+            raise ValueError(
+                f"import handoff is not summary-ready: {field}"
+            )
+    decision = ownership.get("import_decision")
+    if decision not in IMPORT_HANDOFF_DECISIONS:
+        raise ValueError("import handoff is not summary-ready: import_decision")
+    for field in (
+        "operator_agent_id",
+        "bridge_event_ref",
+        "decision_reason_ref",
+    ):
+        if not isinstance(ownership.get(field), str):
+            raise ValueError(
+                f"import handoff is not summary-ready: {field}"
+            )
+        _ensure_ref(field, ownership[field])
+
+    authority_required = {
+        "operator_gate_required": True,
+        "operator_gate_satisfied": True,
+        "handoff_scope": IMPORT_HANDOFF_SCOPE,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "runtime_traffic_mutation_applied": False,
+        "runtime_receipt_emission_changed": False,
+    }
+    for field, expected in authority_required.items():
+        if authority.get(field) != expected:
+            raise ValueError(
+                f"import handoff is not summary-ready: {field}"
+            )
+
+    privacy_required = {
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "local_paths_recorded": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+    }
+    for field, expected in privacy_required.items():
+        if privacy.get(field) != expected:
+            raise ValueError(
+                f"import handoff is not summary-ready: {field}"
+            )
+
+    entries = replay_plan.get("entries")
+    if replay_plan.get("mode") != "no_authority_metadata_replay":
+        raise ValueError("import handoff is not summary-ready: replay_plan.mode")
+    if not isinstance(entries, list):
+        raise ValueError(
+            "import handoff is not summary-ready: replay_plan.entries"
+        )
+    if replay_plan.get("entry_count") != len(entries):
+        raise ValueError(
+            "import handoff is not summary-ready: replay_plan.entry_count"
+        )
+    required_entry_fields = {
+        "entry_id",
+        "receipt_digest",
+        "evaluation_result_digest",
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    }
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, Mapping):
+            raise ValueError(
+                "import handoff is not summary-ready: replay_plan entry"
+            )
+        missing = sorted(required_entry_fields - set(entry))
+        if missing:
+            raise ValueError(
+                "import handoff is not summary-ready: "
                 f"replay_plan entry {index} missing {missing}"
             )
         _ensure_sha256_digest(

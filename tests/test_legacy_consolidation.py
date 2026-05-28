@@ -234,6 +234,13 @@ class TestApiOpsExtended:
             for item in route_stage_latency["alert_thresholds"]
         )
         assert "route_stage_trace" not in str(route_stage_latency)
+        magma_handoff = data["magma_share_import_handoff"]
+        assert magma_handoff["source"] == "not_configured"
+        assert magma_handoff["status"] == "not_configured"
+        assert magma_handoff["controls_present"] is False
+        assert magma_handoff["runtime_authority_granted"] is False
+        assert magma_handoff["payload_files_imported"] == 0
+        assert magma_handoff["active_count"] == 0
 
     def test_ops_autogrowth_section_hides_ticker_exception_details(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
@@ -283,6 +290,124 @@ class TestApiOpsExtended:
         assert "AutogrowthErrorsObserved" in alert_ids
         assert "AutogrowthSourceDown" not in alert_ids
         assert "private stack trace" not in str(section)
+
+    def test_ops_magma_handoff_section_is_read_only_and_sanitized(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+        from waggledance.core.magma.share_manifest import (
+            IMPORT_REPORT_VERSION,
+            build_magma_share_import_peer_review_handoff,
+        )
+
+        report = {
+            "report_version": IMPORT_REPORT_VERSION,
+            "ok": True,
+            "blockers": [],
+            "source_receipt_verification_ok": True,
+            "context_verified": True,
+            "context_drift_detected": False,
+            "replay_metadata_only": True,
+            "no_authority_import": True,
+            "runtime_export_enabled": False,
+            "runtime_authority_granted": False,
+            "runtime_authority_changed": False,
+            "payload_files_imported": 0,
+            "payload_digest_imported": False,
+            "raw_material_imported": False,
+            "replacement_map_imported": False,
+            "share_id": "magma:share:ops-summary",
+            "purpose": "cross_instance_replay",
+            "share_manifest_digest": "sha256:" + "a" * 64,
+            "source_manifest_digest": "sha256:" + "b" * 64,
+            "replay_plan": {
+                "mode": "no_authority_metadata_replay",
+                "entry_count": 1,
+                "entries": [{
+                    "entry_id": "entry-001",
+                    "receipt_digest": "sha256:" + "c" * 64,
+                    "evaluation_result_digest": "sha256:" + "d" * 64,
+                    "subject_type": "solver_trace",
+                    "risk_class": "low",
+                    "expected_gate": "review",
+                    "actual_gate": "review",
+                    "verdict": "accepted",
+                }],
+            },
+        }
+        handoff = build_magma_share_import_peer_review_handoff(
+            import_report=report,
+            operator_decision_id="operator:decision:ops-summary",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+            import_decision="accepted_for_peer_review",
+            decision_reason_ref="reason:cross_instance_replay_review",
+        )
+
+        class Container:
+            pass
+
+        container = Container()
+        container.magma_share_import_handoff_status = handoff
+        section = _magma_share_import_handoff_section(container)
+
+        assert section["status"] == "ready_for_peer_review"
+        assert section["controls_present"] is False
+        assert section["runtime_authority_granted"] is False
+        assert section["payload_files_imported"] == 0
+        assert section["local_paths_recorded"] is False
+        assert section["active_count"] == 1
+        assert section["latest"]["share_id"] == "magma:share:ops-summary"
+        assert section["latest"]["entry_count"] == 1
+        serialized = json.dumps(section)
+        assert "operator:decision:ops-summary" not in serialized
+        assert "C:\\private" not in serialized
+
+        for path, value in [
+            (("share_id",), "C:/private/share"),
+            (
+                ("operator_ownership", "operator_agent_id"),
+                "C:/private/agent",
+            ),
+            (
+                ("operator_ownership", "decision_reason_ref"),
+                "C:/private/reason",
+            ),
+        ]:
+            tampered = json.loads(json.dumps(handoff))
+            target = tampered
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            container.magma_share_import_handoff_status = tampered
+            invalid_section = _magma_share_import_handoff_section(container)
+            assert invalid_section["source"] == (
+                "magma_share_import_handoff_invalid"
+            )
+            assert invalid_section["controls_present"] is False
+            assert invalid_section["runtime_authority_granted"] is False
+            assert value not in str(invalid_section)
+
+    def test_ops_magma_handoff_failure_hides_exception_details(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _magma_share_import_handoff_section,
+        )
+
+        class Feed:
+            def snapshot(self):
+                raise RuntimeError("C:\\private\\secret\\handoff.json")
+
+        class Container:
+            magma_share_import_handoff_status = Feed()
+
+        section = _magma_share_import_handoff_section(Container())
+
+        assert section["source"] == "magma_share_import_handoff_unavailable"
+        assert section["status"] == "warning"
+        assert section["controls_present"] is False
+        assert section["runtime_authority_granted"] is False
+        assert section["active"][0]["id"] == "MagmaShareImportHandoffUnavailable"
+        assert "C:\\private" not in str(section)
 
     def test_ops_route_stage_latency_panels_are_read_only_promql_templates(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
@@ -810,6 +935,16 @@ class TestHologramOpsFlexHW:
         assert "activeRouteStageLatencyAlerts" in html
         assert "route_stage_latency_start" not in html
         assert "route_stage_latency_stop" not in html
+
+    def test_hologram_ops_renders_magma_handoff_status(self):
+        html = _read_html()
+        assert "ops.magma_share_import_handoff" in html
+        assert "ops_magma_handoff" in html
+        assert "magmaHandoff.runtime_authority_granted" in html
+        assert "magmaHandoff.controls_present" in html
+        assert "activeMagmaHandoffs" in html
+        assert "magma_share_import_handoff_start" not in html
+        assert "magma_share_import_handoff_stop" not in html
 
     def test_hologram_ops_has_flexhw_en_labels(self):
         html = _read_html()

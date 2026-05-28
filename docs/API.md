@@ -146,6 +146,15 @@ that require a Prometheus/Alertmanager time-window feed. The field is derived
 from existing Ops counters only and does not add mutating endpoints or
 configuration controls.
 
+`GET /api/ops` also includes `magma_share_import_handoff`, a read-only
+operator summary for an explicitly supplied
+`share_import_peer_review_handoff.json` snapshot. It reports only
+status/severity, digest refs, share ID, purpose, decision category, handoff
+scope, entry counts, and no-authority privacy flags. The default state is
+`source="not_configured"`. The summary does not scan disk, import payloads,
+record local paths, expose raw operator decision IDs, add runtime authority, or
+add dashboard controls.
+
 ---
 
 ## Core
@@ -288,7 +297,7 @@ query, response, confidence, source, and route type for downstream night learnin
 | `GET /api/learning/state-machine` | GET | Current learning lifecycle state (awake/replay/consolidation/dream/training/canary/morning_report) |
 | `GET /api/swarm/scores` | GET | SwarmScheduler agent scores |
 | `GET /api/learning` | GET | LearningEngine status + leaderboard |
-| `GET /api/ops` | GET | OpsAgent status, model recommendations, read-only route-stage latency panel templates, and read-only autogrowth alert state |
+| `GET /api/ops` | GET | OpsAgent status, model recommendations, read-only route-stage latency panel templates, read-only autogrowth alert state, and read-only MAGMA import handoff status |
 | `GET /api/micro_model` | GET | MicroModel V1/V2 status and promotion stats |
 
 ---

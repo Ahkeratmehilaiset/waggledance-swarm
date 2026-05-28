@@ -14,8 +14,10 @@ from tools.run_runtime_receipt_emission_proof import (
 )
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.share_manifest import (
+    IMPORT_HANDOFF_STATUS_VERSION,
     IMPORT_HANDOFF_VERSION,
     IMPORT_REPORT_VERSION,
+    build_magma_share_import_handoff_status_summary,
     build_magma_share_import_peer_review_handoff,
     build_magma_share_manifest_import_report,
     write_magma_share_import_peer_review_handoff,
@@ -184,6 +186,120 @@ def test_importer_builds_operator_owned_peer_review_handoff_without_authority(
     assert "operator:decision:magma-share-import:001" not in serialized
     assert str(tmp_path) not in serialized
     assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+
+
+def test_import_handoff_status_summary_is_read_only_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=report,
+        operator_decision_id="operator:decision:magma-share-import:summary",
+        operator_agent_id="operator:wd-image1",
+        bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref="reason:cross_instance_replay_review",
+        now_utc=FIXED_NOW + timedelta(hours=1),
+    )
+
+    summary = build_magma_share_import_handoff_status_summary(handoff)
+
+    assert summary["summary_version"] == IMPORT_HANDOFF_STATUS_VERSION
+    assert summary["source"] == "magma_share_import_peer_review_handoff"
+    assert summary["status"] == "ready_for_peer_review"
+    assert summary["severity"] == "none"
+    assert summary["controls_present"] is False
+    assert summary["operator_owned"] is True
+    assert summary["handoff_count"] == 1
+    assert summary["active_count"] == 1
+    assert summary["runtime_export_enabled"] is False
+    assert summary["runtime_authority_granted"] is False
+    assert summary["runtime_authority_changed"] is False
+    assert summary["payload_files_imported"] == 0
+    assert summary["local_paths_recorded"] is False
+    latest = summary["latest"]
+    assert latest["handoff_id"] == handoff["handoff_id"]
+    assert latest["handoff_digest"] == handoff["handoff_digest"]
+    assert latest["share_id"] == report["share_id"]
+    assert latest["handoff_scope"] == "peer_review_only"
+    assert latest["import_decision"] == "accepted_for_peer_review"
+    assert latest["entry_count"] == 1
+    assert summary["active"] == [latest]
+    serialized = json.dumps(summary)
+    assert "operator:decision:magma-share-import:summary" not in serialized
+    assert str(tmp_path) not in serialized
+    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+
+    empty = build_magma_share_import_handoff_status_summary(None)
+    assert empty["source"] == "not_configured"
+    assert empty["status"] == "not_configured"
+    assert empty["controls_present"] is False
+    assert empty["runtime_authority_granted"] is False
+    assert empty["payload_files_imported"] == 0
+    assert empty["active"] == []
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "match"),
+    [
+        (("share_id",), "C:/private/share", "share_id"),
+        (("purpose",), "C:/private/purpose", "purpose"),
+        (
+            ("operator_ownership", "operator_agent_id"),
+            "C:/private/agent",
+            "operator_agent_id",
+        ),
+        (
+            ("operator_ownership", "bridge_event_ref"),
+            "C:/private/bridge",
+            "bridge_event_ref",
+        ),
+        (
+            ("operator_ownership", "decision_reason_ref"),
+            "C:/private/reason",
+            "decision_reason_ref",
+        ),
+        (("created_at_utc",), "C:/private/created-at", "created_at_utc"),
+    ],
+)
+def test_import_handoff_status_summary_rejects_path_like_refs(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    value: str,
+    match: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=report,
+        operator_decision_id="operator:decision:magma-share-import:summary",
+        operator_agent_id="operator:wd-image1",
+        bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref="reason:cross_instance_replay_review",
+        now_utc=FIXED_NOW + timedelta(hours=1),
+    )
+    tampered = json.loads(json.dumps(handoff))
+    target = tampered
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(ValueError, match=match):
+        build_magma_share_import_handoff_status_summary(tampered)
 
 
 def test_peer_review_handoff_write_refuses_failed_import_report(

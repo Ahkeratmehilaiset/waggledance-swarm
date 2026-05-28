@@ -885,8 +885,9 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "provider health" in capability["safe_statement"]
     assert "freshness/retention thresholds" in capability["safe_statement"]
     assert "operator-owned feed freshness source" in capability["safe_statement"]
+    assert "privacy-safe /metrics gauges" in capability["safe_statement"]
     assert "hard append-only" in capability["safe_statement"]
-    assert "privacy-safe operator metrics" in (
+    assert "provider metrics runbook" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

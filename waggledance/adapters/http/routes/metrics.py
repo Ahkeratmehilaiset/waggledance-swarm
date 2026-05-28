@@ -45,6 +45,9 @@ from prometheus_client.core import (
 )
 
 from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
+from waggledance.adapters.http.routes.compat_dashboard import (
+    _magma_share_import_handoff_section,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +98,33 @@ _ROUTE_STAGE_COMPONENT_ATTRS: dict[str, str] = {
     "hybrid_retrieval_8_cell": "hybrid_retrieval",
     "hex_neighbor_assist_7_cell": "hex_neighbor_assist",
 }
+_MAGMA_HANDOFF_PROVIDER_STATUSES: tuple[str, ...] = (
+    "not_configured",
+    "nominal",
+    "warning",
+)
+_MAGMA_HANDOFF_SNAPSHOT_KINDS: tuple[str, ...] = (
+    "none",
+    "handoff",
+    "history",
+    "latest",
+    "invalid",
+)
+_MAGMA_HANDOFF_FRESHNESS_STATES: tuple[str, ...] = (
+    "fresh",
+    "stale",
+    "unknown",
+)
+_MAGMA_HANDOFF_PROVIDER_ALERT_IDS: tuple[str, ...] = (
+    "MagmaShareImportHandoffProviderUnavailable",
+    "MagmaShareImportHandoffProviderInvalid",
+    "MagmaShareImportHandoffProviderRetentionDropped",
+    "MagmaShareImportHandoffProviderRetentionTruncated",
+    "MagmaShareImportHandoffProviderRetentionLimitReached",
+    "MagmaShareImportHandoffProviderFreshnessWarning",
+    "MagmaShareImportHandoffFreshnessSourceUnavailable",
+    "MagmaShareImportHandoffFreshnessSourceInvalid",
+)
 
 
 def _as_float(value: Any) -> float | None:
@@ -109,6 +139,17 @@ def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
         return getattr(obj, name, default)
     except Exception:
         return default
+
+
+def _as_bool_float(value: Any) -> float:
+    return 1.0 if bool(value) else 0.0
+
+
+def _as_nonnegative_float(value: Any) -> float:
+    numeric = _as_float(value)
+    if numeric is None or numeric < 0:
+        return 0.0
+    return numeric
 
 
 class _WaggleCollector:
@@ -144,6 +185,7 @@ class _WaggleCollector:
         yield from self._collect_route_stage_metrics(container)
         yield from self._collect_route_stage_runtime_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
+        yield from self._collect_magma_handoff_metrics(container)
 
     def _collect_hex_metrics(
         self,
@@ -414,6 +456,149 @@ class _WaggleCollector:
                 f"low-risk autogrowth runtime-boundary counter: {name}",
                 value=numeric,
             )
+
+    def _collect_magma_handoff_metrics(self, container: Any) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_magma_handoff_provider_up",
+            "1 if the metrics collector could build MAGMA handoff provider health this scrape.",
+            value=0.0,
+        )
+        try:
+            section = _magma_share_import_handoff_section(container)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "metrics: MAGMA handoff provider health raised: %s",
+                exc,
+            )
+            yield up
+            return
+        provider_health = section.get("provider_health")
+        if not isinstance(provider_health, dict):
+            yield up
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_magma_handoff_provider_up",
+            "1 if the metrics collector could build MAGMA handoff provider health this scrape.",
+            value=1.0,
+        )
+
+        bool_gauges = {
+            "provider_configured": provider_health.get("provider_configured"),
+            "snapshot_available": provider_health.get("snapshot_available"),
+            "snapshot_valid": provider_health.get("snapshot_valid"),
+            "history_feed_present": provider_health.get("history_feed_present"),
+            "freshness_source_configured": provider_health.get(
+                "freshness_source_configured"
+            ),
+            "freshness_source_available": provider_health.get(
+                "freshness_source_available"
+            ),
+            "freshness_source_valid": provider_health.get(
+                "freshness_source_valid"
+            ),
+            "freshness_source_stale": (
+                provider_health.get("feed_staleness_state") == "stale"
+            ),
+            "controls_present": provider_health.get("controls_present"),
+            "runtime_authority_granted": provider_health.get(
+                "runtime_authority_granted"
+            ),
+            "local_paths_recorded": provider_health.get("local_paths_recorded"),
+        }
+        for name, value in bool_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_magma_handoff_{name}",
+                f"read-only MAGMA handoff provider-health gauge: {name}",
+                value=_as_bool_float(value),
+            )
+
+        numeric_gauges = {
+            "snapshot_count": provider_health.get("snapshot_count"),
+            "history_limit": provider_health.get("history_limit"),
+            "history_retained_count": provider_health.get(
+                "history_retained_count"
+            ),
+            "history_dropped_count": provider_health.get("history_dropped_count"),
+            "active_alerts": provider_health.get("active_count"),
+            "freshness_warning_after_seconds": provider_health.get(
+                "freshness_warning_after_seconds"
+            ),
+            "freshness_source_item_count": provider_health.get(
+                "feed_item_count"
+            ),
+            "freshness_source_window_seconds": provider_health.get(
+                "feed_window_seconds"
+            ),
+            "payload_files_imported": provider_health.get(
+                "payload_files_imported"
+            ),
+        }
+        for name, value in numeric_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_magma_handoff_{name}",
+                f"read-only MAGMA handoff provider-health gauge: {name}",
+                value=_as_nonnegative_float(value),
+            )
+
+        status_metric = GaugeMetricFamily(
+            "waggledance_magma_handoff_provider_status",
+            "Current MAGMA handoff provider status as fixed-state gauges.",
+            labels=["status"],
+        )
+        current_status = provider_health.get("status")
+        for status in _MAGMA_HANDOFF_PROVIDER_STATUSES:
+            status_metric.add_metric(
+                [status],
+                1.0 if current_status == status else 0.0,
+            )
+        yield status_metric
+
+        snapshot_kind_metric = GaugeMetricFamily(
+            "waggledance_magma_handoff_provider_snapshot_kind",
+            "Current MAGMA handoff provider snapshot kind as fixed-state gauges.",
+            labels=["kind"],
+        )
+        current_kind = provider_health.get("snapshot_kind")
+        for kind in _MAGMA_HANDOFF_SNAPSHOT_KINDS:
+            snapshot_kind_metric.add_metric(
+                [kind],
+                1.0 if current_kind == kind else 0.0,
+            )
+        yield snapshot_kind_metric
+
+        freshness_state_metric = GaugeMetricFamily(
+            "waggledance_magma_handoff_freshness_state",
+            "Current MAGMA handoff freshness source state as fixed-state gauges.",
+            labels=["state"],
+        )
+        current_freshness_state = provider_health.get("feed_staleness_state")
+        for state in _MAGMA_HANDOFF_FRESHNESS_STATES:
+            freshness_state_metric.add_metric(
+                [state],
+                1.0 if current_freshness_state == state else 0.0,
+            )
+        yield freshness_state_metric
+
+        active_items = provider_health.get("active")
+        if not isinstance(active_items, list):
+            active_items = []
+        active_alert_ids = {
+            item.get("id")
+            for item in active_items
+            if isinstance(item, dict)
+        }
+        alert_metric = GaugeMetricFamily(
+            "waggledance_magma_handoff_provider_alert_active",
+            "Current sanitized MAGMA handoff provider alert state by fixed alert id.",
+            labels=["alert_id"],
+        )
+        for alert_id in _MAGMA_HANDOFF_PROVIDER_ALERT_IDS:
+            alert_metric.add_metric(
+                [alert_id],
+                1.0 if alert_id in active_alert_ids else 0.0,
+            )
+        yield alert_metric
 
 
 def _build_registry(get_container) -> CollectorRegistry:  # noqa: ANN001

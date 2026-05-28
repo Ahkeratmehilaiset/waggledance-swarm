@@ -3221,6 +3221,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, and operator-owned feed freshness source state.",
             ),
             (
+                "waggledance/adapters/http/routes/metrics.py",
+                "Prometheus metrics expose privacy-safe MAGMA handoff provider health and freshness source state without import controls.",
+            ),
+            (
                 "web/hologram-brain-v6.html",
                 "Hologram Ops panel renders MAGMA import handoff status/history, provider health, thresholds, and feed freshness state without controls.",
             ),
@@ -3239,6 +3243,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_share_manifest_importer.py",
                 "Importer tests reject context drift and prove peer-review handoff history does not grant authority.",
+            ),
+            (
+                "tests/test_metrics_endpoint.py",
+                "Metrics endpoint tests prove MAGMA provider-health gauges use fixed labels and do not leak private feed refs.",
             ),
             (
                 "docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md",
@@ -3476,9 +3484,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "surface bounded handoff status history plus provider health "
                 "with read-only freshness/retention thresholds plus a "
                 "sanitized operator-owned feed freshness source for the "
-                "explicit handoff feed without disk scanning, payload import, "
-                "local path exposure, provider exception details, or runtime "
-                "controls; hard "
+                "explicit handoff feed. The same sanitized state is exposed "
+                "as privacy-safe /metrics gauges with fixed "
+                "status/freshness/alert labels and without disk scanning, "
+                "payload import, local path exposure, provider exception "
+                "details, or runtime controls; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3499,9 +3509,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Promote MAGMA handoff provider health and freshness source "
-                "state into privacy-safe operator metrics without adding "
-                "import controls."
+                "Add a MAGMA handoff provider metrics runbook and alert "
+                "thresholds without adding import controls."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

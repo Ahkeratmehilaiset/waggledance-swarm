@@ -206,10 +206,13 @@ class TestApiOpsExtended:
             "wakeups_total",
             "non_idle_ticks",
             "errors_total",
+            "alert_state",
         ]:
             assert field in autogrowth
         assert isinstance(autogrowth["enabled"], bool)
         assert isinstance(autogrowth["running"], bool)
+        assert autogrowth["alert_state"]["source"] == "local_ops_snapshot"
+        assert autogrowth["alert_state"]["controls_present"] is False
         assert "last_error" not in autogrowth
 
     def test_ops_autogrowth_section_hides_ticker_exception_details(self):
@@ -226,7 +229,40 @@ class TestApiOpsExtended:
 
         assert section["enabled"] is False
         assert section["up"] is False
+        assert section["alert_state"]["status"] == "warning"
+        assert section["alert_state"]["active"][0]["id"] == "AutogrowthSourceDown"
         assert "private scheduler detail" not in str(section)
+
+    def test_ops_autogrowth_alert_state_reports_errors_without_details(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _autogrowth_section,
+        )
+
+        class Stats:
+            wakeups_total = 2
+            non_idle_ticks = 1
+            errors_total = 1
+            last_error = "private stack trace"
+
+        class Ticker:
+            is_running = True
+            interval_seconds = 30.0
+            max_ticks_per_wake = 20
+            stats = Stats()
+
+        class Container:
+            autogrowth_background_ticker = Ticker()
+
+        section = _autogrowth_section(Container())
+        alert_state = section["alert_state"]
+        alert_ids = {item["id"] for item in alert_state["active"]}
+
+        assert section["up"] is True
+        assert alert_state["status"] == "warning"
+        assert alert_state["severity"] == "warning"
+        assert "AutogrowthErrorsObserved" in alert_ids
+        assert "AutogrowthSourceDown" not in alert_ids
+        assert "private stack trace" not in str(section)
 
     def test_ops_still_has_status_and_recommendation(self):
         """Existing fields must not break."""
@@ -345,6 +381,8 @@ class TestHologramOpsFlexHW:
         assert "ag.wakeups_total" in html
         assert "ag.non_idle_ticks" in html
         assert "ag.errors_total" in html
+        assert "ag.alert_state" in html
+        assert "activeAutogrowthAlerts" in html
         assert "autogrowth_start" not in html
         assert "autogrowth_stop" not in html
 

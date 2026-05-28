@@ -24,6 +24,9 @@ from tools.wd_image1_capability_manifest import (
 from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_alert_runbook_smoke,
 )
+from tools.wd_image1_capability_manifest import (
+    build_low_risk_autogrowth_ops_alert_state_smoke,
+)
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
 
@@ -478,6 +481,43 @@ def test_low_risk_autogrowth_alert_runbook_smoke_blocks_missing_inputs(
     assert proof["runtime_authority_changed"] is False
 
 
+def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() -> None:
+    proof = build_low_risk_autogrowth_ops_alert_state_smoke(ROOT)
+
+    assert proof["ok"] is True
+    assert proof["proof_id"] == (
+        "low_risk_autogrowth_ops_alert_state_smoke_v1"
+    )
+    assert proof["ops_endpoint"] == "/api/ops"
+    assert proof["dashboard_path"] == "web/hologram-brain-v6.html"
+    assert proof["api_contract_present"] is True
+    assert proof["ui_contract_present"] is True
+    assert proof["test_contract_present"] is True
+    assert proof["docs_contract_present"] is True
+    assert proof["alert_state_visible"] is True
+    assert proof["local_snapshot_source"] is True
+    assert proof["rate_rules_deferred"] is True
+    assert proof["forbidden_controls_absent"] is True
+    assert proof["forbidden_control_tokens_found"] == []
+    assert proof["runtime_authority_changed"] is False
+    assert proof["operator_gate_required"] is False
+    assert proof["external_writes_applied"] is False
+
+
+def test_low_risk_autogrowth_ops_alert_state_smoke_blocks_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    proof = build_low_risk_autogrowth_ops_alert_state_smoke(tmp_path)
+
+    assert proof["ok"] is False
+    assert proof["blocked_reason"] == "missing_required_inputs"
+    assert "waggledance/adapters/http/routes/compat_dashboard.py" in (
+        proof["missing_inputs"]
+    )
+    assert "web/hologram-brain-v6.html" in proof["missing_inputs"]
+    assert proof["runtime_authority_changed"] is False
+
+
 def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> None:
     report = build_manifest(ROOT)
     capability = _by_id(report)["hexagonal_upgrades"]
@@ -532,8 +572,19 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert capability["proof"]["alert_runbook_smoke"][
         "runtime_authority_changed"
     ] is False
-    assert "alert state" in capability["next_smallest_pr"]
+    assert capability["proof"]["ops_alert_state_smoke"]["ok"] is True
+    assert capability["proof"]["ops_alert_state_smoke"][
+        "alert_state_visible"
+    ] is True
+    assert capability["proof"]["ops_alert_state_smoke"][
+        "forbidden_controls_absent"
+    ] is True
+    assert capability["proof"]["ops_alert_state_smoke"][
+        "runtime_authority_changed"
+    ] is False
+    assert "Prometheus/Alertmanager feed" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
+    assert "local alert state" in capability["safe_statement"]
     assert "operator alert thresholds" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 

@@ -1,8 +1,8 @@
 # MAGMA Share Manifest Contract
 
-`magma.share_manifest.v0` is the contract-first boundary for future
-cross-instance MAGMA sharing. It is intentionally schema, docs, and tests only;
-runtime export remains disabled until a later operator-gated PR.
+`magma.share_manifest.v0` is the contract-first boundary for cross-instance
+MAGMA sharing. Runtime export remains disabled by default; the only writer in
+this repo is an explicit operator-gated local exporter.
 
 The manifest is for peers that need to review or replay MAGMA evidence without
 receiving private prompts, raw payloads, raw solver outputs, replacement maps,
@@ -26,15 +26,44 @@ payload files or payload digests.
 
 Allowed entry fields are limited to stable MAGMA references and review state:
 entry id, receipt digest, EvaluationResult digest, subject type, risk class,
-expected/actual gate, verdict, and a sanitization summary. A future runtime
-exporter must validate against this schema before writing any share artifact.
+expected/actual gate, verdict, and a sanitization summary. The local exporter
+validates this schema with date-time format checks and count-consistency checks
+before writing any share artifact.
+
+## Operator-Gated Exporter
+
+`tools/export_magma_share_manifest.py` converts an already verified local
+MAGMA receipt-bundle `manifest.json` into a payload-free `share_manifest.json`.
+It requires an explicit `--operator-approval-id`; the approval ref is checked
+for shape but is not written to the export report. The tool writes only:
+
+- `share_manifest.json`
+- `share_export_report.json`
+
+It does not copy payload files, does not export `canonical_payload_digest`, does
+not export replacement maps, and does not enable default runtime receipt
+emission.
+
+Example:
+
+```powershell
+python tools\export_magma_share_manifest.py `
+  --source-manifest <receipt-bundle>\manifest.json `
+  --out-dir <new-share-export-dir> `
+  --operator-approval-id operator:approval:example `
+  --share-id magma:share:example:001 `
+  --producer-agent codex-lead-1 `
+  --producer-role lead `
+  --bridge-event-ref bridge:example `
+  --purpose cross_instance_replay `
+  --json
+```
 
 ## Non-Goals
 
-This contract does not make MAGMA append-only by default, does not export
+This contract does not make MAGMA append-only by default, does not export full
 receipt bundles, does not add cross-instance transport, and does not grant any
-runtime authority. It only defines the artifact shape that future export code
-must satisfy.
+runtime authority. The exporter emits a local metadata artifact only.
 
 ## Validation
 
@@ -42,8 +71,12 @@ Run:
 
 ```powershell
 python -m pytest tests\contracts\test_magma_share_manifest_schema.py -q
+python -m pytest tests\tools\test_magma_share_manifest_exporter.py -q
 ```
 
 The regression tests prove the good fixture validates and that raw payloads,
 payload digests, replacement maps, raw context, raw solver output, raw-query
-digests, payload files, and runtime export enablement are rejected.
+digests, payload files, invalid timestamps, and runtime export enablement are
+rejected. The exporter tests prove that source receipt bundles are verified
+fail-closed, an operator approval ref is required, artifact counts must match,
+and private payload markers do not appear in exported JSON.

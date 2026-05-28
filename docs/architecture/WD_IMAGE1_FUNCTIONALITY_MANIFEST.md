@@ -31,7 +31,7 @@ Use the safest true wording until the proof tool reports otherwise:
 | --- | --- | --- | --- |
 | Hex-mesh routing | Partial, with route-order proof, HTTP/WS trace contract, dashboard route-stage label smoke, operator route-stage count metrics, runtime rate/latency counters, p95/p99 PromQL panel templates from sanitized histograms, and an optional sanitized read-only Prometheus/Alertmanager latency feed provider with timeout, credential, and private-host guardrails | `waggledance/core/hex_cell_topology.py`, `configs/hex_cells.yaml`, `docs/architecture/HEX_TOPOLOGIES.md`, `waggledance/adapters/http/routes/chat.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `waggledance/adapters/http/route_stage_latency_feed.py`, `web/hologram-brain-v6.html` | Add provider health/cache metrics and bounded backoff without adding route controls. |
 | Deterministic solver-first routing | Partial, with opt-in receipt binding proof | `waggledance/core/reasoning/solver_router.py`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` | Promote solver trace receipt coverage from opt-in proof to configured runtime coverage and exported metrics. |
-| MAGMA audit log | Partial, with opt-in solver-trace receipt proof and a contract-first no-payload cross-instance share manifest | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Add an operator-gated exporter that validates `magma.share_manifest.v0` without enabling default runtime receipt emission. |
+| MAGMA audit log | Partial, with opt-in solver-trace receipt proof, a contract-first no-payload cross-instance share manifest, and an explicit operator-gated local share exporter | `waggledance/core/magma/event_log_adapter.py`, `waggledance/core/magma/receipt_bundle.py`, `waggledance/core/magma/runtime_summary_receipt.py`, `waggledance/core/magma/share_manifest.py`, `tools/export_magma_share_manifest.py`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md`, `docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md` | Add a verifier/importer that consumes `magma.share_manifest.v0` as no-authority replay metadata and rejects stale or context-drifted receipt references. |
 | Low-risk autonomy loop | Partial, with temp-DB proof, runtime-boundary smoke, operator metrics, a read-only dashboard ops overlay with local alert state, and operator alert thresholds | `waggledance/core/autonomy_growth/low_risk_policy.py`, `runtime_query_router.py`, `autogrowth_scheduler.py`, `waggledance/bootstrap/container.py`, `waggledance/adapters/http/api.py`, `waggledance/adapters/http/routes/metrics.py`, `waggledance/adapters/http/routes/compat_dashboard.py`, `web/hologram-brain-v6.html`, `docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md` | Wire a real Prometheus/Alertmanager feed into the read-only Ops alert state without adding controls. |
 | Hexagonal upgrades | Partial, with in-memory proof and runtime-boundary smoke | `waggledance/core/hex_topology/subdivision_operator.py`, `ring_messaging.py`, `parent_child_relations.py`, `waggledance/bootstrap/container.py`, `hex_topology_registry.py`, `hex_neighbor_assist.py` | Promote hexagonal topology boundary reporting into operator-visible metrics without enabling runtime mutation. |
 | Future swarm scalability | Partial, with scale-axis scorecard proof | `docs/architecture/explosive_intelligence_growth_2.md`, `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`, `tools/wd_image1_capability_manifest.py` | Populate the scale-axis scorecard from runtime metrics and benchmark artifacts. |
@@ -146,11 +146,14 @@ the temp artifacts. It does not prove default receipt emission for every
 solver path.
 
 `magma.share_manifest.v0` is a contract-first cross-instance sharing boundary,
-not a runtime exporter. It requires `runtime_export_enabled=false`,
+not default runtime export. It requires `runtime_export_enabled=false`,
 `payload_visibility=no_payload`, zero payload files, no payload digests, and an
 explicit absence inventory for raw payloads, replacement maps, raw context, raw
-solver output, and raw-query digests. Future export code must validate against
-that schema before writing any share artifact.
+solver output, and raw-query digests. The explicit
+`tools/export_magma_share_manifest.py` path is operator-gated and validates the
+schema, date-time formats, and artifact-count consistency before writing a
+local `share_manifest.json`; it does not copy payload files or enable default
+runtime receipt emission.
 
 ### Future Scale-Axis Scorecard
 

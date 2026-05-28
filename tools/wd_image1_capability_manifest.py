@@ -3205,6 +3205,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Opt-in runtime summary receipt binds sanitized query-path payloads.",
             ),
             (
+                "waggledance/core/magma/share_manifest.py",
+                "Operator-gated local share manifest exporter validates the no-payload contract.",
+            ),
+            (
+                "tools/export_magma_share_manifest.py",
+                "Explicit CLI writes payload-free share manifests from verified receipt bundles.",
+            ),
+            (
                 "schemas/v3_13_0/magma_share_manifest.v0.json",
                 "Contract-first cross-instance MAGMA share manifest forbids raw material exports.",
             ),
@@ -3213,8 +3221,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Schema regression tests reject raw payloads, replacement maps, raw context, solver output, and raw-query digests.",
             ),
             (
+                "tests/tools/test_magma_share_manifest_exporter.py",
+                "Exporter tests require operator approval, source verification, count consistency, and payload-marker absence.",
+            ),
+            (
                 "docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md",
-                "Architecture doc records the no-runtime-export share boundary.",
+                "Architecture doc records the no-default-runtime-export share boundary.",
             ),
             (
                 "tools/run_runtime_receipt_emission_proof.py",
@@ -3433,7 +3445,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "MAGMA audit/provenance wrappers, receipt bundles, and an "
                 "opt-in solver-trace runtime receipt proof exist. A "
                 "contract-first cross-instance share manifest also defines a "
-                "no-payload/no-raw-material export boundary; hard "
+                "no-payload/no-raw-material export boundary, and an explicit "
+                "operator-gated local exporter validates it before writing "
+                "share metadata; hard "
                 "append-only/default enforcement is still not yet safe to "
                 "claim."
             ),
@@ -3449,9 +3463,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "language is safe.",
             ),
             next_smallest_pr=(
-                "Add an operator-gated exporter that validates "
-                "magma.share_manifest.v0 without enabling default runtime "
-                "receipt emission."
+                "Add a verifier/importer that consumes magma.share_manifest.v0 "
+                "as no-authority replay metadata and rejects stale or "
+                "context-drifted receipt references."
             ),
             proof=solver_trace_proof.get("magma_execution_receipt_proof"),
         ),

@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 import jsonschema
+import pytest
+
+from waggledance.core.magma.share_manifest import validate_magma_share_manifest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +28,10 @@ def _schema() -> dict:
 def _validator() -> jsonschema.Draft7Validator:
     schema = _schema()
     jsonschema.Draft7Validator.check_schema(schema)
-    return jsonschema.Draft7Validator(schema)
+    return jsonschema.Draft7Validator(
+        schema,
+        format_checker=jsonschema.FormatChecker(),
+    )
 
 
 def _digest(seed: str) -> str:
@@ -97,6 +103,14 @@ def test_share_manifest_is_contract_only_until_runtime_export_pr() -> None:
     manifest["runtime_export_enabled"] = True
 
     assert list(_validator().iter_errors(manifest))
+
+
+def test_share_manifest_rejects_invalid_created_at_format() -> None:
+    manifest = good_magma_share_manifest()
+    manifest["created_at_utc"] = "not-a-date"
+
+    with pytest.raises(ValueError, match="created_at_utc"):
+        validate_magma_share_manifest(manifest)
 
 
 def test_share_manifest_rejects_payload_exports_and_payload_digests() -> None:

@@ -199,6 +199,24 @@ The handoff summary is not an approval artifact. It must not be wired to
 automatic merge, promotion, configuration, importer/exporter, feed control,
 artifact transport, endpoint fetches, or runtime-authority actions.
 
+When a bridge handoff is useful, build an optional bridge-event template from
+the sanitized summary with
+`tools/build_magma_alert_feed_reviewer_bridge_event_template.py`. The template
+validates as a bridge `handoff` event and carries only counts,
+digest-check status, release identifiers, and fixed authority-boundary flags.
+The tool prints JSON only; it does not call `Write-AgentEvent.ps1`, append
+bridge events, transport artifacts, fetch endpoints, approve a release, merge,
+promote, or grant runtime authority.
+
+```powershell
+python tools\build_magma_alert_feed_reviewer_bridge_event_template.py `
+  --summary-json <collected>\reviewer_handoff_summary.json `
+  --agent codex-lead-1 `
+  --task-id wd-image1-reviewer-handoff-template `
+  --to operator,claude-rco-1 `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

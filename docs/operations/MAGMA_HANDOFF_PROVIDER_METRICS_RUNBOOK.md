@@ -472,6 +472,25 @@ append bridge events, include payloads, record local paths, transport artifacts,
 approve, merge, promote, fetch endpoints, grant runtime authority, or make a
 release decision.
 
+Verify that local index entry from explicit local artifacts:
+
+```powershell
+python tools/verify_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py `
+  --index-entry-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.json `
+  --index-entry-verification-summary-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary.json `
+  --summary-bridge-event-template-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template.json `
+  --json
+```
+
+The verifier recomputes digest, size, schema, source-contract,
+rebuilt-index-entry, and bridge-event-schema checks while keeping
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`, and
+`runtime_controls_added=false`. It does not append bridge events, include
+payloads, record local paths, transport artifacts, approve, merge, promote,
+fetch endpoints, grant runtime authority, or make a release decision.
+
 ```powershell
 python tools\verify_magma_decision_review_verification_template_index_entry.py `
   --index-entry-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry.json `

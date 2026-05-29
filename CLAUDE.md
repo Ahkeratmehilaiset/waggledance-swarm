@@ -98,16 +98,51 @@ provider lanes remain supported peers; no lane should be over-claimed as
 ### 9. Autonomous-merge guardrails
 
 A Claude Code session MAY autonomously create PRs, wait for CI, and
-squash-merge them WITHOUT a fresh approval prompt **only if all four**:
+squash-merge them WITHOUT a fresh per-action operator prompt **only if all of
+the following hold**:
 
 a) PR head SHA matches the local `EXPECTED_HEAD`,
 b) all required CI checks are green,
 c) GitHub mergeable state is `clean` / `mergeable`,
 d) no rule in this file (or in any tracked per-session prompt returned by
-   `git ls-files '*master_prompt*.md'`) is violated.
+   `git ls-files '*master_prompt*.md'`) is violated,
+e) **bridge consensus is verified** per the bridge-consensus approval contract
+   below (this replaces the per-action operator query; see
+   `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`).
 
 Use `gh pr merge --match-head-commit="$EXPECTED_HEAD"` to refuse stale-SHA
 merges. Never `--admin`, never `--no-verify`, never force-push.
+
+#### 9a. Bridge-consensus approval contract (replaces the per-action operator query)
+
+Per operator directive 2026-05-29 ("build the storyboard system; approvals via
+bridge consensus, not per-action operator queries"), the approval authority for
+an autonomous **MERGE** is **three distinct, verified bridge agent identities**,
+evaluated fail-closed:
+
+* **Build consensus** — the lead (`codex-lead-1`) and the tools/impl peer
+  (`codex-tools-1`) both concur on the change.
+* **Independent RCO** — `claude-rco-1` posts an explicit `RCO_PASS`
+  (`type=decision` with a status in the approval set) on the PR's **canonical
+  task_id** (= branch name) at the **exact head SHA**, and holds an absolute
+  veto: any `finding`/`changes_requested` from `claude-rco-1` on that task
+  blocks the merge (`tools/check_bridge_changes_requested.py`).
+* **RCO absence = NO merge** — if no explicit `claude-rco-1` `RCO_PASS` at the
+  exact head is present, the gate refuses even when build-consensus and every
+  charter condition pass. Silence blocks; it never default-allows.
+* **Three distinct identities** — duplicate, missing, or unverifiable
+  identities are refused; a 2-of-3 or self-approving signal set fails closed to
+  `operator_review_required`.
+* **Head-exact binding** — all three approvals bind to the exact head SHA; any
+  re-push invalidates all prior approvals and requires re-consensus.
+* **MAGMA receipt** — the merge emits a MAGMA receipt recording the three
+  identities, the head SHA, and the `RCO_PASS` event reference; a consumer must
+  be able to re-derive the verdict from those fields (no trusting a bare flag).
+
+This contract governs **MERGE** only. It does **not** authorize the Stage-2
+atomic-flip cutover, which remains operator-signed under Rule 10 until a
+separate future amendment (gated on a matured synthetic adversarial corpus, a
+proven auto-rollback test, and a post-cutover verification harness) loosens it.
 
 ### 10. Atomic-flip discipline
 

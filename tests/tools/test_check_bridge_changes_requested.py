@@ -430,3 +430,18 @@ def test_cli_smoke_reproduces_pr_527_race_pattern(tmp_path: Path) -> None:
     assert result.returncode == 3, result.stdout
     payload = json.loads(result.stdout)
     assert payload["latest_blocking_event"]["agent"] == "codex"
+
+
+def test_block_is_type_agnostic_fail_closed() -> None:
+    # A veto posted as type=blocked/status=blocked (not a decision/finding)
+    # must still register as a peer block, after an earlier approval, rather
+    # than being dropped by the event-type filter (fail-closed veto path).
+    events = [
+        _event("2026-05-29T13:00:00Z", "claude-rco-1", "decision", "rco_pass"),
+        _event("2026-05-29T13:01:00Z", "claude-rco-1", "blocked", "blocked"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-1"

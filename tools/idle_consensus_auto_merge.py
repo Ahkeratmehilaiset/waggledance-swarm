@@ -45,6 +45,50 @@ PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 PASS_STATES = {"pass", "passed", "success", "successful", "ok"}
 MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
 
+# --- Bridge-consensus approver (T0b) -------------------------------------
+# Per docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md + CLAUDE.md Rule 9a.
+# A fail-closed three-identity consensus replaces the per-action operator
+# query for autonomous MERGE. Any missing/duplicate/stale/forged signal
+# refuses; silence never default-allows.
+BRIDGE_CONSENSUS_LEAD = "codex-lead-1"
+BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"
+BRIDGE_CONSENSUS_RCO = "claude-rco-1"
+DECISION_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
+# Note: a bare "acknowledged" is deliberately NOT a build-consensus vote — an
+# ack of receipt is not an approval (RCO T0b note N2).
+BUILD_CONSENSUS_STATUSES = frozenset(
+    {
+        "approved",
+        "build_consensus",
+        "build_consensus_pass",
+        "concur",
+        "concurred",
+        "agree",
+        "agreed",
+    }
+)
+RCO_PASS_STATUSES = frozenset(
+    {
+        "rco_pass",
+        "rco_pass_operator_merge_required",
+        "rco_pass_pending_ci",
+    }
+)
+# Mirrors tools/check_bridge_changes_requested.BLOCKING_STATUSES so the
+# consensus approver and the veto preflight agree on what a block looks like.
+CONSENSUS_BLOCKING_STATUSES = frozenset(
+    {
+        "changes_requested",
+        "rco_block",
+        "blocked",
+        "rco_blocked",
+        "block_requested",
+    }
+)
+CONSENSUS_BLOCKING_NEGATION_TOKENS = frozenset(
+    {"no", "not", "non", "none", "without"}
+)
+
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
 MergeVerifier = Callable[[int, str, str], Mapping[str, Any]]
@@ -96,6 +140,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--require-bridge-consensus",
+        action="store_true",
+        help=(
+            "Require a fail-closed three-identity bridge consensus (lead + "
+            "tools build-consensus + claude-rco-1 RCO_PASS, head-bound) before "
+            "merge. See docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -116,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from_agent=args.from_agent,
             bridge_task_id=args.bridge_task_id,
             apply=args.apply,
+            require_bridge_consensus=args.require_bridge_consensus,
             artifact_writer=_cli_artifact_writer(args),
         )
     except (json.JSONDecodeError, OSError) as exc:
@@ -158,6 +212,7 @@ def evaluate_auto_merge_gate(
     from_agent: str = "",
     bridge_task_id: str = "",
     apply: bool = False,
+    require_bridge_consensus: bool = False,
     runner: Runner | None = None,
     merge_verifier: MergeVerifier | None = None,
     artifact_writer: ArtifactWriter | None = None,
@@ -259,6 +314,22 @@ def evaluate_auto_merge_gate(
     ):
         blockers.append("receipt bundle verification is required before merge")
 
+    bridge_consensus = _evaluate_bridge_consensus(
+        require=require_bridge_consensus,
+        events=events,
+        events_path=events_path,
+        task_id=bridge_gate_task_id,
+        head_sha=head_sha,
+        pr_number=pr_number,
+    )
+    if require_bridge_consensus:
+        if events_path is None:
+            blockers.append("bridge events path is required for bridge consensus")
+        if not bridge_consensus.get("ok", False):
+            reasons = bridge_consensus.get("reasons") or ["bridge consensus incomplete"]
+            for reason in reasons:
+                blockers.append(f"bridge consensus incomplete: {reason}")
+
     command = _merge_command(
         pr_number=pr_number,
         expected_head=expected_head,
@@ -277,6 +348,7 @@ def evaluate_auto_merge_gate(
         bridge_peer_gate=bridge_peer_gate,
         path_gate=_gate_to_dict(path_gate),
         diff_gate=_gate_to_dict(diff_gate),
+        bridge_consensus=bridge_consensus,
     )
     if blockers:
         return {
@@ -450,6 +522,7 @@ def _base_report(
     bridge_peer_gate: Mapping[str, Any],
     path_gate: Mapping[str, Any],
     diff_gate: Mapping[str, Any],
+    bridge_consensus: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "decision": "auto_merge_gate",
@@ -470,6 +543,7 @@ def _base_report(
         "path_gate": dict(path_gate),
         "diff_gate": dict(diff_gate),
         "bridge_peer_gate": dict(bridge_peer_gate),
+        "bridge_consensus": dict(bridge_consensus),
         "rate_gate": dict(rate_gate),
         "gh_command": list(command),
     }
@@ -534,6 +608,232 @@ def _gate_to_dict(gate: Any) -> dict[str, Any]:
         "unmatched_paths": list(gate.unmatched_paths),
         "code_pattern_hits": list(gate.code_pattern_hits),
     }
+
+
+def verify_bridge_consensus(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    head_sha: str,
+    pr_number: int | None = None,
+    lead_agent: str = BRIDGE_CONSENSUS_LEAD,
+    tools_agent: str = BRIDGE_CONSENSUS_TOOLS,
+    rco_agent: str = BRIDGE_CONSENSUS_RCO,
+) -> dict[str, Any]:
+    """Fail-closed three-identity bridge-consensus verification (T0b).
+
+    Requires a positive, head-bound approval from THREE DISTINCT agent
+    identities — the lead and the tools peer (build consensus) plus an
+    independent ``claude-rco-1`` ``rco_pass``. Any of the following refuses
+    (``ok=False``); the function never default-allows on silence:
+
+    * a missing approval from any of the three identities (RCO absence = no
+      merge; a 2-of-3 set fails closed);
+    * a duplicate/forged stand-in (a non-expected agent cannot satisfy a
+      required identity — identities are matched by exact agent id);
+    * an approval not bound to ``head_sha`` (a re-push changes the head and
+      strands prior approvals — re-consensus is required);
+    * a later block from the same identity (a fresh block invalidates an
+      older approval).
+
+    The returned ``identities``/``head_sha``/``rco_pass_ref`` are recorded in
+    the MAGMA receipt so a consumer can re-derive the verdict rather than
+    trust a bare flag.
+    """
+    expected = (lead_agent, tools_agent, rco_agent)
+    base: dict[str, Any] = {
+        "ok": False,
+        "decision": "bridge_consensus_incomplete",
+        "reasons": [],
+        "head_sha": head_sha,
+        "identities": {},
+        "rco_pass_ref": None,
+    }
+    if len({a for a in expected if a and a.strip()}) != 3:
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": ["bridge consensus requires three distinct agent identities"],
+        }
+    if not SHA_RE.fullmatch(head_sha or ""):
+        return {
+            **base,
+            "decision": "invalid_consensus_head",
+            "reasons": ["head_sha must be a 40-char lowercase sha for consensus binding"],
+        }
+
+    latest_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    latest_block: dict[str, int] = {}
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping):
+            continue
+        agent = str(event.get("agent", ""))
+        if agent not in expected:
+            continue
+        if not _consensus_scope_match(event, task_id=task_id, pr_number=pr_number):
+            continue
+        status = str(event.get("status", "")).lower()
+        # Block detection is TYPE-AGNOSTIC (fail-closed): a veto from an
+        # on-scope expected identity must invalidate consensus regardless of
+        # the event type the vetoer used. If this honoured the
+        # DECISION_EVENT_TYPES filter first, a veto posted as e.g.
+        # type=blocked/status=blocked would be silently dropped and a stale
+        # earlier approval would stand -- the exact fail-open T0b prevents.
+        if _is_consensus_block(status):
+            latest_block[agent] = index
+            continue
+        # Approvals remain type-restricted to decision/rco_review/finding.
+        if str(event.get("type", "")).lower() not in DECISION_EVENT_TYPES:
+            continue
+        if not _event_binds_head(event, head_sha):
+            continue
+        if agent == rco_agent:
+            if status in RCO_PASS_STATUSES:
+                latest_approval[agent] = (index, event)
+        elif status in BUILD_CONSENSUS_STATUSES:
+            latest_approval[agent] = (index, event)
+
+    reasons: list[str] = []
+    identities: dict[str, Any] = {}
+    for agent, role in (
+        (lead_agent, "build_lead"),
+        (tools_agent, "build_tools"),
+        (rco_agent, "rco"),
+    ):
+        approval = latest_approval.get(agent)
+        block_index = latest_block.get(agent)
+        approved = approval is not None and (
+            block_index is None or approval[0] > block_index
+        )
+        identities[role] = {
+            "agent": agent,
+            "approved": approved,
+            "approval_index": approval[0] if approval is not None else None,
+            "block_index": block_index,
+        }
+        if not approved:
+            if approval is None:
+                reasons.append(
+                    f"{role} ({agent}): no head-bound approval at {head_sha}"
+                )
+            else:
+                reasons.append(
+                    f"{role} ({agent}): a later block invalidates the approval"
+                )
+
+    rco_pass_ref: dict[str, Any] | None = None
+    rco_approval = latest_approval.get(rco_agent)
+    if rco_approval is not None and identities["rco"]["approved"]:
+        rco_event = rco_approval[1]
+        rco_pass_ref = {
+            "agent": rco_agent,
+            "ts_utc": str(rco_event.get("ts_utc", "")),
+            "status": str(rco_event.get("status", "")),
+            "task_id": str(rco_event.get("task_id", "")),
+        }
+
+    ok = not reasons
+    return {
+        "ok": ok,
+        "decision": "bridge_consensus_verified" if ok else "bridge_consensus_incomplete",
+        "reasons": reasons,
+        "head_sha": head_sha,
+        "identities": identities,
+        "rco_pass_ref": rco_pass_ref,
+    }
+
+
+def _evaluate_bridge_consensus(
+    *,
+    require: bool,
+    events: Sequence[Mapping[str, Any]],
+    events_path: Path | None,
+    task_id: str,
+    head_sha: str,
+    pr_number: int | None,
+) -> dict[str, Any]:
+    """Wrap verify_bridge_consensus with a not-required passthrough.
+
+    When consensus is not required the gate behaviour is unchanged
+    (``ok=True``, ``decision='not_required'``). When required, the verdict is
+    computed over the bridge events; an absent events file yields an empty
+    event list, which fails closed (no identities approve).
+    """
+    if not require:
+        return {
+            "required": False,
+            "ok": True,
+            "decision": "not_required",
+            "reasons": [],
+            "identities": {},
+            "head_sha": head_sha,
+            "rco_pass_ref": None,
+        }
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        pr_number=pr_number,
+    )
+    result["required"] = True
+    if events_path is None:
+        result["ok"] = False
+        if "bridge events path is required for consensus" not in result["reasons"]:
+            result["reasons"] = [
+                "bridge events path is required for consensus",
+                *result["reasons"],
+            ]
+    return result
+
+
+def _consensus_scope_match(
+    event: Mapping[str, Any], *, task_id: str, pr_number: int | None
+) -> bool:
+    if str(event.get("task_id", "")) == task_id:
+        return True
+    if pr_number is None:
+        return False
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        for key in ("pr", "pr_number", "pull_request", "pull_request_number"):
+            value = payload.get(key)
+            if value == pr_number or (
+                isinstance(value, str) and value.strip() == str(pr_number)
+            ):
+                return True
+    pattern = re.compile(rf"(?i)(?:\bpr\s*#?\s*|#){pr_number}\b")
+    return pattern.search(str(event.get("task_id", ""))) is not None
+
+
+def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
+    """True only if the event references the exact head SHA.
+
+    Prefers a structured ``payload`` field; falls back to an exact full-SHA
+    substring in the message text. Because a re-push yields a different SHA,
+    an approval that named the old head will not bind the new head.
+    """
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        for key in ("head", "head_sha", "expected_head", "head_oid", "head_commit"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip().lower() == head_sha:
+                return True
+    message = event.get("message")
+    if isinstance(message, str) and head_sha in message.lower():
+        return True
+    return False
+
+
+def _is_consensus_block(status: str) -> bool:
+    if status in CONSENSUS_BLOCKING_STATUSES:
+        return True
+    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+    has_blocking_shape = {"changes", "requested"}.issubset(tokens) or any(
+        token.startswith("block") for token in tokens
+    )
+    if not has_blocking_shape:
+        return False
+    return not tokens.intersection(CONSENSUS_BLOCKING_NEGATION_TOKENS)
 
 
 def _bridge_peer_gate(

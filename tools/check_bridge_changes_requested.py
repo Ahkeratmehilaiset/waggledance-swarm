@@ -181,11 +181,16 @@ def check_bridge_clear_to_merge(
             continue
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
-        if event_type not in {"decision", "rco_review", "finding"}:
-            continue
+        # Block detection is TYPE-AGNOSTIC (fail-closed): a peer veto must
+        # register regardless of the event type used, so a block posted as
+        # e.g. type=blocked cannot be silently dropped by the type filter and
+        # let a stale approval stand. Approvals stay type-restricted.
         if _is_blocking_status(status):
             peer_signals[agent] = (index, "block", event)
-        elif _is_approval_status(status):
+            continue
+        if event_type not in {"decision", "rco_review", "finding"}:
+            continue
+        if _is_approval_status(status):
             peer_signals[agent] = (index, "approval", event)
 
     blocking_events = [

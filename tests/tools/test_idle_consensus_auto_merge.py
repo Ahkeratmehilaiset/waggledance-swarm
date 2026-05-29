@@ -24,6 +24,8 @@ def _status(**overrides) -> dict:
         "mergeable": "clean",
         "operator_approved": False,
         "receipt_verified": True,
+        "changed_paths": ["tools/idle_daily_summary.py"],
+        "diff_text": "+ def helper():\n+     return 1\n",
         "checks": [
             {"name": "test (3.13)", "state": "success"},
             {"name": "unified", "state": "success"},
@@ -99,6 +101,8 @@ def test_dry_run_ready_never_invokes_runner() -> None:
     assert "gh" in report["gh_command"]
     assert f"--match-head-commit={HEAD}" in report["gh_command"]
     assert report["receipt_gate"]["verified"] is True
+    assert report["path_gate"]["allowed"] is True
+    assert report["diff_gate"]["allowed"] is True
 
 
 def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
@@ -174,6 +178,71 @@ def test_head_mismatch_blocks_without_runner() -> None:
     assert report["decision"] == "operator_review_required"
     assert "exact head mismatch" in report["reasons"]
     assert report["external_effect"] is False
+
+
+def test_denylisted_changed_path_blocks_without_runner() -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(changed_paths=["CLAUDE.md"]),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "path gate failed: denylist hit" in report["reasons"]
+    assert report["path_gate"]["blocked_paths"] == ["CLAUDE.md"]
+    assert report["would_merge"] is False
+
+
+def test_code_pattern_denylist_blocks_without_runner() -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            changed_paths=["tools/idle_protocol_activate.py"],
+            diff_text="+ operator_gate_required=True\n",
+        ),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "diff gate failed: code pattern denylist hit" in report["reasons"]
+    assert report["diff_gate"]["code_pattern_hits"]
+    assert report["would_merge"] is False
+
+
+def test_missing_changed_paths_snapshot_fails_closed() -> None:
+    status = _status()
+    status.pop("changed_paths")
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=status,
+            expected_head=HEAD,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+        )
+    assert excinfo.value.report["decision"] == "invalid_pr_status"
+    assert "changed_paths must be a list" in excinfo.value.report["errors"]
+
+
+def test_missing_diff_text_snapshot_fails_closed() -> None:
+    status = _status()
+    status.pop("diff_text")
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=status,
+            expected_head=HEAD,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+        )
+    assert excinfo.value.report["decision"] == "invalid_pr_status"
+    assert "diff_text must be a string" in excinfo.value.report["errors"]
 
 
 def test_daily_rate_limit_blocks_without_runner(tmp_path: Path) -> None:

@@ -22,7 +22,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 GH_JSON_FIELDS = (
     "number,title,headRefOid,headRefName,mergeable,"
-    "statusCheckRollup,reviewDecision,isDraft,url"
+    "statusCheckRollup,reviewDecision,isDraft,url,files"
 )
 
 Runner = Callable[[Sequence[str]], Any]
@@ -133,16 +133,39 @@ def build_pr_status_snapshot(
     if not isinstance(raw, Mapping):
         raise _invalid("invalid_gh_json", "gh pr view JSON must be an object")
     _assert_no_private_markers(raw)
+
+    diff_command = _gh_pr_diff_command(pr_number=pr_number, repo=repo)
+    diff_result = run(diff_command)
+    diff_return_code = int(getattr(diff_result, "returncode", 0))
+    if diff_return_code != 0:
+        raise PrStatusSnapshotError(
+            {
+                "decision": "gh_pr_diff_failed",
+                "ok": False,
+                "errors": [f"gh pr diff failed with exit code {diff_return_code}"],
+                "exit_code": 1,
+            }
+        )
+    diff_text = str(getattr(diff_result, "stdout", ""))
+    _assert_no_private_markers(diff_text)
     return _normalize_snapshot(
         raw,
         expected_pr_number=pr_number,
         operator_approved=operator_approved,
         receipt_verified=receipt_verified,
+        diff_text=diff_text,
     )
 
 
 def _gh_pr_view_command(*, pr_number: int, repo: str) -> list[str]:
     command = ["gh", "pr", "view", str(pr_number), "--json", GH_JSON_FIELDS]
+    if repo:
+        command.extend(["--repo", repo])
+    return command
+
+
+def _gh_pr_diff_command(*, pr_number: int, repo: str) -> list[str]:
+    command = ["gh", "pr", "diff", str(pr_number), "--patch"]
     if repo:
         command.extend(["--repo", repo])
     return command
@@ -154,6 +177,7 @@ def _normalize_snapshot(
     expected_pr_number: int,
     operator_approved: bool,
     receipt_verified: bool,
+    diff_text: str,
 ) -> dict[str, Any]:
     number = _require_int(raw.get("number"), "number")
     if number != expected_pr_number:
@@ -163,6 +187,7 @@ def _normalize_snapshot(
         raise _invalid("invalid_head_sha", "headRefOid must be a 40-char lowercase sha")
 
     checks = _normalize_checks(raw.get("statusCheckRollup", []))
+    changed_paths = _normalize_changed_paths(raw.get("files", []))
     snapshot = {
         "pr_number": number,
         "title": str(raw.get("title", "")),
@@ -176,6 +201,8 @@ def _normalize_snapshot(
         "receipt_verified": bool(receipt_verified),
         "checks": checks,
         "statusCheckRollup": checks,
+        "changed_paths": changed_paths,
+        "diff_text": diff_text,
     }
     _assert_no_private_markers(snapshot)
     return snapshot
@@ -204,6 +231,20 @@ def _normalize_checks(value: object) -> list[dict[str, str]]:
             }
         )
     return checks
+
+
+def _normalize_changed_paths(value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise _invalid("invalid_files", "files must be a list")
+    paths: list[str] = []
+    for index, item in enumerate(value, 1):
+        if not isinstance(item, Mapping):
+            raise _invalid("invalid_files", f"files item {index} must be an object")
+        path = str(item.get("path", "")).strip()
+        if not path:
+            raise _invalid("invalid_files", f"files item {index} path is required")
+        paths.append(path)
+    return paths
 
 
 def _require_int(value: object, field: str) -> int:

@@ -34,6 +34,8 @@ from tools.idle_consensus_artifact import (  # noqa: E402
 )
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
+    evaluate_diff_content,
+    evaluate_paths,
     load_charter,
 )
 
@@ -189,6 +191,10 @@ def evaluate_auto_merge_gate(
         checked=events_path is not None,
     )
     charter = load_charter(charter_path)
+    changed_paths = _changed_paths(pr_status)
+    diff_text = _diff_text(pr_status)
+    path_gate = evaluate_paths(charter, changed_paths)
+    diff_gate = evaluate_diff_content(charter, diff_text)
     rate_date = utc_date or _today_utc()
     quota_used = _count_daily_auto_merges(events, rate_date)
     quota_total = int(charter.daily_quota)
@@ -210,6 +216,10 @@ def evaluate_auto_merge_gate(
     blockers: list[str] = []
     if head_sha != expected_head:
         blockers.append("exact head mismatch")
+    if not path_gate.allowed:
+        blockers.append(f"path gate failed: {path_gate.reason}")
+    if not diff_gate.allowed:
+        blockers.append(f"diff gate failed: {diff_gate.reason}")
     if mergeable not in MERGEABLE_STATES:
         blockers.append(f"mergeable state is not clean: {mergeable}")
     if not rate_gate["allowed"]:
@@ -265,6 +275,8 @@ def evaluate_auto_merge_gate(
         receipt_verified=receipt_verified,
         artifact_hook_configured=artifact_hook_configured,
         bridge_peer_gate=bridge_peer_gate,
+        path_gate=_gate_to_dict(path_gate),
+        diff_gate=_gate_to_dict(diff_gate),
     )
     if blockers:
         return {
@@ -436,6 +448,8 @@ def _base_report(
     receipt_verified: bool,
     artifact_hook_configured: bool,
     bridge_peer_gate: Mapping[str, Any],
+    path_gate: Mapping[str, Any],
+    diff_gate: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "decision": "auto_merge_gate",
@@ -453,6 +467,8 @@ def _base_report(
             "verified": receipt_verified,
             "artifact_hook_configured": artifact_hook_configured,
         },
+        "path_gate": dict(path_gate),
+        "diff_gate": dict(diff_gate),
         "bridge_peer_gate": dict(bridge_peer_gate),
         "rate_gate": dict(rate_gate),
         "gh_command": list(command),
@@ -486,6 +502,38 @@ def _checks(pr_status: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             raise _invalid("invalid_pr_status", "checks entries must be objects")
         normalized.append(check)
     return normalized
+
+
+def _changed_paths(pr_status: Mapping[str, Any]) -> list[str]:
+    raw = pr_status.get("changed_paths")
+    if not isinstance(raw, list):
+        raise _invalid("invalid_pr_status", "changed_paths must be a list")
+    paths: list[str] = []
+    for index, value in enumerate(raw, 1):
+        if not isinstance(value, str) or not value.strip():
+            raise _invalid(
+                "invalid_pr_status",
+                f"changed_paths item {index} must be a non-empty string",
+            )
+        paths.append(value)
+    return paths
+
+
+def _diff_text(pr_status: Mapping[str, Any]) -> str:
+    raw = pr_status.get("diff_text")
+    if not isinstance(raw, str):
+        raise _invalid("invalid_pr_status", "diff_text must be a string")
+    return raw
+
+
+def _gate_to_dict(gate: Any) -> dict[str, Any]:
+    return {
+        "allowed": bool(gate.allowed),
+        "reason": str(gate.reason),
+        "blocked_paths": list(gate.blocked_paths),
+        "unmatched_paths": list(gate.unmatched_paths),
+        "code_pattern_hits": list(gate.code_pattern_hits),
+    }
 
 
 def _bridge_peer_gate(

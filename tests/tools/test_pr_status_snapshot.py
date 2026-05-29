@@ -26,6 +26,10 @@ def _gh_payload(**overrides) -> dict:
         "isDraft": False,
         "url": "https://github.example/pr/479",
         "reviewDecision": "APPROVED",
+        "files": [
+            {"path": "tools/idle_daily_summary.py"},
+            {"path": "tests/tools/test_idle_consensus_auto_merge.py"},
+        ],
         "statusCheckRollup": [
             {"name": "test (3.13)", "state": "SUCCESS"},
             {"name": "unified", "status": "COMPLETED", "conclusion": "SUCCESS"},
@@ -35,12 +39,20 @@ def _gh_payload(**overrides) -> dict:
     return payload
 
 
-def test_snapshot_uses_structured_gh_json_fields() -> None:
+def _runner(payload: dict | None = None, diff_text: str = "+ def helper():\n") -> tuple[list[list[str]], object]:
     calls: list[list[str]] = []
 
     def runner(command: list[str]) -> SimpleNamespace:
         calls.append(command)
-        return SimpleNamespace(returncode=0, stdout=json.dumps(_gh_payload()))
+        if command[:3] == ["gh", "pr", "diff"]:
+            return SimpleNamespace(returncode=0, stdout=diff_text)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload or _gh_payload()))
+
+    return calls, runner
+
+
+def test_snapshot_uses_structured_gh_json_fields() -> None:
+    calls, runner = _runner()
 
     snapshot = build_pr_status_snapshot(
         pr_number=479,
@@ -59,7 +71,16 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
             GH_JSON_FIELDS,
             "--repo",
             "Ahkeratmehilaiset/waggledance-swarm",
-        ]
+        ],
+        [
+            "gh",
+            "pr",
+            "diff",
+            "479",
+            "--patch",
+            "--repo",
+            "Ahkeratmehilaiset/waggledance-swarm",
+        ],
     ]
     assert snapshot["pr_number"] == 479
     assert snapshot["head_sha"] == HEAD
@@ -79,6 +100,11 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
             "conclusion": "SUCCESS",
         },
     ]
+    assert snapshot["changed_paths"] == [
+        "tools/idle_daily_summary.py",
+        "tests/tools/test_idle_consensus_auto_merge.py",
+    ]
+    assert snapshot["diff_text"] == "+ def helper():\n"
 
 
 def test_gh_failure_does_not_echo_stderr() -> None:
@@ -89,6 +115,19 @@ def test_gh_failure_does_not_echo_stderr() -> None:
         build_pr_status_snapshot(pr_number=479, runner=runner)
     report = excinfo.value.report
     assert report["decision"] == "gh_pr_view_failed"
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_diff_failure_does_not_echo_stderr() -> None:
+    def runner(command: list[str]) -> SimpleNamespace:
+        if command[:3] == ["gh", "pr", "diff"]:
+            return SimpleNamespace(returncode=7, stdout="", stderr="PRIVATE_MARKER")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(_gh_payload()))
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    report = excinfo.value.report
+    assert report["decision"] == "gh_pr_diff_failed"
     assert "PRIVATE_MARKER" not in " ".join(report["errors"])
 
 
@@ -115,6 +154,15 @@ def test_private_marker_refused() -> None:
     assert excinfo.value.report["decision"] == "privacy_marker_refused"
 
 
+def test_private_marker_in_diff_refused() -> None:
+    calls, runner = _runner(diff_text="+ PRIVATE_MARKER\n")
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    assert len(calls) == 2
+    assert excinfo.value.report["decision"] == "privacy_marker_refused"
+
+
 def test_missing_full_head_sha_refused() -> None:
     def runner(command: list[str]) -> SimpleNamespace:
         return SimpleNamespace(returncode=0, stdout=json.dumps(_gh_payload(headRefOid="abc1234")))
@@ -133,10 +181,21 @@ def test_pr_number_mismatch_refused() -> None:
     assert excinfo.value.report["decision"] == "pr_number_mismatch"
 
 
+def test_invalid_files_refused() -> None:
+    calls, runner = _runner(payload=_gh_payload(files=[{"path": ""}]))
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    assert len(calls) == 2
+    assert excinfo.value.report["decision"] == "invalid_files"
+
+
 def test_cli_writes_snapshot_file(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     out_path = tmp_path / "pr-status.json"
 
     def fake_run(command: list[str]) -> SimpleNamespace:
+        if command[:3] == ["gh", "pr", "diff"]:
+            return SimpleNamespace(returncode=0, stdout="+ def helper():\n")
         return SimpleNamespace(returncode=0, stdout=json.dumps(_gh_payload()))
 
     monkeypatch.setattr(snapshot_tool, "_run_command", fake_run)
@@ -158,3 +217,8 @@ def test_cli_writes_snapshot_file(tmp_path, monkeypatch: pytest.MonkeyPatch, cap
     snapshot = json.loads(out_path.read_text(encoding="utf-8"))
     assert snapshot["head_sha"] == HEAD
     assert snapshot["receipt_verified"] is True
+    assert snapshot["changed_paths"] == [
+        "tools/idle_daily_summary.py",
+        "tests/tools/test_idle_consensus_auto_merge.py",
+    ]
+    assert snapshot["diff_text"] == "+ def helper():\n"

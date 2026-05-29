@@ -326,6 +326,22 @@ python tools\build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_re
   --json
 ```
 
+Verify the local operator decision-reference review bundle index with
+`tools/verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py`.
+The local operator decision-reference review bundle verifier recomputes
+`digest_checks`, size checks, and `schema_version_checks` from explicit local
+artifacts. It does not include payloads, record local paths, append bridge
+events, transport artifacts, approve, merge, promote, or grant runtime
+authority.
+
+```powershell
+python tools\verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py `
+  --review-bundle-index-json <collected>\operator_decision_reference_review_bundle_index.json `
+  --decision-validation-json <collected>\operator_decision_reference_validation.json `
+  --review-summary-json <collected>\operator_decision_reference_review_summary.json `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

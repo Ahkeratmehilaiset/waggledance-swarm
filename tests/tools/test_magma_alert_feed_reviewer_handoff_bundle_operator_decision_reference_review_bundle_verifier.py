@@ -64,6 +64,7 @@ def test_operator_decision_reference_review_bundle_verifier_recomputes_digests_w
     assert set(report["size_checks"].values()) == {"match"}
     assert set(report["schema_version_checks"].values()) == {"match"}
     assert report["source_contract_check"] == "match"
+    assert report["rebuilt_index_check"] == "match"
     reference = report["operator_decision_reference"]
     assert reference["decision_reference"] == DECISION_REF
     assert reference["expected_decision_reference"] == DECISION_REF
@@ -212,6 +213,45 @@ def test_operator_decision_reference_review_bundle_verifier_rejects_nested_autho
     )
     assert report["approval_granted"] is False
     assert report["release_decision_made"] is False
+
+
+def test_operator_decision_reference_review_bundle_verifier_rejects_deterministic_index_drift() -> None:
+    cases = (
+        (
+            "reviewer_next_actions",
+            lambda index: index.__setitem__(
+                "reviewer_next_actions",
+                ["approve_release"],
+            ),
+        ),
+        (
+            "artifact_role",
+            lambda index: index["artifacts"][0].__setitem__(
+                "role",
+                "approve_release",
+            ),
+        ),
+    )
+
+    for label, mutate in cases:
+        artifacts = _artifact_set()
+        review_bundle_index = _review_bundle_index(artifacts)
+        mutate(review_bundle_index)
+        raw = _artifact_bytes(artifacts)
+
+        report = verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index(
+            review_bundle_index=review_bundle_index,
+            decision_validation_report=artifacts["validation"],
+            review_summary=artifacts["summary"],
+            decision_validation_bytes=raw["validation"],
+            review_summary_bytes=raw["summary"],
+        )
+
+        assert report["ok"] is False, label
+        assert report["rebuilt_index_check"] == "mismatch", label
+        assert "rebuilt_index_mismatch" in report["blockers"], label
+        assert report["approval_granted"] is False
+        assert report["release_decision_made"] is False
 
 
 def test_operator_decision_reference_review_bundle_verifier_rejects_source_contract_forgery() -> None:

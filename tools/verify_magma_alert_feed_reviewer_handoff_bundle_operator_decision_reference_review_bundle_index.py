@@ -154,6 +154,7 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_
         review_summary_bytes=review_summary_bytes,
         blockers=blockers,
     )
+    rebuilt_index_check = "failed"
 
     if review_bundle_index.get("bundle_index_version") != BUNDLE_INDEX_VERSION:
         blockers.append("bundle_index_version_mismatch")
@@ -184,6 +185,11 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_
         blockers,
     )
     if rebuilt_index is not None:
+        rebuilt_index_check = _compare_rebuilt_index(
+            observed=review_bundle_index,
+            rebuilt=rebuilt_index,
+            blockers=blockers,
+        )
         rebuilt_identity = {
             "release_ref": rebuilt_index.get("release_ref"),
             "commit_sha": rebuilt_index.get("commit_sha"),
@@ -251,6 +257,7 @@ def verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_
         "size_checks": size_checks,
         "schema_version_checks": schema_version_checks,
         "source_contract_check": "match" if rebuilt_index is not None else "failed",
+        "rebuilt_index_check": rebuilt_index_check,
         "manual_review_required": True,
         "approval_granted": False,
         "release_decision_made": False,
@@ -288,6 +295,26 @@ def _rebuilt_source_index(
     except ValueError:
         blockers.append("source_contract_failed:invalid_source_artifact")
     return None
+
+
+def _compare_rebuilt_index(
+    *,
+    observed: Mapping[str, Any],
+    rebuilt: Mapping[str, Any],
+    blockers: list[str],
+) -> str:
+    if _deterministic_index(observed) == _deterministic_index(rebuilt):
+        return "match"
+    blockers.append("rebuilt_index_mismatch")
+    return "mismatch"
+
+
+def _deterministic_index(index: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = json.loads(json.dumps(index, allow_nan=False, sort_keys=True))
+    if isinstance(normalized, dict):
+        normalized.pop("created_at_utc", None)
+        return normalized
+    return {}
 
 
 def _verified_identity(

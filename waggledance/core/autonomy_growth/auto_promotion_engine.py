@@ -23,6 +23,11 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 
 from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
+from waggledance.core.magma.adversarial_corpus_eval import (
+    AdversarialCorpusEvalError,
+    run_adversarial_corpus_evaluation,
+)
 from waggledance.core.solver_synthesis.declarative_solver_spec import SolverSpec
 from waggledance.core.solver_synthesis.deterministic_solver_compiler import (
     CompiledSolver,
@@ -55,6 +60,11 @@ PROMOTION_POLICY_VERSION = "policy:auto_promotion_engine:v1"
 PROMOTION_CHARTER_VERSION = "charter:v1"
 PROMOTION_DOMAIN_THRESHOLD_VERSION = "threshold:auto_promotion_engine:v1"
 
+# T5b: minimum adversarial-corpus size the I11 gate requires (corpus is 42 /
+# 9 defect types as of 2026-05-29). Guards against the corpus silently
+# shrinking below a safety threshold. (RCO may tune.)
+ADVERSARIAL_CORPUS_MIN_CASES = 40
+
 
 @dataclass(frozen=True)
 class PromotionRequest:
@@ -63,6 +73,13 @@ class PromotionRequest:
     shadow_samples: Sequence[ShadowSample]
     oracle: OracleFn
     oracle_kind: str = "external_reference"
+    # T5b adversarial-corpus gate (I11), ON by default + fail-closed. When no
+    # report is supplied the engine RUNS the corpus eval inline, bound to the
+    # exact artifact being committed, so promotions stay gated AND keep
+    # working. require_adversarial_gate may be set False ONLY in tests;
+    # disabling it in production is on the charter code-pattern denylist.
+    require_adversarial_gate: bool = True
+    adversarial_eval_report: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +210,38 @@ class AutoPromotionEngine:
                 family_kind, validation, shadow,
                 "I9_family_promotion_budget_exhausted",
             )
+
+        # I11 (T5b): fail-closed adversarial-corpus gate, bound to the EXACT
+        # artifact being committed (compiled1.artifact_id == the spec_hash
+        # _commit_promotion records). Default ON. When no report is supplied
+        # the engine runs the corpus eval inline (fresh + bound), so the gate
+        # is enforced without stranding the autogrowth pipeline. The verdict
+        # is re-derived from per-case results (never a bare flag); any
+        # missing/incomplete/mis-bound/below-floor result or eval error
+        # refuses. Disabling the gate is charter-denylisted; opt-out is
+        # test-only.
+        if request.require_adversarial_gate:
+            report = request.adversarial_eval_report
+            if report is None:
+                try:
+                    report = run_adversarial_corpus_evaluation(
+                        bound_solver_hash=compiled1.artifact_id,
+                    )
+                except AdversarialCorpusEvalError:
+                    return self._reject_with_validation_shadow(
+                        family_kind, validation, shadow,
+                        "I11_adversarial_corpus_eval_error",
+                    )
+            gate = verify_adversarial_corpus_gate(
+                report=report,
+                expected_solver_hash=compiled1.artifact_id,
+                min_cases=ADVERSARIAL_CORPUS_MIN_CASES,
+            )
+            if not gate.ok:
+                return self._reject_with_validation_shadow(
+                    family_kind, validation, shadow,
+                    "I11_adversarial_corpus_gate",
+                )
 
         # All invariants pass — persist promotion atomically
         return self._commit_promotion(

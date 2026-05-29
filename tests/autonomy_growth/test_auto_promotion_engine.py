@@ -21,6 +21,9 @@ from waggledance.core.autonomy_growth.solver_dispatcher import (
 from waggledance.core.solver_synthesis.declarative_solver_spec import (
     SolverSpec,
 )
+from waggledance.core.solver_synthesis.deterministic_solver_compiler import (
+    compile_spec,
+)
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.storage.control_plane import ControlPlaneDB, ControlPlaneError
 
@@ -638,3 +641,82 @@ def test_no_partial_activation_on_shadow_failure(cp: ControlPlaneDB) -> None:
     assert stats.table_counts["validation_runs"] == 0
     assert stats.table_counts["shadow_evaluations"] == 0
     assert stats.table_counts["promotion_decisions"] == 0
+
+
+class TestI11AdversarialGateInline:
+    """T5b: fail-closed adversarial-corpus gate (I11), ON by default.
+
+    With no report supplied the engine runs the corpus eval inline (bound to
+    the committed artifact), so a clean candidate still promotes; a supplied
+    report that is mis-bound / below-floor / forged refuses.
+    """
+
+    def _request(self, name="adv_inline_solver", **kw):
+        return PromotionRequest(
+            spec=_scalar_unit_conversion_spec(name),
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+            **kw,
+        )
+
+    def test_gate_on_default_promotes_via_inline_eval(self, cp: ControlPlaneDB):
+        # require_adversarial_gate defaults True, no report -> inline eval runs.
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        out = AutoPromotionEngine(cp).evaluate_candidate(self._request())
+        assert out.decision == "auto_promoted"
+        assert out.invariant_failed is None
+
+    def test_supplied_report_bound_to_wrong_solver_refuses(self, cp: ControlPlaneDB):
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        report = {
+            "bound_solver_hash": "0" * 64,
+            "case_count": 42,
+            "cases": [{"case_id": f"c{i}", "ok": True} for i in range(42)],
+            "ok": True,
+        }
+        out = AutoPromotionEngine(cp).evaluate_candidate(
+            self._request(adversarial_eval_report=report)
+        )
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"
+
+    def test_supplied_below_floor_report_refuses(self, cp: ControlPlaneDB):
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        spec = _scalar_unit_conversion_spec("adv_floor_solver")
+        aid = compile_spec(spec).artifact_id
+        report = {
+            "bound_solver_hash": aid,
+            "case_count": 5,
+            "cases": [{"case_id": f"c{i}", "ok": True} for i in range(5)],
+            "ok": True,
+        }
+        out = eng.evaluate_candidate(PromotionRequest(
+            spec=spec,
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+            adversarial_eval_report=report,
+        ))
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"
+
+    def test_supplied_forged_top_ok_with_uncaught_case_refuses(self, cp: ControlPlaneDB):
+        # report['ok']=True but a case is not caught -> re-derive refuses.
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        spec = _scalar_unit_conversion_spec("adv_forge_solver")
+        aid = compile_spec(spec).artifact_id
+        cases = [{"case_id": f"c{i}", "ok": True} for i in range(42)]
+        cases[-1]["ok"] = False
+        report = {"bound_solver_hash": aid, "case_count": 42, "cases": cases, "ok": True}
+        out = eng.evaluate_candidate(PromotionRequest(
+            spec=spec,
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+            adversarial_eval_report=report,
+        ))
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"

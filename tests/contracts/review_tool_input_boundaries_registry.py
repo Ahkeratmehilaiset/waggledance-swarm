@@ -42,7 +42,9 @@ def _check_build_tool_similarity_index_boundaries(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"symlink unavailable: {exc}")
 
-    assert gather_files(repo, ["*.py"]) == []
+    # The escaping symlink is dropped, but the legitimate in-repo file is
+    # retained: confinement must exclude the symlink without over-pruning.
+    assert gather_files(repo, ["*.py"]) == [inside.resolve()]
 
 
 def _check_find_similar_tools_file_leak_boundaries(tmp_path: Path) -> None:

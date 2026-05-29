@@ -5,19 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.contracts.review_tool_input_boundaries_registry import (
+from .review_tool_input_boundaries_registry import (
     discover_tools_importing_confinement_helpers,
     REVIEW_TOOL_INPUT_BOUNDARY_CASES,
 )
 
-pytestmark = pytest.mark.parametrize(
-    "case",
-    REVIEW_TOOL_INPUT_BOUNDARY_CASES,
-    ids=lambda case: case.tool_id,
-)
 
-
-@pytestmark
+@pytest.mark.parametrize("case", REVIEW_TOOL_INPUT_BOUNDARY_CASES, ids=lambda case: case.tool_id)
 def test_review_tool_input_boundaries_are_enforced(tmp_path: Path, case) -> None:
     case.validate(tmp_path)
 

@@ -230,6 +230,13 @@ expected operator-owned reference as context only, keeps the operator decision
 separate, and still reports `direct_bridge_write_performed=false`,
 `transport_added=false`, `approval_granted=false`, and
 `release_decision_made=false`.
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py`
+can build a local operator decision-reference review bundle index that ties the
+validation report and review summary digests without including payloads or
+recording local paths. It keeps `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`, and
+`release_decision_made=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

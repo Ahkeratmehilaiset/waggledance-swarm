@@ -133,6 +133,7 @@ def build_pr_status_snapshot(
     if not isinstance(raw, Mapping):
         raise _invalid("invalid_gh_json", "gh pr view JSON must be an object")
     _assert_no_private_markers(raw)
+    initial_head_sha = str(raw.get("headRefOid", ""))
 
     diff_command = _gh_pr_diff_command(pr_number=pr_number, repo=repo)
     diff_result = run(diff_command)
@@ -148,6 +149,40 @@ def build_pr_status_snapshot(
         )
     diff_text = str(getattr(diff_result, "stdout", ""))
     _assert_no_private_markers(diff_text)
+
+    # Hardening: verify PR head is unchanged after the diff fetch.
+    verify_result = run(command)
+    verify_return_code = int(getattr(verify_result, "returncode", 0))
+    if verify_return_code != 0:
+        raise PrStatusSnapshotError(
+            {
+                "decision": "gh_pr_view_recheck_failed",
+                "ok": False,
+                "errors": [f"gh pr view recheck failed with exit code {verify_return_code}"],
+                "exit_code": 1,
+            }
+        )
+    verify_stdout = str(getattr(verify_result, "stdout", ""))
+    _assert_no_private_markers(verify_stdout)
+    try:
+        verify_raw = json.loads(verify_stdout)
+    except json.JSONDecodeError as exc:
+        raise _invalid("invalid_gh_recheck_json", exc.msg) from exc
+    if not isinstance(verify_raw, Mapping):
+        raise _invalid("invalid_gh_recheck_json", "gh pr view JSON must be an object")
+    current_head_sha = str(verify_raw.get("headRefOid", ""))
+    if current_head_sha != initial_head_sha:
+        raise PrStatusSnapshotError(
+            {
+                "decision": "gh_pr_diff_head_drift",
+                "ok": False,
+                "errors": [
+                    f"PR head changed during snapshot capture: "
+                    f"{initial_head_sha} -> {current_head_sha}",
+                ],
+                "exit_code": 1,
+            }
+        )
     return _normalize_snapshot(
         raw,
         expected_pr_number=pr_number,

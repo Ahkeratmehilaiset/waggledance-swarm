@@ -131,6 +131,41 @@ def test_later_block_invalidates_earlier_approval() -> None:
     assert result["identities"]["rco"]["approved"] is False
 
 
+def test_type_agnostic_block_invalidates_approval() -> None:
+    # RCO T0b case 11 (fail-open regression guard): a veto posted as
+    # type=blocked/status=blocked AFTER an rco_pass must still invalidate
+    # consensus, even though type=blocked is not in DECISION_EVENT_TYPES.
+    events = [
+        _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+        _approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z"),
+        {
+            "ts_utc": "2026-05-29T13:03:00Z",
+            "agent": RCO,
+            "type": "blocked",
+            "status": "blocked",
+            "task_id": TASK,
+            "message": "veto via non-decision type",
+            "payload": {},
+        },
+    ]
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+    assert result["ok"] is False
+    assert result["identities"]["rco"]["approved"] is False
+
+
+def test_acknowledged_is_not_a_build_vote() -> None:
+    # RCO T0b note N2: a bare "acknowledged" is a receipt ack, not an approval.
+    events = [
+        _approval(LEAD, "acknowledged", ts="2026-05-29T13:00:00Z"),
+        _approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z"),
+    ]
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approved"] is False
+
+
 def test_fresh_approval_overrides_older_block() -> None:
     events = [
         _block(RCO, ts="2026-05-29T13:00:00Z"),

@@ -54,6 +54,8 @@ BRIDGE_CONSENSUS_LEAD = "codex-lead-1"
 BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"
 BRIDGE_CONSENSUS_RCO = "claude-rco-1"
 DECISION_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
+# Note: a bare "acknowledged" is deliberately NOT a build-consensus vote — an
+# ack of receipt is not an approval (RCO T0b note N2).
 BUILD_CONSENSUS_STATUSES = frozenset(
     {
         "approved",
@@ -63,7 +65,6 @@ BUILD_CONSENSUS_STATUSES = frozenset(
         "concurred",
         "agree",
         "agreed",
-        "acknowledged",
     }
 )
 RCO_PASS_STATUSES = frozenset(
@@ -671,11 +672,18 @@ def verify_bridge_consensus(
             continue
         if not _consensus_scope_match(event, task_id=task_id, pr_number=pr_number):
             continue
-        if str(event.get("type", "")).lower() not in DECISION_EVENT_TYPES:
-            continue
         status = str(event.get("status", "")).lower()
+        # Block detection is TYPE-AGNOSTIC (fail-closed): a veto from an
+        # on-scope expected identity must invalidate consensus regardless of
+        # the event type the vetoer used. If this honoured the
+        # DECISION_EVENT_TYPES filter first, a veto posted as e.g.
+        # type=blocked/status=blocked would be silently dropped and a stale
+        # earlier approval would stand -- the exact fail-open T0b prevents.
         if _is_consensus_block(status):
             latest_block[agent] = index
+            continue
+        # Approvals remain type-restricted to decision/rco_review/finding.
+        if str(event.get("type", "")).lower() not in DECISION_EVENT_TYPES:
             continue
         if not _event_binds_head(event, head_sha):
             continue

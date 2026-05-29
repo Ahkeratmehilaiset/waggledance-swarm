@@ -34,7 +34,7 @@ from waggledance.core.storage.control_plane import ControlPlaneDB
 def cp(tmp_path):
     db = ControlPlaneDB(tmp_path / "cp.sqlite")
     db.migrate()
-    g = LowRiskGrower(db, require_adversarial_gate=False)
+    g = LowRiskGrower(db)
     g.ensure_low_risk_policies()
     yield db
     db.close()
@@ -65,7 +65,7 @@ def _seed_promoted(cp: ControlPlaneDB) -> None:
         )],
         min_signals_per_intent=1, autoenqueue=True,
     )
-    AutogrowthScheduler(cp, require_adversarial_gate=False).run_until_idle()
+    AutogrowthScheduler(cp).run_until_idle()
 
 
 def _solver_router_with_consult(cp: ControlPlaneDB) -> SolverRouter:

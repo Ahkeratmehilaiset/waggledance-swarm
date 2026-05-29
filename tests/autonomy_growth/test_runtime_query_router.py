@@ -21,7 +21,7 @@ from waggledance.core.storage.control_plane import ControlPlaneDB
 def cp(tmp_path):
     db = ControlPlaneDB(tmp_path / "cp.sqlite")
     db.migrate()
-    g = LowRiskGrower(db, require_adversarial_gate=False)
+    g = LowRiskGrower(db)
     g.ensure_low_risk_policies()
     yield db
     db.close()
@@ -39,7 +39,7 @@ def _seed_one_promoted(cp: ControlPlaneDB, family: str, name: str,
         cp, candidate_signals=[sig],
         min_signals_per_intent=1, autoenqueue=True,
     )
-    AutogrowthScheduler(cp, require_adversarial_gate=False).run_until_idle()
+    AutogrowthScheduler(cp).run_until_idle()
 
 
 def _kelvin_seed(name: str = "celsius_to_kelvin") -> dict:
@@ -166,7 +166,7 @@ def test_router_end_to_end_runtime_then_harvest_then_serve(
             weight=1.0, spec_seed=_kelvin_seed(),
         )], min_signals_per_intent=1, autoenqueue=True,
     )
-    drained = AutogrowthScheduler(cp, require_adversarial_gate=False).run_until_idle()
+    drained = AutogrowthScheduler(cp).run_until_idle()
     assert drained == 1
 
     # Second query — same class — now hits the dispatcher

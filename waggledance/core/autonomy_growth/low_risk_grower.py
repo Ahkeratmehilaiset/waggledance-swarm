@@ -93,18 +93,12 @@ class LowRiskGrower:
         *,
         registry: Optional[SolverFamilyRegistry] = None,
         emit_receipt_bundle: Optional[Callable[[dict[str, Any]], None]] = None,
-        require_adversarial_gate: bool = True,
     ) -> None:
         self._cp = control_plane
         self._engine = AutoPromotionEngine(
             control_plane,
             emit_receipt_bundle=emit_receipt_bundle,
         )
-        # T5b: the adversarial-corpus promotion gate is ON by default
-        # (fail-closed). Until report-generation is wired (follow-up), a
-        # grower with the gate on and no report supplied will refuse all
-        # promotions. Tests opt out with require_adversarial_gate=False.
-        self._require_adversarial_gate = require_adversarial_gate
         self._registry = (
             registry
             if registry is not None
@@ -187,7 +181,6 @@ class LowRiskGrower:
             shadow_samples=gap.shadow_samples,
             oracle=gap.oracle,
             oracle_kind=gap.oracle_kind,
-            require_adversarial_gate=self._require_adversarial_gate,
         ))
         if outcome.decision == "auto_promoted":
             return GapOutcome(

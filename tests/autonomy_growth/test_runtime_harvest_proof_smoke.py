@@ -23,7 +23,7 @@ from tools.run_runtime_harvest_proof import run as run_runtime_harvest_proof
 
 
 def test_runtime_harvest_proof_before_after_passes(tmp_path: Path) -> None:
-    proof = run_runtime_harvest_proof(tmp_path / "out", tmp_path / "p.db", require_adversarial_gate=False)
+    proof = run_runtime_harvest_proof(tmp_path / "out", tmp_path / "p.db")
 
     corpus_size = proof["corpus_size"]
     assert corpus_size >= 48, (
@@ -68,7 +68,7 @@ def test_runtime_harvest_proof_zero_provider_calls(tmp_path: Path) -> None:
     """The runtime-harvest common path must use zero provider calls
     and zero builder subprocess invocations."""
 
-    proof = run_runtime_harvest_proof(tmp_path / "out2", tmp_path / "p2.db", require_adversarial_gate=False)
+    proof = run_runtime_harvest_proof(tmp_path / "out2", tmp_path / "p2.db")
     assert proof["kpis"]["provider_jobs_total"] == 0
     assert proof["kpis"]["builder_jobs_total"] == 0
     # Capability features were recorded for every promoted solver
@@ -79,6 +79,6 @@ def test_runtime_harvest_proof_zero_provider_calls(tmp_path: Path) -> None:
 def test_runtime_harvest_proof_records_primary_teacher_lane(
     tmp_path: Path,
 ) -> None:
-    proof = run_runtime_harvest_proof(tmp_path / "out3", tmp_path / "p3.db", require_adversarial_gate=False)
+    proof = run_runtime_harvest_proof(tmp_path / "out3", tmp_path / "p3.db")
     assert proof["primary_teacher_lane_id"] == "claude_code_builder_lane"
     assert proof["schema_version"] >= 4

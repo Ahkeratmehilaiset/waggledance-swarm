@@ -21,7 +21,7 @@ from waggledance.core.storage.control_plane import ControlPlaneDB
 def cp(tmp_path):
     db = ControlPlaneDB(tmp_path / "cp.sqlite")
     db.migrate()
-    g = LowRiskGrower(db, require_adversarial_gate=False)
+    g = LowRiskGrower(db)
     g.ensure_low_risk_policies()
     yield db
     db.close()
@@ -37,7 +37,7 @@ def _grow_via_loop(cp: ControlPlaneDB, family: str, name: str,
         )],
         min_signals_per_intent=1, autoenqueue=True,
     )
-    AutogrowthScheduler(cp, require_adversarial_gate=False).run_until_idle()
+    AutogrowthScheduler(cp).run_until_idle()
     # Solver naming: f"{solver_name_seed}_i{intent_id:04d}"; iterate
     # to find the matching solver regardless of intent id.
     for sid in range(1, 100):

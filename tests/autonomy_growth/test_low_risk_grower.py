@@ -58,7 +58,7 @@ def _kelvin_gap(name="celsius_to_kelvin_v1") -> GapInput:
 def test_grower_ensures_policies_for_all_allowlisted_families(
     cp: ControlPlaneDB,
 ) -> None:
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies(min_shadow_samples=1)
     pols = cp.list_family_policies(low_risk_only=True)
     kinds = sorted(p.family_kind for p in pols)
@@ -76,7 +76,7 @@ def test_grower_ensures_policies_for_all_allowlisted_families(
 
 
 def test_grower_grows_a_real_candidate_end_to_end(cp: ControlPlaneDB) -> None:
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies()
     out = g.grow_from_gap(_kelvin_gap())
     assert out.accepted is True
@@ -100,7 +100,6 @@ def test_grower_threads_receipt_sink_to_auto_promotion_engine(
     g = LowRiskGrower(
         cp,
         emit_receipt_bundle=lambda bundle: bundles.append(bundle),
-        require_adversarial_gate=False,  # T5b: tests opt out
     )
     g.ensure_low_risk_policies()
 
@@ -127,7 +126,7 @@ def test_grower_threads_receipt_sink_to_auto_promotion_engine(
 def test_grower_rejects_excluded_family_without_calling_provider(
     cp: ControlPlaneDB,
 ) -> None:
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies()
     # temporal_window_rule is not in the allowlist; the grower must
     # refuse without consulting any provider.
@@ -147,7 +146,7 @@ def test_grower_rejects_excluded_family_without_calling_provider(
 
 
 def test_grower_returns_spec_invalid_for_malformed_spec(cp: ControlPlaneDB) -> None:
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies()
     # Missing required spec key 'factor' for scalar_unit_conversion
     bad = GapInput(
@@ -172,13 +171,13 @@ def test_primary_teacher_lane_id_matches_phase10_default(cp: ControlPlaneDB) -> 
     future change demotes Claude Code without an explicit migration,
     this test fails."""
 
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     assert g.primary_teacher_lane_id == "claude_code_builder_lane"
     assert _DEFAULT_PRIORITY_LIST[0] == "claude_code_builder_lane"
 
 
 def test_grower_idempotent_policy_install(cp: ControlPlaneDB) -> None:
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies(min_shadow_samples=2)
     g.ensure_low_risk_policies(min_shadow_samples=7)
     pol = cp.get_family_policy("scalar_unit_conversion")

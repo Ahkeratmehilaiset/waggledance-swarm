@@ -95,10 +95,10 @@ def _harvest_signals_for_intents(seeds: Iterable[dict]) -> list[GapSignal]:
     return sigs
 
 
-def run(out_dir: Path, db_path: Path, *, require_adversarial_gate: bool = True) -> dict:
+def run(out_dir: Path, db_path: Path) -> dict:
     cp = ControlPlaneDB(db_path)
     cp.migrate()
-    grower = LowRiskGrower(cp, require_adversarial_gate=require_adversarial_gate)
+    grower = LowRiskGrower(cp)
     grower.ensure_low_risk_policies(max_auto_promote=200)
 
     seeds = all_canonical_seeds()
@@ -127,10 +127,7 @@ def run(out_dir: Path, db_path: Path, *, require_adversarial_gate: bool = True) 
     digest = digest_signals_into_intents(
         cp, candidate_signals=sigs, min_signals_per_intent=1, autoenqueue=True,
     )
-    scheduler = AutogrowthScheduler(
-        cp, scheduler_id="phase13_proof_scheduler",
-        require_adversarial_gate=require_adversarial_gate,
-    )
+    scheduler = AutogrowthScheduler(cp, scheduler_id="phase13_proof_scheduler")
     drained = scheduler.run_until_idle(max_ticks=500)
 
     # --- Pass 2: re-route. Capability-aware lookup now serves them.

@@ -31,7 +31,7 @@ from waggledance.core.storage.control_plane import ControlPlaneDB
 def cp(tmp_path):
     db = ControlPlaneDB(tmp_path / "cp.sqlite")
     db.migrate()
-    grower = LowRiskGrower(db, require_adversarial_gate=False)
+    grower = LowRiskGrower(db)
     grower.ensure_low_risk_policies()
     yield db
     db.close()
@@ -64,7 +64,7 @@ def _seed_intent(cp: ControlPlaneDB, family: str, key: str, seed: dict,
 
 
 def test_tick_idle_when_queue_empty(cp: ControlPlaneDB) -> None:
-    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
+    sched = AutogrowthScheduler(cp)
     result = sched.tick()
     assert result.claimed is False
     assert sched.stats.ticks_idle == 1
@@ -75,7 +75,7 @@ def test_tick_promotes_a_queued_low_risk_intent(cp: ControlPlaneDB) -> None:
         cp, "scalar_unit_conversion", "suc:thermal:c_to_k",
         _scalar_seed("celsius_to_kelvin"),
     )
-    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
+    sched = AutogrowthScheduler(cp)
     result = sched.tick()
     assert result.claimed is True
     assert result.outcome == OUTCOME_AUTO_PROMOTED
@@ -115,7 +115,6 @@ def test_scheduler_threads_receipt_sink_through_grower_to_engine(
     sched = AutogrowthScheduler(
         cp,
         emit_receipt_bundle=lambda bundle: bundles.append(bundle),
-        require_adversarial_gate=False,  # T5b: tests opt out
     )
 
     result = sched.tick()
@@ -146,7 +145,7 @@ def test_runtime_dispatcher_serves_self_promoted_solver(
         cp, "scalar_unit_conversion", "suc:thermal:c_to_k",
         _scalar_seed("celsius_to_kelvin"),
     )
-    AutogrowthScheduler(cp, require_adversarial_gate=False).tick()
+    AutogrowthScheduler(cp).tick()
 
     disp = LowRiskSolverDispatcher(cp)
     res = disp.dispatch(DispatchQuery(
@@ -179,7 +178,7 @@ def test_run_until_idle_drains_multiple_queued_intents(
             "cell_id": "general",
         }, cell="general",
     )
-    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
+    sched = AutogrowthScheduler(cp)
     drained = sched.run_until_idle(max_ticks=10)
     assert drained == 2
     assert sched.stats.auto_promoted == 2
@@ -196,7 +195,7 @@ def test_tick_rejects_outside_allowlist_terminally(cp: ControlPlaneDB) -> None:
     )
     cp.enqueue_growth_intent(intent.id, priority=5)
 
-    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
+    sched = AutogrowthScheduler(cp)
     result = sched.tick()
     assert result.outcome == OUTCOME_FAMILY_NOT_LOW_RISK
     final_intent = cp.get_growth_intent(intent.id)
@@ -212,7 +211,7 @@ def test_tick_rejects_bad_seed_terminally(cp: ControlPlaneDB) -> None:
         spec_seed_json=json.dumps({"oops": "no spec"}),
     )
     cp.enqueue_growth_intent(intent.id)
-    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
+    sched = AutogrowthScheduler(cp)
     result = sched.tick()
     assert result.outcome in (OUTCOME_REJECTED, OUTCOME_SPEC_INVALID, "bad_seed")
     final = cp.get_growth_intent(intent.id)
@@ -263,7 +262,7 @@ def test_self_starting_loop_signal_to_promotion(cp: ControlPlaneDB) -> None:
     assert digest_stats.intents_created == 1
     assert digest_stats.intents_enqueued == 1
 
-    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
+    sched = AutogrowthScheduler(cp)
     result = sched.tick()
     assert result.outcome == OUTCOME_AUTO_PROMOTED
 
@@ -277,8 +276,8 @@ def test_self_starting_loop_signal_to_promotion(cp: ControlPlaneDB) -> None:
 
 
 def test_scheduler_id_distinguishable(cp: ControlPlaneDB) -> None:
-    a = AutogrowthScheduler(cp, require_adversarial_gate=False, scheduler_id="scheduler-A")
-    b = AutogrowthScheduler(cp, require_adversarial_gate=False, scheduler_id="scheduler-B")
+    a = AutogrowthScheduler(cp, scheduler_id="scheduler-A")
+    b = AutogrowthScheduler(cp, scheduler_id="scheduler-B")
     assert a.scheduler_id != b.scheduler_id
 
 
@@ -291,8 +290,8 @@ def test_two_schedulers_do_not_double_claim(cp: ControlPlaneDB) -> None:
         cp, "scalar_unit_conversion", "k2",
         _scalar_seed("b"), priority=10,
     )
-    a = AutogrowthScheduler(cp, require_adversarial_gate=False, scheduler_id="A")
-    b = AutogrowthScheduler(cp, require_adversarial_gate=False, scheduler_id="B")
+    a = AutogrowthScheduler(cp, scheduler_id="A")
+    b = AutogrowthScheduler(cp, scheduler_id="B")
     r1 = a.tick()
     r2 = b.tick()
     assert r1.claimed and r2.claimed
@@ -307,7 +306,7 @@ def test_background_ticker_drain_once_drains_ready_queue(
         _scalar_seed("bg_celsius_to_kelvin"),
     )
     ticker = AutogrowthBackgroundTicker(
-        AutogrowthScheduler(cp, require_adversarial_gate=False),
+        AutogrowthScheduler(cp),
         interval_seconds=60,
         max_ticks_per_wake=5,
     )
@@ -323,7 +322,7 @@ def test_background_ticker_start_stop_is_idempotent(
     cp: ControlPlaneDB,
 ) -> None:
     ticker = AutogrowthBackgroundTicker(
-        AutogrowthScheduler(cp, require_adversarial_gate=False),
+        AutogrowthScheduler(cp),
         interval_seconds=60,
     )
 

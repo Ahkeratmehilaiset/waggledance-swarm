@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Core (tools-free) runner for the MAGMA adversarial-corpus promotion gate.
+
+Track T5b inline-run: the auto-promotion engine runs the adversarial corpus
+eval *itself*, bound to the exact solver being promoted, and verifies the
+result with ``verify_adversarial_corpus_gate``. Running it inline (rather than
+requiring callers to pre-supply a report) keeps the gate fail-closed AND keeps
+the autogrowth pipeline working — every promotion is freshly gated.
+
+This module deliberately lives in ``core/magma`` and imports NOTHING from
+``tools/`` (no core→tools inversion). It reuses the canonical demo policy and
+the committed corpus/expectations fixtures. It produces only the per-case
+caught/not-caught verdict the gate needs; the richer receipt-bundle emission
+stays in ``tools/run_magma_adversarial_eval.py`` for offline reporting.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from waggledance.core.magma.demo_policy import demo_policy_for_case
+
+# Repo root: waggledance/core/magma/this_file -> parents[3].
+_ROOT = Path(__file__).resolve().parents[3]
+_CORPUS_DIR = _ROOT / "tests" / "fixtures" / "magma_adversarial_corpus"
+DEFAULT_CORPUS_PATH = _CORPUS_DIR / "v0.json"
+DEFAULT_EXPECTATIONS_PATH = _CORPUS_DIR / "v0_expectations.json"
+
+
+class AdversarialCorpusEvalError(RuntimeError):
+    """Raised when the corpus eval cannot run (missing/malformed fixtures).
+
+    Callers MUST treat this as fail-closed (refuse promotion), never as a
+    pass.
+    """
+
+
+def run_adversarial_corpus_eval(
+    *,
+    bound_solver_hash: str,
+    corpus_path: Path = DEFAULT_CORPUS_PATH,
+    expectations_path: Path = DEFAULT_EXPECTATIONS_PATH,
+) -> dict[str, Any]:
+    """Run the adversarial corpus against the canonical demo policy.
+
+    Returns a report bound to ``bound_solver_hash`` in the shape
+    ``verify_adversarial_corpus_gate`` consumes: ``bound_solver_hash``,
+    ``case_count``, ``cases`` (each ``{case_id, ok}`` where ``ok`` is whether
+    the policy caught the adversarial case), and a re-derivable top-level
+    ``ok``. Raises :class:`AdversarialCorpusEvalError` on any fixture problem
+    (the engine treats that fail-closed).
+    """
+    if not isinstance(bound_solver_hash, str) or not bound_solver_hash.strip():
+        raise AdversarialCorpusEvalError("bound_solver_hash must be a non-empty string")
+
+    try:
+        corpus = json.loads(Path(corpus_path).read_text(encoding="utf-8"))
+        expectations_doc = json.loads(Path(expectations_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AdversarialCorpusEvalError(
+            f"adversarial corpus fixtures unreadable: {exc.__class__.__name__}"
+        ) from exc
+
+    raw_cases = corpus.get("cases")
+    raw_expectations = expectations_doc.get("expectations")
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise AdversarialCorpusEvalError("corpus has no cases")
+    if not isinstance(raw_expectations, list) or not raw_expectations:
+        raise AdversarialCorpusEvalError("expectations doc has no expectations")
+
+    expectations = {
+        str(exp.get("case_id")): exp
+        for exp in raw_expectations
+        if isinstance(exp, dict)
+    }
+
+    cases: list[dict[str, Any]] = []
+    for case in raw_cases:
+        if not isinstance(case, dict):
+            raise AdversarialCorpusEvalError("corpus case is not an object")
+        case_id = str(case.get("case_id", ""))
+        expectation = expectations.get(case_id)
+        if expectation is None:
+            raise AdversarialCorpusEvalError(
+                f"no expectation for corpus case {case_id!r}"
+            )
+        actual = demo_policy_for_case(case)
+        gate_ok = actual["actual_gate"] == expectation["expected_gate"]
+        verdict_ok = actual["verdict"] == expectation["expected_verdict"]
+        reasons_ok = set(actual["reason_codes"]) == set(
+            expectation["expected_reason_codes"]
+        )
+        cases.append({"case_id": case_id, "ok": bool(gate_ok and verdict_ok and reasons_ok)})
+
+    return {
+        "eval_version": "magma.adversarial_corpus_eval.core.v0",
+        "bound_solver_hash": bound_solver_hash,
+        "case_count": len(cases),
+        "cases": cases,
+        "ok": all(c["ok"] for c in cases),
+    }

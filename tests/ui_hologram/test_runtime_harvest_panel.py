@@ -68,7 +68,7 @@ def _kelvin_seed() -> dict:
 def test_runtime_harvest_panel_aggregates_after_route_and_harvest(
     cp: ControlPlaneDB,
 ) -> None:
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies()
 
     seed = _kelvin_seed()
@@ -93,7 +93,7 @@ def test_runtime_harvest_panel_aggregates_after_route_and_harvest(
         )],
         min_signals_per_intent=1, autoenqueue=True,
     )
-    AutogrowthScheduler(cp, require_adversarial_gate=False).run_until_idle()
+    AutogrowthScheduler(cp).run_until_idle()
 
     p = build_scale_aware_panels(
         control_plane=cp,
@@ -117,7 +117,7 @@ def test_runtime_harvest_panel_surfaces_phase14_capability_metrics(
     """Phase 14 P7 — the (extended) panel exposes capability-indexed
     solver counts. No new panel — same `autonomy_runtime_harvest_kpis`."""
 
-    g = LowRiskGrower(cp, require_adversarial_gate=False)
+    g = LowRiskGrower(cp)
     g.ensure_low_risk_policies()
     seed = _kelvin_seed()
     detector = RuntimeGapDetector(cp)
@@ -139,7 +139,7 @@ def test_runtime_harvest_panel_surfaces_phase14_capability_metrics(
         )],
         min_signals_per_intent=1, autoenqueue=True,
     )
-    AutogrowthScheduler(cp, require_adversarial_gate=False).run_until_idle()
+    AutogrowthScheduler(cp).run_until_idle()
 
     p = build_scale_aware_panels(
         control_plane=cp,

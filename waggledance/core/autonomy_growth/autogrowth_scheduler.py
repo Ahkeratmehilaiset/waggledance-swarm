@@ -104,15 +104,11 @@ class AutogrowthScheduler:
         scheduler_id: Optional[str] = None,
         failure_backoff_seconds: float = 60.0,
         max_attempts_before_park: int = 3,
-        require_adversarial_gate: bool = True,
     ) -> None:
         self._cp = control_plane
-        # T5b: gate ON by default (fail-closed); tests opt out via
-        # require_adversarial_gate=False threaded to the grower.
         self._grower = grower if grower is not None else LowRiskGrower(
             control_plane,
             emit_receipt_bundle=emit_receipt_bundle,
-            require_adversarial_gate=require_adversarial_gate,
         )
         self._scheduler_id = (
             scheduler_id

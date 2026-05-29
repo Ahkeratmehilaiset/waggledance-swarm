@@ -161,6 +161,11 @@ def test_operator_decision_reference_review_bundle_verification_summary_blocks_i
             lambda report: report.__setitem__("rebuilt_index_check", "mismatch"),
             "verification_report_rebuilt_index_check_not_match",
         ),
+        (
+            "artifact_count_checked_mismatch",
+            lambda report: report.__setitem__("artifact_count_checked", 1),
+            "verification_report_artifact_count_checked_mismatch",
+        ),
     )
 
     for label, mutate, expected_blocker in cases:

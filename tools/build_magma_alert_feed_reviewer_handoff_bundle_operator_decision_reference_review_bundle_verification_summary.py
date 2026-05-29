@@ -403,6 +403,8 @@ def _verification_report_contract_blockers(report: Mapping[str, Any]) -> list[st
         blockers.append("verification_report_source_contract_check_not_match")
     if report.get("rebuilt_index_check") != "match":
         blockers.append("verification_report_rebuilt_index_check_not_match")
+    if report.get("artifact_count_checked") != len(_ARTIFACT_IDS):
+        blockers.append("verification_report_artifact_count_checked_mismatch")
     for check_name in ("digest_checks", "size_checks", "schema_version_checks"):
         checks = _check_statuses(_mapping(report.get(check_name)))
         for artifact_id, status in checks.items():

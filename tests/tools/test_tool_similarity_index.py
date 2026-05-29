@@ -7,6 +7,7 @@ import pytest
 
 from tools.build_tool_similarity_index import (
     extract_skeleton,
+    gather_files,
     require_local_ollama_url,
     require_repo_relative_file,
 )
@@ -78,6 +79,32 @@ def test_require_repo_relative_file_rejects_absolute_path_outside_root(
 
     with pytest.raises(ValueError, match="file_outside_repo_root"):
         require_repo_relative_file(repo, str(outside))
+
+
+def test_gather_files_rejects_parent_glob_escape(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    inside = repo / "inside.py"
+    inside.write_text("def inside(): pass\n", encoding="utf-8")
+    outside = tmp_path / "outside.py"
+    outside.write_text("def outside(): pass\n", encoding="utf-8")
+
+    assert gather_files(repo, ["*.py"]) == [inside.resolve()]
+    assert gather_files(repo, ["../*.py"]) == []
+
+
+def test_gather_files_rejects_symlink_escape(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("def outside(): pass\n", encoding="utf-8")
+    link = repo / "linked_outside.py"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    assert gather_files(repo, ["*.py"]) == []
 
 
 def test_find_similar_tools_rejects_outside_file_without_path_leak(

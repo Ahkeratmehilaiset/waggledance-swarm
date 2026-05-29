@@ -194,11 +194,17 @@ def embed(text: str, *, model: str, base_url: str, timeout: float, prefix: str) 
 
 
 def gather_files(root: Path, globs: list[str]) -> list[Path]:
+    repo_root = root.resolve()
     seen: dict[str, Path] = {}
     for pattern in globs:
         for path in sorted(root.glob(pattern)):
             if path.is_file() and path.suffix == ".py":
-                seen[str(path.resolve())] = path
+                resolved = path.resolve()
+                try:
+                    resolved.relative_to(repo_root)
+                except ValueError:
+                    continue
+                seen[str(resolved)] = resolved
     return list(seen.values())
 
 

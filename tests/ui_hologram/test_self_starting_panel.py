@@ -62,7 +62,7 @@ def _seed_one(cp: ControlPlaneDB, family: str, cell: str, name: str,
 
 
 def test_self_starting_panel_aggregates_after_run(cp: ControlPlaneDB) -> None:
-    g = LowRiskGrower(cp)
+    g = LowRiskGrower(cp, require_adversarial_gate=False)
     g.ensure_low_risk_policies()
     _seed_one(
         cp, "scalar_unit_conversion", "thermal", "celsius_to_kelvin",
@@ -79,7 +79,7 @@ def test_self_starting_panel_aggregates_after_run(cp: ControlPlaneDB) -> None:
             "cell_id": "thermal",
         },
     )
-    sched = AutogrowthScheduler(cp)
+    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
     sched.run_until_idle()
 
     p = build_scale_aware_panels(control_plane=cp).autonomy_self_starting_kpis
@@ -102,7 +102,7 @@ def test_self_starting_panel_is_aggregate_not_per_solver(
 ) -> None:
     """Scale invariant: no per-solver_name rows leak into the panel."""
 
-    g = LowRiskGrower(cp)
+    g = LowRiskGrower(cp, require_adversarial_gate=False)
     g.ensure_low_risk_policies()
     for i in range(4):
         _seed_one(
@@ -120,7 +120,7 @@ def test_self_starting_panel_is_aggregate_not_per_solver(
                 "cell_id": "general",
             },
         )
-    sched = AutogrowthScheduler(cp)
+    sched = AutogrowthScheduler(cp, require_adversarial_gate=False)
     sched.run_until_idle()
     p = build_scale_aware_panels(control_plane=cp).autonomy_self_starting_kpis
     assert p.available is True

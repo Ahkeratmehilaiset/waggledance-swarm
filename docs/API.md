@@ -309,6 +309,15 @@ handoff JSON. It carries the same `source_contract_check`,
 `approval_granted=false`, `release_decision_made=false`, and
 `runtime_controls_added=false`; it does not append bridge events or make a
 release decision.
+`tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py`
+can build a local index entry for that index-entry verification summary
+bridge-event template. The index entry records `template_index_entry`,
+`bridge_event_schema_validated`, `source_contract_check`, and
+`rebuilt_template_check` while keeping `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`,
+`release_decision_made=false`, and `runtime_controls_added=false`; it does not
+append bridge events or make a release decision.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

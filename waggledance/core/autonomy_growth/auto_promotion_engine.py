@@ -26,7 +26,7 @@ from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.magma.adversarial_corpus_eval import (
     AdversarialCorpusEvalError,
-    run_adversarial_corpus_eval,
+    run_adversarial_corpus_evaluation,
 )
 from waggledance.core.solver_synthesis.declarative_solver_spec import SolverSpec
 from waggledance.core.solver_synthesis.deterministic_solver_compiler import (
@@ -224,7 +224,7 @@ class AutoPromotionEngine:
             report = request.adversarial_eval_report
             if report is None:
                 try:
-                    report = run_adversarial_corpus_eval(
+                    report = run_adversarial_corpus_evaluation(
                         bound_solver_hash=compiled1.artifact_id,
                     )
                 except AdversarialCorpusEvalError:

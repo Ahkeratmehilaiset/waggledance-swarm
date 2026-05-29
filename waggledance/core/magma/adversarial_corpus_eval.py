@@ -36,7 +36,7 @@ class AdversarialCorpusEvalError(RuntimeError):
     """
 
 
-def run_adversarial_corpus_eval(
+def run_adversarial_corpus_evaluation(
     *,
     bound_solver_hash: str,
     corpus_path: Path = DEFAULT_CORPUS_PATH,

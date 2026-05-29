@@ -398,6 +398,24 @@ python tools\build_magma_decision_review_verification_template_index_entry.py `
   --json
 ```
 
+Verify the local operator decision-reference review bundle verification
+bridge-event template index entry with
+`tools/verify_magma_decision_review_verification_template_index_entry.py`.
+The verifier recomputes `digest_checks`, size checks,
+`schema_version_checks`, `source_contract_check`,
+`rebuilt_index_entry_check`, and `bridge_event_schema_check` from explicit
+local artifacts. It does not append bridge events, include payloads, record
+local paths, transport artifacts, approve, merge, promote, fetch endpoints, or
+grant runtime authority.
+
+```powershell
+python tools\verify_magma_decision_review_verification_template_index_entry.py `
+  --index-entry-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry.json `
+  --review-bundle-verification-summary-json <collected>\operator_decision_reference_review_bundle_verification_summary.json `
+  --bridge-event-template-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template.json `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

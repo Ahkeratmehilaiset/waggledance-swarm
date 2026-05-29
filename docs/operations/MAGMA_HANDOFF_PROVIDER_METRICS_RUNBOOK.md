@@ -408,6 +408,29 @@ local artifacts. It does not append bridge events, include payloads, record
 local paths, transport artifacts, approve, merge, promote, fetch endpoints, or
 grant runtime authority.
 
+Render the local operator decision-reference review bundle verification
+bridge-event template index-entry verification summary from the verifier report:
+
+```powershell
+python tools/build_magma_decision_review_verification_template_index_entry_summary.py `
+  --index-entry-verification-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification.json `
+  --reviewer-agent claude-rco-1 `
+  --handoff-ref bridge:handoff:decision-reference-review-template-index-verifier `
+  --json
+```
+
+The summary carries
+`operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification`,
+`source_contract_check`, `rebuilt_index_entry_check`,
+`bridge_event_schema_check`, `decision_reference_verified`, and
+`template_only` as reviewer context. It keeps
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`, and
+`runtime_controls_added=false`; it does not append bridge events, include
+payloads, record local paths, transport artifacts, approve, merge, promote,
+fetch endpoints, or grant runtime authority.
+
 ```powershell
 python tools\verify_magma_decision_review_verification_template_index_entry.py `
   --index-entry-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry.json `

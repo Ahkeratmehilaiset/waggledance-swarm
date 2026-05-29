@@ -578,6 +578,46 @@ def test_metrics_magma_alert_feed_backoff_failure_is_sanitized():
     assert "127.0.0.1" not in body
 
 
+def test_metrics_magma_alert_feed_response_refusal_reason_is_fixed_label():
+    from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+        MagmaHandoffMetricsAlertFeedHttpResponse,
+        MagmaHandoffMetricsAlertmanagerFeed,
+    )
+
+    def transport(url, headers, timeout_seconds, params):
+        return MagmaHandoffMetricsAlertFeedHttpResponse(
+            body=b"[]",
+            content_type="application/json",
+            status_code=200,
+            source_url=f"{url}/redirected",
+        )
+
+    feed = MagmaHandoffMetricsAlertmanagerFeed(
+        alertmanager_base_url="http://127.0.0.1:9093",
+        allowed_private_hosts=["127.0.0.1"],
+        cache_ttl_seconds=1,
+        failure_backoff_seconds=10,
+        transport=transport,
+    )
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.magma_share_import_handoff_metrics_alert_feed = feed
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_magma_handoff_alert_feed_fetch_failures_total 1.0" in body
+    assert (
+        "waggledance_magma_handoff_alert_feed_failure_reason{"
+        'reason="RESPONSE_SOURCE_URL_REFUSED"} 1.0'
+    ) in body
+    assert (
+        'waggledance_magma_handoff_alert_feed_failure_reason{reason="none"} 0.0'
+        in body
+    )
+    assert "redirected" not in body
+    assert "127.0.0.1" not in body
+
+
 def test_metrics_reports_autogrowth_disabled_when_ticker_missing():
     container = _FakeContainer(_FakeHexAssist({"enabled": True}))
     client = TestClient(_make_app(container))

@@ -138,6 +138,16 @@ def build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_r
         "operator_decision_reference_review_summary",
         review_summary,
     )
+    _assert_bytes_match_artifact(
+        "operator_decision_reference_validation",
+        decision_validation_report,
+        decision_validation_bytes,
+    )
+    _assert_bytes_match_artifact(
+        "operator_decision_reference_review_summary",
+        review_summary,
+        review_summary_bytes,
+    )
 
     validation_reference = _assert_validation_contract(decision_validation_report)
     review_reference = _assert_review_summary_contract(review_summary)
@@ -239,16 +249,7 @@ def _load_json_artifact(path: Path, artifact_id: str) -> tuple[bytes, Mapping[st
         raise DecisionReferenceReviewBundleIndexError(
             f"{artifact_id}_unreadable"
         ) from exc
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except UnicodeDecodeError as exc:
-        raise DecisionReferenceReviewBundleIndexError(
-            f"{artifact_id}_decode_error"
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise DecisionReferenceReviewBundleIndexError(
-            f"{artifact_id}_json_error"
-        ) from exc
+    parsed = _parse_json_bytes(raw, artifact_id)
     if not isinstance(parsed, Mapping):
         raise DecisionReferenceReviewBundleIndexError(
             f"{artifact_id}_not_mapping"
@@ -305,6 +306,10 @@ def _assert_validation_contract(report: Mapping[str, Any]) -> dict[str, str]:
         "operator_decision_reference_validation",
     )
     verification = _mapping(report.get("bundle_verification"))
+    _expect_authority_absent_or_false(
+        verification,
+        "operator_decision_reference_validation_verification",
+    )
     for field in ("verification_summary_ok", "verification_ok", "identity_match"):
         _expect_true(verification, field, "operator_decision_reference_validation")
     if verification.get("verification_summary_version") != VERIFICATION_SUMMARY_VERSION:
@@ -354,6 +359,10 @@ def _assert_review_summary_contract(summary: Mapping[str, Any]) -> dict[str, str
         "manual_review_required",
         "operator_decision_reference_review_summary_ownership",
     )
+    _expect_authority_absent_or_false(
+        ownership,
+        "operator_decision_reference_review_summary_ownership",
+    )
     for field in (
         "approval_granted",
         "release_decision_made",
@@ -374,6 +383,10 @@ def _assert_review_summary_contract(summary: Mapping[str, Any]) -> dict[str, str
             "operator_decision_reference_review_summary_context_only_not_true"
         )
     verification = _mapping(summary.get("bundle_verification"))
+    _expect_authority_absent_or_false(
+        verification,
+        "operator_decision_reference_review_summary_verification",
+    )
     for field in ("verification_summary_ok", "verification_ok", "identity_match"):
         _expect_true(verification, field, "operator_decision_reference_review_summary")
     if verification.get("verification_summary_version") != VERIFICATION_SUMMARY_VERSION:
@@ -441,6 +454,7 @@ def _assert_reference_contract(
         )
     for field in _REFERENCE_FALSE_FIELDS:
         _expect_false(reference, field, label)
+    _expect_authority_absent_or_false(reference, label)
     if reference.get("decision_must_be_recorded_separately") is not True:
         raise DecisionReferenceReviewBundleIndexError(
             f"{label}_decision_must_be_recorded_separately_not_true"
@@ -510,13 +524,25 @@ def _assert_mapping(artifact_id: str, value: Mapping[str, Any]) -> None:
 
 
 def _assert_no_forbidden_input(artifact_id: str, value: Mapping[str, Any]) -> None:
-    if _forbidden_output_markers(json.dumps(value, sort_keys=True)):
+    try:
+        serialized = json.dumps(value, allow_nan=False, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise DecisionReferenceReviewBundleIndexError(
+            f"{artifact_id}_non_finite_json_value"
+        ) from exc
+    if _forbidden_output_markers(serialized):
         raise DecisionReferenceReviewBundleIndexError(f"{artifact_id}_forbidden_marker")
 
 
 def _expect_authority_false(artifact: Mapping[str, Any], label: str) -> None:
     for field in _AUTHORITY_FALSE_FIELDS:
         _expect_false(artifact, field, label)
+
+
+def _expect_authority_absent_or_false(artifact: Mapping[str, Any], label: str) -> None:
+    for field in _AUTHORITY_FALSE_FIELDS:
+        if field in artifact:
+            _expect_false(artifact, field, label)
 
 
 def _expect_false(artifact: Mapping[str, Any], field: str, label: str) -> None:
@@ -557,6 +583,41 @@ def _required_commit(value: Any, reason: str) -> str:
     if isinstance(value, str) and _COMMIT_RE.match(value):
         return value
     raise DecisionReferenceReviewBundleIndexError(reason)
+
+
+def _parse_json_bytes(raw: bytes, artifact_id: str) -> Any:
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non_finite_json_constant")
+
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            parse_constant=reject_constant,
+        )
+    except UnicodeDecodeError as exc:
+        raise DecisionReferenceReviewBundleIndexError(
+            f"{artifact_id}_decode_error"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise DecisionReferenceReviewBundleIndexError(
+            f"{artifact_id}_json_error"
+        ) from exc
+    except ValueError as exc:
+        raise DecisionReferenceReviewBundleIndexError(
+            f"{artifact_id}_json_error"
+        ) from exc
+
+
+def _assert_bytes_match_artifact(
+    artifact_id: str,
+    artifact: Mapping[str, Any],
+    raw: bytes,
+) -> None:
+    parsed = _parse_json_bytes(raw, artifact_id)
+    if parsed != artifact:
+        raise DecisionReferenceReviewBundleIndexError(
+            f"{artifact_id}_bytes_mismatch"
+        )
 
 
 def _parse_utc(raw: str) -> datetime:

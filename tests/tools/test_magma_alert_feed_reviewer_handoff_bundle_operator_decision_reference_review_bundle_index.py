@@ -229,6 +229,29 @@ def test_operator_decision_reference_review_bundle_index_blocks_forged_artifacts
             ),
             "operator_decision_reference_review_summary_bridge_template_version_mismatch",
         ),
+        (
+            "validation_reference_authority",
+            lambda artifacts: artifacts["validation"][
+                "operator_decision_reference"
+            ].__setitem__("approval_granted", True),
+            "operator_decision_reference_validation_approval_granted_not_false",
+        ),
+        (
+            "summary_ownership_bridge_write",
+            lambda artifacts: artifacts["summary"]["reviewer_ownership"].__setitem__(
+                "direct_bridge_write_performed",
+                True,
+            ),
+            "operator_decision_reference_review_summary_ownership_direct_bridge_write_performed_not_false",
+        ),
+        (
+            "validation_non_finite_value",
+            lambda artifacts: artifacts["validation"].__setitem__(
+                "warnings",
+                [float("nan")],
+            ),
+            "operator_decision_reference_validation_non_finite_json_value",
+        ),
     )
 
     for label, mutate, expected_reason in cases:
@@ -245,6 +268,24 @@ def test_operator_decision_reference_review_bundle_index_blocks_forged_artifacts
             )
 
         assert getattr(exc_info.value, "code", "") == expected_reason, label
+
+
+def test_operator_decision_reference_review_bundle_index_rejects_mismatched_raw_bytes() -> None:
+    artifacts = _artifact_set()
+
+    with pytest.raises(Exception) as exc_info:
+        build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index(
+            decision_validation_report=artifacts["validation"],
+            review_summary=artifacts["summary"],
+            decision_validation_bytes=b'{"forged":true}',
+            review_summary_bytes=_json_bytes(artifacts["summary"]),
+            now_utc=FIXED_NOW,
+        )
+
+    assert (
+        getattr(exc_info.value, "code", "")
+        == "operator_decision_reference_validation_bytes_mismatch"
+    )
 
 
 def test_operator_decision_reference_review_bundle_index_missing_input_is_path_free(
@@ -307,6 +348,49 @@ def test_operator_decision_reference_review_bundle_index_non_utf8_input_is_path_
     assert payload["blockers"] == [
         "operator_decision_reference_review_bundle_index_failed:"
         "operator_decision_reference_validation_decode_error"
+    ]
+    assert payload["approval_granted"] is False
+    assert payload["local_paths_recorded"] is False
+    combined = result.stdout + result.stderr
+    assert "Traceback" not in combined
+    assert str(tmp_path) not in combined
+    for path in paths.values():
+        assert path.name not in combined
+    assert not any(marker in combined for marker in PRIVATE_MARKERS)
+
+
+def test_operator_decision_reference_review_bundle_index_non_finite_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    artifacts = _artifact_set()
+    paths = _write_artifacts(tmp_path, artifacts)
+    artifacts["validation"]["warnings"] = [float("nan")]
+    paths["validation"].write_text(
+        json.dumps(artifacts["validation"], sort_keys=True),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--decision-validation-json",
+            str(paths["validation"]),
+            "--review-summary-json",
+            str(paths["summary"]),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "operator_decision_reference_review_bundle_index_failed:"
+        "operator_decision_reference_validation_json_error"
     ]
     assert payload["approval_granted"] is False
     assert payload["local_paths_recorded"] is False

@@ -197,6 +197,38 @@ def test_operator_decision_reference_review_bundle_index_blocks_forged_artifacts
             ),
             "operator_decision_reference_review_summary_decision_reference_mismatch",
         ),
+        (
+            "validation_verification_summary_version",
+            lambda artifacts: artifacts["validation"]["bundle_verification"].__setitem__(
+                "verification_summary_version",
+                "bogus",
+            ),
+            "operator_decision_reference_validation_verification_summary_version_mismatch",
+        ),
+        (
+            "validation_bridge_template_version",
+            lambda artifacts: artifacts["validation"]["bundle_verification"].__setitem__(
+                "bridge_template_version",
+                "bogus",
+            ),
+            "operator_decision_reference_validation_bridge_template_version_mismatch",
+        ),
+        (
+            "summary_verification_summary_version",
+            lambda artifacts: artifacts["summary"]["bundle_verification"].__setitem__(
+                "verification_summary_version",
+                "bogus",
+            ),
+            "operator_decision_reference_review_summary_verification_summary_version_mismatch",
+        ),
+        (
+            "summary_bridge_template_version",
+            lambda artifacts: artifacts["summary"]["bundle_verification"].__setitem__(
+                "bridge_template_version",
+                "bogus",
+            ),
+            "operator_decision_reference_review_summary_bridge_template_version_mismatch",
+        ),
     )
 
     for label, mutate, expected_reason in cases:

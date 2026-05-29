@@ -16,8 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.build_magma_alert_feed_reviewer_bridge_event_template import (  # noqa: E402
+    TEMPLATE_VERSION,
+)
 from tools.build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary import (  # noqa: E402
     SUMMARY_VERSION as REVIEW_SUMMARY_VERSION,
+)
+from tools.build_magma_alert_feed_reviewer_handoff_bundle_verification_summary import (  # noqa: E402
+    SUMMARY_VERSION as VERIFICATION_SUMMARY_VERSION,
 )
 from tools.package_magma_alert_feed_release_evidence import (  # noqa: E402
     FORBIDDEN_OUTPUT_MARKERS,
@@ -301,6 +307,14 @@ def _assert_validation_contract(report: Mapping[str, Any]) -> dict[str, str]:
     verification = _mapping(report.get("bundle_verification"))
     for field in ("verification_summary_ok", "verification_ok", "identity_match"):
         _expect_true(verification, field, "operator_decision_reference_validation")
+    if verification.get("verification_summary_version") != VERIFICATION_SUMMARY_VERSION:
+        raise DecisionReferenceReviewBundleIndexError(
+            "operator_decision_reference_validation_verification_summary_version_mismatch"
+        )
+    if verification.get("bridge_template_version") != TEMPLATE_VERSION:
+        raise DecisionReferenceReviewBundleIndexError(
+            "operator_decision_reference_validation_bridge_template_version_mismatch"
+        )
     boundary = _mapping(report.get("operator_boundary"))
     _expect_true(boundary, "validation_only", "operator_decision_reference_validation_boundary")
     _expect_true(boundary, "manual_review_required", "operator_decision_reference_validation_boundary")
@@ -362,6 +376,14 @@ def _assert_review_summary_contract(summary: Mapping[str, Any]) -> dict[str, str
     verification = _mapping(summary.get("bundle_verification"))
     for field in ("verification_summary_ok", "verification_ok", "identity_match"):
         _expect_true(verification, field, "operator_decision_reference_review_summary")
+    if verification.get("verification_summary_version") != VERIFICATION_SUMMARY_VERSION:
+        raise DecisionReferenceReviewBundleIndexError(
+            "operator_decision_reference_review_summary_verification_summary_version_mismatch"
+        )
+    if verification.get("bridge_template_version") != TEMPLATE_VERSION:
+        raise DecisionReferenceReviewBundleIndexError(
+            "operator_decision_reference_review_summary_bridge_template_version_mismatch"
+        )
     boundary = _mapping(summary.get("operator_boundary"))
     _expect_true(
         boundary,

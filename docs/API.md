@@ -237,6 +237,14 @@ recording local paths. It keeps `artifact_payloads_included=false`,
 `local_paths_recorded=false`, `transport_added=false`,
 `direct_bridge_write_performed=false`, `approval_granted=false`, and
 `release_decision_made=false`.
+`tools/verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py`
+can verify that local operator decision-reference review bundle index by
+recomputing `digest_checks`, size checks, and `schema_version_checks` from
+explicit local artifacts. The local operator decision-reference review bundle
+verifier keeps `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`,
+`release_decision_made=false`, and `runtime_controls_added=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

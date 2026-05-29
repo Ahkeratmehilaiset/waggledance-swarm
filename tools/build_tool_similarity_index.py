@@ -39,6 +39,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,6 +51,7 @@ DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_EMBED_TIMEOUT = 60.0
 DOC_PREFIX = "search_document: "
 MAX_IMPORTS_META = 4000  # Chroma metadata is a flat string; keep it bounded.
+LOCAL_OLLAMA_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _utc_now_iso() -> str:
@@ -58,6 +60,47 @@ def _utc_now_iso() -> str:
 
 def file_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def require_repo_relative_file(root: Path, raw_path: str) -> Path:
+    """Resolve a reviewer-supplied path while keeping reads under the repo root."""
+
+    repo_root = root.resolve()
+    candidate = Path(raw_path)
+    resolved = (candidate if candidate.is_absolute() else repo_root / candidate).resolve()
+    try:
+        resolved.relative_to(repo_root)
+    except ValueError as exc:
+        raise ValueError("file_outside_repo_root") from exc
+    return resolved
+
+
+def require_local_ollama_url(base_url: str) -> str:
+    """Return a normalized local Ollama base URL or raise ValueError."""
+
+    parsed = urlparse(base_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("ollama_url_port_invalid") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in LOCAL_OLLAMA_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("ollama_url_must_be_local")
+    host = parsed.hostname
+    if host == "::1":
+        host = "[::1]"
+    normalized = f"http://{host}"
+    if port is not None:
+        normalized += f":{port}"
+    return normalized
 
 
 def extract_skeleton(text: str) -> tuple[str, int, list[str]]:
@@ -111,9 +154,17 @@ def embed(text: str, *, model: str, base_url: str, timeout: float, prefix: str) 
     On a context-length overflow (HTTP 400) the input is truncated and retried,
     so the indexer is robust to the embedder's context window regardless of model.
     """
+    try:
+        local_base_url = require_local_ollama_url(base_url)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Ollama URL must be local http localhost/127.0.0.1/[::1] "
+            "with no userinfo, path, query, or fragment."
+        ) from exc
+
     import requests
 
-    url = f"{base_url.rstrip('/')}/api/embed"
+    url = f"{local_base_url}/api/embed"
     payload_text = prefix + text
     for _attempt in range(6):
         try:

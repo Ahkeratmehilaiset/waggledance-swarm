@@ -52,18 +52,17 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).resolve()
     persist_dir = Path(args.persist_dir).resolve() if args.persist_dir else (root / bidx.DEFAULT_PERSIST_SUBDIR)
-    if not persist_dir.exists():
-        print(json.dumps({"error": "index_missing", "persist_dir": str(persist_dir),
-                          "hint": "Run tools/build_tool_similarity_index.py first."}))
-        return 1
 
     self_rel = None
     query_imports: set[str] = set()
     if args.file:
-        fpath = Path(args.file)
-        fpath = fpath if fpath.is_absolute() else (root / fpath)
+        try:
+            fpath = bidx.require_repo_relative_file(root, args.file)
+        except ValueError:
+            print(json.dumps({"error": "file_outside_repo_root"}))
+            return 1
         if not fpath.is_file():
-            print(json.dumps({"error": "file_not_found", "file": str(fpath)}))
+            print(json.dumps({"error": "file_not_found", "file": args.file}))
             return 1
         text = fpath.read_text(encoding="utf-8", errors="replace")
         skeleton, _n, imports = bidx.extract_skeleton(text)
@@ -75,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
         query_text = skeleton
     else:
         query_text = args.text
+
+    if not persist_dir.exists():
+        print(json.dumps({"error": "index_missing", "persist_dir": str(persist_dir),
+                          "hint": "Run tools/build_tool_similarity_index.py first."}))
+        return 1
 
     try:
         vector = bidx.embed(

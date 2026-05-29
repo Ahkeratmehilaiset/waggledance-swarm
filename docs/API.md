@@ -255,6 +255,17 @@ bundle verification summary for reviewers. It carries
 `transport_added=false`, `direct_bridge_write_performed=false`,
 `approval_granted=false`, `release_decision_made=false`, and
 `runtime_controls_added=false`.
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py`
+can render a local operator decision-reference review bundle verification
+bridge-event template from that verified summary. The template is valid bridge
+`handoff` JSON and carries
+`operator_decision_reference_review_bundle_verification`,
+`source_contract_check`, `rebuilt_index_check`, and
+`decision_reference_verified`, but it is template-only and does not append
+bridge events. It keeps `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`,
+`release_decision_made=false`, and `runtime_controls_added=false`.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

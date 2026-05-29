@@ -367,7 +367,7 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         blockers.append("review_bundle_verification_source_contract_not_match")
     if verification.get("rebuilt_index_check") != "match":
         blockers.append("review_bundle_verification_rebuilt_index_not_match")
-    if _as_nonnegative_int(verification.get("blocker_count")) != 0:
+    if verification.get("blocker_count") != 0:
         blockers.append("review_bundle_verification_blocker_count_nonzero")
     if _safe_token_list(verification.get("blockers")):
         blockers.append("review_bundle_verification_blockers_present")

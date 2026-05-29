@@ -242,6 +242,13 @@ def test_operator_decision_reference_review_bundle_verification_bridge_event_tem
             "review_bundle_verification_bundle_index_version_mismatch",
         ),
         (
+            "blocker_count_string",
+            lambda summary: summary[
+                "operator_decision_reference_review_bundle_verification"
+            ].__setitem__("blocker_count", "1"),
+            "review_bundle_verification_blocker_count_nonzero",
+        ),
+        (
             "reference_is_approval",
             lambda summary: summary["operator_decision_reference_review"].__setitem__(
                 "decision_reference_is_approval",

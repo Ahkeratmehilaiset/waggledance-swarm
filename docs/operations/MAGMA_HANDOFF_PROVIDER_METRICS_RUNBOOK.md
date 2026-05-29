@@ -361,6 +361,26 @@ python tools\build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_re
   --json
 ```
 
+Render an optional local operator decision-reference review bundle
+verification bridge-event template from that verified summary with
+`tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py`.
+The template validates as bridge `handoff` JSON and carries
+`operator_decision_reference_review_bundle_verification`,
+`source_contract_check`, `rebuilt_index_check`, and
+`decision_reference_verified`, but it is template-only. The tool does not
+append bridge events, include payloads, record local paths, transport
+artifacts, approve, merge, promote, fetch endpoints, or grant runtime
+authority.
+
+```powershell
+python tools\build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py `
+  --review-bundle-verification-summary-json <collected>\operator_decision_reference_review_bundle_verification_summary.json `
+  --agent codex-lead-1 `
+  --task-id wd-image1-decision-review-bundle-verification-template `
+  --to operator,claude-rco-1 `
+  --json
+```
+
 ### Post-failure release-hold review
 
 When `MagmaHandoffAlertFeedBackoffActive`,

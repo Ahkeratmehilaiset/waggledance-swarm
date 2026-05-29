@@ -39,14 +39,26 @@ def _gh_payload(**overrides) -> dict:
     return payload
 
 
-def _runner(payload: dict | None = None, diff_text: str = "+ def helper():\n") -> tuple[list[list[str]], object]:
+def _runner(
+    payload: dict | None = None,
+    diff_text: str = "+ def helper():\n",
+    recheck_payload: dict | None = None,
+) -> tuple[list[list[str]], object]:
+    initial_payload = payload or _gh_payload()
+    followup_payload = recheck_payload if recheck_payload is not None else initial_payload
+    payloads = [initial_payload, followup_payload]
+    view_call = {"index": 0}
+
     calls: list[list[str]] = []
 
     def runner(command: list[str]) -> SimpleNamespace:
         calls.append(command)
         if command[:3] == ["gh", "pr", "diff"]:
             return SimpleNamespace(returncode=0, stdout=diff_text)
-        return SimpleNamespace(returncode=0, stdout=json.dumps(payload or _gh_payload()))
+        index = view_call["index"]
+        payload_to_use = payloads[min(index, len(payloads) - 1)]
+        view_call["index"] += 1
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload_to_use))
 
     return calls, runner
 
@@ -78,6 +90,16 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
             "diff",
             "479",
             "--patch",
+            "--repo",
+            "Ahkeratmehilaiset/waggledance-swarm",
+        ],
+        [
+            "gh",
+            "pr",
+            "view",
+            "479",
+            "--json",
+            GH_JSON_FIELDS,
             "--repo",
             "Ahkeratmehilaiset/waggledance-swarm",
         ],
@@ -163,6 +185,37 @@ def test_private_marker_in_diff_refused() -> None:
     assert excinfo.value.report["decision"] == "privacy_marker_refused"
 
 
+def test_pr_head_changed_during_snapshot_is_rejected() -> None:
+    calls, runner = _runner(
+        payload=_gh_payload(),
+        recheck_payload=_gh_payload(headRefOid="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    report = excinfo.value.report
+    assert report["decision"] == "gh_pr_diff_head_drift"
+    assert len(calls) == 3
+
+
+def test_recheck_view_failure_is_reported() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        calls.append(command)
+        if command[:3] == ["gh", "pr", "diff"]:
+            return SimpleNamespace(returncode=0, stdout="+ def helper():\n")
+        if command[:3] == ["gh", "pr", "view"] and len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(_gh_payload()))
+        return SimpleNamespace(returncode=13, stdout="", stderr="fetch failed")
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    report = excinfo.value.report
+    assert report["decision"] == "gh_pr_view_recheck_failed"
+    assert len(calls) == 3
+
+
 def test_missing_full_head_sha_refused() -> None:
     def runner(command: list[str]) -> SimpleNamespace:
         return SimpleNamespace(returncode=0, stdout=json.dumps(_gh_payload(headRefOid="abc1234")))
@@ -186,7 +239,7 @@ def test_invalid_files_refused() -> None:
 
     with pytest.raises(PrStatusSnapshotError) as excinfo:
         build_pr_status_snapshot(pr_number=479, runner=runner)
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert excinfo.value.report["decision"] == "invalid_files"
 
 

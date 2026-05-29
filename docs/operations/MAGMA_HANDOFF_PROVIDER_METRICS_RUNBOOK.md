@@ -431,6 +431,27 @@ The summary carries
 payloads, record local paths, transport artifacts, approve, merge, promote,
 fetch endpoints, or grant runtime authority.
 
+Render a local bridge-event template for that index-entry verification summary
+without appending it:
+
+```powershell
+python tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template.py `
+  --index-entry-verification-summary-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary.json `
+  --agent codex-lead-1 `
+  --task-id wd-image1-template-index-summary-ready `
+  --to operator,claude-rco-1,codex-tools-1 `
+  --json
+```
+
+The template validates the summary contract and renders schema-valid handoff
+JSON while keeping `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`,
+`release_decision_made=false`, and `runtime_controls_added=false`. It does not
+append bridge events, include payloads, record local paths, transport artifacts,
+approve, merge, promote, fetch endpoints, grant runtime authority, or make a
+release decision.
+
 ```powershell
 python tools\verify_magma_decision_review_verification_template_index_entry.py `
   --index-entry-json <collected>\operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry.json `

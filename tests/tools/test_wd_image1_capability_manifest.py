@@ -734,6 +734,12 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
         ]
         is True
     )
+    assert (
+        proof[
+            "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary_contract_present"
+        ]
+        is True
+    )
     assert proof["guardrails_present"] is True
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
@@ -1072,6 +1078,9 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "decision-reference review bundle verifier" in (
         capability["safe_statement"]
     )
+    assert "decision-reference review bundle verification summary" in (
+        capability["safe_statement"]
+    )
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
     assert capability["proof"]["provider_metrics_runbook_smoke"][
         "alert_thresholds_documented"
@@ -1090,11 +1099,17 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["metrics_alertmanager_adapter_smoke"][
+            "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary_contract_present"
+        ]
+        is True
+    )
     assert capability["proof"]["metrics_alertmanager_adapter_smoke"][
         "guardrails_present"
     ] is True
     assert "hard append-only" in capability["safe_statement"]
-    assert "decision-reference review bundle verification summary" in (
+    assert "decision-reference review bundle verification bridge-event template" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

@@ -287,6 +287,18 @@ verification bridge-event template index-entry verifier keeps
 `transport_added=false`, `direct_bridge_write_performed=false`,
 `approval_granted=false`, `release_decision_made=false`, and
 `runtime_controls_added=false`.
+`tools/build_magma_decision_review_verification_template_index_entry_summary.py`
+can render a local operator decision-reference review bundle verification
+bridge-event template index-entry verification summary from that verifier
+report. It carries
+`operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification`,
+`source_contract_check`, `rebuilt_index_entry_check`,
+`bridge_event_schema_check`, `decision_reference_verified`, and
+`template_only` as path-free reviewer context while keeping
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`, and
+`runtime_controls_added=false`; it does not append bridge events.
 
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports

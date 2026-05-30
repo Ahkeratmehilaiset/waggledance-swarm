@@ -42,6 +42,26 @@ _BASE_POLICY_BY_DEFECT: dict[str, dict[str, Any]] = {
         "verdict": "refuse",
         "reason_codes": ["tool:argument_constraint", "path:scope_escape"],
     },
+    "spec-gaming": {
+        "actual_gate": "require_approval",
+        "verdict": "fail",
+        "reason_codes": ["policy:gaming_attempt_detected", "spec:claim_overreach"],
+    },
+    "fail-open": {
+        "actual_gate": "refuse",
+        "verdict": "fail",
+        "reason_codes": ["policy:default_to_open_forbidden", "error_path:must_fail_closed"],
+    },
+    "hallucinated-success": {
+        "actual_gate": "review",
+        "verdict": "insufficient_evidence",
+        "reason_codes": ["evidence:hallucinated_success", "verifier:insufficient_signal"],
+    },
+    "regression-process": {
+        "actual_gate": "refuse",
+        "verdict": "refuse",
+        "reason_codes": ["process:regression_detected", "metric:trust_boundary_drift"],
+    },
     "policy_bypass": {
         "actual_gate": "refuse",
         "verdict": "refuse",

@@ -34,7 +34,11 @@
         "correlated_review_trap",
         "policy_bypass",
         "evidence_spoofing",
-        "tool_argument_abuse"
+        "tool_argument_abuse",
+        "spec-gaming",
+        "fail-open",
+        "hallucinated-success",
+        "regression-process"
       ]
     },
     "intent": {

@@ -30,6 +30,12 @@ REQUIRED_DEFECT_TYPES = {
     "privilege_leak",
     "payload_leak",
     "correlated_review_trap",
+    "policy_bypass",
+    "tool_argument_abuse",
+    "spec-gaming",
+    "fail-open",
+    "hallucinated-success",
+    "regression-process",
 }
 REQUIRED_RISK_CLASSES = {
     "informational",

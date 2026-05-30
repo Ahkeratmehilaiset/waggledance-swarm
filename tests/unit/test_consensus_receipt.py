@@ -126,3 +126,18 @@ def test_type_confused_identities_refuses():
 
 def test_charter_digest_mismatch_refuses():
     assert _verify(_receipt(), charter_digest="different")["ok"] is False
+
+
+def test_build_role_pointing_at_non_vote_event_refuses():
+    # RCO case-08 hardening: a (forged/buggy) verdict whose build_lead
+    # approval_index points at a HEARTBEAT (not a build_consensus vote) must
+    # refuse — the verifier checks each role's live-event type+status
+    # independently of rederived_verdict.
+    events = _events()
+    events[0] = {"agent": "codex-lead-1", "type": "heartbeat", "status": "active",
+                 "task_id": TASK, "ts_utc": "2026-05-30T01:00:00Z", "message": "hb"}
+    verdict = _verdict()  # still claims build_lead approved at index 0
+    receipt = _receipt(events=events, verdict=verdict)
+    res = _verify(receipt, events=events, verdict=verdict)
+    assert res["ok"] is False
+    assert any("build_lead" in x for x in res["reasons"])

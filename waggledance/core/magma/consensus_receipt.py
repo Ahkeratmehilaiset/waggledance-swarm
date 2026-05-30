@@ -27,6 +27,21 @@ CONSENSUS_RECEIPT_SCHEMA = "magma.bridge_consensus_receipt.v0"
 RCO_PASS_STATUSES = frozenset(
     {"rco_pass", "rco_pass_operator_merge_required", "rco_pass_pending_ci"}
 )
+# Mirrors tools/idle_consensus_auto_merge so the receipt verifier independently
+# enforces that each identity's LIVE approval event is a decision-type vote with
+# the right status for its role — not trusting rederived_verdict to have done so.
+BUILD_CONSENSUS_STATUSES = frozenset(
+    {
+        "approved",
+        "build_consensus",
+        "build_consensus_pass",
+        "concur",
+        "concurred",
+        "agree",
+        "agreed",
+    }
+)
+DECISION_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
 _ROLES = ("build_lead", "build_tools", "rco")
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 # Keys that participate in the canonical digest (everything except the digest
@@ -189,14 +204,18 @@ def verify_bridge_consensus_receipt(
             live = _approval_event(events, r_info.get("approval_index"))
             if live is None or bridge_event_digest(live) != entry.get("event_digest"):
                 reasons.append(f"{role} event_digest does not match a live bridge event")
+                continue
+            # The live approval event must itself be a decision-type vote with
+            # the status allowed for this role — checked INDEPENDENTLY of
+            # rederived_verdict so a forged/buggy verdict pointing a build role
+            # at e.g. a heartbeat event cannot pass (RCO case-08 hardening).
+            if str(live.get("type", "")).lower() not in DECISION_EVENT_TYPES:
+                reasons.append(f"{role} live event is not a decision-type vote")
+            allowed = RCO_PASS_STATUSES if role == "rco" else BUILD_CONSENSUS_STATUSES
+            if str(live.get("status", "")).lower() not in allowed:
+                reasons.append(f"{role} live event status not allowed for the role")
         if len(seen_agents) != 3:
             reasons.append("receipt does not carry three distinct identities")
-
-    # rco identity must carry an RCO_PASS-family status on its live event.
-    rco_info = rederived_ids.get("rco") or {}
-    rco_live = _approval_event(events, rco_info.get("approval_index"))
-    if rco_live is None or str(rco_live.get("status", "")).lower() not in RCO_PASS_STATUSES:
-        reasons.append("rco identity is not a live RCO_PASS-family decision")
 
     ok = not reasons
     return {

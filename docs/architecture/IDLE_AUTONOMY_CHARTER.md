@@ -28,6 +28,7 @@ These are the operator-directive statements that motivated this charter. They ar
 * 2026-05-18 05:43Z: "Bridgen yksi tarkoitus on SELF envolving ja developmet perustuen analyyseihin ja faktoihin"
 * 2026-05-18 05:55Z: "tavoite on mahdollisimman tehokas agenttien välinen toiminta ja autonominen"
 * 2026-05-18 06:48Z: "TEHKÄÄ IDLE JA BRIDGE VALMIIKSI"
+* 2026-05-29: "rakenna kuvan mukainen järjestelmä ei pelkkää substraattia, kaikki ilman operaattori kyselyitä, kyselyt hoidetaan bridgen consensuksella" (build the storyboard system, not just substrate; all without per-action operator queries; approvals via bridge consensus — see `BRIDGE_CONSENSUS_APPROVAL_V1.md`)
 
 ## Allowlist
 
@@ -59,6 +60,10 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `docs/architecture/POLICY_SURFACE_V0.md` (charter-essential policy)
 * `docs/architecture/IDLE_AUTONOMY_CHARTER.md` (this file — self-modification banned)
 * `docs/architecture/IDLE_CONSENSUS_ARTIFACT_V1.md` (companion charter doc)
+* `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md` (consensus-approval contract — self-modification banned)
+* `tools/idle_consensus_auto_merge.py` (the merge gate itself — self-modification banned)
+* `waggledance/core/magma/consensus_receipt.py` (bridge consensus receipt writer/verifier)
+* `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
 * `.env`
 * `.env.*`
 * `**/.env`
@@ -83,6 +88,8 @@ Even within allowlisted file paths, an autonomous merge **must refuse** if the d
 * Changes to `_safe_label`, `_sequence_errors`, or instance-chain logic in `tools/idle_protocol_activate.py`
 * Changes to `verify_manifest` ok-check or canonical digest logic in `tools/verify_magma_receipt.py` or `waggledance/core/magma/`
 * Changes to denylist or allowlist content in `tools/idle_consensus_to_pr.py` (self-modification ban)
+* Changes to the three-identity / RCO-pass / head-binding verification logic in `tools/idle_consensus_auto_merge.py` (consensus-gate self-modification ban)
+* Changes that disable the adversarial-corpus promotion gate (T5b): flipping `require_adversarial_gate` to a `False` default, weakening `ADVERSARIAL_CORPUS_MIN_CASES`, or altering `verify_adversarial_corpus_gate` re-derivation/binding in `waggledance/core/magma/adversarial_gate.py` or `auto_promotion_engine.py` (gate self-modification ban; opt-out is test-only)
 * Changes to `PRIVATE_MARKER` constant or `_DO_NOT_LEAK` detection logic anywhere
 * Changes that REMOVE existing `write_receipt_bundle` or `verify_manifest` calls
 
@@ -97,6 +104,32 @@ All seven conditions must hold. Failure of any one downgrades the PR to operator
 5. **Mergeable clean**: GitHub reports `mergeable: clean` (no conflicts).
 6. **Allowlist match**: every changed file path in the diff matches an allowlist entry.
 7. **No denylist hit**: no changed file path matches the file denylist and no diff content matches the code-pattern denylist.
+
+## Bridge-consensus approval path (2026-05-29)
+
+The **Consensus** condition (#1 above) may be satisfied either by idle-protocol
+soft/hard convergence **or** by a verified **three-agent bridge consensus**, per
+the operator's 2026-05-29 directive (approvals via bridge consensus, not
+per-action operator queries). The full contract is in
+`docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`; the gate
+(`tools/idle_consensus_auto_merge.py`) enforces it fail-closed (enforcement
+lands in Track T0b). In summary, a bridge consensus requires **all** of:
+
+* **three distinct verified identities** — lead (`codex-lead-1`) + tools peer
+  (`codex-tools-1`) build consensus, plus an independent `claude-rco-1`
+  `RCO_PASS`; duplicate/missing/unverifiable identities or a 2-of-3 set fail
+  closed;
+* **RCO veto + RCO absence = no merge** — any `claude-rco-1`
+  `finding`/`changes_requested` blocks; absence of an explicit `RCO_PASS` at the
+  exact head also blocks (silence never default-allows);
+* **head-exact binding** — all three approvals bind to the exact head SHA; any
+  re-push invalidates them and requires re-consensus;
+* the seven parallel conditions above, plus a **MAGMA receipt** recording the
+  three identities + head SHA + `RCO_PASS` reference, re-derivable by a consumer.
+
+This path governs **MERGE only**. It does **not** authorize the Stage-2 cutover,
+which stays operator-signed (Rule 10 / escalation category 5) until a separate
+future amendment.
 
 ## Escalation categories (always operator-required)
 
@@ -129,11 +162,11 @@ For every autonomous merge:
 
 This charter document is on the file denylist. Any PR that modifies `docs/architecture/IDLE_AUTONOMY_CHARTER.md` itself must be operator-merged. Agents cannot weaken their own gates.
 
-The same ban applies to denylist edits inside `tools/idle_consensus_to_pr.py` and to operator-gate constants throughout the substrate.
+The same ban applies to denylist edits inside `tools/idle_consensus_to_pr.py`, to the consensus-verification logic inside `tools/idle_consensus_auto_merge.py` and `tools/check_bridge_changes_requested.py`, to `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, and to operator-gate constants throughout the substrate. A bridge consensus can never self-approve a change to the gate that evaluates it — such PRs always operator-merge.
 
 ## Charter scope
 
-This charter authorizes **automatic merges for idle-protocol consensus events only**. It does not authorize:
+This charter authorizes **automatic merges for idle-protocol consensus events and for verified three-agent bridge-consensus events** (see the bridge-consensus approval path above). It does not authorize:
 
 * Automatic merges of operator-directed PRs (operator continues to merge those manually unless explicitly authorized).
 * Automatic merges of dependabot PRs (separate operator policy may authorize batch handling).

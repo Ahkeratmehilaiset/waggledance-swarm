@@ -335,6 +335,11 @@ def _receipt_reason_codes(report: dict[str, Any]) -> list[str]:
 def _coverage_for_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
     defect_counts = Counter(str(case.get("defect_type", "")) for case in cases)
     risk_counts = Counter(str(case.get("risk_class", "")) for case in cases)
+    defect_class_counts = Counter(
+        str(case.get("defect_class", ""))
+        for case in cases
+        if isinstance(case.get("defect_class"), str) and case.get("defect_class") != ""
+    )
 
     def tagged_count(*tags: str) -> int:
         required = set(tags)
@@ -350,6 +355,7 @@ def _coverage_for_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "defect_type_counts": dict(sorted(defect_counts.items())),
         "risk_class_counts": dict(sorted(risk_counts.items())),
+        "defect_class_counts": dict(sorted(defect_class_counts.items())),
         "privacy_canary_case_count": sum(
             1 for case in cases if isinstance(case.get("privacy_canary"), str)
         ),

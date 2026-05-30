@@ -28,7 +28,7 @@ from waggledance.core.storage.control_plane import ControlPlaneDB
 
 def test_mass_autogrowth_zero_provider_calls(tmp_path: Path) -> None:
     db_path = tmp_path / "p.db"
-    proof = run_mass_proof(tmp_path / "out", db_path)
+    proof = run_mass_proof(tmp_path / "out", db_path, require_adversarial_gate=False)
     assert proof["scheduler"]["auto_promoted"] == 30
 
     # Inspect the resulting control plane: provider_jobs must be empty

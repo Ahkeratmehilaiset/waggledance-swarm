@@ -117,7 +117,7 @@ def _seed_to_flat_input(seed: dict) -> Tuple[str, Dict]:
 
 
 def _build_service(cp: ControlPlaneDB) -> Tuple[AutonomyService, HotPathCache]:
-    grower = LowRiskGrower(cp)
+    grower = LowRiskGrower(cp, require_adversarial_gate=False)
     grower.ensure_low_risk_policies(max_auto_promote=200)
     detector = RuntimeGapDetector(cp)
     hot_path = HotPathCache(
@@ -194,6 +194,7 @@ def test_promoted_solvers_survive_db_close_reopen(scratch_db_path: Path):
     )
     scheduler = AutogrowthScheduler(
         cp1, scheduler_id="phase16a_restart_scheduler",
+        require_adversarial_gate=False,  # T5b: tests opt out
     )
     drained = scheduler.run_until_idle(max_ticks=200)
     assert digest.intents_created == 6

@@ -31,6 +31,11 @@ REQUIRED_DEFECT_TYPES = {
     "payload_leak",
     "correlated_review_trap",
 }
+REQUIRED_DEFECT_CLASSES = {
+    "spec-gaming/reward-hacking",
+    "fail-open",
+    "hallucinated-success",
+}
 REQUIRED_RISK_CLASSES = {
     "informational",
     "internal_memory",
@@ -135,8 +140,10 @@ def _validate_cases(
 
         defect_type = str(case.get("defect_type", ""))
         risk_class = str(case.get("risk_class", ""))
+        defect_class = str(case.get("defect_class", ""))
         coverage["defect_type"].add(defect_type)
         coverage["risk_class"].add(risk_class)
+        coverage["defect_class"].add(defect_class)
 
         trap = str(case.get("peer_review_trap_marker", "none"))
         if trap != "none":
@@ -193,6 +200,7 @@ def _validate_cross_refs(
 def _validate_coverage(coverage: dict[str, Any], errors: list[str]) -> None:
     _require_coverage("defect_type", REQUIRED_DEFECT_TYPES, coverage, errors)
     _require_coverage("risk_class", REQUIRED_RISK_CLASSES, coverage, errors)
+    _require_coverage("defect_class", REQUIRED_DEFECT_CLASSES, coverage, errors)
     _require_coverage("expected_gate", REQUIRED_GATES, coverage, errors)
     _require_coverage("expected_verdict", REQUIRED_VERDICTS, coverage, errors)
     if coverage["privacy_canary_count"] < 2:
@@ -216,6 +224,7 @@ def _empty_coverage() -> dict[str, Any]:
     return {
         "defect_type": set(),
         "risk_class": set(),
+        "defect_class": set(),
         "expected_gate": set(),
         "expected_verdict": set(),
         "privacy_canary_count": 0,
@@ -227,6 +236,7 @@ def _coverage_report(coverage: dict[str, Any]) -> dict[str, Any]:
     return {
         "defect_type": sorted(coverage["defect_type"]),
         "risk_class": sorted(coverage["risk_class"]),
+        "defect_class": sorted(coverage["defect_class"]),
         "expected_gate": sorted(coverage["expected_gate"]),
         "expected_verdict": sorted(coverage["expected_verdict"]),
         "privacy_canary_count": coverage["privacy_canary_count"],

@@ -657,3 +657,73 @@ def test_private_marker_refused() -> None:
             receipt_bundle_path="docs/receipts/manifest.json",
         )
     assert excinfo.value.report["decision"] == "privacy_marker_refused"
+
+
+def test_apply_runs_bridge_consensus_receipt_step_before_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def fake_receipt_step(**_kwargs: object) -> dict:
+        calls.append("receipt")
+        return {
+            "path": str(tmp_path / "bridge-consensus-receipt.json"),
+            "verification": {"ok": True, "reasons": []},
+        }
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        calls.append("merge")
+        return SimpleNamespace(returncode=0, stdout="abcdef\n")
+
+    monkeypatch.setattr(
+        "tools.idle_consensus_auto_merge._write_and_verify_bridge_consensus_receipt",
+        fake_receipt_step,
+    )
+    events = [
+        {
+            **_bridge_event(
+                agent="codex-lead-1",
+                type_="decision",
+                status="build_consensus",
+                task_id="idle-consensus-001",
+            ),
+            "payload": {"head": HEAD},
+        },
+        {
+            **_bridge_event(
+                agent="codex-tools-1",
+                type_="decision",
+                status="build_consensus",
+                ts="2026-05-18T01:01:00Z",
+                task_id="idle-consensus-001",
+            ),
+            "payload": {"head": HEAD},
+        },
+        {
+            **_bridge_event(
+                agent="claude-rco-1",
+                type_="decision",
+                status="rco_pass",
+                ts="2026-05-18T01:02:00Z",
+                task_id="idle-consensus-001",
+            ),
+            "payload": {"head": HEAD},
+        },
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(receipt_verified=True),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+        require_bridge_consensus=True,
+        receipt_out_dir=tmp_path,
+        receipt_bundle_path="docs/receipts/manifest.json",
+    )
+    assert calls == ["receipt", "merge"]
+    assert report["decision"] == "auto_merged"
+    assert report["bridge_consensus_receipt"]["path"] == str(
+        tmp_path / "bridge-consensus-receipt.json"
+    )

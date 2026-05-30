@@ -21,6 +21,9 @@ from waggledance.core.autonomy_growth.solver_dispatcher import (
 from waggledance.core.solver_synthesis.declarative_solver_spec import (
     SolverSpec,
 )
+from waggledance.core.solver_synthesis.deterministic_solver_compiler import (
+    compile_spec,
+)
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.storage.control_plane import ControlPlaneDB, ControlPlaneError
 
@@ -75,6 +78,7 @@ def _promotion_request(name: str) -> PromotionRequest:
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
         oracle_kind="formula_recompute",
+        require_adversarial_gate=False,  # T5b: tests opt out
     )
 
 
@@ -100,6 +104,7 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
         oracle_kind="formula_recompute",
+        require_adversarial_gate=False,  # T5b: tests opt out; gated paths covered in TestI11AdversarialGate
     ))
     assert outcome.decided is True
     assert outcome.decision == "auto_promoted"
@@ -159,6 +164,7 @@ def test_auto_promotion_receipt_binding_is_payload_free(
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
         oracle_kind="formula_recompute",
+        require_adversarial_gate=False,  # T5b: tests opt out; gated paths covered in TestI11AdversarialGate
     ))
 
     bundle = build_promotion_decision_receipt(
@@ -191,6 +197,7 @@ def test_auto_promotion_emits_chained_receipts_for_promote_and_rollback(
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
         oracle_kind="formula_recompute",
+        require_adversarial_gate=False,  # T5b: tests opt out; gated paths covered in TestI11AdversarialGate
     ))
     rollback = eng.rollback(
         "receipt_solver",
@@ -380,6 +387,7 @@ def test_auto_promotion_artifact_failure_blocks_commit(
             shadow_samples=_shadow_samples_simple(),
             oracle=_scalar_unit_conversion_oracle,
             oracle_kind="formula_recompute",
+            require_adversarial_gate=False,  # T5b: tests opt out
         ))
 
     assert cp.get_solver("artifact_fail") is None
@@ -420,6 +428,7 @@ def test_rejects_when_family_policy_missing(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert outcome.decided is False
     assert outcome.invariant_failed == "I2_family_policy_missing"
@@ -433,6 +442,7 @@ def test_rejects_when_family_policy_not_low_risk(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert outcome.decided is False
     assert outcome.invariant_failed == "I2_family_policy_not_low_risk"
@@ -449,6 +459,7 @@ def test_rejects_when_validation_fails(cp: ControlPlaneDB) -> None:
         validation_cases=bad_cases,
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert outcome.decided is False
     assert outcome.invariant_failed == "I5_validation_pass_rate_below_min"
@@ -465,6 +476,7 @@ def test_rejects_when_shadow_sample_count_below_min(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=[{"x": 1.0}, {"x": 2.0}, {"x": 3.0}],  # only 3 < 10
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert outcome.decided is False
     assert outcome.invariant_failed == "I6_shadow_sample_count_below_min"
@@ -498,6 +510,7 @@ def test_rejects_when_solver_already_auto_promoted(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     )
     first = eng.evaluate_candidate(request)
     assert first.decision == "auto_promoted"
@@ -518,6 +531,7 @@ def test_rejects_when_promotion_budget_exhausted(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert a.decision == "auto_promoted"
     b = eng.evaluate_candidate(PromotionRequest(
@@ -525,6 +539,7 @@ def test_rejects_when_promotion_budget_exhausted(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert b.decided is False
     assert b.invariant_failed == "I9_family_promotion_budget_exhausted"
@@ -538,6 +553,7 @@ def test_rollback_flips_status_and_records_decision(cp: ControlPlaneDB) -> None:
         validation_cases=_validation_cases_for_celsius_to_kelvin(),
         shadow_samples=_shadow_samples_simple(),
         oracle=_scalar_unit_conversion_oracle,
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert cp.get_solver("celsius_to_kelvin_v1").status == "auto_promoted"
 
@@ -610,6 +626,7 @@ def test_threshold_rule_round_trip(cp: ControlPlaneDB) -> None:
     outcome = eng.evaluate_candidate(PromotionRequest(
         spec=spec, validation_cases=cases, shadow_samples=samples,
         oracle=oracle, oracle_kind="formula_recompute",
+        require_adversarial_gate=False,  # T5b: tests opt out
     ))
     assert outcome.decision == "auto_promoted"
 
@@ -638,3 +655,93 @@ def test_no_partial_activation_on_shadow_failure(cp: ControlPlaneDB) -> None:
     assert stats.table_counts["validation_runs"] == 0
     assert stats.table_counts["shadow_evaluations"] == 0
     assert stats.table_counts["promotion_decisions"] == 0
+
+
+class TestI11AdversarialGate:
+    """T5b: fail-closed adversarial-corpus gate (I11), default ON.
+
+    The gate binds to the EXACT artifact being committed
+    (compiled.artifact_id) and re-derives the verdict from per-case results.
+    """
+
+    def _spec(self) -> SolverSpec:
+        return _scalar_unit_conversion_spec("adv_gate_solver")
+
+    def _artifact_id(self, spec: SolverSpec) -> str:
+        return compile_spec(spec).artifact_id
+
+    def _request(self, spec: SolverSpec, **kw) -> PromotionRequest:
+        return PromotionRequest(
+            spec=spec,
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+            **kw,
+        )
+
+    @staticmethod
+    def _report(bound_hash: str, *, n: int = 42, top_ok: bool = True,
+                last_case_ok: bool = True) -> dict:
+        cases = [{"case_id": f"c{i}", "ok": True} for i in range(n)]
+        if cases:
+            cases[-1]["ok"] = last_case_ok
+        return {
+            "bound_solver_hash": bound_hash,
+            "case_count": len(cases),
+            "cases": cases,
+            "ok": top_ok,
+            "coverage": {
+                "defect_class_counts": {
+                    "spec-gaming/reward-hacking": 1,
+                    "fail-open": 1,
+                    "hallucinated-success": 1,
+                }
+            },
+        }
+
+    def test_promotes_with_valid_bound_report(self, cp: ControlPlaneDB) -> None:
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        spec = self._spec()
+        out = eng.evaluate_candidate(
+            self._request(spec, adversarial_eval_report=self._report(self._artifact_id(spec)))
+        )
+        assert out.decision == "auto_promoted"
+        assert out.invariant_failed is None
+
+    def test_default_on_refuses_without_report(self, cp: ControlPlaneDB) -> None:
+        # Default require_adversarial_gate=True + no report => fail-closed.
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        out = eng.evaluate_candidate(self._request(self._spec()))
+        assert out.decided is False
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"
+
+    def test_refuses_report_bound_to_wrong_solver(self, cp: ControlPlaneDB) -> None:
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        out = eng.evaluate_candidate(
+            self._request(self._spec(), adversarial_eval_report=self._report("0" * 64))
+        )
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"
+
+    def test_refuses_below_floor(self, cp: ControlPlaneDB) -> None:
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        spec = self._spec()
+        out = eng.evaluate_candidate(
+            self._request(spec, adversarial_eval_report=self._report(self._artifact_id(spec), n=39))
+        )
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"
+
+    def test_refuses_forged_top_ok_with_uncaught_case(self, cp: ControlPlaneDB) -> None:
+        # report['ok']=True but a case is not caught -> re-derive refuses.
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        eng = AutoPromotionEngine(cp)
+        spec = self._spec()
+        out = eng.evaluate_candidate(
+            self._request(spec, adversarial_eval_report=self._report(
+                self._artifact_id(spec), top_ok=True, last_case_ok=False))
+        )
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"

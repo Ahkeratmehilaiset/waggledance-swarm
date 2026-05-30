@@ -350,10 +350,10 @@ def all_seeds() -> Iterable[tuple[str, str, str, dict]]:
 # -- runner -------------------------------------------------------------
 
 
-def run(out_dir: Path, db_path: Path) -> dict:
+def run(out_dir: Path, db_path: Path, *, require_adversarial_gate: bool = True) -> dict:
     cp = ControlPlaneDB(db_path)
     cp.migrate()
-    grower = LowRiskGrower(cp)
+    grower = LowRiskGrower(cp, require_adversarial_gate=require_adversarial_gate)
     grower.ensure_low_risk_policies()
 
     # Phase 12 step 1: detector records signals (self-starting evidence)
@@ -381,7 +381,10 @@ def run(out_dir: Path, db_path: Path) -> dict:
     )
 
     # Phase 12 step 3: scheduler drains the queue end-to-end
-    scheduler = AutogrowthScheduler(cp, scheduler_id="mass_proof_scheduler")
+    scheduler = AutogrowthScheduler(
+        cp, scheduler_id="mass_proof_scheduler",
+        require_adversarial_gate=require_adversarial_gate,
+    )
     drained = scheduler.run_until_idle(max_ticks=200)
 
     # Phase 12 step 4: dispatcher serves the auto-promoted solvers

@@ -37,6 +37,11 @@ REQUIRED_DEFECT_TYPES = {
     "payload_leak",
     "correlated_review_trap",
 }
+REQUIRED_DEFECT_CLASSES = {
+    "spec-gaming/reward-hacking",
+    "fail-open",
+    "hallucinated-success",
+}
 
 
 def _load_corpus(path: Path = CORPUS) -> dict:
@@ -232,6 +237,7 @@ def test_validator_json_report_includes_coverage() -> None:
         "review",
         "require_approval",
     }
+    assert REQUIRED_DEFECT_CLASSES <= set(report["coverage"]["defect_class"])
     assert report["case_count"] >= 38
 
 

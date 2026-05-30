@@ -11,7 +11,7 @@ from tools.run_mass_autogrowth_proof import run as run_mass_proof
 def test_mass_autogrowth_proof_promotes_30_solvers_self_started(
     tmp_path: Path,
 ) -> None:
-    proof = run_mass_proof(tmp_path / "out", tmp_path / "p.db")
+    proof = run_mass_proof(tmp_path / "out", tmp_path / "p.db", require_adversarial_gate=False)
 
     # Self-starting end-to-end: 30 distinct seeds, 30 promoted
     assert proof["self_starting"] is True
@@ -66,7 +66,7 @@ def test_mass_proof_self_starting_truthful(tmp_path: Path) -> None:
     row that itself was claimed by the scheduler — i.e., the path was
     self-started, not invoked manually solver-by-solver."""
 
-    proof = run_mass_proof(tmp_path / "out2", tmp_path / "p2.db")
+    proof = run_mass_proof(tmp_path / "out2", tmp_path / "p2.db", require_adversarial_gate=False)
     assert proof["scheduler"]["ticks_total"] >= 30
     # The scheduler id is recorded; not None or empty
     assert proof["scheduler"]["id"]

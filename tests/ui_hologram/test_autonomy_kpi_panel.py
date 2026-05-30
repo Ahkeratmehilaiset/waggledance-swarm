@@ -70,7 +70,7 @@ def _kelvin_gap(name="celsius_to_kelvin_v1") -> GapInput:
 def test_autonomy_panel_aggregates_after_grow_and_dispatch(
     cp: ControlPlaneDB,
 ) -> None:
-    g = LowRiskGrower(cp)
+    g = LowRiskGrower(cp, require_adversarial_gate=False)
     g.ensure_low_risk_policies()
     out = g.grow_from_gap(_kelvin_gap())
     assert out.accepted is True
@@ -95,7 +95,7 @@ def test_autonomy_panel_aggregates_after_grow_and_dispatch(
 
 def test_autonomy_panel_reflects_rollback_in_aggregate(cp: ControlPlaneDB) -> None:
     from waggledance.core.autonomy_growth import AutoPromotionEngine
-    g = LowRiskGrower(cp)
+    g = LowRiskGrower(cp, require_adversarial_gate=False)
     g.ensure_low_risk_policies()
     g.grow_from_gap(_kelvin_gap())
     AutoPromotionEngine(cp).rollback("celsius_to_kelvin_v1", "test_rollback")
@@ -114,7 +114,7 @@ def test_autonomy_panel_does_not_list_per_solver_state(cp: ControlPlaneDB) -> No
     one item per solver — every item is a metric_name/value pair.
     """
 
-    g = LowRiskGrower(cp)
+    g = LowRiskGrower(cp, require_adversarial_gate=False)
     g.ensure_low_risk_policies()
     for i in range(5):
         g.grow_from_gap(_kelvin_gap(name=f"k_to_c_v{i}"))

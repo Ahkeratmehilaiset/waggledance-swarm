@@ -106,7 +106,7 @@ def _run_corpus(
     return results, latencies_ms
 
 
-def run(out_dir: Path, db_path: Path) -> dict:
+def run(out_dir: Path, db_path: Path, *, require_adversarial_gate: bool = True) -> dict:
     # The proof requires a pristine DB so pass 1 truthfully misses and
     # pass-pre-cache truthfully measures the SQLite-bound dispatch
     # cost. The default db_path uses a `.db` extension so it is
@@ -126,7 +126,7 @@ def run(out_dir: Path, db_path: Path) -> dict:
                 pass
     cp = ControlPlaneDB(db_path)
     cp.migrate()
-    grower = LowRiskGrower(cp)
+    grower = LowRiskGrower(cp, require_adversarial_gate=require_adversarial_gate)
     grower.ensure_low_risk_policies(max_auto_promote=200)
 
     seeds = all_canonical_seeds()
@@ -193,7 +193,10 @@ def run(out_dir: Path, db_path: Path) -> dict:
         cp, candidate_signals=in_memory_signals,
         min_signals_per_intent=1, autoenqueue=True,
     )
-    scheduler = AutogrowthScheduler(cp, scheduler_id="phase14_proof_scheduler")
+    scheduler = AutogrowthScheduler(
+        cp, scheduler_id="phase14_proof_scheduler",
+        require_adversarial_gate=require_adversarial_gate,
+    )
     drained = scheduler.run_until_idle(max_ticks=500)
 
     # ── Pass pre_cache: same corpus, but routed through SolverRouter

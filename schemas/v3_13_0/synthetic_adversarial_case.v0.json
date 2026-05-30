@@ -37,6 +37,14 @@
         "tool_argument_abuse"
       ]
     },
+    "defect_class": {
+      "type": "string",
+      "enum": [
+        "spec-gaming/reward-hacking",
+        "fail-open",
+        "hallucinated-success"
+      ]
+    },
     "intent": {
       "type": "string",
       "minLength": 20,

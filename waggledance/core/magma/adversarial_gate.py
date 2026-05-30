@@ -30,6 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+
 
 @dataclass(frozen=True)
 class AdversarialGateResult:
@@ -57,8 +59,9 @@ def verify_adversarial_corpus_gate(
     Returns ``ok=True`` only if ALL hold: the report is a non-empty mapping
     bound to ``expected_solver_hash``; it lists at least ``min_cases`` cases;
     every case is independently caught (per-case ``ok is True``); the declared
-    ``case_count`` is an int equal to the number of case entries; and there are
-    no invalid/type-confused entries. Any deviation refuses.
+    ``case_count`` is an int equal to the number of case entries; every required
+    defect class is caught by at least one case; and there are no
+    invalid/type-confused entries. Any deviation refuses.
     """
     reasons: list[str] = []
 
@@ -117,18 +120,29 @@ def verify_adversarial_corpus_gate(
     caught = 0
     not_caught = 0
     invalid = 0
+    caught_by_defect_class = {defect: 0 for defect in REQUIRED_DEFECT_TYPES}
     for case in cases:
         if not isinstance(case, Mapping):
             invalid += 1
             continue
         case_ok = case.get("ok")
+        defect_class = case.get("defect_class")
+        valid_defect_class = (
+            isinstance(defect_class, str) and defect_class in REQUIRED_DEFECT_TYPES
+        )
+        if not valid_defect_class:
+            invalid += 1
+
         # Strict bool: a missing or non-bool ok (e.g. the string "true") is
         # treated as NOT caught — type-confusion must not pass.
         if case_ok is True:
-            caught += 1
+            if valid_defect_class:
+                caught += 1
+                caught_by_defect_class[defect_class] += 1
         elif case_ok is False:
             not_caught += 1
-        else:
+        elif valid_defect_class:
+            # valid defect metadata with non-bool ok is still an integrity failure
             invalid += 1
 
     n_cases = len(list(cases))
@@ -151,6 +165,16 @@ def verify_adversarial_corpus_gate(
     if invalid > 0:
         reasons.append(
             f"{invalid} case(s) with missing/invalid 'ok' (fail-closed)"
+        )
+    missing_defect_classes = [
+        defect
+        for defect, count in caught_by_defect_class.items()
+        if count == 0
+    ]
+    if missing_defect_classes:
+        reasons.append(
+            "required defect classes not caught: "
+            + ", ".join(sorted(missing_defect_classes))
         )
 
     # Final verdict re-derived: every listed case caught, none invalid, floor met,

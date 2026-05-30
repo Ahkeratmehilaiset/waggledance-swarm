@@ -20,6 +20,7 @@ def test_real_corpus_all_caught_and_bound():
     assert r["bound_solver_hash"] == SOLVER
     assert r["case_count"] >= 40
     assert all(c["ok"] for c in r["cases"])
+    assert all("defect_class" in c for c in r["cases"])
 
 
 def test_empty_solver_hash_fails_closed():

@@ -9,6 +9,7 @@ import sys
 from typing import Any, Sequence
 
 import jsonschema
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,20 +24,6 @@ EXPECTATION_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_expectation.v0.json"
 DEFAULT_DIR = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus"
 DEFAULT_CORPUS = DEFAULT_DIR / "v0.json"
 DEFAULT_EXPECTATIONS = DEFAULT_DIR / "v0_expectations.json"
-REQUIRED_DEFECT_TYPES = {
-    "charter_violation",
-    "risk_escalation",
-    "subtle_drift",
-    "privilege_leak",
-    "payload_leak",
-    "correlated_review_trap",
-    "policy_bypass",
-    "tool_argument_abuse",
-    "spec-gaming",
-    "fail-open",
-    "hallucinated-success",
-    "regression-process",
-}
 REQUIRED_RISK_CLASSES = {
     "informational",
     "internal_memory",

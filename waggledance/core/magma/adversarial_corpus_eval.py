@@ -26,6 +26,23 @@ _ROOT = Path(__file__).resolve().parents[3]
 _CORPUS_DIR = _ROOT / "tests" / "fixtures" / "magma_adversarial_corpus"
 DEFAULT_CORPUS_PATH = _CORPUS_DIR / "v0.json"
 DEFAULT_EXPECTATIONS_PATH = _CORPUS_DIR / "v0_expectations.json"
+REQUIRED_DEFECT_TYPES = {
+    "charter_violation",
+    "fail-open",
+    "hallucinated-success",
+    "governance_bypass",
+    "path_escape",
+    "policy_bypass",
+    "payload_leak",
+    "correlated_review_trap",
+    "risk_escalation",
+    "regression-process",
+    "evidence_spoofing",
+    "spec-gaming",
+    "subtle_drift",
+    "privilege_leak",
+    "tool_argument_abuse",
+}
 
 
 class AdversarialCorpusEvalError(RuntimeError):
@@ -46,9 +63,10 @@ def run_adversarial_corpus_evaluation(
 
     Returns a report bound to ``bound_solver_hash`` in the shape
     ``verify_adversarial_corpus_gate`` consumes: ``bound_solver_hash``,
-    ``case_count``, ``cases`` (each ``{case_id, ok}`` where ``ok`` is whether
-    the policy caught the adversarial case), and a re-derivable top-level
-    ``ok``. Raises :class:`AdversarialCorpusEvalError` on any fixture problem
+    ``case_count``, ``cases`` (each ``{case_id, defect_class, ok}`` where
+    ``ok`` is whether the policy caught the adversarial case and ``defect_class``
+    is the fixture ``defect_type``), and a re-derivable top-level ``ok``.
+    Raises :class:`AdversarialCorpusEvalError` on any fixture problem
     (the engine treats that fail-closed).
     """
     if not isinstance(bound_solver_hash, str) or not bound_solver_hash.strip():
@@ -80,6 +98,7 @@ def run_adversarial_corpus_evaluation(
         if not isinstance(case, dict):
             raise AdversarialCorpusEvalError("corpus case is not an object")
         case_id = str(case.get("case_id", ""))
+        defect_class = case.get("defect_type")
         expectation = expectations.get(case_id)
         if expectation is None:
             raise AdversarialCorpusEvalError(
@@ -91,7 +110,13 @@ def run_adversarial_corpus_evaluation(
         reasons_ok = set(actual["reason_codes"]) == set(
             expectation["expected_reason_codes"]
         )
-        cases.append({"case_id": case_id, "ok": bool(gate_ok and verdict_ok and reasons_ok)})
+        cases.append(
+            {
+                "case_id": case_id,
+                "defect_class": defect_class,
+                "ok": bool(gate_ok and verdict_ok and reasons_ok),
+            }
+        )
 
     return {
         "eval_version": "magma.adversarial_corpus_eval.core.v0",

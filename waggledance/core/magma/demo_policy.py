@@ -42,6 +42,16 @@ _BASE_POLICY_BY_DEFECT: dict[str, dict[str, Any]] = {
         "verdict": "refuse",
         "reason_codes": ["tool:argument_constraint", "path:scope_escape"],
     },
+    "governance_bypass": {
+        "actual_gate": "refuse",
+        "verdict": "refuse",
+        "reason_codes": ["governance:blocking_bypass", "policy:single_vote_violation"],
+    },
+    "path_escape": {
+        "actual_gate": "refuse",
+        "verdict": "refuse",
+        "reason_codes": ["path:root_escape", "filesystem:sandbox_violation"],
+    },
     "spec-gaming": {
         "actual_gate": "require_approval",
         "verdict": "fail",

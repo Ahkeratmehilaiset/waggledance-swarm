@@ -105,6 +105,7 @@ def test_grok_response_allows_absent_pr_head_for_non_pr_plan_review() -> None:
     [
         ({}, "grok freshness proof required"),
         ([], "grok freshness proof requires payload object"),
+        ({"freshness": []}, "grok freshness proof required"),
         ({"freshness": {"freshness_ok": True}}, "remote_main_sha"),
         (
             {"freshness": _freshness(freshness_ok=False)},
@@ -116,6 +117,10 @@ def test_grok_response_allows_absent_pr_head_for_non_pr_plan_review() -> None:
         ),
         (
             {"freshness": _freshness(remote_main_sha="abc1234")},
+            "remote_main_sha",
+        ),
+        (
+            {"freshness": _freshness(remote_main_sha="A" * 40)},
             "remote_main_sha",
         ),
         (

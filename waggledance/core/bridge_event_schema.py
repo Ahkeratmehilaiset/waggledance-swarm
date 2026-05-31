@@ -50,7 +50,7 @@ KNOWN_EVENT_TYPES = frozenset({
 })
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
 KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
-FULL_GIT_SHA_PATTERN = r"^[0-9a-fA-F]{40}$"
+FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
 GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
 GROK_REVIEW_STATUSES = frozenset({"grok_response"})
 GROK_FRESHNESS_REQUIRED_SHA_FIELDS = (
@@ -199,7 +199,7 @@ class BridgeEvent(BaseModel):
             value = freshness.get(field_name)
             if not _is_full_git_sha(value):
                 raise ValueError(
-                    f"grok freshness {field_name} must be full 40-hex sha"
+                    f"grok freshness {field_name} must be lowercase 40-hex sha"
                 )
         remote_main_sha = freshness["remote_main_sha"]
         local_origin_main_sha = freshness["local_origin_main_sha"]
@@ -209,7 +209,7 @@ class BridgeEvent(BaseModel):
             value = freshness.get(field_name)
             if value is not None and not _is_full_git_sha(value):
                 raise ValueError(
-                    f"grok freshness {field_name} must be full 40-hex sha"
+                    f"grok freshness {field_name} must be lowercase 40-hex sha"
                 )
 
 

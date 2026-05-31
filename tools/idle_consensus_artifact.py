@@ -32,7 +32,17 @@ from waggledance.core.magma.receipt_bundle import (
 
 
 DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
+REPLAY_SEED_VERSION = "idle_consensus_replay_seed.v0"
+POLICY_VERSION = "policy:idle_consensus_artifact:v1"
+CHARTER_VERSION = "charter:idle_autonomy:v1"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
+CANDIDATE_MATERIAL_KEYS = (
+    "candidate_diff",
+    "candidate_diff_text",
+    "candidate_changed_paths",
+    "changed_paths",
+    "diff_text",
+)
 IMPLEMENTATION_HINTS = (
     "create pr",
     "open pr",
@@ -191,6 +201,7 @@ def write_idle_consensus_artifact(
             "no_external_effect",
         ],
     }
+    artifact["replay_seed"] = build_idle_consensus_replay_seed(artifact)
     markdown = _markdown(artifact)
     _assert_no_implementation_hints(markdown)
     receipt_bundle = None
@@ -232,6 +243,86 @@ class ArtifactError(ValueError):
     def __init__(self, message: str, report: dict[str, Any]) -> None:
         super().__init__(message)
         self.report = report
+
+
+def build_idle_consensus_replay_seed(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    """Build digest-only metadata for later counterfactual replay admission."""
+    if "replay_seed" in artifact:
+        raise ArtifactError(
+            "idle consensus artifact is not replay-seed eligible",
+            {
+                "decision": "replay_seed_refused",
+                "errors": ["existing replay_seed must not be provided"],
+                "exit_code": 2,
+            },
+        )
+    material_keys = sorted(key for key in CANDIDATE_MATERIAL_KEYS if key in artifact)
+    if material_keys:
+        raise ArtifactError(
+            "idle consensus artifact is not replay-seed eligible",
+            {
+                "decision": "replay_seed_refused",
+                "errors": ["candidate diff material is not allowed in replay seed source"],
+                "candidate_material_keys": material_keys,
+                "exit_code": 2,
+            },
+        )
+    if artifact.get("operator_gate_required") is not True:
+        raise ArtifactError(
+            "idle consensus artifact is not replay-seed eligible",
+            {
+                "decision": "replay_seed_refused",
+                "errors": ["operator gate is required for replay seed"],
+                "exit_code": 2,
+            },
+        )
+    if artifact.get("auto_execute") is not False:
+        raise ArtifactError(
+            "idle consensus artifact is not replay-seed eligible",
+            {
+                "decision": "replay_seed_refused",
+                "errors": ["auto_execute must be false for replay seed"],
+                "exit_code": 2,
+            },
+        )
+    artifact_without_seed = dict(artifact)
+    convergence = artifact.get("convergence", {})
+    transcript = artifact.get("transcript", [])
+    return {
+        "seed_version": REPLAY_SEED_VERSION,
+        "purpose": "future_counterfactual_candidate_diff_replay",
+        "dry_run_only": True,
+        "candidate_diff_included": False,
+        "external_effect": False,
+        "writes_applied": False,
+        "would_create_task": False,
+        "would_create_branch": False,
+        "would_create_pr": False,
+        "would_merge": False,
+        "consensus_artifact": {
+            "artifact_version": str(artifact.get("artifact_version", "")),
+            "artifact_id": str(artifact.get("artifact_id", "")),
+            "digest": sha256_digest(artifact_without_seed),
+        },
+        "convergence_digest": sha256_digest(convergence),
+        "transcript_digest": sha256_digest(transcript),
+        "policy_ref": POLICY_VERSION,
+        "charter_ref": CHARTER_VERSION,
+        "required_future_inputs": [
+            "changed_paths",
+            "candidate_diff_digest",
+            "candidate_diff_charter_gates",
+            "counterfactual_eval_receipt",
+            "operator_review_decision",
+        ],
+        "next_required_gates": [
+            "candidate_changed_paths_confinement",
+            "candidate_diff_digest_rederived",
+            "candidate_diff_charter_gate",
+            "counterfactual_eval_receipt",
+            "operator_review_gate",
+        ],
+    }
 
 
 def _read_events(path: Path) -> list[dict[str, Any]]:
@@ -343,6 +434,21 @@ def _markdown(artifact: Mapping[str, Any]) -> str:
                 f"- Proposal id: `{payload['proposal_id']}`",
                 f"- Problem: {payload['problem_statement']}",
                 f"- Tradeoff: {payload['tradeoff_axis']}",
+            ]
+        )
+    if "replay_seed" in artifact:
+        seed = artifact["replay_seed"]
+        lines.extend(
+            [
+                "",
+                "## Replay Seed",
+                "",
+                f"- Seed version: `{seed['seed_version']}`",
+                f"- Consensus artifact digest: `{seed['consensus_artifact']['digest']}`",
+                f"- Transcript digest: `{seed['transcript_digest']}`",
+                f"- Convergence digest: `{seed['convergence_digest']}`",
+                "",
+                "The replay seed stores digest metadata only. It includes no candidate diff and authorizes no writes or external effect.",
             ]
         )
     lines.append("")

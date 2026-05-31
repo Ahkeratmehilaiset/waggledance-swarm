@@ -81,6 +81,52 @@ the import decision, digest bindings, replay metadata refs, and
 authority/privacy flags, while redacting the operator decision id and recording
 no local paths.
 
+## Replay Admission Contract Surface
+
+The v0 importer is the admission gate for any future multi-instance replay
+flywheel. A receiver must treat a share manifest as replay metadata only until
+all of these checks pass:
+
+- The input validates as `magma.share_manifest.v0`.
+- `purpose` is the expected review purpose, normally
+  `cross_instance_replay`.
+- `export_policy.contract` is `sanitization_v0`.
+- `export_policy.payload_visibility` is `no_payload`.
+- Every payload/raw-material allowance remains `false`.
+- `artifact_counts.payload_files` is `0`.
+- `forbidden_material_absent` and each entry's
+  `sanitization.raw_material_removed` include `raw_payload`,
+  `replacement_map`, `raw_context`, `raw_solver_output`, and
+  `raw_query_digest`.
+- `created_at_utc` is UTC, not in the future beyond the importer clock-skew
+  tolerance, and within the receiver's max-age window.
+- `sanitized_source_manifest_digest` still matches the separately supplied
+  local receipt-bundle `manifest.json`.
+- Each entry's receipt digest, EvaluationResult digest, subject type, risk
+  class, gate decisions, and verdict still match the local receipt/evaluation
+  pair.
+
+The only successful admission output is a local report or optional
+operator-owned peer-review handoff. It must keep:
+
+- `replay_metadata_only` true.
+- `no_authority_import` true.
+- `runtime_export_enabled`, `runtime_authority_granted`, and
+  `runtime_authority_changed` false.
+- `payload_files_imported` as `0`.
+- `payload_digest_imported`, `raw_material_imported`, and
+  `replacement_map_imported` false.
+- Local paths, operator decision ids, payload text, raw context, raw solver
+  outputs, replacement maps, and deterministic raw-query digests out of the
+  serialized handoff.
+
+A receiver must reject the admission attempt on schema failure, missing
+sanitization inventory, any relaxed payload/raw-material flag, stale or future
+timestamps, share-id or purpose mismatch, source-manifest digest drift,
+per-entry digest drift, categorical context drift, failed local source receipt
+verification, unsafe source-manifest paths, or a failed import report being
+handed to peer review.
+
 Example:
 
 ```powershell

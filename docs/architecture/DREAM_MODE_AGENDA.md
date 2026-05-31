@@ -57,8 +57,14 @@ would swallow charter constraints:
    schema: `schemas/v3_13_0/magma_receipt.v1.json`, tests:
    `tests/unit/test_magma_receipt_emitter.py`.
 2. **Multi-instance replay flywheel** — cross-instance signed MAGMA
-   share with sanitization contract. *Status:* not yet built; design
-   surface only (see §C / §D seeds below).
+   share with sanitization contract. *Status:* partial; the v0
+   payload-free share/import/export contract exists in
+   `schemas/v3_13_0/magma_share_manifest.v0.json`,
+   `waggledance/core/magma/share_manifest.py`,
+   `tools/export_magma_share_manifest.py`, and
+   `tools/import_magma_share_manifest.py`. The replay flywheel still
+   needs an explicit replay-admission contract surface before any
+   cross-instance transport or runtime authority is considered.
 3. **Counterfactual eval pipeline** — replay a stored consensus
    against a candidate diff. *Status:* partial; see
    `tools/run_pdam_counterfactual_demo.py`,
@@ -97,7 +103,7 @@ landscape):
 | **Local intelligence + distillation** | `waggledance/core/local_intelligence/`, `LOCAL_MODEL_DISTILLATION.md` | Local-first claim vs. cloud-fallback budget; sweep against newer Ollama models. |
 | **World model + reality view** | `waggledance/core/world_model/`, `waggledance/ui/hologram/` | Truthfulness audit cadence; calibration-drift detector progress. |
 | **Synthetic adversarial corpus** | not yet built (5-ingredient #5) | Pure greenfield slice; design first; smallest seed corpus. |
-| **Multi-instance replay flywheel** | not yet built (5-ingredient #2) | Sanitization contract; cross-instance signed MAGMA share. |
+| **Multi-instance replay flywheel** | `waggledance/core/magma/share_manifest.py`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `tools/export_magma_share_manifest.py`, `tools/import_magma_share_manifest.py` | Replay-admission contract; cross-instance signed MAGMA share; no-authority import boundary. |
 
 ## Strategic seed categories
 
@@ -189,9 +195,10 @@ demonstrable improvement that ships as a PR ≤ 400 LoC and passes the
 This is the strategic backbone (see §Five-ingredient roadmap above for
 the enumeration and current per-ingredient status). Allowed seeds:
 
-* Ingredient #2 (multi-instance flywheel): "Sketch a sanitization
-  contract for cross-instance MAGMA share that survives charter
-  audit; no code yet, just the contract surface."
+* Ingredient #2 (multi-instance flywheel): "Tighten the replay
+  admission contract for a received `magma.share_manifest.v0`: list
+  the required no-payload/no-authority checks, rejection modes, and
+  report invariants before adding any cross-instance transport."
 * Ingredient #3 (counterfactual eval pipeline): "Identify the
   smallest extension to `tools/idle_consensus_artifact.py` that
   would let a stored consensus be replayed against a candidate diff

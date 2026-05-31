@@ -16,6 +16,11 @@ import pytest
 
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.solver_synthesis.hex_cell_competition import (
+    HEX_CELL_ACTIVATION_PREFLIGHT_NEXT_GATE,
+    HEX_CELL_ACTIVATION_PREFLIGHT_RECEIPT_EVENT_TYPE,
+    HEX_CELL_ACTIVATION_PREFLIGHT_SCHEMA_VERSION,
+    HEX_CELL_ACTIVATION_PREFLIGHT_STATUS,
+    HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION,
     HEX_CELL_COMPETITION_AUTHORITY_STATUS,
     HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
     HEX_CELL_COMPETITION_RANKING_RULE,
@@ -29,12 +34,19 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (
     HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE,
     HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
     HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+    build_hex_cell_activation_preflight,
     build_hex_cell_competition_result,
     build_hex_cell_operator_gate_authorization,
     build_hex_cell_promotion_acceptance,
 )
 from waggledance.core.solver_synthesis.solver_candidate_store import (
     SolverCandidate,
+)
+from waggledance.core.v3_13_0.solver_provenance import (
+    SolverCandidateRecord,
+    VerificationResult,
+    build_solver_provenance_transition_receipt,
+    canonicalize_manifest,
 )
 
 
@@ -162,6 +174,56 @@ def _acceptance_id(
         "hexcellaccept:"
         f"{cell_id}:{capability_id}:"
         f"{acceptance_digest.removeprefix('sha256:')[:16]}"
+    )
+
+
+def _authorization_from_fixture():
+    payload = _load_fixture()
+    _candidates, competition = _build_from_fixture(payload)
+    acceptance = build_hex_cell_promotion_acceptance(
+        competition=competition
+    )
+    return build_hex_cell_operator_gate_authorization(
+        acceptance=acceptance,
+        operator_approval_id="approval:hexcell:thermal:001",
+        approved_by="operator:jkh",
+        acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+    )
+
+
+def _solver_provenance_activation_bundle(
+    candidate_id: str,
+    *,
+    transition: str = "activation_authorised",
+) -> dict:
+    canonical, digest = canonicalize_manifest({
+        "candidate_id": candidate_id,
+        "template_family": "HexCellPreflightDemoSolver",
+        "version": 1,
+    })
+    candidate = SolverCandidateRecord(
+        candidate_id=candidate_id,
+        manifest_canonical_json=canonical,
+        manifest_sha256=digest,
+        target_domain="DOM-011",
+        target_write_risk="local_artifact",
+        activation_state="signed",
+    )
+    verification = VerificationResult(
+        valid=True,
+        candidate_id=candidate_id,
+        activation_state="signed",
+        has_owner_signature=True,
+        has_peer_signature=True,
+        manifest_sha256_observed=digest,
+    )
+    return build_solver_provenance_transition_receipt(
+        candidate=candidate,
+        transition=transition,
+        audit_event_ref="evt_hexcell_preflight",
+        bridge_event_ref="bridge_hexcell_preflight",
+        verification=verification,
+        new_state="activated",
     )
 
 
@@ -583,6 +645,129 @@ def test_operator_gate_authorization_rejects_precleared_authority_drift():
             operator_approval_id="approval:hexcell:thermal:001",
             approved_by="operator:jkh",
             acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+        )
+
+
+def test_builds_activation_preflight_without_runtime_authority():
+    authorization = _authorization_from_fixture()
+    bundle = _solver_provenance_activation_bundle(
+        authorization.accepted_candidate_id
+    )
+
+    preflight = build_hex_cell_activation_preflight(
+        authorization=authorization,
+        solver_provenance_bundle=bundle,
+    )
+
+    assert preflight.schema_version == (
+        HEX_CELL_ACTIVATION_PREFLIGHT_SCHEMA_VERSION
+    )
+    assert preflight.authorization_id == authorization.authorization_id
+    assert preflight.authorization_digest == authorization.authorization_digest
+    assert preflight.accepted_candidate_id == (
+        authorization.accepted_candidate_id
+    )
+    assert preflight.solver_candidate_id == authorization.accepted_candidate_id
+    assert preflight.activation_transition == (
+        HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION
+    )
+    assert preflight.activation_preflight_status == (
+        HEX_CELL_ACTIVATION_PREFLIGHT_STATUS
+    )
+    assert preflight.required_next_gate == (
+        HEX_CELL_ACTIVATION_PREFLIGHT_NEXT_GATE
+    )
+    assert preflight.required_receipt_event_type == (
+        HEX_CELL_ACTIVATION_PREFLIGHT_RECEIPT_EVENT_TYPE
+    )
+    assert preflight.receipt_bound_activation_verified is True
+    assert preflight.operator_gate_cleared is True
+    assert preflight.runtime_authority_granted is False
+    assert preflight.runtime_traffic_mutation_applied is False
+    assert preflight.candidate_state_mutation_applied is False
+    assert preflight.preflight_id.startswith("hexcellpreflight:")
+    assert preflight.preflight_digest.startswith("sha256:")
+
+    as_dict = preflight.to_dict()
+    assert as_dict["runtime_authority_granted"] is False
+    assert as_dict["receipt_bound_activation_verified"] is True
+
+
+def test_activation_preflight_rejects_candidate_mismatch():
+    authorization = _authorization_from_fixture()
+    bundle = _solver_provenance_activation_bundle("other-candidate")
+
+    with pytest.raises(ValueError, match="accepted_candidate_id"):
+        build_hex_cell_activation_preflight(
+            authorization=authorization,
+            solver_provenance_bundle=bundle,
+        )
+
+
+def test_activation_preflight_rejects_receipt_event_candidate_mismatch():
+    authorization = _authorization_from_fixture()
+    bundle = _solver_provenance_activation_bundle(
+        authorization.accepted_candidate_id,
+    )
+    forged = dict(bundle)
+    forged["receipt"] = dict(bundle["receipt"])
+    forged["receipt"]["event_id"] = (
+        "magma:solver_provenance:activation_authorised:wrong-candidate"
+    )
+
+    with pytest.raises(ValueError, match="event_id"):
+        build_hex_cell_activation_preflight(
+            authorization=authorization,
+            solver_provenance_bundle=forged,
+        )
+
+
+def test_activation_preflight_rejects_non_activation_receipt():
+    authorization = _authorization_from_fixture()
+    bundle = _solver_provenance_activation_bundle(
+        authorization.accepted_candidate_id,
+    )
+    forged = dict(bundle)
+    forged["payload"] = dict(bundle["payload"])
+    forged["payload"]["transition"] = "activation_revoked"
+
+    with pytest.raises(ValueError, match="activation_authorised"):
+        build_hex_cell_activation_preflight(
+            authorization=authorization,
+            solver_provenance_bundle=forged,
+        )
+
+
+def test_activation_preflight_rejects_evaluation_digest_drift():
+    authorization = _authorization_from_fixture()
+    bundle = _solver_provenance_activation_bundle(
+        authorization.accepted_candidate_id,
+    )
+    forged = dict(bundle)
+    forged["evaluation_result"] = dict(bundle["evaluation_result"])
+    forged["evaluation_result"]["target_digest"] = "sha256:" + "0" * 64
+
+    with pytest.raises(ValueError, match="target_digest"):
+        build_hex_cell_activation_preflight(
+            authorization=authorization,
+            solver_provenance_bundle=forged,
+        )
+
+
+def test_activation_preflight_rejects_pregranted_authority():
+    authorization = _authorization_from_fixture()
+    forged_authorization = replace(
+        authorization,
+        runtime_authority_granted=True,
+    )
+    bundle = _solver_provenance_activation_bundle(
+        authorization.accepted_candidate_id,
+    )
+
+    with pytest.raises(ValueError, match="pre-granted runtime authority"):
+        build_hex_cell_activation_preflight(
+            authorization=forged_authorization,
+            solver_provenance_bundle=bundle,
         )
 
 

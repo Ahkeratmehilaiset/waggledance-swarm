@@ -9,6 +9,8 @@ import sys
 from tools.run_magma_adversarial_eval import build_adversarial_eval_report
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.magma.demo_policy import demo_policy_for_case
 
 
@@ -55,7 +57,7 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     expected_case_count = _expected_case_count()
     report = build_adversarial_eval_report()
 
-    assert report["eval_version"] == "magma.adversarial_eval.v0"
+    assert report["eval_version"] == "magma.adversarial_eval.v1"
     assert report["writes_applied"] is False
     assert report["ok"] is True
     assert report["case_count"] == expected_case_count
@@ -64,6 +66,10 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["gate_accuracy"] == 1.0
     assert report["verdict_accuracy"] == 1.0
     assert report["reason_code_accuracy"] == 1.0
+    assert all(
+        case["defect_class"] in REQUIRED_DEFECT_TYPES
+        for case in report["cases"]
+    )
     assert report["full_match_count"] == expected_case_count
     assert report["partial_match_count"] == 0
     assert report["mismatch_count"] == 0
@@ -77,6 +83,21 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["catch_agent_bucket_status"] == "redacted_hidden_expectations_v0"
     assert "failure_buckets" not in report
     assert "receipt_bundle" not in report
+
+
+def test_report_can_feed_gate_when_bound_to_solver() -> None:
+    solver_hash = "solver-artifact-hash"
+    report = build_adversarial_eval_report(bound_solver_hash=solver_hash)
+
+    gate = verify_adversarial_corpus_gate(
+        report=report,
+        expected_solver_hash=solver_hash,
+        min_cases=len(REQUIRED_DEFECT_TYPES),
+    )
+
+    assert report["bound_solver_hash"] == solver_hash
+    assert gate.ok is True
+    assert gate.reasons == ()
 
 
 def test_scores_phase_d_folded_expansion_provenance() -> None:

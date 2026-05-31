@@ -494,20 +494,23 @@ def _adversarial_report_blockers(adversarial_report: Mapping[str, Any]) -> list[
     pass_count = 0
     fail_count = 0
     invalid_count = 0
+    caught_by_defect_class = {defect: 0 for defect in REQUIRED_DEFECT_TYPES}
     for case in cases:
         if not isinstance(case, Mapping):
             invalid_count += 1
             continue
         case_invalid = False
         defect_class = case.get("defect_class")
-        if (
-            not isinstance(defect_class, str)
-            or defect_class not in REQUIRED_DEFECT_TYPES
-        ):
+        valid_defect_class = (
+            isinstance(defect_class, str) and defect_class in REQUIRED_DEFECT_TYPES
+        )
+        if not valid_defect_class:
             case_invalid = True
         case_ok = case.get("ok")
         if case_ok is True:
             pass_count += 1
+            if valid_defect_class:
+                caught_by_defect_class[defect_class] += 1
         elif case_ok is False:
             fail_count += 1
         else:
@@ -519,6 +522,8 @@ def _adversarial_report_blockers(adversarial_report: Mapping[str, Any]) -> list[
         blockers.append("adversarial_eval_cases_invalid")
     if fail_count:
         blockers.append("adversarial_eval_cases_not_caught")
+    if any(count == 0 for count in caught_by_defect_class.values()):
+        blockers.append("adversarial_eval_required_defect_classes_missing")
     if adversarial_report.get("pass_count") != pass_count:
         blockers.append("adversarial_eval_pass_count_mismatch")
     if adversarial_report.get("fail_count") != fail_count + invalid_count:

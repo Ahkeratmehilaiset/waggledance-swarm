@@ -121,6 +121,24 @@ def test_forged_adversarial_case_aggregates_are_blocked() -> None:
     assert "adversarial_eval_fail_count_mismatch" in report["blockers"]
 
 
+def test_gutted_adversarial_defect_class_coverage_is_blocked() -> None:
+    adversarial = _adversarial_report()
+    one_defect = sorted(REQUIRED_DEFECT_TYPES)[0]
+    for case in adversarial["cases"]:
+        case["defect_class"] = one_defect
+
+    report = build_competitive_triad_simulation(
+        now_utc=_fixed_now(),
+        v12_proof=_v12_proof(),
+        rival_matrix=_rival_matrix(),
+        adversarial_report=adversarial,
+    )
+
+    assert report["ok"] is False
+    assert report["wd_signals"]["adversarial_full_pass"] is False
+    assert "adversarial_eval_required_defect_classes_missing" in report["blockers"]
+
+
 def test_render_markdown_carries_scope_and_next_100h() -> None:
     report = build_competitive_triad_simulation(
         now_utc=_fixed_now(),

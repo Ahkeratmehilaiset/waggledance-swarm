@@ -80,7 +80,9 @@ would swallow charter constraints:
    both agents must catch before a candidate solver is promoted.
    *Status:* fail-closed gate plus seed fixtures; the strict v0 corpus
    now declares a machine-checked held-out split for blind replay
-   growth. Critical-class multi-case floors remain a follow-up slice.
+   growth and enforces a two-case floor for the six highest-risk
+   critical defect classes. Broader ASI/OWASP mapping remains a
+   follow-up slice.
    (`tests/fixtures/magma_adversarial_corpus/v0.json`,
    `tools/validate_synthetic_adversarial_corpus.py`,
    `tools/run_magma_adversarial_eval.py`).
@@ -104,7 +106,7 @@ landscape):
 | **Bridge protocol** | `.agent-bridge/`, `tools/bridge_*`, `tools/work_queue*` | Two-agent activation loop (deferred); read/write-claim race surface; next-action accuracy. |
 | **Local intelligence + distillation** | `waggledance/core/local_intelligence/`, `LOCAL_MODEL_DISTILLATION.md` | Local-first claim vs. cloud-fallback budget; sweep against newer Ollama models. |
 | **World model + reality view** | `waggledance/core/world_model/`, `waggledance/ui/hologram/` | Truthfulness audit cadence; calibration-drift detector progress. |
-| **Synthetic adversarial corpus** | not yet built (5-ingredient #5) | Pure greenfield slice; design first; smallest seed corpus. |
+| **Synthetic adversarial corpus** | `tests/fixtures/magma_adversarial_corpus/`, `tools/validate_synthetic_adversarial_corpus.py`, `tools/run_magma_adversarial_eval.py` | Grow critical/ASI-aligned coverage without changing runtime authority; maintain blind replay split and expansion boundaries. |
 | **Multi-instance replay flywheel** | `waggledance/core/magma/share_manifest.py`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `tools/export_magma_share_manifest.py`, `tools/import_magma_share_manifest.py` | Replay-admission contract; cross-instance signed MAGMA share; no-authority import boundary. |
 
 ## Strategic seed categories

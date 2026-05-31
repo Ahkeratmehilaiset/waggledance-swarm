@@ -34,7 +34,7 @@ def _freshness(**overrides: object) -> dict[str, object]:
 
 def _grok_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
-        "ts_utc": "2026-05-31T18:12:00.000000Z",
+        "ts_utc": "2026-05-31T19:30:00.000000Z",
         "agent": "grok-scout-1",
         "type": "message",
         "task_id": "dream-mode-wd-sub-area-contracts-regression-gap-audit-2026-05-31",
@@ -67,6 +67,17 @@ def test_grok_response_requires_and_accepts_freshness_proof() -> None:
     assert isinstance(model, BridgeEvent)
     assert model.payload["freshness"]["freshness_ok"] is True
     assert model.payload["freshness"]["remote_main_sha"] == MAIN_SHA
+
+
+def test_pre_epoch_grok_response_remains_valid_for_append_only_history() -> None:
+    model = validate_event(
+        _grok_event(
+            ts_utc="2026-05-31T19:12:00.000000Z",
+            payload={},
+        )
+    )
+
+    assert model.payload == {}
 
 
 def test_grok_alias_response_uses_same_freshness_contract() -> None:

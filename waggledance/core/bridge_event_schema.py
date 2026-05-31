@@ -53,6 +53,7 @@ KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
 FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
 GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
 GROK_REVIEW_STATUSES = frozenset({"grok_response"})
+GROK_FRESHNESS_EPOCH_UTC = "2026-05-31T19:24:00Z"
 GROK_FRESHNESS_REQUIRED_SHA_FIELDS = (
     "remote_main_sha",
     "local_origin_main_sha",
@@ -188,6 +189,8 @@ class BridgeEvent(BaseModel):
             and self.status in GROK_REVIEW_STATUSES
         ):
             return
+        if not _is_at_or_after_utc(self.ts_utc, GROK_FRESHNESS_EPOCH_UTC):
+            return
         if not isinstance(self.payload, Mapping):
             raise ValueError("grok freshness proof requires payload object")
         freshness = self.payload.get("freshness")
@@ -274,6 +277,12 @@ def _is_valid_agent_id(value: str) -> bool:
 
 def _is_full_git_sha(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(FULL_GIT_SHA_PATTERN, value))
+
+
+def _is_at_or_after_utc(value: str, epoch: str) -> bool:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed_epoch = datetime.fromisoformat(epoch.replace("Z", "+00:00"))
+    return parsed >= parsed_epoch
 
 
 def validate_event_line(line: str, *, line_no: int = 1) -> BridgeEvent:
@@ -371,6 +380,7 @@ __all__ = [
     "BRIDGE_EVENT_SCHEMA_VERSION",
     "AGENT_ID_PATTERN",
     "FULL_GIT_SHA_PATTERN",
+    "GROK_FRESHNESS_EPOCH_UTC",
     "GROK_REVIEW_AGENTS",
     "GROK_REVIEW_STATUSES",
     "BridgeEvent",

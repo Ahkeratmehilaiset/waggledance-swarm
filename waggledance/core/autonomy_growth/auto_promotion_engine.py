@@ -41,6 +41,11 @@ from waggledance.core.storage.control_plane import (
     SolverRecord,
 )
 
+from .counterfactual_replay import (
+    A3_LABEL_INSUFFICIENT,
+    compute_counterfactual_delta,
+    derive_a3_label,
+)
 from .family_features import extract_features
 from .low_risk_policy import is_low_risk_family
 from .shadow_evaluator import (
@@ -60,6 +65,7 @@ PROMOTION_DECIDED_BY = "autopromotion_engine_v1"
 PROMOTION_POLICY_VERSION = "policy:auto_promotion_engine:v1"
 PROMOTION_CHARTER_VERSION = "charter:v1"
 PROMOTION_DOMAIN_THRESHOLD_VERSION = "threshold:auto_promotion_engine:v1"
+COUNTERFACTUAL_PROMOTION_SUMMARY_SCHEMA = "magma.counterfactual_promotion_summary.v0"
 
 # T5b: minimum adversarial-corpus size the I11 gate requires. The floor now
 # derives from ``len(REQUIRED_DEFECT_TYPES)`` to avoid stale hardcoded thresholds.
@@ -80,6 +86,10 @@ class PromotionRequest:
     # disabling it in production is on the charter code-pattern denylist.
     require_adversarial_gate: bool = True
     adversarial_eval_report: Optional[Any] = None
+    # T1 slice 2: optional A3 counterfactual replay evidence. This is never a
+    # promotion gate. If absent or malformed the promotion proceeds and the
+    # receipt records a skipped/failed counterfactual summary.
+    counterfactual_incumbent_spec: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,7 @@ class PromotionOutcome:
     error: Optional[str] = None
     promotion_decision_artifact: Optional[dict[str, Any]] = None
     promotion_decision_digest: Optional[str] = None
+    counterfactual: Optional[dict[str, Any]] = None
 
 
 class AutoPromotionReceiptEmissionError(ControlPlaneError):
@@ -243,6 +254,8 @@ class AutoPromotionEngine:
                     "I11_adversarial_corpus_gate",
                 )
 
+        counterfactual = _counterfactual_summary_for_request(request)
+
         # All invariants pass — persist promotion atomically
         return self._commit_promotion(
             spec=spec,
@@ -250,6 +263,7 @@ class AutoPromotionEngine:
             family_kind=family_kind,
             validation=validation,
             shadow=shadow,
+            counterfactual=counterfactual,
         )
 
     def rollback(
@@ -337,6 +351,7 @@ class AutoPromotionEngine:
                     decision_record_id=decision.id,
                     promotion_decision_artifact=decision_artifact,
                     promotion_decision_digest=decision_digest,
+                    counterfactual=None,
                 )
                 self._cp._conn.execute("COMMIT")  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
@@ -413,6 +428,7 @@ class AutoPromotionEngine:
         family_kind: str,
         validation: ValidationOutcome,
         shadow: ShadowOutcome,
+        counterfactual: dict[str, Any],
     ) -> PromotionOutcome:
         try:
             decision_artifact = build_promotion_decision_artifact(
@@ -424,6 +440,7 @@ class AutoPromotionEngine:
                 cell_id=spec.cell_id,
                 validation=validation,
                 shadow=shadow,
+                counterfactual=counterfactual,
             )
             decision_digest = sha256_digest(decision_artifact)
         except Exception as exc:  # noqa: BLE001
@@ -495,6 +512,9 @@ class AutoPromotionEngine:
                         "validation_pass_rate": validation.pass_rate,
                         "shadow_agreement_rate": shadow.agreement_rate,
                         "promotion_decision_digest": decision_digest,
+                        "counterfactual": _counterfactual_summary(
+                            counterfactual
+                        ),
                     }),
                 )
                 outcome = PromotionOutcome(
@@ -508,6 +528,7 @@ class AutoPromotionEngine:
                     decision_record_id=decision.id,
                     promotion_decision_artifact=decision_artifact,
                     promotion_decision_digest=decision_digest,
+                    counterfactual=_counterfactual_summary(counterfactual),
                 )
                 self._cp._conn.execute("COMMIT")  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
@@ -556,6 +577,7 @@ def build_promotion_decision_artifact(
     solver_id: int | None = None,
     validation: ValidationOutcome | None = None,
     shadow: ShadowOutcome | None = None,
+    counterfactual: Any = None,
     invariant_failed: str | None = None,
     rollback_reason: str | None = None,
     ts_utc: str | None = None,
@@ -586,6 +608,7 @@ def build_promotion_decision_artifact(
         "spec_hash": spec_hash,
         "validation": _validation_summary(validation),
         "shadow": _shadow_summary(shadow),
+        "counterfactual": _counterfactual_summary(counterfactual),
         "invariant_failed": invariant_failed or "",
         "rollback_reason_digest": (
             sha256_digest({"rollback_reason": rollback_reason})
@@ -599,6 +622,7 @@ def build_promotion_decision_artifact(
         approved=approved,
         validation=validation,
         shadow=shadow,
+        counterfactual=counterfactual,
         invariant_failed=invariant_failed,
     )
     return build_rco_decision_artifact(
@@ -728,6 +752,7 @@ def _promotion_receipt_payload(outcome: PromotionOutcome) -> dict[str, Any]:
         "invariant_failed": outcome.invariant_failed or "",
         "decision_record_id": outcome.decision_record_id,
         "promotion_decision_digest": outcome.promotion_decision_digest,
+        "counterfactual": _counterfactual_summary(outcome.counterfactual),
     }
 
 
@@ -757,6 +782,82 @@ def _shadow_summary(shadow: ShadowOutcome | None) -> dict[str, Any] | None:
     }
 
 
+def _counterfactual_summary_for_request(
+    request: PromotionRequest,
+) -> dict[str, Any]:
+    incumbent = request.counterfactual_incumbent_spec
+    if incumbent is None:
+        return {
+            "schema_version": COUNTERFACTUAL_PROMOTION_SUMMARY_SCHEMA,
+            "status": "skipped",
+            "reason": "no_incumbent_spec",
+            "a3_label": A3_LABEL_INSUFFICIENT,
+            "delta_digest": None,
+        }
+    try:
+        delta = compute_counterfactual_delta(
+            shadow_samples=request.shadow_samples,
+            candidate=request.spec,
+            incumbent=incumbent,
+            oracle=request.oracle,
+            oracle_kind=request.oracle_kind,
+        )
+    except Exception as exc:  # noqa: BLE001 - counterfactual is observability
+        return {
+            "schema_version": COUNTERFACTUAL_PROMOTION_SUMMARY_SCHEMA,
+            "status": "failed",
+            "error_type": exc.__class__.__name__,
+            "a3_label": A3_LABEL_INSUFFICIENT,
+            "delta_digest": None,
+        }
+
+    return {
+        "schema_version": COUNTERFACTUAL_PROMOTION_SUMMARY_SCHEMA,
+        "status": "computed",
+        "delta_schema_version": str(delta.get("schema_version") or ""),
+        "delta_digest": delta.get("canonical_digest"),
+        "candidate_hash": delta.get("candidate_hash"),
+        "incumbent_hash": delta.get("incumbent_hash"),
+        "sample_count": delta.get("sample_count"),
+        "same_sample_set": (
+            delta.get("candidate_sample_set_digest")
+            == delta.get("incumbent_sample_set_digest")
+        ),
+        "deterministic": delta.get("deterministic") is True,
+        "divergence_count": delta.get("divergence_count"),
+        "no_delta": delta.get("no_delta") is True,
+        "oracle_kind": delta.get("oracle_kind"),
+        "a3_label": derive_a3_label(delta),
+    }
+
+
+def _counterfactual_summary(counterfactual: Any) -> dict[str, Any] | None:
+    if not isinstance(counterfactual, dict):
+        return None
+    allowed = {
+        "schema_version",
+        "status",
+        "reason",
+        "error_type",
+        "a3_label",
+        "delta_schema_version",
+        "delta_digest",
+        "candidate_hash",
+        "incumbent_hash",
+        "sample_count",
+        "same_sample_set",
+        "deterministic",
+        "divergence_count",
+        "no_delta",
+        "oracle_kind",
+    }
+    return {
+        key: counterfactual.get(key)
+        for key in sorted(allowed)
+        if key in counterfactual
+    }
+
+
 def _promotion_reason_codes(
     *,
     decision: str,
@@ -764,6 +865,7 @@ def _promotion_reason_codes(
     approved: bool,
     validation: ValidationOutcome | None,
     shadow: ShadowOutcome | None,
+    counterfactual: Any = None,
     invariant_failed: str | None,
 ) -> list[str]:
     codes = [
@@ -786,6 +888,19 @@ def _promotion_reason_codes(
             if shadow.disagree_count == 0
             else "promotion:shadow:review"
         )
+    cf = _counterfactual_summary(counterfactual)
+    if cf is not None:
+        status = _safe_ref(str(cf.get("status") or "unknown"))
+        codes.append(f"promotion:counterfactual:{status}")
+        label = cf.get("a3_label")
+        if label:
+            codes.append(f"promotion:counterfactual_label:{_safe_ref(str(label))}")
+        if cf.get("status") == "computed":
+            codes.append(
+                "promotion:counterfactual:no_delta"
+                if cf.get("no_delta") is True
+                else "promotion:counterfactual:delta"
+            )
     if invariant_failed:
         codes.append(f"promotion:invariant:{_safe_ref(invariant_failed)}")
     return codes

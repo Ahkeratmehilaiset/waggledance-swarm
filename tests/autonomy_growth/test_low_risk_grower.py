@@ -123,6 +123,51 @@ def test_grower_threads_receipt_sink_to_auto_promotion_engine(
     )
 
 
+def test_grower_keeps_malformed_counterfactual_incumbent_fail_open(
+    cp: ControlPlaneDB,
+) -> None:
+    g = LowRiskGrower(cp)
+    g.ensure_low_risk_policies()
+    gap = _kelvin_gap("celsius_to_kelvin_bad_incumbent_v1")
+    malformed_gap = GapInput(
+        family_kind=gap.family_kind,
+        solver_name=gap.solver_name,
+        cell_id=gap.cell_id,
+        spec=gap.spec,
+        source=gap.source,
+        source_kind=gap.source_kind,
+        validation_cases=gap.validation_cases,
+        shadow_samples=gap.shadow_samples,
+        oracle=gap.oracle,
+        oracle_kind=gap.oracle_kind,
+        counterfactual_incumbent={
+            "solver_name": "bad-name",
+            "cell_id": "general",
+            "spec": {
+                "from_unit": "C",
+                "to_unit": "K",
+                "factor": 1.0,
+                "offset": 0.0,
+            },
+            "source": "private://counterfactual-incumbent",
+            "source_kind": "private",
+        },
+    )
+
+    out = g.grow_from_gap(malformed_gap)
+
+    assert out.accepted is True
+    assert out.reason == "auto_promoted"
+    assert out.promotion is not None
+    assert out.promotion.decision == "auto_promoted"
+    counterfactual = out.promotion.counterfactual
+    assert counterfactual is not None
+    assert counterfactual["status"] == "failed"
+    assert counterfactual["a3_label"] == "INSUFFICIENT"
+    assert counterfactual["delta_digest"] is None
+    assert "private://counterfactual-incumbent" not in str(counterfactual)
+
+
 def test_grower_rejects_excluded_family_without_calling_provider(
     cp: ControlPlaneDB,
 ) -> None:

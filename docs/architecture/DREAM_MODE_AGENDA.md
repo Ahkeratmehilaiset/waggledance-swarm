@@ -78,7 +78,9 @@ would swallow charter constraints:
    competitive step still missing.
 5. **Synthetic adversarial corpus** — minimal adversarial example set
    both agents must catch before a candidate solver is promoted.
-   *Status:* seed fixtures only
+   *Status:* fail-closed gate plus seed fixtures; the strict v0 corpus
+   now declares a machine-checked held-out split for blind replay
+   growth. Critical-class multi-case floors remain a follow-up slice.
    (`tests/fixtures/magma_adversarial_corpus/v0.json`,
    `tools/validate_synthetic_adversarial_corpus.py`,
    `tools/run_magma_adversarial_eval.py`).

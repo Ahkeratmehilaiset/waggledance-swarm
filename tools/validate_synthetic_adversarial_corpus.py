@@ -17,6 +17,7 @@ from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 from waggledance.core.magma.schema_validation import redacted_schema_errors
 
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
+CORPUS_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_corpus.v0.json"
 CASE_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_case.v0.json"
 EXPECTATION_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_expectation.v0.json"
 DEFAULT_DIR = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus"
@@ -37,6 +38,8 @@ REQUIRED_VERDICTS = {
     "insufficient_evidence",
     "abstain",
 }
+SPLIT_VERSION = "magma.synthetic_adversarial_split.v0"
+MIN_HELD_OUT_CASES = 6
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,12 +74,15 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
     corpus = _read_json(corpus_path, errors, "corpus")
     expectations_doc = _read_json(expectations_path, errors, "expectations")
     full_coverage_required = _full_coverage_required(corpus)
+    corpus_validator = _validator(CORPUS_SCHEMA)
     cases = _cases(corpus, errors)
     expectations = _expectations(expectations_doc, errors)
     case_validator = _validator(CASE_SCHEMA)
     expectation_validator = _validator(EXPECTATION_SCHEMA)
     coverage = _empty_coverage()
 
+    if isinstance(corpus, dict):
+        _schema_errors(corpus_validator, corpus, "corpus", errors)
     case_ids = _validate_cases(cases, case_validator, coverage, errors)
     expectation_ids = _validate_expectations(
         expectations,
@@ -86,6 +92,7 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
     )
     _validate_cross_refs(case_ids, expectation_ids, errors)
     if full_coverage_required:
+        _validate_split(corpus, case_ids, coverage, errors)
         _validate_coverage(coverage, errors)
 
     return {
@@ -94,6 +101,7 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
         "expectations": "<redacted>",
         "case_count": len(cases),
         "full_coverage_required": full_coverage_required,
+        "split_required": full_coverage_required,
         "coverage": _coverage_report(coverage),
         "errors": errors,
     }
@@ -181,6 +189,57 @@ def _validate_cross_refs(
         errors.append("expectations: dangling case_id values: " + ", ".join(dangling_expectations))
 
 
+def _validate_split(
+    corpus: Any,
+    case_ids: set[str],
+    coverage: dict[str, Any],
+    errors: list[str],
+) -> None:
+    if not isinstance(corpus, dict):
+        return
+    split = corpus.get("split")
+    if not isinstance(split, dict):
+        errors.append("corpus: split must be present for full coverage corpus")
+        return
+    if split.get("split_version") != SPLIT_VERSION:
+        errors.append(f"corpus: split_version must be {SPLIT_VERSION}")
+    raw_held_out = split.get("held_out_case_ids")
+    if not isinstance(raw_held_out, list) or not raw_held_out:
+        errors.append("corpus: split.held_out_case_ids must be a non-empty array")
+        return
+
+    held_out: set[str] = set()
+    duplicate_seen: set[str] = set()
+    for index, raw_case_id in enumerate(raw_held_out, 1):
+        if not isinstance(raw_case_id, str):
+            errors.append(f"corpus: split.held_out_case_ids[{index}] must be a case_id string")
+            continue
+        if raw_case_id in held_out:
+            duplicate_seen.add(raw_case_id)
+        held_out.add(raw_case_id)
+
+    if duplicate_seen:
+        errors.append(
+            "corpus: duplicate held_out_case_id values: "
+            + ", ".join(sorted(duplicate_seen))
+        )
+
+    unknown = sorted(held_out - case_ids)
+    if unknown:
+        errors.append(
+            "corpus: split.held_out_case_ids contains unknown case_id values: "
+            + ", ".join(unknown)
+        )
+
+    known_held_out = held_out & case_ids
+    coverage["held_out_case_ids"].update(known_held_out)
+    if len(known_held_out) < MIN_HELD_OUT_CASES:
+        errors.append(
+            "coverage: held_out_case_ids must include at least "
+            f"{MIN_HELD_OUT_CASES} known cases"
+        )
+
+
 def _validate_coverage(coverage: dict[str, Any], errors: list[str]) -> None:
     _require_coverage("defect_type", REQUIRED_DEFECT_TYPES, coverage, errors)
     _require_coverage("risk_class", REQUIRED_RISK_CLASSES, coverage, errors)
@@ -211,6 +270,7 @@ def _empty_coverage() -> dict[str, Any]:
         "expected_verdict": set(),
         "privacy_canary_count": 0,
         "peer_review_trap_count": 0,
+        "held_out_case_ids": set(),
     }
 
 
@@ -222,6 +282,7 @@ def _coverage_report(coverage: dict[str, Any]) -> dict[str, Any]:
         "expected_verdict": sorted(coverage["expected_verdict"]),
         "privacy_canary_count": coverage["privacy_canary_count"],
         "peer_review_trap_count": coverage["peer_review_trap_count"],
+        "held_out_case_count": len(coverage["held_out_case_ids"]),
     }
 
 

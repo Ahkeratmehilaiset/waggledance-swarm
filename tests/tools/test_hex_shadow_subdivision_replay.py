@@ -178,6 +178,37 @@ def test_hex_shadow_replay_verifier_cli_rejects_recomputed_path_leak(
     assert "artifact_digest_match" not in report["blockers"]
 
 
+def test_hex_shadow_replay_verifier_cli_redacts_invalid_expected_commit(
+    tmp_path: Path,
+) -> None:
+    artifact = _valid_replay_artifact()
+    artifact_path = tmp_path / "replay.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--verify-json",
+            str(artifact_path),
+            "--expected-git-commit",
+            "/workspace/secret",
+            "--strict",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 2
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert report["expected_git_commit"] is None
+    assert "expected_git_commit_valid" in report["blockers"]
+    assert "/workspace/secret" not in result.stdout
+    assert "/workspace/secret" not in result.stderr
+
+
 def test_hex_shadow_replay_verifier_cli_rejects_invalid_json_path_free(
     tmp_path: Path,
 ) -> None:

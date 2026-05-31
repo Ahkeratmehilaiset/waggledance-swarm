@@ -372,6 +372,9 @@ def verify_shadow_subdivision_replay_artifact(
     checks["declared_ok_matches_recomputed_contract"] = (
         artifact_dict.get("ok") is recomputed_contract_ok
     )
+    expected_git_commit_report = (
+        expected_git_commit if _is_git_commit(expected_git_commit) else None
+    )
 
     for name, passed in checks.items():
         if not passed:
@@ -385,7 +388,7 @@ def verify_shadow_subdivision_replay_artifact(
         "verified_proof_id": artifact_dict.get("proof_id"),
         "ok": not blockers,
         "artifact_declared_ok": artifact_dict.get("ok") is True,
-        "expected_git_commit": expected_git_commit,
+        "expected_git_commit": expected_git_commit_report,
         "recomputed_contract_ok": recomputed_contract_ok,
         "blockers": sorted(set(blockers)),
         "checks": checks,

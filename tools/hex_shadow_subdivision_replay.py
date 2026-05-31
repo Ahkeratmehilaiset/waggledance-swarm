@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Any, Mapping, Sequence
@@ -67,17 +68,16 @@ DIGEST_NAMES: tuple[str, ...] = (
     "full_binding",
 )
 PATH_MARKERS: tuple[str, ...] = (
-    ":\\",
-    "\\Users\\",
-    "\\Python\\",
     "file://",
     "/home/",
+    "/python/",
+    "/users/",
     "/workspace/",
     "/workspaces/",
-    "/Users/",
     "/tmp/",
     "waggledance-agent-worktrees",
 )
+WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
 
 
 def _canonical_digest(value: Any) -> str:
@@ -121,7 +121,12 @@ def _reject_json_constant(value: str) -> None:
 
 def _contains_path_marker(value: Any) -> bool:
     if isinstance(value, str):
-        return any(marker in value for marker in PATH_MARKERS)
+        normalized = value.replace("\\", "/").lower()
+        return (
+            WINDOWS_DRIVE_PATH_PATTERN.search(value) is not None
+            or normalized.startswith("//")
+            or any(marker in normalized for marker in PATH_MARKERS)
+        )
     if isinstance(value, Mapping):
         return any(
             _contains_path_marker(key) or _contains_path_marker(item)

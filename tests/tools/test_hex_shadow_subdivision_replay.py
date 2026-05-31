@@ -131,6 +131,53 @@ def test_hex_shadow_replay_verifier_rejects_workspace_path_leak() -> None:
     assert "artifact_digest_match" not in report["blockers"]
 
 
+def test_hex_shadow_replay_verifier_rejects_forward_slash_windows_path() -> None:
+    artifact = _valid_replay_artifact()
+    artifact["safe_conclusion"] = (
+        "operator scratch artifact at C:/Python/project2-master/secret.json"
+    )
+    _refresh_artifact_digest(artifact)
+
+    report = verify_shadow_subdivision_replay_artifact(artifact)
+
+    assert report["ok"] is False
+    assert "artifact_path_free" in report["blockers"]
+    assert "artifact_digest_match" not in report["blockers"]
+
+
+def test_hex_shadow_replay_verifier_cli_rejects_recomputed_path_leak(
+    tmp_path: Path,
+) -> None:
+    artifact = _valid_replay_artifact()
+    artifact["safe_conclusion"] = (
+        "operator scratch artifact at C:/Python/project2-master/secret.json"
+    )
+    _refresh_artifact_digest(artifact)
+    artifact_path = tmp_path / "replay.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--verify-json",
+            str(artifact_path),
+            "--expected-git-commit",
+            artifact["source_snapshot"]["git_commit"],
+            "--strict",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 2
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert "artifact_path_free" in report["blockers"]
+    assert "artifact_digest_match" not in report["blockers"]
+
+
 def test_hex_shadow_replay_verifier_cli_rejects_invalid_json_path_free(
     tmp_path: Path,
 ) -> None:

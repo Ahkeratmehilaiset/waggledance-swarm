@@ -56,11 +56,53 @@ class _FakeContainer:
         autogrowth_background_ticker=None,
         hybrid_retrieval=None,
         route_stage_runtime_metrics=None,
+        hex_topology_registry=None,
     ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
         self.autogrowth_background_ticker = autogrowth_background_ticker
         self.hybrid_retrieval = hybrid_retrieval
         self.route_stage_runtime_metrics = route_stage_runtime_metrics
+        self.hex_topology_registry = hex_topology_registry
+
+
+class _FakeHexCell:
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class _FakeHexTopologyRegistry:
+    def __init__(self) -> None:
+        self._cells = {
+            "hub": _FakeHexCell(enabled=True),
+            "bee_ops": _FakeHexCell(enabled=True),
+            "offline": _FakeHexCell(enabled=False),
+        }
+        self._neighbors = {
+            "hub": ["bee_ops"],
+            "bee_ops": ["hub"],
+            "offline": [],
+        }
+
+    @property
+    def cells(self) -> dict:
+        return dict(self._cells)
+
+    def stats(self) -> dict:
+        return {
+            "cells_loaded": len(self._cells),
+            "total_agents_mapped": 4,
+        }
+
+    def get_neighbor_cells(self, cell_id: str) -> list:
+        return [
+            self._cells[item]
+            for item in self._neighbors.get(cell_id, [])
+            if item in self._cells
+        ]
+
+
+class _EnabledFakeHexAssist(_FakeHexAssist):
+    enabled = True
 
 
 def _magma_import_report(share_id: str = "magma:share:metrics") -> dict:
@@ -205,6 +247,34 @@ def test_metrics_body_contains_gauge_values():
     # These are instantaneous gauges, NOT counters, so no _total suffix.
     assert "waggledance_hex_cells_loaded 11.0" in body
     assert "waggledance_hex_quarantined_cells 2.0" in body
+
+
+def test_metrics_body_contains_hex_topology_boundary_gauges():
+    container = _FakeContainer(
+        _EnabledFakeHexAssist({"enabled": True}),
+        hex_topology_registry=_FakeHexTopologyRegistry(),
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_hex_topology_boundary_up 1.0" in body
+    assert 'waggledance_hex_topology_cells{state="configured"} 3.0' in body
+    assert 'waggledance_hex_topology_cells{state="enabled"} 2.0' in body
+    assert "waggledance_hex_topology_agents_mapped 4.0" in body
+    assert "waggledance_hex_topology_neighbor_links 2.0" in body
+    assert "waggledance_hex_topology_runtime_dispatch_enabled 1.0" in body
+    assert "waggledance_hex_topology_runtime_mutation_authority 0.0" in body
+
+
+def test_metrics_hex_topology_boundary_missing_registry_fails_closed():
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_hex_topology_boundary_up 0.0" in body
+    assert "waggledance_hex_topology_cells" not in body
 
 
 def test_metrics_body_contains_route_stage_count_gauges():
@@ -669,8 +739,11 @@ def test_metrics_missing_hex_neighbor_assist_reports_down():
     body = resp.text
     # _up must be 0 so operators can alert.
     assert "waggledance_up 0.0" in body
-    # No counter lines should be emitted at all.
-    assert "waggledance_hex_" not in body
+    # No hex-neighbor-assist counters should be emitted at all.
+    assert "waggledance_hex_preflight_skips_total" not in body
+    assert "waggledance_hex_cells_loaded" not in body
+    # The topology-boundary source is separate and also fails closed.
+    assert "waggledance_hex_topology_boundary_up 0.0" in body
 
 
 def test_metrics_hex_assist_raising_reports_down():

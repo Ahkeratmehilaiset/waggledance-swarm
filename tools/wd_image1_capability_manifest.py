@@ -1802,6 +1802,20 @@ def _blocked_hexagonal_runtime_smoke(
         "container_registry_present": False,
         "container_hex_neighbor_assist_wiring_present": False,
         "active_runtime_dispatch_enabled": False,
+        "operator_metrics_smoke": {
+            "proof_id": "hexagonal_topology_boundary_operator_metrics_smoke_v1",
+            "ok": False,
+            "operator_visible_metrics": False,
+            "metrics_endpoint": "/metrics",
+            "metric_names": [
+                "waggledance_hex_topology_boundary_up",
+                "waggledance_hex_topology_cells",
+                "waggledance_hex_topology_agents_mapped",
+                "waggledance_hex_topology_neighbor_links",
+                "waggledance_hex_topology_runtime_dispatch_enabled",
+                "waggledance_hex_topology_runtime_mutation_authority",
+            ],
+        },
         "no_runtime_topology_mutation": True,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -1868,9 +1882,12 @@ def build_hexagonal_upgrade_runtime_smoke(
         "waggledance/bootstrap/container.py",
         "waggledance/application/services/hex_topology_registry.py",
         "waggledance/application/services/hex_neighbor_assist.py",
+        "waggledance/adapters/http/routes/metrics.py",
         "waggledance/core/hex_topology/subdivision_operator.py",
         "waggledance/core/hex_topology/ring_messaging.py",
         "waggledance/core/hex_topology/parent_child_relations.py",
+        "tests/test_metrics_endpoint.py",
+        "docs/API.md",
         cell_config_path,
     )
     missing = [
@@ -1904,6 +1921,13 @@ def build_hexagonal_upgrade_runtime_smoke(
     assist_text = (
         repo_root / "waggledance/application/services/hex_neighbor_assist.py"
     ).read_text(encoding="utf-8")
+    metrics_text = (
+        repo_root / "waggledance/adapters/http/routes/metrics.py"
+    ).read_text(encoding="utf-8")
+    metrics_tests_text = (
+        repo_root / "tests/test_metrics_endpoint.py"
+    ).read_text(encoding="utf-8")
+    docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     assist_wiring_present = (
         "def hex_neighbor_assist" in container_text
         and "HexNeighborAssist(" in container_text
@@ -1919,6 +1943,21 @@ def build_hexagonal_upgrade_runtime_smoke(
     enabled_cell_ids: list[str] = []
     neighbor_map: dict[str, list[str]] = {}
     sample_origins: list[dict] = []
+    operator_metric_names = (
+        "waggledance_hex_topology_boundary_up",
+        "waggledance_hex_topology_cells",
+        "waggledance_hex_topology_agents_mapped",
+        "waggledance_hex_topology_neighbor_links",
+        "waggledance_hex_topology_runtime_dispatch_enabled",
+        "waggledance_hex_topology_runtime_mutation_authority",
+    )
+    metrics_contract = {
+        "ok": False,
+        "status_code": None,
+        "expected_lines": [],
+        "missing_lines": [],
+        "forbidden_payload_markers_absent": False,
+    }
     old_cwd = Path.cwd()
     try:
         os.chdir(repo_root)
@@ -1971,6 +2010,48 @@ def build_hexagonal_upgrade_runtime_smoke(
                 "matched_expected": selected == sample["expected_cell"],
             })
         container_registry_present = registry.cell_count > 0
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from waggledance.adapters.http.routes.metrics import router as metrics_router
+
+        app = FastAPI()
+        app.state.container = container
+        app.include_router(metrics_router)
+        resp = TestClient(app).get("/metrics")
+        body = resp.text
+        expected_lines = {
+            "waggledance_hex_topology_boundary_up 1.0",
+            'waggledance_hex_topology_cells{state="configured"} 7.0',
+            'waggledance_hex_topology_cells{state="enabled"} 7.0',
+            "waggledance_hex_topology_agents_mapped 42.0",
+            "waggledance_hex_topology_neighbor_links 24.0",
+            "waggledance_hex_topology_runtime_dispatch_enabled 0.0",
+            "waggledance_hex_topology_runtime_mutation_authority 0.0",
+        }
+        forbidden_markers = (
+            "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+            "query=",
+            "profile=",
+            "route_stage_trace",
+        )
+        missing_lines = sorted(
+            line for line in expected_lines if line not in body
+        )
+        metrics_contract = {
+            "ok": (
+                resp.status_code == 200
+                and not missing_lines
+                and all(marker not in body for marker in forbidden_markers)
+            ),
+            "status_code": resp.status_code,
+            "expected_lines": sorted(expected_lines),
+            "missing_lines": missing_lines,
+            "forbidden_payload_markers_absent": all(
+                marker not in body for marker in forbidden_markers
+            ),
+        }
     finally:
         os.chdir(old_cwd)
 
@@ -1978,6 +2059,50 @@ def build_hexagonal_upgrade_runtime_smoke(
     shadow_children_absent = all(
         child_id not in cell_ids for child_id in shadow_child_ids
     )
+    metrics_checks = {
+        "metric_collectors_present": all(
+            name in metrics_text for name in operator_metric_names
+        ),
+        "registry_boundary_read_present": (
+            "hex_topology_registry" in metrics_text
+            and "stats_fn()" in metrics_text
+            and 'getattr(registry, "cells"' in metrics_text
+        ),
+        "endpoint_regression_tests_present": all(
+            token in metrics_tests_text
+            for token in (
+                "test_metrics_body_contains_hex_topology_boundary_gauges",
+                "test_metrics_hex_topology_boundary_missing_registry_fails_closed",
+                'waggledance_hex_topology_cells{state="configured"}',
+                "waggledance_hex_topology_runtime_mutation_authority 0.0",
+            )
+        ),
+        "api_docs_present": (
+            "hex topology boundary gauges" in docs_text
+            and "waggledance_hex_topology_cells" in docs_text
+            and "do not enable dispatch" in docs_text
+        ),
+        "runtime_contract_ok": metrics_contract["ok"] is True,
+    }
+    operator_metrics_smoke = {
+        "proof_id": "hexagonal_topology_boundary_operator_metrics_smoke_v1",
+        "ok": all(metrics_checks.values()),
+        "metrics_endpoint": "/metrics",
+        "metric_names": list(operator_metric_names),
+        "runtime_contract": metrics_contract,
+        "checks": metrics_checks,
+        "operator_visible_metrics": all(metrics_checks.values()),
+        "no_runtime_topology_mutation": True,
+        "runtime_authority_changed": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "The public /metrics endpoint exposes only aggregated active "
+            "hex topology boundary gauges: cell counts, mapped-agent count, "
+            "directed neighbor-link count, dispatch gate state, and an "
+            "explicit zero runtime-mutation-authority guardrail. It does "
+            "not expose raw query/context data or add topology controls."
+        ),
+    }
     ok = (
         container_registry_present
         and assist_wiring_present
@@ -1985,6 +2110,7 @@ def build_hexagonal_upgrade_runtime_smoke(
         and len(enabled_cell_ids) == 7
         and all(item["matched_expected"] for item in sample_origins)
         and shadow_children_absent
+        and operator_metrics_smoke["ok"]
     )
     return {
         "proof_id": "hexagonal_upgrades_runtime_boundary_smoke_v1",
@@ -2008,6 +2134,7 @@ def build_hexagonal_upgrade_runtime_smoke(
             "sample_origins": sample_origins,
             "stats": registry_stats,
         },
+        "operator_metrics_smoke": operator_metrics_smoke,
         "shadow_child_cell_ids_absent_from_runtime_config": (
             shadow_children_absent
         ),
@@ -5466,8 +5593,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "Pure primitives for subdivision planning, ring messaging, "
                 "and parent-child relation queries exist, and a runtime "
-                "boundary smoke reports the active config topology without "
-                "mutating it."
+                "boundary smoke plus operator-visible /metrics gauges "
+                "report the active config topology without mutating it."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -5477,12 +5604,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "topology.",
                 "Ring delivery is pure validation, not a networked runtime "
                 "delivery layer.",
-                "The runtime boundary smoke reports current Container/config "
-                "wiring; it does not activate subdivision authority.",
+                "The runtime boundary smoke and metrics report current "
+                "Container/config wiring; they do not activate subdivision "
+                "authority.",
             ),
             next_smallest_pr=(
-                "Promote hexagonal topology boundary reporting into "
-                "operator-visible metrics without enabling runtime mutation."
+                "Add a shadow subdivision replay artifact that binds the "
+                "parent/child plan to topology boundary metrics without "
+                "runtime mutation."
             ),
             proof=hex_upgrade_proof,
         ),

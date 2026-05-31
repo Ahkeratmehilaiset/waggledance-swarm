@@ -50,6 +50,20 @@ KNOWN_EVENT_TYPES = frozenset({
 })
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
 KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
+FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
+GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
+GROK_REVIEW_STATUSES = frozenset({"grok_response"})
+GROK_FRESHNESS_EPOCH_UTC = "2026-05-31T19:24:00Z"
+GROK_FRESHNESS_REQUIRED_SHA_FIELDS = (
+    "remote_main_sha",
+    "local_origin_main_sha",
+    "worktree_head",
+)
+GROK_FRESHNESS_OPTIONAL_SHA_FIELDS = (
+    "pr_head_sha",
+    "reviewed_head_sha",
+    "target_head_sha",
+)
 
 
 class BridgeEvent(BaseModel):
@@ -165,7 +179,44 @@ class BridgeEvent(BaseModel):
             and not self.task_id.strip()
         ):
             raise ValueError("ack message requires task_id")
+        self._validate_grok_review_freshness()
         return self
+
+    def _validate_grok_review_freshness(self) -> None:
+        if not (
+            self.agent in GROK_REVIEW_AGENTS
+            and self.type == "message"
+            and self.status in GROK_REVIEW_STATUSES
+        ):
+            return
+        if not _is_at_or_after_utc(self.ts_utc, GROK_FRESHNESS_EPOCH_UTC):
+            return
+        if not isinstance(self.payload, Mapping):
+            raise ValueError("grok freshness proof requires payload object")
+        freshness = self.payload.get("freshness")
+        if not isinstance(freshness, Mapping):
+            raise ValueError("grok freshness proof required")
+        if freshness.get("freshness_ok") is not True:
+            raise ValueError("grok freshness_ok must be true")
+        for field_name in GROK_FRESHNESS_REQUIRED_SHA_FIELDS:
+            value = freshness.get(field_name)
+            if not _is_full_git_sha(value):
+                raise ValueError(
+                    f"grok freshness {field_name} must be lowercase 40-hex sha"
+                )
+        remote_main_sha = freshness["remote_main_sha"]
+        local_origin_main_sha = freshness["local_origin_main_sha"]
+        if remote_main_sha != local_origin_main_sha:
+            raise ValueError("grok freshness main sha mismatch")
+        worktree_head = freshness["worktree_head"]
+        if worktree_head != local_origin_main_sha:
+            raise ValueError("grok freshness worktree sha mismatch")
+        for field_name in GROK_FRESHNESS_OPTIONAL_SHA_FIELDS:
+            value = freshness.get(field_name)
+            if value is not None and not _is_full_git_sha(value):
+                raise ValueError(
+                    f"grok freshness {field_name} must be lowercase 40-hex sha"
+                )
 
 
 @dataclass(frozen=True)
@@ -222,6 +273,16 @@ def validate_event(event: Mapping[str, Any]) -> BridgeEvent:
 
 def _is_valid_agent_id(value: str) -> bool:
     return bool(re.fullmatch(AGENT_ID_PATTERN, value))
+
+
+def _is_full_git_sha(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(FULL_GIT_SHA_PATTERN, value))
+
+
+def _is_at_or_after_utc(value: str, epoch: str) -> bool:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed_epoch = datetime.fromisoformat(epoch.replace("Z", "+00:00"))
+    return parsed >= parsed_epoch
 
 
 def validate_event_line(line: str, *, line_no: int = 1) -> BridgeEvent:
@@ -318,6 +379,10 @@ def _line_sha256(line: str) -> str:
 __all__ = [
     "BRIDGE_EVENT_SCHEMA_VERSION",
     "AGENT_ID_PATTERN",
+    "FULL_GIT_SHA_PATTERN",
+    "GROK_FRESHNESS_EPOCH_UTC",
+    "GROK_REVIEW_AGENTS",
+    "GROK_REVIEW_STATUSES",
     "BridgeEvent",
     "BridgeEventValidationIssue",
     "BridgeEventValidationResult",

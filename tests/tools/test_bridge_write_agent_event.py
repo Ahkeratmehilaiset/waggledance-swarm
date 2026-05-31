@@ -23,6 +23,8 @@ REQUIRES_TASK_ID_CASES = [
     ("message", "received"),
     ("message", "seen"),
 ]
+MAIN_SHA = "a" * 40
+PR_HEAD_SHA = "b" * 40
 
 
 def _powershell() -> str:
@@ -68,6 +70,18 @@ def _run_bridge_script(
         capture_output=True,
         text=True,
     )
+
+
+def _grok_freshness_payload(**overrides: object) -> str:
+    freshness: dict[str, object] = {
+        "freshness_ok": True,
+        "remote_main_sha": MAIN_SHA,
+        "local_origin_main_sha": MAIN_SHA,
+        "worktree_head": MAIN_SHA,
+        "pr_head_sha": PR_HEAD_SHA,
+    }
+    freshness.update(overrides)
+    return json.dumps({"freshness": freshness}, sort_keys=True)
 
 
 @pytest.mark.parametrize(("event_type", "status"), REQUIRES_TASK_ID_CASES)
@@ -222,6 +236,96 @@ def test_role_uuid_capability_metadata_is_optional_and_validated(
     assert event["session_id"] == "codex-impl-1-20260523T140000Z"
     assert event["capabilities"] == ["bridge_event", "work_queue"]
     validate_event_line(line)
+
+
+def test_grok_response_requires_freshness_payload_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "grok-scout-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "grok-dispatch-selftest",
+        "-Status",
+        "grok_response",
+        "-To",
+        "codex-lead-1",
+        "-Message",
+        "missing freshness",
+    )
+
+    assert completed.returncode != 0
+    assert "grok freshness proof required" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_grok_response_with_freshness_payload_writes_valid_event(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "grok-scout-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "grok-dispatch-selftest",
+        "-Status",
+        "grok_response",
+        "-To",
+        "codex-lead-1",
+        "-Message",
+        "fresh response",
+        "-PayloadJson",
+        _grok_freshness_payload(),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    event = json.loads(line)
+    assert event["payload"]["freshness"]["freshness_ok"] is True
+    validate_event_line(line)
+
+
+def test_grok_response_rejects_stale_worktree_freshness_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "grok-scout-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "grok-dispatch-selftest",
+        "-Status",
+        "grok_response",
+        "-To",
+        "codex-lead-1",
+        "-Message",
+        "stale worktree",
+        "-PayloadJson",
+        _grok_freshness_payload(worktree_head=PR_HEAD_SHA),
+    )
+
+    assert completed.returncode != 0
+    assert "grok freshness worktree sha mismatch" in completed.stderr
+    assert not runtime_root.exists()
 
 
 def test_invalid_agent_id_fails_before_runtime_write(tmp_path: Path) -> None:

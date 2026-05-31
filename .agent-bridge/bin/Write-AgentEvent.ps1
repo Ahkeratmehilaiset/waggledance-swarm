@@ -109,6 +109,11 @@ foreach ($capability in @($Capabilities)) {
 
 $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')
+$grokReviewAgents = @('grok-1', 'grok-scout-1')
+$grokReviewStatuses = @('grok_response')
+$grokRequiredFreshnessShaFields = @('remote_main_sha', 'local_origin_main_sha', 'worktree_head')
+$grokOptionalFreshnessShaFields = @('pr_head_sha', 'reviewed_head_sha', 'target_head_sha')
+$fullGitShaPattern = '^[0-9a-f]{40}$'
 # Keep this guard in lock-step with waggledance/core/bridge_event_schema.py.
 # It must run before any bridge file I/O so invalid events fail closed.
 $requiresTaskId = (
@@ -131,6 +136,92 @@ try {
     $payload = [pscustomobject]@{ raw = $PayloadJson; parse_error = $_.Exception.Message }
 }
 Assert-NoPrivateMarker -Label 'payload' -Value ($payload | ConvertTo-Json -Depth 12 -Compress)
+
+function Test-BridgeObject {
+    param([AllowNull()] $Value)
+    return (
+        $null -ne $Value -and
+        (
+            $Value -is [System.Management.Automation.PSCustomObject] -or
+            $Value -is [hashtable]
+        )
+    )
+}
+
+function Test-FullGitSha {
+    param([AllowNull()] $Value)
+    return ($Value -is [string] -and $Value -cmatch $fullGitShaPattern)
+}
+
+function Get-BridgeObjectField {
+    param(
+        [Parameter(Mandatory)] $Object,
+        [Parameter(Mandatory)] [string] $Name
+    )
+    if ($Object -is [hashtable]) {
+        if ($Object.ContainsKey($Name)) { return $Object[$Name] }
+        return $null
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -ne $property) { return $property.Value }
+    return $null
+}
+
+function Test-BridgeObjectHasField {
+    param(
+        [Parameter(Mandatory)] $Object,
+        [Parameter(Mandatory)] [string] $Name
+    )
+    if ($Object -is [hashtable]) { return $Object.ContainsKey($Name) }
+    return ($null -ne $Object.PSObject.Properties[$Name])
+}
+
+function Assert-GrokFreshnessPayload {
+    param([AllowNull()] $Payload)
+    if (-not (
+        ($grokReviewAgents -contains $Agent) -and
+        ($Type -eq 'message') -and
+        ($grokReviewStatuses -contains $Status)
+    )) {
+        return
+    }
+    if (-not (Test-BridgeObject -Value $Payload)) {
+        throw "grok freshness proof requires payload object"
+    }
+    $freshness = Get-BridgeObjectField -Object $Payload -Name 'freshness'
+    if (-not (Test-BridgeObject -Value $freshness)) {
+        throw "grok freshness proof required"
+    }
+    $freshnessOk = Get-BridgeObjectField -Object $freshness -Name 'freshness_ok'
+    if (-not ($freshnessOk -is [bool]) -or $freshnessOk -ne $true) {
+        throw "grok freshness_ok must be true"
+    }
+    foreach ($fieldName in $grokRequiredFreshnessShaFields) {
+        $value = Get-BridgeObjectField -Object $freshness -Name $fieldName
+        if (-not (Test-FullGitSha -Value $value)) {
+            throw "grok freshness $fieldName must be lowercase 40-hex sha"
+        }
+    }
+    $remoteMainSha = Get-BridgeObjectField -Object $freshness -Name 'remote_main_sha'
+    $localOriginMainSha = Get-BridgeObjectField -Object $freshness -Name 'local_origin_main_sha'
+    if ($remoteMainSha -cne $localOriginMainSha) {
+        throw "grok freshness main sha mismatch"
+    }
+    $worktreeHead = Get-BridgeObjectField -Object $freshness -Name 'worktree_head'
+    if ($worktreeHead -cne $localOriginMainSha) {
+        throw "grok freshness worktree sha mismatch"
+    }
+    foreach ($fieldName in $grokOptionalFreshnessShaFields) {
+        if (Test-BridgeObjectHasField -Object $freshness -Name $fieldName) {
+            $value = Get-BridgeObjectField -Object $freshness -Name $fieldName
+            if ($null -ne $value -and -not (Test-FullGitSha -Value $value)) {
+                throw "grok freshness $fieldName must be lowercase 40-hex sha"
+            }
+        }
+    }
+}
+
+Assert-GrokFreshnessPayload -Payload $payload
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).

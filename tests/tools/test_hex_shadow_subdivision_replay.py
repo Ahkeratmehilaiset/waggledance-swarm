@@ -117,6 +117,20 @@ def test_hex_shadow_replay_verifier_rejects_stale_source_snapshot() -> None:
     assert report["checks"]["artifact_digest_match"] is True
 
 
+def test_hex_shadow_replay_verifier_rejects_workspace_path_leak() -> None:
+    artifact = _valid_replay_artifact()
+    artifact["safe_conclusion"] = (
+        "operator scratch artifact at /workspace/waggledance-swarm/replay.json"
+    )
+    _refresh_artifact_digest(artifact)
+
+    report = verify_shadow_subdivision_replay_artifact(artifact)
+
+    assert report["ok"] is False
+    assert "artifact_path_free" in report["blockers"]
+    assert "artifact_digest_match" not in report["blockers"]
+
+
 def test_hex_shadow_replay_verifier_cli_rejects_invalid_json_path_free(
     tmp_path: Path,
 ) -> None:

@@ -72,6 +72,8 @@ PATH_MARKERS: tuple[str, ...] = (
     "\\Python\\",
     "file://",
     "/home/",
+    "/workspace/",
+    "/workspaces/",
     "/Users/",
     "/tmp/",
     "waggledance-agent-worktrees",

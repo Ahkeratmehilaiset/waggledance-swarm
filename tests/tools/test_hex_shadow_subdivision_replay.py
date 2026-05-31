@@ -77,6 +77,36 @@ def test_hex_shadow_replay_verifier_accepts_current_artifact() -> None:
     assert str(ROOT) not in json.dumps(report, sort_keys=True)
 
 
+def test_hex_shadow_replay_blocked_artifact_digest_includes_blocked_reason() -> None:
+    runtime_smoke = json.loads(
+        json.dumps(build_hexagonal_upgrade_runtime_smoke(ROOT))
+    )
+    runtime_smoke["ok"] = False
+    runtime_smoke["operator_metrics_smoke"]["runtime_contract"][
+        "status_code"
+    ] = 500
+    artifact = build_shadow_subdivision_replay_artifact(
+        upgrade_proof=build_hexagonal_upgrade_proof(ROOT),
+        runtime_boundary_smoke=runtime_smoke,
+        source_snapshot=build_source_snapshot(
+            ROOT,
+            now_utc=datetime(2026, 5, 31, tzinfo=timezone.utc),
+        ),
+    )
+
+    report = verify_shadow_subdivision_replay_artifact(
+        artifact,
+        expected_git_commit=artifact["source_snapshot"]["git_commit"],
+    )
+
+    assert artifact["ok"] is False
+    assert artifact["blocked_reason"] == "upstream_proof_or_metric_contract_failed"
+    assert report["ok"] is False
+    assert report["checks"]["artifact_digest_match"] is True
+    assert "artifact_digest_match" not in report["blockers"]
+    assert "metric_status_code" in report["blockers"]
+
+
 def test_hex_shadow_replay_verifier_rejects_tampered_plan_digest() -> None:
     artifact = _valid_replay_artifact()
     artifact["shadow_plan_summary"]["new_child_cell_ids"].append(

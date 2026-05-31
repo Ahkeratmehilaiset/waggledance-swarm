@@ -670,11 +670,11 @@ def build_shadow_subdivision_replay_artifact(
             "does not grant runtime mutation authority."
         ),
     }
+    if not ok:
+        artifact["blocked_reason"] = "upstream_proof_or_metric_contract_failed"
     artifact["artifact_digest"] = _canonical_digest(
         {key: value for key, value in artifact.items() if key != "artifact_digest"}
     )
-    if not ok:
-        artifact["blocked_reason"] = "upstream_proof_or_metric_contract_failed"
     return artifact
 
 

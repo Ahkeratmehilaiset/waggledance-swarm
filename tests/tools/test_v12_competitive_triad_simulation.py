@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.run_v12_competitive_triad_simulation import (
     REPORT_VERSION,
     build_competitive_triad_simulation,
@@ -137,6 +139,84 @@ def test_gutted_adversarial_defect_class_coverage_is_blocked() -> None:
     assert report["ok"] is False
     assert report["wd_signals"]["adversarial_full_pass"] is False
     assert "adversarial_eval_required_defect_classes_missing" in report["blockers"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_blockers"),
+    [
+        (
+            "top_ok_false",
+            {"adversarial_eval_not_ok"},
+        ),
+        (
+            "missing_cases",
+            {"adversarial_eval_cases_missing_or_invalid"},
+        ),
+        (
+            "case_count_bool",
+            {"adversarial_eval_case_count_not_int"},
+        ),
+        (
+            "case_count_mismatch",
+            {"adversarial_eval_case_count_mismatch"},
+        ),
+        (
+            "case_not_mapping",
+            {
+                "adversarial_eval_cases_invalid",
+                "adversarial_eval_pass_count_mismatch",
+                "adversarial_eval_fail_count_mismatch",
+            },
+        ),
+        (
+            "case_ok_string",
+            {
+                "adversarial_eval_cases_invalid",
+                "adversarial_eval_pass_count_mismatch",
+                "adversarial_eval_fail_count_mismatch",
+            },
+        ),
+        (
+            "invalid_defect_class",
+            {
+                "adversarial_eval_cases_invalid",
+                "adversarial_eval_fail_count_mismatch",
+            },
+        ),
+    ],
+)
+def test_malformed_adversarial_report_shapes_are_blocked(
+    mutation: str,
+    expected_blockers: set[str],
+) -> None:
+    adversarial = _adversarial_report()
+    if mutation == "top_ok_false":
+        adversarial["ok"] = False
+    elif mutation == "missing_cases":
+        adversarial.pop("cases")
+    elif mutation == "case_count_bool":
+        adversarial["case_count"] = True
+    elif mutation == "case_count_mismatch":
+        adversarial["case_count"] = adversarial["case_count"] + 1
+    elif mutation == "case_not_mapping":
+        adversarial["cases"][0] = "not-a-case"
+    elif mutation == "case_ok_string":
+        adversarial["cases"][0]["ok"] = "true"
+    elif mutation == "invalid_defect_class":
+        adversarial["cases"][0]["defect_class"] = "unknown"
+    else:  # pragma: no cover - protects the parametrized table.
+        raise AssertionError(f"unhandled mutation: {mutation}")
+
+    report = build_competitive_triad_simulation(
+        now_utc=_fixed_now(),
+        v12_proof=_v12_proof(),
+        rival_matrix=_rival_matrix(),
+        adversarial_report=adversarial,
+    )
+
+    assert report["ok"] is False
+    assert report["wd_signals"]["adversarial_full_pass"] is False
+    assert expected_blockers <= set(report["blockers"])
 
 
 def test_render_markdown_carries_scope_and_next_100h() -> None:

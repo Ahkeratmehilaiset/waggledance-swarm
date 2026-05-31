@@ -6,6 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+from tools.hex_shadow_subdivision_replay import (
+    build_shadow_subdivision_replay_artifact,
+)
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
@@ -477,6 +480,93 @@ def test_hexagonal_upgrade_runtime_smoke_reports_active_topology_boundary() -> N
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
+
+
+def test_hexagonal_shadow_replay_binds_pure_plan_to_metric_contract() -> None:
+    upgrade_proof = build_hexagonal_upgrade_proof(ROOT)
+    runtime_smoke = build_hexagonal_upgrade_runtime_smoke(ROOT)
+
+    replay = build_shadow_subdivision_replay_artifact(
+        upgrade_proof=upgrade_proof,
+        runtime_boundary_smoke=runtime_smoke,
+    )
+
+    assert replay["ok"] is True
+    assert replay["proof_id"] == "hex_shadow_subdivision_replay_v1"
+    assert replay["proof_type"] == "shadow_replay_hypothetical"
+    assert replay["binding_scope"] == "structural_metrics_contract_only"
+    assert replay["shadow_plan_summary"]["plan_id"] == (
+        upgrade_proof["plan"]["plan_id"]
+    )
+    assert replay["shadow_plan_summary"]["target_state"] == (
+        "subdivision_in_shadow"
+    )
+    assert replay["delivery_summary"] == {
+        "message_count": 3,
+        "delivered_count": 3,
+        "blocked_count": 0,
+        "message_kinds": [
+            "child_to_parent",
+            "parent_to_child",
+            "ring_request",
+        ],
+    }
+    assert replay["runtime_topology_summary"] == {
+        "cell_count": 7,
+        "enabled_cell_count": 7,
+        "dispatch_enabled": False,
+        "shadow_child_cell_ids_absent_from_runtime_config": True,
+    }
+    assert (
+        "waggledance_hex_topology_runtime_mutation_authority"
+        in replay["metric_contract_summary"]["metric_names"]
+    )
+    assert (
+        "waggledance_hex_topology_cells"
+        in replay["metric_contract_summary"]["metric_names"]
+    )
+    assert replay["guardrails"]["no_runtime_topology_mutation"] is True
+    assert replay["guardrails"]["runtime_authority_changed"] is False
+    assert replay["guardrails"]["dispatch_controls_added"] is False
+    assert replay["guardrails"]["network_transport_added"] is False
+    assert replay["guardrails"]["raw_query_or_payload_included"] is False
+    assert replay["guardrails"]["runtime_config_contents_included"] is False
+    assert replay["guardrails"]["numeric_equality_to_shadow_children_claimed"] is False
+    assert replay["artifact_digest"].startswith("sha256:")
+    assert all(
+        digest.startswith("sha256:")
+        for digest in replay["digests"].values()
+    )
+    serialized = json.dumps(replay, sort_keys=True)
+    assert "bee hive" not in serialized
+    assert "energy hvac" not in serialized
+    assert "neighbor proof" not in serialized
+    assert "hierarchy proof" not in serialized
+
+
+def test_hex_shadow_replay_tool_cli_emits_path_free_json() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "hex_shadow_subdivision_replay.py"),
+            "--root",
+            str(ROOT),
+            "--json",
+            "--strict",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    replay = json.loads(result.stdout)
+    assert replay["ok"] is True
+    assert replay["source_snapshot"]["git_commit_available"] is True
+    assert replay["digests"]["full_binding"].startswith("sha256:")
+    assert str(ROOT) not in result.stdout
+    assert "bee hive" not in result.stdout
+    assert "hierarchy proof" not in result.stdout
 
 
 def test_low_risk_autonomy_proof_flows_gap_to_scheduler_outcome() -> None:
@@ -999,6 +1089,17 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["proof"]["runtime_boundary_smoke"][
         "operator_metrics_smoke"
     ]["ok"] is True
+    assert capability["proof"]["shadow_subdivision_replay"]["ok"] is True
+    assert capability["proof"]["shadow_subdivision_replay"][
+        "proof_type"
+    ] == "shadow_replay_hypothetical"
+    assert capability["proof"]["shadow_subdivision_replay"]["guardrails"][
+        "runtime_authority_changed"
+    ] is False
+    assert capability["proof"]["shadow_subdivision_replay"][
+        "source_snapshot"
+    ]["git_commit_available"] is True
+    assert "local verifier" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

@@ -1,6 +1,17 @@
 {
   "corpus_version": "magma.synthetic_adversarial_corpus.v0",
   "generated_at_utc": "2026-05-24T01:40:00Z",
+  "split": {
+    "split_version": "magma.synthetic_adversarial_split.v0",
+    "held_out_case_ids": [
+      "case:adv:spec_gaming:001",
+      "case:adv:fail_open:001",
+      "case:adv:hallucinated_success:001",
+      "case:adv:regression_process:001",
+      "case:adv:governance_bypass:001",
+      "case:adv:path_escape:001"
+    ]
+  },
   "cases": [
     {
       "case_version": "magma.synthetic_adversarial_case.v0",

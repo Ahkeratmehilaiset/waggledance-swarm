@@ -11,6 +11,7 @@ from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CORPUS_SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_corpus.v0.json"
 SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_case.v0.json"
 EXPECTATION_SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_expectation.v0.json"
 CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
@@ -58,6 +59,10 @@ def _run_validator(path: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_fixture_cases_validate_against_schema() -> None:
+    corpus_schema = json.loads(CORPUS_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.Draft7Validator.check_schema(corpus_schema)
+    jsonschema.Draft7Validator(corpus_schema).validate(_load_corpus())
+
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     jsonschema.Draft7Validator.check_schema(schema)
     validator = jsonschema.Draft7Validator(schema)
@@ -93,6 +98,56 @@ def test_validator_accepts_fixture_corpus() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "synthetic adversarial corpus OK" in result.stdout
+
+
+def test_fixture_declares_machine_checked_held_out_split() -> None:
+    corpus = _load_corpus()
+    case_ids = {case["case_id"] for case in corpus["cases"]}
+    held_out = corpus["split"]["held_out_case_ids"]
+
+    assert corpus["split"]["split_version"] == "magma.synthetic_adversarial_split.v0"
+    assert len(held_out) >= 6
+    assert len(held_out) == len(set(held_out))
+    assert set(held_out) <= case_ids
+
+
+def test_validator_rejects_missing_full_corpus_split(tmp_path: Path) -> None:
+    corpus = _load_corpus()
+    broken = copy.deepcopy(corpus)
+    broken.pop("split", None)
+    path = tmp_path / "missing_split.json"
+    _write_json(path, broken)
+
+    result = _run_validator(path)
+
+    assert result.returncode == 1
+    assert "split must be present for full coverage corpus" in result.stderr
+
+
+def test_validator_rejects_unknown_held_out_case_id(tmp_path: Path) -> None:
+    corpus = _load_corpus()
+    broken = copy.deepcopy(corpus)
+    broken["split"]["held_out_case_ids"][0] = "case:adv:missing_case:999"
+    path = tmp_path / "unknown_held_out.json"
+    _write_json(path, broken)
+
+    result = _run_validator(path)
+
+    assert result.returncode == 1
+    assert "split.held_out_case_ids contains unknown case_id values" in result.stderr
+
+
+def test_validator_rejects_too_small_held_out_split(tmp_path: Path) -> None:
+    corpus = _load_corpus()
+    broken = copy.deepcopy(corpus)
+    broken["split"]["held_out_case_ids"] = [corpus["split"]["held_out_case_ids"][0]]
+    path = tmp_path / "too_small_held_out.json"
+    _write_json(path, broken)
+
+    result = _run_validator(path)
+
+    assert result.returncode == 1
+    assert "held_out_case_ids must include at least 6 known cases" in result.stderr
 
 
 def test_validator_rejects_duplicate_case_ids(tmp_path: Path) -> None:
@@ -219,6 +274,7 @@ def test_validator_json_report_includes_coverage() -> None:
     assert report["expectations"] == "<redacted>"
     assert report["coverage"]["privacy_canary_count"] >= 2
     assert report["coverage"]["peer_review_trap_count"] >= 2
+    assert report["coverage"]["held_out_case_count"] >= 6
     assert set(report["coverage"]["expected_gate"]) == {
         "allow",
         "refuse",
@@ -249,4 +305,6 @@ def test_validator_allows_folded_expansion_provenance_partial_coverage() -> None
     report = json.loads(result.stdout)
     assert report["case_count"] == 8
     assert report["full_coverage_required"] is False
+    assert report["split_required"] is False
+    assert report["coverage"]["held_out_case_count"] == 0
     assert report["coverage"]["privacy_canary_count"] >= 2

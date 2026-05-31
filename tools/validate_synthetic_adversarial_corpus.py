@@ -8,14 +8,13 @@ from pathlib import Path
 import sys
 from typing import Any, Sequence
 
-import jsonschema
-
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.magma.schema_validation import redacted_schema_errors  # noqa: E402
+import jsonschema
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from waggledance.core.magma.schema_validation import redacted_schema_errors
 
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
 CASE_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_case.v0.json"
@@ -23,20 +22,6 @@ EXPECTATION_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_expectation.v0.json"
 DEFAULT_DIR = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus"
 DEFAULT_CORPUS = DEFAULT_DIR / "v0.json"
 DEFAULT_EXPECTATIONS = DEFAULT_DIR / "v0_expectations.json"
-REQUIRED_DEFECT_TYPES = {
-    "charter_violation",
-    "risk_escalation",
-    "subtle_drift",
-    "privilege_leak",
-    "payload_leak",
-    "correlated_review_trap",
-    "policy_bypass",
-    "tool_argument_abuse",
-    "spec-gaming",
-    "fail-open",
-    "hallucinated-success",
-    "regression-process",
-}
 REQUIRED_RISK_CLASSES = {
     "informational",
     "internal_memory",

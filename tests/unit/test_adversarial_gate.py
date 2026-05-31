@@ -2,6 +2,7 @@
 """Forge-probe tests for the fail-closed adversarial-corpus promotion gate."""
 from __future__ import annotations
 
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 from waggledance.core.magma.adversarial_gate import (
     verify_adversarial_corpus_gate,
 )
@@ -23,8 +24,30 @@ def _report(*, cases, bound=SOLVER, case_count=None, top_ok=True):
     }
 
 
-def _ok_cases(n):
-    return [{"case_id": f"c{i}", "ok": True, "status": "full_match"} for i in range(n)]
+def _required_types() -> list[str]:
+    return sorted(REQUIRED_DEFECT_TYPES)
+
+
+def _ok_cases(n: int):
+    required = _required_types()
+    return [
+        {
+            "case_id": f"c{i}",
+            "defect_class": required[i % len(required)],
+            "ok": True,
+            "status": "full_match",
+        }
+        for i in range(n)
+    ]
+
+
+def _case_with_defect(*, case_id: str, defect_class: str, ok=True, status="full_match"):
+    return {
+        "case_id": case_id,
+        "defect_class": defect_class,
+        "ok": ok,
+        "status": status,
+    }
 
 
 def test_happy_path_all_caught_bound_passes():
@@ -37,7 +60,14 @@ def test_happy_path_all_caught_bound_passes():
 
 def test_forged_top_ok_with_one_uncaught_case_refuses():
     # report['ok']=True but a case is not caught -> must re-derive and refuse.
-    cases = _ok_cases(19) + [{"case_id": "evil", "ok": False, "status": "mismatch"}]
+    cases = _ok_cases(19) + [
+        _case_with_defect(
+            case_id="evil",
+            defect_class=_required_types()[0],
+            ok=False,
+            status="mismatch",
+        )
+    ]
     r = _report(cases=cases, top_ok=True)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
@@ -54,11 +84,38 @@ def test_type_confused_case_count_refuses():
 
 def test_type_confused_case_ok_string_is_not_caught():
     # ok="true" (string) must NOT count as caught.
-    cases = _ok_cases(19) + [{"case_id": "x", "ok": "true"}]
+    cases = _ok_cases(19) + [_case_with_defect(case_id="x", defect_class=_required_types()[0], ok="true")]
     r = _report(cases=cases)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
     assert result.invalid_case_count == 1
+
+
+def test_invalid_defect_class_is_rejected():
+    cases = _ok_cases(15) + [
+        {
+            "case_id": "bad",
+            "defect_class": "bogus_defect",
+            "ok": True,
+            "status": "full_match",
+        }
+    ]
+    r = _report(cases=cases)
+    result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
+    assert result.ok is False
+    assert any("missing/invalid defect_class" in reason for reason in result.reasons)
+    assert result.invalid_case_count >= 1
+
+
+def test_missing_required_defect_class_refuses():
+    required = _required_types()
+    cases = [_case_with_defect(case_id=f"c{i}", defect_class=required[i]) for i in range(len(required) - 1)]
+    # Missing one required class while all listed cases are caught.
+    # Gate should still refuse due missing required class coverage.
+    r = _report(cases=cases)
+    result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=2)
+    assert result.ok is False
+    assert any("required defect classes not caught" in reason for reason in result.reasons)
 
 
 def test_binding_mismatch_refuses():

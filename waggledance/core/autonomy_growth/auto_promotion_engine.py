@@ -26,6 +26,7 @@ from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.magma.adversarial_corpus_eval import (
     AdversarialCorpusEvalError,
+    REQUIRED_DEFECT_TYPES,
     run_adversarial_corpus_evaluation,
 )
 from waggledance.core.solver_synthesis.declarative_solver_spec import SolverSpec
@@ -60,10 +61,9 @@ PROMOTION_POLICY_VERSION = "policy:auto_promotion_engine:v1"
 PROMOTION_CHARTER_VERSION = "charter:v1"
 PROMOTION_DOMAIN_THRESHOLD_VERSION = "threshold:auto_promotion_engine:v1"
 
-# T5b: minimum adversarial-corpus size the I11 gate requires (corpus is 42 /
-# 9 defect types as of 2026-05-29). Guards against the corpus silently
-# shrinking below a safety threshold. (RCO may tune.)
-ADVERSARIAL_CORPUS_MIN_CASES = 40
+# T5b: minimum adversarial-corpus size the I11 gate requires. The floor now
+# derives from ``len(REQUIRED_DEFECT_TYPES)`` to avoid stale hardcoded thresholds.
+ADVERSARIAL_CORPUS_MIN_CASES = len(REQUIRED_DEFECT_TYPES)
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import jsonschema
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,20 +30,6 @@ EXPANSION_EXPECTATIONS = (
     / "v0_expansion_2026_05_23_expectations.json"
 )
 SCRIPT = ROOT / "tools" / "validate_synthetic_adversarial_corpus.py"
-REQUIRED_DEFECT_TYPES = {
-    "charter_violation",
-    "risk_escalation",
-    "subtle_drift",
-    "privilege_leak",
-    "payload_leak",
-    "correlated_review_trap",
-    "policy_bypass",
-    "tool_argument_abuse",
-    "spec-gaming",
-    "fail-open",
-    "hallucinated-success",
-    "regression-process",
-}
 
 
 def _load_corpus(path: Path = CORPUS) -> dict:

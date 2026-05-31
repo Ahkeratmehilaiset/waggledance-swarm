@@ -9,8 +9,13 @@ import sys
 
 import pytest
 
-from tools.idle_consensus_artifact import ArtifactError, write_idle_consensus_artifact
+from tools.idle_consensus_artifact import (
+    ArtifactError,
+    build_idle_consensus_replay_seed,
+    write_idle_consensus_artifact,
+)
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.canonical import sha256_digest
 
 
 NOW = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
@@ -179,6 +184,115 @@ def test_soft_consensus_writes_operator_review_artifact(tmp_path: Path) -> None:
     assert "Operator review required" in markdown
     assert "no task creation" in markdown
     assert all(hint not in markdown.lower() for hint in PROHIBITED_HINTS)
+
+
+def test_artifact_includes_digest_only_replay_seed(tmp_path: Path) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed = artifact["replay_seed"]
+    artifact_without_seed = dict(artifact)
+    artifact_without_seed.pop("replay_seed")
+    seed_text = json.dumps(seed, sort_keys=True)
+    markdown = Path(report["markdown_path"]).read_text(encoding="utf-8")
+
+    assert seed["seed_version"] == "idle_consensus_replay_seed.v0"
+    assert seed["purpose"] == "future_counterfactual_candidate_diff_replay"
+    assert seed["candidate_diff_included"] is False
+    assert seed["dry_run_only"] is True
+    assert seed["external_effect"] is False
+    assert seed["writes_applied"] is False
+    assert seed["would_create_task"] is False
+    assert seed["would_create_branch"] is False
+    assert seed["would_create_pr"] is False
+    assert seed["would_merge"] is False
+    assert seed["consensus_artifact"] == {
+        "artifact_version": "idle_consensus_operator_review.v1",
+        "artifact_id": artifact["artifact_id"],
+        "digest": sha256_digest(artifact_without_seed),
+    }
+    assert seed["convergence_digest"] == sha256_digest(artifact["convergence"])
+    assert seed["transcript_digest"] == sha256_digest(artifact["transcript"])
+    assert seed["policy_ref"] == "policy:idle_consensus_artifact:v1"
+    assert seed["charter_ref"] == "charter:idle_autonomy:v1"
+    assert seed["required_future_inputs"] == [
+        "changed_paths",
+        "candidate_diff_digest",
+        "candidate_diff_charter_gates",
+        "counterfactual_eval_receipt",
+        "operator_review_decision",
+    ]
+    assert seed["next_required_gates"] == [
+        "candidate_changed_paths_confinement",
+        "candidate_diff_digest_rederived",
+        "candidate_diff_charter_gate",
+        "counterfactual_eval_receipt",
+        "operator_review_gate",
+    ]
+    assert "diff --git" not in seed_text
+    assert "candidate_changed_paths" not in seed
+    assert "Replay Seed" in markdown
+    assert seed["consensus_artifact"]["digest"] in markdown
+
+
+def test_replay_seed_refuses_artifact_without_operator_gate() -> None:
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_replay_seed(
+            {
+                "artifact_version": "idle_consensus_operator_review.v1",
+                "artifact_id": "unsafe",
+                "operator_gate_required": False,
+                "auto_execute": False,
+                "convergence": {},
+                "transcript": [],
+            }
+        )
+
+    assert excinfo.value.report["decision"] == "replay_seed_refused"
+    assert excinfo.value.report["errors"] == [
+        "operator gate is required for replay seed"
+    ]
+
+
+def test_replay_seed_refuses_candidate_material_source() -> None:
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_replay_seed(
+            {
+                "artifact_version": "idle_consensus_operator_review.v1",
+                "artifact_id": "unsafe",
+                "operator_gate_required": True,
+                "auto_execute": False,
+                "convergence": {},
+                "transcript": [],
+                "candidate_diff_text": "diff --git a/x b/x",
+            }
+        )
+
+    assert excinfo.value.report["decision"] == "replay_seed_refused"
+    assert excinfo.value.report["errors"] == [
+        "candidate diff material is not allowed in replay seed source"
+    ]
+    assert excinfo.value.report["candidate_material_keys"] == ["candidate_diff_text"]
+
+
+def test_replay_seed_refuses_existing_seed() -> None:
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_replay_seed(
+            {
+                "artifact_version": "idle_consensus_operator_review.v1",
+                "artifact_id": "unsafe",
+                "operator_gate_required": True,
+                "auto_execute": False,
+                "convergence": {},
+                "transcript": [],
+                "replay_seed": {"candidate_diff_text": "diff --git a/x b/x"},
+            }
+        )
+
+    assert excinfo.value.report["decision"] == "replay_seed_refused"
+    assert excinfo.value.report["errors"] == [
+        "existing replay_seed must not be provided"
+    ]
 
 
 def test_consensus_target_colon_is_sanitized_before_artifact_write(

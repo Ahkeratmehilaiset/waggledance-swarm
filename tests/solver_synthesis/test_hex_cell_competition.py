@@ -704,6 +704,24 @@ def test_activation_preflight_rejects_candidate_mismatch():
         )
 
 
+def test_activation_preflight_rejects_receipt_event_candidate_mismatch():
+    authorization = _authorization_from_fixture()
+    bundle = _solver_provenance_activation_bundle(
+        authorization.accepted_candidate_id,
+    )
+    forged = dict(bundle)
+    forged["receipt"] = dict(bundle["receipt"])
+    forged["receipt"]["event_id"] = (
+        "magma:solver_provenance:activation_authorised:wrong-candidate"
+    )
+
+    with pytest.raises(ValueError, match="event_id"):
+        build_hex_cell_activation_preflight(
+            authorization=authorization,
+            solver_provenance_bundle=forged,
+        )
+
+
 def test_activation_preflight_rejects_non_activation_receipt():
     authorization = _authorization_from_fixture()
     bundle = _solver_provenance_activation_bundle(

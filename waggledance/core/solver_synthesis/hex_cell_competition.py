@@ -1113,13 +1113,13 @@ def _validate_solver_provenance_activation_bundle(
         "solver_provenance_bundle.receipt.event_id",
         receipt.get("event_id"),
     )
-    if (
-        f":{HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION}:"
-        not in event_id
-    ):
+    expected_event_id = _solver_provenance_activation_event_id(
+        authorization.accepted_candidate_id
+    )
+    if event_id != expected_event_id:
         raise ValueError(
-            "hex-cell activation preflight requires activation_authorised "
-            "receipt event"
+            "hex-cell activation preflight requires receipt event_id to "
+            "match activation_authorised accepted_candidate_id"
         )
     if receipt.get("receipt_version") != "magma.receipt.v1":
         raise ValueError(
@@ -1390,6 +1390,13 @@ def _activation_preflight_id(
         "hexcellpreflight:"
         f"{cell_id}:{capability_id}:"
         f"{preflight_digest.removeprefix('sha256:')[:16]}"
+    )
+
+
+def _solver_provenance_activation_event_id(candidate_id: str) -> str:
+    return (
+        "magma:solver_provenance:"
+        f"{HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION}:{candidate_id}"
     )
 
 

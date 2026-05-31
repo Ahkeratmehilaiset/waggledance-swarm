@@ -53,6 +53,7 @@ def test_proof_builds_receipt_bound_preflight_without_authority(
     forge_probes = report["forge_probes"]
     assert set(forge_probes) == {
         "candidate_mismatch",
+        "receipt_event_candidate_mismatch",
         "transition_drift",
         "evaluation_digest_drift",
         "pregranted_runtime_authority",

@@ -302,6 +302,19 @@ def _forge_probe_results(
                 ),
             )
         ),
+        "receipt_event_candidate_mismatch": _expect_rejected(
+            lambda: build_hex_cell_activation_preflight(
+                authorization=authorization,
+                solver_provenance_bundle=_with_receipt_field(
+                    solver_bundle,
+                    "event_id",
+                    (
+                        "magma:solver_provenance:"
+                        "activation_authorised:wrong-candidate"
+                    ),
+                ),
+            )
+        ),
         "transition_drift": _expect_rejected(
             lambda: build_hex_cell_activation_preflight(
                 authorization=authorization,
@@ -370,6 +383,17 @@ def _with_evaluation_field(
     mutated = dict(bundle)
     mutated["evaluation_result"] = dict(bundle["evaluation_result"])
     mutated["evaluation_result"][field] = value
+    return mutated
+
+
+def _with_receipt_field(
+    bundle: dict[str, Any],
+    field: str,
+    value: Any,
+) -> dict[str, Any]:
+    mutated = dict(bundle)
+    mutated["receipt"] = dict(bundle["receipt"])
+    mutated["receipt"][field] = value
     return mutated
 
 

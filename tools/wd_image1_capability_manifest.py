@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 from tools.hex_shadow_subdivision_replay import (  # noqa: E402
     build_source_snapshot,
     build_shadow_subdivision_replay_artifact,
+    verify_shadow_subdivision_replay_artifact,
 )
 from waggledance.core.hex_topology.cell_message_contract import make_message
 from waggledance.core.hex_topology.parent_child_relations import (
@@ -5279,10 +5280,17 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof(root)
     hex_upgrade_runtime_smoke = build_hexagonal_upgrade_runtime_smoke(root)
+    hex_upgrade_source_snapshot = build_source_snapshot(root)
     hex_upgrade_shadow_replay = build_shadow_subdivision_replay_artifact(
         upgrade_proof=hex_upgrade_proof,
         runtime_boundary_smoke=hex_upgrade_runtime_smoke,
-        source_snapshot=build_source_snapshot(root),
+        source_snapshot=hex_upgrade_source_snapshot,
+    )
+    hex_upgrade_shadow_replay_verification = (
+        verify_shadow_subdivision_replay_artifact(
+            hex_upgrade_shadow_replay,
+            expected_git_commit=hex_upgrade_source_snapshot.get("git_commit"),
+        )
     )
     hex_upgrade_proof["runtime_boundary_smoke"] = (
         hex_upgrade_runtime_smoke
@@ -5290,10 +5298,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof["shadow_subdivision_replay"] = (
         hex_upgrade_shadow_replay
     )
+    hex_upgrade_proof["shadow_subdivision_replay_verification"] = (
+        hex_upgrade_shadow_replay_verification
+    )
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
         and hex_upgrade_shadow_replay.get("ok") is True
+        and hex_upgrade_shadow_replay_verification.get("ok") is True
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_runtime_boundary_smoke = (
@@ -5614,7 +5626,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "report the active config topology without mutating it. A "
                 "shadow replay artifact binds the pure plan/relation/delivery "
                 "proof to that read-only metrics contract without runtime "
-                "activation."
+                "activation, and a local verifier recomputes the replay "
+                "digests and no-authority guardrails offline."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -5629,8 +5642,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local verifier for the shadow subdivision replay "
-                "artifact without activating runtime subdivision authority."
+                "Add a path-free reviewer summary for the shadow subdivision "
+                "replay verifier without activating runtime subdivision "
+                "authority."
             ),
             proof=hex_upgrade_proof,
         ),

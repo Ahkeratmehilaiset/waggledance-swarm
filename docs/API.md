@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, low-risk autogrowth ticker boundary metrics, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, read-only hex topology boundary gauges, low-risk autogrowth ticker boundary metrics, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -80,6 +80,13 @@ waggledance_autogrowth_wakeups_total 0.0
 # TYPE waggledance_route_stage_count gauge
 waggledance_route_stage_count{group="expected"} 8.0
 waggledance_route_stage_count{group="disabled_optional"} 1.0
+# HELP waggledance_hex_topology_cells Configured and enabled active hex topology cell counts.
+# TYPE waggledance_hex_topology_cells gauge
+waggledance_hex_topology_cells{state="configured"} 7.0
+waggledance_hex_topology_cells{state="enabled"} 7.0
+# HELP waggledance_hex_topology_runtime_mutation_authority 1 if runtime topology mutation authority is enabled; the current boundary collector exposes read-only state only.
+# TYPE waggledance_hex_topology_runtime_mutation_authority gauge
+waggledance_hex_topology_runtime_mutation_authority 0.0
 # HELP waggledance_route_stage_observations_total Total sanitized chat requests where the route stage was observed.
 # TYPE waggledance_route_stage_observations_total counter
 waggledance_route_stage_observations_total{stage="language_detection"} 12.0
@@ -104,6 +111,15 @@ Route-stage count groups are derived from the static chat route-stage allowlist
 and current optional component flags. They do not record query text, language
 hints, profile names, context, or route-stage trace payloads, and they do not
 enable disabled hex paths.
+
+Hex topology boundary gauges are derived from the active `HexTopologyRegistry`
+and current hex neighbor dispatch gate. They expose only aggregate counts:
+configured/enabled cells, mapped agents, directed neighbor links, dispatch gate
+state, and the explicit `waggledance_hex_topology_runtime_mutation_authority`
+guardrail gauge. These scrapes do not record query text, agent payloads,
+neighbor message payloads, local paths, or topology config contents, and they
+do not enable dispatch, create cells, subdivide cells, or add runtime topology
+controls.
 
 Route-stage runtime counters are recorded only after the chat response has
 been sanitized through the route-stage allowlist. `observations_total` supports

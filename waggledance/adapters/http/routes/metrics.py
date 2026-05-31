@@ -203,6 +203,7 @@ class _WaggleCollector:
             return
 
         yield from self._collect_hex_metrics(container, up)
+        yield from self._collect_hex_topology_boundary_metrics(container)
         yield from self._collect_route_stage_metrics(container)
         yield from self._collect_route_stage_runtime_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
@@ -277,6 +278,117 @@ class _WaggleCollector:
                 f"v3.5.6 hex-mesh gauge: {name}",
                 value=numeric,
             )
+
+    def _collect_hex_topology_boundary_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_hex_topology_boundary_up",
+            (
+                "1 if the metrics collector could read the active "
+                "hex topology boundary this scrape"
+            ),
+            value=0.0,
+        )
+        try:
+            registry = getattr(container, "hex_topology_registry", None)
+        except Exception as exc:
+            logger.warning("metrics: failed to fetch hex_topology_registry: %s", exc)
+            yield up
+            return
+        if registry is None:
+            yield up
+            return
+
+        try:
+            stats_fn = getattr(registry, "stats", None)
+            stats = stats_fn() if callable(stats_fn) else {}
+            if not isinstance(stats, dict):
+                stats = {}
+            raw_cells = getattr(registry, "cells", {})
+            cells = raw_cells if isinstance(raw_cells, dict) else {}
+            cell_items = list(cells.items())
+            configured_count = len(cell_items)
+            if configured_count <= 0:
+                configured_count = int(_as_nonnegative_float(stats.get("cells_loaded")))
+            enabled_count = sum(
+                1
+                for _cell_id, cell in cell_items
+                if bool(_safe_getattr(cell, "enabled", False))
+            )
+            total_agents = _as_nonnegative_float(stats.get("total_agents_mapped"))
+            neighbor_links = self._hex_topology_neighbor_link_count(
+                registry,
+                [cell_id for cell_id, _cell in cell_items],
+            )
+        except Exception as exc:
+            logger.warning(
+                "metrics: hex topology boundary collection raised: %s",
+                exc,
+            )
+            yield up
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_hex_topology_boundary_up",
+            (
+                "1 if the metrics collector could read the active "
+                "hex topology boundary this scrape"
+            ),
+            value=1.0,
+        )
+
+        cell_metric = GaugeMetricFamily(
+            "waggledance_hex_topology_cells",
+            "Configured and enabled active hex topology cell counts.",
+            labels=["state"],
+        )
+        cell_metric.add_metric(["configured"], float(configured_count))
+        cell_metric.add_metric(["enabled"], float(enabled_count))
+        yield cell_metric
+
+        yield GaugeMetricFamily(
+            "waggledance_hex_topology_agents_mapped",
+            "Total agents mapped into the active hex topology registry.",
+            value=total_agents,
+        )
+        yield GaugeMetricFamily(
+            "waggledance_hex_topology_neighbor_links",
+            "Directed ring-1 neighbor links visible in the active hex topology.",
+            value=float(neighbor_links),
+        )
+
+        hex_assist = _safe_getattr(container, "hex_neighbor_assist")
+        yield GaugeMetricFamily(
+            "waggledance_hex_topology_runtime_dispatch_enabled",
+            "1 if the runtime hex neighbor dispatch gate is enabled.",
+            value=_as_bool_float(_safe_getattr(hex_assist, "enabled", False)),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_hex_topology_runtime_mutation_authority",
+            (
+                "1 if runtime topology mutation authority is enabled; "
+                "the current boundary collector exposes read-only state only"
+            ),
+            value=0.0,
+        )
+
+    @staticmethod
+    def _hex_topology_neighbor_link_count(
+        registry: Any,
+        cell_ids: list[str],
+    ) -> int:
+        get_neighbors = _safe_getattr(registry, "get_neighbor_cells")
+        if not callable(get_neighbors):
+            return 0
+        count = 0
+        for cell_id in cell_ids:
+            neighbors = get_neighbors(cell_id)
+            if not isinstance(neighbors, list):
+                continue
+            count += len(neighbors)
+        return count
 
     def _collect_route_stage_metrics(self, container: Any) -> Iterable[Any]:
         disabled_optional = [

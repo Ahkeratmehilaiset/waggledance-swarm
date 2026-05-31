@@ -461,6 +461,17 @@ def test_hexagonal_upgrade_runtime_smoke_reports_active_topology_boundary() -> N
         item["matched_expected"]
         for item in proof["runtime_topology"]["sample_origins"]
     )
+    metrics = proof["operator_metrics_smoke"]
+    assert metrics["ok"] is True
+    assert metrics["operator_visible_metrics"] is True
+    assert metrics["runtime_contract"]["ok"] is True
+    assert "waggledance_hex_topology_cells" in metrics["metric_names"]
+    assert (
+        "waggledance_hex_topology_runtime_mutation_authority"
+        in metrics["metric_names"]
+    )
+    assert metrics["no_runtime_topology_mutation"] is True
+    assert metrics["runtime_authority_changed"] is False
     assert proof["shadow_child_cell_ids_absent_from_runtime_config"] is True
     assert proof["no_runtime_topology_mutation"] is True
     assert proof["runtime_authority_changed"] is False
@@ -985,6 +996,9 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["proof"]["runtime_boundary_smoke"][
         "shadow_child_cell_ids_absent_from_runtime_config"
     ] is True
+    assert capability["proof"]["runtime_boundary_smoke"][
+        "operator_metrics_smoke"
+    ]["ok"] is True
     assert report["summary"]["proofs_ok"] is True
 
 

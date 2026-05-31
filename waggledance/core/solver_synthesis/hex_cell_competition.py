@@ -9,8 +9,9 @@ behind later operator-gated promotion work.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -48,6 +49,20 @@ HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE = (
 HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR = (
     "same_inputs_same_authorization_digest_no_runtime_mutation"
 )
+HEX_CELL_ACTIVATION_PREFLIGHT_SCHEMA_VERSION = (
+    "hex_cell_activation_preflight.v0"
+)
+HEX_CELL_ACTIVATION_PREFLIGHT_STATUS = (
+    "solver_provenance_activation_receipt_verified"
+)
+HEX_CELL_ACTIVATION_PREFLIGHT_NEXT_GATE = (
+    "runtime_authority_activation_commit"
+)
+HEX_CELL_ACTIVATION_PREFLIGHT_RECEIPT_EVENT_TYPE = (
+    "hex_cell.activation_preflight"
+)
+HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION = "activation_authorised"
+HEX_CELL_ACTIVATION_PREFLIGHT_NEW_STATE = "activated"
 
 
 @dataclass(frozen=True)
@@ -248,6 +263,81 @@ class HexCellOperatorGateAuthorization:
             "operator_authorized_activation": (
                 self.operator_authorized_activation
             ),
+            "runtime_authority_granted": self.runtime_authority_granted,
+            "runtime_traffic_mutation_applied": (
+                self.runtime_traffic_mutation_applied
+            ),
+            "candidate_state_mutation_applied": (
+                self.candidate_state_mutation_applied
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class HexCellActivationPreflight:
+    """Receipt-bound preflight before any runtime authority commit.
+
+    This artifact links the cleared operator-gate authorization to a verified
+    SolverProvenance ``activation_authorised`` MAGMA receipt. It deliberately
+    keeps runtime authority unapplied; the next gate is a separate commit step.
+    """
+
+    schema_version: str
+    preflight_id: str
+    authorization_id: str
+    authorization_digest: str
+    acceptance_id: str
+    competition_id: str
+    cell_id: str
+    capability_id: str
+    accepted_candidate_id: str
+    solver_candidate_id: str
+    solver_provenance_receipt_digest: str
+    solver_provenance_receipt_event_id: str
+    activation_transition: str
+    activation_state: str
+    preflight_digest: str
+    evidence_digest_algorithm: str
+    activation_preflight_status: str
+    required_next_gate: str
+    required_receipt_event_type: str
+    receipt_bound_activation_verified: bool
+    operator_gate_cleared: bool
+    runtime_authority_granted: bool
+    runtime_traffic_mutation_applied: bool
+    candidate_state_mutation_applied: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": self.schema_version,
+            "preflight_id": self.preflight_id,
+            "authorization_id": self.authorization_id,
+            "authorization_digest": self.authorization_digest,
+            "acceptance_id": self.acceptance_id,
+            "competition_id": self.competition_id,
+            "cell_id": self.cell_id,
+            "capability_id": self.capability_id,
+            "accepted_candidate_id": self.accepted_candidate_id,
+            "solver_candidate_id": self.solver_candidate_id,
+            "solver_provenance_receipt_digest": (
+                self.solver_provenance_receipt_digest
+            ),
+            "solver_provenance_receipt_event_id": (
+                self.solver_provenance_receipt_event_id
+            ),
+            "activation_transition": self.activation_transition,
+            "activation_state": self.activation_state,
+            "preflight_digest": self.preflight_digest,
+            "evidence_digest_algorithm": self.evidence_digest_algorithm,
+            "activation_preflight_status": (
+                self.activation_preflight_status
+            ),
+            "required_next_gate": self.required_next_gate,
+            "required_receipt_event_type": self.required_receipt_event_type,
+            "receipt_bound_activation_verified": (
+                self.receipt_bound_activation_verified
+            ),
+            "operator_gate_cleared": self.operator_gate_cleared,
             "runtime_authority_granted": self.runtime_authority_granted,
             "runtime_traffic_mutation_applied": (
                 self.runtime_traffic_mutation_applied
@@ -520,6 +610,69 @@ def build_hex_cell_operator_gate_authorization(
     )
 
 
+def build_hex_cell_activation_preflight(
+    *,
+    authorization: HexCellOperatorGateAuthorization,
+    solver_provenance_bundle: Mapping[str, Any],
+) -> HexCellActivationPreflight:
+    """Bind operator authorization to a SolverProvenance activation receipt.
+
+    The preflight is intentionally a validation artifact, not an authority
+    grant. It fail-closes on authorization drift, candidate mismatch,
+    malformed receipt shape, digest mismatch, or a non-passing provenance
+    activation receipt.
+    """
+    _validate_operator_gate_authorization_for_preflight(authorization)
+    receipt_event_id = _validate_solver_provenance_activation_bundle(
+        authorization=authorization,
+        solver_provenance_bundle=solver_provenance_bundle,
+    )
+    receipt_digest = sha256_digest(
+        _as_mapping("solver_provenance_bundle.receipt",
+                    solver_provenance_bundle.get("receipt"))
+    )
+
+    payload = _activation_preflight_payload(
+        authorization=authorization,
+        solver_provenance_receipt_digest=receipt_digest,
+        solver_provenance_receipt_event_id=receipt_event_id,
+    )
+    preflight_digest = sha256_digest(payload)
+    preflight_id = _activation_preflight_id(
+        authorization.cell_id,
+        authorization.capability_id,
+        preflight_digest,
+    )
+    return HexCellActivationPreflight(
+        schema_version=HEX_CELL_ACTIVATION_PREFLIGHT_SCHEMA_VERSION,
+        preflight_id=preflight_id,
+        authorization_id=authorization.authorization_id,
+        authorization_digest=authorization.authorization_digest,
+        acceptance_id=authorization.acceptance_id,
+        competition_id=authorization.competition_id,
+        cell_id=authorization.cell_id,
+        capability_id=authorization.capability_id,
+        accepted_candidate_id=authorization.accepted_candidate_id,
+        solver_candidate_id=authorization.accepted_candidate_id,
+        solver_provenance_receipt_digest=receipt_digest,
+        solver_provenance_receipt_event_id=receipt_event_id,
+        activation_transition=HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION,
+        activation_state=HEX_CELL_ACTIVATION_PREFLIGHT_NEW_STATE,
+        preflight_digest=preflight_digest,
+        evidence_digest_algorithm=HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        activation_preflight_status=HEX_CELL_ACTIVATION_PREFLIGHT_STATUS,
+        required_next_gate=HEX_CELL_ACTIVATION_PREFLIGHT_NEXT_GATE,
+        required_receipt_event_type=(
+            HEX_CELL_ACTIVATION_PREFLIGHT_RECEIPT_EVENT_TYPE
+        ),
+        receipt_bound_activation_verified=True,
+        operator_gate_cleared=True,
+        runtime_authority_granted=False,
+        runtime_traffic_mutation_applied=False,
+        candidate_state_mutation_applied=False,
+    )
+
+
 def _validate_candidate(
     candidate: SolverCandidate,
     capability_id: str,
@@ -761,6 +914,248 @@ def _validate_promotion_acceptance_for_operator_gate(
         )
 
 
+def _validate_operator_gate_authorization_for_preflight(
+    authorization: HexCellOperatorGateAuthorization,
+) -> None:
+    if (
+        authorization.schema_version
+        != HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires operator authorization "
+            "schema "
+            f"{HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION!r}; got "
+            f"{authorization.schema_version!r}"
+        )
+    if (
+        authorization.evidence_digest_algorithm
+        != HEX_CELL_COMPETITION_DIGEST_ALGORITHM
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires digest algorithm "
+            f"{HEX_CELL_COMPETITION_DIGEST_ALGORITHM!r}; got "
+            f"{authorization.evidence_digest_algorithm!r}"
+        )
+    if authorization.authority_status != (
+        HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires cleared operator gate "
+            f"authorization; got {authorization.authority_status!r}"
+        )
+    if (
+        authorization.required_next_gate
+        != HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires next gate "
+            f"{HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE!r}; got "
+            f"{authorization.required_next_gate!r}"
+        )
+    if (
+        authorization.required_receipt_event_type
+        != HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires authorization receipt "
+            "event type "
+            f"{HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE!r}"
+        )
+    if authorization.receipt_ordering_enforced is not True:
+        raise ValueError(
+            "hex-cell activation preflight requires receipt ordering"
+        )
+    if (
+        authorization.authorization_receipt_required_before_runtime_authority
+        is not True
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires authorization receipt "
+            "before runtime authority"
+        )
+    if authorization.operator_gate_required is not True:
+        raise ValueError(
+            "hex-cell activation preflight requires operator gate"
+        )
+    if authorization.operator_gate_cleared is not True:
+        raise ValueError(
+            "hex-cell activation preflight requires cleared operator gate"
+        )
+    if authorization.operator_authorized_activation is not True:
+        raise ValueError(
+            "hex-cell activation preflight requires operator-authorized "
+            "activation"
+        )
+    if authorization.runtime_authority_granted:
+        raise ValueError(
+            "hex-cell activation preflight refuses pre-granted runtime "
+            "authority"
+        )
+    if authorization.runtime_traffic_mutation_applied:
+        raise ValueError(
+            "hex-cell activation preflight refuses mutated runtime traffic"
+        )
+    if authorization.candidate_state_mutation_applied:
+        raise ValueError(
+            "hex-cell activation preflight refuses mutated candidate state"
+        )
+    expected_digest = sha256_digest(
+        _operator_gate_authorization_payload_from_authorization(
+            authorization
+        )
+    )
+    if authorization.authorization_digest != expected_digest:
+        raise ValueError(
+            "hex-cell activation preflight requires authorization_digest "
+            "to match current authorization fields"
+        )
+    expected_id = _operator_gate_authorization_id(
+        authorization.cell_id,
+        authorization.capability_id,
+        authorization.authorization_digest,
+    )
+    if authorization.authorization_id != expected_id:
+        raise ValueError(
+            "hex-cell activation preflight requires authorization_id to "
+            "match authorization_digest"
+        )
+
+
+def _validate_solver_provenance_activation_bundle(
+    *,
+    authorization: HexCellOperatorGateAuthorization,
+    solver_provenance_bundle: Mapping[str, Any],
+) -> str:
+    bundle = _as_mapping(
+        "solver_provenance_bundle",
+        solver_provenance_bundle,
+    )
+    payload = _as_mapping(
+        "solver_provenance_bundle.payload",
+        bundle.get("payload"),
+    )
+    evaluation = _as_mapping(
+        "solver_provenance_bundle.evaluation_result",
+        bundle.get("evaluation_result"),
+    )
+    receipt = _as_mapping(
+        "solver_provenance_bundle.receipt",
+        bundle.get("receipt"),
+    )
+
+    candidate_id = _require_mapping_string(
+        "solver_provenance_bundle.payload.candidate_id",
+        payload.get("candidate_id"),
+    )
+    if candidate_id != authorization.accepted_candidate_id:
+        raise ValueError(
+            "hex-cell activation preflight requires solver provenance "
+            "candidate_id to match accepted_candidate_id"
+        )
+    if payload.get("schema_version") != (
+        "solver_provenance_transition_payload.v1"
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires solver provenance "
+            "transition payload v1"
+        )
+    if payload.get("transition") != HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION:
+        raise ValueError(
+            "hex-cell activation preflight requires activation_authorised "
+            "transition"
+        )
+    if payload.get("new_state") != HEX_CELL_ACTIVATION_PREFLIGHT_NEW_STATE:
+        raise ValueError(
+            "hex-cell activation preflight requires activated new_state"
+        )
+    if payload.get("verification_valid") is not True:
+        raise ValueError(
+            "hex-cell activation preflight requires valid solver provenance "
+            "verification"
+        )
+    rco_digest = _require_mapping_sha256_digest(
+        "solver_provenance_bundle.payload.rco_decision_digest",
+        payload.get("rco_decision_digest"),
+    )
+
+    if evaluation.get("subject_type") != "solver":
+        raise ValueError(
+            "hex-cell activation preflight requires solver evaluation"
+        )
+    if evaluation.get("risk_class") != "local_artifact":
+        raise ValueError(
+            "hex-cell activation preflight requires local_artifact risk"
+        )
+    if evaluation.get("expected_gate") != "allow":
+        raise ValueError(
+            "hex-cell activation preflight requires expected_gate allow"
+        )
+    if evaluation.get("actual_gate") != "allow":
+        raise ValueError(
+            "hex-cell activation preflight requires actual_gate allow"
+        )
+    if evaluation.get("verdict") != "pass":
+        raise ValueError(
+            "hex-cell activation preflight requires pass verdict"
+        )
+    if evaluation.get("operator_required") is not False:
+        raise ValueError(
+            "hex-cell activation preflight requires non-external receipt"
+        )
+    payload_digest = sha256_digest(payload)
+    if evaluation.get("target_digest") != payload_digest:
+        raise ValueError(
+            "hex-cell activation preflight requires evaluation target_digest "
+            "to match payload"
+        )
+
+    event_id = _require_mapping_string(
+        "solver_provenance_bundle.receipt.event_id",
+        receipt.get("event_id"),
+    )
+    if (
+        f":{HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION}:"
+        not in event_id
+    ):
+        raise ValueError(
+            "hex-cell activation preflight requires activation_authorised "
+            "receipt event"
+        )
+    if receipt.get("receipt_version") != "magma.receipt.v1":
+        raise ValueError(
+            "hex-cell activation preflight requires MAGMA receipt v1"
+        )
+    if receipt.get("risk_class") != "local_artifact":
+        raise ValueError(
+            "hex-cell activation preflight requires local_artifact receipt"
+        )
+    if receipt.get("payload_visibility") != "digest_only":
+        raise ValueError(
+            "hex-cell activation preflight requires digest-only payload"
+        )
+    if receipt.get("operator_gate_required") is not False:
+        raise ValueError(
+            "hex-cell activation preflight requires receipt with no runtime "
+            "operator gate"
+        )
+    if receipt.get("canonical_payload_digest") != payload_digest:
+        raise ValueError(
+            "hex-cell activation preflight requires receipt payload digest "
+            "to match payload"
+        )
+    if receipt.get("evaluation_result_digest") != sha256_digest(evaluation):
+        raise ValueError(
+            "hex-cell activation preflight requires receipt evaluation digest "
+            "to match evaluation_result"
+        )
+    if receipt.get("rco_decision_digest") != rco_digest:
+        raise ValueError(
+            "hex-cell activation preflight requires receipt rco digest to "
+            "match payload"
+        )
+    return event_id
+
+
 def _promotion_acceptance_payload(
     *,
     competition_id: str,
@@ -842,6 +1237,89 @@ def _operator_gate_authorization_payload(
     }
 
 
+def _operator_gate_authorization_payload_from_authorization(
+    authorization: HexCellOperatorGateAuthorization,
+) -> dict:
+    return {
+        "schema_version": HEX_CELL_OPERATOR_GATE_AUTHORIZATION_SCHEMA_VERSION,
+        "acceptance_id": authorization.acceptance_id,
+        "competition_id": authorization.competition_id,
+        "cell_id": authorization.cell_id,
+        "capability_id": authorization.capability_id,
+        "accepted_candidate_id": authorization.accepted_candidate_id,
+        "rejected_candidate_ids": list(authorization.rejected_candidate_ids),
+        "competition_evidence_digest": (
+            authorization.competition_evidence_digest
+        ),
+        "acceptance_digest": authorization.acceptance_digest,
+        "acceptance_receipt_digest": (
+            authorization.acceptance_receipt_digest
+        ),
+        "evidence_digest_algorithm": HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        "operator_approval_id": authorization.operator_approval_id,
+        "approved_by": authorization.approved_by,
+        "operator_decision": authorization.operator_decision,
+        "operator_scope": authorization.operator_scope,
+        "authority_status": HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS,
+        "required_next_gate": (
+            HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE
+        ),
+        "required_receipt_event_type": (
+            HEX_CELL_OPERATOR_GATE_AUTHORIZATION_RECEIPT_EVENT_TYPE
+        ),
+        "receipt_ordering_enforced": True,
+        "authorization_receipt_required_before_runtime_authority": True,
+        "duplicate_retry_behavior": (
+            HEX_CELL_OPERATOR_GATE_DUPLICATE_RETRY_BEHAVIOR
+        ),
+        "operator_gate_required": True,
+        "operator_gate_cleared": True,
+        "operator_authorized_activation": True,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+
+
+def _activation_preflight_payload(
+    *,
+    authorization: HexCellOperatorGateAuthorization,
+    solver_provenance_receipt_digest: str,
+    solver_provenance_receipt_event_id: str,
+) -> dict:
+    return {
+        "schema_version": HEX_CELL_ACTIVATION_PREFLIGHT_SCHEMA_VERSION,
+        "authorization_id": authorization.authorization_id,
+        "authorization_digest": authorization.authorization_digest,
+        "acceptance_id": authorization.acceptance_id,
+        "competition_id": authorization.competition_id,
+        "cell_id": authorization.cell_id,
+        "capability_id": authorization.capability_id,
+        "accepted_candidate_id": authorization.accepted_candidate_id,
+        "solver_candidate_id": authorization.accepted_candidate_id,
+        "solver_provenance_receipt_digest": (
+            solver_provenance_receipt_digest
+        ),
+        "solver_provenance_receipt_event_id": (
+            solver_provenance_receipt_event_id
+        ),
+        "activation_transition": HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION,
+        "activation_state": HEX_CELL_ACTIVATION_PREFLIGHT_NEW_STATE,
+        "activation_preflight_status": (
+            HEX_CELL_ACTIVATION_PREFLIGHT_STATUS
+        ),
+        "required_next_gate": HEX_CELL_ACTIVATION_PREFLIGHT_NEXT_GATE,
+        "required_receipt_event_type": (
+            HEX_CELL_ACTIVATION_PREFLIGHT_RECEIPT_EVENT_TYPE
+        ),
+        "receipt_bound_activation_verified": True,
+        "operator_gate_cleared": True,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+
+
 def _competition_evidence_payload(
     *,
     cell_id: str,
@@ -903,6 +1381,18 @@ def _operator_gate_authorization_id(
     )
 
 
+def _activation_preflight_id(
+    cell_id: str,
+    capability_id: str,
+    preflight_digest: str,
+) -> str:
+    return (
+        "hexcellpreflight:"
+        f"{cell_id}:{capability_id}:"
+        f"{preflight_digest.removeprefix('sha256:')[:16]}"
+    )
+
+
 def _require_non_empty(field_name: str, value: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -910,7 +1400,9 @@ def _require_non_empty(field_name: str, value: str) -> str:
     return normalized
 
 
-def _require_sha256_digest(field_name: str, value: str) -> str:
+def _require_sha256_digest(field_name: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a sha256 digest")
     normalized = _require_non_empty(field_name, value)
     if not normalized.startswith("sha256:"):
         raise ValueError(f"{field_name} must be a sha256 digest")
@@ -923,11 +1415,34 @@ def _require_sha256_digest(field_name: str, value: str) -> str:
     return normalized
 
 
+def _as_mapping(field_name: str, value: object) -> Mapping[str, Any]:
+    if not isinstance(value, MappingABC):
+        raise ValueError(f"{field_name} must be a mapping")
+    return value
+
+
+def _require_mapping_string(field_name: str, value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _require_mapping_sha256_digest(field_name: str, value: object) -> str:
+    return _require_sha256_digest(field_name, value)
+
+
 __all__ = [
     "CandidateCompetitionScore",
+    "HexCellActivationPreflight",
     "HexCellCompetitionResult",
     "HexCellOperatorGateAuthorization",
     "HexCellPromotionAcceptance",
+    "HEX_CELL_ACTIVATION_PREFLIGHT_NEW_STATE",
+    "HEX_CELL_ACTIVATION_PREFLIGHT_NEXT_GATE",
+    "HEX_CELL_ACTIVATION_PREFLIGHT_RECEIPT_EVENT_TYPE",
+    "HEX_CELL_ACTIVATION_PREFLIGHT_SCHEMA_VERSION",
+    "HEX_CELL_ACTIVATION_PREFLIGHT_STATUS",
+    "HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION",
     "HEX_CELL_COMPETITION_AUTHORITY_STATUS",
     "HEX_CELL_COMPETITION_DIGEST_ALGORITHM",
     "HEX_CELL_COMPETITION_RANKING_RULE",
@@ -941,6 +1456,7 @@ __all__ = [
     "HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE",
     "HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION",
     "HEX_CELL_PROMOTION_ACCEPTANCE_STATUS",
+    "build_hex_cell_activation_preflight",
     "build_hex_cell_competition_result",
     "build_hex_cell_operator_gate_authorization",
     "build_hex_cell_promotion_acceptance",

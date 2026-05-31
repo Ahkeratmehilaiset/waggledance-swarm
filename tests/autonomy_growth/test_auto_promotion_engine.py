@@ -8,6 +8,7 @@ import json
 import pytest
 
 from waggledance.core.autonomy_growth.auto_promotion_engine import (
+    ADVERSARIAL_CORPUS_MIN_CASES,
     AutoPromotionReceiptEmissionError,
     AutoPromotionEngine,
     PROMOTION_DECIDED_BY,
@@ -25,6 +26,8 @@ from waggledance.core.solver_synthesis.deterministic_solver_compiler import (
     compile_spec,
 )
 from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.storage.control_plane import ControlPlaneDB, ControlPlaneError
 
 
@@ -69,6 +72,36 @@ def _validation_cases_for_celsius_to_kelvin():
 
 def _shadow_samples_simple():
     return [{"x": float(i) * 1.7} for i in range(20)]
+
+
+def _valid_adversarial_cases(count: int) -> list[dict[str, object]]:
+    required = sorted(REQUIRED_DEFECT_TYPES)
+    return [
+        {
+            "case_id": f"c{i}",
+            "defect_class": required[i % len(required)],
+            "ok": True,
+        }
+        for i in range(count)
+    ]
+
+
+def _assert_adversarial_gate_reason(
+    *,
+    report: dict[str, object],
+    expected_solver_hash: str,
+    reason_fragment: str,
+) -> None:
+    gate = verify_adversarial_corpus_gate(
+        report=report,
+        expected_solver_hash=expected_solver_hash,
+        min_cases=ADVERSARIAL_CORPUS_MIN_CASES,
+    )
+    assert gate.ok is False
+    assert any(reason_fragment in reason for reason in gate.reasons)
+    assert not any(
+        "missing/invalid defect_class" in reason for reason in gate.reasons
+    )
 
 
 def _promotion_request(name: str) -> PromotionRequest:
@@ -670,12 +703,21 @@ class TestI11AdversarialGateInline:
 
     def test_supplied_report_bound_to_wrong_solver_refuses(self, cp: ControlPlaneDB):
         cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        spec = _scalar_unit_conversion_spec("adv_inline_solver")
+        expected_aid = compile_spec(spec).artifact_id
         report = {
             "bound_solver_hash": "0" * 64,
             "case_count": 42,
-            "cases": [{"case_id": f"c{i}", "ok": True} for i in range(42)],
+            "pass_count": 42,
+            "fail_count": 0,
+            "cases": _valid_adversarial_cases(42),
             "ok": True,
         }
+        _assert_adversarial_gate_reason(
+            report=report,
+            expected_solver_hash=expected_aid,
+            reason_fragment="bound_solver_hash does not match",
+        )
         out = AutoPromotionEngine(cp).evaluate_candidate(
             self._request(adversarial_eval_report=report)
         )
@@ -689,9 +731,16 @@ class TestI11AdversarialGateInline:
         report = {
             "bound_solver_hash": aid,
             "case_count": 5,
-            "cases": [{"case_id": f"c{i}", "ok": True} for i in range(5)],
+            "pass_count": 5,
+            "fail_count": 0,
+            "cases": _valid_adversarial_cases(5),
             "ok": True,
         }
+        _assert_adversarial_gate_reason(
+            report=report,
+            expected_solver_hash=aid,
+            reason_fragment="corpus below floor",
+        )
         out = eng.evaluate_candidate(PromotionRequest(
             spec=spec,
             validation_cases=_validation_cases_for_celsius_to_kelvin(),
@@ -708,9 +757,21 @@ class TestI11AdversarialGateInline:
         eng = AutoPromotionEngine(cp)
         spec = _scalar_unit_conversion_spec("adv_forge_solver")
         aid = compile_spec(spec).artifact_id
-        cases = [{"case_id": f"c{i}", "ok": True} for i in range(42)]
+        cases = _valid_adversarial_cases(42)
         cases[-1]["ok"] = False
-        report = {"bound_solver_hash": aid, "case_count": 42, "cases": cases, "ok": True}
+        report = {
+            "bound_solver_hash": aid,
+            "case_count": 42,
+            "pass_count": 42,
+            "fail_count": 0,
+            "cases": cases,
+            "ok": True,
+        }
+        _assert_adversarial_gate_reason(
+            report=report,
+            expected_solver_hash=aid,
+            reason_fragment="adversarial case(s) NOT caught",
+        )
         out = eng.evaluate_candidate(PromotionRequest(
             spec=spec,
             validation_cases=_validation_cases_for_celsius_to_kelvin(),

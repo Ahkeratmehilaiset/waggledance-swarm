@@ -34,7 +34,7 @@ from waggledance.core.magma.receipt_bundle import (  # noqa: E402
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 
 
-EVAL_VERSION = "magma.adversarial_eval.v0"
+EVAL_VERSION = "magma.adversarial_eval.v1"
 ADVERSARIAL_EVAL_RECEIPT_POLICY_VERSION = "policy:magma_adversarial_eval:v0"
 ADVERSARIAL_EVAL_RECEIPT_THRESHOLD_VERSION = "threshold:synthetic_adversarial:v0"
 
@@ -46,6 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--expectations", type=Path, default=DEFAULT_EXPECTATIONS)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--bound-solver-hash",
+        default=None,
+        help=(
+            "Optional exact solver artifact hash to bind into the report for "
+            "promotion-gate verification."
+        ),
+    )
     parser.add_argument(
         "--receipt-out-dir",
         type=Path,
@@ -67,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = build_adversarial_eval_report(
             corpus_path=args.corpus,
             expectations_path=args.expectations,
+            bound_solver_hash=args.bound_solver_hash,
             receipt_out_dir=args.receipt_out_dir,
             now_utc=_parse_utc(args.now) if args.now else None,
         )
@@ -102,6 +111,7 @@ def build_adversarial_eval_report(
     *,
     corpus_path: Path = DEFAULT_CORPUS,
     expectations_path: Path = DEFAULT_EXPECTATIONS,
+    bound_solver_hash: str | None = None,
     receipt_out_dir: Path | None = None,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
@@ -135,6 +145,7 @@ def build_adversarial_eval_report(
         reason_matches += int(reasons_ok)
         case_report = {
             "case_id": case["case_id"],
+            "defect_class": case["defect_type"],
             "risk_class": case["risk_class"],
             "status": status,
             "gate_mismatch": not gate_ok,
@@ -170,6 +181,10 @@ def build_adversarial_eval_report(
         "cases": cases,
         "failures": failures,
     }
+    if bound_solver_hash is not None:
+        if not isinstance(bound_solver_hash, str) or not bound_solver_hash.strip():
+            raise ValueError("bound_solver_hash must be a non-empty string")
+        report["bound_solver_hash"] = bound_solver_hash
     if receipt_out_dir is not None:
         report["receipt_bundle"] = _emit_receipt_bundle(
             report=report,
@@ -307,6 +322,7 @@ def _receipt_payload_for_report(report: dict[str, Any]) -> dict[str, Any]:
         "case_evaluation_result_digests": [
             {
                 "case_id": case["case_id"],
+                "defect_class": case["defect_class"],
                 "evaluation_result_digest": case["evaluation_result_digest"],
                 "ok": case["ok"],
                 "status": case["status"],

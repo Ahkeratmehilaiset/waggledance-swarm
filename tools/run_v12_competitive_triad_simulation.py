@@ -26,6 +26,9 @@ from tools.run_v12_rival_local_check_matrix import (  # noqa: E402
     build_rival_local_check_matrix,
 )
 from tools.show_v12_proof import collect_proof  # noqa: E402
+from waggledance.core.magma.adversarial_corpus_eval import (  # noqa: E402
+    REQUIRED_DEFECT_TYPES,
+)
 from waggledance.core.solver_synthesis.hex_cell_competition import (  # noqa: E402
     HEX_CELL_COMPETITION_AUTHORITY_STATUS,
     build_hex_cell_competition_result,
@@ -414,14 +417,10 @@ def _wd_signals(
     adoption = v12_proof.get("adoption", {})
     coverage = adversarial_report.get("coverage", {})
     risk_counts = coverage.get("risk_class_counts", {})
+    adversarial_blockers = _adversarial_report_blockers(adversarial_report)
     return {
         "v12_proof_ok": bool(v12_proof.get("ok")),
-        "adversarial_full_pass": bool(
-            adversarial_report.get("ok")
-            and adversarial_report.get("fail_count") == 0
-            and adversarial_report.get("pass_count")
-            == adversarial_report.get("case_count")
-        ),
+        "adversarial_full_pass": not adversarial_blockers,
         "adversarial_case_count": adversarial_report.get("case_count"),
         "adversarial_external_effect_cases": int(
             risk_counts.get("external_effect", 0) or 0
@@ -464,8 +463,7 @@ def _blockers(
     blockers: list[str] = []
     if v12_proof.get("ok") is not True:
         blockers.append("v12_proof_not_ok")
-    if adversarial_report.get("ok") is not True:
-        blockers.append("adversarial_eval_not_ok")
+    blockers.extend(_adversarial_report_blockers(adversarial_report))
     if rival_matrix.get("consensus_grade") is not False:
         blockers.append("rival_consensus_grade_must_remain_false")
     if hex_probe["authority_status"] != HEX_CELL_COMPETITION_AUTHORITY_STATUS:
@@ -474,6 +472,62 @@ def _blockers(
         blockers.append("hex_competition_runtime_mutation_applied")
     if hex_probe["candidate_state_mutation_applied"]:
         blockers.append("hex_competition_candidate_state_mutation_applied")
+    return blockers
+
+
+def _adversarial_report_blockers(adversarial_report: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    if adversarial_report.get("ok") is not True:
+        blockers.append("adversarial_eval_not_ok")
+
+    cases = adversarial_report.get("cases")
+    if not isinstance(cases, list) or not cases:
+        blockers.append("adversarial_eval_cases_missing_or_invalid")
+        return blockers
+
+    declared = adversarial_report.get("case_count")
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        blockers.append("adversarial_eval_case_count_not_int")
+    elif declared != len(cases):
+        blockers.append("adversarial_eval_case_count_mismatch")
+
+    pass_count = 0
+    fail_count = 0
+    invalid_count = 0
+    caught_by_defect_class = {defect: 0 for defect in REQUIRED_DEFECT_TYPES}
+    for case in cases:
+        if not isinstance(case, Mapping):
+            invalid_count += 1
+            continue
+        case_invalid = False
+        defect_class = case.get("defect_class")
+        valid_defect_class = (
+            isinstance(defect_class, str) and defect_class in REQUIRED_DEFECT_TYPES
+        )
+        if not valid_defect_class:
+            case_invalid = True
+        case_ok = case.get("ok")
+        if case_ok is True:
+            pass_count += 1
+            if valid_defect_class:
+                caught_by_defect_class[defect_class] += 1
+        elif case_ok is False:
+            fail_count += 1
+        else:
+            case_invalid = True
+        if case_invalid:
+            invalid_count += 1
+
+    if invalid_count:
+        blockers.append("adversarial_eval_cases_invalid")
+    if fail_count:
+        blockers.append("adversarial_eval_cases_not_caught")
+    if any(count == 0 for count in caught_by_defect_class.values()):
+        blockers.append("adversarial_eval_required_defect_classes_missing")
+    if adversarial_report.get("pass_count") != pass_count:
+        blockers.append("adversarial_eval_pass_count_mismatch")
+    if adversarial_report.get("fail_count") != fail_count + invalid_count:
+        blockers.append("adversarial_eval_fail_count_mismatch")
     return blockers
 
 

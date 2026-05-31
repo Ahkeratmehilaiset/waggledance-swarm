@@ -12,6 +12,7 @@ from tools.run_v12_competitive_triad_simulation import (
     build_competitive_triad_simulation,
     render_markdown,
 )
+from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -99,6 +100,45 @@ def test_consensus_grade_true_is_blocked() -> None:
     assert report["no_overclaim_guardrails"]["keeps_consensus_grade_false"] is False
 
 
+def test_forged_adversarial_case_aggregates_are_blocked() -> None:
+    adversarial = _adversarial_report()
+    adversarial["cases"][-1]["ok"] = False
+    adversarial["ok"] = True
+    adversarial["pass_count"] = adversarial["case_count"]
+    adversarial["fail_count"] = 0
+
+    report = build_competitive_triad_simulation(
+        now_utc=_fixed_now(),
+        v12_proof=_v12_proof(),
+        rival_matrix=_rival_matrix(),
+        adversarial_report=adversarial,
+    )
+
+    assert report["ok"] is False
+    assert report["wd_signals"]["adversarial_full_pass"] is False
+    assert "adversarial_eval_cases_not_caught" in report["blockers"]
+    assert "adversarial_eval_pass_count_mismatch" in report["blockers"]
+    assert "adversarial_eval_fail_count_mismatch" in report["blockers"]
+
+
+def test_gutted_adversarial_defect_class_coverage_is_blocked() -> None:
+    adversarial = _adversarial_report()
+    one_defect = sorted(REQUIRED_DEFECT_TYPES)[0]
+    for case in adversarial["cases"]:
+        case["defect_class"] = one_defect
+
+    report = build_competitive_triad_simulation(
+        now_utc=_fixed_now(),
+        v12_proof=_v12_proof(),
+        rival_matrix=_rival_matrix(),
+        adversarial_report=adversarial,
+    )
+
+    assert report["ok"] is False
+    assert report["wd_signals"]["adversarial_full_pass"] is False
+    assert "adversarial_eval_required_defect_classes_missing" in report["blockers"]
+
+
 def test_render_markdown_carries_scope_and_next_100h() -> None:
     report = build_competitive_triad_simulation(
         now_utc=_fixed_now(),
@@ -177,11 +217,20 @@ def _rival_matrix() -> dict:
 
 
 def _adversarial_report() -> dict:
+    required = sorted(REQUIRED_DEFECT_TYPES)
     return {
         "ok": True,
         "case_count": 42,
         "pass_count": 42,
         "fail_count": 0,
+        "cases": [
+            {
+                "case_id": f"case-{i}",
+                "defect_class": required[i % len(required)],
+                "ok": True,
+            }
+            for i in range(42)
+        ],
         "coverage": {
             "risk_class_counts": {
                 "external_effect": 22,

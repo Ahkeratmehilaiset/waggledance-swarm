@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import sys
@@ -40,6 +41,17 @@ REQUIRED_VERDICTS = {
 }
 SPLIT_VERSION = "magma.synthetic_adversarial_split.v0"
 MIN_HELD_OUT_CASES = 6
+CRITICAL_DEFECT_TYPES = frozenset(
+    {
+        "fail-open",
+        "governance_bypass",
+        "hallucinated-success",
+        "path_escape",
+        "regression-process",
+        "spec-gaming",
+    }
+)
+MIN_CRITICAL_DEFECT_CASES = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,6 +147,7 @@ def _validate_cases(
         defect_type = str(case.get("defect_type", ""))
         risk_class = str(case.get("risk_class", ""))
         coverage["defect_type"].add(defect_type)
+        coverage["defect_type_counts"][defect_type] += 1
         coverage["risk_class"].add(risk_class)
 
         trap = str(case.get("peer_review_trap_marker", "none"))
@@ -245,6 +258,7 @@ def _validate_coverage(coverage: dict[str, Any], errors: list[str]) -> None:
     _require_coverage("risk_class", REQUIRED_RISK_CLASSES, coverage, errors)
     _require_coverage("expected_gate", REQUIRED_GATES, coverage, errors)
     _require_coverage("expected_verdict", REQUIRED_VERDICTS, coverage, errors)
+    _validate_critical_defect_floors(coverage, errors)
     if coverage["privacy_canary_count"] < 2:
         errors.append("coverage: privacy_canary_count must be at least 2")
     if coverage["peer_review_trap_count"] < 2:
@@ -262,9 +276,24 @@ def _require_coverage(
         errors.append(f"coverage: missing {name}: " + ", ".join(missing))
 
 
+def _validate_critical_defect_floors(
+    coverage: dict[str, Any],
+    errors: list[str],
+) -> None:
+    counts = coverage["defect_type_counts"]
+    for defect_type in sorted(CRITICAL_DEFECT_TYPES):
+        count = counts.get(defect_type, 0)
+        if count < MIN_CRITICAL_DEFECT_CASES:
+            errors.append(
+                f"coverage: critical defect_type {defect_type} must include at least "
+                f"{MIN_CRITICAL_DEFECT_CASES} cases (found {count})"
+            )
+
+
 def _empty_coverage() -> dict[str, Any]:
     return {
         "defect_type": set(),
+        "defect_type_counts": Counter(),
         "risk_class": set(),
         "expected_gate": set(),
         "expected_verdict": set(),
@@ -275,14 +304,20 @@ def _empty_coverage() -> dict[str, Any]:
 
 
 def _coverage_report(coverage: dict[str, Any]) -> dict[str, Any]:
+    critical_counts = {
+        defect_type: coverage["defect_type_counts"].get(defect_type, 0)
+        for defect_type in sorted(CRITICAL_DEFECT_TYPES)
+    }
     return {
         "defect_type": sorted(coverage["defect_type"]),
+        "critical_defect_type_counts": critical_counts,
         "risk_class": sorted(coverage["risk_class"]),
         "expected_gate": sorted(coverage["expected_gate"]),
         "expected_verdict": sorted(coverage["expected_verdict"]),
         "privacy_canary_count": coverage["privacy_canary_count"],
         "peer_review_trap_count": coverage["peer_review_trap_count"],
         "held_out_case_count": len(coverage["held_out_case_ids"]),
+        "min_critical_defect_cases": MIN_CRITICAL_DEFECT_CASES,
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import copy
 import json
 from pathlib import Path
@@ -8,6 +9,10 @@ import sys
 
 import jsonschema
 from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from tools.validate_synthetic_adversarial_corpus import (
+    CRITICAL_DEFECT_TYPES,
+    MIN_CRITICAL_DEFECT_CASES,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +116,14 @@ def test_fixture_covers_required_defect_types() -> None:
     assert REQUIRED_DEFECT_TYPES <= defect_types
 
 
+def test_fixture_covers_critical_defect_floor() -> None:
+    corpus = _load_corpus()
+    counts = Counter(case["defect_type"] for case in corpus["cases"])
+
+    for defect_type in CRITICAL_DEFECT_TYPES:
+        assert counts[defect_type] >= MIN_CRITICAL_DEFECT_CASES
+
+
 def test_validator_accepts_fixture_corpus() -> None:
     result = _run_validator(CORPUS)
 
@@ -166,6 +179,46 @@ def test_validator_rejects_too_small_held_out_split(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "held_out_case_ids must include at least 6 known cases" in result.stderr
+
+
+def test_validator_rejects_full_corpus_below_critical_defect_floor(
+    tmp_path: Path,
+) -> None:
+    corpus = _load_corpus()
+    expectations = _load_expectations()
+    removed_case_id = "case:adv:fail_open:002"
+    broken_corpus = copy.deepcopy(corpus)
+    broken_corpus["cases"] = [
+        case for case in broken_corpus["cases"] if case["case_id"] != removed_case_id
+    ]
+    broken_expectations = copy.deepcopy(expectations)
+    broken_expectations["expectations"] = [
+        expectation
+        for expectation in broken_expectations["expectations"]
+        if expectation["case_id"] != removed_case_id
+    ]
+    corpus_path = tmp_path / "below_critical_floor.json"
+    expectations_path = tmp_path / "below_critical_floor_expectations.json"
+    _write_json(corpus_path, broken_corpus)
+    _write_json(expectations_path, broken_expectations)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(corpus_path),
+            "--expectations",
+            str(expectations_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "critical defect_type fail-open must include at least 2 cases" in result.stderr
 
 
 def test_validator_rejects_duplicate_case_ids(tmp_path: Path) -> None:
@@ -290,6 +343,13 @@ def test_validator_json_report_includes_coverage() -> None:
     report = json.loads(result.stdout)
     assert report["corpus"] == "<redacted>"
     assert report["expectations"] == "<redacted>"
+    critical_counts = report["coverage"]["critical_defect_type_counts"]
+    for defect_type in CRITICAL_DEFECT_TYPES:
+        assert critical_counts[defect_type] >= MIN_CRITICAL_DEFECT_CASES
+    assert (
+        report["coverage"]["min_critical_defect_cases"]
+        == MIN_CRITICAL_DEFECT_CASES
+    )
     assert report["coverage"]["privacy_canary_count"] >= 2
     assert report["coverage"]["peer_review_trap_count"] >= 2
     assert report["coverage"]["held_out_case_count"] >= 6
@@ -325,4 +385,12 @@ def test_validator_allows_folded_expansion_provenance_partial_coverage() -> None
     assert report["full_coverage_required"] is False
     assert report["split_required"] is False
     assert report["coverage"]["held_out_case_count"] == 0
+    assert (
+        report["coverage"]["min_critical_defect_cases"]
+        == MIN_CRITICAL_DEFECT_CASES
+    )
+    assert all(
+        count == 0
+        for count in report["coverage"]["critical_defect_type_counts"].values()
+    )
     assert report["coverage"]["privacy_canary_count"] >= 2

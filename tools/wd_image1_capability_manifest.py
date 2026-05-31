@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.hex_shadow_subdivision_replay import (  # noqa: E402
+    build_shadow_subdivision_replay_verifier_summary,
     build_source_snapshot,
     build_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_artifact,
@@ -5257,7 +5258,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tools/hex_shadow_subdivision_replay.py",
-                "Read-only shadow subdivision replay artifact builder.",
+                "Read-only shadow subdivision replay artifact builder, verifier, and reviewer summary renderer.",
             ),
         ),
     )
@@ -5292,6 +5293,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             expected_git_commit=hex_upgrade_source_snapshot.get("git_commit"),
         )
     )
+    hex_upgrade_shadow_replay_verifier_summary = (
+        build_shadow_subdivision_replay_verifier_summary(
+            hex_upgrade_shadow_replay_verification,
+            reviewer_agent_id="codex-tools-1",
+            handoff_ref="wd-image1-hex-shadow-replay-verifier-summary",
+        )
+    )
     hex_upgrade_proof["runtime_boundary_smoke"] = (
         hex_upgrade_runtime_smoke
     )
@@ -5301,11 +5309,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof["shadow_subdivision_replay_verification"] = (
         hex_upgrade_shadow_replay_verification
     )
+    hex_upgrade_proof["shadow_subdivision_replay_verifier_summary"] = (
+        hex_upgrade_shadow_replay_verifier_summary
+    )
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
         and hex_upgrade_shadow_replay.get("ok") is True
         and hex_upgrade_shadow_replay_verification.get("ok") is True
+        and hex_upgrade_shadow_replay_verifier_summary.get("ok") is True
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_runtime_boundary_smoke = (
@@ -5627,7 +5639,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "shadow replay artifact binds the pure plan/relation/delivery "
                 "proof to that read-only metrics contract without runtime "
                 "activation, and a local verifier recomputes the replay "
-                "digests and no-authority guardrails offline."
+                "digests and no-authority guardrails offline. A path-free "
+                "reviewer summary renders that verifier result as context "
+                "without bridge writes, transport, or runtime authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -5642,9 +5656,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free reviewer summary for the shadow subdivision "
-                "replay verifier without activating runtime subdivision "
-                "authority."
+                "Add a bridge-event template for the shadow subdivision "
+                "replay verifier summary without appending it or activating "
+                "runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

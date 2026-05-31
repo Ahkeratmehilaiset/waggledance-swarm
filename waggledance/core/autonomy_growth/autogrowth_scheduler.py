@@ -256,6 +256,9 @@ class AutogrowthScheduler:
                         promotion.shadow.agreement_rate
                         if promotion and promotion.shadow else None
                     ),
+                    "counterfactual": (
+                        promotion.counterfactual if promotion else None
+                    ),
                 }),
             )
             self._cp.complete_queue_row(claimed.id, status="completed")
@@ -371,6 +374,7 @@ class AutogrowthScheduler:
             shadow_samples=list(shadow_samples),
             oracle=oracle,
             oracle_kind=seed.get("oracle_kind", "family_reference_oracle"),
+            counterfactual_incumbent=seed.get("counterfactual_incumbent"),
         )
 
     def _record_run(

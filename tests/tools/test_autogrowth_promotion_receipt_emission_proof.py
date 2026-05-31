@@ -70,6 +70,13 @@ def test_proof_emits_scheduler_to_engine_receipt(tmp_path: Path) -> None:
     assert report["transitions"] == ["auto_promoted"]
     assert report["receipt_count"] == 1
     assert report["verifier_ok"] is True
+    assert report["counterfactual"]["status"] == "computed"
+    assert report["counterfactual"]["a3_label"] == "RUNTIME_MEASURED"
+    assert report["counterfactual"]["sample_count"] == 20
+    assert report["counterfactual"]["same_sample_set"] is True
+    assert report["counterfactual"]["deterministic"] is True
+    assert report["counterfactual"]["divergence_count"] == 20
+    assert report["counterfactual"]["delta_digest"]
     assert report["raw_payload_leak_check"] is True
     assert report["sink_none_preserved"] is True
     assert report["external_effect_authority_change"] is False
@@ -92,6 +99,14 @@ def test_proof_emits_scheduler_to_engine_receipt(tmp_path: Path) -> None:
     verifier = verify_manifest(manifest_path)
     assert verifier["ok"] is True
     assert verifier["receipt_count"] == 1
+
+    payload = json.loads(_entry_path(manifest_path, 0, "payload").read_text())
+    assert payload["counterfactual"]["status"] == "computed"
+    assert payload["counterfactual"]["delta_digest"] == (
+        report["counterfactual"]["delta_digest"]
+    )
+    assert "per_arm" not in json.dumps(payload, sort_keys=True)
+    assert "divergences" not in json.dumps(payload, sort_keys=True)
 
 
 def test_proof_refuses_existing_out_dir(tmp_path: Path) -> None:
@@ -155,6 +170,7 @@ def test_cli_json_reports_autogrowth_proof(tmp_path: Path) -> None:
     assert payload["axis_id"] == AXIS_ID
     assert payload["claim_label"] == CLAIM_LABEL
     assert payload["transitions"] == ["auto_promoted"]
+    assert payload["counterfactual"]["status"] == "computed"
     assert payload["receipt_count"] == 1
     assert "DO_NOT_LEAK" not in result.stdout
 

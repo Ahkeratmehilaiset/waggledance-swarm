@@ -15,6 +15,10 @@ from waggledance.core.autonomy_growth.auto_promotion_engine import (
     PromotionRequest,
     build_promotion_decision_receipt,
 )
+from waggledance.core.autonomy_growth.counterfactual_replay import (
+    A3_LABEL_INSUFFICIENT,
+    A3_LABEL_RUNTIME_MEASURED,
+)
 from waggledance.core.autonomy_growth.solver_dispatcher import (
     DispatchQuery,
     LowRiskSolverDispatcher,
@@ -48,6 +52,26 @@ def _scalar_unit_conversion_spec(name: str = "celsius_to_kelvin_v1") -> SolverSp
         cell_id="general",
         spec={"from_unit": "C", "to_unit": "K",
               "factor": 1.0, "offset": 273.15},
+        source="phase11_test",
+        source_kind="hand_authored",
+    )
+
+
+def _scalar_unit_conversion_incumbent_spec(
+    name: str = "celsius_identity_v1",
+) -> SolverSpec:
+    return SolverSpec(
+        schema_version=1,
+        spec_id=f"spec_{name}",
+        family_kind="scalar_unit_conversion",
+        solver_name=name,
+        cell_id="general",
+        spec={
+            "from_unit": "C",
+            "to_unit": "C",
+            "factor": 1.0,
+            "offset": 0.0,
+        },
         source="phase11_test",
         source_kind="hand_authored",
     )
@@ -148,6 +172,13 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
     assert outcome.promotion_decision_digest == sha256_digest(
         outcome.promotion_decision_artifact
     )
+    assert outcome.counterfactual == {
+        "a3_label": A3_LABEL_INSUFFICIENT,
+        "delta_digest": None,
+        "reason": "no_incumbent_spec",
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "skipped",
+    }
 
     # Solver row reflects auto_promoted
     solver = cp.get_solver("celsius_to_kelvin_v1")
@@ -162,6 +193,7 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
     assert evidence["promotion_decision_digest"] == (
         outcome.promotion_decision_digest
     )
+    assert evidence["counterfactual"]["status"] == "skipped"
 
     # Artifact persisted and dispatcher can use it
     artifact = cp.get_solver_artifact(solver.id)
@@ -209,6 +241,84 @@ def test_auto_promotion_receipt_binding_is_payload_free(
     assert bundle["evaluation_result"]["subject_type"] == "promotion"
     assert bundle["evaluation_result"]["verdict"] == "pass"
     assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+
+def test_auto_promotion_records_sanitized_counterfactual_summary(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    eng = AutoPromotionEngine(cp)
+
+    outcome = eng.evaluate_candidate(PromotionRequest(
+        spec=_scalar_unit_conversion_spec("counterfactual_solver"),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+        counterfactual_incumbent_spec=_scalar_unit_conversion_incumbent_spec(),
+    ))
+
+    assert outcome.decision == "auto_promoted"
+    assert outcome.counterfactual is not None
+    assert outcome.counterfactual["status"] == "computed"
+    assert outcome.counterfactual["a3_label"] == A3_LABEL_RUNTIME_MEASURED
+    assert outcome.counterfactual["sample_count"] == 20
+    assert outcome.counterfactual["same_sample_set"] is True
+    assert outcome.counterfactual["deterministic"] is True
+    assert outcome.counterfactual["divergence_count"] == 20
+    assert outcome.counterfactual["no_delta"] is False
+    assert outcome.counterfactual["delta_digest"]
+    assert "per_arm" not in outcome.counterfactual
+    assert "divergences" not in outcome.counterfactual
+
+    solver = cp.get_solver("counterfactual_solver")
+    assert solver is not None
+    decision = cp.list_promotion_decisions(solver_id=solver.id)[0]
+    evidence = json.loads(decision.evidence or "{}")
+    assert evidence["counterfactual"]["status"] == "computed"
+    assert evidence["counterfactual"]["delta_digest"] == (
+        outcome.counterfactual["delta_digest"]
+    )
+
+    bundle = build_promotion_decision_receipt(outcome)
+    payload_counterfactual = bundle["payload"]["counterfactual"]
+    assert payload_counterfactual["status"] == "computed"
+    assert payload_counterfactual["delta_digest"] == (
+        outcome.counterfactual["delta_digest"]
+    )
+    assert "promotion:counterfactual:computed" in (
+        bundle["promotion_decision_artifact"]["reason_codes"]
+    )
+    assert "promotion:counterfactual_label:RUNTIME_MEASURED" in (
+        bundle["promotion_decision_artifact"]["reason_codes"]
+    )
+    serialized = json.dumps(bundle, sort_keys=True)
+    assert "per_arm" not in serialized
+    assert "divergences" not in serialized
+
+
+def test_counterfactual_failure_does_not_block_promotion(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    eng = AutoPromotionEngine(cp)
+
+    outcome = eng.evaluate_candidate(PromotionRequest(
+        spec=_scalar_unit_conversion_spec("counterfactual_fail_open"),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+        counterfactual_incumbent_spec={"not": "a SolverSpec"},
+    ))
+
+    assert outcome.decision == "auto_promoted"
+    assert outcome.invariant_failed is None
+    assert outcome.counterfactual is not None
+    assert outcome.counterfactual["status"] == "failed"
+    assert outcome.counterfactual["a3_label"] == A3_LABEL_INSUFFICIENT
+    assert outcome.counterfactual["delta_digest"] is None
+    assert cp.get_solver("counterfactual_fail_open") is not None
 
 
 def test_auto_promotion_emits_chained_receipts_for_promote_and_rollback(

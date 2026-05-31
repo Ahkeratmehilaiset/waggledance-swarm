@@ -74,6 +74,7 @@ class GapInput:
     shadow_samples: Sequence[Mapping[str, Any]]
     oracle: OracleFn
     oracle_kind: str = "external_reference"
+    counterfactual_incumbent: Optional[Mapping[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -175,12 +176,16 @@ class LowRiskGrower:
                 error=str(exc),
             )
 
+        counterfactual_incumbent_spec = self._counterfactual_incumbent_spec(
+            gap, candidate=spec,
+        )
         outcome = self._engine.evaluate_candidate(PromotionRequest(
             spec=spec,
             validation_cases=gap.validation_cases,
             shadow_samples=gap.shadow_samples,
             oracle=gap.oracle,
             oracle_kind=gap.oracle_kind,
+            counterfactual_incumbent_spec=counterfactual_incumbent_spec,
         ))
         if outcome.decision == "auto_promoted":
             return GapOutcome(
@@ -194,6 +199,46 @@ class LowRiskGrower:
             reason=f"rejected:{outcome.invariant_failed}",
             error=outcome.error,
         )
+
+    def _counterfactual_incumbent_spec(
+        self,
+        gap: GapInput,
+        *,
+        candidate: SolverSpec,
+    ) -> Any:
+        """Build an optional incumbent spec for T1 evidence.
+
+        Counterfactual replay is observability only. A malformed optional
+        incumbent should make the replay summary fail, not block a promotion,
+        so invalid mappings are passed through to AutoPromotionEngine where
+        the counterfactual path records a sanitized failure.
+        """
+
+        raw = gap.counterfactual_incumbent
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            return raw
+        spec_payload = raw.get("spec")
+        if not isinstance(spec_payload, Mapping):
+            return dict(raw)
+        try:
+            return make_spec(
+                family_kind=str(raw.get("family_kind") or gap.family_kind),
+                solver_name=str(
+                    raw.get("solver_name")
+                    or f"{candidate.solver_name}_incumbent"
+                ),
+                cell_id=str(raw.get("cell_id") or gap.cell_id),
+                spec=dict(spec_payload),
+                source=str(raw.get("source") or gap.source),
+                source_kind=str(
+                    raw.get("source_kind") or "counterfactual_incumbent"
+                ),
+                registry=self._registry,
+            )
+        except SpecValidationError:
+            return dict(raw)
 
 
 __all__ = [

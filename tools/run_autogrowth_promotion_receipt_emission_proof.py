@@ -134,6 +134,7 @@ def build_autogrowth_promotion_receipt_emission_proof(
     leak_free = _raw_payload_leak_free(out_dir)
 
     transitions = [str(bundle["payload"]["decision"]) for bundle in bundles]
+    counterfactual = _counterfactual_from_bundles(bundles)
     expected_transitions = [OUTCOME_AUTO_PROMOTED]
     blockers: list[str] = []
     if tick_summary["outcome"] != OUTCOME_AUTO_PROMOTED:
@@ -153,6 +154,11 @@ def build_autogrowth_promotion_receipt_emission_proof(
         blockers.append("offline_receipt_verifier_failed")
     if not leak_free:
         blockers.append("raw_payload_marker_leaked")
+    if (
+        not isinstance(counterfactual, dict)
+        or counterfactual.get("status") != "computed"
+    ):
+        blockers.append("counterfactual_summary_not_computed")
 
     report = {
         "report_version": REPORT_VERSION,
@@ -177,6 +183,7 @@ def build_autogrowth_promotion_receipt_emission_proof(
         "transitions": transitions,
         "receipt_count": int(verifier_report.get("receipt_count", 0) or 0),
         "verifier_ok": verifier_report.get("ok") is True,
+        "counterfactual": counterfactual,
         "raw_payload_leak_check": leak_free,
         "receipt_out_dir": str(receipt_dir),
         "receipt_manifest": str(manifest_path),
@@ -265,11 +272,32 @@ def _scalar_seed() -> dict[str, Any]:
             {"inputs": {"x": 25.0}, "expected": 298.15},
         ],
         "shadow_samples": [{"x": float(i) * 1.7} for i in range(20)],
+        "counterfactual_incumbent": {
+            "solver_name": "autogrowth_receipt_incumbent",
+            "cell_id": "thermal",
+            "spec": {
+                "from_unit": "C",
+                "to_unit": "K",
+                "factor": 1.0,
+                "offset": 0.0,
+            },
+            "source": "private incumbent source DO_NOT_LEAK",
+            "source_kind": "local_proof_counterfactual_incumbent",
+        },
         "solver_name_seed": _SOLVER_NAME_SEED,
         "cell_id": "thermal",
         "source": _PRIVATE_SOURCE_MARKER,
         "source_kind": "local_proof",
     }
+
+
+def _counterfactual_from_bundles(
+    bundles: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not bundles:
+        return None
+    counterfactual = bundles[0].get("payload", {}).get("counterfactual")
+    return counterfactual if isinstance(counterfactual, dict) else None
 
 
 def _raw_payload_leak_free(out_dir: Path) -> bool:

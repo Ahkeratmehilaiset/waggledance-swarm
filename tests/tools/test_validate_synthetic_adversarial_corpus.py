@@ -74,6 +74,24 @@ def test_fixture_cases_validate_against_schema() -> None:
         validator.validate(case)
 
 
+def test_corpus_schema_requires_split_for_primary_v0_corpus() -> None:
+    schema = json.loads(CORPUS_SCHEMA.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    broken = copy.deepcopy(_load_corpus())
+    broken.pop("split")
+
+    errors = list(validator.iter_errors(broken))
+
+    assert any("split" in error.message for error in errors)
+
+
+def test_corpus_schema_allows_expansion_without_split() -> None:
+    schema = json.loads(CORPUS_SCHEMA.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+
+    validator.validate(_load_corpus(EXPANSION))
+
+
 def test_fixture_expectations_validate_against_schema() -> None:
     schema = json.loads(EXPECTATION_SCHEMA.read_text(encoding="utf-8"))
     jsonschema.Draft7Validator.check_schema(schema)

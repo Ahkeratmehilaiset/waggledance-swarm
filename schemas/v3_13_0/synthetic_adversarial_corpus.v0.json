@@ -9,6 +9,18 @@
     "corpus_version",
     "cases"
   ],
+  "if": {
+    "not": {
+      "required": [
+        "expansion_label"
+      ]
+    }
+  },
+  "then": {
+    "required": [
+      "split"
+    ]
+  },
   "properties": {
     "corpus_version": {
       "const": "magma.synthetic_adversarial_corpus.v0"

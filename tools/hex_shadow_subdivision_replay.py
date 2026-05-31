@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 PROOF_ID = "hex_shadow_subdivision_replay_v1"
 PROOF_TYPE = "shadow_replay_hypothetical"
+VERIFIER_PROOF_ID = "hex_shadow_subdivision_replay_verifier_v1"
 
 TOPOLOGY_BOUNDARY_METRIC_NAMES: tuple[str, ...] = (
     "waggledance_hex_topology_boundary_up",
@@ -23,6 +24,57 @@ TOPOLOGY_BOUNDARY_METRIC_NAMES: tuple[str, ...] = (
     "waggledance_hex_topology_neighbor_links",
     "waggledance_hex_topology_runtime_dispatch_enabled",
     "waggledance_hex_topology_runtime_mutation_authority",
+)
+
+ARTIFACT_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
+    {
+        "artifact_digest",
+        "binding_scope",
+        "blocked_reason",
+        "delivery_summary",
+        "digests",
+        "guardrails",
+        "metric_contract_summary",
+        "ok",
+        "proof_id",
+        "proof_type",
+        "relation_summary",
+        "runtime_topology_summary",
+        "safe_conclusion",
+        "shadow_plan_summary",
+        "source_snapshot",
+    }
+)
+GUARDRAIL_TRUE_FIELDS: tuple[str, ...] = ("no_runtime_topology_mutation",)
+GUARDRAIL_FALSE_FIELDS: tuple[str, ...] = (
+    "runtime_authority_changed",
+    "operator_gate_required",
+    "external_writes_applied",
+    "dispatch_controls_added",
+    "network_transport_added",
+    "raw_query_or_payload_included",
+    "runtime_config_contents_included",
+    "local_paths_recorded",
+    "numeric_equality_to_shadow_children_claimed",
+)
+DIGEST_NAMES: tuple[str, ...] = (
+    "plan",
+    "relations",
+    "deliveries",
+    "metric_contract",
+    "runtime_topology_summary",
+    "source_snapshot",
+    "full_binding",
+)
+PATH_MARKERS: tuple[str, ...] = (
+    ":\\",
+    "\\Users\\",
+    "\\Python\\",
+    "file://",
+    "/home/",
+    "/Users/",
+    "/tmp/",
+    "waggledance-agent-worktrees",
 )
 
 
@@ -34,6 +86,344 @@ def _canonical_digest(value: Any) -> str:
         ensure_ascii=True,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _json_error_report(blocker: str) -> dict:
+    return {
+        "proof_id": VERIFIER_PROOF_ID,
+        "verified_proof_id": None,
+        "ok": False,
+        "artifact_declared_ok": False,
+        "recomputed_contract_ok": False,
+        "blockers": [blocker],
+        "checks": {
+            "artifact_readable": blocker != "artifact_unreadable",
+            "artifact_json_valid": blocker != "artifact_json_invalid",
+            "artifact_is_object": blocker != "artifact_not_object",
+            "input_path_recorded": False,
+        },
+        "recomputed_digests": {},
+        "declared_digests": {},
+        "guardrails": {},
+        "safe_conclusion": (
+            "The local replay verifier failed closed before artifact "
+            "validation. It did not record the input path or grant runtime "
+            "subdivision authority."
+        ),
+    }
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non_finite_json_number:{value}")
+
+
+def _contains_path_marker(value: Any) -> bool:
+    if isinstance(value, str):
+        return any(marker in value for marker in PATH_MARKERS)
+    if isinstance(value, Mapping):
+        return any(
+            _contains_path_marker(key) or _contains_path_marker(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(_contains_path_marker(item) for item in value)
+    return False
+
+
+def _mapping_or_empty(value: Any) -> dict:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _sequence_of_strings(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _artifact_digest_input(artifact: Mapping[str, Any]) -> dict:
+    return {
+        key: value
+        for key, value in artifact.items()
+        if key != "artifact_digest"
+    }
+
+
+def _expected_artifact_digests(
+    artifact: Mapping[str, Any],
+) -> tuple[dict[str, str], str]:
+    shadow_plan_summary = _mapping_or_empty(
+        artifact.get("shadow_plan_summary")
+    )
+    relation_summary = _mapping_or_empty(artifact.get("relation_summary"))
+    delivery_summary = _mapping_or_empty(artifact.get("delivery_summary"))
+    metric_contract = _mapping_or_empty(
+        artifact.get("metric_contract_summary")
+    )
+    runtime_summary = _mapping_or_empty(
+        artifact.get("runtime_topology_summary")
+    )
+    source_snapshot = _mapping_or_empty(artifact.get("source_snapshot"))
+    digest_inputs = {
+        "shadow_plan_summary": shadow_plan_summary,
+        "relation_summary": relation_summary,
+        "delivery_summary": delivery_summary,
+        "metric_contract": metric_contract,
+        "runtime_topology_summary": runtime_summary,
+        "source_snapshot": source_snapshot,
+    }
+    return (
+        {
+            "plan": _canonical_digest(shadow_plan_summary),
+            "relations": _canonical_digest(relation_summary),
+            "deliveries": _canonical_digest(delivery_summary),
+            "metric_contract": _canonical_digest(metric_contract),
+            "runtime_topology_summary": _canonical_digest(runtime_summary),
+            "source_snapshot": _canonical_digest(source_snapshot),
+            "full_binding": _canonical_digest(digest_inputs),
+        },
+        _canonical_digest(_artifact_digest_input(artifact)),
+    )
+
+
+def _source_snapshot_check(source_snapshot: Mapping[str, Any]) -> bool:
+    if set(source_snapshot) != {
+        "source",
+        "collected_at_utc",
+        "git_commit",
+        "git_commit_available",
+    }:
+        return False
+    if source_snapshot.get("source") != "local_checkout":
+        return False
+    collected = source_snapshot.get("collected_at_utc")
+    if not isinstance(collected, str) or not collected.endswith("Z"):
+        return False
+    commit_available = source_snapshot.get("git_commit_available")
+    git_commit = source_snapshot.get("git_commit")
+    if commit_available is True:
+        return (
+            isinstance(git_commit, str)
+            and len(git_commit) == 40
+            and all(char in "0123456789abcdef" for char in git_commit.lower())
+        )
+    return commit_available is False and git_commit is None
+
+
+def _is_git_commit(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(char in "0123456789abcdef" for char in value.lower())
+    )
+
+
+def verify_shadow_subdivision_replay_artifact(
+    artifact: Mapping[str, Any],
+    *,
+    expected_git_commit: str | None = None,
+) -> dict:
+    """Verify a replay artifact without trusting its declared ok flag.
+
+    The verifier is local/offline and path-free. It recomputes every digest
+    from the artifact summaries, checks the replay guardrails, optionally
+    binds the source snapshot to an expected Git commit, and rejects unknown
+    top-level fields so raw payloads or runtime config blobs cannot be
+    smuggled into a verified replay.
+    """
+
+    blockers: list[str] = []
+    if not isinstance(artifact, Mapping):
+        return _json_error_report("artifact_not_object")
+
+    artifact_dict = dict(artifact)
+    unknown_keys = sorted(set(artifact_dict) - ARTIFACT_TOP_LEVEL_KEYS)
+    missing_keys = sorted(
+        key
+        for key in ARTIFACT_TOP_LEVEL_KEYS
+        if key != "blocked_reason" and key not in artifact_dict
+    )
+    for key in missing_keys:
+        blockers.append(f"missing_field:{key}")
+    for key in unknown_keys:
+        blockers.append(f"unknown_field:{key}")
+
+    shadow_plan_summary = _mapping_or_empty(
+        artifact_dict.get("shadow_plan_summary")
+    )
+    relation_summary = _mapping_or_empty(artifact_dict.get("relation_summary"))
+    delivery_summary = _mapping_or_empty(artifact_dict.get("delivery_summary"))
+    runtime_summary = _mapping_or_empty(
+        artifact_dict.get("runtime_topology_summary")
+    )
+    metric_contract = _mapping_or_empty(
+        artifact_dict.get("metric_contract_summary")
+    )
+    source_snapshot = _mapping_or_empty(artifact_dict.get("source_snapshot"))
+    guardrails = _mapping_or_empty(artifact_dict.get("guardrails"))
+    declared_digests = _mapping_or_empty(artifact_dict.get("digests"))
+    recomputed_digests, recomputed_artifact_digest = (
+        _expected_artifact_digests(artifact_dict)
+    )
+
+    checks: dict[str, bool] = {
+        "proof_identity": artifact_dict.get("proof_id") == PROOF_ID,
+        "proof_type": artifact_dict.get("proof_type") == PROOF_TYPE,
+        "binding_scope": (
+            artifact_dict.get("binding_scope")
+            == "structural_metrics_contract_only"
+        ),
+        "top_level_fields_known": not unknown_keys,
+        "top_level_fields_present": not missing_keys,
+        "shadow_plan_no_runtime_mutation": (
+            shadow_plan_summary.get("no_runtime_mutation") is True
+        ),
+        "shadow_plan_target_state": (
+            shadow_plan_summary.get("target_state")
+            == "subdivision_in_shadow"
+        ),
+        "delivery_counts_consistent": (
+            isinstance(delivery_summary.get("message_count"), int)
+            and isinstance(delivery_summary.get("delivered_count"), int)
+            and isinstance(delivery_summary.get("blocked_count"), int)
+            and delivery_summary.get("message_count")
+            == delivery_summary.get("delivered_count")
+            and delivery_summary.get("blocked_count") == 0
+        ),
+        "runtime_dispatch_disabled": (
+            runtime_summary.get("dispatch_enabled") is False
+        ),
+        "runtime_shadow_children_absent": (
+            runtime_summary.get(
+                "shadow_child_cell_ids_absent_from_runtime_config"
+            )
+            is True
+        ),
+        "metric_endpoint": metric_contract.get("metrics_endpoint")
+        == "/metrics",
+        "metric_status_code": metric_contract.get("status_code") == 200,
+        "metric_payload_markers_absent": (
+            metric_contract.get("forbidden_payload_markers_absent") is True
+        ),
+        "source_snapshot_path_free": (
+            _source_snapshot_check(source_snapshot)
+            and not _contains_path_marker(source_snapshot)
+        ),
+        "artifact_path_free": not _contains_path_marker(artifact_dict),
+        "artifact_digest_match": (
+            artifact_dict.get("artifact_digest") == recomputed_artifact_digest
+        ),
+    }
+    checks["expected_git_commit_valid"] = (
+        expected_git_commit is None or _is_git_commit(expected_git_commit)
+    )
+    checks["source_snapshot_git_commit_matches_expected"] = (
+        expected_git_commit is None
+        or source_snapshot.get("git_commit") == expected_git_commit
+    )
+
+    metric_names = set(_sequence_of_strings(metric_contract.get("metric_names")))
+    expected_lines = _sequence_of_strings(metric_contract.get("expected_lines"))
+    checks["required_metric_names_present"] = all(
+        name in metric_names for name in TOPOLOGY_BOUNDARY_METRIC_NAMES
+    )
+    checks["required_metric_lines_present"] = all(
+        any(name in line for line in expected_lines)
+        for name in TOPOLOGY_BOUNDARY_METRIC_NAMES
+    )
+
+    for name in DIGEST_NAMES:
+        checks[f"digest_{name}_match"] = (
+            declared_digests.get(name) == recomputed_digests[name]
+        )
+
+    for name in GUARDRAIL_TRUE_FIELDS:
+        checks[f"guardrail_{name}"] = guardrails.get(name) is True
+    for name in GUARDRAIL_FALSE_FIELDS:
+        checks[f"guardrail_{name}"] = guardrails.get(name) is False
+
+    recomputed_contract_ok = all(
+        checks[name]
+        for name in (
+            "proof_identity",
+            "proof_type",
+            "binding_scope",
+            "shadow_plan_no_runtime_mutation",
+            "shadow_plan_target_state",
+            "delivery_counts_consistent",
+            "runtime_dispatch_disabled",
+            "runtime_shadow_children_absent",
+            "metric_endpoint",
+            "metric_status_code",
+            "metric_payload_markers_absent",
+            "required_metric_names_present",
+            "required_metric_lines_present",
+        )
+    ) and all(
+        checks[f"guardrail_{name}"]
+        for name in (*GUARDRAIL_TRUE_FIELDS, *GUARDRAIL_FALSE_FIELDS)
+    )
+    checks["declared_ok_matches_recomputed_contract"] = (
+        artifact_dict.get("ok") is recomputed_contract_ok
+    )
+
+    for name, passed in checks.items():
+        if not passed:
+            blockers.append(name)
+    for name in DIGEST_NAMES:
+        if not checks[f"digest_{name}_match"]:
+            blockers.append(f"digest_mismatch:{name}")
+
+    return {
+        "proof_id": VERIFIER_PROOF_ID,
+        "verified_proof_id": artifact_dict.get("proof_id"),
+        "ok": not blockers,
+        "artifact_declared_ok": artifact_dict.get("ok") is True,
+        "expected_git_commit": expected_git_commit,
+        "recomputed_contract_ok": recomputed_contract_ok,
+        "blockers": sorted(set(blockers)),
+        "checks": checks,
+        "recomputed_digests": {
+            **recomputed_digests,
+            "artifact": recomputed_artifact_digest,
+        },
+        "declared_digests": {
+            name: declared_digests.get(name) for name in DIGEST_NAMES
+        }
+        | {"artifact": artifact_dict.get("artifact_digest")},
+        "guardrails": {
+            name: guardrails.get(name)
+            for name in (*GUARDRAIL_TRUE_FIELDS, *GUARDRAIL_FALSE_FIELDS)
+        },
+        "safe_conclusion": (
+            "The verifier recomputes replay summary digests, the full binding "
+            "digest, the artifact digest, and no-authority guardrails from "
+            "the supplied artifact. It is a local offline check only and does "
+            "not activate runtime subdivision authority."
+        ),
+    }
+
+
+def verify_shadow_subdivision_replay_json_file(
+    path: Path | str,
+    *,
+    expected_git_commit: str | None = None,
+) -> dict:
+    """Load and verify a replay artifact without recording the input path."""
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return _json_error_report("artifact_unreadable")
+    try:
+        artifact = json.loads(raw, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return _json_error_report("artifact_json_invalid")
+    if not isinstance(artifact, Mapping):
+        return _json_error_report("artifact_not_object")
+    return verify_shadow_subdivision_replay_artifact(
+        artifact,
+        expected_git_commit=expected_git_commit,
+    )
 
 
 def _utc_iso(value: datetime) -> str:
@@ -301,7 +691,10 @@ def build_replay_artifact_for_root(root: Path | str = ROOT) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Emit the read-only hex shadow subdivision replay artifact."
+        description=(
+            "Emit or verify the read-only hex shadow subdivision replay "
+            "artifact."
+        )
     )
     parser.add_argument(
         "--root",
@@ -317,13 +710,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Exit 2 when the replay artifact does not pass.",
+        help="Exit 2 when the emitted artifact or verifier report does not pass.",
+    )
+    parser.add_argument(
+        "--verify-json",
+        type=Path,
+        help=(
+            "Verify an existing replay artifact JSON file. The report is "
+            "path-free and does not record the input path."
+        ),
+    )
+    parser.add_argument(
+        "--expected-git-commit",
+        help=(
+            "Expected source_snapshot.git_commit for --verify-json. Defaults "
+            "to the current --root HEAD when available."
+        ),
     )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.verify_json is not None:
+        expected_git_commit = (
+            args.expected_git_commit
+            if args.expected_git_commit is not None
+            else _git_head_commit(args.root)
+        )
+        report = verify_shadow_subdivision_replay_json_file(
+            args.verify_json,
+            expected_git_commit=expected_git_commit,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if args.strict and report.get("ok") is not True:
+            return 2
+        return 0
+
     artifact = build_replay_artifact_for_root(args.root)
     print(json.dumps(artifact, indent=2, sort_keys=True))
     if args.strict and artifact.get("ok") is not True:

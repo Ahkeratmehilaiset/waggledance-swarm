@@ -1099,7 +1099,22 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["proof"]["shadow_subdivision_replay"][
         "source_snapshot"
     ]["git_commit_available"] is True
-    assert "local verifier" in capability["next_smallest_pr"]
+    assert capability["proof"]["shadow_subdivision_replay_verification"][
+        "ok"
+    ] is True
+    assert capability["proof"]["shadow_subdivision_replay_verification"][
+        "proof_id"
+    ] == "hex_shadow_subdivision_replay_verifier_v1"
+    assert capability["proof"]["shadow_subdivision_replay_verification"][
+        "artifact_declared_ok"
+    ] is True
+    assert capability["proof"]["shadow_subdivision_replay_verification"][
+        "expected_git_commit"
+    ] == capability["proof"]["shadow_subdivision_replay"]["source_snapshot"][
+        "git_commit"
+    ]
+    assert "local verifier" in capability["safe_statement"]
+    assert "reviewer summary" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

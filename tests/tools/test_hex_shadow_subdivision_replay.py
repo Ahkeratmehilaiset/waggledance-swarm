@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from tools.hex_shadow_subdivision_replay import (
+    build_shadow_subdivision_replay_verifier_summary,
     build_shadow_subdivision_replay_artifact,
     build_source_snapshot,
     verify_shadow_subdivision_replay_artifact,
@@ -55,6 +56,14 @@ def _valid_replay_artifact() -> dict:
     )
 
 
+def _valid_verifier_report() -> dict:
+    artifact = _valid_replay_artifact()
+    return verify_shadow_subdivision_replay_artifact(
+        artifact,
+        expected_git_commit=artifact["source_snapshot"]["git_commit"],
+    )
+
+
 def test_hex_shadow_replay_verifier_accepts_current_artifact() -> None:
     artifact = _valid_replay_artifact()
 
@@ -75,6 +84,131 @@ def test_hex_shadow_replay_verifier_accepts_current_artifact() -> None:
     assert report["checks"]["required_metric_lines_present"] is True
     assert report["guardrails"]["runtime_authority_changed"] is False
     assert str(ROOT) not in json.dumps(report, sort_keys=True)
+
+
+def test_hex_shadow_replay_verifier_summary_renders_path_free_context_without_authority() -> None:
+    report = _valid_verifier_report()
+
+    summary = build_shadow_subdivision_replay_verifier_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-shadow-replay-verifier",
+        now_utc=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert summary["ok"] is True
+    assert summary["proof_id"] == "hex_shadow_subdivision_replay_verifier_summary_v1"
+    assert summary["created_at_utc"] == "2026-05-31T12:00:00Z"
+    assert summary["reviewer_ownership"] == {
+        "reviewer_agent_id": "claude-rco-1",
+        "handoff_ref": "bridge:hex-shadow-replay-verifier",
+        "manual_review_required": True,
+        "approval_granted": False,
+        "runtime_subdivision_authority_granted": False,
+    }
+    verification = summary["shadow_subdivision_replay_verification"]
+    assert verification["verification_ok"] is True
+    assert verification["verifier_proof_id"] == "hex_shadow_subdivision_replay_verifier_v1"
+    assert verification["verified_proof_id"] == "hex_shadow_subdivision_replay_v1"
+    assert verification["artifact_declared_ok"] is True
+    assert verification["recomputed_contract_ok"] is True
+    assert set(verification["digest_checks"].values()) == {"match"}
+    assert set(verification["contract_checks"].values()) == {"match"}
+    assert verification["guardrails"]["runtime_authority_changed"] is False
+    assert verification["blockers"] == []
+    assert summary["operator_boundary"]["verification_report_boundary_ok"] is True
+    assert summary["manual_review_required"] is True
+    assert summary["approval_granted"] is False
+    assert summary["release_decision_made"] is False
+    assert summary["automatic_release_decision"] is False
+    assert summary["direct_bridge_write_performed"] is False
+    assert summary["transport_added"] is False
+    assert summary["external_fetch_performed"] is False
+    assert summary["runtime_controls_added"] is False
+    assert summary["runtime_subdivision_authority_granted"] is False
+    assert summary["artifact_payloads_included"] is False
+    assert summary["local_paths_recorded"] is False
+    assert str(ROOT) not in json.dumps(summary, sort_keys=True)
+
+
+def test_hex_shadow_replay_verifier_summary_propagates_blockers_without_authority() -> None:
+    artifact = _valid_replay_artifact()
+    artifact["guardrails"]["runtime_authority_changed"] = True
+    _refresh_artifact_digest(artifact)
+    report = verify_shadow_subdivision_replay_artifact(artifact)
+
+    summary = build_shadow_subdivision_replay_verifier_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-shadow-replay-verifier",
+        now_utc=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert summary["ok"] is False
+    assert "guardrail_runtime_authority_changed" in summary["blockers"]
+    assert (
+        "verification_report_guardrail_not_false:runtime_authority_changed"
+        in summary["blockers"]
+    )
+    assert (
+        "verification_report_guardrail_not_false:runtime_authority_changed"
+        in summary["operator_boundary"]["boundary_blockers"]
+    )
+    assert summary["approval_granted"] is False
+    assert summary["direct_bridge_write_performed"] is False
+    assert summary["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_blocks_pathy_report_without_leaking_path() -> None:
+    report = _valid_verifier_report()
+    report["safe_conclusion"] = "review scratch at C:/Python/project2-master/private.json"
+
+    summary = build_shadow_subdivision_replay_verifier_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-shadow-replay-verifier",
+        now_utc=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
+    )
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert summary["ok"] is False
+    assert "verification_report_path_free" in summary["blockers"]
+    assert "C:/Python/project2-master/private.json" not in serialized
+    assert "project2-master" not in serialized
+    assert summary["local_paths_recorded"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_cli_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    report = _valid_verifier_report()
+    report_path = tmp_path / "verifier-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-verification-json",
+            str(report_path),
+            "--reviewer-agent",
+            "codex-tools-1",
+            "--handoff-ref",
+            "bridge:hex-shadow-replay-verifier",
+            "--strict",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    summary = json.loads(result.stdout)
+    assert summary["ok"] is True
+    assert summary["proof_id"] == "hex_shadow_subdivision_replay_verifier_summary_v1"
+    assert str(tmp_path) not in result.stdout
+    assert str(report_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
 
 
 def test_hex_shadow_replay_blocked_artifact_digest_includes_blocked_reason() -> None:

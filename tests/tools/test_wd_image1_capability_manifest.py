@@ -1113,8 +1113,24 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     ] == capability["proof"]["shadow_subdivision_replay"]["source_snapshot"][
         "git_commit"
     ]
+    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+        "ok"
+    ] is True
+    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+        "proof_id"
+    ] == "hex_shadow_subdivision_replay_verifier_summary_v1"
+    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+        "approval_granted"
+    ] is False
+    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+        "direct_bridge_write_performed"
+    ] is False
+    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+        "runtime_subdivision_authority_granted"
+    ] is False
     assert "local verifier" in capability["safe_statement"]
-    assert "reviewer summary" in capability["next_smallest_pr"]
+    assert "reviewer summary" in capability["safe_statement"]
+    assert "bridge-event template" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

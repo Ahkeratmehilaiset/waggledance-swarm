@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROOF_ID = "hex_shadow_subdivision_replay_v1"
 PROOF_TYPE = "shadow_replay_hypothetical"
 VERIFIER_PROOF_ID = "hex_shadow_subdivision_replay_verifier_v1"
+VERIFIER_SUMMARY_PROOF_ID = "hex_shadow_subdivision_replay_verifier_summary_v1"
 
 TOPOLOGY_BOUNDARY_METRIC_NAMES: tuple[str, ...] = (
     "waggledance_hex_topology_boundary_up",
@@ -78,6 +79,8 @@ PATH_MARKERS: tuple[str, ...] = (
     "waggledance-agent-worktrees",
 )
 WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
+SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
+SAFE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
 
 
 def _canonical_digest(value: Any) -> str:
@@ -145,6 +148,28 @@ def _sequence_of_strings(value: Any) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _safe_ref_or_invalid(value: Any) -> str:
+    if isinstance(value, str) and SAFE_REF_PATTERN.fullmatch(value):
+        return value
+    return "invalid_ref"
+
+
+def _safe_token_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    tokens: list[str] = []
+    for item in value:
+        if isinstance(item, str) and SAFE_TOKEN_PATTERN.fullmatch(item):
+            tokens.append(item)
+        else:
+            tokens.append("invalid_token")
+    return sorted(set(tokens))
+
+
+def _check_status(value: Any) -> str:
+    return "match" if value is True else "mismatch"
 
 
 def _artifact_digest_input(artifact: Mapping[str, Any]) -> dict:
@@ -411,6 +436,270 @@ def verify_shadow_subdivision_replay_artifact(
             "not activate runtime subdivision authority."
         ),
     }
+
+
+def _summary_error_report(blocker: str) -> dict:
+    return {
+        "proof_id": VERIFIER_SUMMARY_PROOF_ID,
+        "ok": False,
+        "created_at_utc": _utc_iso(datetime.now(timezone.utc)),
+        "reviewer_ownership": {
+            "reviewer_agent_id": "invalid_ref",
+            "handoff_ref": "invalid_ref",
+            "manual_review_required": True,
+            "approval_granted": False,
+            "runtime_subdivision_authority_granted": False,
+        },
+        "shadow_subdivision_replay_verification": {
+            "verification_ok": False,
+            "verified_proof_id": None,
+            "blocker_count": 1,
+            "blockers": [blocker],
+        },
+        "operator_boundary": {
+            "manual_review_required": True,
+            "approval_granted": False,
+            "release_decision_made": False,
+            "automatic_release_decision": False,
+            "direct_bridge_write_performed": False,
+            "transport_added": False,
+            "external_fetch_performed": False,
+            "runtime_controls_added": False,
+            "runtime_subdivision_authority_granted": False,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "reviewer_next_actions": [
+            "review_shadow_subdivision_replay_verifier_report",
+            "compare_summary_to_local_verifier_report",
+            "record_operator_decision_separately",
+        ],
+        "manual_review_required": True,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "runtime_controls_added": False,
+        "runtime_subdivision_authority_granted": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+        "blockers": [blocker],
+        "warnings": [],
+        "safe_conclusion": (
+            "The verifier summary failed closed before rendering reviewer "
+            "context. It records no input path, writes no bridge event, and "
+            "grants no runtime subdivision authority."
+        ),
+    }
+
+
+def _verification_report_contract_blockers(
+    verification_report: Mapping[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    checks = _mapping_or_empty(verification_report.get("checks"))
+    guardrails = _mapping_or_empty(verification_report.get("guardrails"))
+
+    if verification_report.get("proof_id") != VERIFIER_PROOF_ID:
+        blockers.append("verification_report_proof_id_mismatch")
+    if verification_report.get("verified_proof_id") != PROOF_ID:
+        blockers.append("verification_report_verified_proof_id_mismatch")
+    if verification_report.get("artifact_declared_ok") is not True:
+        blockers.append("verification_report_artifact_declared_ok_not_true")
+    if verification_report.get("recomputed_contract_ok") is not True:
+        blockers.append("verification_report_recomputed_contract_ok_not_true")
+
+    for name in (
+        "artifact_path_free",
+        "source_snapshot_path_free",
+        "artifact_digest_match",
+        "required_metric_names_present",
+        "required_metric_lines_present",
+        "declared_ok_matches_recomputed_contract",
+        "expected_git_commit_valid",
+        "source_snapshot_git_commit_matches_expected",
+    ):
+        if checks.get(name) is not True:
+            blockers.append(f"verification_report_check_not_true:{name}")
+    for name in DIGEST_NAMES:
+        if checks.get(f"digest_{name}_match") is not True:
+            blockers.append(f"verification_report_digest_not_match:{name}")
+
+    for name in GUARDRAIL_TRUE_FIELDS:
+        if guardrails.get(name) is not True:
+            blockers.append(f"verification_report_guardrail_not_true:{name}")
+    for name in GUARDRAIL_FALSE_FIELDS:
+        if guardrails.get(name) is not False:
+            blockers.append(f"verification_report_guardrail_not_false:{name}")
+
+    expected_git_commit = verification_report.get("expected_git_commit")
+    if expected_git_commit is not None and not _is_git_commit(expected_git_commit):
+        blockers.append("verification_report_expected_git_commit_invalid")
+    return blockers
+
+
+def build_shadow_subdivision_replay_verifier_summary(
+    verification_report: Mapping[str, Any],
+    *,
+    reviewer_agent_id: str,
+    handoff_ref: str,
+    now_utc: datetime | None = None,
+) -> dict:
+    """Render path-free reviewer context from a local replay verifier report."""
+
+    if not isinstance(verification_report, Mapping):
+        return _summary_error_report("verification_report_not_object")
+
+    input_path_free = not _contains_path_marker(verification_report)
+    report_blockers = _safe_token_list(verification_report.get("blockers"))
+    report_warnings = _safe_token_list(verification_report.get("warnings"))
+    contract_blockers = _verification_report_contract_blockers(
+        verification_report
+    )
+    if not input_path_free:
+        contract_blockers.append("verification_report_path_free")
+
+    checks = _mapping_or_empty(verification_report.get("checks"))
+    guardrails = _mapping_or_empty(verification_report.get("guardrails"))
+    blockers = sorted(set(report_blockers + contract_blockers))
+    verification_ok = (
+        verification_report.get("ok") is True
+        and verification_report.get("proof_id") == VERIFIER_PROOF_ID
+    )
+    reviewer_agent = _safe_ref_or_invalid(reviewer_agent_id)
+    handoff = _safe_ref_or_invalid(handoff_ref)
+    if reviewer_agent == "invalid_ref":
+        blockers.append("reviewer_agent_id_invalid")
+    if handoff == "invalid_ref":
+        blockers.append("handoff_ref_invalid")
+    blockers = sorted(set(blockers))
+
+    summary = {
+        "proof_id": VERIFIER_SUMMARY_PROOF_ID,
+        "ok": verification_ok and not blockers,
+        "created_at_utc": _utc_iso(now_utc or datetime.now(timezone.utc)),
+        "reviewer_ownership": {
+            "reviewer_agent_id": reviewer_agent,
+            "handoff_ref": handoff,
+            "manual_review_required": True,
+            "approval_granted": False,
+            "runtime_subdivision_authority_granted": False,
+        },
+        "shadow_subdivision_replay_verification": {
+            "verification_ok": verification_ok,
+            "verifier_proof_id": _safe_ref_or_invalid(
+                verification_report.get("proof_id")
+            ),
+            "verified_proof_id": _safe_ref_or_invalid(
+                verification_report.get("verified_proof_id")
+            ),
+            "expected_git_commit": (
+                verification_report.get("expected_git_commit")
+                if _is_git_commit(verification_report.get("expected_git_commit"))
+                else None
+            ),
+            "artifact_declared_ok": (
+                verification_report.get("artifact_declared_ok") is True
+            ),
+            "recomputed_contract_ok": (
+                verification_report.get("recomputed_contract_ok") is True
+            ),
+            "digest_checks": {
+                **{
+                    name: _check_status(checks.get(f"digest_{name}_match"))
+                    for name in DIGEST_NAMES
+                },
+                "artifact": _check_status(checks.get("artifact_digest_match")),
+            },
+            "contract_checks": {
+                "artifact_path_free": _check_status(
+                    checks.get("artifact_path_free")
+                ),
+                "source_snapshot_path_free": _check_status(
+                    checks.get("source_snapshot_path_free")
+                ),
+                "required_metric_names_present": _check_status(
+                    checks.get("required_metric_names_present")
+                ),
+                "required_metric_lines_present": _check_status(
+                    checks.get("required_metric_lines_present")
+                ),
+                "declared_ok_matches_recomputed_contract": _check_status(
+                    checks.get("declared_ok_matches_recomputed_contract")
+                ),
+                "source_snapshot_git_commit_matches_expected": _check_status(
+                    checks.get("source_snapshot_git_commit_matches_expected")
+                ),
+            },
+            "guardrails": {
+                name: guardrails.get(name)
+                for name in (*GUARDRAIL_TRUE_FIELDS, *GUARDRAIL_FALSE_FIELDS)
+            },
+            "blocker_count": len(report_blockers),
+            "blockers": report_blockers,
+            "warning_count": len(report_warnings),
+            "warnings": report_warnings,
+        },
+        "operator_boundary": {
+            "verification_report_boundary_ok": not contract_blockers,
+            "boundary_blockers": sorted(set(contract_blockers)),
+            "manual_review_required": True,
+            "approval_granted": False,
+            "release_decision_made": False,
+            "automatic_release_decision": False,
+            "direct_bridge_write_performed": False,
+            "transport_added": False,
+            "external_fetch_performed": False,
+            "runtime_controls_added": False,
+            "runtime_subdivision_authority_granted": False,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "reviewer_next_actions": [
+            "review_shadow_subdivision_replay_verifier_report",
+            "compare_summary_to_local_verifier_report",
+            "record_operator_decision_separately",
+        ],
+        "manual_review_required": True,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "runtime_controls_added": False,
+        "runtime_subdivision_authority_granted": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+        "blockers": blockers,
+        "warnings": report_warnings,
+        "safe_conclusion": (
+            "This summary renders the local shadow subdivision replay "
+            "verifier result as reviewer context only. It does not append a "
+            "bridge event, transport artifacts, expose local paths, approve "
+            "runtime subdivision authority, or change runtime topology."
+        ),
+    }
+    if _contains_path_marker(summary):
+        return _summary_error_report("summary_output_path_marker")
+    json.dumps(summary, allow_nan=False, sort_keys=True)
+    return summary
+
+
+def _load_summary_verification_report(path: Path | str) -> tuple[dict | None, dict | None]:
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None, _summary_error_report("verification_report_unreadable")
+    try:
+        report = json.loads(raw, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, _summary_error_report("verification_report_json_invalid")
+    if not isinstance(report, Mapping):
+        return None, _summary_error_report("verification_report_not_object")
+    return dict(report), None
 
 
 def verify_shadow_subdivision_replay_json_file(
@@ -731,17 +1020,54 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--summary-verification-json",
+        type=Path,
+        help=(
+            "Render a path-free reviewer summary from an existing verifier "
+            "report JSON file. The summary does not record the input path or "
+            "append bridge events."
+        ),
+    )
+    parser.add_argument(
         "--expected-git-commit",
         help=(
             "Expected source_snapshot.git_commit for --verify-json. Defaults "
             "to the current --root HEAD when available."
         ),
     )
+    parser.add_argument("--reviewer-agent", default="codex-tools-1")
+    parser.add_argument(
+        "--handoff-ref",
+        default="hex-shadow-subdivision-replay-verifier-summary",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.verify_json is not None and args.summary_verification_json is not None:
+        summary = _summary_error_report("multiple_modes_requested")
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 2
+
+    if args.summary_verification_json is not None:
+        report, failure = _load_summary_verification_report(
+            args.summary_verification_json
+        )
+        summary = (
+            failure
+            if failure is not None
+            else build_shadow_subdivision_replay_verifier_summary(
+                report or {},
+                reviewer_agent_id=args.reviewer_agent,
+                handoff_ref=args.handoff_ref,
+            )
+        )
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        if args.strict and summary.get("ok") is not True:
+            return 2
+        return 0
+
     if args.verify_json is not None:
         expected_git_commit = (
             args.expected_git_commit

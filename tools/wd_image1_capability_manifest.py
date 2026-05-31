@@ -28,6 +28,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.hex_shadow_subdivision_replay import (  # noqa: E402
+    build_source_snapshot,
+    build_shadow_subdivision_replay_artifact,
+)
 from waggledance.core.hex_topology.cell_message_contract import make_message
 from waggledance.core.hex_topology.parent_child_relations import (
     ancestors_of,
@@ -5250,6 +5254,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "waggledance/application/services/hex_neighbor_assist.py",
                 "Feature-flagged runtime hex neighbor assist boundary.",
             ),
+            (
+                "tools/hex_shadow_subdivision_replay.py",
+                "Read-only shadow subdivision replay artifact builder.",
+            ),
         ),
     )
     future_evidence = _evidence(
@@ -5271,12 +5279,21 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_upgrade_proof = build_hexagonal_upgrade_proof(root)
     hex_upgrade_runtime_smoke = build_hexagonal_upgrade_runtime_smoke(root)
+    hex_upgrade_shadow_replay = build_shadow_subdivision_replay_artifact(
+        upgrade_proof=hex_upgrade_proof,
+        runtime_boundary_smoke=hex_upgrade_runtime_smoke,
+        source_snapshot=build_source_snapshot(root),
+    )
     hex_upgrade_proof["runtime_boundary_smoke"] = (
         hex_upgrade_runtime_smoke
+    )
+    hex_upgrade_proof["shadow_subdivision_replay"] = (
+        hex_upgrade_shadow_replay
     )
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
+        and hex_upgrade_shadow_replay.get("ok") is True
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_runtime_boundary_smoke = (
@@ -5594,7 +5611,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Pure primitives for subdivision planning, ring messaging, "
                 "and parent-child relation queries exist, and a runtime "
                 "boundary smoke plus operator-visible /metrics gauges "
-                "report the active config topology without mutating it."
+                "report the active config topology without mutating it. A "
+                "shadow replay artifact binds the pure plan/relation/delivery "
+                "proof to that read-only metrics contract without runtime "
+                "activation."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -5609,9 +5629,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a shadow subdivision replay artifact that binds the "
-                "parent/child plan to topology boundary metrics without "
-                "runtime mutation."
+                "Add a local verifier for the shadow subdivision replay "
+                "artifact without activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

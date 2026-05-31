@@ -237,7 +237,7 @@ class LowRiskGrower:
                 ),
                 registry=self._registry,
             )
-        except SpecValidationError:
+        except (SpecValidationError, ValueError):
             return dict(raw)
 
 

@@ -205,6 +205,9 @@ class BridgeEvent(BaseModel):
         local_origin_main_sha = freshness["local_origin_main_sha"]
         if remote_main_sha != local_origin_main_sha:
             raise ValueError("grok freshness main sha mismatch")
+        worktree_head = freshness["worktree_head"]
+        if worktree_head != local_origin_main_sha:
+            raise ValueError("grok freshness worktree sha mismatch")
         for field_name in GROK_FRESHNESS_OPTIONAL_SHA_FIELDS:
             value = freshness.get(field_name)
             if value is not None and not _is_full_git_sha(value):

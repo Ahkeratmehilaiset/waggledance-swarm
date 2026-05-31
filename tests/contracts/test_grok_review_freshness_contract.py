@@ -132,6 +132,10 @@ def test_grok_response_allows_absent_pr_head_for_non_pr_plan_review() -> None:
             "worktree_head",
         ),
         (
+            {"freshness": _freshness(worktree_head=PR_HEAD_SHA)},
+            "grok freshness worktree sha mismatch",
+        ),
+        (
             {"freshness": _freshness(pr_head_sha="abc1234")},
             "pr_head_sha",
         ),

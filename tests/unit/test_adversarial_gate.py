@@ -103,7 +103,7 @@ def test_invalid_defect_class_is_rejected():
     r = _report(cases=cases)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
-    assert any("missing required defect classes" in reason for reason in result.reasons)
+    assert any("missing/invalid defect_class" in reason for reason in result.reasons)
     assert result.invalid_case_count >= 1
 
 
@@ -112,7 +112,7 @@ def test_missing_required_defect_class_refuses():
     cases = [_case_with_defect(case_id=f"c{i}", defect_class=required[i]) for i in range(len(required) - 1)]
     # Missing one required class while all listed cases are caught.
     # Gate should still refuse due missing required class coverage.
-    r = _report(cases=cases, min_cases=2)
+    r = _report(cases=cases)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=2)
     assert result.ok is False
     assert any("required defect classes not caught" in reason for reason in result.reasons)

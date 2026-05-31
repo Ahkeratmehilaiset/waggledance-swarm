@@ -120,9 +120,13 @@ def verify_adversarial_corpus_gate(
     caught = 0
     not_caught = 0
     invalid = 0
+    invalid_shape = 0
+    invalid_defect_class = 0
+    invalid_ok = 0
     caught_by_defect_class = {defect: 0 for defect in REQUIRED_DEFECT_TYPES}
     for case in cases:
         if not isinstance(case, Mapping):
+            invalid_shape += 1
             invalid += 1
             continue
         case_ok = case.get("ok")
@@ -130,8 +134,10 @@ def verify_adversarial_corpus_gate(
         valid_defect_class = (
             isinstance(defect_class, str) and defect_class in REQUIRED_DEFECT_TYPES
         )
+        case_invalid = False
         if not valid_defect_class:
-            invalid += 1
+            invalid_defect_class += 1
+            case_invalid = True
 
         # Strict bool: a missing or non-bool ok (e.g. the string "true") is
         # treated as NOT caught — type-confusion must not pass.
@@ -141,8 +147,12 @@ def verify_adversarial_corpus_gate(
                 caught_by_defect_class[defect_class] += 1
         elif case_ok is False:
             not_caught += 1
-        elif valid_defect_class:
-            # valid defect metadata with non-bool ok is still an integrity failure
+        else:
+            # Count a malformed case once even if more than one field is bad.
+            invalid_ok += 1
+            case_invalid = True
+
+        if case_invalid:
             invalid += 1
 
     n_cases = len(list(cases))
@@ -163,9 +173,17 @@ def verify_adversarial_corpus_gate(
     if not_caught > 0:
         reasons.append(f"{not_caught} adversarial case(s) NOT caught")
     if invalid > 0:
-        reasons.append(
-            f"{invalid} case(s) with missing/invalid 'ok' (fail-closed)"
-        )
+        if invalid_shape > 0:
+            reasons.append(f"{invalid_shape} case(s) not objects (fail-closed)")
+        if invalid_defect_class > 0:
+            reasons.append(
+                f"{invalid_defect_class} case(s) with missing/invalid "
+                "defect_class (fail-closed)"
+            )
+        if invalid_ok > 0:
+            reasons.append(
+                f"{invalid_ok} case(s) with missing/invalid 'ok' (fail-closed)"
+            )
     missing_defect_classes = [
         defect
         for defect, count in caught_by_defect_class.items()

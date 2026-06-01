@@ -355,8 +355,9 @@ Prometheus/Alertmanager snapshot when the runtime container provides a
 IDs, known alert IDs, fixed route-stage labels, numeric values, and timestamps;
 it drops raw summaries, invalid labels, and unknown fields. The feed state also
 includes sanitized `feed_health` for provider availability, cache/backoff state,
-fixed failure reasons, and no-authority flags. It does not add mutating
-endpoints or runtime routing controls.
+fixed failure reasons, no-authority flags, read-only `slo_panels`, and a
+`drill_evidence` checklist for operator review. It does not add mutating
+endpoints, release decisions, or runtime routing controls.
 
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
@@ -372,7 +373,11 @@ exposes the cache/backoff state through fixed names such as
 `waggledance_route_stage_latency_feed_fetch_failures_total`,
 `waggledance_route_stage_latency_feed_backoff_active`, and
 `waggledance_route_stage_latency_feed_failure_reason`; URLs, hosts, headers,
-and exception text are not surfaced.
+and exception text are not surfaced. The `slo_panels` entries are fixed
+PromQL templates over those metrics for availability, fetch failures, active
+backoff, and stale cache state. The `drill_evidence` checklist names only safe
+artifact classes such as explicit `/metrics` scrapes, explicit `/api/ops`
+snapshots, and local operator log windows.
 
 `GET /api/ops` also includes `autogrowth.alert_state`, a read-only local
 snapshot for the hologram Ops panel. It reports `status`, `severity`,

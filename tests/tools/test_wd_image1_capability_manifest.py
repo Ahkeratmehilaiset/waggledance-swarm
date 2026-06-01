@@ -242,6 +242,11 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["prometheus_alertmanager_feed_supported"] is True
     assert smoke["prometheus_alertmanager_feed_provider_configured"] is True
     assert smoke["latency_feed_state_visible"] is True
+    assert smoke["latency_feed_slo_drill_evidence_supported"] is True
+    assert (
+        smoke["checks"]["ops_latency_feed_slo_drill_contract_present"]
+        is True
+    )
     assert smoke["alert_thresholds_documented"] is True
     assert smoke["runbook_path"] == ("docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md")
     assert smoke["latency_metric_semantics"] == ("stage_correlated_request_latency")
@@ -1374,13 +1379,23 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_slo_drill_evidence_supported"
+        ]
+        is True
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
     assert "p95/p99" in capability["safe_statement"]
     assert "feed provider" in capability["safe_statement"]
+    assert "SLO-panel" in capability["safe_statement"]
+    assert "drill-evidence" in capability["safe_statement"]
     assert "private-host guardrails" in capability["safe_statement"]
-    assert "operator SLO/drill evidence" in capability["next_smallest_pr"]
+    assert "manual route-stage feed release-gate examples" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

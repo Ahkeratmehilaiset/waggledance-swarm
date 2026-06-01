@@ -16,6 +16,7 @@ hologram Ops panel expose the PromQL templates as read-only metadata for
 operator dashboards. When the runtime container provides a
 `route_stage_latency_feed` snapshot provider, `/api/ops` also exposes sanitized
 Prometheus/Alertmanager panel values and active alerts under `feed_state`; it
+also includes read-only feed-health SLO panels and drill-evidence metadata. It
 does not add runtime controls.
 
 ## Metrics
@@ -64,10 +65,32 @@ view of a container-provided Prometheus/Alertmanager snapshot. It may include:
 - `updated_at`: the provider timestamp when it is a string.
 - `feed_health`: sanitized provider health, cache/backoff counters, fixed
   failure reasons, and read-only no-authority flags.
+- `slo_panels`: fixed PromQL templates over feed-health metrics for
+  availability, fetch failures, active backoff, and stale cache state.
+- `drill_evidence`: a checklist of safe operator artifacts for manual review.
 
 It intentionally does not forward Alertmanager annotations, descriptions,
 external URLs, raw label sets, raw query text, hostnames, filesystem paths, or
 exception strings.
+
+## Feed SLO and drill evidence
+
+`feed_state.slo_panels` is read-only metadata. It uses only fixed metric names
+already exposed by `/metrics`; no panel fetches endpoints or changes routing.
+
+| Panel | Metric | Objective |
+| --- | --- | --- |
+| `route_stage_latency_feed_availability_5m` | `waggledance_route_stage_latency_feed_available` | `available == 1` |
+| `route_stage_latency_feed_fetch_failures_15m` | `waggledance_route_stage_latency_feed_fetch_failures_total` | `increase == 0` |
+| `route_stage_latency_feed_backoff_15m` | `waggledance_route_stage_latency_feed_backoff_active` | `max == 0` |
+| `route_stage_latency_feed_cache_stale_15m` | `waggledance_route_stage_latency_feed_cache_stale` | `max == 0` |
+
+`feed_state.drill_evidence` names artifact classes an operator can collect
+during incident review: explicit `/metrics` scrapes, explicit `/api/ops`
+snapshots, and local operator log windows with sanitized reasons. It excludes
+URLs, hosts, headers, filesystem paths, exception text, raw queries, raw
+labels, and annotations. It is not a release decision and does not grant route
+controls, runtime authority, external writes, or configuration mutation.
 
 ## Optional feed provider
 

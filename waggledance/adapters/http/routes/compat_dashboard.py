@@ -498,6 +498,52 @@ ROUTE_STAGE_LATENCY_FEED_HEALTH_REASONS = frozenset({
     "HTTP_STATUS_REFUSED",
     "FEED_READ_FAILED",
 })
+ROUTE_STAGE_LATENCY_FEED_SLO_PANELS = (
+    {
+        "id": "route_stage_latency_feed_availability_5m",
+        "title": "Route-stage latency feed availability",
+        "metric": "waggledance_route_stage_latency_feed_available",
+        "query": (
+            "avg_over_time("
+            "waggledance_route_stage_latency_feed_available[5m])"
+        ),
+        "window": "5m",
+        "objective": "available == 1",
+    },
+    {
+        "id": "route_stage_latency_feed_fetch_failures_15m",
+        "title": "Route-stage latency feed fetch failures",
+        "metric": "waggledance_route_stage_latency_feed_fetch_failures_total",
+        "query": (
+            "increase("
+            "waggledance_route_stage_latency_feed_fetch_failures_total[15m])"
+        ),
+        "window": "15m",
+        "objective": "increase == 0",
+    },
+    {
+        "id": "route_stage_latency_feed_backoff_15m",
+        "title": "Route-stage latency feed backoff active",
+        "metric": "waggledance_route_stage_latency_feed_backoff_active",
+        "query": (
+            "max_over_time("
+            "waggledance_route_stage_latency_feed_backoff_active[15m])"
+        ),
+        "window": "15m",
+        "objective": "max == 0",
+    },
+    {
+        "id": "route_stage_latency_feed_cache_stale_15m",
+        "title": "Route-stage latency feed cache stale",
+        "metric": "waggledance_route_stage_latency_feed_cache_stale",
+        "query": (
+            "max_over_time("
+            "waggledance_route_stage_latency_feed_cache_stale[15m])"
+        ),
+        "window": "15m",
+        "objective": "max == 0",
+    },
+)
 
 
 def _route_stage_latency_empty_feed_state(source: str) -> dict:
@@ -621,6 +667,114 @@ def _route_stage_latency_feed_health(provider, snapshot=None) -> dict:  # noqa: 
     elif health["configured"]:
         health["status"] = "nominal"
     return health
+
+
+def _route_stage_latency_feed_nonnegative_float(value) -> float:  # noqa: ANN001
+    numeric = _number_or_none(value)
+    if numeric is None or numeric < 0:
+        return 0.0
+    return float(numeric)
+
+
+def _route_stage_latency_feed_slo_panel_status(
+    panel_id: str,
+    feed_health: Mapping[str, object],
+) -> str:
+    if not feed_health.get("configured"):
+        return "not_configured"
+    if panel_id == "route_stage_latency_feed_availability_5m":
+        return "nominal" if feed_health.get("available") else "warning"
+    if panel_id == "route_stage_latency_feed_fetch_failures_15m":
+        failures = _route_stage_latency_feed_nonnegative_float(
+            feed_health.get("fetch_failure_count")
+        )
+        return "warning" if failures > 0 else "nominal"
+    if panel_id == "route_stage_latency_feed_backoff_15m":
+        return "warning" if feed_health.get("backoff_active") else "nominal"
+    if panel_id == "route_stage_latency_feed_cache_stale_15m":
+        return "warning" if feed_health.get("cache_stale") else "nominal"
+    return "nominal"
+
+
+def _route_stage_latency_feed_slo_current_value(
+    panel_id: str,
+    feed_health: Mapping[str, object],
+) -> float:
+    if panel_id == "route_stage_latency_feed_availability_5m":
+        return 1.0 if feed_health.get("available") else 0.0
+    if panel_id == "route_stage_latency_feed_fetch_failures_15m":
+        return _route_stage_latency_feed_nonnegative_float(
+            feed_health.get("fetch_failure_count")
+        )
+    if panel_id == "route_stage_latency_feed_backoff_15m":
+        return 1.0 if feed_health.get("backoff_active") else 0.0
+    if panel_id == "route_stage_latency_feed_cache_stale_15m":
+        return 1.0 if feed_health.get("cache_stale") else 0.0
+    return 0.0
+
+
+def _route_stage_latency_feed_slo_panels(
+    feed_health: Mapping[str, object],
+) -> list[dict[str, object]]:
+    return [
+        {
+            **panel,
+            "current_value": _route_stage_latency_feed_slo_current_value(
+                str(panel["id"]),
+                feed_health,
+            ),
+            "status": _route_stage_latency_feed_slo_panel_status(
+                str(panel["id"]),
+                feed_health,
+            ),
+            "controls_present": False,
+        }
+        for panel in ROUTE_STAGE_LATENCY_FEED_SLO_PANELS
+    ]
+
+
+def _route_stage_latency_feed_drill_evidence() -> dict[str, object]:
+    return {
+        "source": "operator_runbook",
+        "required_artifacts": [
+            {
+                "id": "metrics_scrape",
+                "source": "/metrics",
+                "fields": [
+                    "waggledance_route_stage_latency_feed_status",
+                    "waggledance_route_stage_latency_feed_failure_reason",
+                    "waggledance_route_stage_latency_feed_backoff_active",
+                    "waggledance_route_stage_latency_feed_cache_stale",
+                ],
+            },
+            {
+                "id": "ops_snapshot",
+                "source": "/api/ops",
+                "fields": [
+                    "route_stage_latency.feed_state.feed_health",
+                    "route_stage_latency.feed_state.slo_panels",
+                ],
+            },
+            {
+                "id": "runtime_window_logs",
+                "source": "operator_log_window",
+                "fields": ["timestamp", "commit", "sanitized_reason"],
+            },
+        ],
+        "privacy_exclusions": [
+            "urls",
+            "hosts",
+            "headers",
+            "filesystem_paths",
+            "exception_text",
+            "raw_queries",
+            "raw_labels",
+            "annotations",
+        ],
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
 
 
 def _route_stage_latency_feed_provider(container):  # noqa: ANN001
@@ -783,45 +937,61 @@ def _route_stage_latency_max_severity(items: list[dict]) -> str:
     return severity
 
 
+def _route_stage_latency_feed_state_with_operator_evidence(
+    state: Mapping[str, object],
+    feed_health: Mapping[str, object],
+) -> dict:
+    return {
+        **dict(state),
+        "feed_health": dict(feed_health),
+        "slo_panels": _route_stage_latency_feed_slo_panels(feed_health),
+        "drill_evidence": _route_stage_latency_feed_drill_evidence(),
+    }
+
+
 def _route_stage_latency_feed_state(container) -> dict:  # noqa: ANN001
     snapshot, state, provider = _route_stage_latency_feed_snapshot(container)
     feed_health = _route_stage_latency_feed_health(provider, snapshot)
     if state == "not_configured":
-        return {
-            **_route_stage_latency_empty_feed_state("not_configured"),
-            "feed_health": feed_health,
-        }
+        return _route_stage_latency_feed_state_with_operator_evidence(
+            _route_stage_latency_empty_feed_state("not_configured"),
+            feed_health,
+        )
     if snapshot is None:
-        return {
-            **_route_stage_latency_empty_feed_state(
-                "prometheus_alertmanager_unavailable"
-            ),
-            "status": "warning",
-            "severity": "warning",
-            "active_count": 1,
-            "active": [{
-                "id": "RouteStageLatencyFeedUnavailable",
+        return _route_stage_latency_feed_state_with_operator_evidence(
+            {
+                **_route_stage_latency_empty_feed_state(
+                    "prometheus_alertmanager_unavailable"
+                ),
+                "status": "warning",
                 "severity": "warning",
-                "summary": "Route-stage latency feed snapshot is unavailable.",
-            }],
-            "feed_health": feed_health,
-        }
+                "active_count": 1,
+                "active": [{
+                    "id": "RouteStageLatencyFeedUnavailable",
+                    "severity": "warning",
+                    "summary": "Route-stage latency feed snapshot is unavailable.",
+                }],
+            },
+            feed_health,
+        )
 
     panel_values = _sanitize_route_stage_latency_panel_values(snapshot)
     active = _sanitize_route_stage_latency_active_alerts(snapshot)
     severity = _route_stage_latency_max_severity(active + panel_values)
-    return {
-        "source": "prometheus_alertmanager_snapshot",
-        "status": severity if severity != "none" else "nominal",
-        "severity": severity,
-        "prometheus_alertmanager_feed": True,
-        "updated_at": _route_stage_latency_updated_at(snapshot),
-        "panel_values": panel_values,
-        "active_count": len(active),
-        "active": active,
-        "controls_present": False,
-        "feed_health": feed_health,
-    }
+    return _route_stage_latency_feed_state_with_operator_evidence(
+        {
+            "source": "prometheus_alertmanager_snapshot",
+            "status": severity if severity != "none" else "nominal",
+            "severity": severity,
+            "prometheus_alertmanager_feed": True,
+            "updated_at": _route_stage_latency_updated_at(snapshot),
+            "panel_values": panel_values,
+            "active_count": len(active),
+            "active": active,
+            "controls_present": False,
+        },
+        feed_health,
+    )
 
 
 def _route_stage_latency_panels(container=None) -> dict:

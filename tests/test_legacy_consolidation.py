@@ -1100,6 +1100,18 @@ class TestApiOpsExtended:
         assert section["prometheus_alertmanager_feed"] is False
         assert section["feed_state"]["source"] == "not_configured"
         assert section["feed_state"]["panel_values"] == []
+        assert len(section["feed_state"]["slo_panels"]) == 4
+        assert section["feed_state"]["slo_panels"][0]["id"] == (
+            "route_stage_latency_feed_availability_5m"
+        )
+        assert section["feed_state"]["slo_panels"][0]["status"] == (
+            "not_configured"
+        )
+        assert section["feed_state"]["drill_evidence"]["controls_present"] is False
+        assert (
+            section["feed_state"]["drill_evidence"]["external_writes_applied"]
+            is False
+        )
         assert "waggledance_route_stage_request_latency_histogram_ms_bucket" in (
             section["metrics"]
         )
@@ -1176,6 +1188,14 @@ class TestApiOpsExtended:
         assert feed_state["status"] == "critical"
         assert feed_state["severity"] == "critical"
         assert feed_state["controls_present"] is False
+        assert [panel["id"] for panel in feed_state["slo_panels"]] == [
+            "route_stage_latency_feed_availability_5m",
+            "route_stage_latency_feed_fetch_failures_15m",
+            "route_stage_latency_feed_backoff_15m",
+            "route_stage_latency_feed_cache_stale_15m",
+        ]
+        assert feed_state["slo_panels"][0]["status"] == "warning"
+        assert feed_state["drill_evidence"]["runtime_authority_granted"] is False
         assert len(feed_state["panel_values"]) == 3
         assert feed_state["panel_values"][0]["value"] == 3123.456
         assert feed_state["panel_values"][0]["status"] == "warning"
@@ -1271,6 +1291,12 @@ class TestApiOpsExtended:
         assert feed_health["external_writes_applied"] is False
         assert feed_health["cache_hit_count"] == 0.0
         assert feed_health["last_failure_reason"] == "FEED_READ_FAILED"
+        assert section["feed_state"]["slo_panels"][0]["status"] == "nominal"
+        assert section["feed_state"]["drill_evidence"]["controls_present"] is False
+        assert (
+            section["feed_state"]["drill_evidence"]["runtime_authority_granted"]
+            is False
+        )
         assert "C:/private/prometheus-token" not in str(section)
 
     def test_ops_route_stage_latency_feed_health_preserves_none_reason(self):
@@ -1354,6 +1380,8 @@ class TestApiOpsExtended:
         assert feed_state["source"] == "prometheus_alertmanager_unavailable"
         assert feed_state["status"] == "warning"
         assert feed_state["active"][0]["id"] == "RouteStageLatencyFeedUnavailable"
+        assert feed_state["slo_panels"][0]["status"] == "warning"
+        assert feed_state["drill_evidence"]["external_writes_applied"] is False
         assert "private query=secret" not in str(section)
         assert "query=" not in str(section)
 
@@ -1448,6 +1476,16 @@ class TestApiOpsExtended:
         assert feed_health["backoff_active"] is False
         assert feed_health["controls_present"] is False
         assert feed_health["runtime_authority_granted"] is False
+        assert cached_feed_state["slo_panels"][0]["status"] == "nominal"
+        assert cached_feed_state["slo_panels"][1]["current_value"] == 0.0
+        assert cached_feed_state["drill_evidence"]["source"] == "operator_runbook"
+        assert (
+            cached_feed_state["drill_evidence"]["runtime_authority_granted"]
+            is False
+        )
+        assert "exception_text" in cached_feed_state["drill_evidence"][
+            "privacy_exclusions"
+        ]
         assert "PRIVATE_QUERY_MARKER" not in serialized
         assert "PRIVATE_ANNOTATION" not in serialized
         assert "query=secret" not in serialized
@@ -1547,6 +1585,17 @@ class TestApiOpsExtended:
         assert feed_health["last_failure_reason"] == "NETWORK_REQUEST_FAILED"
         assert feed_health["controls_present"] is False
         assert feed_health["runtime_authority_granted"] is False
+        panel_status = {
+            panel["id"]: panel["status"]
+            for panel in backoff_state["slo_panels"]
+        }
+        assert (
+            panel_status["route_stage_latency_feed_fetch_failures_15m"]
+            == "warning"
+        )
+        assert panel_status["route_stage_latency_feed_backoff_15m"] == "warning"
+        assert panel_status["route_stage_latency_feed_cache_stale_15m"] == "warning"
+        assert backoff_state["drill_evidence"]["controls_present"] is False
         assert "C:/private/prometheus-token" not in serialized
         assert "127.0.0.1" not in serialized
 

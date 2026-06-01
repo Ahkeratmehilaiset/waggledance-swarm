@@ -1166,12 +1166,37 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert index_entry["runtime_subdivision_authority_granted"] is False
     assert index_entry["artifact_payloads_included"] is False
     assert index_entry["local_paths_recorded"] is False
+    index_entry_verification = capability["proof"][
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification"
+    ]
+    assert index_entry_verification["ok"] is True
+    assert (
+        index_entry_verification["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_v1"
+    )
+    assert (
+        index_entry_verification["verification_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification.v1"
+    )
+    assert index_entry_verification["source_contract_check"] == "match"
+    assert index_entry_verification["rebuilt_index_entry_check"] == "match"
+    assert index_entry_verification["bridge_event_schema_check"] == "match"
+    assert (
+        index_entry_verification["digest_checks"][
+            "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template"
+        ]
+        == "match"
+    )
+    assert index_entry_verification["direct_bridge_write_performed"] is False
+    assert index_entry_verification["runtime_subdivision_authority_granted"] is False
+    assert index_entry_verification["artifact_payloads_included"] is False
+    assert index_entry_verification["local_paths_recorded"] is False
     assert "local verifier" in capability["safe_statement"]
     assert "reviewer summary" in capability["safe_statement"]
     assert "bridge-event template" in capability["safe_statement"]
     assert "local index entry" in capability["safe_statement"]
-    assert "index entry" in capability["next_smallest_pr"]
-    assert "local verifier" in capability["next_smallest_pr"]
+    assert "verifier summary" in capability["next_smallest_pr"]
+    assert "index-entry verifier" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

@@ -33,8 +33,23 @@ def _valid_evidence() -> dict[str, object]:
     }
 
 
-def test_current_release_gate_hold_is_recorded_without_release_mutation() -> None:
+def _hold_evidence() -> dict[str, object]:
+    evidence = _valid_evidence()
+    evidence.update({
+        "commit": "2a1ea79b41202198cb9a6648fe716c08733fa8e2",
+        "ended_at_utc": "2026-05-22T23:21:53Z",
+        "duration_hours": 311.365,
+        "result": "hold",
+    })
+    return evidence
+
+
+def test_hold_release_gate_is_recorded_without_release_mutation(tmp_path) -> None:
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    evidence_path.write_text(json.dumps(_hold_evidence()), encoding="utf-8")
+
     report = build_report(
+        soak_evidence=evidence_path,
         checked_at_utc=dt.datetime(2026, 5, 26, 1, 0, tzinfo=dt.UTC),
         today=dt.date(2026, 5, 26),
     )
@@ -82,13 +97,17 @@ def test_passing_gate_is_still_read_only(tmp_path) -> None:
 
 
 def test_cli_writes_hold_report_without_failing(tmp_path) -> None:
+    evidence_path = tmp_path / "release_soak_evidence.json"
     output = tmp_path / "release_gate_readonly_recheck.json"
+    evidence_path.write_text(json.dumps(_hold_evidence()), encoding="utf-8")
 
     rc = main([
         "--checked-at-utc",
         "2026-05-26T01:00:00Z",
         "--today",
         "2026-05-26",
+        "--soak-evidence",
+        str(evidence_path),
         "--output",
         str(output),
     ])
@@ -102,8 +121,12 @@ def test_cli_writes_hold_report_without_failing(tmp_path) -> None:
     assert loaded["release_boundary"]["external_effect_authority_change"] is False
 
 
-def test_strict_exit_code_reports_blocked_hold() -> None:
+def test_strict_exit_code_reports_blocked_hold(tmp_path) -> None:
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    evidence_path.write_text(json.dumps(_hold_evidence()), encoding="utf-8")
+
     report = build_report(
+        soak_evidence=evidence_path,
         checked_at_utc=dt.datetime(2026, 5, 26, 1, 0, tzinfo=dt.UTC),
         today=dt.date(2026, 5, 26),
     )
@@ -112,7 +135,9 @@ def test_strict_exit_code_reports_blocked_hold() -> None:
 
 
 def test_cli_strict_returns_blocked_after_writing_report(tmp_path, capsys) -> None:
+    evidence_path = tmp_path / "release_soak_evidence.json"
     output = tmp_path / "release_gate_readonly_recheck.json"
+    evidence_path.write_text(json.dumps(_hold_evidence()), encoding="utf-8")
 
     rc = main(
         [
@@ -120,6 +145,8 @@ def test_cli_strict_returns_blocked_after_writing_report(tmp_path, capsys) -> No
             "2026-05-26T01:00:00Z",
             "--today",
             "2026-05-26",
+            "--soak-evidence",
+            str(evidence_path),
             "--output",
             str(output),
             "--strict",

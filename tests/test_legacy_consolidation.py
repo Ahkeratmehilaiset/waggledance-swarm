@@ -1105,7 +1105,7 @@ class TestApiOpsExtended:
             for panel in section["feed_state"]["slo_panels"]
         ] == [
             "route_stage_latency_feed_availability_5m",
-            "route_stage_latency_feed_fetch_failures_15m",
+            "route_stage_latency_feed_fetch_failures_total",
             "route_stage_latency_feed_backoff_15m",
             "route_stage_latency_feed_cache_stale_15m",
         ]
@@ -1349,10 +1349,10 @@ class TestApiOpsExtended:
             "route_stage_latency_feed_availability_5m"
         ]["status"] == "nominal"
         assert slo_panels[
-            "route_stage_latency_feed_fetch_failures_15m"
+            "route_stage_latency_feed_fetch_failures_total"
         ]["current_value"] == 2.0
         assert slo_panels[
-            "route_stage_latency_feed_fetch_failures_15m"
+            "route_stage_latency_feed_fetch_failures_total"
         ]["status"] == "warning"
         assert slo_panels[
             "route_stage_latency_feed_backoff_15m"

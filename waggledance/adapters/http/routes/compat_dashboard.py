@@ -511,15 +511,12 @@ ROUTE_STAGE_LATENCY_FEED_SLO_PANELS = (
         "objective": "available == 1",
     },
     {
-        "id": "route_stage_latency_feed_fetch_failures_15m",
-        "title": "Route-stage feed fetch failures",
+        "id": "route_stage_latency_feed_fetch_failures_total",
+        "title": "Route-stage feed fetch failures total",
         "metric": "waggledance_route_stage_latency_feed_fetch_failures_total",
-        "query": (
-            "increase("
-            "waggledance_route_stage_latency_feed_fetch_failures_total[15m])"
-        ),
-        "window": "15m",
-        "objective": "increase == 0",
+        "query": "waggledance_route_stage_latency_feed_fetch_failures_total",
+        "window": "process_lifetime",
+        "objective": "total == 0",
     },
     {
         "id": "route_stage_latency_feed_backoff_15m",
@@ -684,7 +681,7 @@ def _route_stage_latency_feed_slo_panel_status(
         return "not_configured"
     if panel_id == "route_stage_latency_feed_availability_5m":
         return "nominal" if feed_health.get("available") else "warning"
-    if panel_id == "route_stage_latency_feed_fetch_failures_15m":
+    if panel_id == "route_stage_latency_feed_fetch_failures_total":
         failures = _route_stage_latency_feed_nonnegative_float(
             feed_health.get("fetch_failure_count")
         )
@@ -702,7 +699,7 @@ def _route_stage_latency_feed_slo_current_value(
 ) -> float:
     if panel_id == "route_stage_latency_feed_availability_5m":
         return 1.0 if feed_health.get("available") else 0.0
-    if panel_id == "route_stage_latency_feed_fetch_failures_15m":
+    if panel_id == "route_stage_latency_feed_fetch_failures_total":
         return _route_stage_latency_feed_nonnegative_float(
             feed_health.get("fetch_failure_count")
         )

@@ -77,12 +77,13 @@ exception strings.
 
 The `feed_state.slo_panels` array is template metadata only. The dashboard can
 render the current values from sanitized `feed_health`, while operator-owned
-Prometheus can use the PromQL templates below for time-window review.
+Prometheus can use the PromQL templates below for time-window or cumulative
+review.
 
 | Panel | PromQL | Window | Objective |
 | --- | --- | --- | --- |
 | `route_stage_latency_feed_availability_5m` | `avg_over_time(waggledance_route_stage_latency_feed_available[5m])` | `5m` | `available == 1` |
-| `route_stage_latency_feed_fetch_failures_15m` | `increase(waggledance_route_stage_latency_feed_fetch_failures_total[15m])` | `15m` | `increase == 0` |
+| `route_stage_latency_feed_fetch_failures_total` | `waggledance_route_stage_latency_feed_fetch_failures_total` | `process_lifetime` | `total == 0` |
 | `route_stage_latency_feed_backoff_15m` | `max_over_time(waggledance_route_stage_latency_feed_backoff_active[15m])` | `15m` | `max == 0` |
 | `route_stage_latency_feed_cache_stale_15m` | `max_over_time(waggledance_route_stage_latency_feed_cache_stale[15m])` | `15m` | `max == 0` |
 

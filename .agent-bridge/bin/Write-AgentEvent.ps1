@@ -78,6 +78,26 @@ function Resolve-BridgeCapabilities {
     )
 }
 
+function Assert-BridgeAgentTargets {
+    param([AllowNull()] [string] $Targets)
+    if ([string]::IsNullOrEmpty($Targets)) {
+        return
+    }
+    $targetList = @(
+        $Targets -split ',' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+    if ($targetList.Count -eq 0) {
+        throw "to must be empty or comma-separated agents"
+    }
+    foreach ($target in $targetList) {
+        if ($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+            throw "to contains invalid bridge agent id: $target"
+        }
+    }
+}
+
 $Role = Resolve-BridgeMetadataString -Explicit $Role -EnvName 'AGENT_BRIDGE_ROLE'
 $AgentUuid = Resolve-BridgeMetadataString -Explicit $AgentUuid -EnvName 'AGENT_BRIDGE_AGENT_UUID'
 $SessionId = Resolve-BridgeMetadataString -Explicit $SessionId -EnvName 'AGENT_BRIDGE_SESSION_ID'
@@ -106,6 +126,7 @@ foreach ($capability in @($Capabilities)) {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
+Assert-BridgeAgentTargets -Targets $To
 
 $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')

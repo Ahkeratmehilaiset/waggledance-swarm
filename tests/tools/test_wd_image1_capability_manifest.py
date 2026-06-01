@@ -1380,6 +1380,21 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_verifier_supported"
+        ]
+        is True
+    )
+    verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
+        "drill_evidence_verifier_smoke"
+    ]
+    assert verifier_smoke["ok"] is True
+    assert verifier_smoke["accepts_valid_package"] is True
+    assert verifier_smoke["rejects_authority_forgery"] is True
+    assert verifier_smoke["network_access_performed"] is False
+    assert verifier_smoke["runtime_authority_granted"] is False
+    assert verifier_smoke["external_writes_applied"] is False
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -1387,8 +1402,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "feed provider" in capability["safe_statement"]
     assert "private-host guardrails" in capability["safe_statement"]
     assert "operator SLO/drill evidence" in capability["safe_statement"]
-    assert "offline verifier" in capability["next_smallest_pr"]
-    assert "route-stage feed-health drill" in capability["next_smallest_pr"]
+    assert "offline" in capability["safe_statement"]
+    assert "drill evidence verifier" in capability["safe_statement"]
+    assert "verification summary bridge-event template" in (
+        capability["next_smallest_pr"]
+    )
+    assert "route-stage feed-health drill evidence" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

@@ -593,6 +593,23 @@ def test_report_fails_closed_on_release_boundary_source_sprint_mismatch() -> Non
 
     assert report["ok"] is False
     assert "release_boundary_source_sprint_mismatch" in report["blockers"]
+    assert [
+        package["id"] for package in report["landed_work_packages"]
+    ] == [
+        "rival_local_evidence_execution_or_accepted_blockers",
+        "release_gate_readonly_recheck",
+        "operator_authority_decision_packet",
+        "phase_synthesis_and_baseline_refresh",
+    ]
+    assert [
+        package["id"] for package in report["remaining_work_packages"]
+    ] == [
+        "operator_gated_authority_activation_decision",
+        "release_soak_evidence_blocker_resolution",
+    ]
+    assert report["remaining_work_packages"][1]["status"] == (
+        "release_boundary_readiness_blocked"
+    )
 
 
 def test_report_fails_closed_on_release_boundary_source_gate_hold() -> None:
@@ -614,6 +631,23 @@ def test_report_fails_closed_on_release_boundary_source_gate_hold() -> None:
     assert report["ok"] is False
     assert "release_boundary_source_gate_not_pass" in report["blockers"]
     assert "release_boundary_source_gate_blockers_present" in report["blockers"]
+    assert [
+        package["id"] for package in report["landed_work_packages"]
+    ] == [
+        "rival_local_evidence_execution_or_accepted_blockers",
+        "release_gate_readonly_recheck",
+        "operator_authority_decision_packet",
+        "phase_synthesis_and_baseline_refresh",
+    ]
+    assert [
+        package["id"] for package in report["remaining_work_packages"]
+    ] == [
+        "operator_gated_authority_activation_decision",
+        "release_soak_evidence_blocker_resolution",
+    ]
+    assert report["remaining_work_packages"][1]["status"] == (
+        "release_boundary_readiness_blocked"
+    )
 
 
 def test_report_fails_closed_on_operator_authority_mutation() -> None:

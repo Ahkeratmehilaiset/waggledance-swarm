@@ -367,15 +367,39 @@ def _operator_authority_remaining_status(report: dict[str, Any] | None) -> str:
     return "operator_decision_required"
 
 
-def _release_boundary_ready(report: dict[str, Any] | None) -> bool:
+def _release_boundary_ready(
+    report: dict[str, Any] | None,
+    *,
+    sprint_id: str | None,
+    release_gate_report: dict[str, Any],
+) -> bool:
     if report is None:
         return False
     guardrails = _release_boundary_guardrails(report)
+    source_phase = guardrails["source_phase_synthesis_refresh"]
+    source_gate = guardrails["source_release_gate_readonly_recheck"]
     return (
         guardrails["report_ok"] is True
         and guardrails["release_boundary_status"] == "ready_for_operator_finalization"
         and guardrails["release_boundary_blockers"] == []
         and guardrails["release_boundary_all_false"] is True
+        and sprint_id is not None
+        and source_phase["sprint_id"] == sprint_id
+        and source_phase["ok"] is True
+        and source_phase["release_boundary_all_false"] is True
+        and (
+            source_phase["remaining_release_soak_status"]
+            == "ready_for_release_boundary_review"
+            or source_phase["landed_release_soak_status"]
+            == "complete_release_boundary_readiness_recorded"
+        )
+        and release_gate_report.get("release_gate_decision") == "pass"
+        and source_gate["ok"] is True
+        and source_gate["read_only"] is True
+        and source_gate["release_gate_decision"] == "pass"
+        and source_gate["release_gate_effect"] == "none"
+        and source_gate["release_boundary_all_false"] is True
+        and source_gate["blockers"] == []
     )
 
 
@@ -385,6 +409,7 @@ def _landed_work_packages(
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None,
     release_boundary_readiness_report: dict[str, Any] | None,
+    sprint_id: str | None,
 ) -> list[dict[str, Any]]:
     packages = [
         {
@@ -400,7 +425,11 @@ def _landed_work_packages(
             "summary": _release_gate_guardrails(release_gate_report),
         },
     ]
-    if _release_boundary_ready(release_boundary_readiness_report):
+    if _release_boundary_ready(
+        release_boundary_readiness_report,
+        sprint_id=sprint_id,
+        release_gate_report=release_gate_report,
+    ):
         packages.append(
             {
                 "id": "release_soak_evidence_blocker_resolution",
@@ -437,6 +466,7 @@ def _remaining_work_packages(
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None,
     release_boundary_readiness_report: dict[str, Any] | None,
+    sprint_id: str | None,
 ) -> list[dict[str, Any]]:
     packages = [
         {
@@ -456,7 +486,11 @@ def _remaining_work_packages(
             ),
         },
     ]
-    if _release_boundary_ready(release_boundary_readiness_report):
+    if _release_boundary_ready(
+        release_boundary_readiness_report,
+        sprint_id=sprint_id,
+        release_gate_report=release_gate_report,
+    ):
         packages.append(
             {
                 "id": "operator_release_finalization_decision",
@@ -757,11 +791,13 @@ def build_report(
         release_gate_report=release_gate_report,
         operator_authority_report=operator_authority_report,
         release_boundary_readiness_report=release_boundary_readiness_report,
+        sprint_id=baseline.get("sprint_id"),
     )
     remaining_work_packages = _remaining_work_packages(
         release_gate_report=release_gate_report,
         operator_authority_report=operator_authority_report,
         release_boundary_readiness_report=release_boundary_readiness_report,
+        sprint_id=baseline.get("sprint_id"),
     )
     _bind_effective_next_work_packages(
         phase_synthesis,

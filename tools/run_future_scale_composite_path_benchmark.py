@@ -41,17 +41,34 @@ def _safe_path_label(path: Path, root: Path = ROOT) -> str:
         return "<external_axioms_dir>"
 
 
-def _load_axiom_solvers(axioms_dir: Path) -> list[dict[str, Any]]:
+def _load_axiom_solvers(
+    axioms_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     solvers: list[dict[str, Any]] = []
+    scan = {
+        "axioms_dir_exists": axioms_dir.exists(),
+        "files_scanned": 0,
+        "files_loaded": 0,
+        "files_skipped": 0,
+        "skip_reasons": {
+            "yaml_parse_error": 0,
+            "missing_model_id": 0,
+        },
+    }
     if not axioms_dir.exists():
-        return solvers
+        return solvers, scan
     for path in sorted(axioms_dir.rglob("*.yaml")):
+        scan["files_scanned"] += 1
         try:
             with path.open(encoding="utf-8") as f:
                 axiom = yaml.safe_load(f) or {}
         except Exception:
+            scan["files_skipped"] += 1
+            scan["skip_reasons"]["yaml_parse_error"] += 1
             continue
         if not axiom.get("model_id"):
+            scan["files_skipped"] += 1
+            scan["skip_reasons"]["missing_model_id"] += 1
             continue
 
         inputs = [
@@ -87,7 +104,8 @@ def _load_axiom_solvers(axioms_dir: Path) -> list[dict[str, Any]]:
                 "outputs": outputs,
             }
         )
-    return solvers
+    scan["files_loaded"] = len(solvers)
+    return solvers, scan
 
 
 def _canonical_digest(value: Any) -> str:
@@ -138,7 +156,7 @@ def build_composite_path_benchmark(
         raise ValueError("max_depth must be >= 2")
     min_score = _finite_number("min_bridge_score", min_bridge_score)
 
-    solvers = _load_axiom_solvers(axioms_dir)
+    solvers, scan_summary = _load_axiom_solvers(axioms_dir)
     graph = build_graph(solvers, max_depth=max_depth)
     stats = graph["stats"]
     bridges = [
@@ -188,6 +206,7 @@ def build_composite_path_benchmark(
             "axioms_dir": _safe_path_label(axioms_dir),
             "solver_projection_digest": _canonical_digest(solver_projection),
             "solver_projection_count": len(solvers),
+            "axiom_scan_summary": scan_summary,
             "composition_graph_api": "waggledance.core.learning.composition_graph.build_graph",
         },
         "parameters": {

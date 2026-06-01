@@ -99,6 +99,8 @@ def test_composite_path_benchmark_measures_local_paths_without_claim_upgrade(
     assert benchmark["summary"]["useful_composite_paths_total"] > 0
     assert benchmark["summary"]["useful_composite_paths_by_depth"]["2"] > 0
     assert benchmark["top_useful_paths"]
+    assert benchmark["source"]["axiom_scan_summary"]["files_loaded"] == 3
+    assert benchmark["source"]["axiom_scan_summary"]["files_skipped"] == 0
 
     assert benchmark["claim_gate_satisfied"] is False
     assert benchmark["claim_safe"] is False
@@ -124,6 +126,7 @@ def test_composite_path_benchmark_fails_closed_when_no_paths(tmp_path: Path) -> 
     assert benchmark["ok"] is True
     assert benchmark["evidence_status"] == "blocked_no_useful_composite_paths"
     assert benchmark["measured_value_present"] is False
+    assert benchmark["source"]["axiom_scan_summary"]["files_scanned"] == 0
     assert benchmark["summary"]["useful_composite_paths_total"] == 0
     assert benchmark["claim_gate_satisfied"] is False
     assert "needs production corpus binding before runtime scalability claims" in benchmark["blockers"]
@@ -154,6 +157,34 @@ def test_composite_path_benchmark_rejects_non_finite_thresholds() -> None:
             ROOT / "configs" / "axioms",
             min_bridge_score=float("inf"),
         )
+
+
+def test_composite_path_benchmark_counts_skipped_axioms_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    tool = _load_tool()
+    axioms = _seed_composite_axioms(tmp_path)
+    (axioms / "bad" / "broken.yaml").parent.mkdir(parents=True)
+    (axioms / "bad" / "broken.yaml").write_text("model_id: [", encoding="utf-8")
+    (axioms / "bad" / "missing_model.yaml").write_text(
+        "cell_id: thermal\n",
+        encoding="utf-8",
+    )
+
+    benchmark = tool.build_composite_path_benchmark(axioms)
+    scan = benchmark["source"]["axiom_scan_summary"]
+
+    assert scan["files_scanned"] == 5
+    assert scan["files_loaded"] == 3
+    assert scan["files_skipped"] == 2
+    assert scan["skip_reasons"] == {
+        "missing_model_id": 1,
+        "yaml_parse_error": 1,
+    }
+    payload = json.dumps(benchmark, sort_keys=True)
+    assert "broken.yaml" not in payload
+    assert "missing_model.yaml" not in payload
+    assert str(tmp_path) not in payload
 
 
 def test_composite_path_benchmark_rejects_invalid_depth(tmp_path: Path) -> None:

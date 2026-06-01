@@ -25,6 +25,10 @@ axis, not proof of unlimited scalability. Manifest aggregation is deferred until
 the sibling `contradiction_rate` and `insight_score` benchmark artifacts land on
 their own disjoint paths.
 
+The `source.axiom_scan_summary` block reports aggregate scanned/loaded/skipped
+counts and skip reasons. It deliberately omits individual file paths so a
+malformed external axiom directory cannot leak host paths into the artifact.
+
 Example:
 
 ```powershell

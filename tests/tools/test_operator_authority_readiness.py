@@ -20,7 +20,9 @@ from tools.run_operator_authority_readiness import (
 FIXED_NOW = dt.datetime(2026, 5, 26, 6, 0, tzinfo=dt.UTC)
 
 
-def _phase_synthesis_refresh() -> dict[str, object]:
+def _phase_synthesis_refresh(
+    authority_status: str = "operator_decision_required",
+) -> dict[str, object]:
     return {
         "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
         "sprint_id": "magma-100h-sprint3-2026-05-26",
@@ -31,7 +33,7 @@ def _phase_synthesis_refresh() -> dict[str, object]:
             {
                 "id": "operator_gated_authority_activation_decision",
                 "owner": "operator",
-                "status": "operator_decision_required",
+                "status": authority_status,
                 "acceptance": (
                     "requires an explicit operator approval event; no runtime "
                     "traffic or candidate-state mutation before approval"
@@ -124,6 +126,28 @@ def test_report_records_hold_when_operator_approval_is_missing() -> None:
         option["release_boundary_mutation_allowed"] is False
         for option in packet["decision_options"]
     )
+
+
+def test_post_decision_packet_hold_status_is_still_waiting_for_operator() -> None:
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(
+            "operator_approval_missing_decision_packet_recorded"
+        ),
+        events=[],
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["activation_blockers"] == [
+        "explicit_operator_approval_event_missing"
+    ]
+    assert report["required_operator_task"]["source_status"] == (
+        "operator_approval_missing_decision_packet_recorded"
+    )
+    assert report["operator_decision_packet"]["source_status"] == (
+        "operator_approval_missing_decision_packet_recorded"
+    )
+    assert report["authority_guardrails"]["runtime_authority_granted"] is False
+    assert all(value is False for value in report["release_boundary"].values())
 
 
 def test_only_operator_approval_event_counts() -> None:

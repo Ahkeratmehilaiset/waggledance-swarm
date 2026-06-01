@@ -245,6 +245,23 @@ def test_report_records_phase_refresh_without_overclaim() -> None:
         "2026-05-26T02:10:00Z"
     )
     assert [
+        package["id"]
+        for package in report["phase_synthesis"]["baseline_next_work_packages"]
+    ] == ["phase_synthesis_and_baseline_refresh"]
+    assert [
+        package["id"] for package in report["phase_synthesis"]["next_work_packages"]
+    ] == [
+        "operator_gated_authority_activation_decision",
+        "release_soak_evidence_blocker_resolution",
+    ]
+    assert not (
+        set(report["phase_synthesis"]["landed_work_package_ids"])
+        & {
+            package["id"]
+            for package in report["phase_synthesis"]["next_work_packages"]
+        }
+    )
+    assert [
         package["id"] for package in report["landed_work_packages"]
     ] == [
         "rival_local_evidence_execution_or_accepted_blockers",

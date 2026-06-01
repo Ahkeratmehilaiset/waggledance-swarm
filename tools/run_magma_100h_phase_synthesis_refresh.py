@@ -264,6 +264,125 @@ def _operator_authority_remaining_status(report: dict[str, Any] | None) -> str:
     return "operator_decision_required"
 
 
+def _landed_work_packages(
+    *,
+    rival_report: dict[str, Any],
+    release_gate_report: dict[str, Any],
+    operator_authority_report: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    packages = [
+        {
+            "id": "rival_local_evidence_execution_or_accepted_blockers",
+            "status": "complete_accepted_blockers_recorded",
+            "evidence": _repo_path(DEFAULT_RIVAL_ACCEPTED_BLOCKERS),
+            "summary": _rival_guardrails(rival_report),
+        },
+        {
+            "id": "release_gate_readonly_recheck",
+            "status": "complete_observation_only",
+            "evidence": _repo_path(DEFAULT_RELEASE_GATE_RECHECK),
+            "summary": _release_gate_guardrails(release_gate_report),
+        },
+    ]
+    if operator_authority_report is not None:
+        packages.append(
+            {
+                "id": "operator_authority_decision_packet",
+                "status": "complete_non_authority_decision_surface_recorded",
+                "evidence": _repo_path(DEFAULT_OPERATOR_AUTHORITY_READINESS),
+                "summary": _operator_authority_guardrails(
+                    operator_authority_report
+                ),
+            }
+        )
+    packages.append(
+        {
+            "id": "phase_synthesis_and_baseline_refresh",
+            "status": "complete_if_report_ok",
+            "evidence": _repo_path(DEFAULT_OUTPUT),
+        }
+    )
+    return packages
+
+
+def _remaining_work_packages(
+    *,
+    release_gate_report: dict[str, Any],
+    operator_authority_report: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "operator_gated_authority_activation_decision",
+            "status": _operator_authority_remaining_status(
+                operator_authority_report
+            ),
+            "owner": "operator",
+            "peer": "codex,claude",
+            "target": (
+                "record explicit operator approval or keep runtime authority "
+                "held"
+            ),
+            "acceptance": (
+                "requires an explicit operator approval event; no runtime "
+                "traffic or candidate-state mutation before approval"
+            ),
+        },
+        {
+            "id": "release_soak_evidence_blocker_resolution",
+            "status": (
+                "blocked_until_release_gate_soak_evidence_passes"
+                if release_gate_report.get("release_gate_decision") == "hold"
+                else "ready_for_release_boundary_review"
+            ),
+            "owner": "operator,codex",
+            "peer": "claude",
+            "target": (
+                "resolve release soak evidence blockers before any release "
+                "boundary review"
+            ),
+            "acceptance": (
+                "release boundary remains false until release gate passes "
+                "and an explicit release-boundary authorization exists"
+            ),
+        },
+    ]
+
+
+def _work_package_ids(packages: list[dict[str, Any]] | Any) -> list[str]:
+    if not isinstance(packages, list):
+        return []
+    ids: list[str] = []
+    for package in packages:
+        if isinstance(package, dict) and isinstance(package.get("id"), str):
+            ids.append(package["id"])
+    return ids
+
+
+def _phase_next_work_package(package: dict[str, Any]) -> dict[str, Any]:
+    keys = ("id", "status", "owner", "peer", "target", "acceptance")
+    return {key: package[key] for key in keys if package.get(key) is not None}
+
+
+def _bind_effective_next_work_packages(
+    phase_synthesis: dict[str, Any],
+    *,
+    landed_work_packages: list[dict[str, Any]],
+    remaining_work_packages: list[dict[str, Any]],
+) -> None:
+    baseline_next_work = [
+        dict(package)
+        for package in (phase_synthesis.get("next_work_packages") or [])
+        if isinstance(package, dict)
+    ]
+    phase_synthesis["baseline_next_work_packages"] = baseline_next_work
+    phase_synthesis["landed_work_package_ids"] = sorted(
+        set(_work_package_ids(landed_work_packages))
+    )
+    phase_synthesis["next_work_packages"] = [
+        _phase_next_work_package(package) for package in remaining_work_packages
+    ]
+
+
 def _collect_blockers(
     *,
     baseline: dict[str, Any],
@@ -271,6 +390,8 @@ def _collect_blockers(
     rival_report: dict[str, Any],
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None,
+    landed_work_packages: list[dict[str, Any]],
+    remaining_work_packages: list[dict[str, Any]],
 ) -> list[str]:
     blockers: list[str] = []
 
@@ -294,6 +415,15 @@ def _collect_blockers(
         blockers.append("phase_synthesis_not_bound_to_refreshed_baseline")
     if phase_synthesis.get("release_boundary") != baseline.get("release_boundary"):
         blockers.append("phase_synthesis_release_boundary_mismatch")
+    phase_next_ids = set(
+        _work_package_ids(phase_synthesis.get("next_work_packages") or [])
+    )
+    landed_ids = set(_work_package_ids(landed_work_packages))
+    remaining_ids = set(_work_package_ids(remaining_work_packages))
+    if phase_next_ids & landed_ids:
+        blockers.append("phase_synthesis_next_work_includes_landed_package")
+    if phase_next_ids != remaining_ids:
+        blockers.append("phase_synthesis_next_work_not_bound_to_remaining_packages")
 
     rival_guardrails = _rival_guardrails(rival_report)
     if rival_guardrails["report_ok"] is not True:
@@ -379,45 +509,28 @@ def build_report(
         baseline,
         generated_at_utc=generated_at_utc,
     )
+    landed_work_packages = _landed_work_packages(
+        rival_report=rival_report,
+        release_gate_report=release_gate_report,
+        operator_authority_report=operator_authority_report,
+    )
+    remaining_work_packages = _remaining_work_packages(
+        release_gate_report=release_gate_report,
+        operator_authority_report=operator_authority_report,
+    )
+    _bind_effective_next_work_packages(
+        phase_synthesis,
+        landed_work_packages=landed_work_packages,
+        remaining_work_packages=remaining_work_packages,
+    )
     blockers = _collect_blockers(
         baseline=baseline,
         phase_synthesis=phase_synthesis,
         rival_report=rival_report,
         release_gate_report=release_gate_report,
         operator_authority_report=operator_authority_report,
-    )
-
-    landed_work_packages = [
-        {
-            "id": "rival_local_evidence_execution_or_accepted_blockers",
-            "status": "complete_accepted_blockers_recorded",
-            "evidence": _repo_path(DEFAULT_RIVAL_ACCEPTED_BLOCKERS),
-            "summary": _rival_guardrails(rival_report),
-        },
-        {
-            "id": "release_gate_readonly_recheck",
-            "status": "complete_observation_only",
-            "evidence": _repo_path(DEFAULT_RELEASE_GATE_RECHECK),
-            "summary": _release_gate_guardrails(release_gate_report),
-        },
-    ]
-    if operator_authority_report is not None:
-        landed_work_packages.append(
-            {
-                "id": "operator_authority_decision_packet",
-                "status": "complete_non_authority_decision_surface_recorded",
-                "evidence": _repo_path(DEFAULT_OPERATOR_AUTHORITY_READINESS),
-                "summary": _operator_authority_guardrails(
-                    operator_authority_report
-                ),
-            }
-        )
-    landed_work_packages.append(
-        {
-            "id": "phase_synthesis_and_baseline_refresh",
-            "status": "complete_if_report_ok",
-            "evidence": _repo_path(DEFAULT_OUTPUT),
-        }
+        landed_work_packages=landed_work_packages,
+        remaining_work_packages=remaining_work_packages,
     )
 
     return {
@@ -434,32 +547,7 @@ def build_report(
         },
         "phase_synthesis": phase_synthesis,
         "landed_work_packages": landed_work_packages,
-        "remaining_work_packages": [
-            {
-                "id": "operator_gated_authority_activation_decision",
-                "status": _operator_authority_remaining_status(
-                    operator_authority_report
-                ),
-                "owner": "operator",
-                "acceptance": (
-                    "requires an explicit operator approval event; no runtime "
-                    "traffic or candidate-state mutation before approval"
-                ),
-            },
-            {
-                "id": "release_soak_evidence_blocker_resolution",
-                "status": (
-                    "blocked_until_release_gate_soak_evidence_passes"
-                    if release_gate_report.get("release_gate_decision") == "hold"
-                    else "ready_for_release_boundary_review"
-                ),
-                "owner": "operator,codex",
-                "acceptance": (
-                    "release boundary remains false until release gate passes "
-                    "and an explicit release-boundary authorization exists"
-                ),
-            },
-        ],
+        "remaining_work_packages": remaining_work_packages,
         "release_boundary": dict(FALSE_RELEASE_BOUNDARY),
     }
 

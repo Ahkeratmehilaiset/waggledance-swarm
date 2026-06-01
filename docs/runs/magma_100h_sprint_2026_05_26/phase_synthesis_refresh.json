@@ -1,6 +1,6 @@
 {
   "baseline_refresh": {
-    "baseline_generated_at_utc": "2026-05-26T02:11:08Z",
+    "baseline_generated_at_utc": "2026-06-01T00:33:09Z",
     "baseline_guardrails": {
       "baseline_ok": true,
       "competitor_consensus_grade": false,
@@ -26,7 +26,7 @@
     }
   },
   "blockers": [],
-  "generated_at_utc": "2026-05-26T21:14:25Z",
+  "generated_at_utc": "2026-06-01T00:33:17Z",
   "landed_work_packages": [
     {
       "evidence": "docs/runs/magma_100h_sprint_2026_05_26/rival_local_accepted_blockers.json",
@@ -158,93 +158,47 @@
   "phase_synthesis": {
     "adversarial_corpus": {
       "available": true,
-      "case_count": 42,
+      "case_count": 59,
       "coverage": {
         "clean_baseline_case_count": 4,
         "counterfactual_case_count": 3,
         "defect_type_counts": {
           "charter_violation": 5,
           "correlated_review_trap": 3,
-          "evidence_spoofing": 7,
+          "evidence_spoofing": 8,
+          "fail-open": 3,
+          "governance_bypass": 3,
+          "hallucinated-success": 2,
+          "path_escape": 2,
           "payload_leak": 5,
           "policy_bypass": 3,
           "privilege_leak": 3,
+          "regression-process": 2,
           "risk_escalation": 3,
+          "spec-gaming": 3,
           "subtle_drift": 9,
-          "tool_argument_abuse": 4
+          "tool_argument_abuse": 5
         },
         "evaluation_result_case_count": 3,
         "hidden_tool_case_count": 1,
-        "operator_gate_case_count": 2,
-        "privacy_canary_case_count": 28,
-        "receipt_binding_case_count": 2,
+        "operator_gate_case_count": 3,
+        "privacy_canary_case_count": 45,
+        "receipt_binding_case_count": 3,
         "risk_class_counts": {
-          "external_effect": 22,
-          "informational": 10,
-          "internal_memory": 5,
-          "local_artifact": 5
+          "external_effect": 32,
+          "informational": 12,
+          "internal_memory": 7,
+          "local_artifact": 8
         }
       },
       "fail_count": 0,
       "gate_accuracy": 1.0,
-      "pass_count": 42,
+      "pass_count": 59,
       "reason_code_accuracy": 1.0,
       "verdict_accuracy": 1.0
     },
-    "baseline_generated_at_utc": "2026-05-26T02:11:08Z",
-    "blockers": [],
-    "ceded_axes": [
-      "A6 adapter_distribution_friction",
-      "A7 public_cryptographic_verification",
-      "A8 standard_policy_language_portability"
-    ],
-    "competitor_pilot": {
-      "consensus_grade": false,
-      "pilot_status": "scope_ready_not_consensus_grade",
-      "rival_local_check_blocked_count": 3,
-      "rival_local_check_consensus_grade": false,
-      "rival_local_check_pass_count": 1,
-      "rival_local_check_required_count": 4,
-      "rival_local_checks_status": "1/4 rival local checks passed",
-      "rivals": [
-        "JamJet",
-        "Asqav",
-        "Microsoft AGT",
-        "Preloop"
-      ]
-    },
-    "counter_read": {
-      "present": false
-    },
-    "forbidden_claims_count": 7,
-    "generated_at_utc": "2026-05-26T21:14:25Z",
-    "governance_throughput": {
-      "event_count_in_window": 2077,
-      "metric_count": 8,
-      "status_counts": {
-        "deferred": 1,
-        "insufficient_data": 2,
-        "ok": 5
-      },
-      "task_count_in_window": 351,
-      "window_label": "last-7d (from 2026-05-19T02:11:07.900215+00:00)"
-    },
-    "must_win_axes": {
-      "a3_counterfactual": {
-        "claim_label": "MEASURED_LOCAL_PARTIAL",
-        "delta_proven": true,
-        "receipt_chain_verified": true,
-        "variant_count": 3,
-        "variants_with_gate_delta": 2,
-        "variants_with_kind_delta": 3
-      },
-      "a4_solver_growth": {
-        "claim_label": "MEASURED_LOCAL_SYNTHETIC",
-        "growth_proven": true,
-        "receipt_chain_verified": true
-      }
-    },
-    "next_work_packages": [
+    "baseline_generated_at_utc": "2026-06-01T00:33:09Z",
+    "baseline_next_work_packages": [
       {
         "acceptance": "rival matrix artifacts verify; consensus_grade remains false unless all four required local checks pass",
         "id": "rival_local_evidence_execution_or_accepted_blockers",
@@ -272,6 +226,82 @@
         "owner": "codex",
         "peer": "claude",
         "target": "run release-readiness gates read-only after baseline refresh without tag or Docker stable/latest action"
+      }
+    ],
+    "blockers": [],
+    "ceded_axes": [
+      "A6 adapter_distribution_friction",
+      "A7 public_cryptographic_verification",
+      "A8 standard_policy_language_portability"
+    ],
+    "competitor_pilot": {
+      "consensus_grade": false,
+      "pilot_status": "scope_ready_not_consensus_grade",
+      "rival_local_check_blocked_count": 3,
+      "rival_local_check_consensus_grade": false,
+      "rival_local_check_pass_count": 1,
+      "rival_local_check_required_count": 4,
+      "rival_local_checks_status": "1/4 rival local checks passed",
+      "rivals": [
+        "JamJet",
+        "Asqav",
+        "Microsoft AGT",
+        "Preloop"
+      ]
+    },
+    "counter_read": {
+      "present": false
+    },
+    "forbidden_claims_count": 7,
+    "generated_at_utc": "2026-06-01T00:33:17Z",
+    "governance_throughput": {
+      "event_count_in_window": 15967,
+      "metric_count": 8,
+      "status_counts": {
+        "deferred": 1,
+        "insufficient_data": 1,
+        "ok": 6
+      },
+      "task_count_in_window": 1152,
+      "window_label": "last-7d (from 2026-05-25T00:33:08.960110+00:00)"
+    },
+    "landed_work_package_ids": [
+      "operator_authority_decision_packet",
+      "phase_synthesis_and_baseline_refresh",
+      "release_gate_readonly_recheck",
+      "rival_local_evidence_execution_or_accepted_blockers"
+    ],
+    "must_win_axes": {
+      "a3_counterfactual": {
+        "claim_label": "MEASURED_LOCAL_PARTIAL",
+        "delta_proven": true,
+        "receipt_chain_verified": true,
+        "variant_count": 3,
+        "variants_with_gate_delta": 2,
+        "variants_with_kind_delta": 3
+      },
+      "a4_solver_growth": {
+        "claim_label": "MEASURED_LOCAL_SYNTHETIC",
+        "growth_proven": true,
+        "receipt_chain_verified": true
+      }
+    },
+    "next_work_packages": [
+      {
+        "acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
+        "id": "operator_gated_authority_activation_decision",
+        "owner": "operator",
+        "peer": "codex,claude",
+        "status": "operator_approval_missing_decision_packet_recorded",
+        "target": "record explicit operator approval or keep runtime authority held"
+      },
+      {
+        "acceptance": "release boundary remains false until release gate passes and an explicit release-boundary authorization exists",
+        "id": "release_soak_evidence_blocker_resolution",
+        "owner": "operator,codex",
+        "peer": "claude",
+        "status": "blocked_until_release_gate_soak_evidence_passes",
+        "target": "resolve release soak evidence blockers before any release boundary review"
       }
     ],
     "ok": true,
@@ -305,13 +335,17 @@
       "acceptance": "requires an explicit operator approval event; no runtime traffic or candidate-state mutation before approval",
       "id": "operator_gated_authority_activation_decision",
       "owner": "operator",
-      "status": "operator_approval_missing_decision_packet_recorded"
+      "peer": "codex,claude",
+      "status": "operator_approval_missing_decision_packet_recorded",
+      "target": "record explicit operator approval or keep runtime authority held"
     },
     {
       "acceptance": "release boundary remains false until release gate passes and an explicit release-boundary authorization exists",
       "id": "release_soak_evidence_blocker_resolution",
       "owner": "operator,codex",
-      "status": "blocked_until_release_gate_soak_evidence_passes"
+      "peer": "claude",
+      "status": "blocked_until_release_gate_soak_evidence_passes",
+      "target": "resolve release soak evidence blockers before any release boundary review"
     }
   ],
   "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",

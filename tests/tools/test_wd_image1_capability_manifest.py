@@ -1374,13 +1374,21 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_slo_drill_supported"
+        ]
+        is True
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
     assert "p95/p99" in capability["safe_statement"]
     assert "feed provider" in capability["safe_statement"]
     assert "private-host guardrails" in capability["safe_statement"]
-    assert "operator SLO/drill evidence" in capability["next_smallest_pr"]
+    assert "operator SLO/drill evidence" in capability["safe_statement"]
+    assert "offline verifier" in capability["next_smallest_pr"]
+    assert "route-stage feed-health drill" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

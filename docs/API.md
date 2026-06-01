@@ -358,6 +358,15 @@ includes sanitized `feed_health` for provider availability, cache/backoff state,
 fixed failure reasons, and no-authority flags. It does not add mutating
 endpoints or runtime routing controls.
 
+The same `feed_state` includes read-only `slo_panels` and `drill_evidence`
+metadata for operator feed-health drills. The SLO panels cover feed
+availability, fetch failures, bounded backoff, and stale cache state using fixed
+PromQL templates. The drill evidence lists only `/metrics`, `/api/ops`, and
+operator-log-window fields needed for manual review, excludes URLs, hosts,
+headers, filesystem paths, raw labels/results, and exception text, and keeps
+`controls_present=false`, `runtime_authority_granted=false`, and
+`external_writes_applied=false`.
+
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager

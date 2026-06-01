@@ -46,6 +46,7 @@ from tools.wd_image1_capability_manifest import (
 from tools.wd_image1_capability_manifest import (
     build_low_risk_autogrowth_ops_alert_state_smoke,
 )
+from tools.wd_image1_capability_manifest import _build_future_scale_runtime_evidence
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
 
@@ -1633,6 +1634,46 @@ def test_future_scale_axis_scorecard_blocks_foreign_root(
     assert proof["missing_inputs"] == []
     assert proof["axes"] == []
     assert proof["claim_decomposition"] == []
+
+
+def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
+    route_stage_smoke = {
+        "ok": True,
+        "runtime_contract": {
+            "ok": "true",
+            "sanitized_trace": [{"stage": "orchestrator_llm_fallback"}],
+        },
+        "drill_evidence_verifier_smoke": {"ok": 1},
+        "histogram_quantile_supported": True,
+        "latency_panel_templates_visible": True,
+    }
+    solver_receipt_proof = {
+        "ok": True,
+        "solver_call_trace_count": "1",
+        "solver_call_trace_receipt_bound": "yes",
+    }
+
+    evidence_by_axis, summary = _build_future_scale_runtime_evidence(
+        route_stage_smoke,
+        solver_receipt_proof,
+    )
+
+    assert summary["route_stage_runtime_metrics_smoke_ok"] is True
+    assert summary["route_stage_runtime_contract_ok"] is False
+    assert summary["feed_health_drill_evidence_verifier_smoke_ok"] is False
+    assert summary["solver_trace_receipt_proof_ok"] is True
+    assert summary["required_runtime_evidence_present"] is False
+    assert evidence_by_axis["coverage"]["status"] == "runtime_contract_unavailable"
+    assert (
+        evidence_by_axis["latency"]["status"] == "runtime_contract_unavailable"
+    )
+    assert (
+        evidence_by_axis["audit_completeness"]["status"]
+        == "drill_evidence_contract_unavailable"
+    )
+    assert all(
+        item["claim_gate_satisfied"] is False for item in evidence_by_axis.values()
+    )
 
 
 def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:

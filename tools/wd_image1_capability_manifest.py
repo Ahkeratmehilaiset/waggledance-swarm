@@ -5061,7 +5061,7 @@ def _build_future_scale_runtime_evidence(
             "claim_gate_satisfied": False,
         },
     }
-    if not route_stage_ok:
+    if not (route_stage_ok and runtime_contract_ok):
         for axis_id in ("coverage", "llm_fallback_rate", "route_depth", "latency"):
             evidence_by_axis[axis_id]["status"] = "runtime_contract_unavailable"
             evidence_by_axis[axis_id]["blockers"].append(
@@ -5073,6 +5073,14 @@ def _build_future_scale_runtime_evidence(
         ] = "receipt_contract_unavailable"
         evidence_by_axis["audit_completeness"]["blockers"].append(
             "solver trace receipt proof failed"
+        )
+    if not drill_smoke_ok:
+        if receipt_ok:
+            evidence_by_axis["audit_completeness"][
+                "status"
+            ] = "drill_evidence_contract_unavailable"
+        evidence_by_axis["audit_completeness"]["blockers"].append(
+            "feed-health drill evidence verifier smoke failed"
         )
 
     populated_axes = [
@@ -5091,6 +5099,12 @@ def _build_future_scale_runtime_evidence(
         "latency",
         "audit_completeness",
     )
+    unavailable_statuses = {
+        "unmeasured",
+        "runtime_contract_unavailable",
+        "receipt_contract_unavailable",
+        "drill_evidence_contract_unavailable",
+    }
     summary = {
         "route_stage_runtime_metrics_smoke_ok": route_stage_ok,
         "route_stage_runtime_contract_ok": runtime_contract_ok,
@@ -5102,10 +5116,12 @@ def _build_future_scale_runtime_evidence(
         "unmeasured_axes": unmeasured_axes,
         "required_runtime_axes": list(required_runtime_axes),
         "required_runtime_evidence_present": all(
-            evidence_by_axis[axis_id]["status"]
-            not in {"unmeasured", "runtime_contract_unavailable"}
+            evidence_by_axis[axis_id]["status"] not in unavailable_statuses
             for axis_id in required_runtime_axes
         )
+        and route_stage_ok
+        and runtime_contract_ok
+        and drill_smoke_ok
         and receipt_ok,
         "runtime_authority_changed": False,
         "operator_gate_required": False,

@@ -289,6 +289,64 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_authori
     assert report["runtime_subdivision_authority_granted"] is False
 
 
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_summary_blockers() -> None:
+    summary = _valid_verifier_summary()
+    summary["blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "verifier_summary_blockers_malformed" in item for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_verification_blockers() -> None:
+    summary = _valid_verifier_summary()
+    summary["shadow_subdivision_replay_verification"]["blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "verifier_summary_verification_blockers_malformed" in item
+        for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_boundary_blockers() -> None:
+    summary = _valid_verifier_summary()
+    summary["operator_boundary"]["boundary_blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "operator_boundary_blockers_malformed" in item for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
 def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_path_leak() -> None:
     summary = _valid_verifier_summary()
     summary["safe_conclusion"] = "scratch verifier at C:/Python/project2-master/out.json"

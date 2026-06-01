@@ -194,6 +194,19 @@ def _safe_token_list(value: Any) -> list[str]:
     return sorted(set(tokens))
 
 
+def _empty_blocker_list_contract_error(
+    value: Any,
+    *,
+    malformed: str,
+    present: str,
+) -> str | None:
+    if not isinstance(value, list):
+        return malformed
+    if _safe_token_list(value):
+        return present
+    return None
+
+
 def _check_status(value: Any) -> str:
     return "match" if value is True else "mismatch"
 
@@ -801,8 +814,13 @@ def _verifier_summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]
         blockers.append("verifier_summary_proof_id_mismatch")
     if summary.get("manual_review_required") is not True:
         blockers.append("verifier_summary_manual_review_required_not_true")
-    if _safe_token_list(summary.get("blockers")):
-        blockers.append("verifier_summary_blockers_present")
+    error = _empty_blocker_list_contract_error(
+        summary.get("blockers"),
+        malformed="verifier_summary_blockers_malformed",
+        present="verifier_summary_blockers_present",
+    )
+    if error is not None:
+        blockers.append(error)
     for field in SUMMARY_AUTHORITY_FALSE_FIELDS:
         if summary.get(field) is not False:
             blockers.append(f"verifier_summary_{field}_not_false")
@@ -836,8 +854,13 @@ def _verifier_summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]
         blockers.append("verifier_summary_recomputed_contract_ok_not_true")
     if verification.get("blocker_count") != 0:
         blockers.append("verifier_summary_blocker_count_nonzero")
-    if _safe_token_list(verification.get("blockers")):
-        blockers.append("verifier_summary_verification_blockers_present")
+    error = _empty_blocker_list_contract_error(
+        verification.get("blockers"),
+        malformed="verifier_summary_verification_blockers_malformed",
+        present="verifier_summary_verification_blockers_present",
+    )
+    if error is not None:
+        blockers.append(error)
 
     digest_checks = _mapping_or_empty(verification.get("digest_checks"))
     for name in (*DIGEST_NAMES, "artifact"):
@@ -868,8 +891,13 @@ def _verifier_summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]
     boundary = _mapping_or_empty(summary.get("operator_boundary"))
     if boundary.get("verification_report_boundary_ok") is not True:
         blockers.append("operator_boundary_verification_report_not_ok")
-    if _safe_token_list(boundary.get("boundary_blockers")):
-        blockers.append("operator_boundary_blockers_present")
+    error = _empty_blocker_list_contract_error(
+        boundary.get("boundary_blockers"),
+        malformed="operator_boundary_blockers_malformed",
+        present="operator_boundary_blockers_present",
+    )
+    if error is not None:
+        blockers.append(error)
     if boundary.get("manual_review_required") is not True:
         blockers.append("operator_boundary_manual_review_required_not_true")
     for field in SUMMARY_AUTHORITY_FALSE_FIELDS:

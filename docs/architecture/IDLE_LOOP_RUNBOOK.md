@@ -244,21 +244,22 @@ runs `gh pr merge`) and reports an ordered worklist:
    prompt-cache TTL). Open operator packs remain fail-closed but no longer
    force the longest wakeup while unrelated unblocked work may be available.
 
-### Self-merge timeout window
+### RCO wakeup window
 
 When one agent (typically Codex in this repo's bridge loop) opens a PR and CI
-goes green, that agent's harness will self-merge **without** the peer's RCO
-after a timeout window if no `rco_pass` arrives. The observed window is
-roughly **5–10 minutes after CI green**, with `~10 min` declared in the MAGMA
-sprint baseline's `claude_activation_contract.rco_timeout_minutes_after_ci_green`
-field (`docs/runs/magma_100h_sprint_2026_05_23/baseline.json`). Both ends of
-the range have been seen — the floor in single-digit minutes during the
-v3.12.0 lock-vuln remediation when Codex self-merged PR #588 ~4m49s after
-unified CI green.
+goes green, the peer-RCO leg remains fail-closed. The producing agent's harness
+must not self-merge without an explicit head-bound `claude-rco-1` `RCO_PASS`
+or an explicit operator override. If no `RCO_PASS` arrives before the wakeup
+window expires, the correct automated result is `operator_review_required`
+with bridge evidence for the operator; silence never default-allows.
 
-Consequence for the peer (here, Claude) loop discipline: the heartbeat must
-already be cache-warm (`<=WAKEUP_IN_FLIGHT`, 240s) **before** the PR opens on
-GitHub, not just once the PR is visible. The code-side enforcer is
+The MAGMA sprint baseline's
+`claude_activation_contract.rco_timeout_minutes_after_ci_green` field
+(`docs/runs/magma_100h_sprint_2026_05_23/baseline.json`) is retained only as a
+peer-wakeup budget. It is not merge authority. Consequence for the peer (here,
+Claude) loop discipline: the heartbeat must already be cache-warm
+(`<=WAKEUP_IN_FLIGHT`, 240s) **before** the PR opens on GitHub, not just once
+the PR is visible. The code-side enforcer is
 `tools/bridge_loop_tick.py::peer_has_active_pr_producing_claim`: it scans
 **backwards** for the peer's latest event with `(type, status)` in
 `PEER_PR_PRODUCING_SIGNALS` — `(claim, active)`, `(claim, started)`,
@@ -270,14 +271,15 @@ It is cleared only when a strictly LATER peer event for the SAME `task_id`
 is terminal: `type=done` (any status) or `status` in
 `PEER_TERMINAL_STATUSES` = `{blocked, abandoned, released}`.
 `_recommended_wakeup` consumes that signal and returns `WAKEUP_IN_FLIGHT`
-so the next tick can catch the imminent PR with time to RCO before the
-self-merge.
+so the next tick can catch the imminent PR with time to RCO before the merge
+gate would otherwise have to stop at `operator_review_required`.
 
 This codifies the lesson from PRs #584 and #585 (2026-05-22), where a
 peer-side 1200s and then 1800s heartbeat skipped over Codex's RCO requests
-and both PRs self-merged without Claude's review. The window is short
-enough that a long heartbeat **across** an active peer claim is too long, but
-narrow enough that a 240s heartbeat reliably catches it.
+and both PRs progressed without Claude's review. The window is short enough
+that a long heartbeat **across** an active peer claim is too long, but narrow
+enough that a 240s heartbeat reliably catches the RCO request and prevents an
+operator escalation caused only by peer silence.
 
 This removes the need for a human "continue" poke between ticks and lets an
 RCO-passed PR merge in the same tick it becomes ready — while every mutation

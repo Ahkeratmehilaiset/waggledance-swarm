@@ -388,6 +388,8 @@ def _failure_summary(reason: str) -> dict[str, Any]:
 
 def _boundary_blockers(report: Mapping[str, Any]) -> list[str]:
     blockers = []
+    if report.get("manual_review_required") is not True:
+        blockers.append("verification_report_manual_review_required_not_true")
     for field in _AUTHORITY_FALSE_FIELDS:
         if report.get(field) is not False:
             blockers.append(f"verification_report_{field}_not_false")
@@ -398,6 +400,8 @@ def _boundary_blockers(report: Mapping[str, Any]) -> list[str]:
 
 def _verification_report_contract_blockers(report: Mapping[str, Any]) -> list[str]:
     blockers: list[str] = []
+    if report.get("ok") is not True:
+        blockers.append("verification_report_not_ok")
     if _safe_ref_or_invalid(report.get("release_ref")) == "invalid_ref":
         blockers.append("verification_report_release_ref_invalid")
     if _commit_or_invalid(report.get("commit_sha")) == "invalid_commit":

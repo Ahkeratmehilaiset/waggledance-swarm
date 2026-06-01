@@ -30,6 +30,10 @@ BRIDGE_TASK_ID = "next100h-operator-authority-readiness-hold-2026-05-26"
 APPROVAL_EVENT_TYPES = {"approval", "decision"}
 APPROVAL_STATUSES = {"approved", "operator_approved", "authority_approved"}
 STRICT_BLOCKED_EXIT_CODE = 2
+AUTHORITY_WAITING_SOURCE_STATUSES = {
+    "operator_decision_required",
+    "operator_approval_missing_decision_packet_recorded",
+}
 
 FALSE_RELEASE_BOUNDARY = {
     "stable_release_claim": False,
@@ -170,7 +174,7 @@ def _collect_blockers(
         blockers.append("phase_synthesis_release_boundary_mutated")
 
     package = _remaining_authority_package(phase_synthesis_refresh)
-    if package.get("status") != "operator_decision_required":
+    if package.get("status") not in AUTHORITY_WAITING_SOURCE_STATUSES:
         blockers.append("operator_decision_package_not_waiting")
     if not approval_events:
         blockers.append("explicit_operator_approval_event_missing")

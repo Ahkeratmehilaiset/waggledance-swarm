@@ -30,6 +30,7 @@ DEFAULT_BASELINE = SPRINT_DIR / "baseline.json"
 DEFAULT_RIVAL_ACCEPTED_BLOCKERS = SPRINT_DIR / "rival_local_accepted_blockers.json"
 DEFAULT_RELEASE_GATE_RECHECK = SPRINT_DIR / "release_gate_readonly_recheck.json"
 DEFAULT_OPERATOR_AUTHORITY_READINESS = SPRINT_DIR / "operator_authority_readiness.json"
+DEFAULT_RELEASE_BOUNDARY_READINESS = SPRINT_DIR / "release_boundary_readiness.json"
 DEFAULT_OUTPUT = SPRINT_DIR / "phase_synthesis_refresh.json"
 
 EXPECTED_FORBIDDEN_CLAIMS = {
@@ -200,6 +201,21 @@ def _decision_options_non_mutating(packet: dict[str, Any]) -> bool:
     )
 
 
+def _release_decision_options_non_mutating(packet: dict[str, Any]) -> bool:
+    options = packet.get("decision_options")
+    if not isinstance(options, list) or not options:
+        return False
+    return all(
+        isinstance(option, dict)
+        and option.get("tag_creation_allowed") is False
+        and option.get("docker_latest_move_allowed") is False
+        and option.get("docker_stable_move_allowed") is False
+        and option.get("stable_release_claim_allowed") is False
+        and option.get("external_effect_authority_change_allowed") is False
+        for option in options
+    )
+
+
 def _operator_authority_guardrails(report: dict[str, Any]) -> dict[str, Any]:
     invariants = report.get("read_only_invariants") or {}
     authority_guardrails = report.get("authority_guardrails") or {}
@@ -250,6 +266,93 @@ def _operator_authority_guardrails(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _release_boundary_guardrails(report: dict[str, Any]) -> dict[str, Any]:
+    invariants = report.get("read_only_invariants") or {}
+    guardrails = report.get("release_boundary_guardrails") or {}
+    packet = report.get("release_decision_packet") or {}
+    source_phase = report.get("source_phase_synthesis_refresh") or {}
+    source_gate = report.get("source_release_gate_readonly_recheck") or {}
+    options = packet.get("decision_options")
+    option_count = len(options) if isinstance(options, list) else 0
+
+    return {
+        "report_ok": report.get("ok") is True,
+        "release_boundary_status": report.get("release_boundary_status"),
+        "release_boundary_blockers": list(
+            report.get("release_boundary_blockers") or []
+        ),
+        "operator_finalization_required": (
+            report.get("operator_finalization_required") is True
+        ),
+        "release_boundary_all_false": _boundary_is_false(report),
+        "release_boundary_guardrails": {
+            "release_boundary_effect": guardrails.get("release_boundary_effect"),
+            "tag_creation_applied": guardrails.get("tag_creation_applied"),
+            "docker_latest_move_applied": guardrails.get(
+                "docker_latest_move_applied"
+            ),
+            "docker_stable_move_applied": guardrails.get(
+                "docker_stable_move_applied"
+            ),
+            "stable_release_claim_applied": guardrails.get(
+                "stable_release_claim_applied"
+            ),
+            "external_effect_authority_change_applied": guardrails.get(
+                "external_effect_authority_change_applied"
+            ),
+            "requires_operator_only_finalization": guardrails.get(
+                "requires_operator_only_finalization"
+            ),
+        },
+        "read_only_invariants": dict(invariants),
+        "release_decision_packet": {
+            "schema_version": packet.get("schema_version"),
+            "decision_status": packet.get("decision_status"),
+            "default_recommendation": packet.get("default_recommendation"),
+            "operator_finalization_required": packet.get(
+                "operator_finalization_required"
+            ),
+            "release_boundary_effect_before_followup": packet.get(
+                "release_boundary_effect_before_followup"
+            ),
+            "option_count": option_count,
+            "all_options_non_mutating": _release_decision_options_non_mutating(
+                packet
+            ),
+        },
+        "source_phase_synthesis_refresh": {
+            "schema_version": source_phase.get("schema_version"),
+            "sprint_id": source_phase.get("sprint_id"),
+            "generated_at_utc": source_phase.get("generated_at_utc"),
+            "ok": source_phase.get("ok") is True,
+            "release_boundary_all_false": (
+                source_phase.get("release_boundary_all_false") is True
+            ),
+            "remaining_release_soak_status": (
+                (source_phase.get("remaining_release_soak_package") or {}).get(
+                    "status"
+                )
+            ),
+            "landed_release_soak_status": (
+                (source_phase.get("landed_release_soak_package") or {}).get(
+                    "status"
+                )
+            ),
+        },
+        "source_release_gate_readonly_recheck": {
+            "schema_version": source_gate.get("schema_version"),
+            "ok": source_gate.get("ok") is True,
+            "read_only": source_gate.get("read_only") is True,
+            "release_gate_decision": source_gate.get("release_gate_decision"),
+            "release_gate_effect": source_gate.get("release_gate_effect"),
+            "release_boundary_all_false": (
+                source_gate.get("release_boundary_all_false") is True
+            ),
+            "blockers": list(source_gate.get("blockers") or []),
+        },
+    }
+
+
 def _operator_authority_remaining_status(report: dict[str, Any] | None) -> str:
     if report is None:
         return "operator_decision_required"
@@ -264,11 +367,49 @@ def _operator_authority_remaining_status(report: dict[str, Any] | None) -> str:
     return "operator_decision_required"
 
 
+def _release_boundary_ready(
+    report: dict[str, Any] | None,
+    *,
+    sprint_id: str | None,
+    release_gate_report: dict[str, Any],
+) -> bool:
+    if report is None:
+        return False
+    guardrails = _release_boundary_guardrails(report)
+    source_phase = guardrails["source_phase_synthesis_refresh"]
+    source_gate = guardrails["source_release_gate_readonly_recheck"]
+    return (
+        guardrails["report_ok"] is True
+        and guardrails["release_boundary_status"] == "ready_for_operator_finalization"
+        and guardrails["release_boundary_blockers"] == []
+        and guardrails["release_boundary_all_false"] is True
+        and sprint_id is not None
+        and source_phase["sprint_id"] == sprint_id
+        and source_phase["ok"] is True
+        and source_phase["release_boundary_all_false"] is True
+        and (
+            source_phase["remaining_release_soak_status"]
+            == "ready_for_release_boundary_review"
+            or source_phase["landed_release_soak_status"]
+            == "complete_release_boundary_readiness_recorded"
+        )
+        and release_gate_report.get("release_gate_decision") == "pass"
+        and source_gate["ok"] is True
+        and source_gate["read_only"] is True
+        and source_gate["release_gate_decision"] == "pass"
+        and source_gate["release_gate_effect"] == "none"
+        and source_gate["release_boundary_all_false"] is True
+        and source_gate["blockers"] == []
+    )
+
+
 def _landed_work_packages(
     *,
     rival_report: dict[str, Any],
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None,
+    release_boundary_readiness_report: dict[str, Any] | None,
+    sprint_id: str | None,
 ) -> list[dict[str, Any]]:
     packages = [
         {
@@ -284,6 +425,21 @@ def _landed_work_packages(
             "summary": _release_gate_guardrails(release_gate_report),
         },
     ]
+    if _release_boundary_ready(
+        release_boundary_readiness_report,
+        sprint_id=sprint_id,
+        release_gate_report=release_gate_report,
+    ):
+        packages.append(
+            {
+                "id": "release_soak_evidence_blocker_resolution",
+                "status": "complete_release_boundary_readiness_recorded",
+                "evidence": _repo_path(DEFAULT_RELEASE_BOUNDARY_READINESS),
+                "summary": _release_boundary_guardrails(
+                    release_boundary_readiness_report or {}
+                ),
+            }
+        )
     if operator_authority_report is not None:
         packages.append(
             {
@@ -309,8 +465,10 @@ def _remaining_work_packages(
     *,
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None,
+    release_boundary_readiness_report: dict[str, Any] | None,
+    sprint_id: str | None,
 ) -> list[dict[str, Any]]:
-    return [
+    packages = [
         {
             "id": "operator_gated_authority_activation_decision",
             "status": _operator_authority_remaining_status(
@@ -327,25 +485,54 @@ def _remaining_work_packages(
                 "traffic or candidate-state mutation before approval"
             ),
         },
-        {
-            "id": "release_soak_evidence_blocker_resolution",
-            "status": (
-                "blocked_until_release_gate_soak_evidence_passes"
-                if release_gate_report.get("release_gate_decision") == "hold"
-                else "ready_for_release_boundary_review"
-            ),
-            "owner": "operator,codex",
-            "peer": "claude",
-            "target": (
-                "resolve release soak evidence blockers before any release "
-                "boundary review"
-            ),
-            "acceptance": (
-                "release boundary remains false until release gate passes "
-                "and an explicit release-boundary authorization exists"
-            ),
-        },
     ]
+    if _release_boundary_ready(
+        release_boundary_readiness_report,
+        sprint_id=sprint_id,
+        release_gate_report=release_gate_report,
+    ):
+        packages.append(
+            {
+                "id": "operator_release_finalization_decision",
+                "status": "operator_release_finalization_required",
+                "owner": "operator",
+                "peer": "codex,claude",
+                "target": (
+                    "operator performs any tag, Docker, or stable release "
+                    "finalization separately"
+                ),
+                "acceptance": (
+                    "release boundary remains false until operator-only "
+                    "finalization creates signed release receipts; agents do "
+                    "not tag releases or move Docker aliases"
+                ),
+            }
+        )
+    else:
+        status = (
+            "blocked_until_release_gate_soak_evidence_passes"
+            if release_gate_report.get("release_gate_decision") == "hold"
+            else "ready_for_release_boundary_review"
+        )
+        if release_boundary_readiness_report is not None:
+            status = "release_boundary_readiness_blocked"
+        packages.append(
+            {
+                "id": "release_soak_evidence_blocker_resolution",
+                "status": status,
+                "owner": "operator,codex",
+                "peer": "claude",
+                "target": (
+                    "resolve release soak evidence blockers before any "
+                    "release boundary review"
+                ),
+                "acceptance": (
+                    "release boundary remains false until release gate passes "
+                    "and an explicit release-boundary authorization exists"
+                ),
+            },
+        )
+    return packages
 
 
 def _work_package_ids(packages: list[dict[str, Any]] | Any) -> list[str]:
@@ -390,6 +577,7 @@ def _collect_blockers(
     rival_report: dict[str, Any],
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None,
+    release_boundary_readiness_report: dict[str, Any] | None,
     landed_work_packages: list[dict[str, Any]],
     remaining_work_packages: list[dict[str, Any]],
 ) -> list[str]:
@@ -451,6 +639,94 @@ def _collect_blockers(
     if release_guardrails["decision"] not in {"hold", "pass"}:
         blockers.append("release_gate_decision_unknown")
 
+    if release_boundary_readiness_report is not None:
+        release_boundary = _release_boundary_guardrails(
+            release_boundary_readiness_report
+        )
+        boundary_guardrails = release_boundary["release_boundary_guardrails"]
+        decision_packet = release_boundary["release_decision_packet"]
+        source_phase = release_boundary["source_phase_synthesis_refresh"]
+        source_gate = release_boundary["source_release_gate_readonly_recheck"]
+        read_only_invariants = release_boundary["read_only_invariants"]
+
+        if release_boundary["report_ok"] is not True:
+            blockers.append("release_boundary_readiness_report_not_ok")
+        if release_boundary["release_boundary_status"] != (
+            "ready_for_operator_finalization"
+        ):
+            blockers.append("release_boundary_not_ready_for_operator_finalization")
+        if release_boundary["release_boundary_blockers"]:
+            blockers.append("release_boundary_readiness_blockers_present")
+        if release_boundary["operator_finalization_required"] is not True:
+            blockers.append("release_boundary_operator_finalization_not_required")
+        if release_boundary["release_boundary_all_false"] is not True:
+            blockers.append("release_boundary_readiness_boundary_mutated")
+        if release_guardrails["decision"] != "pass":
+            blockers.append("release_boundary_readiness_without_release_gate_pass")
+        if boundary_guardrails["release_boundary_effect"] != "none":
+            blockers.append("release_boundary_effect_not_none")
+        if boundary_guardrails["tag_creation_applied"] is not False:
+            blockers.append("release_boundary_tag_created")
+        if boundary_guardrails["docker_latest_move_applied"] is not False:
+            blockers.append("release_boundary_docker_latest_moved")
+        if boundary_guardrails["docker_stable_move_applied"] is not False:
+            blockers.append("release_boundary_docker_stable_moved")
+        if boundary_guardrails["stable_release_claim_applied"] is not False:
+            blockers.append("release_boundary_stable_release_claimed")
+        if (
+            boundary_guardrails["external_effect_authority_change_applied"]
+            is not False
+        ):
+            blockers.append("release_boundary_external_effect_authority_changed")
+        if boundary_guardrails["requires_operator_only_finalization"] is not True:
+            blockers.append("release_boundary_operator_only_finalization_missing")
+        if read_only_invariants.get("no_tag_created") is not True:
+            blockers.append("release_boundary_no_tag_invariant_missing")
+        if read_only_invariants.get("no_docker_latest_moved") is not True:
+            blockers.append("release_boundary_no_latest_invariant_missing")
+        if read_only_invariants.get("no_docker_stable_moved") is not True:
+            blockers.append("release_boundary_no_stable_invariant_missing")
+        if read_only_invariants.get("no_stable_release_claim") is not True:
+            blockers.append("release_boundary_no_claim_invariant_missing")
+        if (
+            read_only_invariants.get("no_external_effect_authority_change")
+            is not True
+        ):
+            blockers.append("release_boundary_no_external_effect_invariant_missing")
+        if read_only_invariants.get("release_boundary_effect") != "none":
+            blockers.append("release_boundary_read_only_effect_not_none")
+        if decision_packet["operator_finalization_required"] is not True:
+            blockers.append("release_boundary_packet_finalization_not_required")
+        if decision_packet["release_boundary_effect_before_followup"] != "none":
+            blockers.append("release_boundary_packet_effect_not_none")
+        if decision_packet["all_options_non_mutating"] is not True:
+            blockers.append("release_boundary_decision_option_mutates")
+        if source_phase["sprint_id"] != baseline.get("sprint_id"):
+            blockers.append("release_boundary_source_sprint_mismatch")
+        if source_phase["ok"] is not True:
+            blockers.append("release_boundary_source_phase_not_ok")
+        if source_phase["release_boundary_all_false"] is not True:
+            blockers.append("release_boundary_source_phase_boundary_mutated")
+        if (
+            source_phase["remaining_release_soak_status"]
+            != "ready_for_release_boundary_review"
+            and source_phase["landed_release_soak_status"]
+            != "complete_release_boundary_readiness_recorded"
+        ):
+            blockers.append("release_boundary_source_soak_status_not_ready")
+        if source_gate["ok"] is not True:
+            blockers.append("release_boundary_source_gate_not_ok")
+        if source_gate["read_only"] is not True:
+            blockers.append("release_boundary_source_gate_not_read_only")
+        if source_gate["release_gate_decision"] != "pass":
+            blockers.append("release_boundary_source_gate_not_pass")
+        if source_gate["release_gate_effect"] != "none":
+            blockers.append("release_boundary_source_gate_effect_not_none")
+        if source_gate["release_boundary_all_false"] is not True:
+            blockers.append("release_boundary_source_gate_boundary_mutated")
+        if source_gate["blockers"]:
+            blockers.append("release_boundary_source_gate_blockers_present")
+
     if operator_authority_report is not None:
         operator_guardrails = _operator_authority_guardrails(
             operator_authority_report
@@ -502,6 +778,7 @@ def build_report(
     rival_report: dict[str, Any],
     release_gate_report: dict[str, Any],
     operator_authority_report: dict[str, Any] | None = None,
+    release_boundary_readiness_report: dict[str, Any] | None = None,
     generated_at_utc: dt.datetime | None = None,
 ) -> dict[str, Any]:
     generated_at_utc = generated_at_utc or _utc_now()
@@ -513,10 +790,14 @@ def build_report(
         rival_report=rival_report,
         release_gate_report=release_gate_report,
         operator_authority_report=operator_authority_report,
+        release_boundary_readiness_report=release_boundary_readiness_report,
+        sprint_id=baseline.get("sprint_id"),
     )
     remaining_work_packages = _remaining_work_packages(
         release_gate_report=release_gate_report,
         operator_authority_report=operator_authority_report,
+        release_boundary_readiness_report=release_boundary_readiness_report,
+        sprint_id=baseline.get("sprint_id"),
     )
     _bind_effective_next_work_packages(
         phase_synthesis,
@@ -529,6 +810,7 @@ def build_report(
         rival_report=rival_report,
         release_gate_report=release_gate_report,
         operator_authority_report=operator_authority_report,
+        release_boundary_readiness_report=release_boundary_readiness_report,
         landed_work_packages=landed_work_packages,
         remaining_work_packages=remaining_work_packages,
     )
@@ -558,6 +840,7 @@ def build_report_from_paths(
     rival_report_path: Path,
     release_gate_report_path: Path,
     operator_authority_path: Path | None = None,
+    release_boundary_readiness_path: Path | None = None,
     generated_at_utc: dt.datetime | None = None,
 ) -> dict[str, Any]:
     return build_report(
@@ -567,6 +850,14 @@ def build_report_from_paths(
         operator_authority_report=(
             _read_json(operator_authority_path)
             if operator_authority_path is not None
+            else None
+        ),
+        release_boundary_readiness_report=(
+            _read_json(release_boundary_readiness_path)
+            if (
+                release_boundary_readiness_path is not None
+                and release_boundary_readiness_path.exists()
+            )
             else None
         ),
         generated_at_utc=generated_at_utc,
@@ -592,6 +883,16 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OPERATOR_AUTHORITY_READINESS,
     )
     parser.add_argument(
+        "--release-boundary-readiness",
+        type=Path,
+        default=DEFAULT_RELEASE_BOUNDARY_READINESS,
+    )
+    parser.add_argument(
+        "--skip-release-boundary-readiness",
+        action="store_true",
+        help="Do not consume the optional release-boundary readiness report.",
+    )
+    parser.add_argument(
         "--generated-at-utc",
         type=_parse_timestamp,
         help="Override report timestamp, ISO-8601 UTC.",
@@ -605,6 +906,11 @@ def main(argv: list[str] | None = None) -> int:
         rival_report_path=args.rival_accepted_blockers,
         release_gate_report_path=args.release_gate_recheck,
         operator_authority_path=args.operator_authority_readiness,
+        release_boundary_readiness_path=(
+            None
+            if args.skip_release_boundary_readiness
+            else args.release_boundary_readiness
+        ),
         generated_at_utc=args.generated_at_utc,
     )
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"

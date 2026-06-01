@@ -1,0 +1,153 @@
+{
+  "checked_at_utc": "2026-06-01T03:02:04Z",
+  "ok": true,
+  "operator_decision_packs": {
+    "docker_latest_promotion": {
+      "blockers": [],
+      "category": "docker_promotion",
+      "chosen_option": "ghcr_stable_only",
+      "chosen_option_data": {
+        "moves_latest": false,
+        "registries": [
+          "ghcr.io"
+        ],
+        "reversible": "yes (tags can be retagged)"
+      },
+      "decision_id": "docker-latest-promotion",
+      "expected_category": "docker_promotion",
+      "expected_decision_id": "docker-latest-promotion",
+      "path": "docs\\operator_inbox\\docker-latest-promotion.yaml",
+      "signed": true,
+      "signed_by": "operator:jani:2026-05-22T18:14:34Z",
+      "structural_invariants": {
+        "agent_must_not_self_resolve": true,
+        "latest_move_is_operator_only": true,
+        "no_main_branch_auto_merge": true
+      }
+    },
+    "torch_cuda_vs_cpu": {
+      "blockers": [],
+      "category": "dependency_security",
+      "chosen_option": "A2_cu126",
+      "chosen_option_data": {
+        "caveat": "xformers must move to a cu126-compatible build (verify separately)",
+        "driver_change_required": "CUDA runtime 11.8 -> 12.6 (needs NVIDIA driver supporting CUDA 12.6)",
+        "fixes_osv_vulns": true,
+        "index_url": "https://download.pytorch.org/whl/cu126",
+        "keeps_gpu": true,
+        "packages": [
+          "torch==2.11.0+cu126",
+          "torchvision==0.26.0+cu126",
+          "torchaudio==2.11.0+cu126"
+        ],
+        "resolver_correction": "2026-05-22 Codex pip dry-run found torchvision==0.27.0+cu126 depends on torch==2.12.0; corrected to torchvision==0.26.0+cu126 to preserve the signed A2 torch==2.11.0+cu126 strategy."
+      },
+      "decision_id": "torch-cuda-vs-cpu",
+      "expected_category": "dependency_security",
+      "expected_decision_id": "torch-cuda-vs-cpu",
+      "path": "docs\\operator_inbox\\torch-cuda-vs-cpu.yaml",
+      "signed": true,
+      "signed_by": "operator:jani:2026-05-22T18:14:34Z",
+      "structural_invariants": {
+        "agent_must_not_self_resolve": true,
+        "dependency_change_lands_via_pr": true,
+        "no_main_branch_auto_merge": true
+      }
+    }
+  },
+  "operator_finalization_required": true,
+  "read_only_invariants": {
+    "no_docker_latest_moved": true,
+    "no_docker_stable_moved": true,
+    "no_external_effect_authority_change": true,
+    "no_stable_release_claim": true,
+    "no_tag_created": true,
+    "release_boundary_effect": "none"
+  },
+  "release_boundary": {
+    "docker_latest_move": false,
+    "external_effect_authority_change": false,
+    "stable_release_claim": false,
+    "tag_creation": false
+  },
+  "release_boundary_blockers": [],
+  "release_boundary_guardrails": {
+    "docker_latest_move_applied": false,
+    "docker_stable_move_applied": false,
+    "external_effect_authority_change_applied": false,
+    "release_boundary_effect": "none",
+    "requires_operator_only_finalization": true,
+    "stable_release_claim_applied": false,
+    "tag_creation_applied": false
+  },
+  "release_boundary_status": "ready_for_operator_finalization",
+  "release_decision_packet": {
+    "decision_options": [
+      {
+        "docker_latest_move_allowed": false,
+        "docker_stable_move_allowed": false,
+        "external_effect_authority_change_allowed": false,
+        "id": "hold_no_release_boundary_change",
+        "next_status": "hold_operator_finalization_required",
+        "operator_action_required": false,
+        "stable_release_claim_allowed": false,
+        "summary": "Keep all release-boundary guardrails closed.",
+        "tag_creation_allowed": false
+      },
+      {
+        "docker_latest_move_allowed": false,
+        "docker_stable_move_allowed": false,
+        "external_effect_authority_change_allowed": false,
+        "followup_requirements": [
+          "operator_only_release_finalization",
+          "fresh_exact_head_ci",
+          "rco_and_bridge_preflight",
+          "signed_tag_or_release_receipt_after_operator_action"
+        ],
+        "id": "operator_finalizes_release_boundary_separately",
+        "next_status": "operator_release_finalization_required",
+        "operator_action_required": true,
+        "stable_release_claim_allowed": false,
+        "summary": "Operator may perform a separate release finalization; this report still performs no release action.",
+        "tag_creation_allowed": false
+      }
+    ],
+    "decision_status": "operator_finalization_required",
+    "default_recommendation": "hold_no_release_boundary_change",
+    "id": "operator_release_finalization_decision",
+    "operator_finalization_required": true,
+    "operator_input_required": true,
+    "release_boundary_effect_before_followup": "none",
+    "release_gate_decision": "pass",
+    "schema_version": "waggledance.release_boundary_decision_packet.v0",
+    "source_acceptance": "release boundary remains false until release gate passes and an explicit release-boundary authorization exists",
+    "source_status": "ready_for_release_boundary_review"
+  },
+  "schema_version": "waggledance.release_boundary_readiness.v0",
+  "source_phase_synthesis_refresh": {
+    "generated_at_utc": "2026-06-01T01:18:32Z",
+    "landed_release_soak_package": {
+      "id": "release_soak_evidence_blocker_resolution",
+      "owner": null,
+      "status": null
+    },
+    "ok": true,
+    "release_boundary_all_false": true,
+    "remaining_release_soak_package": {
+      "id": "release_soak_evidence_blocker_resolution",
+      "owner": "operator,codex",
+      "status": "ready_for_release_boundary_review"
+    },
+    "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+    "sprint_id": "magma-100h-sprint3-2026-05-26"
+  },
+  "source_release_gate_readonly_recheck": {
+    "blockers": [],
+    "ok": true,
+    "read_only": true,
+    "release_boundary_all_false": true,
+    "release_gate_decision": "pass",
+    "release_gate_effect": "none",
+    "schema_version": "waggledance.release_gate_readonly_recheck.v0"
+  }
+}

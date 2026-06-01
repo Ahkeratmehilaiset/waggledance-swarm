@@ -187,6 +187,16 @@ def test_operator_decision_reference_review_bundle_verification_bridge_event_tem
             lambda report: report.__setitem__("template_only", False),
             "verification_report_template_only_not_true",
         ),
+        (
+            "report_not_ok",
+            lambda report: report.__setitem__("ok", False),
+            "verification_report_not_ok",
+        ),
+        (
+            "manual_review_required_false",
+            lambda report: report.__setitem__("manual_review_required", False),
+            "verification_report_manual_review_required_not_true",
+        ),
     )
 
     for label, mutate, expected_blocker in cases:

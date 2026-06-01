@@ -26,7 +26,7 @@
     }
   },
   "blockers": [],
-  "generated_at_utc": "2026-06-01T00:33:17Z",
+  "generated_at_utc": "2026-06-01T01:18:32Z",
   "landed_work_packages": [
     {
       "evidence": "docs/runs/magma_100h_sprint_2026_05_26/rival_local_accepted_blockers.json",
@@ -52,12 +52,8 @@
       "id": "release_gate_readonly_recheck",
       "status": "complete_observation_only",
       "summary": {
-        "blockers": [
-          "soak_evidence_result_not_pass",
-          "soak_evidence_duration_lt_336h",
-          "soak_evidence_ended_before_required_soak_end"
-        ],
-        "decision": "hold",
+        "blockers": [],
+        "decision": "pass",
         "read_only": true,
         "read_only_invariants": {
           "no_docker_latest_moved": true,
@@ -71,15 +67,15 @@
         "report_ok": true,
         "soak_evidence_diagnostics": {
           "docker_stable_policy": "finalized",
-          "duration_hours": 311.365,
-          "ended_at_date": "2026-05-22",
+          "duration_hours": 336,
+          "ended_at_date": "2026-05-24",
           "error_log_clean": true,
           "expected_docker_stable_policy": "finalized",
           "expected_error_log_clean": true,
           "expected_silent_failures": 0,
           "required_duration_hours": 336,
           "required_soak_end": "2026-05-24",
-          "result": "hold",
+          "result": "pass",
           "silent_failures": 0,
           "status_fields": {
             "axis_a_regression": {
@@ -253,7 +249,7 @@
       "present": false
     },
     "forbidden_claims_count": 7,
-    "generated_at_utc": "2026-06-01T00:33:17Z",
+    "generated_at_utc": "2026-06-01T01:18:32Z",
     "governance_throughput": {
       "event_count_in_window": 15967,
       "metric_count": 8,
@@ -300,7 +296,7 @@
         "id": "release_soak_evidence_blocker_resolution",
         "owner": "operator,codex",
         "peer": "claude",
-        "status": "blocked_until_release_gate_soak_evidence_passes",
+        "status": "ready_for_release_boundary_review",
         "target": "resolve release soak evidence blockers before any release boundary review"
       }
     ],
@@ -344,7 +340,7 @@
       "id": "release_soak_evidence_blocker_resolution",
       "owner": "operator,codex",
       "peer": "claude",
-      "status": "blocked_until_release_gate_soak_evidence_passes",
+      "status": "ready_for_release_boundary_review",
       "target": "resolve release soak evidence blockers before any release boundary review"
     }
   ],

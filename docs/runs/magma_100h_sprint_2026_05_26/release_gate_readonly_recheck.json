@@ -1,24 +1,16 @@
 {
-  "blockers": [
-    "soak_evidence_result_not_pass",
-    "soak_evidence_duration_lt_336h",
-    "soak_evidence_ended_before_required_soak_end"
-  ],
-  "checked_at_utc": "2026-05-26T08:08:00Z",
+  "blockers": [],
+  "checked_at_utc": "2026-06-01T01:16:42Z",
   "gate": {
-    "blockers": [
-      "soak_evidence_result_not_pass",
-      "soak_evidence_duration_lt_336h",
-      "soak_evidence_ended_before_required_soak_end"
-    ],
-    "decision": "hold",
+    "blockers": [],
+    "decision": "pass",
     "latest_stable": "v3.8.0",
     "no_earlier_than": "2026-05-24",
     "soak_evidence_diagnostics": {
       "commit_present": true,
       "docker_stable_policy": "finalized",
-      "duration_hours": 311.365,
-      "ended_at_date": "2026-05-22",
+      "duration_hours": 336,
+      "ended_at_date": "2026-05-24",
       "ended_at_valid": true,
       "error_log_clean": true,
       "expected_docker_stable_policy": "finalized",
@@ -31,7 +23,7 @@
       "readable": true,
       "required_duration_hours": 336,
       "required_soak_end": "2026-05-24",
-      "result": "hold",
+      "result": "pass",
       "silent_failures": 0,
       "started_at_valid": true,
       "status_fields": {
@@ -84,7 +76,7 @@
     "stable_release_claim": false,
     "tag_creation": false
   },
-  "release_gate_decision": "hold",
+  "release_gate_decision": "pass",
   "release_gate_effect": "none",
   "schema_version": "waggledance.release_gate_readonly_recheck.v0"
 }

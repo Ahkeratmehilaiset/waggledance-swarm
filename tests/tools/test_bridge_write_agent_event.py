@@ -200,6 +200,39 @@ def test_regex_agent_id_writes_valid_event_and_outbox(tmp_path: Path) -> None:
     validate_event_line(line)
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "github/main",
+        "docs/benchmarks/LOCAL_OLLAMA_MODEL_SWEEP_2026.md",
+        "Gpt",
+    ],
+)
+def test_invalid_to_agent_id_fails_before_runtime_write(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-To",
+        target,
+        "-Message",
+        "invalid target",
+    )
+
+    assert completed.returncode != 0
+    assert f"to contains invalid bridge agent id: {target}" in completed.stderr
+    assert not runtime_root.exists()
+
+
 def test_role_uuid_capability_metadata_is_optional_and_validated(
     tmp_path: Path,
 ) -> None:

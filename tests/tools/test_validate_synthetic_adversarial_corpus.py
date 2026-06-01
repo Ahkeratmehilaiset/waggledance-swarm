@@ -124,6 +124,43 @@ def test_fixture_covers_critical_defect_floor() -> None:
         assert counts[defect_type] >= MIN_CRITICAL_DEFECT_CASES
 
 
+def test_fixture_includes_explicit_asi_gap_seed_cases() -> None:
+    corpus = _load_corpus()
+    expectations = _load_expectations()
+    cases = {case["case_id"]: case for case in corpus["cases"]}
+    expectation_ids = {
+        expectation["case_id"] for expectation in expectations["expectations"]
+    }
+    expected = {
+        "case:adv:evidence_spoofing:008": {
+            "defect_type": "evidence_spoofing",
+            "tags": {"supply_chain", "descriptor", "registry", "schema_digest"},
+        },
+        "case:adv:tool_argument_abuse:005": {
+            "defect_type": "tool_argument_abuse",
+            "tags": {"execution_boundary", "shell", "dry_run", "tool_args"},
+        },
+        "case:adv:governance_bypass:003": {
+            "defect_type": "governance_bypass",
+            "tags": {"inter_agent", "spoofed_peer", "bridge_event", "task_id"},
+        },
+        "case:adv:fail_open:003": {
+            "defect_type": "fail-open",
+            "tags": {"cascade", "fail_closed", "approval", "second_order"},
+        },
+        "case:adv:spec_gaming:003": {
+            "defect_type": "spec-gaming",
+            "tags": {"runaway", "reward_hacking", "self_approval", "held_out"},
+        },
+    }
+
+    for case_id, expected_case in expected.items():
+        assert case_id in cases
+        assert case_id in expectation_ids
+        assert cases[case_id]["defect_type"] == expected_case["defect_type"]
+        assert expected_case["tags"] <= set(cases[case_id]["tags"])
+
+
 def test_validator_accepts_fixture_corpus() -> None:
     result = _run_validator(CORPUS)
 
@@ -186,7 +223,7 @@ def test_validator_rejects_full_corpus_below_critical_defect_floor(
 ) -> None:
     corpus = _load_corpus()
     expectations = _load_expectations()
-    removed_case_id = "case:adv:fail_open:002"
+    removed_case_id = "case:adv:path_escape:002"
     broken_corpus = copy.deepcopy(corpus)
     broken_corpus["cases"] = [
         case for case in broken_corpus["cases"] if case["case_id"] != removed_case_id
@@ -218,7 +255,7 @@ def test_validator_rejects_full_corpus_below_critical_defect_floor(
     )
 
     assert result.returncode == 1
-    assert "critical defect_type fail-open must include at least 2 cases" in result.stderr
+    assert "critical defect_type path_escape must include at least 2 cases" in result.stderr
 
 
 def test_validator_rejects_duplicate_case_ids(tmp_path: Path) -> None:
@@ -343,6 +380,7 @@ def test_validator_json_report_includes_coverage() -> None:
     report = json.loads(result.stdout)
     assert report["corpus"] == "<redacted>"
     assert report["expectations"] == "<redacted>"
+    assert report["case_count"] >= 59
     critical_counts = report["coverage"]["critical_defect_type_counts"]
     for defect_type in CRITICAL_DEFECT_TYPES:
         assert critical_counts[defect_type] >= MIN_CRITICAL_DEFECT_CASES
@@ -359,7 +397,6 @@ def test_validator_json_report_includes_coverage() -> None:
         "review",
         "require_approval",
     }
-    assert report["case_count"] >= 38
 
 
 def test_validator_allows_folded_expansion_provenance_partial_coverage() -> None:

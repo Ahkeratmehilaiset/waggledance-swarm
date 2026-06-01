@@ -23,6 +23,25 @@ TASK = "codex-lead/t0b-consensus-approver-20260529"
 LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_idle_loop_runbook_keeps_rco_timeout_fail_closed() -> None:
+    text = (ROOT / "docs" / "architecture" / "IDLE_LOOP_RUNBOOK.md").read_text(
+        encoding="utf-8"
+    )
+    section = text.split("### RCO wakeup window", 1)[1].split("## Recovery", 1)[0]
+    bridge_tick = (ROOT / "tools" / "bridge_loop_tick.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "must not self-merge without an explicit head-bound" in section
+    assert "operator_review_required" in section
+    assert "silence never default-allows" in section
+    assert "self-merge **without** the peer's RCO" not in section
+    assert "will self-merge" not in section
+    assert "self-merge timeout" not in bridge_tick
+    assert "operator_review_required" in bridge_tick
 
 
 def _approval(agent: str, status: str, *, head: str = HEAD, ts: str, in_message: bool = False) -> dict:

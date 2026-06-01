@@ -478,6 +478,26 @@ ROUTE_STAGE_LATENCY_UPDATED_AT_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
     r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
 )
+ROUTE_STAGE_LATENCY_FEED_HEALTH_REASONS = frozenset({
+    "none",
+    "BACKOFF_ACTIVE",
+    "NETWORK_TIMEOUT",
+    "NETWORK_REQUEST_FAILED",
+    "RESPONSE_SHAPE_REFUSED",
+    "RESPONSE_BODY_REFUSED",
+    "RESPONSE_STATUS_REFUSED",
+    "RESPONSE_JSON_REFUSED",
+    "RESPONSE_TOO_LARGE",
+    "RESPONSE_CONTENT_TYPE_REFUSED",
+    "RESPONSE_SOURCE_URL_REFUSED",
+    "PROMETHEUS_STATUS_REFUSED",
+    "PROMETHEUS_DATA_REFUSED",
+    "PROMETHEUS_RESULT_REFUSED",
+    "ALERTMANAGER_RESULT_REFUSED",
+    "ROUTE_STAGE_LATENCY_FEED_UNAVAILABLE",
+    "HTTP_STATUS_REFUSED",
+    "FEED_READ_FAILED",
+})
 
 
 def _route_stage_latency_empty_feed_state(source: str) -> dict:
@@ -491,7 +511,116 @@ def _route_stage_latency_empty_feed_state(source: str) -> dict:
         "active_count": 0,
         "active": [],
         "controls_present": False,
+        "feed_health": _route_stage_latency_feed_health_default(source),
     }
+
+
+def _route_stage_latency_feed_health_default(source: str) -> dict:
+    configured = source != "not_configured"
+    return {
+        "source": source,
+        "status": "not_configured" if not configured else "warning",
+        "configured": configured,
+        "available": False,
+        "cache_enabled": False,
+        "cache_present": False,
+        "cache_stale": False,
+        "backoff_active": False,
+        "cache_ttl_seconds": 0.0,
+        "failure_backoff_seconds": 0.0,
+        "timeout_seconds": 0.0,
+        "max_response_bytes": 0.0,
+        "last_response_bytes": 0.0,
+        "cache_hit_count": 0.0,
+        "cache_miss_count": 0.0,
+        "fetch_success_count": 0.0,
+        "fetch_failure_count": 0.0,
+        "backoff_skip_count": 0.0,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "last_failure_reason": None,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
+
+
+def _route_stage_latency_feed_reason(reason) -> str | None:  # noqa: ANN001
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    raw = reason.strip()
+    if raw.lower() == "none":
+        return "none"
+    clean = raw.upper()
+    if clean.startswith("HTTP_STATUS_"):
+        return "HTTP_STATUS_REFUSED"
+    if clean in ROUTE_STAGE_LATENCY_FEED_HEALTH_REASONS:
+        return clean
+    return "FEED_READ_FAILED"
+
+
+def _route_stage_latency_feed_health(provider, snapshot=None) -> dict:  # noqa: ANN001
+    if provider is None:
+        return _route_stage_latency_feed_health_default("not_configured")
+    raw_health = None
+    if isinstance(snapshot, Mapping):
+        raw_health = snapshot.get("provider_health")
+    if not isinstance(raw_health, Mapping):
+        method = _safe_getattr(provider, "provider_health", None)
+        if callable(method):
+            try:
+                raw_health = method()
+            except Exception:
+                raw_health = None
+    if not isinstance(raw_health, Mapping):
+        raw_health = {}
+
+    health = _route_stage_latency_feed_health_default(
+        "prometheus_alertmanager_adapter"
+    )
+    for key in (
+        "configured",
+        "available",
+        "cache_enabled",
+        "cache_present",
+        "cache_stale",
+        "backoff_active",
+    ):
+        if key in raw_health:
+            health[key] = bool(raw_health.get(key))
+    for key in (
+        "cache_ttl_seconds",
+        "failure_backoff_seconds",
+        "timeout_seconds",
+        "max_response_bytes",
+        "last_response_bytes",
+        "cache_hit_count",
+        "cache_miss_count",
+        "fetch_success_count",
+        "fetch_failure_count",
+        "backoff_skip_count",
+    ):
+        value = _number_or_none(raw_health.get(key))
+        if value is not None and value >= 0:
+            health[key] = round(value, 3)
+    for key in ("last_success_at", "last_failure_at"):
+        value = raw_health.get(key)
+        health[key] = (
+            _route_stage_latency_updated_at({"updated_at": value})
+            if isinstance(value, str)
+            else None
+        )
+    health["last_failure_reason"] = _route_stage_latency_feed_reason(
+        raw_health.get("last_failure_reason")
+    )
+    raw_status = raw_health.get("status")
+    if raw_status in {"not_configured", "nominal", "warning"}:
+        health["status"] = raw_status
+    elif health["backoff_active"] or health["fetch_failure_count"] > 0:
+        health["status"] = "warning"
+    elif health["configured"]:
+        health["status"] = "nominal"
+    return health
 
 
 def _route_stage_latency_feed_provider(container):  # noqa: ANN001
@@ -509,18 +638,22 @@ def _route_stage_latency_feed_provider(container):  # noqa: ANN001
 def _route_stage_latency_feed_snapshot(container):  # noqa: ANN001
     provider = _route_stage_latency_feed_provider(container)
     if provider is None:
-        return None, "not_configured"
+        return None, "not_configured", None
     if isinstance(provider, dict):
-        return provider, ""
+        return provider, "", provider
     for method_name in ("snapshot", "get_status", "status"):
         method = _safe_getattr(provider, method_name, None)
         if callable(method):
             try:
                 snapshot = method()
             except Exception:
-                return None, "unavailable"
-            return snapshot if isinstance(snapshot, dict) else None, "invalid"
-    return None, "invalid"
+                return None, "unavailable", provider
+            return (
+                snapshot if isinstance(snapshot, dict) else None,
+                "" if isinstance(snapshot, dict) else "invalid",
+                provider,
+            )
+    return None, "invalid", provider
 
 
 def _route_stage_latency_stage(item: dict) -> str | None:
@@ -651,9 +784,13 @@ def _route_stage_latency_max_severity(items: list[dict]) -> str:
 
 
 def _route_stage_latency_feed_state(container) -> dict:  # noqa: ANN001
-    snapshot, state = _route_stage_latency_feed_snapshot(container)
+    snapshot, state, provider = _route_stage_latency_feed_snapshot(container)
+    feed_health = _route_stage_latency_feed_health(provider, snapshot)
     if state == "not_configured":
-        return _route_stage_latency_empty_feed_state("not_configured")
+        return {
+            **_route_stage_latency_empty_feed_state("not_configured"),
+            "feed_health": feed_health,
+        }
     if snapshot is None:
         return {
             **_route_stage_latency_empty_feed_state(
@@ -667,6 +804,7 @@ def _route_stage_latency_feed_state(container) -> dict:  # noqa: ANN001
                 "severity": "warning",
                 "summary": "Route-stage latency feed snapshot is unavailable.",
             }],
+            "feed_health": feed_health,
         }
 
     panel_values = _sanitize_route_stage_latency_panel_values(snapshot)
@@ -682,6 +820,7 @@ def _route_stage_latency_feed_state(container) -> dict:  # noqa: ANN001
         "active_count": len(active),
         "active": active,
         "controls_present": False,
+        "feed_health": feed_health,
     }
 
 

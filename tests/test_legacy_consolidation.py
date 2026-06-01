@@ -1071,6 +1071,8 @@ class TestApiOpsExtended:
                     "alertmanager_base_url": "https://alerts.example",
                     "timeout_s": 2,
                     "max_response_bytes": 1000,
+                    "cache_ttl_s": 11,
+                    "failure_backoff_s": 12,
                 },
             },
         )
@@ -1229,6 +1231,75 @@ class TestApiOpsExtended:
         assert "value_ms" not in feed_state["active"][0]
         json.dumps(section, allow_nan=False)
 
+    def test_ops_route_stage_latency_feed_health_forces_no_authority_flags(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [],
+                    "active_alerts": [],
+                    "provider_health": {
+                        "status": "nominal",
+                        "configured": True,
+                        "available": True,
+                        "cache_enabled": True,
+                        "cache_present": True,
+                        "controls_present": True,
+                        "runtime_authority_granted": True,
+                        "external_writes_applied": True,
+                        "cache_hit_count": "not-a-number",
+                        "last_failure_reason": "C:/private/prometheus-token",
+                    },
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_health = section["feed_state"]["feed_health"]
+
+        assert feed_health["configured"] is True
+        assert feed_health["available"] is True
+        assert feed_health["cache_enabled"] is True
+        assert feed_health["cache_present"] is True
+        assert feed_health["controls_present"] is False
+        assert feed_health["runtime_authority_granted"] is False
+        assert feed_health["external_writes_applied"] is False
+        assert feed_health["cache_hit_count"] == 0.0
+        assert feed_health["last_failure_reason"] == "FEED_READ_FAILED"
+        assert "C:/private/prometheus-token" not in str(section)
+
+    def test_ops_route_stage_latency_feed_health_preserves_none_reason(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [],
+                    "active_alerts": [],
+                    "provider_health": {
+                        "status": "nominal",
+                        "configured": True,
+                        "available": True,
+                        "last_failure_reason": "none",
+                    },
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_health = section["feed_state"]["feed_health"]
+
+        assert feed_health["last_failure_reason"] == "none"
+
     def test_ops_route_stage_latency_feed_state_rejects_raw_updated_at(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _route_stage_latency_panels,
@@ -1344,10 +1415,14 @@ class TestApiOpsExtended:
             route_stage_latency_feed = feed
 
         section = _route_stage_latency_panels(Container())
+        cached_section = _route_stage_latency_panels(Container())
         feed_state = section["feed_state"]
+        cached_feed_state = cached_section["feed_state"]
+        feed_health = cached_feed_state["feed_health"]
         serialized = str(section)
 
         assert len([call for call in calls if call[0].endswith("/api/v1/query")]) == 3
+        assert len(calls) == 4
         assert calls[-1][0].endswith("/api/v2/alerts")
         assert feed_state["source"] == "prometheus_alertmanager_snapshot"
         assert feed_state["prometheus_alertmanager_feed"] is True
@@ -1360,11 +1435,120 @@ class TestApiOpsExtended:
         assert feed_state["active"][0]["summary"] == (
             "RouteStageLatencyP99Critical active for hot_cache."
         )
+        assert feed_health["source"] == "prometheus_alertmanager_adapter"
+        assert feed_health["status"] == "nominal"
+        assert feed_health["configured"] is True
+        assert feed_health["available"] is True
+        assert feed_health["cache_enabled"] is True
+        assert feed_health["cache_present"] is True
+        assert feed_health["cache_hit_count"] == 1
+        assert feed_health["cache_miss_count"] == 1
+        assert feed_health["fetch_success_count"] == 1
+        assert feed_health["fetch_failure_count"] == 0
+        assert feed_health["backoff_active"] is False
+        assert feed_health["controls_present"] is False
+        assert feed_health["runtime_authority_granted"] is False
         assert "PRIVATE_QUERY_MARKER" not in serialized
         assert "PRIVATE_ANNOTATION" not in serialized
         assert "query=secret" not in serialized
         assert "prod-db" not in serialized
         assert "generatorURL" not in serialized
+
+    def test_route_stage_latency_feed_provider_uses_bounded_backoff(self):
+        from waggledance.adapters.http.route_stage_latency_feed import (
+            RouteStageLatencyFeedHttpResponse,
+            RouteStageLatencyPrometheusAlertmanagerFeed,
+        )
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        calls = []
+        now = [0.0]
+
+        def utc_now():
+            return datetime(
+                2026,
+                5,
+                28,
+                11,
+                int(now[0]),
+                tzinfo=timezone.utc,
+            )
+
+        def transport(url, headers, timeout_seconds, params):
+            calls.append((url, dict(params)))
+            if len(calls) > 4:
+                raise RuntimeError("C:/private/prometheus-token")
+            if url.endswith("/api/v1/query"):
+                body = {
+                    "status": "success",
+                    "data": {
+                        "result": [{
+                            "metric": {"stage": "language_detection"},
+                            "value": [1_716_888_000, "99.0"],
+                        }],
+                    },
+                }
+            else:
+                body = [{
+                    "labels": {
+                        "alertname": "RouteStageLatencyP95Warning",
+                        "stage": "language_detection",
+                        "severity": "warning",
+                    },
+                    "status": {"state": "active"},
+                }]
+            return RouteStageLatencyFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+            prometheus_base_url="http://127.0.0.1:9090",
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            cache_ttl_seconds=1,
+            failure_backoff_seconds=10,
+            monotonic=lambda: now[0],
+            utc_now=utc_now,
+            transport=transport,
+        )
+
+        class Container:
+            route_stage_latency_feed = feed
+
+        first = _route_stage_latency_panels(Container())
+        now[0] = 2.0
+        failed_refresh = _route_stage_latency_panels(Container())
+        now[0] = 3.0
+        backoff_reuse = _route_stage_latency_panels(Container())
+
+        first_state = first["feed_state"]
+        failed_state = failed_refresh["feed_state"]
+        backoff_state = backoff_reuse["feed_state"]
+        feed_health = backoff_state["feed_health"]
+        serialized = str(backoff_reuse)
+
+        assert len(calls) == 5
+        assert first_state["active_count"] == 1
+        assert failed_state["active_count"] == 1
+        assert backoff_state["active"][0]["id"] == "RouteStageLatencyP95Warning"
+        assert feed_health["status"] == "warning"
+        assert feed_health["available"] is True
+        assert feed_health["cache_present"] is True
+        assert feed_health["cache_stale"] is True
+        assert feed_health["backoff_active"] is True
+        assert feed_health["fetch_success_count"] == 1
+        assert feed_health["fetch_failure_count"] == 1
+        assert feed_health["backoff_skip_count"] == 1
+        assert feed_health["last_failure_reason"] == "NETWORK_REQUEST_FAILED"
+        assert feed_health["controls_present"] is False
+        assert feed_health["runtime_authority_granted"] is False
+        assert "C:/private/prometheus-token" not in serialized
+        assert "127.0.0.1" not in serialized
 
     def test_route_stage_latency_feed_provider_rejects_non_finite_numbers(self):
         from waggledance.adapters.http.route_stage_latency_feed import (
@@ -1464,6 +1648,8 @@ class TestApiOpsExtended:
                     "alertmanager_base_url": "https://alerts.example",
                     "timeout_s": 2,
                     "max_response_bytes": 1000,
+                    "cache_ttl_s": 11,
+                    "failure_backoff_s": 12,
                 },
             },
         )
@@ -1473,6 +1659,9 @@ class TestApiOpsExtended:
             container.route_stage_latency_feed,
             RouteStageLatencyPrometheusAlertmanagerFeed,
         )
+        health = container.route_stage_latency_feed.provider_health()
+        assert health["cache_ttl_seconds"] == 11
+        assert health["failure_backoff_seconds"] == 12
 
     def test_ops_still_has_status_and_recommendation(self):
         """Existing fields must not break."""

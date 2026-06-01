@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from tools.hex_shadow_subdivision_replay import (
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary,
@@ -82,6 +83,21 @@ def _valid_verifier_summary_bridge_event_template() -> dict:
         run_id="codex-lead-1-20260531T120000Z",
         session_id="codex-lead-1-20260531T120000Z",
         now_utc=datetime(2026, 5, 31, 12, 30, tzinfo=timezone.utc),
+    )
+
+
+def _valid_verifier_summary_bridge_event_template_index_entry_verification() -> dict:
+    template = _valid_verifier_summary_bridge_event_template()
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+        now_utc=datetime(2026, 5, 31, 12, 45, tzinfo=timezone.utc),
+    )
+    return verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        entry,
+        template,
+        template_report_bytes=raw,
     )
 
 
@@ -929,6 +945,180 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
     assert any(
         "summary_bridge_event_template_index_entry_duplicate_key" in item
         for item in report["blockers"]
+    )
+    assert "project2-master" not in serialized
+    assert "private.json" not in serialized
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_renders_path_free_context_without_authority() -> (
+    None
+):
+    report = _valid_verifier_summary_bridge_event_template_index_entry_verification()
+
+    summary = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-index-entry-verification",
+        now_utc=datetime(2026, 5, 31, 13, 0, tzinfo=timezone.utc),
+    )
+    nested = summary[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification"
+    ]
+    artifact_id = "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template"
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert summary["ok"] is True
+    assert (
+        summary["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_v1"
+    )
+    assert (
+        summary["summary_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary.v1"
+    )
+    assert summary["created_at_utc"] == "2026-05-31T13:00:00Z"
+    assert nested["verification_ok"] is True
+    assert nested["digest_checks"][artifact_id] == "match"
+    assert nested["size_checks"][artifact_id] == "match"
+    assert nested["schema_version_checks"][artifact_id] == "match"
+    assert nested["source_contract_check"] == "match"
+    assert nested["rebuilt_index_entry_check"] == "match"
+    assert nested["bridge_event_schema_check"] == "match"
+    assert summary["operator_boundary"]["index_entry_verification_report_boundary_ok"]
+    assert summary["direct_bridge_write_performed"] is False
+    assert summary["runtime_subdivision_authority_granted"] is False
+    assert summary["artifact_payloads_included"] is False
+    assert summary["local_paths_recorded"] is False
+    assert '"template_index_entry":' not in serialized
+    assert '"bridge_event_template":' not in serialized
+    assert str(ROOT) not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_rejects_authority() -> (
+    None
+):
+    report = _valid_verifier_summary_bridge_event_template_index_entry_verification()
+    report["runtime_subdivision_authority_granted"] = True
+
+    summary = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-index-entry-verification",
+    )
+
+    assert summary["ok"] is False
+    assert (
+        "index_entry_verification_runtime_subdivision_authority_granted_not_false"
+        in summary["blockers"]
+    )
+    assert summary["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_rejects_path_leak() -> (
+    None
+):
+    report = _valid_verifier_summary_bridge_event_template_index_entry_verification()
+    report["warnings"] = ["C:/Python/project2-master/private.json"]
+
+    summary = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-index-entry-verification",
+    )
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert summary["ok"] is False
+    assert "index_entry_verification_report_path_free" in summary["blockers"]
+    assert "project2-master" not in serialized
+    assert "private.json" not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_cli_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    report = _valid_verifier_summary_bridge_event_template_index_entry_verification()
+    report_path = (
+        tmp_path / "verifier-summary-bridge-event-template-index-verification.json"
+    )
+    report_path.write_bytes(_json_bytes(report))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-bridge-event-template-index-entry-verification-json",
+            str(report_path),
+            "--reviewer-agent",
+            "claude-rco-1",
+            "--handoff-ref",
+            "bridge:hex-index-entry-verification",
+            "--now",
+            "2026-05-31T13:15:00Z",
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    summary = json.loads(result.stdout)
+    assert summary["ok"] is True
+    assert summary["created_at_utc"] == "2026-05-31T13:15:00Z"
+    assert summary["direct_bridge_write_performed"] is False
+    assert summary["runtime_subdivision_authority_granted"] is False
+    assert str(tmp_path) not in result.stdout
+    assert str(report_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_cli_rejects_duplicate_key_hidden_path_free(
+    tmp_path: Path,
+) -> None:
+    report = _valid_verifier_summary_bridge_event_template_index_entry_verification()
+    hidden_prefix = (
+        json.dumps(
+            {
+                "warnings": [
+                    "C:/Python/project2-master/private.json",
+                ]
+            },
+            sort_keys=True,
+        )[:-1]
+        + ","
+    )
+    report_raw = (hidden_prefix + json.dumps(report, sort_keys=True)[1:]).encode(
+        "utf-8"
+    )
+    report_path = (
+        tmp_path / "verifier-summary-bridge-event-template-index-verification.json"
+    )
+    report_path.write_bytes(report_raw)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-bridge-event-template-index-entry-verification-json",
+            str(report_path),
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 2
+    summary = json.loads(result.stdout)
+    serialized = json.dumps(summary, sort_keys=True)
+    assert summary["ok"] is False
+    assert any(
+        "summary_bridge_event_template_index_entry_verification_duplicate_key" in item
+        for item in summary["blockers"]
     )
     assert "project2-master" not in serialized
     assert "private.json" not in serialized

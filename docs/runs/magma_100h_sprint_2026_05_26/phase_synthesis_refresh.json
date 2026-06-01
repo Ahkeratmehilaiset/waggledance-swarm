@@ -26,7 +26,7 @@
     }
   },
   "blockers": [],
-  "generated_at_utc": "2026-06-01T01:18:32Z",
+  "generated_at_utc": "2026-06-01T03:02:12Z",
   "landed_work_packages": [
     {
       "evidence": "docs/runs/magma_100h_sprint_2026_05_26/rival_local_accepted_blockers.json",
@@ -104,6 +104,62 @@
             }
           },
           "target_version": "v3.12.0"
+        }
+      }
+    },
+    {
+      "evidence": "docs/runs/magma_100h_sprint_2026_05_26/release_boundary_readiness.json",
+      "id": "release_soak_evidence_blocker_resolution",
+      "status": "complete_release_boundary_readiness_recorded",
+      "summary": {
+        "operator_finalization_required": true,
+        "read_only_invariants": {
+          "no_docker_latest_moved": true,
+          "no_docker_stable_moved": true,
+          "no_external_effect_authority_change": true,
+          "no_stable_release_claim": true,
+          "no_tag_created": true,
+          "release_boundary_effect": "none"
+        },
+        "release_boundary_all_false": true,
+        "release_boundary_blockers": [],
+        "release_boundary_guardrails": {
+          "docker_latest_move_applied": false,
+          "docker_stable_move_applied": false,
+          "external_effect_authority_change_applied": false,
+          "release_boundary_effect": "none",
+          "requires_operator_only_finalization": true,
+          "stable_release_claim_applied": false,
+          "tag_creation_applied": false
+        },
+        "release_boundary_status": "ready_for_operator_finalization",
+        "release_decision_packet": {
+          "all_options_non_mutating": true,
+          "decision_status": "operator_finalization_required",
+          "default_recommendation": "hold_no_release_boundary_change",
+          "operator_finalization_required": true,
+          "option_count": 2,
+          "release_boundary_effect_before_followup": "none",
+          "schema_version": "waggledance.release_boundary_decision_packet.v0"
+        },
+        "report_ok": true,
+        "source_phase_synthesis_refresh": {
+          "generated_at_utc": "2026-06-01T01:18:32Z",
+          "landed_release_soak_status": null,
+          "ok": true,
+          "release_boundary_all_false": true,
+          "remaining_release_soak_status": "ready_for_release_boundary_review",
+          "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+          "sprint_id": "magma-100h-sprint3-2026-05-26"
+        },
+        "source_release_gate_readonly_recheck": {
+          "blockers": [],
+          "ok": true,
+          "read_only": true,
+          "release_boundary_all_false": true,
+          "release_gate_decision": "pass",
+          "release_gate_effect": "none",
+          "schema_version": "waggledance.release_gate_readonly_recheck.v0"
         }
       }
     },
@@ -249,7 +305,7 @@
       "present": false
     },
     "forbidden_claims_count": 7,
-    "generated_at_utc": "2026-06-01T01:18:32Z",
+    "generated_at_utc": "2026-06-01T03:02:12Z",
     "governance_throughput": {
       "event_count_in_window": 15967,
       "metric_count": 8,
@@ -265,6 +321,7 @@
       "operator_authority_decision_packet",
       "phase_synthesis_and_baseline_refresh",
       "release_gate_readonly_recheck",
+      "release_soak_evidence_blocker_resolution",
       "rival_local_evidence_execution_or_accepted_blockers"
     ],
     "must_win_axes": {
@@ -292,12 +349,12 @@
         "target": "record explicit operator approval or keep runtime authority held"
       },
       {
-        "acceptance": "release boundary remains false until release gate passes and an explicit release-boundary authorization exists",
-        "id": "release_soak_evidence_blocker_resolution",
-        "owner": "operator,codex",
-        "peer": "claude",
-        "status": "ready_for_release_boundary_review",
-        "target": "resolve release soak evidence blockers before any release boundary review"
+        "acceptance": "release boundary remains false until operator-only finalization creates signed release receipts; agents do not tag releases or move Docker aliases",
+        "id": "operator_release_finalization_decision",
+        "owner": "operator",
+        "peer": "codex,claude",
+        "status": "operator_release_finalization_required",
+        "target": "operator performs any tag, Docker, or stable release finalization separately"
       }
     ],
     "ok": true,
@@ -336,12 +393,12 @@
       "target": "record explicit operator approval or keep runtime authority held"
     },
     {
-      "acceptance": "release boundary remains false until release gate passes and an explicit release-boundary authorization exists",
-      "id": "release_soak_evidence_blocker_resolution",
-      "owner": "operator,codex",
-      "peer": "claude",
-      "status": "ready_for_release_boundary_review",
-      "target": "resolve release soak evidence blockers before any release boundary review"
+      "acceptance": "release boundary remains false until operator-only finalization creates signed release receipts; agents do not tag releases or move Docker aliases",
+      "id": "operator_release_finalization_decision",
+      "owner": "operator",
+      "peer": "codex,claude",
+      "status": "operator_release_finalization_required",
+      "target": "operator performs any tag, Docker, or stable release finalization separately"
     }
   ],
   "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",

@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from tools.hex_shadow_subdivision_replay import (
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary,
     build_shadow_subdivision_replay_artifact,
     build_source_snapshot,
@@ -19,6 +20,7 @@ from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_proof,
     build_hexagonal_upgrade_runtime_smoke,
 )
+from waggledance.core.bridge_event_schema import validate_event
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +63,15 @@ def _valid_verifier_report() -> dict:
     return verify_shadow_subdivision_replay_artifact(
         artifact,
         expected_git_commit=artifact["source_snapshot"]["git_commit"],
+    )
+
+
+def _valid_verifier_summary() -> dict:
+    return build_shadow_subdivision_replay_verifier_summary(
+        _valid_verifier_report(),
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-shadow-replay-verifier",
+        now_utc=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
     )
 
 
@@ -178,6 +189,36 @@ def test_hex_shadow_replay_verifier_summary_blocks_pathy_report_without_leaking_
     assert summary["local_paths_recorded"] is False
 
 
+def test_hex_shadow_replay_verifier_summary_blocks_malformed_report_blockers_before_template() -> None:
+    report = _valid_verifier_report()
+    report["blockers"] = "hidden_blocker"
+
+    summary = build_shadow_subdivision_replay_verifier_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-shadow-replay-verifier",
+        now_utc=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
+    )
+    template = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_blockers_malformed" in summary["blockers"]
+    assert (
+        "verification_report_blockers_malformed"
+        in summary["operator_boundary"]["boundary_blockers"]
+    )
+    assert template["ok"] is False
+    assert "bridge_event_template" not in template
+    assert any(
+        "operator_boundary_blockers_present" in item
+        for item in template["blockers"]
+    )
+
+
 def test_hex_shadow_replay_verifier_summary_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:
@@ -208,6 +249,186 @@ def test_hex_shadow_replay_verifier_summary_cli_json_is_path_free(
     assert summary["proof_id"] == "hex_shadow_subdivision_replay_verifier_summary_v1"
     assert str(tmp_path) not in result.stdout
     assert str(report_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_is_valid_without_writing() -> None:
+    summary = _valid_verifier_summary()
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+        run_id="codex-lead-1-20260531T120000Z",
+        session_id="codex-lead-1-20260531T120000Z",
+        now_utc=datetime(2026, 5, 31, 12, 30, tzinfo=timezone.utc),
+    )
+
+    assert report["ok"] is True
+    assert (
+        report["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_v1"
+    )
+    assert report["template_only"] is True
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+    event = report["bridge_event_template"]
+    validate_event(event)
+    assert event["ts_utc"] == "2026-05-31T12:30:00Z"
+    assert event["cwd"] == "template_not_emitted"
+    assert event["paths"] == []
+    assert event["write_scope"] == []
+    payload = event["payload"]
+    assert (
+        payload["schema_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template.v1"
+    )
+    assert payload["template_only"] is True
+    assert payload["manual_review_required"] is True
+    assert payload["approval_granted"] is False
+    assert payload["release_decision_made"] is False
+    assert payload["runtime_controls_added"] is False
+    assert payload["runtime_subdivision_authority_granted"] is False
+    assert payload["local_paths_recorded"] is False
+    assert set(
+        payload["shadow_subdivision_replay_verification"]["digest_checks"].values()
+    ) == {"match"}
+    assert str(ROOT) not in json.dumps(report, sort_keys=True)
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_authority() -> None:
+    summary = _valid_verifier_summary()
+    summary["runtime_subdivision_authority_granted"] = True
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "verifier_summary_runtime_subdivision_authority_granted_not_false"
+        in blocker
+        for blocker in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_summary_blockers() -> None:
+    summary = _valid_verifier_summary()
+    summary["blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "verifier_summary_blockers_malformed" in item for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_verification_blockers() -> None:
+    summary = _valid_verifier_summary()
+    summary["shadow_subdivision_replay_verification"]["blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "verifier_summary_verification_blockers_malformed" in item
+        for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_boundary_blockers() -> None:
+    summary = _valid_verifier_summary()
+    summary["operator_boundary"]["boundary_blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "operator_boundary_blockers_malformed" in item for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_path_leak() -> None:
+    summary = _valid_verifier_summary()
+    summary["safe_conclusion"] = "scratch verifier at C:/Python/project2-master/out.json"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+    serialized = json.dumps(report, sort_keys=True)
+
+    assert report["ok"] is False
+    assert any("verifier_summary_path_free" in item for item in report["blockers"])
+    assert "C:/Python/project2-master/out.json" not in serialized
+    assert "project2-master" not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_cli_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    summary = _valid_verifier_summary()
+    summary_path = tmp_path / "verifier-summary.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-bridge-event-template-json",
+            str(summary_path),
+            "--agent",
+            "codex-lead-1",
+            "--task-id",
+            "wd-image1-hex-shadow-replay-template",
+            "--to",
+            "operator,claude-rco-1,codex-tools-1",
+            "--now",
+            "2026-05-31T12:30:00Z",
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    validate_event(report["bridge_event_template"])
+    assert str(tmp_path) not in result.stdout
+    assert str(summary_path) not in result.stdout
     assert str(tmp_path) not in result.stderr
 
 

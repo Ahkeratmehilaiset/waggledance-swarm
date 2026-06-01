@@ -6,6 +6,7 @@ It does not mutate runtime state, bridge state, GitHub state, or tracked files.
 Local executable proofs may create ephemeral temp files and delete them before
 returning.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,12 +24,12 @@ from typing import Iterable, Sequence
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.hex_shadow_subdivision_replay import (  # noqa: E402
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary,
     build_source_snapshot,
@@ -159,7 +160,8 @@ def _blocked_hex_mesh_entry_proof(
         "missing_inputs": list(missing_inputs),
         "proves_every_query_first_enters_mesh": False,
         "literal_claim_safe": False,
-        "current_config": current_config or {
+        "current_config": current_config
+        or {
             "hybrid_retrieval_enabled": False,
             "hybrid_retrieval_mode": "unknown",
             "hybrid_retrieval_authoritative": False,
@@ -229,16 +231,18 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
             str(sample["intent"]),
             str(sample["query"]),
         )
-        solver_assignments.append({
-            "query": sample["query"],
-            "intent": sample["intent"],
-            "expected_cell": sample["expected_cell"],
-            "cell_id": assignment.cell_id,
-            "method": assignment.method,
-            "ring1": assignment.neighbors_ring1,
-            "ring2": assignment.neighbors_ring2,
-            "matched_expected": assignment.cell_id == sample["expected_cell"],
-        })
+        solver_assignments.append(
+            {
+                "query": sample["query"],
+                "intent": sample["intent"],
+                "expected_cell": sample["expected_cell"],
+                "cell_id": assignment.cell_id,
+                "method": assignment.method,
+                "ring1": assignment.neighbors_ring1,
+                "ring2": assignment.neighbors_ring2,
+                "matched_expected": assignment.cell_id == sample["expected_cell"],
+            }
+        )
 
     cell_config_path = str(
         hex_mesh_cfg.get("cell_config_path") or "configs/hex_cells.yaml"
@@ -288,17 +292,21 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
             str(sample["query"]),
             str(sample["intent"]),
         )
-        neighbors = [
-            cell.id for cell in agent_registry.get_neighbor_cells(str(cell_id))
-        ] if cell_id else []
-        agent_assignments.append({
-            "query": sample["query"],
-            "intent": sample["intent"],
-            "expected_cell": sample["expected_cell"],
-            "cell_id": cell_id,
-            "ring1": neighbors,
-            "matched_expected": cell_id == sample["expected_cell"],
-        })
+        neighbors = (
+            [cell.id for cell in agent_registry.get_neighbor_cells(str(cell_id))]
+            if cell_id
+            else []
+        )
+        agent_assignments.append(
+            {
+                "query": sample["query"],
+                "intent": sample["intent"],
+                "expected_cell": sample["expected_cell"],
+                "cell_id": cell_id,
+                "ring1": neighbors,
+                "matched_expected": cell_id == sample["expected_cell"],
+            }
+        )
 
     route_order = list(HEX_MESH_CHAT_ROUTE_ORDER)
     pre_hex_steps = route_order[:5]
@@ -353,12 +361,8 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
     )
     proof["runtime_trace_smoke"] = runtime_trace_smoke
     proof["route_stage_ui_smoke"] = route_stage_ui_smoke
-    proof["route_stage_operator_metrics_smoke"] = (
-        route_stage_operator_metrics_smoke
-    )
-    proof["route_stage_runtime_metrics_smoke"] = (
-        route_stage_runtime_metrics_smoke
-    )
+    proof["route_stage_operator_metrics_smoke"] = route_stage_operator_metrics_smoke
+    proof["route_stage_runtime_metrics_smoke"] = route_stage_runtime_metrics_smoke
     proof["ok"] = bool(
         proof["ok"]
         and runtime_trace_smoke["ok"]
@@ -381,9 +385,7 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
         "tests/integration/test_chat_api_contract.py",
     )
     missing_inputs = [
-        rel_path
-        for rel_path in required_paths
-        if not (repo_root / rel_path).exists()
+        rel_path for rel_path in required_paths if not (repo_root / rel_path).exists()
     ]
     base = {
         "proof_id": proof_id,
@@ -414,9 +416,7 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
             "import_root": str(resolved_import_root),
         }
 
-    html = (repo_root / "web" / "hologram-brain-v6.html").read_text(
-        encoding="utf-8"
-    )
+    html = (repo_root / "web" / "hologram-brain-v6.html").read_text(encoding="utf-8")
     chat_route_source = (
         repo_root / "waggledance" / "adapters" / "http" / "routes" / "chat.py"
     ).read_text(encoding="utf-8")
@@ -486,9 +486,7 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
         )
         disabled_route_stages = data.get("disabled_route_stages")
         disabled_route_stages = (
-            disabled_route_stages
-            if isinstance(disabled_route_stages, list)
-            else []
+            disabled_route_stages if isinstance(disabled_route_stages, list) else []
         )
         ws_event_contract = {
             "ok": (
@@ -504,9 +502,7 @@ def build_hex_mesh_route_stage_ui_smoke(root: Path | str = ROOT) -> dict:
             "event_type": event.get("type"),
             "data_keys": sorted(data.keys()),
             "label_stages": [
-                item.get("stage")
-                for item in labels
-                if isinstance(item, dict)
+                item.get("stage") for item in labels if isinstance(item, dict)
             ],
             "disabled_route_stages": disabled_route_stages,
             "forbidden_raw_markers_absent": forbidden_raw_markers_absent,
@@ -620,9 +616,7 @@ def build_hex_mesh_route_stage_operator_metrics_smoke(
         "disabled_optional",
     )
     missing_inputs = [
-        rel_path
-        for rel_path in required_paths
-        if not (repo_root / rel_path).exists()
+        rel_path for rel_path in required_paths if not (repo_root / rel_path).exists()
     ]
     base = {
         "proof_id": proof_id,
@@ -747,7 +741,7 @@ def build_hex_mesh_route_stage_operator_metrics_smoke(
         ),
         "optional_component_flags_read_only": (
             "_route_stage_component_enabled" in metrics_text
-            and "_safe_getattr(component, \"enabled\", False)" in metrics_text
+            and '_safe_getattr(component, "enabled", False)' in metrics_text
             and not any(token in metrics_text for token in forbidden_mutation_tokens)
         ),
         "endpoint_regression_tests_present": all(
@@ -809,9 +803,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "waggledance_route_stage_request_latency_histogram_ms",
     )
     missing_inputs = [
-        rel_path
-        for rel_path in required_paths
-        if not (repo_root / rel_path).exists()
+        rel_path for rel_path in required_paths if not (repo_root / rel_path).exists()
     ]
     base = {
         "proof_id": proof_id,
@@ -845,9 +837,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "import_root": str(resolved_import_root),
         }
 
-    chat_text = (
-        repo_root / "waggledance/adapters/http/routes/chat.py"
-    ).read_text(encoding="utf-8")
+    chat_text = (repo_root / "waggledance/adapters/http/routes/chat.py").read_text(
+        encoding="utf-8"
+    )
     metrics_text = (
         repo_root / "waggledance/adapters/http/routes/metrics.py"
     ).read_text(encoding="utf-8")
@@ -857,18 +849,14 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     provider_text = (
         repo_root / "waggledance/adapters/http/route_stage_latency_feed.py"
     ).read_text(encoding="utf-8")
-    container_text = (
-        repo_root / "waggledance/bootstrap/container.py"
-    ).read_text(encoding="utf-8")
-    html_text = (repo_root / "web/hologram-brain-v6.html").read_text(
+    container_text = (repo_root / "waggledance/bootstrap/container.py").read_text(
         encoding="utf-8"
     )
-    settings_text = (repo_root / "configs/settings.yaml").read_text(
+    html_text = (repo_root / "web/hologram-brain-v6.html").read_text(encoding="utf-8")
+    settings_text = (repo_root / "configs/settings.yaml").read_text(encoding="utf-8")
+    metrics_tests_text = (repo_root / "tests/test_metrics_endpoint.py").read_text(
         encoding="utf-8"
     )
-    metrics_tests_text = (
-        repo_root / "tests/test_metrics_endpoint.py"
-    ).read_text(encoding="utf-8")
     chat_tests_text = (
         repo_root / "tests/integration/test_chat_api_contract.py"
     ).read_text(encoding="utf-8")
@@ -943,23 +931,22 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "route_stage_trace",
         )
         expected_lines = {
-            'waggledance_route_stage_observations_total{'
+            "waggledance_route_stage_observations_total{"
             'stage="language_detection"} 2.0',
-            'waggledance_route_stage_observations_total{'
-            'stage="hot_cache"} 2.0',
-            'waggledance_route_stage_observations_total{'
+            "waggledance_route_stage_observations_total{" 'stage="hot_cache"} 2.0',
+            "waggledance_route_stage_observations_total{"
             'stage="orchestrator_llm_fallback"} 1.0',
-            'waggledance_route_stage_request_latency_ms_total{'
+            "waggledance_route_stage_request_latency_ms_total{"
             'stage="language_detection"} 20.0',
-            'waggledance_route_stage_request_latency_ms_total{'
+            "waggledance_route_stage_request_latency_ms_total{"
             'stage="hot_cache"} 20.0',
-            'waggledance_route_stage_request_latency_ms_total{'
+            "waggledance_route_stage_request_latency_ms_total{"
             'stage="orchestrator_llm_fallback"} 12.5',
-            'waggledance_route_stage_request_latency_histogram_ms_bucket{'
+            "waggledance_route_stage_request_latency_histogram_ms_bucket{"
             'le="50",stage="language_detection"} 2.0',
-            'waggledance_route_stage_request_latency_histogram_ms_count{'
+            "waggledance_route_stage_request_latency_histogram_ms_count{"
             'stage="language_detection"} 2.0',
-            'waggledance_route_stage_request_latency_histogram_ms_sum{'
+            "waggledance_route_stage_request_latency_histogram_ms_sum{"
             'stage="language_detection"} 20.0',
         }
         runtime_contract = {
@@ -994,7 +981,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "request.query",
         "profile=",
         "language=",
-        "route_stage_trace\": trace",
+        'route_stage_trace": trace',
     )
     checks = {
         "chat_records_after_sanitized_response": (
@@ -1058,7 +1045,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             )
         ),
         "ops_latency_feed_state_present": all(
-            token in "\n".join(
+            token
+            in "\n".join(
                 (
                     ops_text,
                     provider_text,
@@ -1125,7 +1113,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "route-stage runtime observation/latency counters" in docs_text
             and "waggledance_route_stage_observations_total" in docs_text
             and "waggledance_route_stage_request_latency_ms_total" in docs_text
-            and "waggledance_route_stage_request_latency_histogram_ms_bucket" in docs_text
+            and "waggledance_route_stage_request_latency_histogram_ms_bucket"
+            in docs_text
             and "ROUTE_STAGE_LATENCY_RUNBOOK.md" in docs_text
             and "It is not an internal span timer" in docs_text
             and "route_stage_latency_feed" in docs_text
@@ -1202,9 +1191,7 @@ def _build_hex_mesh_runtime_trace_smoke_from_static(static_proof: dict) -> dict:
     if not current_config.get("hex_mesh_enabled", False):
         disabled_static_stages.append("hex_neighbor_assist_7_cell")
     expected_live_order = [
-        stage
-        for stage in static_route_order
-        if stage not in disabled_static_stages
+        stage for stage in static_route_order if stage not in disabled_static_stages
     ]
 
     class _TraceHotCache:
@@ -1384,8 +1371,7 @@ def _build_hex_mesh_runtime_trace_smoke_from_static(static_proof: dict) -> dict:
             "source": getattr(result, "source", None),
             "confidence": getattr(result, "confidence", None),
             "cached": getattr(result, "cached", None),
-            "hybrid_trace_present": getattr(result, "hybrid_trace", None)
-            is not None,
+            "hybrid_trace_present": getattr(result, "hybrid_trace", None) is not None,
             "round_table": getattr(result, "round_table", None),
         },
         "current_config": current_config,
@@ -1480,11 +1466,7 @@ def build_solver_trace_magma_receipt_proof(root: Path | str = ROOT) -> dict:
         "tools/run_runtime_receipt_emission_proof.py",
         "tools/verify_magma_receipt.py",
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_solver_trace_magma_receipt_proof(
             missing_inputs=missing,
@@ -1538,15 +1520,11 @@ def build_solver_trace_magma_receipt_proof(root: Path | str = ROOT) -> dict:
         "reason_codes": report.get("reason_codes", []),
         "solver_selection": report.get("solver_selection", []),
         "solver_call_trace_count": report.get("solver_call_trace_count"),
-        "solver_call_trace_digest_bound": report.get(
-            "solver_call_trace_digest_bound"
-        ),
+        "solver_call_trace_digest_bound": report.get("solver_call_trace_digest_bound"),
         "solver_call_trace_receipt_bound": report.get(
             "solver_call_trace_receipt_bound"
         ),
-        "solver_call_trace_privacy_safe": report.get(
-            "solver_call_trace_privacy_safe"
-        ),
+        "solver_call_trace_privacy_safe": report.get("solver_call_trace_privacy_safe"),
         "raw_payload_leak_check": report.get("raw_payload_leak_check"),
         "external_writes_applied": False,
         "local_artifacts_written": True,
@@ -1571,11 +1549,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         "waggledance/core/capabilities/selector.py",
         "waggledance/core/capabilities/registry.py",
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_deterministic_solver_trace_proof(
             missing_inputs=missing,
@@ -1602,10 +1576,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         for item in trace
         if item.get("stage") == "solver_call"
     ]
-    query_text_recorded = (
-        sample_query in trace_json
-        or '"query"' in trace_json
-    )
+    query_text_recorded = sample_query in trace_json or '"query"' in trace_json
     receipt_proof = build_solver_trace_magma_receipt_proof(root)
     ok = (
         result.quality_path == "gold"
@@ -1613,10 +1584,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         and selected_solver_ids == ["solve.math"]
         and bool(trace)
         and not query_text_recorded
-        and all(
-            item.get("execution_boundary") == "safe_action_bus"
-            for item in trace
-        )
+        and all(item.get("execution_boundary") == "safe_action_bus" for item in trace)
         and receipt_proof.get("ok") is True
     )
     return {
@@ -1635,9 +1603,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         "magma_execution_receipt_proof": receipt_proof,
         "receipt_metrics": {
             "receipt_count": receipt_proof.get("receipt_count"),
-            "solver_call_trace_count": receipt_proof.get(
-                "solver_call_trace_count"
-            ),
+            "solver_call_trace_count": receipt_proof.get("solver_call_trace_count"),
             "solver_call_trace_receipt_bound": receipt_proof.get(
                 "solver_call_trace_receipt_bound"
             ),
@@ -1695,11 +1661,7 @@ def build_hexagonal_upgrade_proof(root: Path | str = ROOT) -> dict:
         "waggledance/core/hex_topology/ring_messaging.py",
         "waggledance/core/hex_topology/parent_child_relations.py",
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_hexagonal_upgrade_proof(
             missing_inputs=missing,
@@ -1775,7 +1737,8 @@ def build_hexagonal_upgrade_proof(root: Path | str = ROOT) -> dict:
     ok = (
         topology == original
         and plan.no_runtime_mutation
-        and relations["thermal_children"] == [
+        and relations["thermal_children"]
+        == [
             "thermal.cooling",
             "thermal.heating",
         ]
@@ -1931,9 +1894,9 @@ def build_hexagonal_upgrade_runtime_smoke(
     metrics_text = (
         repo_root / "waggledance/adapters/http/routes/metrics.py"
     ).read_text(encoding="utf-8")
-    metrics_tests_text = (
-        repo_root / "tests/test_metrics_endpoint.py"
-    ).read_text(encoding="utf-8")
+    metrics_tests_text = (repo_root / "tests/test_metrics_endpoint.py").read_text(
+        encoding="utf-8"
+    )
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     assist_wiring_present = (
         "def hex_neighbor_assist" in container_text
@@ -1979,13 +1942,9 @@ def build_hexagonal_upgrade_runtime_smoke(
         registry_stats = registry.stats()
         cells = registry.cells
         cell_ids = list(cells.keys())
-        enabled_cell_ids = [
-            cell_id for cell_id, cell in cells.items() if cell.enabled
-        ]
+        enabled_cell_ids = [cell_id for cell_id, cell in cells.items() if cell.enabled]
         neighbor_map = {
-            cell_id: [
-                neighbor.id for neighbor in registry.get_neighbor_cells(cell_id)
-            ]
+            cell_id: [neighbor.id for neighbor in registry.get_neighbor_cells(cell_id)]
             for cell_id in cell_ids
         }
         for sample in (
@@ -2009,13 +1968,15 @@ def build_hexagonal_upgrade_runtime_smoke(
                 str(sample["query"]),
                 str(sample["intent"]),
             )
-            sample_origins.append({
-                "query": sample["query"],
-                "intent": sample["intent"],
-                "expected_cell": sample["expected_cell"],
-                "cell_id": selected,
-                "matched_expected": selected == sample["expected_cell"],
-            })
+            sample_origins.append(
+                {
+                    "query": sample["query"],
+                    "intent": sample["intent"],
+                    "expected_cell": sample["expected_cell"],
+                    "cell_id": selected,
+                    "matched_expected": selected == sample["expected_cell"],
+                }
+            )
         container_registry_present = registry.cell_count > 0
 
         from fastapi import FastAPI
@@ -2043,9 +2004,7 @@ def build_hexagonal_upgrade_runtime_smoke(
             "profile=",
             "route_stage_trace",
         )
-        missing_lines = sorted(
-            line for line in expected_lines if line not in body
-        )
+        missing_lines = sorted(line for line in expected_lines if line not in body)
         metrics_contract = {
             "ok": (
                 resp.status_code == 200
@@ -2142,9 +2101,7 @@ def build_hexagonal_upgrade_runtime_smoke(
             "stats": registry_stats,
         },
         "operator_metrics_smoke": operator_metrics_smoke,
-        "shadow_child_cell_ids_absent_from_runtime_config": (
-            shadow_children_absent
-        ),
+        "shadow_child_cell_ids_absent_from_runtime_config": (shadow_children_absent),
         "shadow_child_cell_ids": list(shadow_child_ids),
         "no_runtime_topology_mutation": shadow_children_absent,
         "runtime_authority_changed": False,
@@ -2215,14 +2172,13 @@ def build_low_risk_autonomy_proof() -> dict:
             after = router.route(query)
             intent = (
                 cp.get_growth_intent(tick.intent_id)
-                if tick.intent_id is not None else None
+                if tick.intent_id is not None
+                else None
             )
             queue_rows = cp.list_autogrowth_queue(limit=5)
             runs = cp.list_autogrowth_runs(family_kind=family_kind, limit=5)
             served_value = (
-                after.output
-                if isinstance(after.output, (int, float))
-                else None
+                after.output if isinstance(after.output, (int, float)) else None
             )
             ok = (
                 is_low_risk_family(family_kind)
@@ -2296,7 +2252,8 @@ def build_low_risk_autonomy_proof() -> dict:
                         "priority": intent.priority,
                         "signal_count": intent.signal_count,
                     }
-                    if intent is not None else None
+                    if intent is not None
+                    else None
                 ),
                 "queue_after_tick": [
                     {
@@ -2402,11 +2359,7 @@ def build_low_risk_autogrowth_runtime_boundary_smoke(
         "waggledance/adapters/http/api.py",
         "tests/integration/test_runtime_autogrowth_lifespan.py",
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_low_risk_runtime_boundary_smoke(
             missing_inputs=missing,
@@ -2444,9 +2397,7 @@ def build_low_risk_autogrowth_runtime_boundary_smoke(
     container = None
     cp_db = None
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="wd-image1-autogrowth-runtime-"
-        ) as tmp:
+        with tempfile.TemporaryDirectory(prefix="wd-image1-autogrowth-runtime-") as tmp:
             temp_root = Path(tmp)
             os.chdir(temp_root)
             container = Container(
@@ -2471,7 +2422,8 @@ def build_low_risk_autogrowth_runtime_boundary_smoke(
             finally:
                 cp_db = (
                     getattr(container, "control_plane_db", None)
-                    if container is not None else None
+                    if container is not None
+                    else None
                 )
                 if cp_db is not None:
                     cp_db.close()
@@ -2572,11 +2524,7 @@ def build_low_risk_autogrowth_operator_metrics_smoke(
         "tests/test_metrics_endpoint.py",
         "docs/API.md",
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_low_risk_operator_metrics_smoke(
             missing_inputs=missing,
@@ -2602,29 +2550,21 @@ def build_low_risk_autogrowth_operator_metrics_smoke(
     for node in ast.walk(metrics_tree):
         if isinstance(node, ast.Assign):
             target_names = [
-                target.id
-                for target in node.targets
-                if isinstance(target, ast.Name)
+                target.id for target in node.targets if isinstance(target, ast.Name)
             ]
-            if (
-                "_AUTOGROWTH_COUNTER_NAMES" in target_names
-                and isinstance(node.value, ast.Tuple)
+            if "_AUTOGROWTH_COUNTER_NAMES" in target_names and isinstance(
+                node.value, ast.Tuple
             ):
                 counter_source_names = [
                     item.value
                     for item in node.value.elts
-                    if isinstance(item, ast.Constant)
-                    and isinstance(item.value, str)
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
                 ]
-            if (
-                "gauge_values" in target_names
-                and isinstance(node.value, ast.Dict)
-            ):
+            if "gauge_values" in target_names and isinstance(node.value, ast.Dict):
                 gauge_source_names.update(
                     key.value
                     for key in node.value.keys
-                    if isinstance(key, ast.Constant)
-                    and isinstance(key.value, str)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
                 )
         if (
             isinstance(node, ast.AnnAssign)
@@ -2635,15 +2575,10 @@ def build_low_risk_autogrowth_operator_metrics_smoke(
             counter_source_names = [
                 item.value
                 for item in node.value.elts
-                if isinstance(item, ast.Constant)
-                and isinstance(item.value, str)
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
             ]
         if isinstance(node, ast.Call) and node.args:
-            func_name = (
-                node.func.id
-                if isinstance(node.func, ast.Name)
-                else None
-            )
+            func_name = node.func.id if isinstance(node.func, ast.Name) else None
             if (
                 func_name in {"GaugeMetricFamily", "CounterMetricFamily"}
                 and isinstance(node.args[0], ast.Constant)
@@ -2654,15 +2589,10 @@ def build_low_risk_autogrowth_operator_metrics_smoke(
 
     emitted_metric_names = set(literal_metric_names)
     emitted_metric_names.update(
-        f"waggledance_autogrowth_{name}"
-        for name in gauge_source_names
+        f"waggledance_autogrowth_{name}" for name in gauge_source_names
     )
     for source_name in counter_source_names:
-        base = (
-            source_name[:-6]
-            if source_name.endswith("_total")
-            else source_name
-        )
+        base = source_name[:-6] if source_name.endswith("_total") else source_name
         emitted_metric_names.add(f"waggledance_autogrowth_{base}_total")
 
     test_text = (repo_root / "tests/test_metrics_endpoint.py").read_text(
@@ -2748,11 +2678,7 @@ def build_low_risk_autogrowth_alert_runbook_smoke(
     runbook_rel = "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md"
     api_rel = "docs/API.md"
     required = (runbook_rel, api_rel)
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_low_risk_autogrowth_alert_runbook_smoke(
             missing_inputs=missing,
@@ -2785,9 +2711,7 @@ def build_low_risk_autogrowth_alert_runbook_smoke(
         "increase(waggledance_autogrowth_non_idle_ticks_total[10m]) > 20",
     }
     missing_threshold_rules = [
-        rule
-        for rule in sorted(required_threshold_rules)
-        if rule not in runbook_text
+        rule for rule in sorted(required_threshold_rules) if rule not in runbook_text
     ]
     forbidden_control_tokens = {
         "POST /api/autogrowth",
@@ -2861,9 +2785,7 @@ def _blocked_magma_handoff_provider_metrics_runbook_smoke(
         "ok": False,
         "blocked_reason": blocked_reason,
         "missing_inputs": list(missing_inputs),
-        "runbook_path": (
-            "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
-        ),
+        "runbook_path": ("docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"),
         "api_docs_path": "docs/API.md",
         "metrics_endpoint": "/metrics",
         "alert_thresholds_documented": False,
@@ -2897,11 +2819,7 @@ def build_magma_handoff_provider_metrics_runbook_smoke(
     metrics_rel = "waggledance/adapters/http/routes/metrics.py"
     tests_rel = "tests/test_metrics_endpoint.py"
     required = (runbook_rel, api_rel, metrics_rel, tests_rel)
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_magma_handoff_provider_metrics_runbook_smoke(
             missing_inputs=missing,
@@ -2944,19 +2862,17 @@ def build_magma_handoff_provider_metrics_runbook_smoke(
         "waggledance_magma_handoff_runtime_authority_granted > 0",
         "waggledance_magma_handoff_payload_files_imported > 0",
         (
-            'waggledance_magma_handoff_provider_alert_active{'
+            "waggledance_magma_handoff_provider_alert_active{"
             'alert_id="MagmaShareImportHandoffProviderUnavailable"} == 1'
         ),
         (
-            'waggledance_magma_handoff_provider_alert_active{'
+            "waggledance_magma_handoff_provider_alert_active{"
             'alert_id="MagmaShareImportHandoffFreshnessSourceUnavailable"} '
             "== 1"
         ),
     }
     missing_threshold_rules = [
-        rule
-        for rule in sorted(required_threshold_rules)
-        if rule not in runbook_text
+        rule for rule in sorted(required_threshold_rules) if rule not in runbook_text
     ]
     forbidden_control_tokens = {
         "import_payload",
@@ -3085,11 +3001,7 @@ def build_magma_handoff_metrics_alert_state_smoke(
     docs_rel = "docs/API.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
     required = (api_rel, html_rel, tests_rel, docs_rel, runbook_rel)
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_magma_handoff_metrics_alert_state_smoke(
             missing_inputs=missing,
@@ -3235,8 +3147,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "blocked_reason": blocked_reason,
         "missing_inputs": list(missing_inputs),
         "adapter_path": (
-            "waggledance/adapters/http/"
-            "magma_handoff_metrics_alert_feed.py"
+            "waggledance/adapters/http/" "magma_handoff_metrics_alert_feed.py"
         ),
         "settings_path": "configs/settings.yaml",
         "ops_endpoint": "/api/ops",
@@ -3286,9 +3197,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     """Prove the MAGMA metrics Alertmanager adapter is configured read-only."""
 
     repo_root = Path(root)
-    adapter_rel = (
-        "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
-    )
+    adapter_rel = "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
     container_rel = "waggledance/bootstrap/container.py"
     ops_rel = "waggledance/adapters/http/routes/compat_dashboard.py"
     metrics_rel = "waggledance/adapters/http/routes/metrics.py"
@@ -3298,33 +3207,19 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bridge_template_rel = (
         "tools/build_magma_alert_feed_reviewer_bridge_event_template.py"
     )
-    bundle_index_rel = (
-        "tools/build_magma_alert_feed_reviewer_handoff_bundle_index.py"
-    )
+    bundle_index_rel = "tools/build_magma_alert_feed_reviewer_handoff_bundle_index.py"
     bundle_verifier_rel = (
         "tools/verify_magma_alert_feed_reviewer_handoff_bundle_index.py"
     )
     bundle_verification_summary_rel = (
         "tools/build_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py"
     )
-    decision_reference_validator_rel = (
-        "tools/validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py"
-    )
-    decision_reference_review_summary_rel = (
-        "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary.py"
-    )
-    decision_reference_review_bundle_index_rel = (
-        "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py"
-    )
-    decision_reference_review_bundle_verifier_rel = (
-        "tools/verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py"
-    )
-    decision_reference_review_bundle_verification_summary_rel = (
-        "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_rel = (
-        "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py"
-    )
+    decision_reference_validator_rel = "tools/validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference.py"
+    decision_reference_review_summary_rel = "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary.py"
+    decision_reference_review_bundle_index_rel = "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py"
+    decision_reference_review_bundle_verifier_rel = "tools/verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py"
+    decision_reference_review_bundle_verification_summary_rel = "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary.py"
+    decision_reference_review_bundle_verification_bridge_template_rel = "tools/build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py"
     decision_reference_review_bundle_verification_bridge_template_index_entry_rel = (
         "tools/build_magma_decision_review_verification_template_index_entry.py"
     )
@@ -3334,27 +3229,17 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_rel = (
         "tools/build_magma_decision_review_verification_template_index_entry_summary.py"
     )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_rel = (
-        "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_rel = (
-        "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_rel = (
-        "tools/verify_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
-    )
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_rel = "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_rel = "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_rel = "tools/verify_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
-    package_tests_rel = (
-        "tests/tools/test_magma_alert_feed_release_evidence_package.py"
-    )
+    package_tests_rel = "tests/tools/test_magma_alert_feed_release_evidence_package.py"
     validator_tests_rel = (
         "tests/tools/test_magma_alert_feed_release_evidence_validator.py"
     )
-    summary_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_summary.py"
-    )
+    summary_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_summary.py"
     bridge_template_tests_rel = (
         "tests/tools/test_magma_alert_feed_reviewer_bridge_event_template.py"
     )
@@ -3364,45 +3249,21 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     bundle_verifier_tests_rel = (
         "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_verifier.py"
     )
-    bundle_verification_summary_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py"
-    )
-    decision_reference_validator_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_validator.py"
-    )
-    decision_reference_review_summary_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary.py"
-    )
-    decision_reference_review_bundle_index_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py"
-    )
-    decision_reference_review_bundle_verifier_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verifier.py"
-    )
-    decision_reference_review_bundle_verification_summary_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_tests_rel = (
-        "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py"
-    )
+    bundle_verification_summary_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_verification_summary.py"
+    decision_reference_validator_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_validator.py"
+    decision_reference_review_summary_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary.py"
+    decision_reference_review_bundle_index_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.py"
+    decision_reference_review_bundle_verifier_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verifier.py"
+    decision_reference_review_bundle_verification_summary_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary.py"
+    decision_reference_review_bundle_verification_bridge_template_tests_rel = "tests/tools/test_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.py"
     decision_reference_review_bundle_verification_bridge_template_index_entry_tests_rel = (
         "tests/tools/test_magma_decision_review_verification_template_index_entry.py"
     )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_rel = (
-        "tests/tools/test_magma_decision_review_verification_template_index_entry_verifier.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_rel = (
-        "tests/tools/test_magma_decision_review_verification_template_index_entry_summary.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_rel = (
-        "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_rel = (
-        "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
-    )
-    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_rel = (
-        "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verifier.py"
-    )
+    decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_verifier.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verifier.py"
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
@@ -3458,11 +3319,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         runbook_rel,
         hologram_rel,
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
             missing_inputs=missing,
@@ -3475,15 +3332,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     package_text = (repo_root / package_rel).read_text(encoding="utf-8")
     validator_text = (repo_root / validator_rel).read_text(encoding="utf-8")
     summary_text = (repo_root / summary_rel).read_text(encoding="utf-8")
-    bridge_template_text = (repo_root / bridge_template_rel).read_text(
-        encoding="utf-8"
-    )
-    bundle_index_text = (repo_root / bundle_index_rel).read_text(
-        encoding="utf-8"
-    )
-    bundle_verifier_text = (repo_root / bundle_verifier_rel).read_text(
-        encoding="utf-8"
-    )
+    bridge_template_text = (repo_root / bridge_template_rel).read_text(encoding="utf-8")
+    bundle_index_text = (repo_root / bundle_index_rel).read_text(encoding="utf-8")
+    bundle_verifier_text = (repo_root / bundle_verifier_rel).read_text(encoding="utf-8")
     bundle_verification_summary_text = (
         repo_root / bundle_verification_summary_rel
     ).read_text(encoding="utf-8")
@@ -3512,37 +3363,39 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
-    metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
-        encoding="utf-8"
-    )
-    package_tests_text = (repo_root / package_tests_rel).read_text(
-        encoding="utf-8"
-    )
-    validator_tests_text = (repo_root / validator_tests_rel).read_text(
-        encoding="utf-8"
-    )
-    summary_tests_text = (repo_root / summary_tests_rel).read_text(
-        encoding="utf-8"
-    )
+    metrics_tests_text = (repo_root / metrics_tests_rel).read_text(encoding="utf-8")
+    package_tests_text = (repo_root / package_tests_rel).read_text(encoding="utf-8")
+    validator_tests_text = (repo_root / validator_tests_rel).read_text(encoding="utf-8")
+    summary_tests_text = (repo_root / summary_tests_rel).read_text(encoding="utf-8")
     bridge_template_tests_text = (repo_root / bridge_template_tests_rel).read_text(
         encoding="utf-8"
     )
@@ -3577,81 +3430,95 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     decision_reference_review_bundle_verification_bridge_template_index_entry_tests_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_tests_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_text = (
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_rel
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
     hologram_text = (repo_root / hologram_rel).read_text(encoding="utf-8")
-    combined_runtime_lower = "\n".join((
-        adapter_text,
-        container_text,
-        ops_text,
-        metrics_text,
-        package_text,
-        validator_text,
-        summary_text,
-        bridge_template_text,
-        bundle_index_text,
-        bundle_verifier_text,
-        bundle_verification_summary_text,
-        decision_reference_validator_text,
-        decision_reference_review_summary_text,
-        decision_reference_review_bundle_index_text,
-        decision_reference_review_bundle_verifier_text,
-        decision_reference_review_bundle_verification_summary_text,
-        decision_reference_review_bundle_verification_bridge_template_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_text,
-        settings_text,
-        metrics_tests_text,
-        package_tests_text,
-        validator_tests_text,
-        summary_tests_text,
-        bridge_template_tests_text,
-        bundle_index_tests_text,
-        bundle_verifier_tests_text,
-        bundle_verification_summary_tests_text,
-        decision_reference_validator_tests_text,
-        decision_reference_review_summary_tests_text,
-        decision_reference_review_bundle_index_tests_text,
-        decision_reference_review_bundle_verifier_tests_text,
-        decision_reference_review_bundle_verification_summary_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_text,
-        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_text,
-        docs_text,
-        manifest_text,
-        runbook_text,
-        hologram_text,
-    )).lower()
+    combined_runtime_lower = "\n".join(
+        (
+            adapter_text,
+            container_text,
+            ops_text,
+            metrics_text,
+            package_text,
+            validator_text,
+            summary_text,
+            bridge_template_text,
+            bundle_index_text,
+            bundle_verifier_text,
+            bundle_verification_summary_text,
+            decision_reference_validator_text,
+            decision_reference_review_summary_text,
+            decision_reference_review_bundle_index_text,
+            decision_reference_review_bundle_verifier_text,
+            decision_reference_review_bundle_verification_summary_text,
+            decision_reference_review_bundle_verification_bridge_template_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_text,
+            settings_text,
+            metrics_tests_text,
+            package_tests_text,
+            validator_tests_text,
+            summary_tests_text,
+            bridge_template_tests_text,
+            bundle_index_tests_text,
+            bundle_verifier_tests_text,
+            bundle_verification_summary_tests_text,
+            decision_reference_validator_tests_text,
+            decision_reference_review_summary_tests_text,
+            decision_reference_review_bundle_index_tests_text,
+            decision_reference_review_bundle_verifier_tests_text,
+            decision_reference_review_bundle_verification_summary_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_text,
+            docs_text,
+            manifest_text,
+            runbook_text,
+            hologram_text,
+        )
+    ).lower()
 
     adapter_contract_present = all(
         token in adapter_text
@@ -3730,18 +3597,21 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     cache_backoff_contract_present = all(
-        token in "\n".join((
-            adapter_text,
-            ops_text,
-            metrics_text,
-            settings_text,
-            tests_text,
-            metrics_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-            hologram_text,
-        ))
+        token
+        in "\n".join(
+            (
+                adapter_text,
+                ops_text,
+                metrics_text,
+                settings_text,
+                tests_text,
+                metrics_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+                hologram_text,
+            )
+        )
         for token in (
             "cache_ttl_s",
             "failure_backoff_s",
@@ -3754,15 +3624,18 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     slo_drill_contract_present = all(
-        token in "\n".join((
-            ops_text,
-            metrics_text,
-            tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-            hologram_text,
-        ))
+        token
+        in "\n".join(
+            (
+                ops_text,
+                metrics_text,
+                tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+                hologram_text,
+            )
+        )
         for token in (
             "MAGMA_HANDOFF_METRICS_ALERT_FEED_SLO_PANELS",
             "magma_alert_feed_availability_5m",
@@ -3789,13 +3662,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     release_evidence_package_contract_present = all(
-        token in "\n".join((
-            package_text,
-            package_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                package_text,
+                package_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_release_evidence.v1",
             "write_magma_alert_feed_release_evidence_package",
@@ -3810,13 +3686,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     release_evidence_validator_contract_present = all(
-        token in "\n".join((
-            validator_text,
-            validator_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                validator_text,
+                validator_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "validate_magma_alert_feed_release_evidence_package",
             "digest_checks",
@@ -3830,13 +3709,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_summary_contract_present = all(
-        token in "\n".join((
-            summary_text,
-            summary_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                summary_text,
+                summary_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_summary.v1",
             "build_magma_alert_feed_reviewer_handoff_summary",
@@ -3851,13 +3733,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_bridge_event_template_contract_present = all(
-        token in "\n".join((
-            bridge_template_text,
-            bridge_template_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                bridge_template_text,
+                bridge_template_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_bridge_event_template.v1",
             "build_magma_alert_feed_reviewer_bridge_event_template",
@@ -3872,13 +3757,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_bridge_event_template_decision_reference_slot_present = all(
-        token in "\n".join((
-            bridge_template_text,
-            bridge_template_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                bridge_template_text,
+                bridge_template_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "operator_decision_ref",
             "decision_reference",
@@ -3889,13 +3777,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_index_contract_present = all(
-        token in "\n".join((
-            bundle_index_text,
-            bundle_index_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                bundle_index_text,
+                bundle_index_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_index.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_index",
@@ -3908,13 +3799,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_verifier_contract_present = all(
-        token in "\n".join((
-            bundle_verifier_text,
-            bundle_verifier_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                bundle_verifier_text,
+                bundle_verifier_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_verification.v1",
             "verify_magma_alert_feed_reviewer_handoff_bundle_index",
@@ -3926,13 +3820,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_verification_summary_contract_present = all(
-        token in "\n".join((
-            bundle_verification_summary_text,
-            bundle_verification_summary_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                bundle_verification_summary_text,
+                bundle_verification_summary_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_verification_summary.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_verification_summary",
@@ -3944,13 +3841,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_validator_contract_present = all(
-        token in "\n".join((
-            decision_reference_validator_text,
-            decision_reference_validator_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_validator_text,
+                decision_reference_validator_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_validation.v1",
             "validate_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference",
@@ -3963,13 +3863,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_summary_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_summary_text,
-            decision_reference_review_summary_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_summary_text,
+                decision_reference_review_summary_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_summary",
@@ -3982,13 +3885,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_index_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_index_text,
-            decision_reference_review_bundle_index_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_index_text,
+                decision_reference_review_bundle_index_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index",
@@ -4009,13 +3915,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verifier_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verifier_text,
-            decision_reference_review_bundle_verifier_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verifier_text,
+                decision_reference_review_bundle_verifier_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification.v1",
             "verify_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_index",
@@ -4035,13 +3944,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_summary_text,
-            decision_reference_review_bundle_verification_summary_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_summary_text,
+                decision_reference_review_bundle_verification_summary_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_summary",
@@ -4062,13 +3974,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_text,
-            decision_reference_review_bundle_verification_bridge_template_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_text,
+                decision_reference_review_bundle_verification_bridge_template_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template",
@@ -4090,13 +4005,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_index_entry_text,
-            decision_reference_review_bundle_verification_bridge_template_index_entry_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry.v1",
             "build_magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry",
@@ -4119,13 +4037,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verifier_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_text,
-            decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_verifier_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification.v1",
             "verify_magma_decision_review_verification_template_index_entry",
@@ -4149,13 +4070,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_text,
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary.v1",
             "build_magma_decision_review_verification_template_index_entry_summary",
@@ -4178,13 +4102,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_text,
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template.v1",
             "build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template",
@@ -4207,13 +4134,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_text,
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.v1",
             "build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry",
@@ -4236,13 +4166,16 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
     )
     reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_contract_present = all(
-        token in "\n".join((
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_text,
-            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_text,
-            docs_text,
-            manifest_text,
-            runbook_text,
-        ))
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
         for token in (
             "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification.v1",
             "verify_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry",
@@ -4522,11 +4455,7 @@ def build_low_risk_autogrowth_ops_alert_state_smoke(
     tests_rel = "tests/test_legacy_consolidation.py"
     docs_rel = "docs/API.md"
     required = (api_rel, html_rel, tests_rel, docs_rel)
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_low_risk_autogrowth_ops_alert_state_smoke(
             missing_inputs=missing,
@@ -4536,9 +4465,7 @@ def build_low_risk_autogrowth_ops_alert_state_smoke(
     html_text = (repo_root / html_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
-    combined_runtime_lower = "\n".join(
-        (api_text, html_text, docs_text)
-    ).lower()
+    combined_runtime_lower = "\n".join((api_text, html_text, docs_text)).lower()
 
     api_contract_present = all(
         token in api_text
@@ -4762,11 +4689,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
         "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md",
     )
-    missing = [
-        rel_path
-        for rel_path in required
-        if not (repo_root / rel_path).exists()
-    ]
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
     if missing:
         return _blocked_future_scale_axis_scorecard(
             missing_inputs=missing,
@@ -4797,16 +4720,18 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
     axes = []
     for axis in _FUTURE_SCALE_AXES:
         proxy = axis["proxy"]
-        axes.append({
-            "axis_id": axis["axis_id"],
-            "image_phrase": axis["image_phrase"],
-            "proxy": proxy,
-            "current_status": axis["current_status"],
-            "proxy_named_in_scoreboard_doc": proxy.lower() in honeycomb_lower,
-            "source_path": "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
-            "claim_gate": axis["claim_gate"],
-            "literal_claim_safe": False,
-        })
+        axes.append(
+            {
+                "axis_id": axis["axis_id"],
+                "image_phrase": axis["image_phrase"],
+                "proxy": proxy,
+                "current_status": axis["current_status"],
+                "proxy_named_in_scoreboard_doc": proxy.lower() in honeycomb_lower,
+                "source_path": "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
+                "claim_gate": axis["claim_gate"],
+                "literal_claim_safe": False,
+            }
+        )
 
     claim_decomposition = [
         {
@@ -4855,15 +4780,10 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
 
     eig_disabled_by_default = "enabled: false" in eig_lower
     eig_benchmark_only = (
-        "| m6 | benchmarks and scale simulation | benchmark-only |"
-        in eig_lower
+        "| m6 | benchmarks and scale simulation | benchmark-only |" in eig_lower
     )
-    scorecard_doc_present = "future scale-axis scorecard" in (
-        manifest_text.lower()
-    )
-    all_axis_proxies_named = all(
-        axis["proxy_named_in_scoreboard_doc"] for axis in axes
-    )
+    scorecard_doc_present = "future scale-axis scorecard" in (manifest_text.lower())
+    all_axis_proxies_named = all(axis["proxy_named_in_scoreboard_doc"] for axis in axes)
     ok = (
         all_axis_proxies_named
         and eig_disabled_by_default
@@ -5259,7 +5179,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tools/hex_shadow_subdivision_replay.py",
-                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, and bridge-event template builder.",
+                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, and template index-entry builder.",
             ),
         ),
     )
@@ -5288,11 +5208,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         runtime_boundary_smoke=hex_upgrade_runtime_smoke,
         source_snapshot=hex_upgrade_source_snapshot,
     )
-    hex_upgrade_shadow_replay_verification = (
-        verify_shadow_subdivision_replay_artifact(
-            hex_upgrade_shadow_replay,
-            expected_git_commit=hex_upgrade_source_snapshot.get("git_commit"),
-        )
+    hex_upgrade_shadow_replay_verification = verify_shadow_subdivision_replay_artifact(
+        hex_upgrade_shadow_replay,
+        expected_git_commit=hex_upgrade_source_snapshot.get("git_commit"),
     )
     hex_upgrade_shadow_replay_verifier_summary = (
         build_shadow_subdivision_replay_verifier_summary(
@@ -5310,12 +5228,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             role="lead-impl",
         )
     )
-    hex_upgrade_proof["runtime_boundary_smoke"] = (
-        hex_upgrade_runtime_smoke
+    hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        hex_upgrade_shadow_replay_verifier_summary_bridge_event_template,
+        template_report_bytes=json.dumps(
+            hex_upgrade_shadow_replay_verifier_summary_bridge_event_template,
+            sort_keys=True,
+        ).encode("utf-8"),
     )
-    hex_upgrade_proof["shadow_subdivision_replay"] = (
-        hex_upgrade_shadow_replay
-    )
+    hex_upgrade_proof["runtime_boundary_smoke"] = hex_upgrade_runtime_smoke
+    hex_upgrade_proof["shadow_subdivision_replay"] = hex_upgrade_shadow_replay
     hex_upgrade_proof["shadow_subdivision_replay_verification"] = (
         hex_upgrade_shadow_replay_verification
     )
@@ -5325,42 +5246,37 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof[
         "shadow_subdivision_replay_verifier_summary_bridge_event_template"
     ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template
+    hex_upgrade_proof[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry"
+    ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
         and hex_upgrade_shadow_replay.get("ok") is True
         and hex_upgrade_shadow_replay_verification.get("ok") is True
         and hex_upgrade_shadow_replay_verifier_summary.get("ok") is True
-        and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template.get(
+        and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template.get("ok")
+        is True
+        and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry.get(
             "ok"
         )
         is True
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
-    low_risk_runtime_boundary_smoke = (
-        build_low_risk_autogrowth_runtime_boundary_smoke(root)
+    low_risk_runtime_boundary_smoke = build_low_risk_autogrowth_runtime_boundary_smoke(
+        root
     )
-    low_risk_operator_metrics_smoke = (
-        build_low_risk_autogrowth_operator_metrics_smoke(root)
+    low_risk_operator_metrics_smoke = build_low_risk_autogrowth_operator_metrics_smoke(
+        root
     )
-    low_risk_alert_runbook_smoke = (
-        build_low_risk_autogrowth_alert_runbook_smoke(root)
+    low_risk_alert_runbook_smoke = build_low_risk_autogrowth_alert_runbook_smoke(root)
+    low_risk_ops_alert_state_smoke = build_low_risk_autogrowth_ops_alert_state_smoke(
+        root
     )
-    low_risk_ops_alert_state_smoke = (
-        build_low_risk_autogrowth_ops_alert_state_smoke(root)
-    )
-    low_risk_autonomy_proof["runtime_boundary_smoke"] = (
-        low_risk_runtime_boundary_smoke
-    )
-    low_risk_autonomy_proof["operator_metrics_smoke"] = (
-        low_risk_operator_metrics_smoke
-    )
-    low_risk_autonomy_proof["alert_runbook_smoke"] = (
-        low_risk_alert_runbook_smoke
-    )
-    low_risk_autonomy_proof["ops_alert_state_smoke"] = (
-        low_risk_ops_alert_state_smoke
-    )
+    low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
+    low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
+    low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
+    low_risk_autonomy_proof["ops_alert_state_smoke"] = low_risk_ops_alert_state_smoke
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
         and low_risk_runtime_boundary_smoke.get("ok") is True
@@ -5370,11 +5286,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
-    magma_metrics_runbook_smoke = (
-        build_magma_handoff_provider_metrics_runbook_smoke(root)
+    magma_metrics_runbook_smoke = build_magma_handoff_provider_metrics_runbook_smoke(
+        root
     )
-    magma_metrics_alert_state_smoke = (
-        build_magma_handoff_metrics_alert_state_smoke(root)
+    magma_metrics_alert_state_smoke = build_magma_handoff_metrics_alert_state_smoke(
+        root
     )
     magma_metrics_alertmanager_adapter_smoke = (
         build_magma_handoff_metrics_alertmanager_adapter_smoke(root)
@@ -5382,12 +5298,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     magma_audit_proof = dict(
         solver_trace_proof.get("magma_execution_receipt_proof") or {}
     )
-    magma_audit_proof["provider_metrics_runbook_smoke"] = (
-        magma_metrics_runbook_smoke
-    )
-    magma_audit_proof["metrics_alert_state_smoke"] = (
-        magma_metrics_alert_state_smoke
-    )
+    magma_audit_proof["provider_metrics_runbook_smoke"] = magma_metrics_runbook_smoke
+    magma_audit_proof["metrics_alert_state_smoke"] = magma_metrics_alert_state_smoke
     magma_audit_proof["metrics_alertmanager_adapter_smoke"] = (
         magma_metrics_alertmanager_adapter_smoke
     )
@@ -5404,8 +5316,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             capability_id="hex_mesh_entry",
             title="Hex-mesh query entry",
             image_claim=(
-                "Every query first enters an intelligent 8-cell honeycomb "
-                "topology."
+                "Every query first enters an intelligent 8-cell honeycomb " "topology."
             ),
             safe_statement=(
                 "WD has two independent topologies: an 8-cell "
@@ -5616,8 +5527,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             claim_safe=False,
             evidence=autogrowth_evidence,
             gaps=(
-                "AutogrowthScheduler is caller-driven and explicitly "
-                "bounded.",
+                "AutogrowthScheduler is caller-driven and explicitly " "bounded.",
                 "The low-risk allowlist is fixed; adding families requires "
                 "reviewed deterministic compiler and executor support.",
                 "The executable proof uses an ephemeral temp DB; it does not "
@@ -5661,14 +5571,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "without bridge writes, transport, or runtime authority. A "
                 "template-only bridge-event template renderer can turn that "
                 "summary into schema-valid handoff JSON without appending it "
-                "or granting subdivision authority."
+                "or granting subdivision authority, and a local index entry "
+                "binds that template's digest and schema check without "
+                "including payloads or granting runtime authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
             evidence=hex_upgrade_evidence,
             gaps=(
-                "Subdivision is shadow-first and does not mutate runtime "
-                "topology.",
+                "Subdivision is shadow-first and does not mutate runtime " "topology.",
                 "Ring delivery is pure validation, not a networked runtime "
                 "delivery layer.",
                 "The runtime boundary smoke and metrics report current "
@@ -5676,9 +5587,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local index entry for the shadow subdivision replay "
-                "verifier summary bridge-event template without appending it "
-                "or activating runtime subdivision authority."
+                "Add a local verifier for the shadow subdivision replay "
+                "verifier summary bridge-event template index entry without "
+                "appending it or activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),
@@ -5698,12 +5609,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             claim_safe=False,
             evidence=future_evidence,
             gaps=(
-                "No finite software system can honestly prove infinite "
-                "scalability.",
+                "No finite software system can honestly prove infinite " "scalability.",
                 "Future claims must be tied to measured axes such as "
                 "coverage, fallback rate, latency, and audit completeness.",
                 "The current scorecard defines gates; it does not yet export "
-                "all runtime metrics."
+                "all runtime metrics.",
             ),
             next_smallest_pr=(
                 "Populate the scale-axis scorecard from runtime metrics and "

@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from tools.hex_shadow_subdivision_replay import (
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary,
     build_shadow_subdivision_replay_artifact,
@@ -21,7 +22,6 @@ from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_runtime_smoke,
 )
 from waggledance.core.bridge_event_schema import validate_event
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "hex_shadow_subdivision_replay.py"
@@ -39,11 +39,7 @@ def _canonical_digest(value: Any) -> str:
 
 def _refresh_artifact_digest(artifact: dict) -> None:
     artifact["artifact_digest"] = _canonical_digest(
-        {
-            key: value
-            for key, value in artifact.items()
-            if key != "artifact_digest"
-        }
+        {key: value for key, value in artifact.items() if key != "artifact_digest"}
     )
 
 
@@ -75,6 +71,27 @@ def _valid_verifier_summary() -> dict:
     )
 
 
+def _valid_verifier_summary_bridge_event_template() -> dict:
+    return build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        _valid_verifier_summary(),
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+        run_id="codex-lead-1-20260531T120000Z",
+        session_id="codex-lead-1-20260531T120000Z",
+        now_utc=datetime(2026, 5, 31, 12, 30, tzinfo=timezone.utc),
+    )
+
+
+def _json_bytes(value: dict) -> bytes:
+    return json.dumps(value, sort_keys=True).encode("utf-8")
+
+
+def _raw_sha256(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
 def test_hex_shadow_replay_verifier_accepts_current_artifact() -> None:
     artifact = _valid_replay_artifact()
 
@@ -97,7 +114,9 @@ def test_hex_shadow_replay_verifier_accepts_current_artifact() -> None:
     assert str(ROOT) not in json.dumps(report, sort_keys=True)
 
 
-def test_hex_shadow_replay_verifier_summary_renders_path_free_context_without_authority() -> None:
+def test_hex_shadow_replay_verifier_summary_renders_path_free_context_without_authority() -> (
+    None
+):
     report = _valid_verifier_report()
 
     summary = build_shadow_subdivision_replay_verifier_summary(
@@ -119,7 +138,9 @@ def test_hex_shadow_replay_verifier_summary_renders_path_free_context_without_au
     }
     verification = summary["shadow_subdivision_replay_verification"]
     assert verification["verification_ok"] is True
-    assert verification["verifier_proof_id"] == "hex_shadow_subdivision_replay_verifier_v1"
+    assert (
+        verification["verifier_proof_id"] == "hex_shadow_subdivision_replay_verifier_v1"
+    )
     assert verification["verified_proof_id"] == "hex_shadow_subdivision_replay_v1"
     assert verification["artifact_declared_ok"] is True
     assert verification["recomputed_contract_ok"] is True
@@ -142,7 +163,9 @@ def test_hex_shadow_replay_verifier_summary_renders_path_free_context_without_au
     assert str(ROOT) not in json.dumps(summary, sort_keys=True)
 
 
-def test_hex_shadow_replay_verifier_summary_propagates_blockers_without_authority() -> None:
+def test_hex_shadow_replay_verifier_summary_propagates_blockers_without_authority() -> (
+    None
+):
     artifact = _valid_replay_artifact()
     artifact["guardrails"]["runtime_authority_changed"] = True
     _refresh_artifact_digest(artifact)
@@ -170,9 +193,13 @@ def test_hex_shadow_replay_verifier_summary_propagates_blockers_without_authorit
     assert summary["runtime_subdivision_authority_granted"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_blocks_pathy_report_without_leaking_path() -> None:
+def test_hex_shadow_replay_verifier_summary_blocks_pathy_report_without_leaking_path() -> (
+    None
+):
     report = _valid_verifier_report()
-    report["safe_conclusion"] = "review scratch at C:/Python/project2-master/private.json"
+    report["safe_conclusion"] = (
+        "review scratch at C:/Python/project2-master/private.json"
+    )
 
     summary = build_shadow_subdivision_replay_verifier_summary(
         report,
@@ -189,7 +216,9 @@ def test_hex_shadow_replay_verifier_summary_blocks_pathy_report_without_leaking_
     assert summary["local_paths_recorded"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_blocks_malformed_report_blockers_before_template() -> None:
+def test_hex_shadow_replay_verifier_summary_blocks_malformed_report_blockers_before_template() -> (
+    None
+):
     report = _valid_verifier_report()
     report["blockers"] = "hidden_blocker"
 
@@ -214,8 +243,7 @@ def test_hex_shadow_replay_verifier_summary_blocks_malformed_report_blockers_bef
     assert template["ok"] is False
     assert "bridge_event_template" not in template
     assert any(
-        "operator_boundary_blockers_present" in item
-        for item in template["blockers"]
+        "operator_boundary_blockers_present" in item for item in template["blockers"]
     )
 
 
@@ -252,7 +280,9 @@ def test_hex_shadow_replay_verifier_summary_cli_json_is_path_free(
     assert str(tmp_path) not in result.stderr
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_is_valid_without_writing() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_is_valid_without_writing() -> (
+    None
+):
     summary = _valid_verifier_summary()
 
     report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
@@ -298,7 +328,9 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_is_valid_witho
     assert str(ROOT) not in json.dumps(report, sort_keys=True)
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_authority() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_authority() -> (
+    None
+):
     summary = _valid_verifier_summary()
     summary["runtime_subdivision_authority_granted"] = True
 
@@ -311,15 +343,16 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_authori
     assert report["ok"] is False
     assert "bridge_event_template" not in report
     assert any(
-        "verifier_summary_runtime_subdivision_authority_granted_not_false"
-        in blocker
+        "verifier_summary_runtime_subdivision_authority_granted_not_false" in blocker
         for blocker in report["blockers"]
     )
     assert report["direct_bridge_write_performed"] is False
     assert report["runtime_subdivision_authority_granted"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_summary_blockers() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_summary_blockers() -> (
+    None
+):
     summary = _valid_verifier_summary()
     summary["blockers"] = "hidden_blocker"
 
@@ -338,7 +371,9 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malform
     assert report["runtime_subdivision_authority_granted"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_verification_blockers() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_verification_blockers() -> (
+    None
+):
     summary = _valid_verifier_summary()
     summary["shadow_subdivision_replay_verification"]["blockers"] = "hidden_blocker"
 
@@ -358,7 +393,9 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malform
     assert report["runtime_subdivision_authority_granted"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_boundary_blockers() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malformed_boundary_blockers() -> (
+    None
+):
     summary = _valid_verifier_summary()
     summary["operator_boundary"]["boundary_blockers"] = "hidden_blocker"
 
@@ -377,9 +414,13 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_malform
     assert report["runtime_subdivision_authority_granted"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_path_leak() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_blocks_path_leak() -> (
+    None
+):
     summary = _valid_verifier_summary()
-    summary["safe_conclusion"] = "scratch verifier at C:/Python/project2-master/out.json"
+    summary["safe_conclusion"] = (
+        "scratch verifier at C:/Python/project2-master/out.json"
+    )
 
     report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
         summary,
@@ -432,14 +473,186 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_cli_json_is_pa
     assert str(tmp_path) not in result.stderr
 
 
-def test_hex_shadow_replay_blocked_artifact_digest_includes_blocked_reason() -> None:
-    runtime_smoke = json.loads(
-        json.dumps(build_hexagonal_upgrade_runtime_smoke(ROOT))
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ties_digest_without_authority() -> (
+    None
+):
+    template = _valid_verifier_summary_bridge_event_template()
+    raw = _json_bytes(template)
+
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+        now_utc=datetime(2026, 5, 31, 12, 45, tzinfo=timezone.utc),
     )
+
+    assert entry["ok"] is True
+    assert (
+        entry["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_v1"
+    )
+    assert (
+        entry["index_entry_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry.v1"
+    )
+    assert entry["created_at_utc"] == "2026-05-31T12:45:00Z"
+    assert entry["artifact_count"] == 1
+    artifact = entry["artifacts"][0]
+    assert (
+        artifact["artifact_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template"
+    )
+    assert artifact["sha256"] == _raw_sha256(raw)
+    assert artifact["json_schema_version"] == (
+        "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template.v1"
+    )
+    assert artifact["payload_included"] is False
+    assert artifact["local_path_recorded"] is False
+    index = entry["template_index_entry"]
+    assert index["template_only"] is True
+    assert index["bridge_event_schema_validated"] is True
+    assert index["source_contract_check"] == "match"
+    assert index["event_status"] == (
+        "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_ready"
+    )
+    assert index["template_sha256"] == _raw_sha256(raw)
+    assert entry["operator_boundary"]["approval_granted"] is False
+    assert entry["direct_bridge_write_performed"] is False
+    assert entry["runtime_subdivision_authority_granted"] is False
+    assert entry["artifact_payloads_included"] is False
+    assert entry["local_paths_recorded"] is False
+    serialized = json.dumps(entry, sort_keys=True)
+    assert '"bridge_event_template":' not in serialized
+    assert (
+        "Hex shadow subdivision replay verifier summary bridge-event template ready"
+        not in serialized
+    )
+    assert str(ROOT) not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_blocks_authority() -> (
+    None
+):
+    template = _valid_verifier_summary_bridge_event_template()
+    template["runtime_subdivision_authority_granted"] = True
+
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=_json_bytes(template),
+    )
+
+    assert entry["ok"] is False
+    assert "template_index_entry" not in entry
+    assert any(
+        "summary_bridge_event_template_runtime_subdivision_authority_granted_not_false"
+        in item
+        for item in entry["blockers"]
+    )
+    assert entry["direct_bridge_write_performed"] is False
+    assert entry["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_blocks_malformed_blockers() -> (
+    None
+):
+    template = _valid_verifier_summary_bridge_event_template()
+    template["blockers"] = "hidden_blocker"
+
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=_json_bytes(template),
+    )
+
+    assert entry["ok"] is False
+    assert "template_index_entry" not in entry
+    assert any(
+        "summary_bridge_event_template_blockers_malformed" in item
+        for item in entry["blockers"]
+    )
+    assert entry["direct_bridge_write_performed"] is False
+    assert entry["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_rejects_raw_bytes_mismatch() -> (
+    None
+):
+    template = _valid_verifier_summary_bridge_event_template()
+
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=b'{"forged":true}',
+    )
+
+    assert entry["ok"] is False
+    assert "template_index_entry" not in entry
+    assert any(
+        "summary_bridge_event_template_bytes_mismatch" in item
+        for item in entry["blockers"]
+    )
+    assert entry["artifact_payloads_included"] is False
+    assert entry["local_paths_recorded"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_blocks_path_leak() -> (
+    None
+):
+    template = _valid_verifier_summary_bridge_event_template()
+    template["bridge_event_template"][
+        "message"
+    ] = "operator scratch artifact at C:/Python/project2-master/private.json"
+
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=_json_bytes(template),
+    )
+    serialized = json.dumps(entry, sort_keys=True)
+
+    assert entry["ok"] is False
+    assert any(
+        "summary_bridge_event_template_path_free" in item for item in entry["blockers"]
+    )
+    assert "C:/Python/project2-master/private.json" not in serialized
+    assert "project2-master" not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_cli_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    template = _valid_verifier_summary_bridge_event_template()
+    template_path = tmp_path / "verifier-summary-bridge-event-template.json"
+    template_path.write_bytes(_json_bytes(template))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-bridge-event-template-index-entry-json",
+            str(template_path),
+            "--now",
+            "2026-05-31T12:45:00Z",
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    entry = json.loads(result.stdout)
+    assert entry["ok"] is True
+    assert entry["created_at_utc"] == "2026-05-31T12:45:00Z"
+    assert entry["template_index_entry"]["bridge_event_schema_validated"] is True
+    assert entry["direct_bridge_write_performed"] is False
+    assert entry["runtime_subdivision_authority_granted"] is False
+    assert str(tmp_path) not in result.stdout
+    assert str(template_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_blocked_artifact_digest_includes_blocked_reason() -> None:
+    runtime_smoke = json.loads(json.dumps(build_hexagonal_upgrade_runtime_smoke(ROOT)))
     runtime_smoke["ok"] = False
-    runtime_smoke["operator_metrics_smoke"]["runtime_contract"][
-        "status_code"
-    ] = 500
+    runtime_smoke["operator_metrics_smoke"]["runtime_contract"]["status_code"] = 500
     artifact = build_shadow_subdivision_replay_artifact(
         upgrade_proof=build_hexagonal_upgrade_proof(ROOT),
         runtime_boundary_smoke=runtime_smoke,
@@ -464,9 +677,7 @@ def test_hex_shadow_replay_blocked_artifact_digest_includes_blocked_reason() -> 
 
 def test_hex_shadow_replay_verifier_rejects_tampered_plan_digest() -> None:
     artifact = _valid_replay_artifact()
-    artifact["shadow_plan_summary"]["new_child_cell_ids"].append(
-        "thermal.hidden"
-    )
+    artifact["shadow_plan_summary"]["new_child_cell_ids"].append("thermal.hidden")
 
     report = verify_shadow_subdivision_replay_artifact(artifact)
 

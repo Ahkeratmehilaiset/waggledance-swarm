@@ -49,15 +49,13 @@ from tools.wd_image1_capability_manifest import (
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "wd_image1_capability_manifest.py"
 
 
 def _by_id(report: dict) -> dict[str, dict]:
     return {
-        capability["capability_id"]: capability
-        for capability in report["capabilities"]
+        capability["capability_id"]: capability for capability in report["capabilities"]
     }
 
 
@@ -153,17 +151,18 @@ def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
         "hex_neighbor_assist_7_cell",
     ]
     assert proof["route_stage_ui_smoke"]["ok"] is True
-    assert proof["route_stage_ui_smoke"]["checks"][
-        "dashboard_stage_container_present"
-    ] is True
+    assert (
+        proof["route_stage_ui_smoke"]["checks"]["dashboard_stage_container_present"]
+        is True
+    )
     assert proof["route_stage_operator_metrics_smoke"]["ok"] is True
-    assert proof["route_stage_operator_metrics_smoke"][
-        "operator_visible_metrics"
-    ] is True
+    assert (
+        proof["route_stage_operator_metrics_smoke"]["operator_visible_metrics"] is True
+    )
     assert proof["route_stage_runtime_metrics_smoke"]["ok"] is True
-    assert proof["route_stage_runtime_metrics_smoke"][
-        "operator_visible_metrics"
-    ] is True
+    assert (
+        proof["route_stage_runtime_metrics_smoke"]["operator_visible_metrics"] is True
+    )
     assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
 
 
@@ -188,9 +187,10 @@ def test_hex_mesh_route_stage_ui_smoke_reports_dashboard_contract() -> None:
     assert "query" not in smoke["ws_event_contract"]["data_keys"]
     assert "language" not in smoke["ws_event_contract"]["data_keys"]
     assert "profile" not in smoke["ws_event_contract"]["data_keys"]
-    assert "hex_neighbor_assist_7_cell" in smoke["ws_event_contract"][
-        "disabled_route_stages"
-    ]
+    assert (
+        "hex_neighbor_assist_7_cell"
+        in smoke["ws_event_contract"]["disabled_route_stages"]
+    )
     assert smoke["observed_ui_stage_names"] == smoke["expected_route_stages"]
     assert smoke["no_runtime_mutation"] is True
     assert smoke["external_writes_applied"] is False
@@ -243,12 +243,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["prometheus_alertmanager_feed_provider_configured"] is True
     assert smoke["latency_feed_state_visible"] is True
     assert smoke["alert_thresholds_documented"] is True
-    assert smoke["runbook_path"] == (
-        "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md"
-    )
-    assert smoke["latency_metric_semantics"] == (
-        "stage_correlated_request_latency"
-    )
+    assert smoke["runbook_path"] == ("docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md")
+    assert smoke["latency_metric_semantics"] == ("stage_correlated_request_latency")
     assert smoke["raw_payload_recorded"] is False
     assert smoke["runtime_routing_changed"] is False
     assert smoke["disabled_hex_paths_enabled"] is False
@@ -324,12 +320,13 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
         "opt_in_handle_query_runtime_summary"
     )
     assert proof["magma_execution_receipt_proof"]["ok"] is True
-    assert proof["magma_execution_receipt_proof"][
-        "solver_call_trace_receipt_bound"
-    ] is True
-    assert proof["magma_execution_receipt_proof"][
-        "solver_call_trace_privacy_safe"
-    ] is True
+    assert (
+        proof["magma_execution_receipt_proof"]["solver_call_trace_receipt_bound"]
+        is True
+    )
+    assert (
+        proof["magma_execution_receipt_proof"]["solver_call_trace_privacy_safe"] is True
+    )
     assert proof["receipt_metrics"] == {
         "receipt_count": 1,
         "solver_call_trace_count": 1,
@@ -384,12 +381,10 @@ def test_bad_root_manifest_fails_closed_without_file_errors(tmp_path: Path) -> N
     hex_proof = capabilities["hex_mesh_entry"]["proof"]
 
     assert all(
-        capability["status"] == "blocked"
-        for capability in report["capabilities"]
+        capability["status"] == "blocked" for capability in report["capabilities"]
     )
     assert all(
-        capability["claim_safe"] is False
-        for capability in report["capabilities"]
+        capability["claim_safe"] is False for capability in report["capabilities"]
     )
     assert hex_proof["ok"] is False
     assert hex_proof["blocked_reason"] == "missing_required_inputs"
@@ -461,8 +456,7 @@ def test_hexagonal_upgrade_runtime_smoke_reports_active_topology_boundary() -> N
         "safety_security",
     ]
     assert all(
-        item["matched_expected"]
-        for item in proof["runtime_topology"]["sample_origins"]
+        item["matched_expected"] for item in proof["runtime_topology"]["sample_origins"]
     )
     metrics = proof["operator_metrics_smoke"]
     assert metrics["ok"] is True
@@ -470,8 +464,7 @@ def test_hexagonal_upgrade_runtime_smoke_reports_active_topology_boundary() -> N
     assert metrics["runtime_contract"]["ok"] is True
     assert "waggledance_hex_topology_cells" in metrics["metric_names"]
     assert (
-        "waggledance_hex_topology_runtime_mutation_authority"
-        in metrics["metric_names"]
+        "waggledance_hex_topology_runtime_mutation_authority" in metrics["metric_names"]
     )
     assert metrics["no_runtime_topology_mutation"] is True
     assert metrics["runtime_authority_changed"] is False
@@ -498,9 +491,7 @@ def test_hexagonal_shadow_replay_binds_pure_plan_to_metric_contract() -> None:
     assert replay["shadow_plan_summary"]["plan_id"] == (
         upgrade_proof["plan"]["plan_id"]
     )
-    assert replay["shadow_plan_summary"]["target_state"] == (
-        "subdivision_in_shadow"
-    )
+    assert replay["shadow_plan_summary"]["target_state"] == ("subdivision_in_shadow")
     assert replay["delivery_summary"] == {
         "message_count": 3,
         "delivered_count": 3,
@@ -533,10 +524,7 @@ def test_hexagonal_shadow_replay_binds_pure_plan_to_metric_contract() -> None:
     assert replay["guardrails"]["runtime_config_contents_included"] is False
     assert replay["guardrails"]["numeric_equality_to_shadow_children_claimed"] is False
     assert replay["artifact_digest"].startswith("sha256:")
-    assert all(
-        digest.startswith("sha256:")
-        for digest in replay["digests"].values()
-    )
+    assert all(digest.startswith("sha256:") for digest in replay["digests"].values())
     serialized = json.dumps(replay, sort_keys=True)
     assert "bee hive" not in serialized
     assert "energy hvac" not in serialized
@@ -622,7 +610,9 @@ def test_low_risk_autogrowth_runtime_boundary_smoke_reports_runtime_wiring() -> 
     assert proof["external_writes_applied"] is False
 
 
-def test_low_risk_autogrowth_operator_metrics_smoke_reports_prometheus_contract() -> None:
+def test_low_risk_autogrowth_operator_metrics_smoke_reports_prometheus_contract() -> (
+    None
+):
     proof = build_low_risk_autogrowth_operator_metrics_smoke(ROOT)
 
     assert proof["ok"] is True
@@ -668,9 +658,7 @@ def test_low_risk_autogrowth_alert_runbook_smoke_reports_threshold_contract() ->
 
     assert proof["ok"] is True
     assert proof["proof_id"] == "low_risk_autogrowth_alert_runbook_smoke_v1"
-    assert proof["runbook_path"] == (
-        "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md"
-    )
+    assert proof["runbook_path"] == ("docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md")
     assert proof["api_docs_path"] == "docs/API.md"
     assert proof["alert_thresholds_documented"] is True
     assert proof["missing_metric_mentions"] == []
@@ -692,20 +680,18 @@ def test_low_risk_autogrowth_alert_runbook_smoke_blocks_missing_inputs(
 
     assert proof["ok"] is False
     assert proof["blocked_reason"] == "missing_required_inputs"
-    assert "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md" in (
-        proof["missing_inputs"]
-    )
+    assert "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md" in (proof["missing_inputs"])
     assert "docs/API.md" in proof["missing_inputs"]
     assert proof["runtime_authority_changed"] is False
 
 
-def test_magma_handoff_provider_metrics_runbook_smoke_reports_threshold_contract() -> None:
+def test_magma_handoff_provider_metrics_runbook_smoke_reports_threshold_contract() -> (
+    None
+):
     proof = build_magma_handoff_provider_metrics_runbook_smoke(ROOT)
 
     assert proof["ok"] is True
-    assert proof["proof_id"] == (
-        "magma_handoff_provider_metrics_runbook_smoke_v1"
-    )
+    assert proof["proof_id"] == ("magma_handoff_provider_metrics_runbook_smoke_v1")
     assert proof["runbook_path"] == (
         "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
     )
@@ -719,9 +705,7 @@ def test_magma_handoff_provider_metrics_runbook_smoke_reports_threshold_contract
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
     assert "waggledance_magma_handoff_provider_up" in proof["metric_names"]
-    assert "waggledance_magma_handoff_provider_alert_active" in (
-        proof["metric_names"]
-    )
+    assert "waggledance_magma_handoff_provider_alert_active" in (proof["metric_names"])
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
@@ -782,9 +766,7 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
     proof = build_magma_handoff_metrics_alertmanager_adapter_smoke(ROOT)
 
     assert proof["ok"] is True
-    assert proof["proof_id"] == (
-        "magma_handoff_metrics_alertmanager_adapter_smoke_v1"
-    )
+    assert proof["proof_id"] == ("magma_handoff_metrics_alertmanager_adapter_smoke_v1")
     assert proof["adapter_path"] == (
         "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
     )
@@ -802,14 +784,13 @@ def test_magma_handoff_metrics_alertmanager_adapter_smoke_reports_contract() -> 
     assert proof["release_evidence_validator_contract_present"] is True
     assert proof["reviewer_handoff_summary_contract_present"] is True
     assert proof["reviewer_bridge_event_template_contract_present"] is True
-    assert proof[
-        "reviewer_bridge_event_template_decision_reference_slot_present"
-    ] is True
+    assert (
+        proof["reviewer_bridge_event_template_decision_reference_slot_present"] is True
+    )
     assert proof["reviewer_handoff_bundle_index_contract_present"] is True
     assert proof["reviewer_handoff_bundle_verifier_contract_present"] is True
     assert (
-        proof["reviewer_handoff_bundle_verification_summary_contract_present"]
-        is True
+        proof["reviewer_handoff_bundle_verification_summary_contract_present"] is True
     )
     assert (
         proof[
@@ -909,9 +890,7 @@ def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() 
     proof = build_low_risk_autogrowth_ops_alert_state_smoke(ROOT)
 
     assert proof["ok"] is True
-    assert proof["proof_id"] == (
-        "low_risk_autogrowth_ops_alert_state_smoke_v1"
-    )
+    assert proof["proof_id"] == ("low_risk_autogrowth_ops_alert_state_smoke_v1")
     assert proof["ops_endpoint"] == "/api/ops"
     assert proof["dashboard_path"] == "web/hologram-brain-v6.html"
     assert proof["api_contract_present"] is True
@@ -1027,9 +1006,7 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_missing_inputs(
     assert proof["blocked_reason"] == "missing_required_inputs"
     assert "waggledance/adapters/http/routes/chat.py" in proof["missing_inputs"]
     assert "waggledance/adapters/http/routes/metrics.py" in proof["missing_inputs"]
-    assert "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md" in (
-        proof["missing_inputs"]
-    )
+    assert "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md" in (proof["missing_inputs"])
     assert proof["runtime_routing_changed"] is False
     assert proof["disabled_hex_paths_enabled"] is False
     assert proof["raw_payload_recorded"] is False
@@ -1080,54 +1057,81 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["claim_safe"] is False
     assert capability["proof"]["ok"] is True
     assert capability["proof"]["runtime_boundary_smoke"]["ok"] is True
-    assert capability["proof"]["runtime_boundary_smoke"][
-        "active_runtime_dispatch_enabled"
-    ] is False
-    assert capability["proof"]["runtime_boundary_smoke"][
-        "shadow_child_cell_ids_absent_from_runtime_config"
-    ] is True
-    assert capability["proof"]["runtime_boundary_smoke"][
-        "operator_metrics_smoke"
-    ]["ok"] is True
+    assert (
+        capability["proof"]["runtime_boundary_smoke"]["active_runtime_dispatch_enabled"]
+        is False
+    )
+    assert (
+        capability["proof"]["runtime_boundary_smoke"][
+            "shadow_child_cell_ids_absent_from_runtime_config"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["runtime_boundary_smoke"]["operator_metrics_smoke"]["ok"]
+        is True
+    )
     assert capability["proof"]["shadow_subdivision_replay"]["ok"] is True
-    assert capability["proof"]["shadow_subdivision_replay"][
-        "proof_type"
-    ] == "shadow_replay_hypothetical"
-    assert capability["proof"]["shadow_subdivision_replay"]["guardrails"][
-        "runtime_authority_changed"
-    ] is False
-    assert capability["proof"]["shadow_subdivision_replay"][
-        "source_snapshot"
-    ]["git_commit_available"] is True
-    assert capability["proof"]["shadow_subdivision_replay_verification"][
-        "ok"
-    ] is True
-    assert capability["proof"]["shadow_subdivision_replay_verification"][
-        "proof_id"
-    ] == "hex_shadow_subdivision_replay_verifier_v1"
-    assert capability["proof"]["shadow_subdivision_replay_verification"][
-        "artifact_declared_ok"
-    ] is True
-    assert capability["proof"]["shadow_subdivision_replay_verification"][
-        "expected_git_commit"
-    ] == capability["proof"]["shadow_subdivision_replay"]["source_snapshot"][
-        "git_commit"
-    ]
-    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
-        "ok"
-    ] is True
-    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
-        "proof_id"
-    ] == "hex_shadow_subdivision_replay_verifier_summary_v1"
-    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
-        "approval_granted"
-    ] is False
-    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
-        "direct_bridge_write_performed"
-    ] is False
-    assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
-        "runtime_subdivision_authority_granted"
-    ] is False
+    assert (
+        capability["proof"]["shadow_subdivision_replay"]["proof_type"]
+        == "shadow_replay_hypothetical"
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay"]["guardrails"][
+            "runtime_authority_changed"
+        ]
+        is False
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay"]["source_snapshot"][
+            "git_commit_available"
+        ]
+        is True
+    )
+    assert capability["proof"]["shadow_subdivision_replay_verification"]["ok"] is True
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verification"]["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_v1"
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verification"][
+            "artifact_declared_ok"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verification"][
+            "expected_git_commit"
+        ]
+        == capability["proof"]["shadow_subdivision_replay"]["source_snapshot"][
+            "git_commit"
+        ]
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verifier_summary"]["ok"] is True
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verifier_summary"]["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_v1"
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+            "approval_granted"
+        ]
+        is False
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        capability["proof"]["shadow_subdivision_replay_verifier_summary"][
+            "runtime_subdivision_authority_granted"
+        ]
+        is False
+    )
     template = capability["proof"][
         "shadow_subdivision_replay_verifier_summary_bridge_event_template"
     ]
@@ -1144,10 +1148,30 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
         template["bridge_event_template"]["payload"]["schema_version"]
         == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template.v1"
     )
+    index_entry = capability["proof"][
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry"
+    ]
+    assert index_entry["ok"] is True
+    assert (
+        index_entry["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_v1"
+    )
+    assert index_entry["template_only"] is True
+    assert index_entry["template_index_entry"]["bridge_event_schema_validated"] is True
+    assert (
+        index_entry["template_index_entry"]["event_status"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_ready"
+    )
+    assert index_entry["direct_bridge_write_performed"] is False
+    assert index_entry["runtime_subdivision_authority_granted"] is False
+    assert index_entry["artifact_payloads_included"] is False
+    assert index_entry["local_paths_recorded"] is False
     assert "local verifier" in capability["safe_statement"]
     assert "reviewer summary" in capability["safe_statement"]
     assert "bridge-event template" in capability["safe_statement"]
+    assert "local index entry" in capability["safe_statement"]
     assert "index entry" in capability["next_smallest_pr"]
+    assert "local verifier" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 
@@ -1162,42 +1186,48 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert capability["proof"]["scheduler_tick"]["outcome"] == "auto_promoted"
     assert capability["proof"]["route_after"]["source"] == "auto_promoted_solver"
     assert capability["proof"]["runtime_boundary_smoke"]["ok"] is True
-    assert capability["proof"]["runtime_boundary_smoke"][
-        "default_interval_seconds"
-    ] == 30.0
-    assert capability["proof"]["runtime_boundary_smoke"][
-        "default_max_ticks_per_wake"
-    ] == 20
-    assert capability["proof"]["runtime_boundary_smoke"][
-        "runtime_authority_changed"
-    ] is False
+    assert (
+        capability["proof"]["runtime_boundary_smoke"]["default_interval_seconds"]
+        == 30.0
+    )
+    assert (
+        capability["proof"]["runtime_boundary_smoke"]["default_max_ticks_per_wake"]
+        == 20
+    )
+    assert (
+        capability["proof"]["runtime_boundary_smoke"]["runtime_authority_changed"]
+        is False
+    )
     assert capability["proof"]["operator_metrics_smoke"]["ok"] is True
-    assert capability["proof"]["operator_metrics_smoke"][
-        "operator_visible_metrics"
-    ] is True
-    assert capability["proof"]["operator_metrics_smoke"][
-        "runtime_authority_changed"
-    ] is False
+    assert (
+        capability["proof"]["operator_metrics_smoke"]["operator_visible_metrics"]
+        is True
+    )
+    assert (
+        capability["proof"]["operator_metrics_smoke"]["runtime_authority_changed"]
+        is False
+    )
     assert capability["proof"]["alert_runbook_smoke"]["ok"] is True
-    assert capability["proof"]["alert_runbook_smoke"][
-        "alert_thresholds_documented"
-    ] is True
-    assert capability["proof"]["alert_runbook_smoke"][
-        "forbidden_controls_absent"
-    ] is True
-    assert capability["proof"]["alert_runbook_smoke"][
-        "runtime_authority_changed"
-    ] is False
+    assert (
+        capability["proof"]["alert_runbook_smoke"]["alert_thresholds_documented"]
+        is True
+    )
+    assert (
+        capability["proof"]["alert_runbook_smoke"]["forbidden_controls_absent"] is True
+    )
+    assert (
+        capability["proof"]["alert_runbook_smoke"]["runtime_authority_changed"] is False
+    )
     assert capability["proof"]["ops_alert_state_smoke"]["ok"] is True
-    assert capability["proof"]["ops_alert_state_smoke"][
-        "alert_state_visible"
-    ] is True
-    assert capability["proof"]["ops_alert_state_smoke"][
-        "forbidden_controls_absent"
-    ] is True
-    assert capability["proof"]["ops_alert_state_smoke"][
-        "runtime_authority_changed"
-    ] is False
+    assert capability["proof"]["ops_alert_state_smoke"]["alert_state_visible"] is True
+    assert (
+        capability["proof"]["ops_alert_state_smoke"]["forbidden_controls_absent"]
+        is True
+    )
+    assert (
+        capability["proof"]["ops_alert_state_smoke"]["runtime_authority_changed"]
+        is False
+    )
     assert "Prometheus/Alertmanager feed" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert "local alert state" in capability["safe_statement"]
@@ -1218,15 +1248,24 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["route_stage_ui_smoke"]["ok"] is True
     assert capability["proof"]["route_stage_operator_metrics_smoke"]["ok"] is True
     assert capability["proof"]["route_stage_runtime_metrics_smoke"]["ok"] is True
-    assert capability["proof"]["route_stage_runtime_metrics_smoke"][
-        "histogram_quantile_supported"
-    ] is True
-    assert capability["proof"]["route_stage_runtime_metrics_smoke"][
-        "latency_panel_templates_visible"
-    ] is True
-    assert capability["proof"]["route_stage_runtime_metrics_smoke"][
-        "latency_feed_state_visible"
-    ] is True
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "histogram_quantile_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_panel_templates_visible"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_state_visible"
+        ]
+        is True
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -1275,14 +1314,9 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
     assert "companion validator" in capability["safe_statement"]
     assert "verification summary renderer" in capability["safe_statement"]
     assert "operator decision-reference validator" in capability["safe_statement"]
-    assert (
-        "decision-reference review summary renderer"
-        in capability["safe_statement"]
-    )
+    assert "decision-reference review summary renderer" in capability["safe_statement"]
     assert "decision-reference review bundle index" in capability["safe_statement"]
-    assert "decision-reference review bundle verifier" in (
-        capability["safe_statement"]
-    )
+    assert "decision-reference review bundle verifier" in (capability["safe_statement"])
     assert "decision-reference review bundle verification summary" in (
         capability["safe_statement"]
     )
@@ -1290,16 +1324,23 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         capability["safe_statement"]
     )
     assert capability["proof"]["provider_metrics_runbook_smoke"]["ok"] is True
-    assert capability["proof"]["provider_metrics_runbook_smoke"][
-        "alert_thresholds_documented"
-    ] is True
-    assert capability["proof"]["provider_metrics_runbook_smoke"][
-        "forbidden_controls_absent"
-    ] is True
+    assert (
+        capability["proof"]["provider_metrics_runbook_smoke"][
+            "alert_thresholds_documented"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["provider_metrics_runbook_smoke"][
+            "forbidden_controls_absent"
+        ]
+        is True
+    )
     assert capability["proof"]["metrics_alert_state_smoke"]["ok"] is True
-    assert capability["proof"]["metrics_alert_state_smoke"][
-        "fixed_alert_ids_enforced"
-    ] is True
+    assert (
+        capability["proof"]["metrics_alert_state_smoke"]["fixed_alert_ids_enforced"]
+        is True
+    )
     assert capability["proof"]["metrics_alertmanager_adapter_smoke"]["ok"] is True
     assert (
         capability["proof"]["metrics_alertmanager_adapter_smoke"][
@@ -1355,13 +1396,12 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
-    assert capability["proof"]["metrics_alertmanager_adapter_smoke"][
-        "guardrails_present"
-    ] is True
-    assert "hard append-only" in capability["safe_statement"]
-    assert "index-entry verifier" in (
-        capability["next_smallest_pr"]
+    assert (
+        capability["proof"]["metrics_alertmanager_adapter_smoke"]["guardrails_present"]
+        is True
     )
+    assert "hard append-only" in capability["safe_statement"]
+    assert "index-entry verifier" in (capability["next_smallest_pr"])
     assert report["summary"]["proofs_ok"] is True
 
 
@@ -1381,9 +1421,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
-    assert {
-        item["axis_id"] for item in proof["axes"]
-    } == {
+    assert {item["axis_id"] for item in proof["axes"]} == {
         "coverage",
         "llm_fallback_rate",
         "route_depth",
@@ -1394,8 +1432,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         "audit_completeness",
     }
     assert all(
-        item["literal_claim_safe"] is False
-        for item in proof["claim_decomposition"]
+        item["literal_claim_safe"] is False for item in proof["claim_decomposition"]
     )
 
 

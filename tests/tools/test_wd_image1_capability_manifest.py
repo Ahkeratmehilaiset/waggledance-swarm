@@ -1553,10 +1553,19 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert proof["eig_disabled_by_default"] is True
     assert proof["eig_benchmark_only"] is True
     assert proof["scorecard_doc_present"] is True
+    summary = proof["runtime_evidence_summary"]
+    assert summary["route_stage_runtime_metrics_smoke_ok"] is True
+    assert summary["route_stage_runtime_contract_ok"] is True
+    assert summary["feed_health_drill_evidence_verifier_smoke_ok"] is True
+    assert summary["solver_trace_receipt_proof_ok"] is True
+    assert summary["required_runtime_evidence_present"] is True
+    assert summary["runtime_evidence_axis_count"] == 5
+    assert summary["unmeasured_axis_count"] == 3
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
-    assert {item["axis_id"] for item in proof["axes"]} == {
+    axes = {item["axis_id"]: item for item in proof["axes"]}
+    assert set(axes) == {
         "coverage",
         "llm_fallback_rate",
         "route_depth",
@@ -1566,6 +1575,40 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         "latency",
         "audit_completeness",
     }
+    assert axes["coverage"]["runtime_evidence"]["status"] == "runtime_proxy_defined"
+    assert (
+        axes["llm_fallback_rate"]["runtime_evidence"]["sample"][
+            "fallback_stage_observed_in_smoke"
+        ]
+        is True
+    )
+    assert axes["latency"]["runtime_evidence"]["status"] == "runtime_metric_defined"
+    assert (
+        "waggledance_route_stage_request_latency_histogram_ms_bucket"
+        in axes["latency"]["runtime_evidence"]["metric_names"]
+    )
+    assert (
+        axes["audit_completeness"]["runtime_evidence"]["status"]
+        == "contract_proof_available"
+    )
+    assert (
+        axes["audit_completeness"]["runtime_evidence"]["sample"][
+            "solver_call_trace_receipt_bound"
+        ]
+        is True
+    )
+    assert (
+        axes["useful_composite_paths"]["runtime_evidence"]["status"]
+        == "unmeasured"
+    )
+    assert (
+        axes["contradiction_rate"]["runtime_evidence"]["status"] == "unmeasured"
+    )
+    assert axes["insight_score"]["runtime_evidence"]["status"] == "unmeasured"
+    assert all(
+        item["runtime_evidence"]["claim_gate_satisfied"] is False
+        for item in axes.values()
+    )
     assert all(
         item["literal_claim_safe"] is False for item in proof["claim_decomposition"]
     )
@@ -1602,7 +1645,13 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
     assert capability["proof"]["literal_future_claim_safe"] is False
     assert capability["proof"]["unbounded_claims_rejected"] is True
     assert capability["proof"]["axis_count"] == 8
-    assert "runtime metrics" in capability["next_smallest_pr"]
+    assert (
+        capability["proof"]["runtime_evidence_summary"][
+            "required_runtime_evidence_present"
+        ]
+        is True
+    )
+    assert "benchmark artifacts" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

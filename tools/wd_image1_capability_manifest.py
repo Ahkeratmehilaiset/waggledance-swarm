@@ -4861,6 +4861,259 @@ _FUTURE_SCALE_AXES: tuple[dict[str, str], ...] = (
 )
 
 
+def _unmeasured_future_scale_axis_evidence(
+    *,
+    blockers: Sequence[str],
+    artifact_paths: Sequence[str] = (),
+) -> dict:
+    return {
+        "status": "unmeasured",
+        "measurement_scope": "no_versioned_runtime_metric_or_benchmark",
+        "metric_names": [],
+        "artifact_paths": list(artifact_paths),
+        "sample": {},
+        "evidence_freshness": "not_available",
+        "blockers": list(blockers),
+        "claim_gate_satisfied": False,
+    }
+
+
+def _build_future_scale_runtime_evidence(
+    route_stage_runtime_metrics_smoke: dict,
+    solver_trace_receipt_proof: dict,
+) -> tuple[dict[str, dict], dict]:
+    route_contract = route_stage_runtime_metrics_smoke.get("runtime_contract")
+    if not isinstance(route_contract, dict):
+        route_contract = {}
+    sanitized_trace = route_contract.get("sanitized_trace")
+    if not isinstance(sanitized_trace, list):
+        sanitized_trace = []
+
+    route_stage_ok = route_stage_runtime_metrics_smoke.get("ok") is True
+    runtime_contract_ok = route_contract.get("ok") is True
+    drill_smoke = route_stage_runtime_metrics_smoke.get(
+        "drill_evidence_verifier_smoke"
+    )
+    if not isinstance(drill_smoke, dict):
+        drill_smoke = {}
+    drill_smoke_ok = drill_smoke.get("ok") is True
+    receipt_ok = solver_trace_receipt_proof.get("ok") is True
+    fallback_stage_observed = any(
+        isinstance(item, dict)
+        and item.get("stage") == "orchestrator_llm_fallback"
+        for item in sanitized_trace
+    )
+
+    route_stage_artifacts = [
+        "waggledance/adapters/http/routes/chat.py",
+        "waggledance/adapters/http/routes/metrics.py",
+        "waggledance/adapters/http/routes/compat_dashboard.py",
+        "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
+        "tools/verify_route_stage_feed_health_drill_evidence.py",
+    ]
+    solver_receipt_artifacts = [
+        "waggledance/core/magma/runtime_summary_receipt.py",
+        "tools/run_runtime_receipt_emission_proof.py",
+        "tools/verify_magma_receipt.py",
+    ]
+    route_stage_metric_names = [
+        "waggledance_route_stage_observations_total",
+        "waggledance_route_stage_request_latency_ms_total",
+        "waggledance_route_stage_request_latency_histogram_ms",
+    ]
+    latency_metric_names = [
+        "waggledance_route_stage_request_latency_histogram_ms_bucket",
+        "waggledance_route_stage_request_latency_histogram_ms_sum",
+        "waggledance_route_stage_request_latency_histogram_ms_count",
+    ]
+
+    evidence_by_axis = {
+        "coverage": {
+            "status": "runtime_proxy_defined",
+            "measurement_scope": (
+                "sanitized route-stage observation coverage proxy, not a "
+                "deterministic solver-win production coverage rate"
+            ),
+            "metric_names": ["waggledance_route_stage_observations_total"],
+            "artifact_paths": route_stage_artifacts,
+            "sample": {
+                "sanitized_trace_stage_count": len(sanitized_trace),
+                "runtime_contract_ok": runtime_contract_ok,
+            },
+            "evidence_freshness": "local_manifest_smoke",
+            "blockers": [
+                "needs versioned production corpus",
+                "needs solver-win versus fallback denominator",
+            ],
+            "claim_gate_satisfied": False,
+        },
+        "llm_fallback_rate": {
+            "status": "runtime_proxy_defined",
+            "measurement_scope": (
+                "route-stage fallback observation counter, not a per-cell "
+                "production fallback-rate baseline"
+            ),
+            "metric_names": ["waggledance_route_stage_observations_total"],
+            "artifact_paths": route_stage_artifacts,
+            "sample": {
+                "fallback_stage": "orchestrator_llm_fallback",
+                "fallback_stage_observed_in_smoke": fallback_stage_observed,
+            },
+            "evidence_freshness": "local_manifest_smoke",
+            "blockers": [
+                "needs per-cell fallback denominator",
+                "needs production time-window baseline",
+            ],
+            "claim_gate_satisfied": False,
+        },
+        "route_depth": {
+            "status": "local_sample_only",
+            "measurement_scope": (
+                "route depth can be counted from sanitized route-stage trace "
+                "samples, but no exported route-depth histogram exists"
+            ),
+            "metric_names": ["waggledance_route_stage_observations_total"],
+            "artifact_paths": route_stage_artifacts,
+            "sample": {
+                "sanitized_trace_stage_count": len(sanitized_trace),
+                "route_depth_histogram_exported": False,
+            },
+            "evidence_freshness": "local_manifest_smoke",
+            "blockers": [
+                "needs route-depth histogram",
+                "needs benchmark artifact with p50 p95 p99 route depth",
+            ],
+            "claim_gate_satisfied": False,
+        },
+        "useful_composite_paths": _unmeasured_future_scale_axis_evidence(
+            blockers=(
+                "needs replayable composite-path usefulness receipts",
+                "needs benchmark corpus proving composite value lift",
+            ),
+            artifact_paths=("docs/architecture/HONEYCOMB_SOLVER_SCALING.md",),
+        ),
+        "contradiction_rate": _unmeasured_future_scale_axis_evidence(
+            blockers=(
+                "needs proposal-gate contradiction verdict metrics",
+                "needs verifier-backed contradiction-rate benchmark",
+            ),
+            artifact_paths=("docs/architecture/HONEYCOMB_SOLVER_SCALING.md",),
+        ),
+        "insight_score": _unmeasured_future_scale_axis_evidence(
+            blockers=(
+                "needs reproducible insight scoring rubric",
+                "needs versioned dream-mode benchmark corpus",
+            ),
+            artifact_paths=("docs/architecture/HONEYCOMB_SOLVER_SCALING.md",),
+        ),
+        "latency": {
+            "status": "runtime_metric_defined",
+            "measurement_scope": (
+                "stage-correlated request latency histograms plus p95/p99 "
+                "operator panel templates"
+            ),
+            "metric_names": latency_metric_names,
+            "artifact_paths": route_stage_artifacts,
+            "sample": {
+                "histogram_quantile_supported": (
+                    route_stage_runtime_metrics_smoke.get(
+                        "histogram_quantile_supported"
+                    )
+                    is True
+                ),
+                "latency_panel_templates_visible": (
+                    route_stage_runtime_metrics_smoke.get(
+                        "latency_panel_templates_visible"
+                    )
+                    is True
+                ),
+            },
+            "evidence_freshness": "local_manifest_smoke",
+            "blockers": [
+                "needs versioned benchmark run",
+                "needs p50 p95 p99 baseline artifact under load",
+            ],
+            "claim_gate_satisfied": False,
+        },
+        "audit_completeness": {
+            "status": "contract_proof_available",
+            "measurement_scope": (
+                "opt-in solver trace receipt binding plus feed-health drill "
+                "verification, not default all-path audit coverage"
+            ),
+            "metric_names": route_stage_metric_names,
+            "artifact_paths": route_stage_artifacts + solver_receipt_artifacts,
+            "sample": {
+                "solver_trace_receipt_proof_ok": receipt_ok,
+                "solver_call_trace_count": solver_trace_receipt_proof.get(
+                    "solver_call_trace_count"
+                ),
+                "solver_call_trace_receipt_bound": solver_trace_receipt_proof.get(
+                    "solver_call_trace_receipt_bound"
+                ),
+                "feed_health_drill_verifier_smoke_ok": drill_smoke_ok,
+            },
+            "evidence_freshness": "local_manifest_smoke",
+            "blockers": [
+                "needs default receipt emission coverage",
+                "needs audit completeness denominator metric",
+            ],
+            "claim_gate_satisfied": False,
+        },
+    }
+    if not route_stage_ok:
+        for axis_id in ("coverage", "llm_fallback_rate", "route_depth", "latency"):
+            evidence_by_axis[axis_id]["status"] = "runtime_contract_unavailable"
+            evidence_by_axis[axis_id]["blockers"].append(
+                "route-stage runtime metrics smoke failed"
+            )
+    if not receipt_ok:
+        evidence_by_axis["audit_completeness"][
+            "status"
+        ] = "receipt_contract_unavailable"
+        evidence_by_axis["audit_completeness"]["blockers"].append(
+            "solver trace receipt proof failed"
+        )
+
+    populated_axes = [
+        axis_id
+        for axis_id, evidence in evidence_by_axis.items()
+        if evidence["status"] != "unmeasured"
+    ]
+    unmeasured_axes = [
+        axis_id
+        for axis_id, evidence in evidence_by_axis.items()
+        if evidence["status"] == "unmeasured"
+    ]
+    required_runtime_axes = (
+        "coverage",
+        "llm_fallback_rate",
+        "latency",
+        "audit_completeness",
+    )
+    summary = {
+        "route_stage_runtime_metrics_smoke_ok": route_stage_ok,
+        "route_stage_runtime_contract_ok": runtime_contract_ok,
+        "feed_health_drill_evidence_verifier_smoke_ok": drill_smoke_ok,
+        "solver_trace_receipt_proof_ok": receipt_ok,
+        "runtime_evidence_axis_count": len(populated_axes),
+        "unmeasured_axis_count": len(unmeasured_axes),
+        "runtime_evidence_axes_populated": populated_axes,
+        "unmeasured_axes": unmeasured_axes,
+        "required_runtime_axes": list(required_runtime_axes),
+        "required_runtime_evidence_present": all(
+            evidence_by_axis[axis_id]["status"]
+            not in {"unmeasured", "runtime_contract_unavailable"}
+            for axis_id in required_runtime_axes
+        )
+        and receipt_ok,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+    }
+    return evidence_by_axis, summary
+
+
 def _blocked_future_scale_axis_scorecard(
     *,
     missing_inputs: Sequence[str],
@@ -4934,10 +5187,26 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
     ).read_text(encoding="utf-8")
     honeycomb_lower = honeycomb_text.lower()
     eig_lower = eig_text.lower()
+    route_stage_runtime_metrics_smoke = build_hex_mesh_route_stage_runtime_metrics_smoke(
+        repo_root
+    )
+    solver_trace_receipt_proof = build_solver_trace_magma_receipt_proof(repo_root)
+    runtime_evidence_by_axis, runtime_evidence_summary = (
+        _build_future_scale_runtime_evidence(
+            route_stage_runtime_metrics_smoke,
+            solver_trace_receipt_proof,
+        )
+    )
 
     axes = []
     for axis in _FUTURE_SCALE_AXES:
         proxy = axis["proxy"]
+        axis_runtime_evidence = runtime_evidence_by_axis.get(
+            axis["axis_id"],
+            _unmeasured_future_scale_axis_evidence(
+                blockers=("runtime evidence mapping missing",),
+            ),
+        )
         axes.append(
             {
                 "axis_id": axis["axis_id"],
@@ -4948,6 +5217,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
                 "source_path": "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
                 "claim_gate": axis["claim_gate"],
                 "literal_claim_safe": False,
+                "runtime_evidence": axis_runtime_evidence,
             }
         )
 
@@ -5007,6 +5277,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         and eig_disabled_by_default
         and eig_benchmark_only
         and scorecard_doc_present
+        and runtime_evidence_summary["required_runtime_evidence_present"]
     )
     return {
         "proof_id": "future_scale_axis_scorecard_v1",
@@ -5021,6 +5292,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         "eig_disabled_by_default": eig_disabled_by_default,
         "eig_benchmark_only": eig_benchmark_only,
         "scorecard_doc_present": scorecard_doc_present,
+        "runtime_evidence_summary": runtime_evidence_summary,
         "axes": axes,
         "claim_decomposition": claim_decomposition,
         "runtime_authority_changed": False,
@@ -5028,9 +5300,12 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         "external_writes_applied": False,
         "safe_conclusion": (
             "The future swarm wording is decomposed into measurable scale "
-            "axes. The literal claims for emergent intelligence, infinite "
-            "scalability, and industrial-grade efficiency remain unsafe until "
-            "those axes have versioned metrics and proof artifacts."
+            "axes. First runtime evidence bindings now populate route-stage "
+            "coverage, fallback, latency, and opt-in audit-completeness "
+            "proxies, but the literal claims for emergent intelligence, "
+            "infinite scalability, and industrial-grade efficiency remain "
+            "unsafe until all axes have versioned metrics and benchmark "
+            "artifacts."
         ),
     }
 
@@ -5415,6 +5690,22 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tools/wd_image1_capability_manifest.py",
                 "Executable scale-axis scorecard proof.",
+            ),
+            (
+                "waggledance/adapters/http/routes/metrics.py",
+                "Route-stage runtime counters and latency histograms.",
+            ),
+            (
+                "waggledance/adapters/http/routes/compat_dashboard.py",
+                "Operator p95/p99 latency panel templates and feed state.",
+            ),
+            (
+                "tools/verify_route_stage_feed_health_drill_evidence.py",
+                "Offline route-stage feed-health evidence verifier.",
+            ),
+            (
+                "tools/run_runtime_receipt_emission_proof.py",
+                "Opt-in MAGMA solver trace receipt proof artifact.",
             ),
         ),
     )
@@ -5879,8 +6170,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             safe_statement=(
                 "The repo has future scale architecture and a scale-axis "
-                "scorecard; unlimited scalability remains a target, not a "
-                "fact."
+                "scorecard with first runtime evidence bindings for "
+                "route-stage coverage, fallback, latency, and opt-in audit "
+                "completeness proxies; unlimited scalability remains a "
+                "target, not a fact."
             ),
             status=_status_for(future_evidence),
             claim_safe=False,
@@ -5889,12 +6182,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "No finite software system can honestly prove infinite " "scalability.",
                 "Future claims must be tied to measured axes such as "
                 "coverage, fallback rate, latency, and audit completeness.",
-                "The current scorecard defines gates; it does not yet export "
-                "all runtime metrics.",
+                "The current scorecard binds some existing runtime evidence; "
+                "composite-path usefulness, contradiction rate, and insight "
+                "score remain unmeasured.",
             ),
             next_smallest_pr=(
-                "Populate the scale-axis scorecard from runtime metrics and "
-                "benchmark artifacts."
+                "Add versioned benchmark artifacts for the unmeasured "
+                "composite-path, contradiction-rate, insight-score, and "
+                "route-depth axes."
             ),
             proof=future_scale_scorecard,
         ),

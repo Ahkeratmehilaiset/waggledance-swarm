@@ -1117,6 +1117,20 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "failure_backoff_s",
             )
         ),
+        "ops_latency_feed_slo_drill_contract_present": all(
+            token
+            in "\n".join((ops_text, ops_tests_text, docs_text, runbook_text))
+            for token in (
+                "ROUTE_STAGE_LATENCY_FEED_SLO_PANELS",
+                "_route_stage_latency_feed_slo_panels",
+                "_route_stage_latency_feed_drill_evidence",
+                "route_stage_latency_feed_availability_5m",
+                "route_stage_latency.feed_state.drill_evidence",
+                "test_ops_route_stage_latency_feed_slo_drill_evidence_tracks_health",
+                "Feed health SLO panels",
+                "Operator drill evidence",
+            )
+        ),
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
@@ -1176,6 +1190,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "latency_feed_cache_backoff_supported": checks[
             "ops_latency_feed_cache_backoff_contract_present"
         ],
+        "latency_feed_slo_drill_supported": checks[
+            "ops_latency_feed_slo_drill_contract_present"
+        ],
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
         "latency_metric_semantics": "stage_correlated_request_latency",
@@ -1186,9 +1203,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "counters and histograms from sanitized route traces. It supports "
             "Prometheus rate, p95/p99 histogram_quantile panels, and optional "
             "sanitized Prometheus/Alertmanager feed state with provider "
-            "health, TTL cache, and bounded failure backoff without storing "
-            "raw query, profile, language, context, or full route trace "
-            "payloads."
+            "health, TTL cache, bounded failure backoff, and operator "
+            "SLO/drill evidence templates without storing raw query, profile, "
+            "language, context, or full route trace payloads."
         ),
     }
 
@@ -5414,8 +5431,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "traces plus p95/p99 PromQL latency panel templates and "
                 "an optional sanitized read-only Prometheus/Alertmanager "
                 "feed provider with timeout, TTL cache, bounded failure "
-                "backoff, credential, and private-host guardrails; exact "
-                "runtime entry order depends on flags and call path."
+                "backoff, credential, private-host guardrails, and read-only "
+                "operator SLO/drill evidence templates; exact runtime entry "
+                "order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -5427,8 +5445,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add operator SLO/drill evidence around route-stage feed "
-                "health without adding route controls."
+                "Add an offline verifier for route-stage feed-health drill "
+                "evidence packages without adding route controls."
             ),
             proof=hex_entry_proof,
         ),

@@ -1100,6 +1100,31 @@ class TestApiOpsExtended:
         assert section["prometheus_alertmanager_feed"] is False
         assert section["feed_state"]["source"] == "not_configured"
         assert section["feed_state"]["panel_values"] == []
+        assert [
+            panel["id"]
+            for panel in section["feed_state"]["slo_panels"]
+        ] == [
+            "route_stage_latency_feed_availability_5m",
+            "route_stage_latency_feed_fetch_failures_total",
+            "route_stage_latency_feed_backoff_15m",
+            "route_stage_latency_feed_cache_stale_15m",
+        ]
+        assert {
+            panel["status"]
+            for panel in section["feed_state"]["slo_panels"]
+        } == {"not_configured"}
+        assert all(
+            panel["controls_present"] is False
+            for panel in section["feed_state"]["slo_panels"]
+        )
+        drill_evidence = section["feed_state"]["drill_evidence"]
+        assert drill_evidence["source"] == "operator_runbook"
+        assert drill_evidence["runbook_path"] == (
+            "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md"
+        )
+        assert drill_evidence["controls_present"] is False
+        assert drill_evidence["runtime_authority_granted"] is False
+        assert drill_evidence["external_writes_applied"] is False
         assert "waggledance_route_stage_request_latency_histogram_ms_bucket" in (
             section["metrics"]
         )
@@ -1260,7 +1285,10 @@ class TestApiOpsExtended:
             route_stage_latency_feed = Feed()
 
         section = _route_stage_latency_panels(Container())
-        feed_health = section["feed_state"]["feed_health"]
+        feed_state = section["feed_state"]
+        feed_health = feed_state["feed_health"]
+        slo_panels = {panel["id"]: panel for panel in feed_state["slo_panels"]}
+        drill_evidence = feed_state["drill_evidence"]
 
         assert feed_health["configured"] is True
         assert feed_health["available"] is True
@@ -1271,7 +1299,75 @@ class TestApiOpsExtended:
         assert feed_health["external_writes_applied"] is False
         assert feed_health["cache_hit_count"] == 0.0
         assert feed_health["last_failure_reason"] == "FEED_READ_FAILED"
+        assert slo_panels[
+            "route_stage_latency_feed_availability_5m"
+        ]["current_value"] == 1.0
+        assert slo_panels[
+            "route_stage_latency_feed_availability_5m"
+        ]["status"] == "nominal"
+        assert all(
+            panel["controls_present"] is False
+            for panel in slo_panels.values()
+        )
+        assert drill_evidence["controls_present"] is False
+        assert drill_evidence["runtime_authority_granted"] is False
+        assert drill_evidence["external_writes_applied"] is False
+        assert "route_stage_latency.feed_state.feed_health" in str(
+            drill_evidence["required_artifacts"]
+        )
         assert "C:/private/prometheus-token" not in str(section)
+
+    def test_ops_route_stage_latency_feed_slo_drill_evidence_tracks_health(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [],
+                    "active_alerts": [],
+                    "provider_health": {
+                        "status": "warning",
+                        "configured": True,
+                        "available": True,
+                        "backoff_active": True,
+                        "cache_stale": True,
+                        "fetch_failure_count": 2,
+                    },
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_state = section["feed_state"]
+        slo_panels = {panel["id"]: panel for panel in feed_state["slo_panels"]}
+
+        assert slo_panels[
+            "route_stage_latency_feed_availability_5m"
+        ]["status"] == "nominal"
+        assert slo_panels[
+            "route_stage_latency_feed_fetch_failures_total"
+        ]["current_value"] == 2.0
+        assert slo_panels[
+            "route_stage_latency_feed_fetch_failures_total"
+        ]["status"] == "warning"
+        assert slo_panels[
+            "route_stage_latency_feed_backoff_15m"
+        ]["current_value"] == 1.0
+        assert slo_panels[
+            "route_stage_latency_feed_backoff_15m"
+        ]["status"] == "warning"
+        assert slo_panels[
+            "route_stage_latency_feed_cache_stale_15m"
+        ]["current_value"] == 1.0
+        assert slo_panels[
+            "route_stage_latency_feed_cache_stale_15m"
+        ]["status"] == "warning"
+        assert feed_state["drill_evidence"]["source"] == "operator_runbook"
+        assert json.dumps(section, allow_nan=False)
 
     def test_ops_route_stage_latency_feed_health_preserves_none_reason(self):
         from waggledance.adapters.http.routes.compat_dashboard import (

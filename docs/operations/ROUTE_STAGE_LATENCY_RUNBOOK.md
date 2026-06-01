@@ -64,10 +64,50 @@ view of a container-provided Prometheus/Alertmanager snapshot. It may include:
 - `updated_at`: the provider timestamp when it is a string.
 - `feed_health`: sanitized provider health, cache/backoff counters, fixed
   failure reasons, and read-only no-authority flags.
+- `slo_panels`: read-only SLO panel templates for feed availability, fetch
+  failures, bounded backoff, and stale cache state.
+- `drill_evidence`: operator evidence requirements for a manual feed-health
+  drill.
 
 It intentionally does not forward Alertmanager annotations, descriptions,
 external URLs, raw label sets, raw query text, hostnames, filesystem paths, or
 exception strings.
+
+## Feed health SLO panels
+
+The `feed_state.slo_panels` array is template metadata only. The dashboard can
+render the current values from sanitized `feed_health`, while operator-owned
+Prometheus can use the PromQL templates below for time-window or cumulative
+review.
+
+| Panel | PromQL | Window | Objective |
+| --- | --- | --- | --- |
+| `route_stage_latency_feed_availability_5m` | `avg_over_time(waggledance_route_stage_latency_feed_available[5m])` | `5m` | `available == 1` |
+| `route_stage_latency_feed_fetch_failures_total` | `waggledance_route_stage_latency_feed_fetch_failures_total` | `process_lifetime` | `total == 0` |
+| `route_stage_latency_feed_backoff_15m` | `max_over_time(waggledance_route_stage_latency_feed_backoff_active[15m])` | `15m` | `max == 0` |
+| `route_stage_latency_feed_cache_stale_15m` | `max_over_time(waggledance_route_stage_latency_feed_cache_stale[15m])` | `15m` | `max == 0` |
+
+These panels are read-only. They do not change route-stage routing, feed
+configuration, solver selection, release gates, or runtime authority.
+
+## Operator drill evidence
+
+For a manual route-stage feed-health drill, collect only these sanitized
+artifacts:
+
+- `/metrics` scrape fields:
+  `waggledance_route_stage_latency_feed_status`,
+  `waggledance_route_stage_latency_feed_failure_reason`, and
+  `waggledance_route_stage_latency_feed_backoff_active`.
+- `/api/ops` fields: `route_stage_latency.feed_state.feed_health`,
+  `route_stage_latency.feed_state.slo_panels`, and
+  `route_stage_latency.feed_state.drill_evidence`.
+- Operator log window fields: timestamp, commit, and sanitized reason.
+
+Exclude URLs, hosts, headers, filesystem paths, exception text, raw
+Alertmanager labels, and raw Prometheus results. The drill evidence metadata
+keeps `controls_present=false`, `runtime_authority_granted=false`, and
+`external_writes_applied=false`.
 
 ## Optional feed provider
 

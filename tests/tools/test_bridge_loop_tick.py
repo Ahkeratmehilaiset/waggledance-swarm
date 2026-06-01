@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +16,9 @@ from tools.bridge_loop_tick import (
     WAKEUP_ACT_NOW,
     WAKEUP_IN_FLIGHT,
     WAKEUP_QUIET,
+    _git_ref_sha,
     build_loop_tick,
+    build_pr_status_snapshot_fn,
     emit_peer_activation_event,
     evaluate_merge_ready,
     my_unmerged_rco_passes,
@@ -26,6 +29,7 @@ from tools.bridge_loop_tick import (
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
+BASE = "c" * 40
 
 
 def _rco_request(task: str, *, frm: str = "codex", to: str = "claude", ts: str) -> dict:
@@ -107,6 +111,60 @@ def _green_snapshot(pr: int, head: str = HEAD) -> dict:
             {"name": "test", "state": "", "status": "COMPLETED", "conclusion": "SUCCESS"}
         ],
     }
+
+
+# --- stale-base checked PR snapshot function -------------------------------
+
+def test_git_ref_sha_reads_origin_main_sha():
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=f"{BASE}\n")
+
+    assert _git_ref_sha(runner=runner) == BASE
+    assert calls == [["git", "rev-parse", "--verify", "origin/main"]]
+
+
+def test_git_ref_sha_rejects_unresolved_or_malformed_ref():
+    def unresolved(command: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="", stderr="fatal")
+
+    with pytest.raises(RuntimeError, match="could not resolve origin/main"):
+        _git_ref_sha(runner=unresolved)
+
+    def malformed(command: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(returncode=0, stdout="abc123\n")
+
+    with pytest.raises(RuntimeError, match="40-char lowercase sha"):
+        _git_ref_sha(runner=malformed)
+
+
+def test_pr_status_snapshot_fn_passes_expected_base_sha():
+    calls: list[dict] = []
+
+    def ref_sha_fn(ref: str) -> str:
+        assert ref == "origin/main"
+        return BASE
+
+    def snapshot_builder(**kwargs) -> dict:
+        calls.append(kwargs)
+        return _green_snapshot(kwargs["pr_number"])
+
+    snapshot_fn = build_pr_status_snapshot_fn(
+        repo="Ahkeratmehilaiset/waggledance-swarm",
+        ref_sha_fn=ref_sha_fn,
+        snapshot_builder=snapshot_builder,
+    )
+
+    assert snapshot_fn(900)["pr_number"] == 900
+    assert calls == [
+        {
+            "pr_number": 900,
+            "repo": "Ahkeratmehilaiset/waggledance-swarm",
+            "expected_base_sha": BASE,
+        }
+    ]
 
 
 # --- my_unmerged_rco_passes -------------------------------------------------

@@ -33,6 +33,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -66,10 +68,12 @@ WAKEUP_IN_FLIGHT = 240  # CI pending on a candidate / active own claim
 WAKEUP_QUIET = 1800  # nothing pending; operator's ball or idle
 
 SnapshotFn = Callable[[int], Mapping[str, Any]]
+CommandRunner = Callable[[Sequence[str]], Any]
 PEER_AGENT = {"claude": "codex", "codex": "claude"}
 SUBSTANTIVE_IDLE_MINUTES = 30.0
 PEER_ACTIVATION_RECENT_MINUTES = 30.0
 NON_SUBSTANTIVE_TYPES = {"heartbeat", "liveness"}
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # How recently a peer's substantive event must have happened to count as
 # an "active PR-producing claim" for wakeup-anticipation purposes. Tracks
@@ -614,6 +618,54 @@ def _checks_green(snapshot: Mapping[str, Any]) -> bool:
     return all(_check_passed(check) for check in checks if isinstance(check, Mapping))
 
 
+def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git_ref_sha(
+    ref: str = "origin/main",
+    *,
+    runner: CommandRunner | None = None,
+) -> str:
+    run = runner or _run_command
+    result = run(["git", "rev-parse", "--verify", ref])
+    return_code = int(getattr(result, "returncode", 0))
+    if return_code != 0:
+        raise RuntimeError(f"could not resolve {ref} for PR base preflight")
+    sha = str(getattr(result, "stdout", "")).strip().lower()
+    if not SHA_RE.fullmatch(sha):
+        raise RuntimeError(f"{ref} did not resolve to a 40-char lowercase sha")
+    return sha
+
+
+def build_pr_status_snapshot_fn(
+    *,
+    repo: str,
+    base_ref: str = "origin/main",
+    ref_sha_fn: Callable[[str], str] = _git_ref_sha,
+    snapshot_builder: Callable[..., Mapping[str, Any]] | None = None,
+) -> SnapshotFn:
+    """Build a PR snapshot function that binds snapshots to the current base."""
+    if snapshot_builder is None:
+        from tools.pr_status_snapshot import build_pr_status_snapshot
+
+        snapshot_builder = build_pr_status_snapshot
+
+    def snapshot_fn(pr: int) -> Mapping[str, Any]:
+        return snapshot_builder(
+            pr_number=pr,
+            repo=repo,
+            expected_base_sha=ref_sha_fn(base_ref),
+        )
+
+    return snapshot_fn
+
+
 def evaluate_merge_ready(
     candidate: Mapping[str, Any],
     *,
@@ -807,10 +859,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     events_path = args.events or (Path(args.bridge_root) / "shared" / "events.jsonl")
     snapshot_fn: SnapshotFn | None = None
     if args.check_prs:
-        from tools.pr_status_snapshot import build_pr_status_snapshot
-
-        def snapshot_fn(pr: int) -> Mapping[str, Any]:  # type: ignore[misc]
-            return build_pr_status_snapshot(pr_number=pr, repo=args.repo)
+        snapshot_fn = build_pr_status_snapshot_fn(repo=args.repo)
 
     try:
         events = read_events(events_path)

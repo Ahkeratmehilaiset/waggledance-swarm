@@ -592,6 +592,41 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_re
     assert entry["local_paths_recorded"] is False
 
 
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_rejects_duplicate_raw_key_hidden_path() -> (
+    None
+):
+    template = _valid_verifier_summary_bridge_event_template()
+    hidden_prefix = (
+        json.dumps(
+            {
+                "bridge_event_template": {
+                    "message": "C:/Python/project2-master/private.json"
+                }
+            },
+            sort_keys=True,
+        )[:-1]
+        + ","
+    )
+    raw = (hidden_prefix + json.dumps(template, sort_keys=True)[1:]).encode("utf-8")
+
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+    )
+    serialized = json.dumps(entry, sort_keys=True)
+
+    assert entry["ok"] is False
+    assert "template_index_entry" not in entry
+    assert any(
+        "summary_bridge_event_template_duplicate_key" in item
+        for item in entry["blockers"]
+    )
+    assert entry["artifact_payloads_included"] is False
+    assert entry["local_paths_recorded"] is False
+    assert "project2-master" not in serialized
+    assert "private.json" not in serialized
+
+
 def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_blocks_path_leak() -> (
     None
 ):

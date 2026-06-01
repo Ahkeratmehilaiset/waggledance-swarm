@@ -1122,6 +1122,40 @@ def _deterministic_json_bytes(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+class _DuplicateJsonKeyError(ValueError):
+    pass
+
+
+def _reject_duplicate_json_keys(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    seen: set[str] = set()
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise _DuplicateJsonKeyError(key)
+        seen.add(key)
+        result[key] = value
+    return result
+
+
+def _parse_json_bytes_without_duplicate_keys(
+    raw: bytes,
+) -> tuple[Any | None, str | None]:
+    try:
+        decoded = raw.decode("utf-8")
+        parsed = json.loads(
+            decoded,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except _DuplicateJsonKeyError:
+        return None, "summary_bridge_event_template_duplicate_key"
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None, "summary_bridge_event_template_json_error"
+    if _contains_path_marker(decoded):
+        return None, "summary_bridge_event_template_raw_path_marker"
+    return parsed, None
+
+
 def _bridge_template_index_entry_bytes(
     template_report: Mapping[str, Any],
     template_report_bytes: bytes | None,
@@ -1134,13 +1168,9 @@ def _bridge_template_index_entry_bytes(
     if not isinstance(template_report_bytes, (bytes, bytearray)):
         return None, "summary_bridge_event_template_bytes_invalid"
     raw = bytes(template_report_bytes)
-    try:
-        parsed = json.loads(
-            raw.decode("utf-8"),
-            parse_constant=_reject_json_constant,
-        )
-    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return None, "summary_bridge_event_template_json_error"
+    parsed, parse_error = _parse_json_bytes_without_duplicate_keys(raw)
+    if parse_error is not None:
+        return None, parse_error
     if not isinstance(parsed, Mapping):
         return None, "summary_bridge_event_template_not_object"
     if dict(parsed) != dict(template_report):
@@ -1478,18 +1508,12 @@ def _load_bridge_template_report(
                 "summary_bridge_event_template_unreadable"
             ),
         )
-    try:
-        report = json.loads(
-            raw.decode("utf-8"),
-            parse_constant=_reject_json_constant,
-        )
-    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+    report, parse_error = _parse_json_bytes_without_duplicate_keys(raw)
+    if parse_error is not None:
         return (
             None,
             None,
-            _bridge_template_index_entry_error_report(
-                "summary_bridge_event_template_json_invalid"
-            ),
+            _bridge_template_index_entry_error_report(parse_error),
         )
     if not isinstance(report, Mapping):
         return (

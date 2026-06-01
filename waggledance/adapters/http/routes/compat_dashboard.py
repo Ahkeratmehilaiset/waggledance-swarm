@@ -548,7 +548,10 @@ def _route_stage_latency_feed_health_default(source: str) -> dict:
 def _route_stage_latency_feed_reason(reason) -> str | None:  # noqa: ANN001
     if not isinstance(reason, str) or not reason.strip():
         return None
-    clean = reason.strip().upper()
+    raw = reason.strip()
+    if raw.lower() == "none":
+        return "none"
+    clean = raw.upper()
     if clean.startswith("HTTP_STATUS_"):
         return "HTTP_STATUS_REFUSED"
     if clean in ROUTE_STAGE_LATENCY_FEED_HEALTH_REASONS:

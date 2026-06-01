@@ -766,6 +766,37 @@ def test_metrics_body_contains_route_stage_latency_feed_cache_gauges():
     assert "127.0.0.1" not in body
 
 
+def test_metrics_route_stage_latency_feed_preserves_explicit_none_reason():
+    class Feed:
+        def snapshot(self):
+            return {
+                "updated_at": "2026-05-28T04:15:00Z",
+                "panel_values": [],
+                "active_alerts": [],
+                "provider_health": {
+                    "status": "nominal",
+                    "configured": True,
+                    "available": True,
+                    "last_failure_reason": "none",
+                },
+            }
+
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.route_stage_latency_feed = Feed()
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert (
+        'waggledance_route_stage_latency_feed_failure_reason{reason="none"} 1.0'
+        in body
+    )
+    assert (
+        "waggledance_route_stage_latency_feed_failure_reason{"
+        'reason="FEED_READ_FAILED"} 0.0'
+    ) in body
+
+
 def test_metrics_route_stage_latency_feed_backoff_failure_is_sanitized():
     from waggledance.adapters.http.route_stage_latency_feed import (
         RouteStageLatencyFeedHttpResponse,

@@ -1273,6 +1273,33 @@ class TestApiOpsExtended:
         assert feed_health["last_failure_reason"] == "FEED_READ_FAILED"
         assert "C:/private/prometheus-token" not in str(section)
 
+    def test_ops_route_stage_latency_feed_health_preserves_none_reason(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _route_stage_latency_panels,
+        )
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-05-28T04:15:00Z",
+                    "panel_values": [],
+                    "active_alerts": [],
+                    "provider_health": {
+                        "status": "nominal",
+                        "configured": True,
+                        "available": True,
+                        "last_failure_reason": "none",
+                    },
+                }
+
+        class Container:
+            route_stage_latency_feed = Feed()
+
+        section = _route_stage_latency_panels(Container())
+        feed_health = section["feed_state"]["feed_health"]
+
+        assert feed_health["last_failure_reason"] == "none"
+
     def test_ops_route_stage_latency_feed_state_rejects_raw_updated_at(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _route_stage_latency_panels,

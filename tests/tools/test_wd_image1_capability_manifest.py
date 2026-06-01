@@ -1380,7 +1380,7 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "p95/p99" in capability["safe_statement"]
     assert "feed provider" in capability["safe_statement"]
     assert "private-host guardrails" in capability["safe_statement"]
-    assert "provider health/cache metrics" in capability["next_smallest_pr"]
+    assert "operator SLO/drill evidence" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

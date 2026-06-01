@@ -14,6 +14,8 @@ from tools.pr_status_snapshot import (
 
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
+BASE = "abcdef1234567890abcdef1234567890abcdef12"
+OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
 
 
 def _gh_payload(**overrides) -> dict:
@@ -22,6 +24,7 @@ def _gh_payload(**overrides) -> dict:
         "title": "feat(idle): add dry-run auto-merge gate",
         "headRefOid": HEAD,
         "headRefName": "codex/idle-consensus-auto-merge-v1-20260518",
+        "baseRefOid": BASE,
         "mergeable": "MERGEABLE",
         "isDraft": False,
         "url": "https://github.example/pr/479",
@@ -71,6 +74,7 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
         repo="Ahkeratmehilaiset/waggledance-swarm",
         operator_approved=True,
         receipt_verified=True,
+        expected_base_sha=BASE,
         runner=runner,
     )
     assert calls == [
@@ -106,6 +110,7 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
     ]
     assert snapshot["pr_number"] == 479
     assert snapshot["head_sha"] == HEAD
+    assert snapshot["base_sha"] == BASE
     assert snapshot["operator_approved"] is True
     assert snapshot["receipt_verified"] is True
     assert snapshot["checks"] == [
@@ -196,6 +201,58 @@ def test_pr_head_changed_during_snapshot_is_rejected() -> None:
     report = excinfo.value.report
     assert report["decision"] == "gh_pr_diff_head_drift"
     assert len(calls) == 3
+
+
+def test_pr_base_changed_during_snapshot_is_rejected() -> None:
+    calls, runner = _runner(
+        payload=_gh_payload(),
+        recheck_payload=_gh_payload(baseRefOid=OTHER_BASE),
+    )
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    report = excinfo.value.report
+    assert report["decision"] == "gh_pr_diff_base_drift"
+    assert len(calls) == 3
+
+
+def test_expected_base_mismatch_is_rejected() -> None:
+    calls, runner = _runner(payload=_gh_payload(baseRefOid=BASE))
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(
+            pr_number=479,
+            expected_base_sha=OTHER_BASE,
+            runner=runner,
+        )
+    report = excinfo.value.report
+    assert report["decision"] == "stale_base_ref"
+    assert len(calls) == 3
+
+
+def test_invalid_expected_base_refused_before_gh_call() -> None:
+    def runner(command: list[str]) -> SimpleNamespace:
+        raise AssertionError(f"runner should not be called: {command}")
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(
+            pr_number=479,
+            expected_base_sha="abc123",
+            runner=runner,
+        )
+    assert excinfo.value.report["decision"] == "invalid_expected_base_sha"
+
+
+def test_missing_full_base_sha_refused() -> None:
+    def runner(command: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(_gh_payload(baseRefOid="abc1234")),
+        )
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+    assert excinfo.value.report["decision"] == "invalid_base_sha"
 
 
 def test_recheck_view_failure_is_reported() -> None:

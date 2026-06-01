@@ -76,10 +76,9 @@ NON_SUBSTANTIVE_TYPES = {"heartbeat", "liveness"}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # How recently a peer's substantive event must have happened to count as
-# an "active PR-producing claim" for wakeup-anticipation purposes. Tracks
-# the observed Codex self-merge timeout window (~5-10 min after CI green)
-# documented in docs/runs/magma_100h_sprint_2026_05_23/baseline.json::
-# claude_activation_contract.rco_timeout_minutes_after_ci_green.
+# an "active PR-producing claim" for wakeup-anticipation purposes. This keeps
+# the peer warm enough to provide an exact-head RCO decision before otherwise
+# ready work has to fail closed to operator_review_required.
 PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES = 15.0
 
 # Event (type, status) pairs that indicate a peer is mid-task on work that
@@ -271,8 +270,8 @@ def peer_has_active_pr_producing_claim(
     status) or ``status`` in ``PEER_TERMINAL_STATUSES``.
 
     The intent is to keep Claude's wakeup tight (``WAKEUP_IN_FLIGHT``) so the
-    imminent peer PR catches a fresh RCO within the peer's self-merge timeout
-    window (~5-10 min after CI green; see ``PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES``).
+    imminent peer PR catches a fresh exact-head RCO decision before otherwise
+    ready work has to fail closed to operator_review_required.
     """
 
     base: dict[str, Any] = {

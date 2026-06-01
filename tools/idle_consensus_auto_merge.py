@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--charter", type=Path, default=DEFAULT_CHARTER_PATH)
     parser.add_argument("--pr-status-file", type=Path, required=True)
     parser.add_argument("--expected-head", required=True)
+    parser.add_argument(
+        "--expected-base-sha",
+        default="",
+        help=(
+            "Optional current base branch SHA. When set, the PR status "
+            "snapshot base_sha must match before merge."
+        ),
+    )
     parser.add_argument("--consensus-proposal-id", required=True)
     parser.add_argument("--receipt-bundle-path", default="")
     parser.add_argument("--artifact-out-dir", type=Path, default=None)
@@ -160,6 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = evaluate_auto_merge_gate(
             pr_status=status,
             expected_head=args.expected_head,
+            expected_base_sha=args.expected_base_sha,
             consensus_proposal_id=args.consensus_proposal_id,
             receipt_bundle_path=args.receipt_bundle_path,
             events_path=args.events,
@@ -204,6 +213,7 @@ def evaluate_auto_merge_gate(
     pr_status: Mapping[str, Any],
     expected_head: str,
     consensus_proposal_id: str,
+    expected_base_sha: str = "",
     receipt_bundle_path: str = "",
     events_path: Path | None = None,
     charter_path: Path = DEFAULT_CHARTER_PATH,
@@ -222,6 +232,7 @@ def evaluate_auto_merge_gate(
         {
             "pr_status": pr_status,
             "expected_head": expected_head,
+            "expected_base_sha": expected_base_sha,
             "consensus_proposal_id": consensus_proposal_id,
             "receipt_bundle_path": receipt_bundle_path,
             "events_path": str(events_path) if events_path is not None else "",
@@ -232,6 +243,9 @@ def evaluate_auto_merge_gate(
         }
     )
     _validate_sha(expected_head, "expected_head")
+    expected_base_sha = expected_base_sha.strip().lower()
+    if expected_base_sha:
+        _validate_sha(expected_base_sha, "expected_base_sha")
     if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
 
@@ -264,6 +278,11 @@ def evaluate_auto_merge_gate(
     _validate_sha(head_sha, "head_sha")
     title = str(pr_status.get("title", ""))
     mergeable = str(pr_status.get("mergeable", ""))
+    base_gate = _base_ref_gate(
+        snapshot_base_sha=str(pr_status.get("base_sha", "")),
+        expected_base_sha=expected_base_sha,
+        required=apply,
+    )
     receipt_verified = bool(pr_status.get("receipt_verified", False))
     checks = _checks(pr_status)
     artifact_hook_configured = artifact_writer is not None
@@ -277,6 +296,8 @@ def evaluate_auto_merge_gate(
         blockers.append(f"diff gate failed: {diff_gate.reason}")
     if mergeable not in MERGEABLE_STATES:
         blockers.append(f"mergeable state is not clean: {mergeable}")
+    if not bool(base_gate.get("allowed", False)):
+        blockers.append(str(base_gate.get("reason", "base freshness gate failed")))
     if not rate_gate["allowed"]:
         blockers.append(
             f"daily rate limit exceeded: {quota_used}/{quota_total} for {rate_date}"
@@ -348,6 +369,7 @@ def evaluate_auto_merge_gate(
         bridge_peer_gate=bridge_peer_gate,
         path_gate=_gate_to_dict(path_gate),
         diff_gate=_gate_to_dict(diff_gate),
+        base_gate=base_gate,
         bridge_consensus=bridge_consensus,
     )
     if blockers:
@@ -522,6 +544,7 @@ def _base_report(
     bridge_peer_gate: Mapping[str, Any],
     path_gate: Mapping[str, Any],
     diff_gate: Mapping[str, Any],
+    base_gate: Mapping[str, Any],
     bridge_consensus: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -542,6 +565,7 @@ def _base_report(
         },
         "path_gate": dict(path_gate),
         "diff_gate": dict(diff_gate),
+        "base_gate": dict(base_gate),
         "bridge_peer_gate": dict(bridge_peer_gate),
         "bridge_consensus": dict(bridge_consensus),
         "rate_gate": dict(rate_gate),
@@ -608,6 +632,45 @@ def _gate_to_dict(gate: Any) -> dict[str, Any]:
         "unmatched_paths": list(gate.unmatched_paths),
         "code_pattern_hits": list(gate.code_pattern_hits),
     }
+
+
+def _base_ref_gate(
+    *,
+    snapshot_base_sha: str,
+    expected_base_sha: str,
+    required: bool,
+) -> dict[str, Any]:
+    snapshot_base_sha = snapshot_base_sha.strip().lower()
+    expected_base_sha = expected_base_sha.strip().lower()
+    gate = {
+        "allowed": True,
+        "required": bool(required),
+        "configured": bool(expected_base_sha),
+        "snapshot_base_sha": snapshot_base_sha,
+        "expected_base_sha": expected_base_sha,
+        "reason": "",
+    }
+    if not expected_base_sha:
+        if required:
+            return {
+                **gate,
+                "allowed": False,
+                "reason": "expected_base_sha is required before merge",
+            }
+        return gate
+    if not SHA_RE.fullmatch(snapshot_base_sha):
+        return {
+            **gate,
+            "allowed": False,
+            "reason": "base_sha snapshot is required before merge",
+        }
+    if snapshot_base_sha != expected_base_sha:
+        return {
+            **gate,
+            "allowed": False,
+            "reason": "base sha mismatch",
+        }
+    return gate
 
 
 def verify_bridge_consensus(

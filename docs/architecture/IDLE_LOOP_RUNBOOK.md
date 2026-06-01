@@ -198,7 +198,7 @@ detects already-approved merges, surfaces operator decision packs, detects
 heartbeat-only peer sessions, and recommends the next wakeup interval:
 
 ```text
-python tools/bridge_loop_tick.py --agent claude --check-prs --repo OWNER/NAME --json
+python tools/bridge_loop_tick.py --agent claude --check-prs --repo OWNER/NAME --expected-base-sha <fresh-current-main-sha> --json
 ```
 
 Self-wakeup harnesses that are allowed to keep the peer active pass
@@ -215,14 +215,15 @@ runs `gh pr merge`) and reports an ordered worklist:
    preflight-clear + head-matched. Complete it in the SAME tick via the existing
    gated flow, then record the close so the next tick does not re-detect it:
    ```text
-   python tools/pr_status_snapshot.py <pr> --out snap.json
+   python tools/pr_status_snapshot.py <pr> --expected-base-sha <fresh-current-main-sha> --out snap.json
    gh pr merge <pr> --squash --match-head-commit=<approved_head>   # Rule 9 peer-RCO
    .\.agent-bridge\bin\Write-AgentEvent.ps1 -Agent <me> -Type done \
        -TaskId <task> -Status merged -PayloadJson '{"pr":<pr>}'
    ```
    (Idle-consensus-protocol PRs instead go through
-   `idle_consensus_auto_merge.py --apply`, which adds the consensus + MAGMA
-   receipt + 5/day gates. `bridge_loop_tick` covers the direct peer-RCO path.)
+   `idle_consensus_auto_merge.py --apply --expected-base-sha <fresh-current-main-sha>`,
+   which adds the consensus + MAGMA receipt + 5/day gates. `bridge_loop_tick`
+   covers the direct peer-RCO path.)
 3. **Surface operator packs** — each `open_operator_packs` entry is a
    charter-gated decision needing a one-step operator sign-off
    (`docs/operator_inbox/<id>.yaml`, schema `OPERATOR_DECISION_PACK_V1.md`).

@@ -651,6 +651,13 @@ def evaluate_merge_ready(
     try:
         snapshot = snapshot_fn(pr)
     except Exception as exc:  # noqa: BLE001 - report, never crash the tick
+        report = getattr(exc, "report", None)
+        if isinstance(report, Mapping):
+            result["pr_status_error"] = dict(report)
+            decision = str(report.get("decision", ""))
+            if decision:
+                result["blockers"].append(f"pr_status_error:{decision}")
+                return result
         result["blockers"].append(f"pr_status_error:{type(exc).__name__}")
         return result
 
@@ -791,6 +798,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Query gh pr view for rco_pass'd candidates (read-only).",
     )
     parser.add_argument(
+        "--expected-base-sha",
+        default="",
+        help=(
+            "Optional current base branch SHA to pass into PR snapshots when "
+            "--check-prs is set."
+        ),
+    )
+    parser.add_argument(
         "--emit-peer-activation",
         action="store_true",
         help=(
@@ -810,7 +825,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         from tools.pr_status_snapshot import build_pr_status_snapshot
 
         def snapshot_fn(pr: int) -> Mapping[str, Any]:  # type: ignore[misc]
-            return build_pr_status_snapshot(pr_number=pr, repo=args.repo)
+            return build_pr_status_snapshot(
+                pr_number=pr,
+                repo=args.repo,
+                expected_base_sha=args.expected_base_sha,
+            )
 
     try:
         events = read_events(events_path)

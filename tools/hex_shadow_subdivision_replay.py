@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Build a read-only hex shadow-subdivision replay artifact."""
+
 from __future__ import annotations
 
 import argparse
@@ -12,8 +13,12 @@ import subprocess
 import sys
 from typing import Any, Mapping, Sequence
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
+
 PROOF_ID = "hex_shadow_subdivision_replay_v1"
 PROOF_TYPE = "shadow_replay_hypothetical"
 VERIFIER_PROOF_ID = "hex_shadow_subdivision_replay_verifier_v1"
@@ -26,6 +31,17 @@ VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION = (
 )
 VERIFIER_SUMMARY_BRIDGE_EVENT_STATUS = (
     "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_ready"
+)
+VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_PROOF_ID = (
+    "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+    "index_entry_v1"
+)
+VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION = (
+    "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+    "index_entry.v1"
+)
+VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID = (
+    "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template"
 )
 
 TOPOLOGY_BOUNDARY_METRIC_NAMES: tuple[str, ...] = (
@@ -212,27 +228,17 @@ def _check_status(value: Any) -> str:
 
 
 def _artifact_digest_input(artifact: Mapping[str, Any]) -> dict:
-    return {
-        key: value
-        for key, value in artifact.items()
-        if key != "artifact_digest"
-    }
+    return {key: value for key, value in artifact.items() if key != "artifact_digest"}
 
 
 def _expected_artifact_digests(
     artifact: Mapping[str, Any],
 ) -> tuple[dict[str, str], str]:
-    shadow_plan_summary = _mapping_or_empty(
-        artifact.get("shadow_plan_summary")
-    )
+    shadow_plan_summary = _mapping_or_empty(artifact.get("shadow_plan_summary"))
     relation_summary = _mapping_or_empty(artifact.get("relation_summary"))
     delivery_summary = _mapping_or_empty(artifact.get("delivery_summary"))
-    metric_contract = _mapping_or_empty(
-        artifact.get("metric_contract_summary")
-    )
-    runtime_summary = _mapping_or_empty(
-        artifact.get("runtime_topology_summary")
-    )
+    metric_contract = _mapping_or_empty(artifact.get("metric_contract_summary"))
+    runtime_summary = _mapping_or_empty(artifact.get("runtime_topology_summary"))
     source_snapshot = _mapping_or_empty(artifact.get("source_snapshot"))
     digest_inputs = {
         "shadow_plan_summary": shadow_plan_summary,
@@ -318,30 +324,23 @@ def verify_shadow_subdivision_replay_artifact(
     for key in unknown_keys:
         blockers.append(f"unknown_field:{key}")
 
-    shadow_plan_summary = _mapping_or_empty(
-        artifact_dict.get("shadow_plan_summary")
-    )
+    shadow_plan_summary = _mapping_or_empty(artifact_dict.get("shadow_plan_summary"))
     relation_summary = _mapping_or_empty(artifact_dict.get("relation_summary"))
     delivery_summary = _mapping_or_empty(artifact_dict.get("delivery_summary"))
-    runtime_summary = _mapping_or_empty(
-        artifact_dict.get("runtime_topology_summary")
-    )
-    metric_contract = _mapping_or_empty(
-        artifact_dict.get("metric_contract_summary")
-    )
+    runtime_summary = _mapping_or_empty(artifact_dict.get("runtime_topology_summary"))
+    metric_contract = _mapping_or_empty(artifact_dict.get("metric_contract_summary"))
     source_snapshot = _mapping_or_empty(artifact_dict.get("source_snapshot"))
     guardrails = _mapping_or_empty(artifact_dict.get("guardrails"))
     declared_digests = _mapping_or_empty(artifact_dict.get("digests"))
-    recomputed_digests, recomputed_artifact_digest = (
-        _expected_artifact_digests(artifact_dict)
+    recomputed_digests, recomputed_artifact_digest = _expected_artifact_digests(
+        artifact_dict
     )
 
     checks: dict[str, bool] = {
         "proof_identity": artifact_dict.get("proof_id") == PROOF_ID,
         "proof_type": artifact_dict.get("proof_type") == PROOF_TYPE,
         "binding_scope": (
-            artifact_dict.get("binding_scope")
-            == "structural_metrics_contract_only"
+            artifact_dict.get("binding_scope") == "structural_metrics_contract_only"
         ),
         "top_level_fields_known": not unknown_keys,
         "top_level_fields_present": not missing_keys,
@@ -349,8 +348,7 @@ def verify_shadow_subdivision_replay_artifact(
             shadow_plan_summary.get("no_runtime_mutation") is True
         ),
         "shadow_plan_target_state": (
-            shadow_plan_summary.get("target_state")
-            == "subdivision_in_shadow"
+            shadow_plan_summary.get("target_state") == "subdivision_in_shadow"
         ),
         "delivery_counts_consistent": (
             isinstance(delivery_summary.get("message_count"), int)
@@ -360,17 +358,12 @@ def verify_shadow_subdivision_replay_artifact(
             == delivery_summary.get("delivered_count")
             and delivery_summary.get("blocked_count") == 0
         ),
-        "runtime_dispatch_disabled": (
-            runtime_summary.get("dispatch_enabled") is False
-        ),
+        "runtime_dispatch_disabled": (runtime_summary.get("dispatch_enabled") is False),
         "runtime_shadow_children_absent": (
-            runtime_summary.get(
-                "shadow_child_cell_ids_absent_from_runtime_config"
-            )
+            runtime_summary.get("shadow_child_cell_ids_absent_from_runtime_config")
             is True
         ),
-        "metric_endpoint": metric_contract.get("metrics_endpoint")
-        == "/metrics",
+        "metric_endpoint": metric_contract.get("metrics_endpoint") == "/metrics",
         "metric_status_code": metric_contract.get("status_code") == 200,
         "metric_payload_markers_absent": (
             metric_contract.get("forbidden_payload_markers_absent") is True
@@ -384,8 +377,8 @@ def verify_shadow_subdivision_replay_artifact(
             artifact_dict.get("artifact_digest") == recomputed_artifact_digest
         ),
     }
-    checks["expected_git_commit_valid"] = (
-        expected_git_commit is None or _is_git_commit(expected_git_commit)
+    checks["expected_git_commit_valid"] = expected_git_commit is None or _is_git_commit(
+        expected_git_commit
     )
     checks["source_snapshot_git_commit_matches_expected"] = (
         expected_git_commit is None
@@ -460,9 +453,7 @@ def verify_shadow_subdivision_replay_artifact(
             **recomputed_digests,
             "artifact": recomputed_artifact_digest,
         },
-        "declared_digests": {
-            name: declared_digests.get(name) for name in DIGEST_NAMES
-        }
+        "declared_digests": {name: declared_digests.get(name) for name in DIGEST_NAMES}
         | {"artifact": artifact_dict.get("artifact_digest")},
         "guardrails": {
             name: guardrails.get(name)
@@ -601,9 +592,7 @@ def build_shadow_subdivision_replay_verifier_summary(
     input_path_free = not _contains_path_marker(verification_report)
     report_blockers = _safe_token_list(verification_report.get("blockers"))
     report_warnings = _safe_token_list(verification_report.get("warnings"))
-    contract_blockers = _verification_report_contract_blockers(
-        verification_report
-    )
+    contract_blockers = _verification_report_contract_blockers(verification_report)
     if not input_path_free:
         contract_blockers.append("verification_report_path_free")
 
@@ -660,9 +649,7 @@ def build_shadow_subdivision_replay_verifier_summary(
                 "artifact": _check_status(checks.get("artifact_digest_match")),
             },
             "contract_checks": {
-                "artifact_path_free": _check_status(
-                    checks.get("artifact_path_free")
-                ),
+                "artifact_path_free": _check_status(checks.get("artifact_path_free")),
                 "source_snapshot_path_free": _check_status(
                     checks.get("source_snapshot_path_free")
                 ),
@@ -915,10 +902,7 @@ def _verifier_summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]
 
 def _match_status_map(value: Any, keys: Sequence[str]) -> dict[str, str]:
     raw = _mapping_or_empty(value)
-    return {
-        key: "match" if raw.get(key) == "match" else "unknown"
-        for key in keys
-    }
+    return {key: "match" if raw.get(key) == "match" else "unknown" for key in keys}
 
 
 def build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
@@ -1091,7 +1075,399 @@ def build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
     }
 
 
-def _load_summary_verification_report(path: Path | str) -> tuple[dict | None, dict | None]:
+def _bridge_template_index_entry_error_report(reason: str) -> dict:
+    return {
+        "proof_id": VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_PROOF_ID,
+        "ok": False,
+        "index_entry_version": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION
+        ),
+        "template_only": True,
+        "manual_review_required": True,
+        "direct_bridge_write_performed": False,
+        "automatic_release_decision": False,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "runtime_controls_added": False,
+        "runtime_subdivision_authority_granted": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+        "blockers": [
+            "shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+            f"index_entry_failed:{_safe_token(reason)}"
+        ],
+        "warnings": [],
+        "safe_conclusion": (
+            "The bridge-event template index entry failed closed before "
+            "rendering. It does not append to the bridge, transport "
+            "artifacts, include payloads, record local paths, or grant "
+            "runtime subdivision authority."
+        ),
+    }
+
+
+def _raw_sha256(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _deterministic_json_bytes(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+class _DuplicateJsonKeyError(ValueError):
+    pass
+
+
+def _reject_duplicate_json_keys(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    seen: set[str] = set()
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise _DuplicateJsonKeyError(key)
+        seen.add(key)
+        result[key] = value
+    return result
+
+
+def _parse_json_bytes_without_duplicate_keys(
+    raw: bytes,
+) -> tuple[Any | None, str | None]:
+    try:
+        decoded = raw.decode("utf-8")
+        parsed = json.loads(
+            decoded,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except _DuplicateJsonKeyError:
+        return None, "summary_bridge_event_template_duplicate_key"
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None, "summary_bridge_event_template_json_error"
+    if _contains_path_marker(decoded):
+        return None, "summary_bridge_event_template_raw_path_marker"
+    return parsed, None
+
+
+def _bridge_template_index_entry_bytes(
+    template_report: Mapping[str, Any],
+    template_report_bytes: bytes | None,
+) -> tuple[bytes | None, str | None]:
+    if template_report_bytes is None:
+        try:
+            return _deterministic_json_bytes(template_report), None
+        except (TypeError, ValueError):
+            return None, "summary_bridge_event_template_json_error"
+    if not isinstance(template_report_bytes, (bytes, bytearray)):
+        return None, "summary_bridge_event_template_bytes_invalid"
+    raw = bytes(template_report_bytes)
+    parsed, parse_error = _parse_json_bytes_without_duplicate_keys(raw)
+    if parse_error is not None:
+        return None, parse_error
+    if not isinstance(parsed, Mapping):
+        return None, "summary_bridge_event_template_not_object"
+    if dict(parsed) != dict(template_report):
+        return None, "summary_bridge_event_template_bytes_mismatch"
+    return raw, None
+
+
+def _verifier_summary_bridge_event_template_contract_blockers(
+    template_report: Mapping[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    if template_report.get("ok") is not True:
+        blockers.append("summary_bridge_event_template_not_ok")
+    if (
+        template_report.get("proof_id")
+        != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_PROOF_ID
+    ):
+        blockers.append("summary_bridge_event_template_proof_id_mismatch")
+    if (
+        template_report.get("template_version")
+        != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION
+    ):
+        blockers.append("summary_bridge_event_template_version_mismatch")
+    if template_report.get("template_only") is not True:
+        blockers.append("summary_bridge_event_template_template_only_not_true")
+    error = _empty_blocker_list_contract_error(
+        template_report.get("blockers"),
+        malformed="summary_bridge_event_template_blockers_malformed",
+        present="summary_bridge_event_template_blockers_present",
+    )
+    if error is not None:
+        blockers.append(error)
+    for field in SUMMARY_AUTHORITY_FALSE_FIELDS:
+        if template_report.get(field) is not False:
+            blockers.append(f"summary_bridge_event_template_{field}_not_false")
+
+    event = _mapping_or_empty(template_report.get("bridge_event_template"))
+    if not event:
+        blockers.append("summary_bridge_event_template_missing")
+    else:
+        try:
+            validate_event(event)
+        except ValueError:
+            blockers.append("summary_bridge_event_template_schema_invalid")
+    if event.get("type") != "handoff":
+        blockers.append("summary_bridge_event_template_type_mismatch")
+    if event.get("status") != VERIFIER_SUMMARY_BRIDGE_EVENT_STATUS:
+        blockers.append("summary_bridge_event_template_status_mismatch")
+    if event.get("paths") != []:
+        blockers.append("summary_bridge_event_template_paths_not_empty")
+    if event.get("write_scope") != []:
+        blockers.append("summary_bridge_event_template_write_scope_not_empty")
+    if event.get("pid") != 0:
+        blockers.append("summary_bridge_event_template_pid_not_zero")
+    if event.get("cwd") != "template_not_emitted":
+        blockers.append("summary_bridge_event_template_cwd_mismatch")
+
+    payload = _mapping_or_empty(event.get("payload"))
+    if payload.get("schema_version") != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION:
+        blockers.append("summary_bridge_event_template_payload_schema_mismatch")
+    if payload.get("summary_proof_id") != VERIFIER_SUMMARY_PROOF_ID:
+        blockers.append(
+            "summary_bridge_event_template_payload_summary_proof_id_mismatch"
+        )
+    if payload.get("template_only") is not True:
+        blockers.append("summary_bridge_event_template_payload_template_only_not_true")
+    if payload.get("manual_review_required") is not True:
+        blockers.append(
+            "summary_bridge_event_template_payload_manual_review_required_not_true"
+        )
+    for field in SUMMARY_AUTHORITY_FALSE_FIELDS:
+        if payload.get(field) is not False:
+            blockers.append(f"summary_bridge_event_template_payload_{field}_not_false")
+
+    reviewer = _mapping_or_empty(payload.get("reviewer_ownership"))
+    if _safe_ref_or_invalid(reviewer.get("reviewer_agent_id")) == "invalid_ref":
+        blockers.append("summary_bridge_event_template_reviewer_agent_invalid")
+    if _safe_ref_or_invalid(reviewer.get("handoff_ref")) == "invalid_ref":
+        blockers.append("summary_bridge_event_template_handoff_ref_invalid")
+    if reviewer.get("manual_review_required") is not True:
+        blockers.append(
+            "summary_bridge_event_template_reviewer_manual_review_required_not_true"
+        )
+    if reviewer.get("approval_granted") is not False:
+        blockers.append(
+            "summary_bridge_event_template_reviewer_approval_granted_not_false"
+        )
+    if reviewer.get("runtime_subdivision_authority_granted") is not False:
+        blockers.append(
+            "summary_bridge_event_template_reviewer_runtime_subdivision_"
+            "authority_granted_not_false"
+        )
+
+    verification = _mapping_or_empty(
+        payload.get("shadow_subdivision_replay_verification")
+    )
+    if verification.get("verification_ok") is not True:
+        blockers.append("summary_bridge_event_template_verification_not_ok")
+    if verification.get("verifier_proof_id") != VERIFIER_PROOF_ID:
+        blockers.append("summary_bridge_event_template_verification_proof_id_mismatch")
+    if verification.get("verified_proof_id") != PROOF_ID:
+        blockers.append("summary_bridge_event_template_verified_proof_id_mismatch")
+    if verification.get("artifact_declared_ok") is not True:
+        blockers.append("summary_bridge_event_template_artifact_declared_ok_not_true")
+    if verification.get("recomputed_contract_ok") is not True:
+        blockers.append("summary_bridge_event_template_recomputed_contract_ok_not_true")
+    blocker_count = verification.get("blocker_count")
+    if (
+        isinstance(blocker_count, bool)
+        or not isinstance(blocker_count, int)
+        or blocker_count != 0
+    ):
+        blockers.append("summary_bridge_event_template_blocker_count_nonzero")
+    expected_git_commit = verification.get("expected_git_commit")
+    if expected_git_commit is not None and not _is_git_commit(expected_git_commit):
+        blockers.append("summary_bridge_event_template_expected_git_commit_invalid")
+
+    digest_checks = _mapping_or_empty(verification.get("digest_checks"))
+    for name in (*DIGEST_NAMES, "artifact"):
+        if digest_checks.get(name) != "match":
+            blockers.append(
+                f"summary_bridge_event_template_digest_check_not_match:{name}"
+            )
+    contract_checks = _mapping_or_empty(verification.get("contract_checks"))
+    for name in (
+        "artifact_path_free",
+        "source_snapshot_path_free",
+        "required_metric_names_present",
+        "required_metric_lines_present",
+        "declared_ok_matches_recomputed_contract",
+        "source_snapshot_git_commit_matches_expected",
+    ):
+        if contract_checks.get(name) != "match":
+            blockers.append(
+                f"summary_bridge_event_template_contract_check_not_match:{name}"
+            )
+    guardrails = _mapping_or_empty(verification.get("guardrails"))
+    for name in GUARDRAIL_TRUE_FIELDS:
+        if guardrails.get(name) is not True:
+            blockers.append(f"summary_bridge_event_template_guardrail_not_true:{name}")
+    for name in GUARDRAIL_FALSE_FIELDS:
+        if guardrails.get(name) is not False:
+            blockers.append(f"summary_bridge_event_template_guardrail_not_false:{name}")
+
+    boundary = _mapping_or_empty(payload.get("operator_boundary"))
+    if boundary.get("verification_report_boundary_ok") is not True:
+        blockers.append(
+            "summary_bridge_event_template_boundary_verification_report_not_ok"
+        )
+    if boundary.get("manual_review_required") is not True:
+        blockers.append(
+            "summary_bridge_event_template_boundary_manual_review_required_not_true"
+        )
+    for field in SUMMARY_AUTHORITY_FALSE_FIELDS:
+        if boundary.get(field) is not False:
+            blockers.append(f"summary_bridge_event_template_boundary_{field}_not_false")
+    return sorted(set(blockers))
+
+
+def build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+    template_report: Mapping[str, Any],
+    *,
+    template_report_bytes: bytes | None = None,
+    now_utc: datetime | None = None,
+) -> dict:
+    """Return a path-free local index entry for the summary bridge template."""
+
+    if not isinstance(template_report, Mapping):
+        return _bridge_template_index_entry_error_report(
+            "summary_bridge_event_template_not_object"
+        )
+    if _contains_path_marker(template_report):
+        return _bridge_template_index_entry_error_report(
+            "summary_bridge_event_template_path_free"
+        )
+    raw, raw_error = _bridge_template_index_entry_bytes(
+        template_report,
+        template_report_bytes,
+    )
+    if raw_error is not None or raw is None:
+        return _bridge_template_index_entry_error_report(
+            raw_error or "summary_bridge_event_template_bytes_invalid"
+        )
+    contract_blockers = _verifier_summary_bridge_event_template_contract_blockers(
+        template_report
+    )
+    if contract_blockers:
+        return _bridge_template_index_entry_error_report(contract_blockers[0])
+
+    event = _mapping_or_empty(template_report.get("bridge_event_template"))
+    validate_event(event)
+    template_digest = _raw_sha256(raw)
+    artifact = {
+        "artifact_id": VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID,
+        "role": "template_only_bridge_handoff_context",
+        "sha256": template_digest,
+        "size_bytes": len(raw),
+        "json_schema_version": VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION,
+        "payload_included": False,
+        "local_path_recorded": False,
+    }
+    entry = {
+        "proof_id": VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_PROOF_ID,
+        "ok": True,
+        "index_entry_version": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION
+        ),
+        "created_at_utc": _utc_iso(now_utc or datetime.now(timezone.utc)),
+        "artifact_count": 1,
+        "artifacts": [artifact],
+        "template_index_entry": {
+            "artifact_id": (
+                VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID
+            ),
+            "source_summary_proof_id": VERIFIER_SUMMARY_PROOF_ID,
+            "template_proof_id": VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_PROOF_ID,
+            "template_version": VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION,
+            "template_only": True,
+            "bridge_event_schema_validated": True,
+            "template_sha256": template_digest,
+            "source_contract_check": "match",
+            "event_type": "handoff",
+            "event_status": VERIFIER_SUMMARY_BRIDGE_EVENT_STATUS,
+            "manual_review_required": True,
+            "approval_granted": False,
+            "release_decision_made": False,
+            "automatic_release_decision": False,
+            "direct_bridge_write_performed": False,
+            "transport_added": False,
+            "external_fetch_performed": False,
+            "runtime_controls_added": False,
+            "runtime_subdivision_authority_granted": False,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "consistency": {
+            "required_artifacts_present": [
+                VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID
+            ],
+            "all_artifact_digests_recorded": True,
+            "bridge_event_schema_validated": True,
+            "source_contract_check": "match",
+            "template_only": True,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "operator_boundary": {
+            "manual_review_required": True,
+            "approval_granted": False,
+            "release_decision_made": False,
+            "automatic_release_decision": False,
+            "direct_bridge_write_performed": False,
+            "transport_added": False,
+            "external_fetch_performed": False,
+            "runtime_controls_added": False,
+            "runtime_subdivision_authority_granted": False,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "reviewer_next_actions": [
+            "review_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry",
+            "verify_index_entry_in_separate_local_verifier",
+            "record_operator_decision_separately",
+        ],
+        "template_only": True,
+        "manual_review_required": True,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "runtime_controls_added": False,
+        "runtime_subdivision_authority_granted": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+        "blockers": [],
+        "warnings": _safe_token_list(template_report.get("warnings")),
+        "safe_conclusion": (
+            "This local index entry records the digest and schema contract "
+            "for the shadow subdivision replay verifier summary bridge-event "
+            "template. It does not include the template payload, append a "
+            "bridge event, transport artifacts, record local paths, or grant "
+            "runtime subdivision authority."
+        ),
+    }
+    serialized = json.dumps(entry, allow_nan=False, sort_keys=True)
+    if _contains_path_marker(serialized):
+        return _bridge_template_index_entry_error_report(
+            "summary_bridge_event_template_index_entry_output_path_marker"
+        )
+    return entry
+
+
+def _load_summary_verification_report(
+    path: Path | str,
+) -> tuple[dict | None, dict | None]:
     try:
         raw = Path(path).read_text(encoding="utf-8")
     except OSError:
@@ -1117,6 +1493,37 @@ def _load_verifier_summary_report(path: Path | str) -> tuple[dict | None, dict |
     if not isinstance(summary, Mapping):
         return None, _bridge_template_error_report("verifier_summary_not_object")
     return dict(summary), None
+
+
+def _load_bridge_template_report(
+    path: Path | str,
+) -> tuple[dict | None, bytes | None, dict | None]:
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return (
+            None,
+            None,
+            _bridge_template_index_entry_error_report(
+                "summary_bridge_event_template_unreadable"
+            ),
+        )
+    report, parse_error = _parse_json_bytes_without_duplicate_keys(raw)
+    if parse_error is not None:
+        return (
+            None,
+            None,
+            _bridge_template_index_entry_error_report(parse_error),
+        )
+    if not isinstance(report, Mapping):
+        return (
+            None,
+            None,
+            _bridge_template_index_entry_error_report(
+                "summary_bridge_event_template_not_object"
+            ),
+        )
+    return dict(report), raw, None
 
 
 def verify_shadow_subdivision_replay_json_file(
@@ -1221,9 +1628,7 @@ def _metric_contract(runtime_boundary_smoke: Mapping[str, Any]) -> dict:
         runtime_contract = {}
 
     metric_names = [
-        str(name)
-        for name in metrics.get("metric_names", [])
-        if isinstance(name, str)
+        str(name) for name in metrics.get("metric_names", []) if isinstance(name, str)
     ]
     expected_lines = [
         str(line)
@@ -1286,11 +1691,7 @@ def build_shadow_subdivision_replay_artifact(
     metric_contract = _metric_contract(runtime_boundary_smoke)
     runtime_summary = _runtime_topology_summary(runtime_boundary_smoke)
     delivery_summary = _delivery_summary(
-        [
-            delivery
-            for delivery in deliveries
-            if isinstance(delivery, Mapping)
-        ]
+        [delivery for delivery in deliveries if isinstance(delivery, Mapping)]
     )
     shadow_plan_summary = {
         "plan_id": plan.get("plan_id"),
@@ -1415,8 +1816,7 @@ def build_replay_artifact_for_root(root: Path | str = ROOT) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Emit or verify the read-only hex shadow subdivision replay "
-            "artifact."
+            "Emit or verify the read-only hex shadow subdivision replay " "artifact."
         )
     )
     parser.add_argument(
@@ -1458,6 +1858,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Render a template-only bridge event from an existing verifier "
             "summary JSON file. The template is printed but not appended."
+        ),
+    )
+    parser.add_argument(
+        "--summary-bridge-event-template-index-entry-json",
+        type=Path,
+        help=(
+            "Render a local index entry from an existing verifier summary "
+            "bridge-event template JSON file. The index entry is printed but "
+            "not appended."
         ),
     )
     parser.add_argument(
@@ -1505,12 +1914,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.verify_json,
             args.summary_verification_json,
             args.summary_bridge_event_template_json,
+            args.summary_bridge_event_template_index_entry_json,
         )
     )
     if mode_count > 1:
         report = _bridge_template_error_report("multiple_modes_requested")
         print(json.dumps(report, indent=2, sort_keys=True))
         return 2
+
+    if args.summary_bridge_event_template_index_entry_json is not None:
+        template_report, template_report_bytes, failure = _load_bridge_template_report(
+            args.summary_bridge_event_template_index_entry_json
+        )
+        if failure is not None:
+            report = failure
+        else:
+            try:
+                now_utc = _parse_utc(args.now) if args.now else None
+            except ValueError:
+                report = _bridge_template_index_entry_error_report("now_utc_invalid")
+            else:
+                report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry(
+                    template_report or {},
+                    template_report_bytes=template_report_bytes,
+                    now_utc=now_utc,
+                )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if args.strict and report.get("ok") is not True:
+            return 2
+        return 0
 
     if args.summary_bridge_event_template_json is not None:
         summary, failure = _load_verifier_summary_report(
@@ -1525,16 +1957,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report = _bridge_template_error_report("now_utc_invalid")
             else:
                 report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
-                summary or {},
-                agent_id=args.agent,
-                task_id=args.task_id,
-                to=args.to,
-                severity=args.severity,
-                role=args.role,
-                run_id=args.run_id,
-                session_id=args.session_id,
-                now_utc=now_utc,
-            )
+                    summary or {},
+                    agent_id=args.agent,
+                    task_id=args.task_id,
+                    to=args.to,
+                    severity=args.severity,
+                    role=args.role,
+                    run_id=args.run_id,
+                    session_id=args.session_id,
+                    now_utc=now_utc,
+                )
         print(json.dumps(report, indent=2, sort_keys=True))
         if args.strict and report.get("ok") is not True:
             return 2

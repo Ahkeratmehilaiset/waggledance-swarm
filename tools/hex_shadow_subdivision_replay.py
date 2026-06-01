@@ -549,6 +549,13 @@ def _verification_report_contract_blockers(
         blockers.append("verification_report_artifact_declared_ok_not_true")
     if verification_report.get("recomputed_contract_ok") is not True:
         blockers.append("verification_report_recomputed_contract_ok_not_true")
+    error = _empty_blocker_list_contract_error(
+        verification_report.get("blockers"),
+        malformed="verification_report_blockers_malformed",
+        present="verification_report_blockers_present",
+    )
+    if error is not None:
+        blockers.append(error)
 
     for name in (
         "artifact_path_free",

@@ -189,6 +189,36 @@ def test_hex_shadow_replay_verifier_summary_blocks_pathy_report_without_leaking_
     assert summary["local_paths_recorded"] is False
 
 
+def test_hex_shadow_replay_verifier_summary_blocks_malformed_report_blockers_before_template() -> None:
+    report = _valid_verifier_report()
+    report["blockers"] = "hidden_blocker"
+
+    summary = build_shadow_subdivision_replay_verifier_summary(
+        report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-shadow-replay-verifier",
+        now_utc=datetime(2026, 5, 31, 12, 0, tzinfo=timezone.utc),
+    )
+    template = build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-shadow-replay-template",
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_blockers_malformed" in summary["blockers"]
+    assert (
+        "verification_report_blockers_malformed"
+        in summary["operator_boundary"]["boundary_blockers"]
+    )
+    assert template["ok"] is False
+    assert "bridge_event_template" not in template
+    assert any(
+        "operator_boundary_blockers_present" in item
+        for item in template["blockers"]
+    )
+
+
 def test_hex_shadow_replay_verifier_summary_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

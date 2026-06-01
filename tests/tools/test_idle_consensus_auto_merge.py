@@ -13,6 +13,8 @@ from tools.idle_consensus_auto_merge import (
 
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
+BASE = "abcdef1234567890abcdef1234567890abcdef12"
+OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
 MERGE_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 
 
@@ -20,6 +22,7 @@ def _status(**overrides) -> dict:
     status = {
         "pr_number": 477,
         "head_sha": HEAD,
+        "base_sha": BASE,
         "title": "Idle consensus follow-up",
         "mergeable": "clean",
         "operator_approved": False,
@@ -88,6 +91,7 @@ def test_dry_run_ready_never_invokes_runner() -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         repo="Ahkeratmehilaiset/waggledance-swarm",
@@ -115,6 +119,7 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
@@ -150,6 +155,7 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
     report = evaluate_auto_merge_gate(
         pr_status=_status(receipt_verified=False),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
@@ -169,6 +175,7 @@ def test_head_mismatch_blocks_without_runner() -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(head_sha="abcdefabcdefabcdefabcdefabcdefabcdefabcd"),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         apply=True,
@@ -180,11 +187,86 @@ def test_head_mismatch_blocks_without_runner() -> None:
     assert report["external_effect"] is False
 
 
+def test_apply_requires_expected_base_sha_before_runner(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "expected_base_sha is required before merge" in report["reasons"]
+    assert report["base_gate"]["required"] is True
+    assert report["base_gate"]["configured"] is False
+
+
+def test_expected_base_mismatch_blocks_without_runner(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=OTHER_BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "base sha mismatch" in report["reasons"]
+    assert report["base_gate"]["snapshot_base_sha"] == BASE
+    assert report["base_gate"]["expected_base_sha"] == OTHER_BASE
+
+
+def test_expected_base_requires_snapshot_base_sha(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    status = _status()
+    status.pop("base_sha")
+    report = evaluate_auto_merge_gate(
+        pr_status=status,
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "base_sha snapshot is required before merge" in report["reasons"]
+
+
+def test_invalid_expected_base_sha_refused() -> None:
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha="abc123",
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+        )
+    assert excinfo.value.report["decision"] == "invalid_sha"
+    assert "expected_base_sha must be a 40-char lowercase sha" in excinfo.value.report[
+        "errors"
+    ]
+
+
 def test_denylisted_changed_path_blocks_without_runner() -> None:
     calls: list[list[str]] = []
     report = evaluate_auto_merge_gate(
         pr_status=_status(changed_paths=["CLAUDE.md"]),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         apply=True,
@@ -205,6 +287,7 @@ def test_code_pattern_denylist_blocks_without_runner() -> None:
             diff_text="+ operator_gate_required=True\n",
         ),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         apply=True,
@@ -250,6 +333,7 @@ def test_daily_rate_limit_blocks_without_runner(tmp_path: Path) -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(
@@ -288,6 +372,7 @@ def test_bridge_peer_block_blocks_automerge_without_runner(tmp_path: Path) -> No
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(
@@ -336,6 +421,7 @@ def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(receipt_verified=False),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         events_path=_events_path(
             tmp_path,
@@ -375,6 +461,7 @@ def test_bridge_peer_block_matches_pr_number_when_task_id_differs(
     report = evaluate_auto_merge_gate(
         pr_status=_status(pr_number=477),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [event]),
@@ -393,6 +480,7 @@ def test_apply_requires_bridge_events_path() -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         apply=True,
@@ -409,6 +497,7 @@ def test_apply_requires_explicit_bridge_task_id(tmp_path: Path) -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
@@ -543,6 +632,7 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
         evaluate_auto_merge_gate(
             pr_status=_status(),
             expected_head=HEAD,
+            expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path),
@@ -575,6 +665,7 @@ def test_runner_failure_recovers_when_pr_view_confirms_merge(
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
         expected_head=HEAD,
+        expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
@@ -609,6 +700,7 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
         evaluate_auto_merge_gate(
             pr_status=_status(),
             expected_head=HEAD,
+            expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path),
@@ -637,6 +729,7 @@ def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> No
         evaluate_auto_merge_gate(
             pr_status=_status(receipt_verified=False),
             expected_head=HEAD,
+            expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
             events_path=_events_path(tmp_path),
             bridge_task_id="idle-consensus-001",

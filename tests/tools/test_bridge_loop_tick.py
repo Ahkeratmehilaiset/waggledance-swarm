@@ -267,6 +267,26 @@ def test_no_snapshot_fn_is_unchecked_not_ready():
     assert r["ready"] is False and "pr_status_unchecked" in r["blockers"]
 
 
+def test_snapshot_error_decision_is_reported_as_blocker():
+    class SnapshotError(Exception):
+        report = {
+            "decision": "stale_base_ref",
+            "ok": False,
+            "errors": ["base moved"],
+        }
+
+    def snapshot_fn(pr: int) -> dict:
+        raise SnapshotError()
+
+    events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
+    r = evaluate_merge_ready(
+        _candidate(), events=events, agent="claude", snapshot_fn=snapshot_fn,
+    )
+    assert r["ready"] is False
+    assert "pr_status_error:stale_base_ref" in r["blockers"]
+    assert r["pr_status_error"]["decision"] == "stale_base_ref"
+
+
 # --- build_loop_tick + adaptive wakeup -------------------------------------
 
 def test_loop_tick_merge_ready_short_wakeup(tmp_path):

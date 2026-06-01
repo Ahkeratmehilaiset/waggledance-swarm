@@ -21,7 +21,7 @@ from typing import Any, Callable, Mapping, Sequence
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 GH_JSON_FIELDS = (
-    "number,title,headRefOid,headRefName,mergeable,"
+    "number,title,headRefOid,headRefName,baseRefOid,mergeable,"
     "statusCheckRollup,reviewDecision,isDraft,url,files"
 )
 
@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Set receipt_verified=true in the snapshot.",
     )
+    parser.add_argument(
+        "--expected-base-sha",
+        default="",
+        help="Fail closed unless the PR baseRefOid matches this 40-char lowercase sha.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -68,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repo=args.repo,
             operator_approved=args.operator_approved,
             receipt_verified=args.receipt_verified,
+            expected_base_sha=args.expected_base_sha,
         )
         if args.out is not None:
             args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +108,7 @@ def build_pr_status_snapshot(
     repo: str = "",
     operator_approved: bool = False,
     receipt_verified: bool = False,
+    expected_base_sha: str = "",
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     """Query GitHub through ``gh`` and normalize the PR status snapshot."""
@@ -109,6 +116,11 @@ def build_pr_status_snapshot(
         raise _invalid("invalid_pr_number", "pr_number must be positive")
     if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
+    if expected_base_sha and not SHA_RE.fullmatch(expected_base_sha):
+        raise _invalid(
+            "invalid_expected_base_sha",
+            "expected_base_sha must be a 40-char lowercase sha",
+        )
 
     command = _gh_pr_view_command(pr_number=pr_number, repo=repo)
     run = runner or _run_command
@@ -134,6 +146,24 @@ def build_pr_status_snapshot(
         raise _invalid("invalid_gh_json", "gh pr view JSON must be an object")
     _assert_no_private_markers(raw)
     initial_head_sha = str(raw.get("headRefOid", ""))
+    initial_base_sha = str(raw.get("baseRefOid", ""))
+    if expected_base_sha:
+        if not SHA_RE.fullmatch(initial_base_sha):
+            raise _invalid("invalid_base_sha", "baseRefOid must be a 40-char lowercase sha")
+        if initial_base_sha != expected_base_sha:
+            raise PrStatusSnapshotError(
+                {
+                    "decision": "stale_base_ref",
+                    "ok": False,
+                    "errors": [
+                        f"PR base does not match expected base: "
+                        f"{initial_base_sha} != {expected_base_sha}",
+                    ],
+                    "base_sha": initial_base_sha,
+                    "expected_base_sha": expected_base_sha,
+                    "exit_code": 1,
+                }
+            )
 
     diff_command = _gh_pr_diff_command(pr_number=pr_number, repo=repo)
     diff_result = run(diff_command)
@@ -171,6 +201,7 @@ def build_pr_status_snapshot(
     if not isinstance(verify_raw, Mapping):
         raise _invalid("invalid_gh_recheck_json", "gh pr view JSON must be an object")
     current_head_sha = str(verify_raw.get("headRefOid", ""))
+    current_base_sha = str(verify_raw.get("baseRefOid", ""))
     if current_head_sha != initial_head_sha:
         raise PrStatusSnapshotError(
             {
@@ -179,6 +210,18 @@ def build_pr_status_snapshot(
                 "errors": [
                     f"PR head changed during snapshot capture: "
                     f"{initial_head_sha} -> {current_head_sha}",
+                ],
+                "exit_code": 1,
+            }
+        )
+    if current_base_sha != initial_base_sha:
+        raise PrStatusSnapshotError(
+            {
+                "decision": "gh_pr_diff_base_drift",
+                "ok": False,
+                "errors": [
+                    f"PR base changed during snapshot capture: "
+                    f"{initial_base_sha} -> {current_base_sha}",
                 ],
                 "exit_code": 1,
             }
@@ -220,6 +263,9 @@ def _normalize_snapshot(
     head_sha = str(raw.get("headRefOid", ""))
     if not SHA_RE.fullmatch(head_sha):
         raise _invalid("invalid_head_sha", "headRefOid must be a 40-char lowercase sha")
+    base_sha = str(raw.get("baseRefOid", ""))
+    if not SHA_RE.fullmatch(base_sha):
+        raise _invalid("invalid_base_sha", "baseRefOid must be a 40-char lowercase sha")
 
     checks = _normalize_checks(raw.get("statusCheckRollup", []))
     changed_paths = _normalize_changed_paths(raw.get("files", []))
@@ -228,6 +274,7 @@ def _normalize_snapshot(
         "title": str(raw.get("title", "")),
         "head_sha": head_sha,
         "head_ref": str(raw.get("headRefName", "")),
+        "base_sha": base_sha,
         "mergeable": str(raw.get("mergeable", "")),
         "is_draft": bool(raw.get("isDraft", False)),
         "url": str(raw.get("url", "")),

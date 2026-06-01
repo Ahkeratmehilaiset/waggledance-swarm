@@ -866,10 +866,19 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     ops_tests_text = (repo_root / "tests/test_legacy_consolidation.py").read_text(
         encoding="utf-8"
     )
+    drill_verifier_text = (
+        repo_root / "tools/verify_route_stage_feed_health_drill_evidence.py"
+    ).read_text(encoding="utf-8")
+    drill_verifier_tests_text = (
+        repo_root / "tests/tools/test_verify_route_stage_feed_health_drill_evidence.py"
+    ).read_text(encoding="utf-8")
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     runbook_text = (
         repo_root / "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md"
     ).read_text(encoding="utf-8")
+    drill_verifier_smoke = (
+        _build_route_stage_feed_health_drill_evidence_verifier_smoke()
+    )
 
     try:
         from types import SimpleNamespace
@@ -1131,6 +1140,29 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "Operator drill evidence",
             )
         ),
+        "ops_latency_feed_drill_evidence_verifier_contract_present": all(
+            token
+            in "\n".join(
+                (
+                    drill_verifier_text,
+                    drill_verifier_tests_text,
+                    docs_text,
+                    runbook_text,
+                )
+            )
+            for token in (
+                "PACKAGE_SCHEMA_VERSION",
+                "waggledance.route_stage_feed_health_drill_evidence.v1",
+                "VERIFICATION_SCHEMA_VERSION",
+                "verify_route_stage_feed_health_drill_evidence",
+                "REQUIRED_METRICS_FIELDS",
+                "REQUIRED_API_OPS_FIELDS",
+                "network_access_performed",
+                "test_route_stage_feed_health_drill_evidence_verifier_accepts_package",
+                "Offline drill evidence verifier",
+            )
+        )
+        and drill_verifier_smoke.get("ok") is True,
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
@@ -1193,6 +1225,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "latency_feed_slo_drill_supported": checks[
             "ops_latency_feed_slo_drill_contract_present"
         ],
+        "latency_feed_drill_evidence_verifier_supported": checks[
+            "ops_latency_feed_drill_evidence_verifier_contract_present"
+        ],
+        "drill_evidence_verifier_smoke": drill_verifier_smoke,
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
         "latency_metric_semantics": "stage_correlated_request_latency",
@@ -1204,9 +1240,130 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "Prometheus rate, p95/p99 histogram_quantile panels, and optional "
             "sanitized Prometheus/Alertmanager feed state with provider "
             "health, TTL cache, bounded failure backoff, and operator "
-            "SLO/drill evidence templates without storing raw query, profile, "
-            "language, context, or full route trace payloads."
+            "SLO/drill evidence templates plus an offline local drill "
+            "evidence verifier without storing raw query, profile, language, "
+            "context, or full route trace payloads."
         ),
+    }
+
+
+def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
+    try:
+        from copy import deepcopy
+
+        from tools.verify_route_stage_feed_health_drill_evidence import (
+            PACKAGE_SCHEMA_VERSION,
+            VERIFICATION_SCHEMA_VERSION,
+            ROUTE_STAGE_LATENCY_FEED_SLO_PANELS,
+            _route_stage_latency_feed_drill_evidence,
+            _route_stage_latency_feed_slo_current_value,
+            _route_stage_latency_feed_slo_panel_status,
+            verify_route_stage_feed_health_drill_evidence,
+        )
+    except Exception as exc:  # pragma: no cover - defensive manifest guard.
+        return {
+            "ok": False,
+            "blocked_reason": f"verifier_import_failed:{exc.__class__.__name__}",
+            "package_schema_version": None,
+            "verification_schema_version": None,
+            "accepts_valid_package": False,
+            "rejects_authority_forgery": False,
+            "network_access_performed": False,
+        }
+
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    feed_health = {
+        "source": "prometheus_alertmanager_adapter",
+        "status": "warning",
+        "configured": True,
+        "available": True,
+        "cache_enabled": True,
+        "cache_present": True,
+        "cache_stale": True,
+        "backoff_active": True,
+        "cache_ttl_seconds": 30.0,
+        "failure_backoff_seconds": 30.0,
+        "timeout_seconds": 3.0,
+        "max_response_bytes": 1000000.0,
+        "last_response_bytes": 1200.0,
+        "cache_hit_count": 1.0,
+        "cache_miss_count": 2.0,
+        "fetch_success_count": 3.0,
+        "fetch_failure_count": 2.0,
+        "backoff_skip_count": 1.0,
+        "last_success_at": "2026-06-01T16:00:00Z",
+        "last_failure_at": "2026-06-01T16:01:00Z",
+        "last_failure_reason": "FEED_READ_FAILED",
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
+    slo_panels = [
+        {
+            **panel,
+            "current_value": _route_stage_latency_feed_slo_current_value(
+                str(panel["id"]),
+                feed_health,
+            ),
+            "status": _route_stage_latency_feed_slo_panel_status(
+                str(panel["id"]),
+                feed_health,
+            ),
+            "controls_present": False,
+        }
+        for panel in ROUTE_STAGE_LATENCY_FEED_SLO_PANELS
+    ]
+    package = {
+        "schema_version": PACKAGE_SCHEMA_VERSION,
+        "commit": commit,
+        "collected_at_utc": "2026-06-01T16:02:00Z",
+        "metrics_scrape": {
+            "source": "/metrics",
+            "fields": {
+                "waggledance_route_stage_latency_feed_status": "warning",
+                "waggledance_route_stage_latency_feed_failure_reason": (
+                    "FEED_READ_FAILED"
+                ),
+                "waggledance_route_stage_latency_feed_backoff_active": 1,
+            },
+        },
+        "api_ops": {
+            "route_stage_latency": {
+                "feed_state": {
+                    "feed_health": feed_health,
+                    "slo_panels": slo_panels,
+                    "drill_evidence": _route_stage_latency_feed_drill_evidence(),
+                },
+            },
+        },
+        "operator_log_window": {
+            "timestamp": "2026-06-01T16:02:00Z",
+            "commit": commit,
+            "sanitized_reason": "FEED_READ_FAILED",
+        },
+    }
+    valid_report = verify_route_stage_feed_health_drill_evidence(package)
+    tampered = deepcopy(package)
+    tampered["api_ops"]["route_stage_latency"]["feed_state"]["feed_health"][
+        "runtime_authority_granted"
+    ] = True
+    tampered_report = verify_route_stage_feed_health_drill_evidence(tampered)
+    rejects_authority_forgery = (
+        tampered_report.get("ok") is False
+        and "feed_health_runtime_authority_granted_authority_flag_true"
+        in tampered_report.get("blockers", [])
+    )
+    return {
+        "ok": valid_report.get("ok") is True and rejects_authority_forgery,
+        "package_schema_version": PACKAGE_SCHEMA_VERSION,
+        "verification_schema_version": VERIFICATION_SCHEMA_VERSION,
+        "accepts_valid_package": valid_report.get("ok") is True,
+        "rejects_authority_forgery": rejects_authority_forgery,
+        "valid_report_blockers": valid_report.get("blockers", []),
+        "tampered_report_blockers": tampered_report.get("blockers", []),
+        "network_access_performed": valid_report.get("network_access_performed"),
+        "runtime_authority_granted": valid_report.get("runtime_authority_granted"),
+        "external_writes_applied": valid_report.get("external_writes_applied"),
     }
 
 
@@ -5432,8 +5589,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "an optional sanitized read-only Prometheus/Alertmanager "
                 "feed provider with timeout, TTL cache, bounded failure "
                 "backoff, credential, private-host guardrails, and read-only "
-                "operator SLO/drill evidence templates; exact runtime entry "
-                "order depends on flags and call path."
+                "operator SLO/drill evidence templates plus a local offline "
+                "drill evidence verifier; exact runtime entry order depends "
+                "on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -5445,8 +5603,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add an offline verifier for route-stage feed-health drill "
-                "evidence packages without adding route controls."
+                "Add a route-stage feed-health drill evidence verification "
+                "summary bridge-event template without appending it."
             ),
             proof=hex_entry_proof,
         ),

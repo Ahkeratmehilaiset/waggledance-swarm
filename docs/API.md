@@ -367,6 +367,14 @@ headers, filesystem paths, raw labels/results, and exception text, and keeps
 `controls_present=false`, `runtime_authority_granted=false`, and
 `external_writes_applied=false`.
 
+Offline operator drill packages can be checked with
+`tools/verify_route_stage_feed_health_drill_evidence.py`. The verifier accepts
+only local JSON packages using
+`waggledance.route_stage_feed_health_drill_evidence.v1`, re-checks the
+`feed_health`, `slo_panels`, and `drill_evidence` contract, rejects authority or
+external-write flags, and reports `network_access_performed=false`. It does not
+call Prometheus, Alertmanager, `/api/ops`, or any mutating endpoint.
+
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager

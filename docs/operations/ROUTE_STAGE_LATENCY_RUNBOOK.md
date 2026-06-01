@@ -109,6 +109,33 @@ Alertmanager labels, and raw Prometheus results. The drill evidence metadata
 keeps `controls_present=false`, `runtime_authority_granted=false`, and
 `external_writes_applied=false`.
 
+## Offline drill evidence verifier
+
+Use `tools/verify_route_stage_feed_health_drill_evidence.py` to verify a local
+JSON drill evidence package before attaching it to an operator handoff:
+
+```powershell
+python tools/verify_route_stage_feed_health_drill_evidence.py `
+  --evidence-package C:\tmp\route-stage-feed-health-drill.json `
+  --json
+```
+
+The package schema is
+`waggledance.route_stage_feed_health_drill_evidence.v1`. It contains only:
+
+- `metrics_scrape.source=/metrics` plus the three feed-health metric fields
+  listed above.
+- `api_ops.route_stage_latency.feed_state.feed_health`,
+  `api_ops.route_stage_latency.feed_state.slo_panels`, and
+  `api_ops.route_stage_latency.feed_state.drill_evidence`.
+- `operator_log_window.timestamp`, `commit`, and `sanitized_reason`.
+
+The verifier is offline and read-only. It rejects missing or unexpected fields,
+non-finite numbers, raw labels/results, URLs, hosts, headers, filesystem paths,
+exception text, `controls_present=true`, `runtime_authority_granted=true`, and
+`external_writes_applied=true`. Its JSON report redacts local input/output paths
+and keeps `network_access_performed=false`.
+
 ## Optional feed provider
 
 `configs/settings.yaml` includes a disabled-by-default

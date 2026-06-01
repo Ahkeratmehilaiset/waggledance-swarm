@@ -177,6 +177,18 @@ def _release_gate_report() -> dict[str, object]:
     }
 
 
+def _release_gate_pass_report() -> dict[str, object]:
+    report = _release_gate_report()
+    report["release_gate_decision"] = "pass"
+    report["blockers"] = []
+    diagnostics = report["gate"]["soak_evidence_diagnostics"]
+    diagnostics["result"] = "pass"
+    diagnostics["duration_hours"] = 336
+    diagnostics["ended_at_date"] = "2026-05-24"
+    diagnostics["required_soak_end"] = "2026-05-24"
+    return report
+
+
 def _operator_authority_report() -> dict[str, object]:
     return {
         "ok": True,
@@ -218,6 +230,86 @@ def _operator_authority_report() -> dict[str, object]:
                     "runtime_traffic_mutation_allowed": False,
                     "candidate_state_mutation_allowed": False,
                     "release_boundary_mutation_allowed": False,
+                },
+            ],
+        },
+    }
+
+
+def _release_boundary_readiness_report() -> dict[str, object]:
+    return {
+        "schema_version": "waggledance.release_boundary_readiness.v0",
+        "checked_at_utc": "2026-06-01T03:00:00Z",
+        "ok": True,
+        "release_boundary_status": "ready_for_operator_finalization",
+        "release_boundary_blockers": [],
+        "operator_finalization_required": True,
+        "release_boundary": dict(FALSE_RELEASE_BOUNDARY),
+        "release_boundary_guardrails": {
+            "release_boundary_effect": "none",
+            "tag_creation_applied": False,
+            "docker_latest_move_applied": False,
+            "docker_stable_move_applied": False,
+            "stable_release_claim_applied": False,
+            "external_effect_authority_change_applied": False,
+            "requires_operator_only_finalization": True,
+        },
+        "read_only_invariants": {
+            "no_tag_created": True,
+            "no_docker_latest_moved": True,
+            "no_docker_stable_moved": True,
+            "no_stable_release_claim": True,
+            "no_external_effect_authority_change": True,
+            "release_boundary_effect": "none",
+        },
+        "source_phase_synthesis_refresh": {
+            "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+            "sprint_id": "magma-100h-sprint3-2026-05-26",
+            "generated_at_utc": "2026-06-01T02:56:09Z",
+            "ok": True,
+            "release_boundary_all_false": True,
+            "remaining_release_soak_package": {
+                "id": "release_soak_evidence_blocker_resolution",
+                "status": "ready_for_release_boundary_review",
+                "owner": "operator,codex",
+            },
+            "landed_release_soak_package": {
+                "id": "release_soak_evidence_blocker_resolution",
+                "status": None,
+                "owner": None,
+            },
+        },
+        "source_release_gate_readonly_recheck": {
+            "schema_version": "waggledance.release_gate_readonly_recheck.v0",
+            "ok": True,
+            "read_only": True,
+            "release_gate_decision": "pass",
+            "blockers": [],
+            "release_gate_effect": "none",
+            "release_boundary_all_false": True,
+        },
+        "release_decision_packet": {
+            "schema_version": "waggledance.release_boundary_decision_packet.v0",
+            "decision_status": "operator_finalization_required",
+            "default_recommendation": "hold_no_release_boundary_change",
+            "release_boundary_effect_before_followup": "none",
+            "operator_finalization_required": True,
+            "decision_options": [
+                {
+                    "id": "hold_no_release_boundary_change",
+                    "tag_creation_allowed": False,
+                    "docker_latest_move_allowed": False,
+                    "docker_stable_move_allowed": False,
+                    "stable_release_claim_allowed": False,
+                    "external_effect_authority_change_allowed": False,
+                },
+                {
+                    "id": "operator_finalizes_release_boundary_separately",
+                    "tag_creation_allowed": False,
+                    "docker_latest_move_allowed": False,
+                    "docker_stable_move_allowed": False,
+                    "stable_release_claim_allowed": False,
+                    "external_effect_authority_change_allowed": False,
                 },
             ],
         },
@@ -321,6 +413,82 @@ def test_report_records_phase_refresh_without_overclaim() -> None:
     )
 
 
+def test_report_lands_release_soak_when_boundary_readiness_recorded() -> None:
+    report = build_report(
+        baseline=_baseline(),
+        rival_report=_rival_report(),
+        release_gate_report=_release_gate_pass_report(),
+        operator_authority_report=_operator_authority_report(),
+        release_boundary_readiness_report=_release_boundary_readiness_report(),
+        generated_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is True
+    assert report["blockers"] == []
+    assert [
+        package["id"] for package in report["phase_synthesis"]["next_work_packages"]
+    ] == [
+        "operator_gated_authority_activation_decision",
+        "operator_release_finalization_decision",
+    ]
+    assert [
+        package["id"] for package in report["landed_work_packages"]
+    ] == [
+        "rival_local_evidence_execution_or_accepted_blockers",
+        "release_gate_readonly_recheck",
+        "release_soak_evidence_blocker_resolution",
+        "operator_authority_decision_packet",
+        "phase_synthesis_and_baseline_refresh",
+    ]
+    boundary_summary = report["landed_work_packages"][2]["summary"]
+    assert boundary_summary["report_ok"] is True
+    assert boundary_summary["release_boundary_status"] == (
+        "ready_for_operator_finalization"
+    )
+    assert boundary_summary["release_boundary_blockers"] == []
+    assert boundary_summary["operator_finalization_required"] is True
+    assert boundary_summary["release_boundary_all_false"] is True
+    assert boundary_summary["release_boundary_guardrails"] == {
+        "release_boundary_effect": "none",
+        "tag_creation_applied": False,
+        "docker_latest_move_applied": False,
+        "docker_stable_move_applied": False,
+        "stable_release_claim_applied": False,
+        "external_effect_authority_change_applied": False,
+        "requires_operator_only_finalization": True,
+    }
+    assert boundary_summary["release_decision_packet"] == {
+        "schema_version": "waggledance.release_boundary_decision_packet.v0",
+        "decision_status": "operator_finalization_required",
+        "default_recommendation": "hold_no_release_boundary_change",
+        "operator_finalization_required": True,
+        "release_boundary_effect_before_followup": "none",
+        "option_count": 2,
+        "all_options_non_mutating": True,
+    }
+    assert boundary_summary["source_phase_synthesis_refresh"] == {
+        "schema_version": "waggledance.magma_100h_phase_synthesis_refresh.v0",
+        "sprint_id": "magma-100h-sprint3-2026-05-26",
+        "generated_at_utc": "2026-06-01T02:56:09Z",
+        "ok": True,
+        "release_boundary_all_false": True,
+        "remaining_release_soak_status": "ready_for_release_boundary_review",
+        "landed_release_soak_status": None,
+    }
+    assert boundary_summary["source_release_gate_readonly_recheck"] == {
+        "schema_version": "waggledance.release_gate_readonly_recheck.v0",
+        "ok": True,
+        "read_only": True,
+        "release_gate_decision": "pass",
+        "release_gate_effect": "none",
+        "release_boundary_all_false": True,
+        "blockers": [],
+    }
+    assert report["remaining_work_packages"][1]["status"] == (
+        "operator_release_finalization_required"
+    )
+
+
 def test_report_fails_closed_on_baseline_release_boundary_mutation() -> None:
     baseline = _baseline()
     baseline["release_boundary"] = dict(FALSE_RELEASE_BOUNDARY)
@@ -389,6 +557,99 @@ def test_report_fails_closed_on_release_gate_boundary_mutation() -> None:
     assert "release_gate_release_boundary_mutated" in report["blockers"]
 
 
+def test_report_fails_closed_on_release_boundary_readiness_mutation() -> None:
+    readiness = _release_boundary_readiness_report()
+    guardrails = dict(readiness["release_boundary_guardrails"])
+    guardrails["docker_latest_move_applied"] = True
+    readiness["release_boundary_guardrails"] = guardrails
+
+    report = build_report(
+        baseline=_baseline(),
+        rival_report=_rival_report(),
+        release_gate_report=_release_gate_pass_report(),
+        operator_authority_report=_operator_authority_report(),
+        release_boundary_readiness_report=readiness,
+        generated_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "release_boundary_docker_latest_moved" in report["blockers"]
+
+
+def test_report_fails_closed_on_release_boundary_source_sprint_mismatch() -> None:
+    readiness = _release_boundary_readiness_report()
+    source_phase = dict(readiness["source_phase_synthesis_refresh"])
+    source_phase["sprint_id"] = "wrong-sprint"
+    readiness["source_phase_synthesis_refresh"] = source_phase
+
+    report = build_report(
+        baseline=_baseline(),
+        rival_report=_rival_report(),
+        release_gate_report=_release_gate_pass_report(),
+        operator_authority_report=_operator_authority_report(),
+        release_boundary_readiness_report=readiness,
+        generated_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "release_boundary_source_sprint_mismatch" in report["blockers"]
+    assert [
+        package["id"] for package in report["landed_work_packages"]
+    ] == [
+        "rival_local_evidence_execution_or_accepted_blockers",
+        "release_gate_readonly_recheck",
+        "operator_authority_decision_packet",
+        "phase_synthesis_and_baseline_refresh",
+    ]
+    assert [
+        package["id"] for package in report["remaining_work_packages"]
+    ] == [
+        "operator_gated_authority_activation_decision",
+        "release_soak_evidence_blocker_resolution",
+    ]
+    assert report["remaining_work_packages"][1]["status"] == (
+        "release_boundary_readiness_blocked"
+    )
+
+
+def test_report_fails_closed_on_release_boundary_source_gate_hold() -> None:
+    readiness = _release_boundary_readiness_report()
+    source_gate = dict(readiness["source_release_gate_readonly_recheck"])
+    source_gate["release_gate_decision"] = "hold"
+    source_gate["blockers"] = ["soak_evidence_duration_lt_336h"]
+    readiness["source_release_gate_readonly_recheck"] = source_gate
+
+    report = build_report(
+        baseline=_baseline(),
+        rival_report=_rival_report(),
+        release_gate_report=_release_gate_pass_report(),
+        operator_authority_report=_operator_authority_report(),
+        release_boundary_readiness_report=readiness,
+        generated_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "release_boundary_source_gate_not_pass" in report["blockers"]
+    assert "release_boundary_source_gate_blockers_present" in report["blockers"]
+    assert [
+        package["id"] for package in report["landed_work_packages"]
+    ] == [
+        "rival_local_evidence_execution_or_accepted_blockers",
+        "release_gate_readonly_recheck",
+        "operator_authority_decision_packet",
+        "phase_synthesis_and_baseline_refresh",
+    ]
+    assert [
+        package["id"] for package in report["remaining_work_packages"]
+    ] == [
+        "operator_gated_authority_activation_decision",
+        "release_soak_evidence_blocker_resolution",
+    ]
+    assert report["remaining_work_packages"][1]["status"] == (
+        "release_boundary_readiness_blocked"
+    )
+
+
 def test_report_fails_closed_on_operator_authority_mutation() -> None:
     authority_report = _operator_authority_report()
     authority_guardrails = dict(authority_report["authority_guardrails"])
@@ -454,6 +715,7 @@ def test_cli_writes_phase_synthesis_refresh_report(
             str(release_path),
             "--operator-authority-readiness",
             str(operator_path),
+            "--skip-release-boundary-readiness",
             "--generated-at-utc",
             "2026-05-26T02:15:00Z",
             "--output",

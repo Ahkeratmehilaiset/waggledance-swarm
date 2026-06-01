@@ -235,6 +235,53 @@ def test_invalid_to_agent_id_fails_before_runtime_write(
     assert not runtime_root.exists()
 
 
+def test_separator_only_to_agent_ids_fail_before_runtime_write(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-To",
+        ",,,",
+        "-Message",
+        "separator only target",
+    )
+
+    assert completed.returncode != 0
+    assert "to must be empty or comma-separated agents" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_comma_separated_to_agent_ids_write_valid_event(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    targets = "codex-lead-1,codex-tools-1,claude-rco-1,operator"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-To",
+        targets,
+        "-Message",
+        "valid multi-target message",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    event = json.loads(line)
+    assert event["to"] == targets
+    validate_event_line(line)
+
+
 def test_role_uuid_capability_metadata_is_optional_and_validated(
     tmp_path: Path,
 ) -> None:

@@ -1128,9 +1128,26 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert capability["proof"]["shadow_subdivision_replay_verifier_summary"][
         "runtime_subdivision_authority_granted"
     ] is False
+    template = capability["proof"][
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template"
+    ]
+    assert template["ok"] is True
+    assert (
+        template["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_v1"
+    )
+    assert template["template_only"] is True
+    assert template["direct_bridge_write_performed"] is False
+    assert template["runtime_subdivision_authority_granted"] is False
+    assert template["bridge_event_template"]["cwd"] == "template_not_emitted"
+    assert (
+        template["bridge_event_template"]["payload"]["schema_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template.v1"
+    )
     assert "local verifier" in capability["safe_statement"]
     assert "reviewer summary" in capability["safe_statement"]
-    assert "bridge-event template" in capability["next_smallest_pr"]
+    assert "bridge-event template" in capability["safe_statement"]
+    assert "index entry" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

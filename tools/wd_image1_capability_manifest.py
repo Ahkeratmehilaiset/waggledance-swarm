@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.hex_shadow_subdivision_replay import (  # noqa: E402
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary,
     build_source_snapshot,
     build_shadow_subdivision_replay_artifact,
@@ -5258,7 +5259,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tools/hex_shadow_subdivision_replay.py",
-                "Read-only shadow subdivision replay artifact builder, verifier, and reviewer summary renderer.",
+                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, and bridge-event template builder.",
             ),
         ),
     )
@@ -5300,6 +5301,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             handoff_ref="wd-image1-hex-shadow-replay-verifier-summary",
         )
     )
+    hex_upgrade_shadow_replay_verifier_summary_bridge_event_template = (
+        build_shadow_subdivision_replay_verifier_summary_bridge_event_template(
+            hex_upgrade_shadow_replay_verifier_summary,
+            agent_id="codex-lead-1",
+            task_id="wd-image1-hex-shadow-replay-verifier-summary-template",
+            to="operator,claude-rco-1,codex-tools-1",
+            role="lead-impl",
+        )
+    )
     hex_upgrade_proof["runtime_boundary_smoke"] = (
         hex_upgrade_runtime_smoke
     )
@@ -5312,12 +5322,19 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof["shadow_subdivision_replay_verifier_summary"] = (
         hex_upgrade_shadow_replay_verifier_summary
     )
+    hex_upgrade_proof[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template"
+    ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
         and hex_upgrade_shadow_replay.get("ok") is True
         and hex_upgrade_shadow_replay_verification.get("ok") is True
         and hex_upgrade_shadow_replay_verifier_summary.get("ok") is True
+        and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template.get(
+            "ok"
+        )
+        is True
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_runtime_boundary_smoke = (
@@ -5641,7 +5658,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "activation, and a local verifier recomputes the replay "
                 "digests and no-authority guardrails offline. A path-free "
                 "reviewer summary renders that verifier result as context "
-                "without bridge writes, transport, or runtime authority."
+                "without bridge writes, transport, or runtime authority. A "
+                "template-only bridge-event template renderer can turn that "
+                "summary into schema-valid handoff JSON without appending it "
+                "or granting subdivision authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -5656,9 +5676,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a bridge-event template for the shadow subdivision "
-                "replay verifier summary without appending it or activating "
-                "runtime subdivision authority."
+                "Add a local index entry for the shadow subdivision replay "
+                "verifier summary bridge-event template without appending it "
+                "or activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

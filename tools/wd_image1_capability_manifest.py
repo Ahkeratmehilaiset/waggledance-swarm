@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.hex_shadow_subdivision_replay import (  # noqa: E402
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary,
@@ -5180,7 +5181,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tools/hex_shadow_subdivision_replay.py",
-                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, and template index-entry builder.",
+                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, template index-entry builder, index-entry verifier, and index-entry verifier summary renderer.",
             ),
         ),
     )
@@ -5246,6 +5247,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_bytes
         ),
     )
+    hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+        hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification,
+        reviewer_agent_id="codex-tools-1",
+        handoff_ref="wd-image1-hex-index-entry-verification-summary",
+    )
     hex_upgrade_proof["runtime_boundary_smoke"] = hex_upgrade_runtime_smoke
     hex_upgrade_proof["shadow_subdivision_replay"] = hex_upgrade_shadow_replay
     hex_upgrade_proof["shadow_subdivision_replay_verification"] = (
@@ -5263,6 +5269,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof[
         "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification"
     ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification
+    hex_upgrade_proof[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary"
+    ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
@@ -5276,6 +5285,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         )
         is True
         and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification.get(
+            "ok"
+        )
+        is True
+        and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary.get(
             "ok"
         )
         is True
@@ -5596,7 +5609,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "schema, source-contract, rebuilt-entry, and bridge-event "
                 "schema checks without payload inclusion, local path "
                 "recording, bridge writes, transport, or runtime subdivision "
-                "authority."
+                "authority. A path-free verification summary renderer turns that "
+                "index-entry verification result into reviewer context while "
+                "preserving the same no-payload, no-path, no-transport, "
+                "no-bridge-write, and no-runtime-authority boundary."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -5610,10 +5626,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free verifier summary renderer for the shadow "
+                "Add a template-only bridge-event template for the shadow "
                 "subdivision replay verifier summary bridge-event template "
-                "index-entry verifier without appending it or activating "
-                "runtime subdivision authority."
+                "index-entry verification summary without appending it or "
+                "activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

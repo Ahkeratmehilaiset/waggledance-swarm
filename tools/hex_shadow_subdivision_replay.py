@@ -51,6 +51,14 @@ VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION = (
     "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_"
     "index_entry_verification.v1"
 )
+VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_PROOF_ID = (
+    "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+    "index_entry_verification_summary_v1"
+)
+VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_VERSION = (
+    "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+    "index_entry_verification_summary.v1"
+)
 
 TOPOLOGY_BOUNDARY_METRIC_NAMES: tuple[str, ...] = (
     "waggledance_hex_topology_boundary_up",
@@ -1536,6 +1544,102 @@ def _bridge_template_index_entry_verification_error_report(reason: str) -> dict:
     }
 
 
+def _bridge_template_index_entry_verification_summary_error_report(
+    reason: str,
+) -> dict:
+    blocker = (
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+        "index_entry_verification_summary_failed:"
+        f"{_safe_token(reason)}"
+    )
+    return {
+        "proof_id": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_PROOF_ID
+        ),
+        "ok": False,
+        "summary_version": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_VERSION
+        ),
+        "created_at_utc": _utc_iso(datetime.now(timezone.utc)),
+        "verified_verifier_proof_id": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_PROOF_ID
+        ),
+        "reviewer_ownership": {
+            "reviewer_agent_id": "invalid_ref",
+            "handoff_ref": "invalid_ref",
+            "manual_review_required": True,
+            "approval_granted": False,
+            "runtime_subdivision_authority_granted": False,
+        },
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification": {
+            "verification_ok": False,
+            "verifier_proof_id": (
+                VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_PROOF_ID
+            ),
+            "verified_proof_id": (
+                VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_PROOF_ID
+            ),
+            "verification_version": (
+                VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION
+            ),
+            "index_entry_version": (
+                VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION
+            ),
+            "artifact_count_checked": 0,
+            "digest_checks": {},
+            "size_checks": {},
+            "schema_version_checks": {},
+            "source_contract_check": "unknown",
+            "rebuilt_index_entry_check": "unknown",
+            "bridge_event_schema_check": "unknown",
+            "blocker_count": 1,
+            "blockers": [blocker],
+            "warning_count": 0,
+            "warnings": [],
+        },
+        "operator_boundary": {
+            "index_entry_verification_report_boundary_ok": False,
+            "boundary_blockers": [blocker],
+            "manual_review_required": True,
+            "approval_granted": False,
+            "release_decision_made": False,
+            "automatic_release_decision": False,
+            "direct_bridge_write_performed": False,
+            "transport_added": False,
+            "external_fetch_performed": False,
+            "runtime_controls_added": False,
+            "runtime_subdivision_authority_granted": False,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "reviewer_next_actions": [
+            "review_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification",
+            "compare_summary_to_local_index_entry_verifier_report",
+            "record_operator_decision_separately",
+        ],
+        "template_only": True,
+        "manual_review_required": True,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "runtime_controls_added": False,
+        "runtime_subdivision_authority_granted": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+        "blockers": [blocker],
+        "warnings": [],
+        "safe_conclusion": (
+            "The bridge-event template index-entry verification summary "
+            "failed closed. It does not append to the bridge, transport "
+            "artifacts, include payloads, record local paths, or grant runtime "
+            "subdivision authority."
+        ),
+    }
+
+
 def _deterministic_index_entry_for_verification(
     index_entry: Mapping[str, Any],
     blockers: list[str],
@@ -1848,6 +1952,237 @@ def verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_inde
     return report
 
 
+def _bridge_template_index_entry_verification_contract_blockers(
+    verification_report: Mapping[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    artifact_id = VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID
+
+    if verification_report.get("ok") is not True:
+        blockers.append("index_entry_verification_report_not_ok")
+    if (
+        verification_report.get("proof_id")
+        != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_PROOF_ID
+    ):
+        blockers.append("index_entry_verification_proof_id_mismatch")
+    if (
+        verification_report.get("verification_version")
+        != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION
+    ):
+        blockers.append("index_entry_verification_version_mismatch")
+    if (
+        verification_report.get("verified_proof_id")
+        != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_PROOF_ID
+    ):
+        blockers.append("index_entry_verification_verified_proof_id_mismatch")
+    if (
+        verification_report.get("index_entry_version")
+        != VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION
+    ):
+        blockers.append("index_entry_verification_index_entry_version_mismatch")
+
+    artifact_count = verification_report.get("artifact_count_checked")
+    if (
+        isinstance(artifact_count, bool)
+        or not isinstance(artifact_count, int)
+        or artifact_count != 1
+    ):
+        blockers.append("index_entry_verification_artifact_count_checked_mismatch")
+    if verification_report.get("template_only") is not True:
+        blockers.append("index_entry_verification_template_only_not_true")
+    if verification_report.get("manual_review_required") is not True:
+        blockers.append("index_entry_verification_manual_review_required_not_true")
+
+    error = _empty_blocker_list_contract_error(
+        verification_report.get("blockers"),
+        malformed="index_entry_verification_blockers_malformed",
+        present="index_entry_verification_blockers_present",
+    )
+    if error is not None:
+        blockers.append(error)
+    for field in SUMMARY_AUTHORITY_FALSE_FIELDS:
+        if verification_report.get(field) is not False:
+            blockers.append(f"index_entry_verification_{field}_not_false")
+
+    for name, value in (
+        ("digest", verification_report.get("digest_checks")),
+        ("size", verification_report.get("size_checks")),
+        ("schema_version", verification_report.get("schema_version_checks")),
+    ):
+        checks = _mapping_or_empty(value)
+        if checks.get(artifact_id) != "match":
+            blockers.append(f"index_entry_verification_{name}_check_not_match")
+
+    for name in (
+        "source_contract_check",
+        "rebuilt_index_entry_check",
+        "bridge_event_schema_check",
+    ):
+        if verification_report.get(name) != "match":
+            blockers.append(f"index_entry_verification_{name}_not_match")
+
+    return sorted(set(blockers))
+
+
+def build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+    verification_report: Mapping[str, Any],
+    *,
+    reviewer_agent_id: str,
+    handoff_ref: str,
+    now_utc: datetime | None = None,
+) -> dict:
+    """Render path-free reviewer context from the local index-entry verifier."""
+
+    if not isinstance(verification_report, Mapping):
+        return _bridge_template_index_entry_verification_summary_error_report(
+            "index_entry_verification_report_not_object"
+        )
+
+    artifact_id = VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID
+    input_path_free = not _contains_path_marker(verification_report)
+    report_blockers = _safe_token_list(verification_report.get("blockers"))
+    report_warnings = _safe_token_list(verification_report.get("warnings"))
+    contract_blockers = _bridge_template_index_entry_verification_contract_blockers(
+        verification_report
+    )
+    if not input_path_free:
+        contract_blockers.append("index_entry_verification_report_path_free")
+
+    blockers = sorted(set(report_blockers + contract_blockers))
+    verification_ok = (
+        verification_report.get("ok") is True
+        and verification_report.get("proof_id")
+        == VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_PROOF_ID
+    )
+    reviewer_agent = _safe_ref_or_invalid(reviewer_agent_id)
+    handoff = _safe_ref_or_invalid(handoff_ref)
+    if reviewer_agent == "invalid_ref":
+        blockers.append("reviewer_agent_id_invalid")
+    if handoff == "invalid_ref":
+        blockers.append("handoff_ref_invalid")
+    blockers = sorted(set(blockers))
+
+    artifact_count = verification_report.get("artifact_count_checked")
+    safe_artifact_count = (
+        artifact_count
+        if isinstance(artifact_count, int) and not isinstance(artifact_count, bool)
+        else 0
+    )
+    summary = {
+        "proof_id": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_PROOF_ID
+        ),
+        "ok": verification_ok and not blockers,
+        "summary_version": (
+            VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_VERSION
+        ),
+        "created_at_utc": _utc_iso(now_utc or datetime.now(timezone.utc)),
+        "verified_verifier_proof_id": _safe_ref_or_invalid(
+            verification_report.get("proof_id")
+        ),
+        "reviewer_ownership": {
+            "reviewer_agent_id": reviewer_agent,
+            "handoff_ref": handoff,
+            "manual_review_required": True,
+            "approval_granted": False,
+            "runtime_subdivision_authority_granted": False,
+        },
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification": {
+            "verification_ok": verification_ok,
+            "verifier_proof_id": _safe_ref_or_invalid(
+                verification_report.get("proof_id")
+            ),
+            "verified_proof_id": _safe_ref_or_invalid(
+                verification_report.get("verified_proof_id")
+            ),
+            "verification_version": _safe_ref_or_invalid(
+                verification_report.get("verification_version")
+            ),
+            "index_entry_version": _safe_ref_or_invalid(
+                verification_report.get("index_entry_version")
+            ),
+            "artifact_count_checked": safe_artifact_count,
+            "digest_checks": _match_status_map(
+                verification_report.get("digest_checks"),
+                [artifact_id],
+            ),
+            "size_checks": _match_status_map(
+                verification_report.get("size_checks"),
+                [artifact_id],
+            ),
+            "schema_version_checks": _match_status_map(
+                verification_report.get("schema_version_checks"),
+                [artifact_id],
+            ),
+            "source_contract_check": (
+                "match"
+                if verification_report.get("source_contract_check") == "match"
+                else "unknown"
+            ),
+            "rebuilt_index_entry_check": (
+                "match"
+                if verification_report.get("rebuilt_index_entry_check") == "match"
+                else "unknown"
+            ),
+            "bridge_event_schema_check": (
+                "match"
+                if verification_report.get("bridge_event_schema_check") == "match"
+                else "unknown"
+            ),
+            "blocker_count": len(report_blockers),
+            "blockers": report_blockers,
+            "warning_count": len(report_warnings),
+            "warnings": report_warnings,
+        },
+        "operator_boundary": {
+            "index_entry_verification_report_boundary_ok": not contract_blockers,
+            "boundary_blockers": sorted(set(contract_blockers)),
+            "manual_review_required": True,
+            "approval_granted": False,
+            "release_decision_made": False,
+            "automatic_release_decision": False,
+            "direct_bridge_write_performed": False,
+            "transport_added": False,
+            "external_fetch_performed": False,
+            "runtime_controls_added": False,
+            "runtime_subdivision_authority_granted": False,
+            "artifact_payloads_included": False,
+            "local_paths_recorded": False,
+        },
+        "reviewer_next_actions": [
+            "review_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification",
+            "compare_summary_to_local_index_entry_verifier_report",
+            "record_operator_decision_separately",
+        ],
+        "template_only": True,
+        "manual_review_required": True,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "runtime_controls_added": False,
+        "runtime_subdivision_authority_granted": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+        "blockers": blockers,
+        "warnings": report_warnings,
+        "safe_conclusion": (
+            "This reviewer summary renders the local bridge-event template "
+            "index-entry verifier result as path-free context. It does not "
+            "include payloads, append bridge events, transport artifacts, "
+            "record local paths, or grant runtime subdivision authority."
+        ),
+    }
+    serialized = json.dumps(summary, allow_nan=False, sort_keys=True)
+    if _contains_path_marker(serialized):
+        return _bridge_template_index_entry_verification_summary_error_report(
+            "summary_bridge_event_template_index_entry_verification_summary_output_path_marker"
+        )
+    return summary
+
+
 def _load_summary_verification_report(
     path: Path | str,
 ) -> tuple[dict | None, dict | None]:
@@ -1943,6 +2278,32 @@ def _load_bridge_template_index_entry_report(
         return None, parse_error
     if not isinstance(report, Mapping):
         return None, "summary_bridge_event_template_index_entry_not_object"
+    return dict(report), None
+
+
+def _load_bridge_template_index_entry_verification_report(
+    path: Path | str,
+) -> tuple[dict | None, str | None]:
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return None, "summary_bridge_event_template_index_entry_verification_unreadable"
+    report, parse_error = _parse_json_bytes_without_duplicate_keys_for_reasons(
+        raw,
+        duplicate_key_reason=(
+            "summary_bridge_event_template_index_entry_verification_duplicate_key"
+        ),
+        json_error_reason=(
+            "summary_bridge_event_template_index_entry_verification_json_error"
+        ),
+        raw_path_marker_reason=(
+            "summary_bridge_event_template_index_entry_verification_raw_path_marker"
+        ),
+    )
+    if parse_error is not None:
+        return None, parse_error
+    if not isinstance(report, Mapping):
+        return None, "summary_bridge_event_template_index_entry_verification_not_object"
     return dict(report), None
 
 
@@ -2299,6 +2660,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--summary-bridge-event-template-index-entry-verification-json",
+        type=Path,
+        help=(
+            "Render a path-free reviewer summary from an existing local "
+            "verifier summary bridge-event template index-entry verifier JSON "
+            "file. The summary is printed but not appended."
+        ),
+    )
+    parser.add_argument(
         "--summary-bridge-event-template-source-json",
         type=Path,
         help=(
@@ -2353,12 +2723,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.summary_bridge_event_template_json,
             args.summary_bridge_event_template_index_entry_json,
             args.verify_summary_bridge_event_template_index_entry_json,
+            args.summary_bridge_event_template_index_entry_verification_json,
         )
     )
     if mode_count > 1:
         report = _bridge_template_error_report("multiple_modes_requested")
         print(json.dumps(report, indent=2, sort_keys=True))
         return 2
+
+    if args.summary_bridge_event_template_index_entry_verification_json is not None:
+        verification_report, failure = (
+            _load_bridge_template_index_entry_verification_report(
+                args.summary_bridge_event_template_index_entry_verification_json
+            )
+        )
+        if failure is not None:
+            summary = _bridge_template_index_entry_verification_summary_error_report(
+                failure
+            )
+        else:
+            try:
+                now_utc = _parse_utc(args.now) if args.now else None
+            except ValueError:
+                summary = (
+                    _bridge_template_index_entry_verification_summary_error_report(
+                        "now_utc_invalid"
+                    )
+                )
+            else:
+                summary = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+                    verification_report or {},
+                    reviewer_agent_id=args.reviewer_agent,
+                    handoff_ref=args.handoff_ref,
+                    now_utc=now_utc,
+                )
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        if args.strict and summary.get("ok") is not True:
+            return 2
+        return 0
 
     if args.verify_summary_bridge_event_template_index_entry_json is not None:
         if args.summary_bridge_event_template_source_json is None:

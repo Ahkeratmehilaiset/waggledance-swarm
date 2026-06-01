@@ -1191,12 +1191,45 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert index_entry_verification["runtime_subdivision_authority_granted"] is False
     assert index_entry_verification["artifact_payloads_included"] is False
     assert index_entry_verification["local_paths_recorded"] is False
+    index_entry_verification_summary = capability["proof"][
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary"
+    ]
+    assert index_entry_verification_summary["ok"] is True
+    assert (
+        index_entry_verification_summary["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_v1"
+    )
+    assert (
+        index_entry_verification_summary["summary_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary.v1"
+    )
+    summary_nested = index_entry_verification_summary[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification"
+    ]
+    assert summary_nested["verification_ok"] is True
+    assert summary_nested["source_contract_check"] == "match"
+    assert summary_nested["rebuilt_index_entry_check"] == "match"
+    assert summary_nested["bridge_event_schema_check"] == "match"
+    assert (
+        summary_nested["digest_checks"][
+            "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template"
+        ]
+        == "match"
+    )
+    assert index_entry_verification_summary["direct_bridge_write_performed"] is False
+    assert (
+        index_entry_verification_summary["runtime_subdivision_authority_granted"]
+        is False
+    )
+    assert index_entry_verification_summary["artifact_payloads_included"] is False
+    assert index_entry_verification_summary["local_paths_recorded"] is False
     assert "local verifier" in capability["safe_statement"]
     assert "reviewer summary" in capability["safe_statement"]
     assert "bridge-event template" in capability["safe_statement"]
     assert "local index entry" in capability["safe_statement"]
-    assert "verifier summary" in capability["next_smallest_pr"]
-    assert "index-entry verifier" in capability["next_smallest_pr"]
+    assert "verification summary" in capability["safe_statement"]
+    assert "template-only bridge-event template" in capability["next_smallest_pr"]
+    assert "verification summary" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

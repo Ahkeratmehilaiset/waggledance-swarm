@@ -1223,13 +1223,63 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     )
     assert index_entry_verification_summary["artifact_payloads_included"] is False
     assert index_entry_verification_summary["local_paths_recorded"] is False
+    index_entry_verification_summary_template = capability["proof"][
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template"
+    ]
+    assert index_entry_verification_summary_template["ok"] is True
+    assert (
+        index_entry_verification_summary_template["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_v1"
+    )
+    assert (
+        index_entry_verification_summary_template["template_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.v1"
+    )
+    assert index_entry_verification_summary_template["template_only"] is True
+    assert (
+        index_entry_verification_summary_template["direct_bridge_write_performed"]
+        is False
+    )
+    assert (
+        index_entry_verification_summary_template[
+            "runtime_subdivision_authority_granted"
+        ]
+        is False
+    )
+    summary_template_event = index_entry_verification_summary_template[
+        "bridge_event_template"
+    ]
+    assert summary_template_event["cwd"] == "template_not_emitted"
+    assert (
+        summary_template_event["status"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_ready"
+    )
+    assert (
+        summary_template_event["payload"]["schema_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.v1"
+    )
+    assert (
+        summary_template_event["payload"]["summary_proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_v1"
+    )
+    assert (
+        summary_template_event["payload"]["operator_boundary"][
+            "index_entry_verification_report_boundary_ok"
+        ]
+        is True
+    )
     assert "local verifier" in capability["safe_statement"]
     assert "reviewer summary" in capability["safe_statement"]
     assert "bridge-event template" in capability["safe_statement"]
     assert "local index entry" in capability["safe_statement"]
     assert "verification summary" in capability["safe_statement"]
-    assert "template-only bridge-event template" in capability["next_smallest_pr"]
-    assert "verification summary" in capability["next_smallest_pr"]
+    assert (
+        "template-only bridge-event template renderer" in capability["safe_statement"]
+    )
+    assert "local index entry" in capability["next_smallest_pr"]
+    assert (
+        "verification summary bridge-event template" in capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

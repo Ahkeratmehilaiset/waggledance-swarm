@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from tools.hex_shadow_subdivision_replay import (
+    build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
     build_shadow_subdivision_replay_verifier_summary_bridge_event_template,
@@ -98,6 +99,17 @@ def _valid_verifier_summary_bridge_event_template_index_entry_verification() -> 
         entry,
         template,
         template_report_bytes=raw,
+    )
+
+
+def _valid_verifier_summary_bridge_event_template_index_entry_verification_summary() -> (
+    dict
+):
+    return build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary(
+        _valid_verifier_summary_bridge_event_template_index_entry_verification(),
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:hex-index-entry-verification",
+        now_utc=datetime(2026, 5, 31, 13, 0, tzinfo=timezone.utc),
     )
 
 
@@ -1119,6 +1131,243 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
     assert any(
         "summary_bridge_event_template_index_entry_verification_duplicate_key" in item
         for item in summary["blockers"]
+    )
+    assert "project2-master" not in serialized
+    assert "private.json" not in serialized
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_is_valid_without_writing() -> (
+    None
+):
+    summary = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
+    )
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-index-entry-verification-summary-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+        run_id="codex-lead-1-20260531T131500Z",
+        session_id="codex-lead-1-20260531T131500Z",
+        now_utc=datetime(2026, 5, 31, 13, 15, tzinfo=timezone.utc),
+    )
+    event = report["bridge_event_template"]
+    payload = event["payload"]
+    nested = payload[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification"
+    ]
+    artifact_id = "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template"
+    serialized = json.dumps(report, sort_keys=True)
+
+    assert report["ok"] is True
+    assert (
+        report["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_v1"
+    )
+    assert (
+        report["template_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.v1"
+    )
+    assert report["template_only"] is True
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+    validate_event(event)
+    assert event["ts_utc"] == "2026-05-31T13:15:00Z"
+    assert event["cwd"] == "template_not_emitted"
+    assert event["paths"] == []
+    assert event["write_scope"] == []
+    assert (
+        event["status"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_ready"
+    )
+    assert (
+        payload["schema_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.v1"
+    )
+    assert (
+        payload["summary_proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_v1"
+    )
+    assert nested["verification_ok"] is True
+    assert nested["digest_checks"][artifact_id] == "match"
+    assert nested["size_checks"][artifact_id] == "match"
+    assert nested["schema_version_checks"][artifact_id] == "match"
+    assert nested["source_contract_check"] == "match"
+    assert nested["rebuilt_index_entry_check"] == "match"
+    assert nested["bridge_event_schema_check"] == "match"
+    assert payload["operator_boundary"]["index_entry_verification_report_boundary_ok"]
+    assert payload["direct_bridge_write_performed"] is False
+    assert payload["runtime_subdivision_authority_granted"] is False
+    assert payload["artifact_payloads_included"] is False
+    assert payload["local_paths_recorded"] is False
+    assert str(ROOT) not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_blocks_authority() -> (
+    None
+):
+    summary = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
+    )
+    summary["runtime_subdivision_authority_granted"] = True
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-index-entry-verification-summary-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "index_entry_verification_summary_runtime_subdivision_authority_granted_not_false"
+        in item
+        for item in report["blockers"]
+    )
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_blocks_malformed_boundary_blockers() -> (
+    None
+):
+    summary = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
+    )
+    summary["operator_boundary"]["boundary_blockers"] = "hidden_blocker"
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-index-entry-verification-summary-template",
+    )
+
+    assert report["ok"] is False
+    assert "bridge_event_template" not in report
+    assert any(
+        "index_entry_verification_summary_boundary_blockers_malformed" in item
+        for item in report["blockers"]
+    )
+    assert report["direct_bridge_write_performed"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_blocks_path_leak() -> (
+    None
+):
+    summary = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
+    )
+    summary["safe_conclusion"] = (
+        "scratch verifier at C:/Python/project2-master/out.json"
+    )
+
+    report = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+        summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-index-entry-verification-summary-template",
+    )
+    serialized = json.dumps(report, sort_keys=True)
+
+    assert report["ok"] is False
+    assert any(
+        "index_entry_verification_summary_path_free" in item
+        for item in report["blockers"]
+    )
+    assert "C:/Python/project2-master/out.json" not in serialized
+    assert "project2-master" not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_cli_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    summary = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
+    )
+    summary_path = (
+        tmp_path
+        / "verifier-summary-bridge-event-template-index-verification-summary.json"
+    )
+    summary_path.write_bytes(_json_bytes(summary))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-bridge-event-template-index-entry-verification-summary-json",
+            str(summary_path),
+            "--agent",
+            "codex-lead-1",
+            "--task-id",
+            "wd-image1-hex-index-entry-verification-summary-template",
+            "--to",
+            "operator,claude-rco-1,codex-tools-1",
+            "--now",
+            "2026-05-31T13:20:00Z",
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    validate_event(report["bridge_event_template"])
+    assert report["bridge_event_template"]["ts_utc"] == "2026-05-31T13:20:00Z"
+    assert str(tmp_path) not in result.stdout
+    assert str(summary_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_cli_rejects_duplicate_key_hidden_path_free(
+    tmp_path: Path,
+) -> None:
+    summary = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
+    )
+    hidden_prefix = (
+        json.dumps(
+            {"reviewer_ownership": {"note": "C:/Python/project2-master/private.json"}},
+            sort_keys=True,
+        )[:-1]
+        + ","
+    )
+    summary_raw = (hidden_prefix + json.dumps(summary, sort_keys=True)[1:]).encode(
+        "utf-8"
+    )
+    summary_path = (
+        tmp_path
+        / "verifier-summary-bridge-event-template-index-verification-summary.json"
+    )
+    summary_path.write_bytes(summary_raw)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-bridge-event-template-index-entry-verification-summary-json",
+            str(summary_path),
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 2
+    report = json.loads(result.stdout)
+    serialized = json.dumps(report, sort_keys=True)
+    assert report["ok"] is False
+    assert any(
+        "summary_bridge_event_template_index_entry_verification_summary_duplicate_key"
+        in item
+        for item in report["blockers"]
     )
     assert "project2-master" not in serialized
     assert "private.json" not in serialized

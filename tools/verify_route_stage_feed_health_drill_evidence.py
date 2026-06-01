@@ -381,7 +381,7 @@ def _feed_state_from_api_ops(
         _append_once(blockers, "feed_state_not_object")
         return None
     ok = _validate_exact_keys(feed_state, _FEED_STATE_FIELDS, "feed_state", blockers) and ok
-    return feed_state if ok else feed_state
+    return feed_state
 
 
 def _validate_feed_health(value: object, blockers: list[str]) -> bool:

@@ -26,6 +26,10 @@ does not add runtime controls.
 | `waggledance_route_stage_request_latency_histogram_ms_sum` | Histogram sum of request latency for requests where the stage was observed. |
 | `waggledance_route_stage_request_latency_histogram_ms_count` | Histogram count for requests where the stage was observed. |
 | `waggledance_route_stage_observations_total` | Counter for sanitized requests where the stage was observed. |
+| `waggledance_route_stage_latency_feed_available` | Read-only provider health gauge for the optional Prometheus/Alertmanager feed. |
+| `waggledance_route_stage_latency_feed_cache_hits_total` | Count of feed snapshots served from the bounded in-process cache. |
+| `waggledance_route_stage_latency_feed_fetch_failures_total` | Count of failed provider refresh attempts collapsed to fixed reasons. |
+| `waggledance_route_stage_latency_feed_backoff_active` | Gauge showing whether the bounded failure backoff is active. |
 
 The histogram uses request latency correlated to observed route stages. It is
 not an internal per-stage span timer.
@@ -58,6 +62,8 @@ view of a container-provided Prometheus/Alertmanager snapshot. It may include:
 - `active`: known alert IDs, fixed route-stage labels, severity, numeric
   values, and WD-generated summaries.
 - `updated_at`: the provider timestamp when it is a string.
+- `feed_health`: sanitized provider health, cache/backoff counters, fixed
+  failure reasons, and read-only no-authority flags.
 
 It intentionally does not forward Alertmanager annotations, descriptions,
 external URLs, raw label sets, raw query text, hostnames, filesystem paths, or
@@ -78,7 +84,9 @@ userinfo URLs, query-string URLs, redirects, or unbounded responses. Private,
 loopback, and localhost targets are refused unless the exact hostname is listed
 in `allowed_private_hosts`. Provider failures are collapsed to
 `prometheus_alertmanager_unavailable`; exception details are not forwarded to
-the Ops API or dashboard.
+the Ops API or dashboard. The adapter also keeps a bounded TTL cache and bounded
+failure backoff so repeated Ops or `/metrics` scrapes can reuse the last
+sanitized snapshot during temporary feed outages.
 
 Example local operator config:
 
@@ -89,6 +97,8 @@ route_stage_latency_feed:
   alertmanager_base_url: "http://127.0.0.1:9093"
   timeout_s: 3
   max_response_bytes: 1000000
+  cache_ttl_s: 30
+  failure_backoff_s: 30
   allowed_private_hosts:
     - "127.0.0.1"
 ```

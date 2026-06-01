@@ -47,6 +47,7 @@ from prometheus_client.core import (
 from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
 from waggledance.adapters.http.routes.compat_dashboard import (
     _magma_share_import_handoff_section,
+    _route_stage_latency_feed_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,31 @@ _MAGMA_HANDOFF_PROVIDER_ALERT_IDS: tuple[str, ...] = (
     "MagmaShareImportHandoffProviderFreshnessWarning",
     "MagmaShareImportHandoffFreshnessSourceUnavailable",
     "MagmaShareImportHandoffFreshnessSourceInvalid",
+)
+_ROUTE_STAGE_LATENCY_FEED_STATUSES: tuple[str, ...] = (
+    "not_configured",
+    "nominal",
+    "warning",
+)
+_ROUTE_STAGE_LATENCY_FEED_FAILURE_REASONS: tuple[str, ...] = (
+    "none",
+    "BACKOFF_ACTIVE",
+    "NETWORK_TIMEOUT",
+    "NETWORK_REQUEST_FAILED",
+    "RESPONSE_SHAPE_REFUSED",
+    "RESPONSE_BODY_REFUSED",
+    "RESPONSE_STATUS_REFUSED",
+    "RESPONSE_JSON_REFUSED",
+    "RESPONSE_TOO_LARGE",
+    "RESPONSE_CONTENT_TYPE_REFUSED",
+    "RESPONSE_SOURCE_URL_REFUSED",
+    "PROMETHEUS_STATUS_REFUSED",
+    "PROMETHEUS_DATA_REFUSED",
+    "PROMETHEUS_RESULT_REFUSED",
+    "ALERTMANAGER_RESULT_REFUSED",
+    "ROUTE_STAGE_LATENCY_FEED_UNAVAILABLE",
+    "HTTP_STATUS_REFUSED",
+    "FEED_READ_FAILED",
 )
 _MAGMA_HANDOFF_ALERT_FEED_STATUSES: tuple[str, ...] = (
     "not_configured",
@@ -206,6 +232,7 @@ class _WaggleCollector:
         yield from self._collect_hex_topology_boundary_metrics(container)
         yield from self._collect_route_stage_metrics(container)
         yield from self._collect_route_stage_runtime_metrics(container)
+        yield from self._collect_route_stage_latency_feed_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
         yield from self._collect_magma_handoff_metrics(container)
 
@@ -503,6 +530,119 @@ class _WaggleCollector:
         yield latency
         yield latency_histogram
 
+    def _collect_route_stage_latency_feed_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_route_stage_latency_feed_up",
+            "1 if route-stage latency feed health could be built this scrape.",
+            value=0.0,
+        )
+        try:
+            feed_state = _route_stage_latency_feed_state(container)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "metrics: route_stage_latency_feed health raised: %s",
+                exc,
+            )
+            yield up
+            return
+        feed_health = feed_state.get("feed_health")
+        if not isinstance(feed_health, dict):
+            yield up
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_route_stage_latency_feed_up",
+            "1 if route-stage latency feed health could be built this scrape.",
+            value=1.0,
+        )
+
+        bool_gauges = {
+            "configured": feed_health.get("configured"),
+            "available": feed_health.get("available"),
+            "cache_enabled": feed_health.get("cache_enabled"),
+            "cache_present": feed_health.get("cache_present"),
+            "cache_stale": feed_health.get("cache_stale"),
+            "backoff_active": feed_health.get("backoff_active"),
+            "controls_present": feed_health.get("controls_present"),
+            "runtime_authority_granted": feed_health.get("runtime_authority_granted"),
+            "external_writes_applied": feed_health.get("external_writes_applied"),
+        }
+        for name, value in bool_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_route_stage_latency_feed_{name}",
+                (
+                    "read-only route-stage latency feed provider-health "
+                    f"gauge: {name}"
+                ),
+                value=_as_bool_float(value),
+            )
+
+        numeric_gauges = {
+            "cache_ttl_seconds": feed_health.get("cache_ttl_seconds"),
+            "failure_backoff_seconds": feed_health.get("failure_backoff_seconds"),
+            "timeout_seconds": feed_health.get("timeout_seconds"),
+            "max_response_bytes": feed_health.get("max_response_bytes"),
+            "last_response_bytes": feed_health.get("last_response_bytes"),
+        }
+        for name, value in numeric_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_route_stage_latency_feed_{name}",
+                (
+                    "read-only route-stage latency feed provider-health "
+                    f"gauge: {name}"
+                ),
+                value=_as_nonnegative_float(value),
+            )
+
+        counter_values = {
+            "cache_hits": feed_health.get("cache_hit_count"),
+            "cache_misses": feed_health.get("cache_miss_count"),
+            "fetch_successes": feed_health.get("fetch_success_count"),
+            "fetch_failures": feed_health.get("fetch_failure_count"),
+            "backoff_skips": feed_health.get("backoff_skip_count"),
+        }
+        for name, value in counter_values.items():
+            yield CounterMetricFamily(
+                f"waggledance_route_stage_latency_feed_{name}_total",
+                (
+                    "read-only route-stage latency feed provider-health "
+                    f"counter: {name}"
+                ),
+                value=_as_nonnegative_float(value),
+            )
+
+        status_metric = GaugeMetricFamily(
+            "waggledance_route_stage_latency_feed_status",
+            "Current route-stage latency feed status as fixed-state gauges.",
+            labels=["status"],
+        )
+        current_status = feed_health.get("status")
+        for status in _ROUTE_STAGE_LATENCY_FEED_STATUSES:
+            status_metric.add_metric(
+                [status],
+                1.0 if current_status == status else 0.0,
+            )
+        yield status_metric
+
+        reason_metric = GaugeMetricFamily(
+            "waggledance_route_stage_latency_feed_failure_reason",
+            (
+                "Current sanitized route-stage latency feed failure reason as "
+                "fixed-state gauges."
+            ),
+            labels=["reason"],
+        )
+        current_reason = feed_health.get("last_failure_reason") or "none"
+        for reason in _ROUTE_STAGE_LATENCY_FEED_FAILURE_REASONS:
+            reason_metric.add_metric(
+                [reason],
+                1.0 if current_reason == reason else 0.0,
+            )
+        yield reason_metric
+
     def _collect_autogrowth_metrics(self, container: Any) -> Iterable[Any]:
         up = GaugeMetricFamily(
             "waggledance_autogrowth_up",
@@ -561,9 +701,7 @@ class _WaggleCollector:
 
         gauge_values = {
             "background_running": _safe_getattr(ticker, "is_running", False),
-            "background_interval_seconds": _safe_getattr(
-                ticker, "interval_seconds"
-            ),
+            "background_interval_seconds": _safe_getattr(ticker, "interval_seconds"),
             "background_max_ticks_per_wake": _safe_getattr(
                 ticker, "max_ticks_per_wake"
             ),
@@ -627,9 +765,7 @@ class _WaggleCollector:
             "freshness_source_available": provider_health.get(
                 "freshness_source_available"
             ),
-            "freshness_source_valid": provider_health.get(
-                "freshness_source_valid"
-            ),
+            "freshness_source_valid": provider_health.get("freshness_source_valid"),
             "freshness_source_stale": (
                 provider_health.get("feed_staleness_state") == "stale"
             ),
@@ -649,23 +785,17 @@ class _WaggleCollector:
         numeric_gauges = {
             "snapshot_count": provider_health.get("snapshot_count"),
             "history_limit": provider_health.get("history_limit"),
-            "history_retained_count": provider_health.get(
-                "history_retained_count"
-            ),
+            "history_retained_count": provider_health.get("history_retained_count"),
             "history_dropped_count": provider_health.get("history_dropped_count"),
             "active_alerts": provider_health.get("active_count"),
             "freshness_warning_after_seconds": provider_health.get(
                 "freshness_warning_after_seconds"
             ),
-            "freshness_source_item_count": provider_health.get(
-                "feed_item_count"
-            ),
+            "freshness_source_item_count": provider_health.get("feed_item_count"),
             "freshness_source_window_seconds": provider_health.get(
                 "feed_window_seconds"
             ),
-            "payload_files_imported": provider_health.get(
-                "payload_files_imported"
-            ),
+            "payload_files_imported": provider_health.get("payload_files_imported"),
         }
         for name, value in numeric_gauges.items():
             yield GaugeMetricFamily(
@@ -717,9 +847,7 @@ class _WaggleCollector:
         if not isinstance(active_items, list):
             active_items = []
         active_alert_ids = {
-            item.get("id")
-            for item in active_items
-            if isinstance(item, dict)
+            item.get("id") for item in active_items if isinstance(item, dict)
         }
         alert_metric = GaugeMetricFamily(
             "waggledance_magma_handoff_provider_alert_active",
@@ -750,12 +878,8 @@ class _WaggleCollector:
             "cache_stale": feed_health.get("cache_stale"),
             "backoff_active": feed_health.get("backoff_active"),
             "controls_present": feed_health.get("controls_present"),
-            "runtime_authority_granted": feed_health.get(
-                "runtime_authority_granted"
-            ),
-            "external_writes_applied": feed_health.get(
-                "external_writes_applied"
-            ),
+            "runtime_authority_granted": feed_health.get("runtime_authority_granted"),
+            "external_writes_applied": feed_health.get("external_writes_applied"),
         }
         for name, value in bool_gauges.items():
             yield GaugeMetricFamily(
@@ -769,9 +893,7 @@ class _WaggleCollector:
 
         numeric_gauges = {
             "cache_ttl_seconds": feed_health.get("cache_ttl_seconds"),
-            "failure_backoff_seconds": feed_health.get(
-                "failure_backoff_seconds"
-            ),
+            "failure_backoff_seconds": feed_health.get("failure_backoff_seconds"),
             "timeout_seconds": feed_health.get("timeout_seconds"),
             "max_response_bytes": feed_health.get("max_response_bytes"),
             "last_response_bytes": feed_health.get("last_response_bytes"),

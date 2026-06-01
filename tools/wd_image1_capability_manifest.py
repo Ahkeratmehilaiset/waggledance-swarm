@@ -1065,11 +1065,14 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "prometheus_alertmanager_snapshot",
                 "RouteStageLatencyPrometheusAlertmanagerFeed",
                 "RouteStageLatencyFeedUnavailable",
+                "feed_health",
                 "panel_values",
                 "activeRouteStageLatencyAlerts",
                 "test_ops_route_stage_latency_feed_state_sanitizes_snapshot",
                 "test_ops_route_stage_latency_feed_state_rejects_non_finite_numbers",
+                "test_ops_route_stage_latency_feed_health_forces_no_authority_flags",
                 "test_route_stage_latency_feed_provider_rejects_non_finite_numbers",
+                "test_route_stage_latency_feed_provider_uses_bounded_backoff",
                 "It intentionally does not forward Alertmanager annotations",
                 "math.isfinite",
             )
@@ -1082,7 +1085,36 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "prometheus_base_url",
                 "alertmanager_base_url",
                 "allowed_private_hosts",
+                "cache_ttl_s",
+                "failure_backoff_s",
                 "enabled: false",
+            )
+        ),
+        "ops_latency_feed_cache_backoff_contract_present": all(
+            token
+            in "\n".join(
+                (
+                    provider_text,
+                    ops_text,
+                    metrics_text,
+                    settings_text,
+                    metrics_tests_text,
+                    ops_tests_text,
+                    docs_text,
+                    runbook_text,
+                )
+            )
+            for token in (
+                "DEFAULT_CACHE_TTL_SECONDS",
+                "failure_backoff_seconds",
+                "provider_health",
+                "ROUTE_STAGE_LATENCY_FEED_HEALTH_REASONS",
+                "waggledance_route_stage_latency_feed_cache_hits_total",
+                "waggledance_route_stage_latency_feed_backoff_active",
+                "test_metrics_body_contains_route_stage_latency_feed_cache_gauges",
+                "test_metrics_route_stage_latency_feed_backoff_failure_is_sanitized",
+                "cache_ttl_s",
+                "failure_backoff_s",
             )
         ),
         "ops_latency_feed_provider_guardrails_present": all(
@@ -1122,6 +1154,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             and "It is not an internal span timer" in docs_text
             and "route_stage_latency_feed" in docs_text
             and "allowed_private_hosts" in docs_text
+            and "cache_ttl_s" in docs_text
+            and "failure_backoff_s" in docs_text
+            and "waggledance_route_stage_latency_feed_cache_hits_total"
+            in docs_text
         ),
         "runtime_contract_ok": runtime_contract["ok"] is True,
     }
@@ -1137,6 +1173,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "latency_panel_templates_visible": ok,
         "prometheus_alertmanager_feed_supported": ok,
         "prometheus_alertmanager_feed_provider_configured": ok,
+        "latency_feed_cache_backoff_supported": checks[
+            "ops_latency_feed_cache_backoff_contract_present"
+        ],
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
         "latency_metric_semantics": "stage_correlated_request_latency",
@@ -1146,8 +1185,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "observation counters and stage-correlated request latency "
             "counters and histograms from sanitized route traces. It supports "
             "Prometheus rate, p95/p99 histogram_quantile panels, and optional "
-            "sanitized Prometheus/Alertmanager feed state without storing raw "
-            "query, profile, language, context, or full route trace payloads."
+            "sanitized Prometheus/Alertmanager feed state with provider "
+            "health, TTL cache, and bounded failure backoff without storing "
+            "raw query, profile, language, context, or full route trace "
+            "payloads."
         ),
     }
 
@@ -5372,9 +5413,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "counts and runtime rate/latency counters from sanitized "
                 "traces plus p95/p99 PromQL latency panel templates and "
                 "an optional sanitized read-only Prometheus/Alertmanager "
-                "feed provider with timeout, credential, and private-host "
-                "guardrails; exact runtime entry order depends on flags and "
-                "call path."
+                "feed provider with timeout, TTL cache, bounded failure "
+                "backoff, credential, and private-host guardrails; exact "
+                "runtime entry order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -5386,8 +5427,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add provider health/cache metrics and bounded backoff "
-                "without adding route controls."
+                "Add operator SLO/drill evidence around route-stage feed "
+                "health without adding route controls."
             ),
             proof=hex_entry_proof,
         ),

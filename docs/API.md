@@ -353,15 +353,26 @@ PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 Prometheus/Alertmanager snapshot when the runtime container provides a
 `route_stage_latency_feed` provider. The live feed accepts only known panel
 IDs, known alert IDs, fixed route-stage labels, numeric values, and timestamps;
-it drops raw summaries, invalid labels, and unknown fields. The feed state does
-not add mutating endpoints or runtime routing controls.
+it drops raw summaries, invalid labels, and unknown fields. The feed state also
+includes sanitized `feed_health` for provider availability, cache/backoff state,
+fixed failure reasons, and no-authority flags. It does not add mutating
+endpoints or runtime routing controls.
 
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager
 `/api/v2/alerts` endpoints. URL userinfo, query-string URLs, credential-like
 headers, redirects, and private/localhost hosts without an exact
-`allowed_private_hosts` entry are refused.
+`allowed_private_hosts` entry are refused. The adapter keeps a bounded
+in-process TTL cache (`cache_ttl_s`) and failure backoff
+(`failure_backoff_s`) so repeated Ops or `/metrics` scrapes can reuse the last
+sanitized snapshot when the operator feed is temporarily unavailable. `/metrics`
+exposes the cache/backoff state through fixed names such as
+`waggledance_route_stage_latency_feed_cache_hits_total`,
+`waggledance_route_stage_latency_feed_fetch_failures_total`,
+`waggledance_route_stage_latency_feed_backoff_active`, and
+`waggledance_route_stage_latency_feed_failure_reason`; URLs, hosts, headers,
+and exception text are not surfaced.
 
 `GET /api/ops` also includes `autogrowth.alert_state`, a read-only local
 snapshot for the hologram Ops panel. It reports `status`, `severity`,

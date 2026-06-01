@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+import json
 import types
 from datetime import datetime, timezone
 
@@ -685,6 +686,162 @@ def test_metrics_magma_alert_feed_response_refusal_reason_is_fixed_label():
         in body
     )
     assert "redirected" not in body
+    assert "127.0.0.1" not in body
+
+
+def test_metrics_body_contains_route_stage_latency_feed_cache_gauges():
+    from waggledance.adapters.http.route_stage_latency_feed import (
+        RouteStageLatencyFeedHttpResponse,
+        RouteStageLatencyPrometheusAlertmanagerFeed,
+    )
+
+    calls = []
+
+    def transport(url, headers, timeout_seconds, params):
+        calls.append((url, dict(headers), timeout_seconds, dict(params)))
+        if url.endswith("/api/v1/query"):
+            body = {
+                "status": "success",
+                "data": {
+                    "result": [{
+                        "metric": {"stage": "language_detection"},
+                        "value": [1_716_888_000, "101.0"],
+                    }],
+                },
+            }
+        else:
+            body = []
+        return RouteStageLatencyFeedHttpResponse(
+            body=json.dumps(body).encode("utf-8"),
+            content_type="application/json",
+            status_code=200,
+            source_url=url,
+        )
+
+    feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+        prometheus_base_url="http://127.0.0.1:9090",
+        alertmanager_base_url="http://127.0.0.1:9093",
+        allowed_private_hosts=["127.0.0.1"],
+        cache_ttl_seconds=60,
+        failure_backoff_seconds=5,
+        monotonic=lambda: 0.0,
+        transport=transport,
+    )
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.route_stage_latency_feed = feed
+    client = TestClient(_make_app(container))
+
+    client.get("/metrics")
+    body = client.get("/metrics").text
+
+    assert len(calls) == 4
+    assert "waggledance_route_stage_latency_feed_configured 1.0" in body
+    assert "waggledance_route_stage_latency_feed_available 1.0" in body
+    assert "waggledance_route_stage_latency_feed_cache_enabled 1.0" in body
+    assert "waggledance_route_stage_latency_feed_cache_present 1.0" in body
+    assert "waggledance_route_stage_latency_feed_backoff_active 0.0" in body
+    assert "waggledance_route_stage_latency_feed_cache_ttl_seconds 60.0" in body
+    assert (
+        "waggledance_route_stage_latency_feed_failure_backoff_seconds 5.0"
+        in body
+    )
+    assert "waggledance_route_stage_latency_feed_cache_hits_total 1.0" in body
+    assert "waggledance_route_stage_latency_feed_cache_misses_total 1.0" in body
+    assert (
+        "waggledance_route_stage_latency_feed_fetch_successes_total 1.0"
+        in body
+    )
+    assert (
+        "waggledance_route_stage_latency_feed_fetch_failures_total 0.0"
+        in body
+    )
+    assert (
+        'waggledance_route_stage_latency_feed_status{status="nominal"} 1.0'
+        in body
+    )
+    assert (
+        'waggledance_route_stage_latency_feed_failure_reason{reason="none"} 1.0'
+        in body
+    )
+    assert "127.0.0.1" not in body
+
+
+def test_metrics_route_stage_latency_feed_backoff_failure_is_sanitized():
+    from waggledance.adapters.http.route_stage_latency_feed import (
+        RouteStageLatencyFeedHttpResponse,
+        RouteStageLatencyPrometheusAlertmanagerFeed,
+    )
+
+    calls = []
+    now = [0.0]
+
+    def transport(url, headers, timeout_seconds, params):
+        calls.append((url, dict(params)))
+        if len(calls) > 4:
+            raise RuntimeError("C:/private/prometheus-token")
+        if url.endswith("/api/v1/query"):
+            body = {
+                "status": "success",
+                "data": {
+                    "result": [{
+                        "metric": {"stage": "language_detection"},
+                        "value": [1_716_888_000, "101.0"],
+                    }],
+                },
+            }
+        else:
+            body = []
+        return RouteStageLatencyFeedHttpResponse(
+            body=json.dumps(body).encode("utf-8"),
+            content_type="application/json",
+            status_code=200,
+            source_url=url,
+        )
+
+    feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+        prometheus_base_url="http://127.0.0.1:9090",
+        alertmanager_base_url="http://127.0.0.1:9093",
+        allowed_private_hosts=["127.0.0.1"],
+        cache_ttl_seconds=1,
+        failure_backoff_seconds=10,
+        monotonic=lambda: now[0],
+        transport=transport,
+    )
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.route_stage_latency_feed = feed
+    client = TestClient(_make_app(container))
+
+    client.get("/metrics")
+    now[0] = 2.0
+    client.get("/metrics")
+    now[0] = 3.0
+    body = client.get("/metrics").text
+
+    assert len(calls) == 5
+    assert "waggledance_route_stage_latency_feed_available 1.0" in body
+    assert "waggledance_route_stage_latency_feed_cache_stale 1.0" in body
+    assert "waggledance_route_stage_latency_feed_backoff_active 1.0" in body
+    assert (
+        "waggledance_route_stage_latency_feed_fetch_successes_total 1.0"
+        in body
+    )
+    assert (
+        "waggledance_route_stage_latency_feed_fetch_failures_total 1.0"
+        in body
+    )
+    assert (
+        "waggledance_route_stage_latency_feed_backoff_skips_total 1.0"
+        in body
+    )
+    assert (
+        'waggledance_route_stage_latency_feed_status{status="warning"} 1.0'
+        in body
+    )
+    assert (
+        "waggledance_route_stage_latency_feed_failure_reason{"
+        'reason="NETWORK_REQUEST_FAILED"} 1.0'
+    ) in body
+    assert "C:/private/prometheus-token" not in body
     assert "127.0.0.1" not in body
 
 

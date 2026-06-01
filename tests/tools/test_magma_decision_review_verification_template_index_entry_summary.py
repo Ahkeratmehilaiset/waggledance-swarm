@@ -136,6 +136,62 @@ def test_operator_decision_reference_review_bundle_verification_bridge_event_tem
     assert summary["approval_granted"] is False
 
 
+def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_summary_blocks_non_ok_report_without_upstream_blockers() -> None:
+    report = _verification_report()
+    report["ok"] = False
+    report["blockers"] = []
+
+    summary = build_magma_decision_review_verification_template_index_entry_summary(
+        verification_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:decision-reference-review-template-index-verifier",
+        now_utc=datetime(2026, 5, 29, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_not_ok" in summary["blockers"]
+    assert "verification_report_not_ok" in summary["operator_boundary"][
+        "boundary_blockers"
+    ]
+    assert summary["approval_granted"] is False
+    assert summary["release_decision_made"] is False
+
+
+def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_summary_blocks_missing_top_level_manual_review_required() -> None:
+    cases = (
+        (
+            "manual_review_required_false",
+            lambda report: report.__setitem__("manual_review_required", False),
+        ),
+        (
+            "manual_review_required_missing",
+            lambda report: report.pop("manual_review_required", None),
+        ),
+    )
+
+    for label, mutate in cases:
+        report = _verification_report()
+        mutate(report)
+
+        summary = build_magma_decision_review_verification_template_index_entry_summary(
+            verification_report=report,
+            reviewer_agent_id="claude-rco-1",
+            handoff_ref="bridge:handoff:decision-reference-review-template-index-verifier",
+            now_utc=datetime(2026, 5, 29, 6, 0, tzinfo=timezone.utc),
+        )
+
+        assert summary["ok"] is False, label
+        assert "verification_report_manual_review_required_not_true" in summary[
+            "blockers"
+        ], label
+        assert "verification_report_manual_review_required_not_true" in summary[
+            "operator_boundary"
+        ]["boundary_blockers"], label
+        assert summary["operator_boundary"]["verification_report_boundary_ok"] is False
+        assert summary["approval_granted"] is False
+        assert summary["release_decision_made"] is False
+
+
 def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_summary_blocks_invalid_contract_fields() -> None:
     cases = (
         (

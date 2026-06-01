@@ -36,19 +36,19 @@ def _write_axiom(
     path.write_text(
         "\n".join(
             [
-                f"model_id: {model_id}",
-                f"cell_id: {cell_id}",
+                f"model_id: {json.dumps(model_id)}",
+                f"cell_id: {json.dumps(cell_id)}",
                 "variables:",
                 "  input:",
-                f"    unit: {input_unit}",
+                f"    unit: {json.dumps(input_unit)}",
                 "solver_output_schema:",
                 "  primary_value:",
                 "    name: output",
-                f"    unit: {output_unit}",
+                f"    unit: {json.dumps(output_unit)}",
                 "formulas:",
                 "  - name: output",
                 "    formula: input",
-                f"    output_unit: {output_unit}",
+                f"    output_unit: {json.dumps(output_unit)}",
                 "",
             ]
         ),
@@ -99,8 +99,21 @@ def test_composite_path_benchmark_measures_local_paths_without_claim_upgrade(
     assert benchmark["summary"]["useful_composite_paths_total"] > 0
     assert benchmark["summary"]["useful_composite_paths_by_depth"]["2"] > 0
     assert benchmark["top_useful_paths"]
+    assert all(
+        node.startswith("solver_")
+        for path in benchmark["top_useful_paths"]
+        for node in path["nodes"]
+    )
+    assert all(
+        cell.startswith("cell_")
+        for cell in benchmark["summary"]["cells_with_bridges"]
+    )
     assert benchmark["source"]["axiom_scan_summary"]["files_loaded"] == 3
     assert benchmark["source"]["axiom_scan_summary"]["files_skipped"] == 0
+    assert (
+        benchmark["source"]["export_label_policy"]
+        == "top_path_nodes_cells_and_units_are_stable_aliases"
+    )
 
     assert benchmark["claim_gate_satisfied"] is False
     assert benchmark["claim_safe"] is False
@@ -185,6 +198,56 @@ def test_composite_path_benchmark_counts_skipped_axioms_without_path_leak(
     assert "broken.yaml" not in payload
     assert "missing_model.yaml" not in payload
     assert str(tmp_path) not in payload
+
+
+def test_composite_path_benchmark_redacts_external_solver_labels(
+    tmp_path: Path,
+) -> None:
+    tool = _load_tool()
+    axioms = tmp_path / "external_axioms"
+    _write_axiom(
+        axioms / "secret_source.yaml",
+        model_id="Bearer SECRET_TOKEN_1234567890",
+        cell_id="thermal",
+        input_unit="m",
+        output_unit="W",
+    )
+    _write_axiom(
+        axioms / "secret_path.yaml",
+        model_id=r"C:\Users\janik\secret_model",
+        cell_id="energy",
+        input_unit="W",
+        output_unit="kWh",
+    )
+    _write_axiom(
+        axioms / "normal.yaml",
+        model_id="normal_solver",
+        cell_id="math",
+        input_unit="kWh",
+        output_unit="ratio",
+    )
+
+    benchmark = tool.build_composite_path_benchmark(axioms, max_depth=4)
+    payload = json.dumps(benchmark, sort_keys=True)
+
+    assert benchmark["source"]["axioms_dir"] == "<external_axioms_dir>"
+    assert benchmark["top_useful_paths"]
+    assert "SECRET_TOKEN_1234567890" not in payload
+    assert "Bearer" not in payload
+    assert "secret_model" not in payload
+    assert "normal_solver" not in payload
+    assert "Users" not in payload
+    assert all(
+        node.startswith("solver_")
+        for path in benchmark["top_useful_paths"]
+        for node in path["nodes"]
+    )
+    assert all(
+        path["from_cell"].startswith("cell_")
+        and path["to_cell"].startswith("cell_")
+        and path["shared_unit"].startswith("unit_")
+        for path in benchmark["top_useful_paths"]
+    )
 
 
 def test_composite_path_benchmark_rejects_invalid_depth(tmp_path: Path) -> None:

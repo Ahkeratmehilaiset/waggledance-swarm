@@ -120,6 +120,13 @@ def _finite_number(field: str, value: int | float) -> float:
     return number
 
 
+def _alias_map(values: list[Any], prefix: str) -> dict[str, str]:
+    return {
+        value: f"{prefix}_{index:03d}"
+        for index, value in enumerate(sorted({str(value) for value in values}), start=1)
+    }
+
+
 def _depth_counts(paths: list[Any]) -> dict[str, int]:
     counts = {"2": 0, "3": 0, "4": 0}
     for path in paths:
@@ -129,17 +136,24 @@ def _depth_counts(paths: list[Any]) -> dict[str, int]:
     return counts
 
 
-def _top_path_records(bridges: list[Any], limit: int) -> list[dict[str, Any]]:
+def _top_path_records(
+    bridges: list[Any],
+    limit: int,
+    *,
+    node_aliases: dict[str, str],
+    cell_aliases: dict[str, str],
+    unit_aliases: dict[str, str],
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for bridge in bridges[: max(0, limit)]:
         records.append(
             {
                 "score": _finite_number("bridge.score", bridge.score),
                 "depth": int(bridge.path.depth),
-                "from_cell": str(bridge.from_cell),
-                "to_cell": str(bridge.to_cell),
-                "shared_unit": str(bridge.shared_unit),
-                "nodes": [str(node_id) for node_id in bridge.path.nodes],
+                "from_cell": cell_aliases[str(bridge.from_cell)],
+                "to_cell": cell_aliases[str(bridge.to_cell)],
+                "shared_unit": unit_aliases[str(bridge.shared_unit)],
+                "nodes": [node_aliases[str(node_id)] for node_id in bridge.path.nodes],
             }
         )
     return records
@@ -177,6 +191,17 @@ def build_composite_path_benchmark(
         "max_depth": max_depth,
         "min_bridge_score": min_score,
     }
+    node_aliases = _alias_map(
+        [node_id for bridge in bridges for node_id in bridge.path.nodes],
+        "solver",
+    )
+    cell_aliases = _alias_map(
+        list(stats.cells_with_bridges.keys())
+        + [bridge.from_cell for bridge in bridges]
+        + [bridge.to_cell for bridge in bridges],
+        "cell",
+    )
+    unit_aliases = _alias_map([bridge.shared_unit for bridge in bridges], "unit")
 
     evidence_status = (
         "measured_local"
@@ -207,6 +232,12 @@ def build_composite_path_benchmark(
             "solver_projection_digest": _canonical_digest(solver_projection),
             "solver_projection_count": len(solvers),
             "axiom_scan_summary": scan_summary,
+            "export_label_policy": "top_path_nodes_cells_and_units_are_stable_aliases",
+            "export_label_alias_counts": {
+                "node_aliases": len(node_aliases),
+                "cell_aliases": len(cell_aliases),
+                "unit_aliases": len(unit_aliases),
+            },
             "composition_graph_api": "waggledance.core.learning.composition_graph.build_graph",
         },
         "parameters": {
@@ -223,11 +254,17 @@ def build_composite_path_benchmark(
             "useful_composite_paths_total": int(useful_total),
             "useful_composite_paths_by_depth": useful_by_depth,
             "cells_with_bridges": {
-                str(cell): int(count)
+                cell_aliases[str(cell)]: int(count)
                 for cell, count in sorted(stats.cells_with_bridges.items())
             },
         },
-        "top_useful_paths": _top_path_records(bridges, top_limit),
+        "top_useful_paths": _top_path_records(
+            bridges,
+            top_limit,
+            node_aliases=node_aliases,
+            cell_aliases=cell_aliases,
+            unit_aliases=unit_aliases,
+        ),
         "blockers": [
             "needs repeated versioned benchmark windows before trend claims",
             "needs production corpus binding before runtime scalability claims",

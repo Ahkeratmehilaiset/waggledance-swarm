@@ -28,6 +28,8 @@ their own disjoint paths.
 The `source.axiom_scan_summary` block reports aggregate scanned/loaded/skipped
 counts and skip reasons. It deliberately omits individual file paths so a
 malformed external axiom directory cannot leak host paths into the artifact.
+`top_useful_paths` and `summary.cells_with_bridges` export stable local aliases
+for solver, cell, and unit labels instead of raw axiom identifiers.
 
 Example:
 

@@ -205,6 +205,12 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
         "Bearer SECRET_TOKEN_1234567890",
         "sk-1234567890abcdef1234567890abcdef",
         "AKIA1234567890ABCDEFEXTRA",
+        "gpt-4o",
+        "openai",
+        "claude-3-5-sonnet",
+        "gemini-1.5-pro",
+        "hf://org/model/org/model:latest",
+        "org/model:latest",
     ]:
         mutated = deepcopy(report)
         mutated["non_claims"].append(value)

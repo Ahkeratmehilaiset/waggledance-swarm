@@ -57,6 +57,16 @@ LEAK_PATTERNS = (
     re.compile(r"\bBearer\s+[A-Za-z0-9_.-]+", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9]{16,}\b", re.IGNORECASE),
     re.compile(r"\bAKIA[0-9A-Z]{16,}\b"),
+    re.compile(r"\bhf://[A-Za-z0-9_.:/-]+", re.IGNORECASE),
+    re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+\b"),
+    re.compile(
+        r"\b(?:openai|anthropic|gemini|claude|gpt|mistral|llama|deepseek|grok|xai)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:gpt|claude|gemini|llama|mistral|mixtral|deepseek|grok)-[A-Za-z0-9_.-]+\b",
+        re.IGNORECASE,
+    ),
 )
 CASE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,80}$")
 ALLOWED_STAGES = tuple(CHAT_ROUTE_STAGE_ORDER)

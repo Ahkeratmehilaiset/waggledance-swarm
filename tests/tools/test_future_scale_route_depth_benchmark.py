@@ -49,6 +49,7 @@ def test_route_depth_benchmark_reports_local_fixture_measurement() -> None:
     assert report["claim_gate_satisfied"] is False
     assert report["claim_safe"] is False
     assert report["literal_future_claim_safe"] is False
+    assert report["required_runtime_evidence_present"] is False
     assert report["runtime_authority_changed"] is False
     assert report["runtime_authority_granted"] is False
     assert report["controls_present"] is False
@@ -78,6 +79,12 @@ def test_route_depth_benchmark_reports_local_fixture_measurement() -> None:
     assert result["depth_histogram"]["7"] == 1
     assert result["depth_histogram"]["8"] == 1
     assert result["is_production_baseline"] is False
+    assert report["source"]["fixture_set_alias"] == "route_depth_static_trace_set_v1"
+    assert len(report["source"]["fixture_set_sha256"]) == 64
+    assert (
+        report["source"]["sanitizer_api"]
+        == "waggledance.adapters.http.routes.chat._sanitize_route_stage_trace"
+    )
     json.dumps(report, allow_nan=False)
 
 
@@ -159,6 +166,11 @@ def test_validate_rejects_claim_gate_type_confusion() -> None:
     mutated["external_writes_applied"] = 0
     errors = harness.validate_benchmark_report(mutated)
     assert "external_writes_applied must be exact false bool" in errors
+
+    mutated = deepcopy(report)
+    mutated["required_runtime_evidence_present"] = True
+    errors = harness.validate_benchmark_report(mutated)
+    assert "required_runtime_evidence_present must be exact false bool" in errors
 
 
 def test_validate_rejects_non_finite_and_case_type_confusion() -> None:
@@ -250,6 +262,7 @@ def test_markdown_preserves_no_overclaim_guardrails() -> None:
     assert "claim_gate_satisfied: `false`" in markdown
     assert "claim_safe: `false`" in markdown
     assert "literal_future_claim_safe: `false`" in markdown
+    assert "required_runtime_evidence_present: `false`" in markdown
     assert "external_writes_applied: `false`" in markdown
     assert "not a production baseline" in markdown
     assert "not proof of superior intelligence" in markdown

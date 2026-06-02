@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -25,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 from waggledance.adapters.http.routes.chat import (  # noqa: E402
     CHAT_ROUTE_STAGE_ORDER,
+    _sanitize_route_stage_trace,
 )
 
 
@@ -39,6 +41,7 @@ SAFE_FALSE_FIELDS = (
     "claim_gate_satisfied",
     "claim_safe",
     "literal_future_claim_safe",
+    "required_runtime_evidence_present",
     "runtime_authority_changed",
     "runtime_authority_granted",
     "controls_present",
@@ -187,6 +190,7 @@ def build_future_scale_route_depth_benchmark(
         "benchmark_scope": BENCHMARK_SCOPE,
         "not_a_production_baseline": True,
         "not_a_runtime_scorecard_update": True,
+        "required_runtime_evidence_present": False,
         "benchmark_artifact_present": True,
         "measured_value_present": measured,
         "evidence_status": "measured_local" if measured else "blocked_no_route_depth_samples",
@@ -223,6 +227,23 @@ def build_future_scale_route_depth_benchmark(
         "git": {
             "sha": _git_text("rev-parse", "HEAD"),
             "branch": _git_text("branch", "--show-current"),
+        },
+        "source": {
+            "fixture_set_alias": "route_depth_static_trace_set_v1",
+            "fixture_set_sha256": _canonical_digest(
+                {
+                    "case_records": [
+                        {
+                            "case_id": case["case_id"],
+                            "route_depth": case["route_depth"],
+                            "observed_stages": case["observed_stages"],
+                        }
+                        for case in cases
+                    ]
+                }
+            ),
+            "sanitizer_api": "waggledance.adapters.http.routes.chat._sanitize_route_stage_trace",
+            "trace_fixture_policy": "static_traces_sanitized_before_stage_count",
         },
         "blockers_to_full_claim": [
             "fixture traces are deterministic local examples, not production traffic",
@@ -312,6 +333,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- claim_gate_satisfied: `{str(report['claim_gate_satisfied']).lower()}`",
         f"- claim_safe: `{str(report['claim_safe']).lower()}`",
         f"- literal_future_claim_safe: `{str(report['literal_future_claim_safe']).lower()}`",
+        f"- required_runtime_evidence_present: `{str(report['required_runtime_evidence_present']).lower()}`",
         f"- runtime_authority_changed: `{str(report['runtime_authority_changed']).lower()}`",
         f"- external_writes_applied: `{str(report['external_writes_applied']).lower()}`",
         "",
@@ -369,10 +391,10 @@ def _build_case_records(fixtures: Sequence[Mapping[str, Any]]) -> list[dict[str,
 def _sanitize_stage_names(trace: Any) -> list[str]:
     if not isinstance(trace, Sequence) or isinstance(trace, (str, bytes)):
         return []
+    sanitizer_input = [event for event in trace if isinstance(event, dict)]
+    sanitized_trace = _sanitize_route_stage_trace(sanitizer_input)
     stages: list[str] = []
-    for event in trace:
-        if not isinstance(event, Mapping):
-            continue
+    for event in sanitized_trace:
         stage = event.get("stage")
         if isinstance(stage, str) and stage in ALLOWED_STAGE_SET:
             stages.append(stage)
@@ -523,6 +545,11 @@ def _git_text(*args: str) -> str:
     if result.returncode != 0:
         return "unavailable"
     return result.stdout.strip() or "unavailable"
+
+
+def _canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _is_finite_number(value: Any) -> bool:

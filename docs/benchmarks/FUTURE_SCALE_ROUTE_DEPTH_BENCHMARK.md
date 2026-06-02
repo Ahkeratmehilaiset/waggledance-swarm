@@ -20,6 +20,9 @@ hex-neighbor answer, and orchestrator fallback answer.
 
 This is not a production baseline. It does not read raw query text, route
 payloads, local paths, provider names, or model IDs.
+The fixture traces are sanitized through
+`waggledance.adapters.http.routes.chat._sanitize_route_stage_trace` before the
+stage sequence is counted.
 
 ## Claim Guardrails
 
@@ -28,6 +31,7 @@ The artifact must keep these fields false:
 - `claim_gate_satisfied`
 - `claim_safe`
 - `literal_future_claim_safe`
+- `required_runtime_evidence_present`
 - `runtime_authority_changed`
 - `runtime_authority_granted`
 - `controls_present`

@@ -39,6 +39,10 @@ from tools.hex_shadow_subdivision_replay import (  # noqa: E402
     verify_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
 )
+from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
+    build_future_scale_route_depth_benchmark,
+    validate_benchmark_report as validate_route_depth_benchmark_report,
+)
 from waggledance.core.hex_topology.cell_message_contract import make_message
 from waggledance.core.hex_topology.parent_child_relations import (
     ancestors_of,
@@ -4878,9 +4882,75 @@ def _unmeasured_future_scale_axis_evidence(
     }
 
 
+def _build_route_depth_benchmark_for_manifest() -> dict:
+    try:
+        return build_future_scale_route_depth_benchmark()
+    except Exception as exc:  # pragma: no cover - surfaced in proof payload
+        return {
+            "ok": False,
+            "axis_id": "route_depth",
+            "blocked_reason": "route_depth_benchmark_build_failed",
+            "error": repr(exc),
+        }
+
+
+def _route_depth_benchmark_axis_evidence(
+    route_depth_benchmark: dict | None,
+    *,
+    route_stage_artifacts: Sequence[str],
+) -> dict | None:
+    if not isinstance(route_depth_benchmark, dict):
+        return None
+    validation_errors = validate_route_depth_benchmark_report(route_depth_benchmark)
+    if route_depth_benchmark.get("ok") is not True or validation_errors:
+        return None
+    result = route_depth_benchmark.get("benchmark_result")
+    if not isinstance(result, dict):
+        return None
+    return {
+        "status": "measured_local",
+        "measurement_scope": (
+            "local deterministic sanitized route-stage trace benchmark; not "
+            "a production route-depth histogram or runtime baseline"
+        ),
+        "metric_names": [],
+        "artifact_paths": list(route_stage_artifacts)
+        + [
+            "tools/run_future_scale_route_depth_benchmark.py",
+            "tests/tools/test_future_scale_route_depth_benchmark.py",
+            "docs/benchmarks/FUTURE_SCALE_ROUTE_DEPTH_BENCHMARK.md",
+        ],
+        "sample": {
+            "trace_count": result.get("trace_count"),
+            "route_depth_histogram": result.get("route_depth_histogram"),
+            "p50_route_depth": result.get("p50_route_depth"),
+            "p95_route_depth": result.get("p95_route_depth"),
+            "p99_route_depth": result.get("p99_route_depth"),
+            "runtime_route_depth_histogram_exported": result.get(
+                "runtime_route_depth_histogram_exported"
+            ),
+            "benchmark_artifact_present": route_depth_benchmark.get(
+                "benchmark_artifact_present"
+            ),
+        },
+        "evidence_freshness": "local_benchmark_artifact_contract",
+        "blockers": list(
+            route_depth_benchmark.get(
+                "blockers_to_full_claim",
+                [
+                    "needs production route-depth histogram",
+                    "needs versioned load benchmark baseline",
+                ],
+            )
+        ),
+        "claim_gate_satisfied": False,
+    }
+
+
 def _build_future_scale_runtime_evidence(
     route_stage_runtime_metrics_smoke: dict,
     solver_trace_receipt_proof: dict,
+    route_depth_benchmark: dict | None = None,
 ) -> tuple[dict[str, dict], dict]:
     route_contract = route_stage_runtime_metrics_smoke.get("runtime_contract")
     if not isinstance(route_contract, dict):
@@ -4926,6 +4996,10 @@ def _build_future_scale_runtime_evidence(
         "waggledance_route_stage_request_latency_histogram_ms_sum",
         "waggledance_route_stage_request_latency_histogram_ms_count",
     ]
+    route_depth_benchmark_evidence = _route_depth_benchmark_axis_evidence(
+        route_depth_benchmark,
+        route_stage_artifacts=route_stage_artifacts,
+    )
 
     evidence_by_axis = {
         "coverage": {
@@ -5062,11 +5136,16 @@ def _build_future_scale_runtime_evidence(
         },
     }
     if not (route_stage_ok and runtime_contract_ok):
-        for axis_id in ("coverage", "llm_fallback_rate", "route_depth", "latency"):
+        unavailable_axes = ["coverage", "llm_fallback_rate", "latency"]
+        if route_depth_benchmark_evidence is None:
+            unavailable_axes.append("route_depth")
+        for axis_id in unavailable_axes:
             evidence_by_axis[axis_id]["status"] = "runtime_contract_unavailable"
             evidence_by_axis[axis_id]["blockers"].append(
                 "route-stage runtime metrics smoke failed"
             )
+    if route_depth_benchmark_evidence is not None:
+        evidence_by_axis["route_depth"] = route_depth_benchmark_evidence
     if not receipt_ok:
         evidence_by_axis["audit_completeness"][
             "status"
@@ -5207,10 +5286,12 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         repo_root
     )
     solver_trace_receipt_proof = build_solver_trace_magma_receipt_proof(repo_root)
+    route_depth_benchmark = _build_route_depth_benchmark_for_manifest()
     runtime_evidence_by_axis, runtime_evidence_summary = (
         _build_future_scale_runtime_evidence(
             route_stage_runtime_metrics_smoke,
             solver_trace_receipt_proof,
+            route_depth_benchmark,
         )
     )
 

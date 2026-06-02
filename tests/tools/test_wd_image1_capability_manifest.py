@@ -9,6 +9,9 @@ import sys
 from tools.hex_shadow_subdivision_replay import (
     build_shadow_subdivision_replay_artifact,
 )
+from tools.run_future_scale_route_depth_benchmark import (
+    build_future_scale_route_depth_benchmark,
+)
 from tools.wd_image1_capability_manifest import build_manifest
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
@@ -1583,6 +1586,22 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         ]
         is True
     )
+    assert axes["route_depth"]["runtime_evidence"]["status"] == "measured_local"
+    assert (
+        axes["route_depth"]["runtime_evidence"]["measurement_scope"]
+        == "local deterministic sanitized route-stage trace benchmark; not "
+        "a production route-depth histogram or runtime baseline"
+    )
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "route_depth_histogram"
+    ] == {"2": 1, "5": 1, "6": 1, "7": 1}
+    assert axes["route_depth"]["runtime_evidence"]["sample"]["p95_route_depth"] == 7
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "runtime_route_depth_histogram_exported"
+        ]
+        is False
+    )
     assert axes["latency"]["runtime_evidence"]["status"] == "runtime_metric_defined"
     assert (
         "waggledance_route_stage_request_latency_histogram_ms_bucket"
@@ -1664,6 +1683,7 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     assert summary["solver_trace_receipt_proof_ok"] is True
     assert summary["required_runtime_evidence_present"] is False
     assert evidence_by_axis["coverage"]["status"] == "runtime_contract_unavailable"
+    assert evidence_by_axis["route_depth"]["status"] == "runtime_contract_unavailable"
     assert (
         evidence_by_axis["latency"]["status"] == "runtime_contract_unavailable"
     )
@@ -1674,6 +1694,41 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     assert all(
         item["claim_gate_satisfied"] is False for item in evidence_by_axis.values()
     )
+
+
+def test_future_scale_route_depth_benchmark_is_independent_of_runtime_smoke() -> None:
+    route_stage_smoke = {
+        "ok": False,
+        "runtime_contract": {
+            "ok": False,
+            "sanitized_trace": [],
+        },
+        "drill_evidence_verifier_smoke": {"ok": True},
+        "histogram_quantile_supported": False,
+        "latency_panel_templates_visible": False,
+    }
+    solver_receipt_proof = {
+        "ok": True,
+        "solver_call_trace_count": 1,
+        "solver_call_trace_receipt_bound": True,
+    }
+
+    evidence_by_axis, summary = _build_future_scale_runtime_evidence(
+        route_stage_smoke,
+        solver_receipt_proof,
+        build_future_scale_route_depth_benchmark(),
+    )
+
+    assert summary["required_runtime_evidence_present"] is False
+    assert evidence_by_axis["coverage"]["status"] == "runtime_contract_unavailable"
+    assert evidence_by_axis["latency"]["status"] == "runtime_contract_unavailable"
+    route_depth = evidence_by_axis["route_depth"]
+    assert route_depth["status"] == "measured_local"
+    assert route_depth["sample"]["trace_count"] == 4
+    assert route_depth["sample"]["p50_route_depth"] == 5
+    assert route_depth["sample"]["p95_route_depth"] == 7
+    assert route_depth["sample"]["runtime_route_depth_histogram_exported"] is False
+    assert route_depth["claim_gate_satisfied"] is False
 
 
 def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:

@@ -51,7 +51,8 @@
     },
     "source_branch": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9._-]{0,80}$"
     },
     "measurement_scope": {
       "type": "string",
@@ -213,11 +214,13 @@
     "deterministic_seed": {
       "type": "string",
       "minLength": 8,
-      "maxLength": 128
+      "maxLength": 128,
+      "pattern": "^insight-bench-[0-9]{8}-seed-[0-9a-f]{6,}$"
     },
     "reproduce_command": {
       "type": "string",
-      "minLength": 10
+      "minLength": 10,
+      "pattern": "^python tools/run_future_scale_insight_bench\\.py --corpus [a-z][a-z0-9._-]{0,80} --offline --deterministic$"
     },
     "not_claimed": {
       "type": "array",

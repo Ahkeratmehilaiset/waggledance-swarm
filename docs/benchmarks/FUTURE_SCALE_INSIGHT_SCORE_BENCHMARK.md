@@ -46,6 +46,17 @@ The leak and finite-number walk is in the contract test for this slice because
 the producer harness is deliberately out of scope. A later producer PR should
 call an equivalent validator before writing any artifact.
 
+The three repro-oriented scalar fields are also positive allowlists in the
+schema:
+
+- `source_branch` must match the stable alias grammar
+  `^[a-z][a-z0-9._-]{0,80}$`;
+- `deterministic_seed` must match
+  `^insight-bench-[0-9]{8}-seed-[0-9a-f]{6,}$`;
+- `reproduce_command` must match the fixed offline template
+  `python tools/run_future_scale_insight_bench.py --corpus <alias> --offline --deterministic`,
+  where `<alias>` uses the same stable alias grammar.
+
 ## Relation To WD
 
 `insight_score` is the dream-mode projected value signal for candidate solver
@@ -77,7 +88,7 @@ python -m pytest tests/contracts/test_future_scale_insight_score_benchmark_schem
 Expected result:
 
 ```text
-23 passed
+40 passed
 ```
 
 ## Limits

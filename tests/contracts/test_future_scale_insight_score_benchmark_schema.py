@@ -1,7 +1,8 @@
 """Contract tests for the future-scale insight_score benchmark schema.
 
 The slice intentionally adds only a schema, this executable contract, and docs.
-Runtime leak and finite guards live here until a later producer-harness PR can
+The three repro fields use positive schema allowlists; runtime leak and finite
+guards remain here as defense-in-depth until a later producer-harness PR can
 share them from a common utility.
 """
 
@@ -205,10 +206,13 @@ def test_rejects_claim_gate_upgrades(gate: str):
         ("reproduce_command", r"python foo.py --input C:\tmp\synth_adversarial_15case.json"),
         ("reproduce_command", "python foo.py --input /tmp/synth_adversarial_15case.json"),
         ("reproduce_command", "python foo.py --input /home/user/synth_adversarial_15case.json"),
+        ("reproduce_command", "python foo.py --input ../synth_adversarial_15case.json"),
+        ("reproduce_command", "python foo.py --input /mnt/data/synth_adversarial_15case.json"),
         ("reproduce_command", "python foo.py --input data/tmp/synth_adversarial_15case.json"),
         ("reproduce_command", 'python foo.py --token "Bearer abcdefghij1234567890"'),
         ("reproduce_command", 'python foo.py --token "bearer abcdefghij1234567890"'),
         ("source_branch", r"feature/C:\Users\evil\branch"),
+        ("source_branch", r"feature\..\escape"),
         ("source_branch", "hf/meta-llama-model"),
     ],
 )
@@ -217,7 +221,46 @@ def test_rejects_free_text_secrets_and_paths(field: str, value: str):
     fixture[field] = value
 
     errors = validate_insight_benchmark_artifact(fixture)
-    assert any("forbidden secret" in error for error in errors), errors
+    assert errors
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("deterministic_seed", "insight-bench-20260601-seed-7f3a9c-extra"),
+        ("deterministic_seed", "insight-bench-20260601-seed-zzzzzz"),
+        (
+            "reproduce_command",
+            "python tools/run_future_scale_insight_bench.py "
+            "--corpus v12.a3.synth_adversarial.v0 --offline --deterministic --input ../x",
+        ),
+        (
+            "reproduce_command",
+            "python tools/run_future_scale_insight_bench.py "
+            "--corpus /mnt/data/x --offline --deterministic",
+        ),
+        ("source_branch", "feature/foo"),
+        ("source_branch", "1insight-slice-3"),
+        ("source_branch", r"insight\..\escape"),
+    ],
+)
+def test_rejects_repro_field_allowlist_near_misses(field: str, value: str):
+    fixture = _good_fixture()
+    fixture[field] = value
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validator().validate(fixture)
+
+    errors = validate_insight_benchmark_artifact(fixture)
+    assert any("schema_validation" in error for error in errors), errors
+
+
+def test_recursive_leak_walk_remains_defense_in_depth_for_other_scalars():
+    fixture = _good_fixture()
+    fixture["not_claimed"].append("No raw path such as /tmp/synth_adversarial_15case.json.")
+
+    errors = validate_insight_benchmark_artifact(fixture)
+    assert any("forbidden secret/path-like" in error for error in errors), errors
 
 
 @pytest.mark.parametrize(

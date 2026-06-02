@@ -47,6 +47,12 @@ MODEL_PROVIDER_TOKEN_PATTERN = (
     r"(?:[0-9][A-Za-z0-9_.-]*|[_.:/-][A-Za-z0-9_.:/-]+)?"
     r"(?![A-Za-z0-9])"
 )
+SOURCE_PATHS = (
+    "waggledance/adapters/http/routes/chat.py",
+    "waggledance/application/dto/chat_dto.py",
+    "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
+)
+ALLOWED_METADATA_PATH_VALUES = frozenset(SOURCE_PATHS)
 SAFE_FALSE_FIELDS = (
     "claim_gate_satisfied",
     "claim_safe",
@@ -70,6 +76,10 @@ LEAK_PATTERNS = (
     re.compile(r"\bhf://[A-Za-z0-9_.:/-]+", re.IGNORECASE),
     re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+\b"),
     re.compile(MODEL_PROVIDER_TOKEN_PATTERN, re.IGNORECASE),
+)
+REPO_RELATIVE_PATH_PATTERN = re.compile(
+    r"^(?:configs|docs|orchestrator|prompts|reports|schemas|tests|tools|"
+    r"waggledance|web)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+$"
 )
 CASE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,80}$")
 ALLOWED_STAGES = tuple(CHAT_ROUTE_STAGE_ORDER)
@@ -228,11 +238,7 @@ def build_future_scale_route_depth_benchmark(
             JSON_ARTIFACT_NAME,
             MARKDOWN_ARTIFACT_NAME,
         ],
-        "source_paths": [
-            "waggledance/adapters/http/routes/chat.py",
-            "waggledance/application/dto/chat_dto.py",
-            "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
-        ],
+        "source_paths": list(SOURCE_PATHS),
         "reproduce_command": (
             "python tools/run_future_scale_route_depth_benchmark.py "
             "--out-dir <out-dir> --now 2026-06-02T20:55:00Z --json"
@@ -324,7 +330,7 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
     for path, value in _walk_scalars(report):
         if isinstance(value, float) and not math.isfinite(value):
             errors.append(f"{path} contains a non-finite number")
-        if isinstance(value, str) and _looks_like_leak(value):
+        if isinstance(value, str) and _looks_like_leak(path, value):
             errors.append(f"{path} contains a forbidden secret/path-like string")
     return errors
 
@@ -583,8 +589,16 @@ def _walk_scalars(value: Any, path: str = "$") -> list[tuple[str, Any]]:
     return [(path, value)]
 
 
-def _looks_like_leak(value: str) -> bool:
+def _looks_like_leak(path: str, value: str) -> bool:
+    if REPO_RELATIVE_PATH_PATTERN.match(value):
+        return not _is_allowed_metadata_path(path, value)
     return any(pattern.search(value) for pattern in LEAK_PATTERNS)
+
+
+def _is_allowed_metadata_path(path: str, value: str) -> bool:
+    if value not in ALLOWED_METADATA_PATH_VALUES:
+        return False
+    return path == "$.axis_definition_source" or path.startswith("$.source_paths[")
 
 
 if __name__ == "__main__":

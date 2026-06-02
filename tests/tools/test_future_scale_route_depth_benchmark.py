@@ -202,6 +202,8 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
         "data/tmp/route-depth.json",
         "../route-depth.json",
         "/mnt/data/route-depth.json",
+        "docs/internal/path.md",
+        "tools/secret_dump.py",
         "Bearer SECRET_TOKEN_1234567890",
         "sk-1234567890abcdef1234567890abcdef",
         "AKIA1234567890ABCDEFEXTRA",
@@ -242,6 +244,26 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
     clean = deepcopy(report)
     clean["git"]["branch"] = "feature/normal-branch"
     assert harness.validate_benchmark_report(clean) == []
+
+    clean = deepcopy(report)
+    clean["non_claims"].append("does not read docs paths")
+    assert harness.validate_benchmark_report(clean) == []
+
+    clean = deepcopy(report)
+    clean["source_paths"] = list(harness.SOURCE_PATHS)
+    assert harness.validate_benchmark_report(clean) == []
+
+    for path, value in [
+        ("source_paths", "docs/internal/path.md"),
+        ("axis_definition_source", "docs/internal/path.md"),
+    ]:
+        mutated = deepcopy(report)
+        if path == "source_paths":
+            mutated[path].append(value)
+        else:
+            mutated[path] = value
+        errors = harness.validate_benchmark_report(mutated)
+        assert any("forbidden secret/path-like string" in error for error in errors)
 
     clean = deepcopy(report)
     clean["cases"][0]["case_id"] = "yield_route_case"

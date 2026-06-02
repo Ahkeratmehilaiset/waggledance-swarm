@@ -1559,7 +1559,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert summary["route_stage_runtime_contract_ok"] is True
     assert summary["feed_health_drill_evidence_verifier_smoke_ok"] is True
     assert summary["solver_trace_receipt_proof_ok"] is True
-    assert summary["required_runtime_evidence_present"] is True
+    assert summary["required_runtime_evidence_present"] is False
     assert summary["runtime_evidence_axis_count"] == 5
     assert summary["unmeasured_axis_count"] == 3
     assert "route_depth" in summary["required_runtime_axes"]
@@ -1603,6 +1603,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         axes["route_depth"]["runtime_evidence"]["status"]
         == "benchmark_contract_available"
     )
+    assert axes["route_depth"]["runtime_evidence"]["metric_names"] == []
     assert axes["route_depth"]["runtime_evidence"]["sample"]["sample_count"] == 5
     assert axes["route_depth"]["runtime_evidence"]["sample"]["p50_depth"] == 6.0
     assert axes["route_depth"]["runtime_evidence"]["sample"]["p95_depth"] == 7.8
@@ -1711,7 +1712,7 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
         capability["proof"]["runtime_evidence_summary"][
             "required_runtime_evidence_present"
         ]
-        is True
+        is False
     )
     assert "benchmark artifacts" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True

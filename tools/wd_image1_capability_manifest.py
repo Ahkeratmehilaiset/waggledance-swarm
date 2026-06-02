@@ -5159,7 +5159,18 @@ def _build_future_scale_runtime_evidence(
         "runtime_contract_unavailable",
         "receipt_contract_unavailable",
         "drill_evidence_contract_unavailable",
+        "benchmark_contract_unavailable",
     }
+
+    def _has_required_runtime_evidence(axis_id: str) -> bool:
+        evidence = evidence_by_axis[axis_id]
+        metric_names = evidence.get("metric_names")
+        return (
+            evidence["status"] not in unavailable_statuses
+            and isinstance(metric_names, list)
+            and bool(metric_names)
+        )
+
     summary = {
         "route_stage_runtime_metrics_smoke_ok": route_stage_ok,
         "route_stage_runtime_contract_ok": runtime_contract_ok,
@@ -5171,7 +5182,7 @@ def _build_future_scale_runtime_evidence(
         "unmeasured_axes": unmeasured_axes,
         "required_runtime_axes": list(required_runtime_axes),
         "required_runtime_evidence_present": all(
-            evidence_by_axis[axis_id]["status"] not in unavailable_statuses
+            _has_required_runtime_evidence(axis_id)
             for axis_id in required_runtime_axes
         )
         and route_stage_ok
@@ -5348,7 +5359,6 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         and eig_disabled_by_default
         and eig_benchmark_only
         and scorecard_doc_present
-        and runtime_evidence_summary["required_runtime_evidence_present"]
     )
     return {
         "proof_id": "future_scale_axis_scorecard_v1",

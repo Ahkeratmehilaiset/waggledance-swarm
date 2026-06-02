@@ -19,7 +19,9 @@ hot-cache hit, deterministic solver answer, authoritative hybrid answer,
 hex-neighbor answer, and orchestrator fallback answer.
 
 This is not a production baseline. It does not read raw query text, route
-payloads, local paths, provider names, or model IDs.
+payloads, arbitrary local paths, provider names, or model IDs. The emitted
+source metadata is limited to an allowlisted set of repo-relative provenance
+paths; injected path-like scalars are contract violations.
 The fixture traces are sanitized through
 `waggledance.adapters.http.routes.chat._sanitize_route_stage_trace` before the
 stage sequence is counted.

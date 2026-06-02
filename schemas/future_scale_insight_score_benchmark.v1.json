@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/future_scale_insight_score_benchmark.v1.json",
+  "title": "Future Scale Insight Score Benchmark v1",
+  "description": "Strict schema for a versioned, offline, deterministic insight_score benchmark artifact on the future_scale axis. All claim gates remain false; measurement_scope is local only; solver and corpus references use stable aliases only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "benchmark_version",
+    "schema_version",
+    "generated_at_utc",
+    "git_sha",
+    "source_branch",
+    "measurement_scope",
+    "solver_aliases_used",
+    "corpus_alias",
+    "corpus_case_count",
+    "corpus_sha256",
+    "insight_runs",
+    "aggregate",
+    "internal_controls",
+    "claim_gate_satisfied",
+    "claim_safe",
+    "literal_future_claim_safe",
+    "controls_present",
+    "runtime_authority_granted",
+    "external_writes_applied",
+    "required_runtime_evidence_present",
+    "no_cloud_api_calls",
+    "no_model_pull_or_download",
+    "deterministic_seed",
+    "reproduce_command",
+    "not_claimed"
+  ],
+  "properties": {
+    "benchmark_version": {
+      "type": "string",
+      "enum": ["future_scale_insight_score.v1"]
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["insight_score_benchmark.v1"]
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_branch": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9._-]{0,80}$"
+    },
+    "measurement_scope": {
+      "type": "string",
+      "enum": ["local"]
+    },
+    "solver_aliases_used": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9._-]{0,80}$"
+      },
+      "description": "Stable solver aliases only. No raw model names, paths, registry IDs, or provider tokens."
+    },
+    "corpus_alias": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,80}$",
+      "description": "Stable alias for the synthetic adversarial corpus version. No filesystem path or raw corpus ID."
+    },
+    "corpus_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "corpus_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "insight_runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "solver_alias",
+          "insight_score",
+          "cases_evaluated",
+          "finite"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          },
+          "solver_alias": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]{0,80}$"
+          },
+          "insight_score": {
+            "type": "number",
+            "description": "Projected insight value from dream-mode trajectory. Must be finite; non-finite values are rejected by the contract validator."
+          },
+          "cases_evaluated": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "finite": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "delta_vs_baseline": {
+            "type": ["number", "null"]
+          }
+        }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mean_insight_score",
+        "median_insight_score",
+        "scale_trend_slope",
+        "finite"
+      ],
+      "properties": {
+        "mean_insight_score": {
+          "type": "number"
+        },
+        "median_insight_score": {
+          "type": "number"
+        },
+        "scale_trend_slope": {
+          "type": "number",
+          "description": "Slope of insight vs. corpus scale. Finite only."
+        },
+        "p95_insight": {
+          "type": ["number", "null"]
+        },
+        "finite": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      }
+    },
+    "internal_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positive_control_score",
+        "negative_control_score",
+        "control_delta",
+        "controls_measured"
+      ],
+      "properties": {
+        "positive_control_score": {
+          "type": "number"
+        },
+        "negative_control_score": {
+          "type": "number"
+        },
+        "control_delta": {
+          "type": "number"
+        },
+        "controls_measured": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      },
+      "description": "Internal validity controls using known synthetic cases. These are harness controls, not production runtime controls."
+    },
+    "claim_gate_satisfied": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "claim_safe": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "literal_future_claim_safe": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "controls_present": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "runtime_authority_granted": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "external_writes_applied": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "required_runtime_evidence_present": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "no_cloud_api_calls": {
+      "type": "boolean",
+      "enum": [true]
+    },
+    "no_model_pull_or_download": {
+      "type": "boolean",
+      "enum": [true]
+    },
+    "deterministic_seed": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^insight-bench-[0-9]{8}-seed-[0-9a-f]{6,}$"
+    },
+    "reproduce_command": {
+      "type": "string",
+      "minLength": 10,
+      "pattern": "^python tools/run_future_scale_insight_bench\\.py --corpus [a-z][a-z0-9._-]{0,80} --offline --deterministic$"
+    },
+    "not_claimed": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "No claim that insight_score predicts production performance.",
+          "No claim of future scaling safety or autonomous improvement.",
+          "All measurements local and offline only."
+        ]
+      }
+    }
+  }
+}

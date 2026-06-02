@@ -23,9 +23,9 @@ LEAK_PATTERNS = (
     re.compile(r"[A-Za-z]:\\(?:Users|Python|Program Files)", re.IGNORECASE),
     re.compile(r"\\\\(?:wsl|share)", re.IGNORECASE),
     re.compile(r"^/(?:home|root|etc|var|opt|Users|tmp)/", re.MULTILINE),
-    re.compile(r"\bBearer\s+[A-Za-z0-9_.-]+"),
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9_.-]+", re.IGNORECASE),
+    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b", re.IGNORECASE),
+    re.compile(r"\bAKIA[0-9A-Z]{16,}\b", re.IGNORECASE),
     re.compile(
         r"\b(?:claude|deepseek|gemini|gpt|hf|huggingface|llama|mistral|mixtral|ollama|phi|qwen)[A-Za-z0-9_.:/-]*\b",
         re.IGNORECASE,
@@ -197,8 +197,10 @@ def test_rejects_claim_gate_upgrades(gate: str):
     "field,value",
     [
         ("deterministic_seed", "sk-1234567890abcdefREALHFTOKENORKEY"),
+        ("deterministic_seed", "AKIA1234567890ABCDEFEXTRA"),
         ("reproduce_command", r'python foo.py --ckpt "C:\Users\janik\secret\model.bin"'),
         ("reproduce_command", 'python foo.py --token "Bearer abcdefghij1234567890"'),
+        ("reproduce_command", 'python foo.py --token "bearer abcdefghij1234567890"'),
         ("source_branch", r"feature/C:\Users\evil\branch"),
         ("source_branch", "hf/meta-llama-model"),
     ],

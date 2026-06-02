@@ -205,15 +205,49 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
         "Bearer SECRET_TOKEN_1234567890",
         "sk-1234567890abcdef1234567890abcdef",
         "AKIA1234567890ABCDEFEXTRA",
+        "anthropic",
+        "cohere",
+        "command",
+        "command-r",
+        "deepseek",
+        "falcon",
+        "gemma",
+        "google",
         "gpt-4o",
+        "huggingface",
+        "llama",
+        "mistral",
+        "mixtral",
+        "mpt",
+        "ollama",
         "openai",
+        "phi",
+        "poro",
+        "qwen",
         "claude-3-5-sonnet",
         "gemini-1.5-pro",
+        "yi",
         "hf://org/model/org/model:latest",
         "org/model:latest",
     ]:
         mutated = deepcopy(report)
         mutated["non_claims"].append(value)
+        errors = harness.validate_benchmark_report(mutated)
+        assert any("forbidden secret/path-like string" in error for error in errors)
+
+    clean = deepcopy(report)
+    clean["git"]["branch"] = "feature/normal-branch"
+    assert harness.validate_benchmark_report(clean) == []
+
+    for value in [
+        "cohere-internal-model",
+        "command-r-internal-model",
+        "falcon-internal-model",
+        "yi-internal-model",
+        "mpt-internal-model",
+    ]:
+        mutated = deepcopy(report)
+        mutated["git"]["branch"] = value
         errors = harness.validate_benchmark_report(mutated)
         assert any("forbidden secret/path-like string" in error for error in errors)
 

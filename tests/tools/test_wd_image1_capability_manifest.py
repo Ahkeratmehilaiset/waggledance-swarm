@@ -1562,6 +1562,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert summary["required_runtime_evidence_present"] is True
     assert summary["runtime_evidence_axis_count"] == 5
     assert summary["unmeasured_axis_count"] == 3
+    assert "route_depth" in summary["required_runtime_axes"]
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
@@ -1597,6 +1598,18 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
             "solver_call_trace_receipt_bound"
         ]
         is True
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["status"]
+        == "benchmark_contract_available"
+    )
+    assert axes["route_depth"]["runtime_evidence"]["sample"]["sample_count"] == 5
+    assert axes["route_depth"]["runtime_evidence"]["sample"]["p50_depth"] == 6.0
+    assert axes["route_depth"]["runtime_evidence"]["sample"]["p95_depth"] == 7.8
+    assert axes["route_depth"]["runtime_evidence"]["sample"]["p99_depth"] == 7.96
+    assert (
+        "needs exported runtime route-depth histograms by route/profile"
+        in axes["route_depth"]["runtime_evidence"]["blockers"]
     )
     assert (
         axes["useful_composite_paths"]["runtime_evidence"]["status"]
@@ -1666,6 +1679,14 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     assert evidence_by_axis["coverage"]["status"] == "runtime_contract_unavailable"
     assert (
         evidence_by_axis["latency"]["status"] == "runtime_contract_unavailable"
+    )
+    assert (
+        evidence_by_axis["route_depth"]["status"]
+        == "benchmark_contract_available"
+    )
+    assert (
+        "route-stage runtime metrics smoke failed"
+        not in evidence_by_axis["route_depth"]["blockers"]
     )
     assert (
         evidence_by_axis["audit_completeness"]["status"]

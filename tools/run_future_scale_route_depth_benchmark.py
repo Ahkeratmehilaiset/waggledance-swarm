@@ -38,9 +38,14 @@ MARKDOWN_ARTIFACT_NAME = "future_scale_route_depth_benchmark.md"
 BENCHMARK_SCOPE = "local_deterministic_sanitized_route_stage_trace_fixture"
 MEASUREMENT_LABEL = "MEASURED_LOCAL_ONLY"
 MODEL_PROVIDER_NAME_PATTERN = (
-    r"(?:anthropic|claude|cohere|command|command-r|deepseek|falcon|gemini|"
+    r"(?:anthropic|claude|cohere|command-r|command|deepseek|falcon|gemini|"
     r"gemma|google|gpt|grok|hf|huggingface|llama|mistral|mixtral|mpt|"
     r"ollama|openai|phi|poro|qwen|xai|yi)"
+)
+MODEL_PROVIDER_TOKEN_PATTERN = (
+    rf"(?<![A-Za-z0-9]){MODEL_PROVIDER_NAME_PATTERN}"
+    r"(?:[0-9][A-Za-z0-9_.-]*|[_.:/-][A-Za-z0-9_.:/-]+)?"
+    r"(?![A-Za-z0-9])"
 )
 SAFE_FALSE_FIELDS = (
     "claim_gate_satisfied",
@@ -64,8 +69,7 @@ LEAK_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16,}\b"),
     re.compile(r"\bhf://[A-Za-z0-9_.:/-]+", re.IGNORECASE),
     re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+\b"),
-    re.compile(rf"\b{MODEL_PROVIDER_NAME_PATTERN}\b", re.IGNORECASE),
-    re.compile(rf"\b{MODEL_PROVIDER_NAME_PATTERN}-[A-Za-z0-9_.-]+\b", re.IGNORECASE),
+    re.compile(MODEL_PROVIDER_TOKEN_PATTERN, re.IGNORECASE),
 )
 CASE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,80}$")
 ALLOWED_STAGES = tuple(CHAT_ROUTE_STAGE_ORDER)

@@ -227,6 +227,10 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
         "claude-3-5-sonnet",
         "gemini-1.5-pro",
         "yi",
+        "gpt4o_hit",
+        "safe_gpt4o_hit",
+        "cohere_internal_model",
+        "mpt7b_case",
         "hf://org/model/org/model:latest",
         "org/model:latest",
     ]:
@@ -238,6 +242,21 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
     clean = deepcopy(report)
     clean["git"]["branch"] = "feature/normal-branch"
     assert harness.validate_benchmark_report(clean) == []
+
+    clean = deepcopy(report)
+    clean["cases"][0]["case_id"] = "yield_route_case"
+    assert harness.validate_benchmark_report(clean) == []
+
+    for value in [
+        "gpt4o_hit",
+        "safe_gpt4o_hit",
+        "cohere_internal_model",
+        "mpt7b_case",
+    ]:
+        mutated = deepcopy(report)
+        mutated["cases"][0]["case_id"] = value
+        errors = harness.validate_benchmark_report(mutated)
+        assert any("forbidden secret/path-like string" in error for error in errors)
 
     for value in [
         "cohere-internal-model",

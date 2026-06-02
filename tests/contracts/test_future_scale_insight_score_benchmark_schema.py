@@ -214,9 +214,33 @@ def test_rejects_claim_gate_upgrades(gate: str):
         ("source_branch", r"feature/C:\Users\evil\branch"),
         ("source_branch", r"feature\..\escape"),
         ("source_branch", "hf/meta-llama-model"),
+        (
+            "not_claimed",
+            [
+                "No claim that insight_score predicts production performance.",
+                "No claim of future scaling safety or autonomous improvement.",
+                "../sneaky/parent/escape",
+            ],
+        ),
+        (
+            "not_claimed",
+            [
+                "No claim that insight_score predicts production performance.",
+                "No claim of future scaling safety or autonomous improvement.",
+                "/mnt/data/synth_adversarial_15case.json",
+            ],
+        ),
+        (
+            "not_claimed",
+            [
+                "No claim that insight_score predicts production performance.",
+                "No claim of future scaling safety or autonomous improvement.",
+                "C:tmp",
+            ],
+        ),
     ],
 )
-def test_rejects_free_text_secrets_and_paths(field: str, value: str):
+def test_rejects_free_text_secrets_and_paths(field: str, value: Any):
     fixture = _good_fixture()
     fixture[field] = value
 

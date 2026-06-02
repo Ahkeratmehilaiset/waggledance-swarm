@@ -224,8 +224,16 @@
     },
     "not_claimed": {
       "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
       "items": {
-        "type": "string"
+        "type": "string",
+        "enum": [
+          "No claim that insight_score predicts production performance.",
+          "No claim of future scaling safety or autonomous improvement.",
+          "All measurements local and offline only."
+        ]
       }
     }
   }

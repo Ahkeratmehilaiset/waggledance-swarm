@@ -56,6 +56,8 @@ schema:
 - `reproduce_command` must match the fixed offline template
   `python tools/run_future_scale_insight_bench.py --corpus <alias> --offline --deterministic`,
   where `<alias>` uses the same stable alias grammar.
+- `not_claimed` is a fixed three-item disclaimer enum, not an open free-text
+  notes field.
 
 ## Relation To WD
 
@@ -88,7 +90,7 @@ python -m pytest tests/contracts/test_future_scale_insight_score_benchmark_schem
 Expected result:
 
 ```text
-40 passed
+43 passed
 ```
 
 ## Limits

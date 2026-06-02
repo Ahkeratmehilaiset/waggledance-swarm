@@ -31,7 +31,7 @@ LEAK_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9]{16,}\b", re.IGNORECASE),
     re.compile(r"\bAKIA[0-9A-Z]{16,}\b", re.IGNORECASE),
     re.compile(
-        r"\b(?:claude|deepseek|gemini|gpt|hf|huggingface|llama|mistral|mixtral|ollama|phi|qwen)[A-Za-z0-9_.:/-]*\b",
+        r"\b(?:anthropic|claude|deepseek|gemini|gemma|google|gpt|hf|huggingface|llama|mistral|mixtral|ollama|openai|phi|poro|qwen)[A-Za-z0-9_.:/-]*\b",
         re.IGNORECASE,
     ),
 )
@@ -308,6 +308,11 @@ def test_recursive_leak_walk_remains_defense_in_depth_for_other_scalars():
     "field,value",
     [
         ("stage_aliases_used", ["gpt-4o-secret"]),
+        ("stage_aliases_used", ["openai"]),
+        ("stage_aliases_used", ["anthropic"]),
+        ("stage_aliases_used", ["google"]),
+        ("stage_aliases_used", ["gemma4"]),
+        ("stage_aliases_used", ["poro"]),
         ("stage_aliases_used", ["/models/ollama/phi3.gguf"]),
         ("synthetic_fixtures_alias", "/tmp/latency_fixtures_v3.json"),
     ],

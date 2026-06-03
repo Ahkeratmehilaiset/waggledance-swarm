@@ -9,6 +9,7 @@ from waggledance.core.autonomy_growth.counterfactual_replay import (
     A3_LABEL_MEASURED_LOCAL_PARTIAL,
     A3_LABEL_NONDETERMINISTIC_ORACLE,
     A3_LABEL_RUNTIME_MEASURED,
+    COUNTERFACTUAL_DELTA_SCHEMA,
     COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
     CounterfactualReplayError,
     compute_counterfactual_delta,
@@ -163,6 +164,25 @@ def test_observability_summary_from_delta_is_privacy_safe():
     assert delta["canonical_digest"] not in rendered
 
 
+def test_observability_summary_requires_explicit_sample_set_digests():
+    malformed_delta = {
+        "schema_version": COUNTERFACTUAL_DELTA_SCHEMA,
+        "sample_count": 24,
+        "divergence_count": 0,
+        "deterministic": True,
+        "no_delta": True,
+        "canonical_digest": "sha256:redacted",
+    }
+
+    assert derive_a3_label(malformed_delta) == A3_LABEL_INSUFFICIENT
+
+    status = summarize_counterfactual_observability(malformed_delta)
+
+    assert status["status"] == "insufficient"
+    assert status["a3_label"] == A3_LABEL_INSUFFICIENT
+    assert status["same_sample_set"] is False
+
+
 def test_observability_summary_from_promotion_summary_and_missing_source():
     computed = summarize_counterfactual_observability({
         "schema_version": "magma.counterfactual_promotion_summary.v0",
@@ -192,3 +212,21 @@ def test_observability_summary_from_promotion_summary_and_missing_source():
     missing = summarize_counterfactual_observability(None)
     assert missing["source_available"] is False
     assert missing["status"] == "unavailable"
+
+
+def test_observability_summary_bounds_stored_a3_label():
+    status = summarize_counterfactual_observability({
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": "gpt-4o-RAW",
+        "sample_count": 24,
+        "same_sample_set": True,
+        "deterministic": True,
+        "divergence_count": 0,
+        "no_delta": True,
+        "delta_digest": "sha256:private-digest",
+    })
+
+    assert status["status"] == "insufficient"
+    assert status["a3_label"] == A3_LABEL_INSUFFICIENT
+    assert "gpt-4o-RAW" not in repr(status)

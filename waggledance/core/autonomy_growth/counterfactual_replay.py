@@ -196,7 +196,7 @@ def derive_a3_label(
     n = delta.get("sample_count")
     if not isinstance(n, int) or isinstance(n, bool):
         return A3_LABEL_INSUFFICIENT
-    if delta.get("candidate_sample_set_digest") != delta.get("incumbent_sample_set_digest"):
+    if not _same_sample_set(delta):
         return A3_LABEL_INSUFFICIENT
     if delta.get("deterministic") is not True:
         return A3_LABEL_NONDETERMINISTIC_ORACLE
@@ -234,28 +234,26 @@ def summarize_counterfactual_observability(
             a3_label=a3_label,
             sample_count=_nonnegative_int(snapshot.get("sample_count")),
             divergence_count=_nonnegative_int(snapshot.get("divergence_count")),
-            same_sample_set=(
-                snapshot.get("candidate_sample_set_digest")
-                == snapshot.get("incumbent_sample_set_digest")
-            ),
+            same_sample_set=_same_sample_set(snapshot),
             deterministic=snapshot.get("deterministic") is True,
             no_delta=snapshot.get("no_delta") is True,
             delta_digest_present=bool(snapshot.get("canonical_digest")),
         )
 
     compute_status = str(snapshot.get("status") or "unknown")
+    a3_label = _known_a3_label(snapshot.get("a3_label"))
     if compute_status == "failed":
         status = "failed"
     elif compute_status == "skipped":
         status = "skipped"
     else:
-        status = _state_for_a3_label(str(snapshot.get("a3_label") or ""))
+        status = _state_for_a3_label(a3_label)
 
     return _counterfactual_observability_status(
         source_available=True,
         compute_status=compute_status,
         status=status,
-        a3_label=str(snapshot.get("a3_label") or A3_LABEL_INSUFFICIENT),
+        a3_label=a3_label,
         sample_count=_nonnegative_int(snapshot.get("sample_count")),
         divergence_count=_nonnegative_int(snapshot.get("divergence_count")),
         same_sample_set=snapshot.get("same_sample_set") is True,
@@ -301,6 +299,24 @@ def _counterfactual_observability_status(
 
 def _state_for_a3_label(label: str) -> str:
     return _A3_LABEL_TO_OBSERVABILITY_STATE.get(label, "insufficient")
+
+
+def _known_a3_label(value: Any) -> str:
+    if isinstance(value, str) and value in _A3_LABEL_TO_OBSERVABILITY_STATE:
+        return value
+    return A3_LABEL_INSUFFICIENT
+
+
+def _same_sample_set(snapshot: Mapping[str, Any]) -> bool:
+    candidate_digest = snapshot.get("candidate_sample_set_digest")
+    incumbent_digest = snapshot.get("incumbent_sample_set_digest")
+    return (
+        isinstance(candidate_digest, str)
+        and isinstance(incumbent_digest, str)
+        and bool(candidate_digest.strip())
+        and bool(incumbent_digest.strip())
+        and candidate_digest == incumbent_digest
+    )
 
 
 def _nonnegative_int(value: Any) -> int:

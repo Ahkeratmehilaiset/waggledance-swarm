@@ -51,16 +51,16 @@ def _case_with_defect(*, case_id: str, defect_class: str, ok=True, status="full_
 
 
 def test_happy_path_all_caught_bound_passes():
-    r = _report(cases=_ok_cases(20))
+    r = _report(cases=_ok_cases(30))
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is True
     assert result.decision == "adversarial_gate_pass"
-    assert result.caught_count == 20 and result.not_caught_count == 0
+    assert result.caught_count == 30 and result.not_caught_count == 0
 
 
 def test_forged_top_ok_with_one_uncaught_case_refuses():
     # report['ok']=True but a case is not caught -> must re-derive and refuse.
-    cases = _ok_cases(19) + [
+    cases = _ok_cases(30) + [
         _case_with_defect(
             case_id="evil",
             defect_class=_required_types()[0],
@@ -75,7 +75,7 @@ def test_forged_top_ok_with_one_uncaught_case_refuses():
 
 
 def test_type_confused_case_count_refuses():
-    r = _report(cases=_ok_cases(20))
+    r = _report(cases=_ok_cases(30))
     r["case_count"] = "20"  # string, not int
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
@@ -84,7 +84,9 @@ def test_type_confused_case_count_refuses():
 
 def test_type_confused_case_ok_string_is_not_caught():
     # ok="true" (string) must NOT count as caught.
-    cases = _ok_cases(19) + [_case_with_defect(case_id="x", defect_class=_required_types()[0], ok="true")]
+    cases = _ok_cases(30) + [
+        _case_with_defect(case_id="x", defect_class=_required_types()[0], ok="true")
+    ]
     r = _report(cases=cases)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
@@ -92,7 +94,7 @@ def test_type_confused_case_ok_string_is_not_caught():
 
 
 def test_invalid_defect_class_is_rejected():
-    cases = _ok_cases(15) + [
+    cases = _ok_cases(30) + [
         {
             "case_id": "bad",
             "defect_class": "bogus_defect",
@@ -118,15 +120,40 @@ def test_missing_required_defect_class_refuses():
     assert any("required defect classes not caught" in reason for reason in result.reasons)
 
 
+def test_critical_defect_floor_is_rederived_from_per_case_reports():
+    for defect_class in ("governance_bypass", "path_escape"):
+        cases = _ok_cases(30)
+        removed_one = False
+        one_below_floor = []
+        for case in cases:
+            if case["defect_class"] == defect_class and not removed_one:
+                removed_one = True
+                continue
+            one_below_floor.append(case)
+        r = _report(cases=one_below_floor)
+
+        result = verify_adversarial_corpus_gate(
+            report=r,
+            expected_solver_hash=SOLVER,
+            min_cases=10,
+        )
+
+        assert result.ok is False
+        assert any(
+            f"{defect_class}=1" in reason and "critical defect classes below caught floor" in reason
+            for reason in result.reasons
+        )
+
+
 def test_binding_mismatch_refuses():
-    r = _report(cases=_ok_cases(20), bound=OTHER)
+    r = _report(cases=_ok_cases(30), bound=OTHER)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
     assert any("bound_solver_hash" in x for x in result.reasons)
 
 
 def test_missing_binding_refuses():
-    r = _report(cases=_ok_cases(20))
+    r = _report(cases=_ok_cases(30))
     del r["bound_solver_hash"]
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
@@ -147,28 +174,28 @@ def test_below_floor_refuses():
 
 
 def test_cases_not_a_list_refuses():
-    r = _report(cases=_ok_cases(20))
+    r = _report(cases=_ok_cases(30))
     r["cases"] = {"c0": {"ok": True}}  # mapping, not list
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
 
 
 def test_case_count_mismatch_refuses():
-    r = _report(cases=_ok_cases(20), case_count=42)  # lies about the count
+    r = _report(cases=_ok_cases(30), case_count=42)  # lies about the count
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
     assert result.ok is False
     assert any("!=" in x for x in result.reasons)
 
 
 def test_invalid_expected_solver_hash_refuses():
-    r = _report(cases=_ok_cases(20))
+    r = _report(cases=_ok_cases(30))
     for bad in ("", "   ", None, 123):
         result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=bad, min_cases=10)
         assert result.ok is False
 
 
 def test_non_bool_min_cases_refuses():
-    r = _report(cases=_ok_cases(20))
+    r = _report(cases=_ok_cases(30))
     for bad in (True, 0, -1, "10"):
         result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=bad)
         assert result.ok is False

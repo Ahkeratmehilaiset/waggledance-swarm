@@ -14,7 +14,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import jsonschema
-from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from waggledance.core.magma.adversarial_corpus_eval import (
+    CRITICAL_DEFECT_TYPES,
+    MIN_CRITICAL_DEFECT_CASES,
+    REQUIRED_DEFECT_TYPES,
+)
 from waggledance.core.magma.schema_validation import redacted_schema_errors
 
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
@@ -41,17 +45,6 @@ REQUIRED_VERDICTS = {
 }
 SPLIT_VERSION = "magma.synthetic_adversarial_split.v0"
 MIN_HELD_OUT_CASES = 6
-CRITICAL_DEFECT_TYPES = frozenset(
-    {
-        "fail-open",
-        "governance_bypass",
-        "hallucinated-success",
-        "path_escape",
-        "regression-process",
-        "spec-gaming",
-    }
-)
-MIN_CRITICAL_DEFECT_CASES = 2
 
 
 def build_parser() -> argparse.ArgumentParser:

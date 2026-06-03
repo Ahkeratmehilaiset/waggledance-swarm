@@ -78,6 +78,11 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["coverage"]["counterfactual_case_count"] >= 3
     assert report["coverage"]["operator_gate_case_count"] >= 2
     assert report["coverage"]["clean_baseline_case_count"] >= 2
+    assert report["per_case_coverage"]["min_critical_defect_cases"] == 2
+    critical_caught = report["per_case_coverage"]["critical_defect_type_caught_counts"]
+    assert critical_caught["governance_bypass"] >= 2
+    assert critical_caught["path_escape"] >= 2
+    assert report["per_case_coverage"]["critical_defect_types_below_floor"] == {}
     assert report["corpus_digest"].startswith("sha256:")
     assert report["expectations_digest"].startswith("sha256:")
     assert report["catch_agent_bucket_status"] == "redacted_hidden_expectations_v0"
@@ -208,6 +213,7 @@ def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
     assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
     assert payload["case_count"] == expected_case_count
     assert payload["coverage"] == report["coverage"]
+    assert payload["per_case_coverage"] == report["per_case_coverage"]
     assert len(payload["case_evaluation_result_digests"]) == expected_case_count
 
 

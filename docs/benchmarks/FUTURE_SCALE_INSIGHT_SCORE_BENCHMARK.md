@@ -1,23 +1,26 @@
 # Future Scale Insight Score Benchmark
 
-Status: Option A round 1, slice 3 contract artifact.
+Status: local/offline artifact producer for the `insight_score` axis.
 
-This slice defines a versioned, offline, deterministic contract for an
-`insight_score` benchmark artifact on the `future_scale` axis. It is a schema
-and executable contract only. It does not add a producer, does not touch the
-image capability manifest, and does not aggregate the metric into any runtime
+This benchmark defines and produces a versioned, offline, deterministic
+`insight_score` benchmark artifact on the `future_scale` axis. The producer uses
+the existing dream-mode `compute_insight_score` helper over fixed synthetic
+outcome fixtures. It does not touch production dream sessions, mutate runtime
+routing, update authority, call a network, pull models, or make a future-state
 claim.
 
 ## Scope
 
-This PR is intentionally limited to three paths:
+The contract and producer surface is intentionally small:
 
+- `tools/run_future_scale_insight_bench.py`
+- `tests/tools/test_future_scale_insight_score_benchmark.py`
 - `schemas/future_scale_insight_score_benchmark.v1.json`
 - `tests/contracts/test_future_scale_insight_score_benchmark_schema.py`
 - `docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md`
 
-It is disjoint from the already landed composite-path and contradiction-rate
-benchmark slices.
+The WD Image #1 manifest consumes only the producer's sanitized aggregate
+sample and keeps `claim_gate_satisfied=false`.
 
 ## Safety Contract
 
@@ -42,9 +45,10 @@ The executable contract also rejects:
   tokens, and local filesystem paths in any scalar string;
 - extra properties, malformed payloads, wrong scopes, and wrong numeric types.
 
-The leak and finite-number walk is in the contract test for this slice because
-the producer harness is deliberately out of scope. A later producer PR should
-call an equivalent validator before writing any artifact.
+The leak and finite-number walk lives in
+`tools/future_scale_contract_safety.py`. The producer validates the artifact
+against the schema, exact-false gates, finite-number policy, and scalar leak
+walk before printing or writing any explicit `--out-dir` artifacts.
 
 The three repro-oriented scalar fields are also positive allowlists in the
 schema:
@@ -67,34 +71,35 @@ synthetic adversarial corpus alias. It is not a live production usefulness
 metric and does not prove future safety, infinite scalability, or autonomous
 runtime improvement.
 
-The artifact is useful because it gives the third missing future-scale axis a
-strict, reviewable contract:
+The artifact is useful because it gives the `insight_score` future-scale axis a
+strict, reviewable producer:
 
 - composite-path evidence is covered by the landed `useful_composite_paths`
   benchmark;
 - contradiction evidence is covered by the landed `contradiction_rate`
   benchmark;
-- this file covers the `insight_score` contract shape and validation rules.
+- this producer covers local deterministic `insight_score` artifact generation.
 
-Manifest aggregation is a later serialized round after all three contracts have
-landed independently.
+Manifest aggregation now treats this as benchmark-contract evidence only. It
+still does not satisfy required production runtime evidence.
 
 ## Reproduction
 
-Run the contract test from the repository root:
+Run the producer from the repository root:
 
 ```bash
-python -m pytest tests/contracts/test_future_scale_insight_score_benchmark_schema.py -q
+python tools/run_future_scale_insight_bench.py --corpus v12.a3.synth_adversarial.v0 --offline --deterministic --json
 ```
 
-Expected result:
+Run the producer and schema tests:
 
-```text
-43 passed
+```bash
+python -m pytest tests/tools/test_future_scale_insight_score_benchmark.py tests/contracts/test_future_scale_insight_score_benchmark_schema.py -q
 ```
 
 ## Limits
 
-This slice does not produce benchmark results. It does not claim a trend, runtime
-coverage, production corpus binding, or receipt-bound execution. It only defines
-the schema and fail-closed checks that a future producer must satisfy.
+This slice produces local deterministic benchmark results only. It does not
+claim a production trend, runtime coverage, production corpus binding,
+receipt-bound execution, future safety, infinite scalability, or autonomous
+runtime improvement.

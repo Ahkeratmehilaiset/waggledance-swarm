@@ -45,6 +45,9 @@ from tools.run_future_scale_composite_path_benchmark import (  # noqa: E402
 from tools.run_future_scale_contradiction_rate_benchmark import (  # noqa: E402
     build_future_scale_contradiction_rate_benchmark,
 )
+from tools.run_future_scale_insight_bench import (  # noqa: E402
+    build_future_scale_insight_benchmark,
+)
 from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
     build_future_scale_route_depth_benchmark,
 )
@@ -5101,69 +5104,98 @@ def _future_scale_contradiction_rate_benchmark_evidence() -> dict:
 
 def _future_scale_insight_score_contract_evidence() -> dict:
     insight_artifacts = [
+        "tools/run_future_scale_insight_bench.py",
+        "tests/tools/test_future_scale_insight_score_benchmark.py",
         "schemas/future_scale_insight_score_benchmark.v1.json",
         "tests/contracts/test_future_scale_insight_score_benchmark_schema.py",
         "docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md",
     ]
-    missing = [rel_path for rel_path in insight_artifacts if not (ROOT / rel_path).exists()]
+    missing = [
+        rel_path
+        for rel_path in insight_artifacts
+        if not (ROOT / rel_path).exists()
+    ]
     if missing:
         return {
-            "status": "schema_contract_unavailable",
-            "measurement_scope": "insight-score schema contract is incomplete",
+            "status": "benchmark_contract_unavailable",
+            "measurement_scope": "insight-score benchmark contract is incomplete",
             "metric_names": [],
             "artifact_paths": insight_artifacts,
             "sample": {"missing_artifacts": missing},
             "evidence_freshness": "local_schema_contract_missing",
             "blockers": [
-                "insight-score schema contract files are missing",
+                "insight-score benchmark contract files are missing",
                 "needs deterministic producer harness before benchmark results",
             ],
             "claim_gate_satisfied": False,
         }
 
-    schema_text = (
-        ROOT / "schemas/future_scale_insight_score_benchmark.v1.json"
-    ).read_text(encoding="utf-8")
-    docs_text = (
-        ROOT / "docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md"
-    ).read_text(encoding="utf-8")
-    tests_text = (
-        ROOT / "tests/contracts/test_future_scale_insight_score_benchmark_schema.py"
-    ).read_text(encoding="utf-8")
-    contract_ok = all(
-        token in "\n".join((schema_text, docs_text, tests_text))
-        for token in (
-            "future_scale_insight_score.v1",
-            "insight_score_benchmark.v1",
-            "claim_gate_satisfied",
-            "literal_future_claim_safe",
-            "required_runtime_evidence_present",
-            "validate_scalar_safety",
-            "No claim that insight_score predicts production performance.",
+    try:
+        report = build_future_scale_insight_benchmark(
+            now_utc=datetime(2026, 6, 3, 15, 30, tzinfo=timezone.utc),
         )
+    except Exception:
+        return {
+            "status": "benchmark_contract_unavailable",
+            "measurement_scope": (
+                "insight-score benchmark artifact contract could not be built"
+            ),
+            "metric_names": [],
+            "artifact_paths": insight_artifacts,
+            "sample": {},
+            "evidence_freshness": "local_offline_benchmark_contract_failed",
+            "blockers": [
+                "insight-score benchmark artifact contract failed to build",
+                "needs versioned dream-mode benchmark windows before claims",
+            ],
+            "claim_gate_satisfied": False,
+        }
+
+    aggregate = report.get("aggregate") if isinstance(report, dict) else {}
+    controls = report.get("internal_controls") if isinstance(report, dict) else {}
+    if not isinstance(aggregate, dict):
+        aggregate = {}
+    if not isinstance(controls, dict):
+        controls = {}
+    report_ok = (
+        isinstance(report, dict)
+        and report.get("claim_gate_satisfied") is False
+        and report.get("required_runtime_evidence_present") is False
     )
     return {
         "status": (
-            "schema_contract_available" if contract_ok else "schema_contract_unavailable"
+            "benchmark_contract_available"
+            if report_ok
+            else "benchmark_contract_unavailable"
         ),
         "measurement_scope": (
-            "strict local offline schema and executable contract, not produced "
-            "benchmark results"
+            "local deterministic dream-mode insight fixtures, not production "
+            "insight-score performance"
         ),
         "metric_names": [],
         "artifact_paths": insight_artifacts,
         "sample": {
-            "benchmark_version": "future_scale_insight_score.v1",
-            "schema_version": "insight_score_benchmark.v1",
-            "producer_harness_present": False,
-            "contract_test_present": "validate_insight_benchmark_artifact"
-            in tests_text,
-            "scalar_safety_guard_present": "validate_scalar_safety" in tests_text,
+            "benchmark_version": report.get("benchmark_version")
+            if isinstance(report, dict)
+            else None,
+            "schema_version": report.get("schema_version")
+            if isinstance(report, dict)
+            else None,
+            "producer_harness_present": True,
+            "corpus_case_count": report.get("corpus_case_count")
+            if isinstance(report, dict)
+            else None,
+            "mean_insight_score": aggregate.get("mean_insight_score"),
+            "median_insight_score": aggregate.get("median_insight_score"),
+            "scale_trend_slope": aggregate.get("scale_trend_slope"),
+            "positive_control_score": controls.get("positive_control_score"),
+            "negative_control_score": controls.get("negative_control_score"),
+            "controls_measured": controls.get("controls_measured"),
         },
-        "evidence_freshness": "local_schema_contract",
+        "evidence_freshness": "local_offline_benchmark_contract",
         "blockers": [
-            "needs deterministic producer harness before benchmark results",
-            "needs versioned dream-mode benchmark corpus artifact",
+            "fixture outcomes are deterministic local examples, not production dream-mode windows",
+            "needs versioned dream-mode benchmark corpus artifact from runtime traces",
             "needs repeated windows before insight trend claims",
         ],
         "claim_gate_satisfied": False,

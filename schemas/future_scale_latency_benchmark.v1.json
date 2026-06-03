@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/future_scale_latency_benchmark.v1.json",
+  "title": "Future Scale Latency Benchmark v1",
+  "description": "Strict schema for a versioned, offline, deterministic latency benchmark artifact on the future_scale axis. All claim gates remain false; measurement_scope is local only; stage references use stable aliases only. Latency metrics are reported exclusively using the waggledance_route_stage_request_latency_histogram_ms family names (histogram, _bucket, _sum, _count).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "benchmark_version",
+    "schema_version",
+    "generated_at_utc",
+    "git_sha",
+    "source_branch",
+    "measurement_scope",
+    "stage_aliases_used",
+    "synthetic_fixtures_alias",
+    "fixture_case_count",
+    "fixtures_sha256",
+    "latency_metric_family",
+    "latency_bucket_metric",
+    "latency_sum_metric",
+    "latency_count_metric",
+    "latency_observations",
+    "aggregate",
+    "internal_controls",
+    "claim_gate_satisfied",
+    "claim_safe",
+    "literal_future_claim_safe",
+    "controls_present",
+    "runtime_authority_granted",
+    "external_writes_applied",
+    "required_runtime_evidence_present",
+    "no_cloud_api_calls",
+    "no_model_pull_or_download",
+    "deterministic_seed",
+    "reproduce_command",
+    "not_claimed"
+  ],
+  "properties": {
+    "benchmark_version": {
+      "type": "string",
+      "enum": ["future_scale_latency.v1"]
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["latency_benchmark.v1"]
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_branch": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9._-]{0,80}$"
+    },
+    "measurement_scope": {
+      "type": "string",
+      "enum": ["local"]
+    },
+    "stage_aliases_used": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9._-]{0,80}$"
+      },
+      "description": "Stable stage aliases only (e.g. language_detection, hot_cache). No raw model names, paths, registry IDs, or provider tokens. These correspond to the stages instrumented under waggledance_route_stage_request_latency_histogram_ms."
+    },
+    "synthetic_fixtures_alias": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,80}$",
+      "description": "Stable alias for the synthetic offline latency fixtures set. No filesystem path or raw fixture ID."
+    },
+    "fixture_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fixtures_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "latency_metric_family": {
+      "type": "string",
+      "enum": ["waggledance_route_stage_request_latency_histogram_ms"],
+      "description": "The base metric name for the latency histogram family. All latency values in this artifact are reported against this name and its children (_bucket, _sum, _count)."
+    },
+    "latency_bucket_metric": {
+      "type": "string",
+      "enum": ["waggledance_route_stage_request_latency_histogram_ms_bucket"]
+    },
+    "latency_sum_metric": {
+      "type": "string",
+      "enum": ["waggledance_route_stage_request_latency_histogram_ms_sum"]
+    },
+    "latency_count_metric": {
+      "type": "string",
+      "enum": ["waggledance_route_stage_request_latency_histogram_ms_count"]
+    },
+    "latency_observations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "stage_alias",
+          "p50_ms",
+          "p95_ms",
+          "p99_ms",
+          "samples",
+          "finite"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          },
+          "stage_alias": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]{0,80}$"
+          },
+          "p50_ms": {
+            "type": "number",
+            "description": "p50 latency in milliseconds for the stage over the synthetic fixtures. Must be finite; non-finite values are rejected by the contract validator."
+          },
+          "p95_ms": {
+            "type": "number",
+            "description": "p95 latency in milliseconds. Reported under the waggledance_route_stage_request_latency_histogram_ms family. Finite only."
+          },
+          "p99_ms": {
+            "type": "number",
+            "description": "p99 latency in milliseconds for the stage."
+          },
+          "samples": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "finite": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "delta_vs_baseline_p95": {
+            "type": ["number", "null"]
+          }
+        }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mean_p95_ms",
+        "median_p95_ms",
+        "p95_of_p99_ms",
+        "finite"
+      ],
+      "properties": {
+        "mean_p95_ms": {
+          "type": "number"
+        },
+        "median_p95_ms": {
+          "type": "number"
+        },
+        "p95_of_p99_ms": {
+          "type": "number",
+          "description": "Aggregate tail latency using the waggledance_route_stage_request_latency_histogram_ms p99 quantiles. Finite only."
+        },
+        "p99_of_p95_ms": {
+          "type": ["number", "null"]
+        },
+        "finite": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      }
+    },
+    "internal_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positive_control_p95_ms",
+        "negative_control_p95_ms",
+        "control_delta_ms",
+        "controls_measured"
+      ],
+      "properties": {
+        "positive_control_p95_ms": {
+          "type": "number"
+        },
+        "negative_control_p95_ms": {
+          "type": "number"
+        },
+        "control_delta_ms": {
+          "type": "number"
+        },
+        "controls_measured": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      },
+      "description": "Internal validity controls using known synthetic latency fixtures for the waggledance_route_stage_request_latency_histogram_ms instrumented stages. These are harness controls, not production runtime controls."
+    },
+    "claim_gate_satisfied": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "claim_safe": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "literal_future_claim_safe": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "controls_present": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "runtime_authority_granted": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "external_writes_applied": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "required_runtime_evidence_present": {
+      "type": "boolean",
+      "enum": [false]
+    },
+    "no_cloud_api_calls": {
+      "type": "boolean",
+      "enum": [true]
+    },
+    "no_model_pull_or_download": {
+      "type": "boolean",
+      "enum": [true]
+    },
+    "deterministic_seed": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^latency-bench-[0-9]{8}-seed-[0-9a-f]{6,}$"
+    },
+    "reproduce_command": {
+      "type": "string",
+      "minLength": 10,
+      "pattern": "^python tools/run_future_scale_latency_bench\\.py --fixtures [a-z][a-z0-9._-]{0,80} --offline --deterministic$"
+    },
+    "not_claimed": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "No claim that measured latency predicts production performance at scale.",
+          "No claim of future scaling safety or autonomous latency reduction.",
+          "All measurements local and offline only."
+        ]
+      }
+    }
+  }
+}

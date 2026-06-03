@@ -862,6 +862,82 @@ def test_metrics_route_stage_latency_feed_preserves_explicit_none_reason():
     ) in body
 
 
+def test_metrics_body_contains_autogrowth_alert_feed_cache_gauges():
+    from waggledance.adapters.http.autogrowth_alert_feed import (
+        AutogrowthAlertFeedHttpResponse,
+        AutogrowthAlertmanagerFeed,
+    )
+
+    calls = []
+
+    def transport(url, headers, timeout_seconds, params):
+        calls.append((url, dict(headers), timeout_seconds, dict(params)))
+        body = [{
+            "labels": {
+                "alertname": "AutogrowthNonIdleBurst",
+                "severity": "warning",
+                "host": "prod-db",
+            },
+            "status": {"state": "active"},
+            "annotations": {"summary": "PRIVATE_ANNOTATION"},
+            "value": "21",
+        }]
+        return AutogrowthAlertFeedHttpResponse(
+            body=json.dumps(body).encode("utf-8"),
+            content_type="application/json",
+            status_code=200,
+            source_url=url,
+        )
+
+    feed = AutogrowthAlertmanagerFeed(
+        alertmanager_base_url="http://127.0.0.1:9093",
+        allowed_private_hosts=["127.0.0.1"],
+        cache_ttl_seconds=60,
+        failure_backoff_seconds=5,
+        monotonic=lambda: 0.0,
+        transport=transport,
+    )
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    container.autogrowth_alert_feed = feed
+    client = TestClient(_make_app(container))
+
+    client.get("/metrics")
+    body = client.get("/metrics").text
+
+    assert len(calls) == 1
+    assert "waggledance_autogrowth_alert_feed_configured 1.0" in body
+    assert "waggledance_autogrowth_alert_feed_available 1.0" in body
+    assert "waggledance_autogrowth_alert_feed_cache_enabled 1.0" in body
+    assert "waggledance_autogrowth_alert_feed_cache_present 1.0" in body
+    assert "waggledance_autogrowth_alert_feed_backoff_active 0.0" in body
+    assert "waggledance_autogrowth_alert_feed_cache_ttl_seconds 60.0" in body
+    assert (
+        "waggledance_autogrowth_alert_feed_failure_backoff_seconds 5.0"
+        in body
+    )
+    assert "waggledance_autogrowth_alert_feed_cache_hits_total 1.0" in body
+    assert "waggledance_autogrowth_alert_feed_cache_misses_total 1.0" in body
+    assert (
+        "waggledance_autogrowth_alert_feed_fetch_successes_total 1.0"
+        in body
+    )
+    assert (
+        "waggledance_autogrowth_alert_feed_fetch_failures_total 0.0"
+        in body
+    )
+    assert (
+        'waggledance_autogrowth_alert_feed_status{status="nominal"} 1.0'
+        in body
+    )
+    assert (
+        'waggledance_autogrowth_alert_feed_failure_reason{reason="none"} 1.0'
+        in body
+    )
+    assert "127.0.0.1" not in body
+    assert "prod-db" not in body
+    assert "PRIVATE_ANNOTATION" not in body
+
+
 def test_metrics_route_stage_latency_feed_backoff_failure_is_sanitized():
     from waggledance.adapters.http.route_stage_latency_feed import (
         RouteStageLatencyFeedHttpResponse,

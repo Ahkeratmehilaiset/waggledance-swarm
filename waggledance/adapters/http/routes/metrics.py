@@ -46,6 +46,7 @@ from prometheus_client.core import (
 
 from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
 from waggledance.adapters.http.routes.compat_dashboard import (
+    _autogrowth_section,
     _magma_share_import_handoff_section,
     _route_stage_latency_feed_state,
 )
@@ -174,6 +175,27 @@ _MAGMA_HANDOFF_ALERT_FEED_FAILURE_REASONS: tuple[str, ...] = (
     "RESPONSE_SOURCE_URL_REFUSED",
     "ALERTMANAGER_RESULT_REFUSED",
     "MAGMA_HANDOFF_METRICS_ALERT_FEED_UNAVAILABLE",
+    "FEED_READ_FAILED",
+)
+_AUTOGROWTH_ALERT_FEED_STATUSES: tuple[str, ...] = (
+    "not_configured",
+    "nominal",
+    "warning",
+)
+_AUTOGROWTH_ALERT_FEED_FAILURE_REASONS: tuple[str, ...] = (
+    "none",
+    "BACKOFF_ACTIVE",
+    "NETWORK_TIMEOUT",
+    "NETWORK_REQUEST_FAILED",
+    "RESPONSE_SHAPE_REFUSED",
+    "RESPONSE_BODY_REFUSED",
+    "RESPONSE_STATUS_REFUSED",
+    "RESPONSE_JSON_REFUSED",
+    "RESPONSE_TOO_LARGE",
+    "RESPONSE_CONTENT_TYPE_REFUSED",
+    "RESPONSE_SOURCE_URL_REFUSED",
+    "ALERTMANAGER_RESULT_REFUSED",
+    "AUTOGROWTH_ALERT_FEED_UNAVAILABLE",
     "FEED_READ_FAILED",
 )
 
@@ -667,10 +689,12 @@ class _WaggleCollector:
                 exc,
             )
             yield up
+            yield from self._collect_autogrowth_alert_feed_metrics(container)
             return
         if ticker is None:
             yield up
             yield disabled
+            yield from self._collect_autogrowth_alert_feed_metrics(container)
             return
 
         try:
@@ -683,6 +707,7 @@ class _WaggleCollector:
                 "1 if the low-risk autogrowth background ticker is configured",
                 value=1.0,
             )
+            yield from self._collect_autogrowth_alert_feed_metrics(container)
             return
         if stats_obj is None:
             yield up
@@ -691,6 +716,7 @@ class _WaggleCollector:
                 "1 if the low-risk autogrowth background ticker is configured",
                 value=1.0,
             )
+            yield from self._collect_autogrowth_alert_feed_metrics(container)
             return
 
         yield GaugeMetricFamily(
@@ -732,6 +758,128 @@ class _WaggleCollector:
                 f"low-risk autogrowth runtime-boundary counter: {name}",
                 value=numeric,
             )
+
+        yield from self._collect_autogrowth_alert_feed_metrics(container)
+
+    def _collect_autogrowth_alert_feed_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_autogrowth_alert_feed_up",
+            "1 if autogrowth alert feed health could be built this scrape.",
+            value=0.0,
+        )
+        try:
+            section = _autogrowth_section(container)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "metrics: autogrowth alert feed health raised: %s",
+                exc,
+            )
+            yield up
+            return
+        alert_state = section.get("alert_state")
+        if not isinstance(alert_state, dict):
+            yield up
+            return
+        feed_health = alert_state.get("feed_health")
+        if not isinstance(feed_health, dict):
+            yield up
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_autogrowth_alert_feed_up",
+            "1 if autogrowth alert feed health could be built this scrape.",
+            value=1.0,
+        )
+
+        bool_gauges = {
+            "configured": feed_health.get("configured"),
+            "available": feed_health.get("available"),
+            "cache_enabled": feed_health.get("cache_enabled"),
+            "cache_present": feed_health.get("cache_present"),
+            "cache_stale": feed_health.get("cache_stale"),
+            "backoff_active": feed_health.get("backoff_active"),
+            "controls_present": feed_health.get("controls_present"),
+            "runtime_authority_granted": feed_health.get("runtime_authority_granted"),
+            "external_writes_applied": feed_health.get("external_writes_applied"),
+        }
+        for name, value in bool_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_autogrowth_alert_feed_{name}",
+                (
+                    "read-only autogrowth Alertmanager adapter "
+                    f"provider-health gauge: {name}"
+                ),
+                value=_as_bool_float(value),
+            )
+
+        numeric_gauges = {
+            "cache_ttl_seconds": feed_health.get("cache_ttl_seconds"),
+            "failure_backoff_seconds": feed_health.get("failure_backoff_seconds"),
+            "timeout_seconds": feed_health.get("timeout_seconds"),
+            "max_response_bytes": feed_health.get("max_response_bytes"),
+            "last_response_bytes": feed_health.get("last_response_bytes"),
+        }
+        for name, value in numeric_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_autogrowth_alert_feed_{name}",
+                (
+                    "read-only autogrowth Alertmanager adapter "
+                    f"provider-health gauge: {name}"
+                ),
+                value=_as_nonnegative_float(value),
+            )
+
+        counter_values = {
+            "cache_hits": feed_health.get("cache_hit_count"),
+            "cache_misses": feed_health.get("cache_miss_count"),
+            "fetch_successes": feed_health.get("fetch_success_count"),
+            "fetch_failures": feed_health.get("fetch_failure_count"),
+            "backoff_skips": feed_health.get("backoff_skip_count"),
+        }
+        for name, value in counter_values.items():
+            yield CounterMetricFamily(
+                f"waggledance_autogrowth_alert_feed_{name}_total",
+                (
+                    "read-only autogrowth Alertmanager adapter "
+                    f"provider-health counter: {name}"
+                ),
+                value=_as_nonnegative_float(value),
+            )
+
+        status_metric = GaugeMetricFamily(
+            "waggledance_autogrowth_alert_feed_status",
+            (
+                "Current autogrowth Alertmanager adapter status as "
+                "fixed-state gauges."
+            ),
+            labels=["status"],
+        )
+        current_status = feed_health.get("status")
+        for status in _AUTOGROWTH_ALERT_FEED_STATUSES:
+            status_metric.add_metric(
+                [status],
+                1.0 if current_status == status else 0.0,
+            )
+        yield status_metric
+
+        reason_metric = GaugeMetricFamily(
+            "waggledance_autogrowth_alert_feed_failure_reason",
+            (
+                "Current sanitized autogrowth Alertmanager adapter failure "
+                "reason as fixed-state gauges."
+            ),
+            labels=["reason"],
+        )
+        current_reason = feed_health.get("last_failure_reason") or "none"
+        for reason in _AUTOGROWTH_ALERT_FEED_FAILURE_REASONS:
+            reason_metric.add_metric(
+                [reason],
+                1.0 if current_reason == reason else 0.0,
+            )
+        yield reason_metric
 
     def _collect_counterfactual_replay_metrics(
         self,

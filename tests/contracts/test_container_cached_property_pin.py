@@ -92,6 +92,7 @@ PINNED_CACHED_PROPERTIES: frozenset[str] = frozenset(
         # Operator metric feeds
         "route_stage_latency_feed",
         "magma_share_import_handoff_metrics_alert_feed",
+        "autogrowth_alert_feed",
     }
 )
 

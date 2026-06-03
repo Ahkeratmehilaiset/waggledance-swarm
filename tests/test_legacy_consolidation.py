@@ -323,6 +323,232 @@ class TestApiOpsExtended:
         assert "AutogrowthSourceDown" not in alert_ids
         assert "private stack trace" not in str(section)
 
+    def test_ops_autogrowth_alert_feed_sanitizes_snapshot(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _autogrowth_section,
+        )
+
+        class Stats:
+            wakeups_total = 2
+            non_idle_ticks = 1
+            errors_total = 0
+
+        class Ticker:
+            is_running = True
+            interval_seconds = 30.0
+            max_ticks_per_wake = 20
+            stats = Stats()
+
+        class Feed:
+            def snapshot(self):
+                return {
+                    "updated_at": "2026-06-03T20:45:00Z",
+                    "active_alerts": [
+                        {
+                            "labels": {
+                                "alertname": "AutogrowthErrorBurst",
+                                "severity": "critical",
+                                "host": "prod-db",
+                            },
+                            "status": {"state": "active"},
+                            "annotations": {
+                                "summary": "PRIVATE path=C:/private",
+                            },
+                            "generatorURL": "http://alertmanager/private",
+                            "value": "3",
+                        },
+                        {
+                            "labels": {"alertname": "UnknownAutogrowthAlert"},
+                            "status": {"state": "active"},
+                            "annotations": {"summary": "PRIVATE_UNKNOWN"},
+                        },
+                        {
+                            "labels": {"alertname": "AutogrowthWakeupBurst"},
+                            "status": {"state": "resolved"},
+                        },
+                    ],
+                    "provider_health": {
+                        "source": "alertmanager_adapter",
+                        "status": "nominal",
+                        "configured": True,
+                        "available": True,
+                        "cache_enabled": True,
+                        "cache_present": True,
+                        "controls_present": True,
+                        "runtime_authority_granted": True,
+                        "external_writes_applied": True,
+                        "fetch_success_count": 1,
+                    },
+                }
+
+        class Container:
+            autogrowth_background_ticker = Ticker()
+            autogrowth_alert_feed = Feed()
+
+        section = _autogrowth_section(Container())
+        alert_state = section["alert_state"]
+        feed_health = alert_state["feed_health"]
+        serialized = str(section)
+
+        assert alert_state["source"] == "prometheus_alertmanager_snapshot"
+        assert alert_state["prometheus_alertmanager_feed"] is True
+        assert alert_state["updated_at"] == "2026-06-03T20:45:00Z"
+        assert alert_state["status"] == "critical"
+        assert alert_state["severity"] == "critical"
+        assert alert_state["controls_present"] is False
+        assert alert_state["active_count"] == 1
+        assert alert_state["active"][0]["id"] == "AutogrowthErrorBurst"
+        assert alert_state["active"][0]["metric"] == (
+            "waggledance_autogrowth_errors_total"
+        )
+        assert alert_state["active"][0]["value"] == 3.0
+        assert feed_health["controls_present"] is False
+        assert feed_health["runtime_authority_granted"] is False
+        assert feed_health["external_writes_applied"] is False
+        assert "prod-db" not in serialized
+        assert "PRIVATE" not in serialized
+        assert "C:/private" not in serialized
+        assert "generatorURL" not in serialized
+
+    def test_autogrowth_alertmanager_feed_reads_operator_alerts(self):
+        from waggledance.adapters.http.autogrowth_alert_feed import (
+            AutogrowthAlertFeedHttpResponse,
+            AutogrowthAlertmanagerFeed,
+        )
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _autogrowth_section,
+        )
+
+        calls = []
+
+        def transport(url, headers, timeout_seconds, params):
+            calls.append((url, dict(headers), timeout_seconds, dict(params)))
+            body = [
+                {
+                    "labels": {
+                        "alertname": "AutogrowthWakeupBurst",
+                        "severity": "warning",
+                        "host": "prod-db",
+                    },
+                    "status": {"state": "active"},
+                    "annotations": {"summary": "PRIVATE_ANNOTATION"},
+                    "generatorURL": "http://alertmanager/private",
+                    "value": "41",
+                },
+                {
+                    "labels": {"alertname": "UnknownAutogrowthAlert"},
+                    "status": {"state": "active"},
+                },
+            ]
+            return AutogrowthAlertFeedHttpResponse(
+                body=json.dumps(body).encode("utf-8"),
+                content_type="application/json; charset=utf-8",
+                status_code=200,
+                source_url=url,
+            )
+
+        feed = AutogrowthAlertmanagerFeed(
+            alertmanager_base_url="http://127.0.0.1:9093",
+            allowed_private_hosts=["127.0.0.1"],
+            timeout_seconds=2,
+            cache_ttl_seconds=60,
+            transport=transport,
+        )
+
+        class Stats:
+            wakeups_total = 2
+            non_idle_ticks = 1
+            errors_total = 0
+
+        class Ticker:
+            is_running = True
+            interval_seconds = 30.0
+            max_ticks_per_wake = 20
+            stats = Stats()
+
+        class Container:
+            autogrowth_background_ticker = Ticker()
+            autogrowth_alert_feed = feed
+
+        section = _autogrowth_section(Container())
+        cached_section = _autogrowth_section(Container())
+        alert_state = cached_section["alert_state"]
+        feed_health = alert_state["feed_health"]
+        serialized = str(section)
+
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/api/v2/alerts")
+        assert calls[0][1]["Accept"] == "application/json"
+        assert calls[0][1]["User-Agent"] == "waggledance-autogrowth-alert-feed/3.8"
+        assert calls[0][2] == 2
+        assert calls[0][3] == {}
+        assert alert_state["source"] == "prometheus_alertmanager_snapshot"
+        assert alert_state["prometheus_alertmanager_feed"] is True
+        assert alert_state["active_count"] == 1
+        assert alert_state["active"][0]["id"] == "AutogrowthWakeupBurst"
+        assert alert_state["active"][0]["value"] == 41.0
+        assert feed_health["status"] == "nominal"
+        assert feed_health["configured"] is True
+        assert feed_health["available"] is True
+        assert feed_health["cache_hit_count"] == 1
+        assert feed_health["cache_miss_count"] == 1
+        assert feed_health["fetch_success_count"] == 1
+        assert feed_health["fetch_failure_count"] == 0
+        assert feed_health["controls_present"] is False
+        assert feed_health["runtime_authority_granted"] is False
+        assert "prod-db" not in serialized
+        assert "PRIVATE_ANNOTATION" not in serialized
+        assert "generatorURL" not in serialized
+
+    def test_autogrowth_alert_feed_failure_is_sanitized(self):
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            _autogrowth_section,
+        )
+
+        class Feed:
+            def snapshot(self):
+                raise RuntimeError("C:\\private\\alertmanager\\token")
+
+        class Container:
+            autogrowth_background_ticker = None
+            autogrowth_alert_feed = Feed()
+
+        section = _autogrowth_section(Container())
+        alert_state = section["alert_state"]
+
+        assert alert_state["source"] == "prometheus_alertmanager_unavailable"
+        assert alert_state["status"] == "warning"
+        assert alert_state["severity"] == "warning"
+        assert alert_state["controls_present"] is False
+        assert alert_state["active"][0]["id"] == "AutogrowthAlertFeedUnavailable"
+        assert "C:\\private" not in str(section)
+
+    def test_container_wires_configured_autogrowth_alert_feed(self):
+        from waggledance.adapters.http.autogrowth_alert_feed import (
+            AutogrowthAlertmanagerFeed,
+        )
+
+        settings = WaggleSettings(
+            profile="HOME",
+            api_key="test-key-123",
+            _extras={
+                "autogrowth_alert_feed": {
+                    "enabled": True,
+                    "alertmanager_base_url": "https://alerts.example",
+                    "timeout_s": 2,
+                    "max_response_bytes": 1000,
+                    "cache_ttl_s": 11,
+                    "failure_backoff_s": 12,
+                },
+            },
+        )
+        container = Container(settings=settings, stub=True)
+
+        assert isinstance(container.autogrowth_alert_feed, AutogrowthAlertmanagerFeed)
+        health = container.autogrowth_alert_feed.provider_health()
+        assert health["cache_ttl_seconds"] == 11
+        assert health["failure_backoff_seconds"] == 12
+
     def test_ops_magma_handoff_section_is_read_only_and_sanitized(self):
         from waggledance.adapters.http.routes.compat_dashboard import (
             _magma_share_import_handoff_section,

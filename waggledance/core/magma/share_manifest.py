@@ -322,10 +322,20 @@ def build_magma_share_manifest_import_report(
             }
         )
 
+    contract_expected_share_id = (
+        expected_share_id
+        if expected_share_id is not None
+        else share_manifest["share_id"]
+    )
+    contract_expected_purpose = (
+        expected_purpose
+        if expected_purpose is not None
+        else share_manifest["purpose"]
+    )
     admission_contract = _replay_admission_contract(
         max_age_hours=max_age_hours,
-        expected_share_id=expected_share_id,
-        expected_purpose=expected_purpose,
+        expected_share_id=contract_expected_share_id,
+        expected_purpose=contract_expected_purpose,
     )
     return {
         "report_version": IMPORT_REPORT_VERSION,
@@ -766,8 +776,12 @@ def _ensure_import_report_ready_for_handoff(
     for field in ("share_id", "purpose"):
         if not isinstance(import_report.get(field), str):
             raise ValueError(f"import report is not handoff-ready: {field}")
+    _ensure_ref("share_id", import_report["share_id"])
+    if import_report["purpose"] not in PURPOSES:
+        raise ValueError("import report is not handoff-ready: purpose")
     admission_contract = import_report.get("admission_contract")
     admission_contract_digest = import_report.get("admission_contract_digest")
+    require_replay_identity_binding = False
     if admission_contract is None and admission_contract_digest is None:
         pass
     elif not isinstance(admission_contract, Mapping):
@@ -778,6 +792,7 @@ def _ensure_import_report_ready_for_handoff(
             admission_contract,
             admission_contract_digest,
         )
+        require_replay_identity_binding = True
     for field in ("share_manifest_digest", "source_manifest_digest"):
         _ensure_sha256_digest(field, import_report.get(field))
     replay_plan = import_report.get("replay_plan")
@@ -821,6 +836,19 @@ def _ensure_import_report_ready_for_handoff(
             f"replay_plan entry {index} evaluation_result_digest",
             entry.get("evaluation_result_digest"),
         )
+        if require_replay_identity_binding:
+            entry_id = entry.get("entry_id")
+            if not isinstance(entry_id, str):
+                raise ValueError(
+                    "import report is not handoff-ready: "
+                    f"replay_plan entry {index} entry_id"
+                )
+            _ensure_ref(f"replay_plan entry {index} entry_id", entry_id)
+            if not entry_id.startswith(f"{import_report['share_id']}:entry:"):
+                raise ValueError(
+                    "import report is not handoff-ready: "
+                    f"replay_plan entry {index} share_id"
+                )
 
 
 def _replay_admission_contract(
@@ -990,22 +1018,17 @@ def _ensure_replay_admission_contract_matches_import_report(
         not isinstance(max_age_hours, int)
         or isinstance(max_age_hours, bool)
         or max_age_hours <= 0
+        or max_age_hours > DEFAULT_IMPORT_MAX_AGE_HOURS
     ):
         raise ValueError("import report is not handoff-ready: max_age_hours")
     expected_share_id = admission_contract.get("expected_share_id")
-    if (
-        expected_share_id is not None
-        and expected_share_id != import_report["share_id"]
-    ):
+    if expected_share_id is None or expected_share_id != import_report["share_id"]:
         raise ValueError(
             "import report is not handoff-ready: "
             "admission_contract.expected_share_id"
         )
     expected_purpose = admission_contract.get("expected_purpose")
-    if (
-        expected_purpose is not None
-        and expected_purpose != import_report["purpose"]
-    ):
+    if expected_purpose is None or expected_purpose != import_report["purpose"]:
         raise ValueError(
             "import report is not handoff-ready: "
             "admission_contract.expected_purpose"

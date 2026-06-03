@@ -1,40 +1,31 @@
 """Contract tests for the future-scale insight_score benchmark schema.
 
 The slice intentionally adds only a schema, this executable contract, and docs.
-The three repro fields use positive schema allowlists; runtime leak and finite
-guards remain here as defense-in-depth until a later producer-harness PR can
-share them from a common utility.
+The three repro fields use positive schema allowlists. Runtime leak and finite
+guards are shared through tools.future_scale_contract_safety so future producer
+harnesses and tests use the same policy.
 """
 
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
-import re
+import sys
 from typing import Any
 
 import jsonschema
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = ROOT / "schemas" / "future_scale_insight_score_benchmark.v1.json"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-LEAK_PATTERNS = (
-    re.compile(r"[A-Za-z]:[\\/]", re.IGNORECASE),
-    re.compile(r"\\\\(?:wsl|share)", re.IGNORECASE),
-    re.compile(
-        r"(?:^|[\\/])(?:home|root|etc|var|opt|Users|tmp)(?:[\\/]|(?=$|\s|[\"'`;:,)\]]))",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bBearer\s+[A-Za-z0-9_.-]+", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b", re.IGNORECASE),
-    re.compile(r"\bAKIA[0-9A-Z]{16,}\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:claude|deepseek|gemini|gpt|hf|huggingface|llama|mistral|mixtral|ollama|phi|qwen)[A-Za-z0-9_.:/-]*\b",
-        re.IGNORECASE,
-    ),
+from tools.future_scale_contract_safety import (  # noqa: E402
+    validate_exact_false_fields,
+    validate_scalar_safety,
 )
+
+SCHEMA_PATH = ROOT / "schemas" / "future_scale_insight_score_benchmark.v1.json"
 
 GATE_FIELDS = (
     "claim_gate_satisfied",
@@ -57,23 +48,6 @@ def _validator() -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(_load_schema())
 
 
-def _walk_scalars(value: Any, path: str = "$") -> list[tuple[str, Any]]:
-    scalars: list[tuple[str, Any]] = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            scalars.extend(_walk_scalars(child, f"{path}.{key}"))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            scalars.extend(_walk_scalars(child, f"{path}[{index}]"))
-    else:
-        scalars.append((path, value))
-    return scalars
-
-
-def _looks_like_leak(value: str) -> bool:
-    return any(pattern.search(value) for pattern in LEAK_PATTERNS)
-
-
 def validate_insight_benchmark_artifact(artifact: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
@@ -83,9 +57,7 @@ def validate_insight_benchmark_artifact(artifact: dict[str, Any]) -> list[str]:
         path = list(exc.absolute_path) or "$"
         errors.append(f"schema_validation: {exc.message} (path: {path})")
 
-    for gate in GATE_FIELDS:
-        if artifact.get(gate) is not False:
-            errors.append(f"{gate} must be exact false bool")
+    errors.extend(validate_exact_false_fields(artifact, GATE_FIELDS))
 
     if artifact.get("measurement_scope") != "local":
         errors.append("measurement_scope must be 'local'")
@@ -94,13 +66,7 @@ def validate_insight_benchmark_artifact(artifact: dict[str, Any]) -> list[str]:
     if artifact.get("no_model_pull_or_download") is not True:
         errors.append("no_model_pull_or_download must be true")
 
-    for path, value in _walk_scalars(artifact):
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            if not math.isfinite(float(value)):
-                errors.append(f"{path} contains a non-finite number")
-        elif isinstance(value, str) and _looks_like_leak(value):
-            errors.append(f"{path} contains a forbidden secret/path-like string")
-
+    errors.extend(validate_scalar_safety(artifact))
     return errors
 
 
@@ -301,6 +267,23 @@ def test_rejects_raw_identifiers_in_alias_fields(field: str, value: Any):
 
     errors = validate_insight_benchmark_artifact(fixture)
     assert errors
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "supergrok2026",
+        "xxllama",
+        "mygpt4o",
+        "safe_gpt4o_hit",
+    ],
+)
+def test_rejects_glued_provider_aliases_in_run_id(value: str):
+    fixture = _good_fixture()
+    fixture["insight_runs"][0]["run_id"] = value
+
+    errors = validate_insight_benchmark_artifact(fixture)
+    assert any("forbidden secret/path-like string" in error for error in errors), errors
 
 
 def test_rejects_non_finite_scores_even_when_schema_accepts_number():

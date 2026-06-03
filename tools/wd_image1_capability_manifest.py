@@ -54,6 +54,11 @@ from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
     PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
     build_future_scale_route_depth_benchmark,
 )
+from tools.verify_future_scale_route_depth_capture_window_summary import (  # noqa: E402
+    SUMMARY_SCHEMA_VERSION as ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_SCHEMA_VERSION,
+    SUMMARY_STATUS_BLOCKED as ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_STATUS_BLOCKED,
+    build_capture_window_verification_summary,
+)
 from waggledance.core.hex_topology.cell_message_contract import make_message
 from waggledance.core.hex_topology.parent_child_relations import (
     ancestors_of,
@@ -4896,7 +4901,10 @@ def _unmeasured_future_scale_axis_evidence(
 def _future_scale_route_depth_benchmark_evidence() -> dict:
     route_depth_artifacts = [
         "tools/run_future_scale_route_depth_benchmark.py",
+        "tools/verify_future_scale_route_depth_capture_window_summary.py",
         "tests/tools/test_future_scale_route_depth_benchmark.py",
+        "tests/tools/test_future_scale_route_depth_capture_window_summary.py",
+        "docs/architecture/FUTURE_SCALE_ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY.md",
         "docs/benchmarks/FUTURE_SCALE_ROUTE_DEPTH_BENCHMARK.md",
         PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
         PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME,
@@ -4957,11 +4965,36 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
         and capture_attachment.get("required_runtime_evidence_present") is False
         and capture_attachment.get("external_writes_applied") is False
     )
+    try:
+        capture_summary = build_capture_window_verification_summary(
+            benchmark_report=report,
+            capture_attachment=capture_attachment,
+        )
+    except Exception:
+        capture_summary = {}
+    capture_summary_contract_ok = (
+        isinstance(capture_summary, dict)
+        and capture_summary.get("summary_schema_version")
+        == ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_SCHEMA_VERSION
+        and capture_summary.get("status")
+        == ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_STATUS_BLOCKED
+        and capture_summary.get("ok") is False
+        and capture_summary.get("claim_gate_satisfied") is False
+        and capture_summary.get("required_runtime_evidence_present") is False
+        and capture_summary.get("external_writes_applied") is False
+        and "capture_window_count_insufficient"
+        in capture_summary.get("blockers", [])
+    )
     report_ok = isinstance(report, dict) and report.get("ok") is True
     return {
         "status": (
-            "benchmark_histogram_and_capture_attachment_contract_available"
-            if report_ok and histogram_artifact_ok and capture_attachment_ok
+            "benchmark_histogram_capture_attachment_and_summary_contract_available"
+            if (
+                report_ok
+                and histogram_artifact_ok
+                and capture_attachment_ok
+                and capture_summary_contract_ok
+            )
             else "benchmark_contract_available"
             if report_ok
             else "benchmark_contract_unavailable"
@@ -5030,10 +5063,31 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
             "production_capture_window_digest_sha256": capture_attachment.get(
                 "attachment_digest_sha256"
             ),
+            "production_capture_window_summary_schema_version": (
+                capture_summary.get("summary_schema_version")
+                if isinstance(capture_summary, dict)
+                else None
+            ),
+            "production_capture_window_summary_status": (
+                capture_summary.get("status")
+                if isinstance(capture_summary, dict)
+                else None
+            ),
+            "production_capture_window_summary_ok": (
+                capture_summary.get("ok")
+                if isinstance(capture_summary, dict)
+                else None
+            ),
+            "production_capture_window_summary_blockers": (
+                capture_summary.get("blockers", [])
+                if isinstance(capture_summary, dict)
+                else []
+            ),
         },
         "evidence_freshness": "local_offline_benchmark_contract",
         "blockers": [
             "needs operator-owned live production route-depth exports run through the capture-window verifier",
+            "needs path-free capture-window verification summaries for attached operator-owned exports",
             "needs repeated versioned benchmark windows before trend claims",
             "needs production trace corpus binding before efficiency claims",
         ],
@@ -6875,7 +6929,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             next_smallest_pr=(
                 "Run an operator-owned live route-depth export through the "
-                "capture-window verifier without upgrading claims."
+                "capture-window verifier and render the path-free summary "
+                "without upgrading claims."
             ),
             proof=future_scale_scorecard,
         ),

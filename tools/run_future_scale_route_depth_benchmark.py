@@ -28,6 +28,7 @@ from waggledance.adapters.http.routes.chat import (  # noqa: E402
     _sanitize_route_stage_trace,
 )
 from tools.future_scale_contract_safety import validate_scalar_safety  # noqa: E402
+from waggledance.core.leak_policy import is_finite_number  # noqa: E402
 
 
 REPORT_VERSION = "wd.future_scale_route_depth_benchmark.v1"
@@ -455,7 +456,7 @@ def _validate_benchmark_result(result: Mapping[str, Any], errors: list[str]) -> 
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             errors.append(f"benchmark_result.{field} must be a non-negative int")
     for field in ("mean_depth", "p50_depth", "p95_depth", "p99_depth"):
-        if not _is_finite_number(result.get(field)):
+        if not is_finite_number(result.get(field)):
             errors.append(f"benchmark_result.{field} must be finite")
     if result.get("percentile_method") != "linear_interpolated_sorted_depths":
         errors.append("benchmark_result.percentile_method is not recognized")
@@ -542,10 +543,6 @@ def _git_text(*args: str) -> str:
 def _canonical_digest(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _is_finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def _is_stable_case_id(value: str) -> bool:

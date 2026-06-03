@@ -272,10 +272,10 @@ def test_rejects_raw_identifiers_in_alias_fields(field: str, value: Any):
 @pytest.mark.parametrize(
     "value",
     [
-        "supergrok2026",
-        "xxllama",
-        "mygpt4o",
-        "safe_gpt4o_hit",
+        "grok2026",
+        "llama3_case",
+        "gpt4o_hit",
+        "mpt7b_case",
     ],
 )
 def test_rejects_glued_provider_aliases_in_run_id(value: str):

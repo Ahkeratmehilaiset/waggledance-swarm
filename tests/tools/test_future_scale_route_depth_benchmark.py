@@ -230,7 +230,7 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
         "gemini-1.5-pro",
         "yi",
         "gpt4o_hit",
-        "safe_gpt4o_hit",
+        "llama3_case",
         "cohere_internal_model",
         "mpt7b_case",
         "hf://org/model/org/model:latest",
@@ -271,7 +271,7 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
 
     for value in [
         "gpt4o_hit",
-        "safe_gpt4o_hit",
+        "llama3_case",
         "cohere_internal_model",
         "mpt7b_case",
     ]:

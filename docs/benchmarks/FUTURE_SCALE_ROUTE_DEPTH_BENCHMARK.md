@@ -25,6 +25,9 @@ paths; injected path-like scalars are contract violations.
 The fixture traces are sanitized through
 `waggledance.adapters.http.routes.chat._sanitize_route_stage_trace` before the
 stage sequence is counted.
+The report validator also imports `tools.future_scale_contract_safety` so
+provider/model aliases, secrets, non-finite numbers, and disallowed path-like
+scalars are checked with the same policy as sibling future-scale contracts.
 
 ## Claim Guardrails
 

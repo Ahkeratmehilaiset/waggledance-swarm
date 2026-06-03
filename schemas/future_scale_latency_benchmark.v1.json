@@ -127,14 +127,17 @@
           },
           "p50_ms": {
             "type": "number",
+            "minimum": 0,
             "description": "p50 latency in milliseconds for the stage over the synthetic fixtures. Must be finite; non-finite values are rejected by the contract validator."
           },
           "p95_ms": {
             "type": "number",
+            "minimum": 0,
             "description": "p95 latency in milliseconds. Reported under the waggledance_route_stage_request_latency_histogram_ms family. Finite only."
           },
           "p99_ms": {
             "type": "number",
+            "minimum": 0,
             "description": "p99 latency in milliseconds for the stage."
           },
           "samples": {
@@ -162,17 +165,21 @@
       ],
       "properties": {
         "mean_p95_ms": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0
         },
         "median_p95_ms": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0
         },
         "p95_of_p99_ms": {
           "type": "number",
+          "minimum": 0,
           "description": "Aggregate tail latency using the waggledance_route_stage_request_latency_histogram_ms p99 quantiles. Finite only."
         },
         "p99_of_p95_ms": {
-          "type": ["number", "null"]
+          "type": ["number", "null"],
+          "minimum": 0
         },
         "finite": {
           "type": "boolean",
@@ -191,13 +198,16 @@
       ],
       "properties": {
         "positive_control_p95_ms": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0
         },
         "negative_control_p95_ms": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0
         },
         "control_delta_ms": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0
         },
         "controls_measured": {
           "type": "boolean",

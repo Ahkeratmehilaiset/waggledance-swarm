@@ -15,7 +15,6 @@ import hashlib
 import json
 import math
 from pathlib import Path
-import re
 import subprocess
 import sys
 from typing import Any, Mapping, Sequence
@@ -28,6 +27,7 @@ from waggledance.adapters.http.routes.chat import (  # noqa: E402
     CHAT_ROUTE_STAGE_ORDER,
     _sanitize_route_stage_trace,
 )
+from tools.future_scale_contract_safety import validate_scalar_safety  # noqa: E402
 
 
 REPORT_VERSION = "wd.future_scale_route_depth_benchmark.v1"
@@ -37,16 +37,6 @@ JSON_ARTIFACT_NAME = "future_scale_route_depth_benchmark.json"
 MARKDOWN_ARTIFACT_NAME = "future_scale_route_depth_benchmark.md"
 BENCHMARK_SCOPE = "local_deterministic_sanitized_route_stage_trace_fixture"
 MEASUREMENT_LABEL = "MEASURED_LOCAL_ONLY"
-MODEL_PROVIDER_NAME_PATTERN = (
-    r"(?:anthropic|claude|cohere|command-r|command|deepseek|falcon|gemini|"
-    r"gemma|google|gpt|grok|hf|huggingface|llama|mistral|mixtral|mpt|"
-    r"ollama|openai|phi|poro|qwen|xai|yi)"
-)
-MODEL_PROVIDER_TOKEN_PATTERN = (
-    rf"(?<![A-Za-z0-9]){MODEL_PROVIDER_NAME_PATTERN}"
-    r"(?:[0-9][A-Za-z0-9_.-]*|[_.:/-][A-Za-z0-9_.:/-]+)?"
-    r"(?![A-Za-z0-9])"
-)
 SOURCE_PATHS = (
     "waggledance/adapters/http/routes/chat.py",
     "waggledance/application/dto/chat_dto.py",
@@ -64,24 +54,6 @@ SAFE_FALSE_FIELDS = (
     "operator_gate_required",
     "external_writes_applied",
 )
-LEAK_PATTERNS = (
-    re.compile(r"[A-Za-z]:[/\\](?:Users|Python|Program Files|tmp)\b", re.IGNORECASE),
-    re.compile(r"[A-Za-z]:tmp\b", re.IGNORECASE),
-    re.compile(r"\\\\(?:wsl|share)", re.IGNORECASE),
-    re.compile(r"(?:^|[/\\])(?:home|root|etc|var|opt|Users|mnt|tmp)(?:[/\\]|$)", re.IGNORECASE),
-    re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)"),
-    re.compile(r"\bBearer\s+[A-Za-z0-9_.-]+", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b", re.IGNORECASE),
-    re.compile(r"\bAKIA[0-9A-Z]{16,}\b"),
-    re.compile(r"\bhf://[A-Za-z0-9_.:/-]+", re.IGNORECASE),
-    re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+\b"),
-    re.compile(MODEL_PROVIDER_TOKEN_PATTERN, re.IGNORECASE),
-)
-REPO_RELATIVE_PATH_PATTERN = re.compile(
-    r"^(?:configs|docs|orchestrator|prompts|reports|schemas|tests|tools|"
-    r"waggledance|web)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+$"
-)
-CASE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,80}$")
 ALLOWED_STAGES = tuple(CHAT_ROUTE_STAGE_ORDER)
 ALLOWED_STAGE_SET = set(ALLOWED_STAGES)
 
@@ -327,11 +299,12 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
     if allowed_order != list(ALLOWED_STAGES):
         errors.append("allowed_route_stage_order must match CHAT_ROUTE_STAGE_ORDER")
 
-    for path, value in _walk_scalars(report):
-        if isinstance(value, float) and not math.isfinite(value):
-            errors.append(f"{path} contains a non-finite number")
-        if isinstance(value, str) and _looks_like_leak(path, value):
-            errors.append(f"{path} contains a forbidden secret/path-like string")
+    errors.extend(
+        validate_scalar_safety(
+            report,
+            allowed_metadata_path_values=ALLOWED_METADATA_PATH_VALUES,
+        )
+    )
     return errors
 
 
@@ -509,7 +482,7 @@ def _validate_case_record(index: int, case: Any, errors: list[str]) -> None:
         errors.append(f"cases[{index}] must be an object")
         return
     case_id = case.get("case_id")
-    if not isinstance(case_id, str) or not CASE_ID_PATTERN.match(case_id):
+    if not isinstance(case_id, str) or not _is_stable_case_id(case_id):
         errors.append(f"cases[{index}].case_id must be a stable lowercase alias")
     route_depth = case.get("route_depth")
     if not isinstance(route_depth, int) or isinstance(route_depth, bool) or route_depth < 0:
@@ -575,30 +548,12 @@ def _is_finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
-def _walk_scalars(value: Any, path: str = "$") -> list[tuple[str, Any]]:
-    if isinstance(value, dict):
-        found: list[tuple[str, Any]] = []
-        for key, nested in value.items():
-            found.extend(_walk_scalars(nested, f"{path}.{key}"))
-        return found
-    if isinstance(value, list):
-        found = []
-        for index, nested in enumerate(value):
-            found.extend(_walk_scalars(nested, f"{path}[{index}]"))
-        return found
-    return [(path, value)]
-
-
-def _looks_like_leak(path: str, value: str) -> bool:
-    if REPO_RELATIVE_PATH_PATTERN.match(value):
-        return not _is_allowed_metadata_path(path, value)
-    return any(pattern.search(value) for pattern in LEAK_PATTERNS)
-
-
-def _is_allowed_metadata_path(path: str, value: str) -> bool:
-    if value not in ALLOWED_METADATA_PATH_VALUES:
-        return False
-    return path == "$.axis_definition_source" or path.startswith("$.source_paths[")
+def _is_stable_case_id(value: str) -> bool:
+    return (
+        3 <= len(value) <= 81
+        and value[0].islower()
+        and all(character.islower() or character.isdigit() or character == "_" for character in value)
+    )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # Future Scale Latency Benchmark
 
-Status: Option A round 1, slice latency contract artifact.
+Status: Option A round 1, latency contract artifact with shared safety
+validator follow-up.
 
 This slice defines a versioned, offline, deterministic contract for a
 `latency` benchmark artifact on the `future_scale` axis. It is a schema
@@ -10,14 +11,16 @@ claim.
 
 ## Scope
 
-This PR is intentionally limited to three paths:
+The latency contract surface is intentionally small:
 
 - `schemas/future_scale_latency_benchmark.v1.json`
 - `tests/contracts/test_future_scale_latency_benchmark_schema.py`
+- `tools/future_scale_contract_safety.py`
 - `docs/benchmarks/FUTURE_SCALE_LATENCY_BENCHMARK.md`
 
-It is disjoint from the already landed composite-path, contradiction-rate,
-and insight_score benchmark slices.
+The schema and contract test define the latency artifact. The shared safety
+utility is imported by this contract and by sibling future-scale validators so
+provider/model/path scalar checks do not drift across slices.
 
 ## Safety Contract
 
@@ -38,13 +41,15 @@ The executable contract also rejects:
 
 - any claim-gate upgrade or type confusion such as `"false"`;
 - non-finite numeric values such as `NaN`, `Infinity`, and `-Infinity`;
+- negative latency measurements in p50/p95/p99, aggregate latency, and control
+  latency fields;
 - raw model names, provider IDs, Hugging Face style identifiers, secrets, bearer
   tokens, and local filesystem paths in any scalar string;
 - extra properties, malformed payloads, wrong scopes, and wrong numeric types.
 
-The leak and finite-number walk is in the contract test for this slice because
-the producer harness is deliberately out of scope. A later producer PR should
-call an equivalent validator before writing any artifact.
+The leak and finite-number walk lives in
+`tools/future_scale_contract_safety.py`. Producer PRs should import that module
+instead of copying an equivalent validator.
 
 The three repro-oriented scalar fields are also positive allowlists in the
 schema:
@@ -93,7 +98,7 @@ python -m pytest tests/contracts/test_future_scale_latency_benchmark_schema.py -
 Expected result:
 
 ```text
-56 passed
+70 passed
 ```
 
 ## Limits

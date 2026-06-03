@@ -527,6 +527,55 @@ def test_peer_review_handoff_validates_admission_contract_when_present(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("required_checks", [], "admission_contract.canonical"),
+        ("rejection_modes", [], "admission_contract.canonical"),
+        ("report_invariants", {}, "admission_contract.canonical"),
+        ("max_age_hours", 48, "admission_contract.canonical"),
+        (
+            "expected_share_id",
+            "magma:share:import:forged",
+            "admission_contract.expected_share_id",
+        ),
+        (
+            "expected_purpose",
+            "peer_review",
+            "admission_contract.expected_purpose",
+        ),
+    ],
+)
+def test_peer_review_handoff_rejects_recomputed_admission_contract_tamper(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    match: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    tampered = json.loads(json.dumps(report))
+    tampered["admission_contract"][field] = value
+    tampered["admission_contract_digest"] = sha256_digest(
+        tampered["admission_contract"]
+    )
+
+    with pytest.raises(ValueError, match=match):
+        build_magma_share_import_peer_review_handoff(
+            import_report=tampered,
+            operator_decision_id=f"operator:decision:magma-share-import:{field}",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+
 def test_importer_rejects_stale_share_manifest(tmp_path: Path) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
 

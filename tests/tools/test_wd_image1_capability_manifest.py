@@ -1640,7 +1640,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     )
     assert (
         axes["route_depth"]["runtime_evidence"]["status"]
-        == "benchmark_and_histogram_artifact_contract_available"
+        == "benchmark_histogram_and_capture_attachment_contract_available"
     )
     assert axes["route_depth"]["runtime_evidence"]["metric_names"] == []
     assert axes["route_depth"]["runtime_evidence"]["sample"]["sample_count"] == 5
@@ -1680,7 +1680,39 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         == 64
     )
     assert (
-        "needs live production route-depth histogram capture window attached to the artifact contract"
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_attachment_status"
+        ]
+        == "capture_window_attachment_contract_available"
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_runtime_data_attached"
+        ]
+        is False
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_count"
+        ]
+        == 0
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_required_runtime"
+        ]
+        is False
+    )
+    assert (
+        len(
+            axes["route_depth"]["runtime_evidence"]["sample"][
+                "production_capture_window_digest_sha256"
+            ]
+        )
+        == 64
+    )
+    assert (
+        "needs operator-owned live production route-depth exports run through the capture-window verifier"
         in axes["route_depth"]["runtime_evidence"]["blockers"]
     )
     assert (
@@ -1812,7 +1844,7 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     )
     assert (
         evidence_by_axis["route_depth"]["status"]
-        == "benchmark_and_histogram_artifact_contract_available"
+        == "benchmark_histogram_and_capture_attachment_contract_available"
     )
     assert (
         "route-stage runtime metrics smoke failed"
@@ -1845,7 +1877,7 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
     )
     assert capability["proof"]["benchmark_window_summary"]["ok"] is True
     assert "benchmark-window evidence" in capability["safe_statement"]
-    assert "live production route-depth histogram capture window" in (
+    assert "operator-owned live route-depth export" in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

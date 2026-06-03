@@ -39,8 +39,17 @@ MARKDOWN_ARTIFACT_NAME = "future_scale_route_depth_benchmark.md"
 PRODUCTION_HISTOGRAM_ARTIFACT_NAME = (
     "future_scale_route_depth_production_histogram_artifact.json"
 )
+PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME = (
+    "future_scale_route_depth_production_capture_window_attachment.json"
+)
 PRODUCTION_HISTOGRAM_SCHEMA_VERSION = (
     "future_scale_route_depth_production_histogram_artifact.v1"
+)
+PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_SCHEMA_VERSION = (
+    "future_scale_route_depth_production_capture_window_attachment.v1"
+)
+PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION = (
+    "future_scale_route_depth_production_capture_window.v1"
 )
 BENCHMARK_SCOPE = "local_deterministic_sanitized_route_stage_trace_fixture"
 MEASUREMENT_LABEL = "MEASURED_LOCAL_ONLY"
@@ -77,6 +86,31 @@ ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES = (
 ROUTE_DEPTH_BUCKET_LABELS = tuple(
     str(depth) for depth in range(0, len(ALLOWED_STAGES) + 1)
 ) + ("+Inf",)
+ALLOWED_CAPTURE_SOURCE_KINDS = ("operator_owned_metrics_export",)
+CAPTURE_WINDOW_REQUIRED_FIELDS = (
+    "schema_version",
+    "capture_window_id",
+    "source_kind",
+    "operator_owned_export",
+    "window_start_utc",
+    "window_end_utc",
+    "metric_names",
+    "label_names",
+    "bucket_labels",
+    "sample_count",
+    "route_depth_sum",
+    "aggregate_cumulative_buckets",
+    "route_profile_count",
+    "route_profiles",
+    "raw_payload_included",
+    "query_text_included",
+    "local_paths_recorded",
+    "network_access",
+    "cloud_api_calls",
+)
+CAPTURE_WINDOW_ALLOWED_FIELDS = set(CAPTURE_WINDOW_REQUIRED_FIELDS) | {
+    "window_digest_sha256",
+}
 
 
 DEFAULT_TRACE_FIXTURES: tuple[dict[str, Any], ...] = (
@@ -154,6 +188,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional UTC timestamp override, e.g. 2026-06-02T20:55:00Z.",
     )
+    parser.add_argument(
+        "--production-capture-window-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional local operator-owned route-depth capture-window JSON export. "
+            "The input path is not recorded in the emitted artifacts."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON.")
     return parser
 
@@ -161,8 +204,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        capture_window = (
+            _load_capture_window_export(args.production_capture_window_json)
+            if args.production_capture_window_json is not None
+            else None
+        )
         report = build_future_scale_route_depth_benchmark(
             now_utc=_parse_utc(args.now) if args.now else None,
+            production_capture_window=capture_window,
         )
     except ValueError as exc:
         print(f"future scale route_depth benchmark FAILED: {exc}", file=sys.stderr)
@@ -185,6 +234,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             + "\n",
             encoding="utf-8",
         )
+        (args.out_dir / PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME).write_text(
+            json.dumps(
+                report["production_route_depth_capture_window_attachment"],
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         (args.out_dir / MARKDOWN_ARTIFACT_NAME).write_text(markdown, encoding="utf-8")
 
     if args.json:
@@ -198,6 +257,7 @@ def build_future_scale_route_depth_benchmark(
     *,
     trace_fixtures: Sequence[Mapping[str, Any]] | None = None,
     now_utc: datetime | None = None,
+    production_capture_window: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cases = _build_case_records(trace_fixtures or DEFAULT_TRACE_FIXTURES)
@@ -205,6 +265,9 @@ def build_future_scale_route_depth_benchmark(
     measured = bool(depths)
     benchmark_result = _build_benchmark_result(depths)
     histogram_artifact = _build_production_route_depth_histogram_artifact(cases)
+    capture_attachment = _build_production_capture_window_attachment(
+        production_capture_window,
+    )
     report: dict[str, Any] = {
         "report_version": REPORT_VERSION,
         "schema_version": SCHEMA_VERSION,
@@ -226,6 +289,7 @@ def build_future_scale_route_depth_benchmark(
         "allowed_route_stage_order": list(ALLOWED_STAGES),
         "benchmark_result": benchmark_result,
         "production_route_depth_histogram_artifact": histogram_artifact,
+        "production_route_depth_capture_window_attachment": capture_attachment,
         "cases": cases,
         "claim_gate_satisfied": False,
         "claim_safe": False,
@@ -242,6 +306,7 @@ def build_future_scale_route_depth_benchmark(
         "artifact_write_scope": [
             JSON_ARTIFACT_NAME,
             PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
+            PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME,
             MARKDOWN_ARTIFACT_NAME,
         ],
         "source_paths": list(SOURCE_PATHS),
@@ -272,8 +337,8 @@ def build_future_scale_route_depth_benchmark(
         },
         "blockers_to_full_claim": [
             "fixture traces are deterministic local examples, not production traffic",
-            "needs live production route-depth histogram capture window "
-            "attached to this artifact contract",
+            "needs repeated operator-owned live production route-depth capture "
+            "windows validated through the attachment contract",
             "needs repeated versioned benchmark windows before trend claims",
             "needs manifest aggregation with sibling future-scale axes",
         ],
@@ -327,6 +392,11 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
         errors.append("production_route_depth_histogram_artifact must be an object")
     else:
         _validate_production_route_depth_histogram_artifact(artifact, errors)
+    attachment = report.get("production_route_depth_capture_window_attachment")
+    if not isinstance(attachment, dict):
+        errors.append("production_route_depth_capture_window_attachment must be an object")
+    else:
+        _validate_production_capture_window_attachment(attachment, errors)
 
     cases = report.get("cases")
     if not isinstance(cases, list):
@@ -351,6 +421,7 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
 def render_markdown(report: dict[str, Any]) -> str:
     result = report["benchmark_result"]
     histogram_artifact = report["production_route_depth_histogram_artifact"]
+    capture_attachment = report["production_route_depth_capture_window_attachment"]
     lines = [
         "# Future-Scale Route Depth Benchmark",
         "",
@@ -367,6 +438,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"`{histogram_artifact['artifact_status']}`",
         "- production_histogram_runtime_data_attached: "
         f"`{str(histogram_artifact['production_runtime_data_attached']).lower()}`",
+        "- production_capture_window_attachment: "
+        f"`{capture_attachment['attachment_status']}`",
+        "- production_capture_window_runtime_data_attached: "
+        f"`{str(capture_attachment['production_runtime_data_attached']).lower()}`",
+        "- production_capture_window_count: "
+        f"`{capture_attachment['capture_window_count']}`",
         f"- claim_gate_satisfied: `{str(report['claim_gate_satisfied']).lower()}`",
         f"- claim_safe: `{str(report['claim_safe']).lower()}`",
         f"- literal_future_claim_safe: `{str(report['literal_future_claim_safe']).lower()}`",
@@ -507,6 +584,318 @@ def _build_production_route_depth_histogram_artifact(
             "attach live production runtime data or satisfy the future-scale "
             "claim gate."
         ),
+    }
+
+
+def _load_capture_window_export(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("could not read production capture-window JSON") from exc
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("production capture-window JSON is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("production capture-window JSON must be an object")
+    return parsed
+
+
+def _build_production_capture_window_attachment(
+    capture_window: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    capture_windows = []
+    if capture_window is not None:
+        capture_windows.append(_normalize_production_capture_window(capture_window))
+    data_attached = bool(capture_windows)
+    digest_source = {
+        "schema_version": PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_SCHEMA_VERSION,
+        "metric_names": list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES),
+        "label_names": list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES),
+        "bucket_labels": list(ROUTE_DEPTH_BUCKET_LABELS),
+        "capture_windows": capture_windows,
+    }
+    return {
+        "schema_version": PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_SCHEMA_VERSION,
+        "capture_window_schema_version": PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION,
+        "attachment_status": (
+            "operator_capture_window_attached"
+            if data_attached
+            else "capture_window_attachment_contract_available"
+        ),
+        "measurement_scope": (
+            "operator-owned route-depth capture-window attachment verifier; "
+            "one attached window is not enough to satisfy runtime evidence gates"
+        ),
+        "production_runtime_data_attached": data_attached,
+        "production_data_source": (
+            capture_windows[0]["source_kind"] if data_attached else "not_attached"
+        ),
+        "required_runtime_evidence_present": False,
+        "claim_gate_satisfied": False,
+        "claim_safe": False,
+        "literal_future_claim_safe": False,
+        "runtime_authority_changed": False,
+        "runtime_authority_granted": False,
+        "controls_present": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "network_access": "not_used",
+        "cloud_api_calls": 0,
+        "metric_names": list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES),
+        "label_names": list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES),
+        "bucket_labels": list(ROUTE_DEPTH_BUCKET_LABELS),
+        "allowed_source_kinds": list(ALLOWED_CAPTURE_SOURCE_KINDS),
+        "capture_window_count": len(capture_windows),
+        "capture_windows": capture_windows,
+        "attachment_digest_sha256": _canonical_digest(digest_source),
+        "blockers_to_runtime_claim": [
+            "needs repeated operator-owned production capture windows",
+            "needs retention policy for route/profile capture windows",
+            "needs independent production benchmark-window correlation",
+        ],
+        "safe_conclusion": (
+            "The attachment contract can validate a sanitized operator-owned "
+            "route-depth capture window, but it does not by itself satisfy "
+            "runtime evidence or future-scale claim gates."
+        ),
+    }
+
+
+def _normalize_production_capture_window(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    errors: list[str] = []
+    keys = set(payload)
+    missing = [field for field in CAPTURE_WINDOW_REQUIRED_FIELDS if field not in keys]
+    if missing:
+        errors.append("production capture window missing required fields")
+    unknown = keys - CAPTURE_WINDOW_ALLOWED_FIELDS
+    if unknown:
+        errors.append("production capture window contains unsupported fields")
+
+    if payload.get("schema_version") != PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION:
+        errors.append("production capture window schema_version is not recognized")
+    capture_window_id = payload.get("capture_window_id")
+    if (
+        not isinstance(capture_window_id, str)
+        or not _is_stable_case_id(capture_window_id)
+    ):
+        errors.append(
+            "production capture window capture_window_id must be a stable lowercase alias"
+        )
+    source_kind = payload.get("source_kind")
+    if source_kind not in ALLOWED_CAPTURE_SOURCE_KINDS:
+        errors.append("production capture window source_kind is not recognized")
+    if payload.get("operator_owned_export") is not True:
+        errors.append("production capture window operator_owned_export must be true")
+
+    start = _parse_capture_timestamp(
+        payload.get("window_start_utc"),
+        "window_start_utc",
+        errors,
+    )
+    end = _parse_capture_timestamp(
+        payload.get("window_end_utc"),
+        "window_end_utc",
+        errors,
+    )
+    if start is not None and end is not None and end <= start:
+        errors.append("production capture window window_end_utc must be after start")
+
+    if payload.get("metric_names") != list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES):
+        errors.append("production capture window metric_names mismatch")
+    if payload.get("label_names") != list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES):
+        errors.append("production capture window label_names mismatch")
+    if payload.get("bucket_labels") != list(ROUTE_DEPTH_BUCKET_LABELS):
+        errors.append("production capture window bucket_labels mismatch")
+
+    sample_count = _positive_int(
+        payload.get("sample_count"),
+        "production capture window sample_count",
+        errors,
+    )
+    route_depth_sum = _non_negative_int(
+        payload.get("route_depth_sum"),
+        "production capture window route_depth_sum",
+        errors,
+    )
+    route_profile_count = _positive_int(
+        payload.get("route_profile_count"),
+        "production capture window route_profile_count",
+        errors,
+    )
+    _validate_depth_sum_bounds(
+        route_depth_sum,
+        sample_count,
+        "production capture window route_depth_sum",
+        errors,
+    )
+
+    aggregate = payload.get("aggregate_cumulative_buckets")
+    if not isinstance(aggregate, dict):
+        errors.append(
+            "production capture window aggregate_cumulative_buckets must be an object"
+        )
+        normalized_aggregate = {}
+    else:
+        normalized_aggregate = {
+            label: aggregate.get(label) for label in ROUTE_DEPTH_BUCKET_LABELS
+        }
+        _validate_cumulative_buckets(
+            aggregate,
+            expected_sample_count=sample_count,
+            errors=errors,
+            prefix="production capture window aggregate_cumulative_buckets",
+        )
+
+    profiles_payload = payload.get("route_profiles")
+    normalized_profiles: list[dict[str, Any]] = []
+    recomputed_aggregate = {label: 0 for label in ROUTE_DEPTH_BUCKET_LABELS}
+    total_samples = 0
+    total_depth_sum = 0
+    seen_profiles: set[str] = set()
+    if not isinstance(profiles_payload, list):
+        errors.append("production capture window route_profiles must be a list")
+    else:
+        if route_profile_count is not None and len(profiles_payload) != route_profile_count:
+            errors.append("production capture window route_profile_count mismatch")
+        for index, profile in enumerate(profiles_payload):
+            normalized = _normalize_capture_profile(index, profile, errors)
+            if normalized is None:
+                continue
+            route_profile = normalized["route_profile"]
+            if route_profile in seen_profiles:
+                errors.append(
+                    "production capture window route_profiles route_profile "
+                    "aliases must be unique"
+                )
+            seen_profiles.add(route_profile)
+            normalized_profiles.append(normalized)
+            total_samples += normalized["sample_count"]
+            total_depth_sum += normalized["route_depth_sum"]
+            for label in ROUTE_DEPTH_BUCKET_LABELS:
+                value = normalized["cumulative_buckets"].get(label)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    recomputed_aggregate[label] += value
+
+    if sample_count is not None and total_samples != sample_count:
+        errors.append("production capture window route_profiles sample_count mismatch")
+    if route_depth_sum is not None and total_depth_sum != route_depth_sum:
+        errors.append(
+            "production capture window route_profiles route_depth_sum mismatch"
+        )
+    if isinstance(aggregate, dict) and recomputed_aggregate != normalized_aggregate:
+        errors.append(
+            "production capture window aggregate does not match route_profiles"
+        )
+
+    for field in (
+        "raw_payload_included",
+        "query_text_included",
+        "local_paths_recorded",
+    ):
+        if payload.get(field) is not False:
+            errors.append(f"production capture window {field} must be false")
+    if payload.get("network_access") != "not_used":
+        errors.append("production capture window network_access must be not_used")
+    if payload.get("cloud_api_calls") != 0:
+        errors.append("production capture window cloud_api_calls must be 0")
+
+    if errors:
+        raise ValueError("invalid production capture window: " + "; ".join(errors))
+
+    normalized_window = {
+        "schema_version": PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION,
+        "capture_window_id": capture_window_id,
+        "source_kind": source_kind,
+        "operator_owned_export": True,
+        "window_start_utc": _format_utc(start),
+        "window_end_utc": _format_utc(end),
+        "metric_names": list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES),
+        "label_names": list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES),
+        "bucket_labels": list(ROUTE_DEPTH_BUCKET_LABELS),
+        "sample_count": sample_count,
+        "route_depth_sum": route_depth_sum,
+        "aggregate_cumulative_buckets": normalized_aggregate,
+        "route_profile_count": route_profile_count,
+        "route_profiles": normalized_profiles,
+        "raw_payload_included": False,
+        "query_text_included": False,
+        "local_paths_recorded": False,
+        "network_access": "not_used",
+        "cloud_api_calls": 0,
+    }
+    digest = _canonical_digest(_capture_window_digest_source(normalized_window))
+    supplied_digest = payload.get("window_digest_sha256")
+    if supplied_digest is not None and supplied_digest != digest:
+        raise ValueError("invalid production capture window: window_digest_sha256 mismatch")
+    normalized_window["window_digest_sha256"] = digest
+    return normalized_window
+
+
+def _normalize_capture_profile(
+    index: int,
+    profile: Any,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    prefix = f"production capture window route_profiles[{index}]"
+    if not isinstance(profile, dict):
+        errors.append(f"{prefix} must be an object")
+        return None
+    route_profile = profile.get("route_profile")
+    if not isinstance(route_profile, str) or not _is_stable_case_id(route_profile):
+        errors.append(f"{prefix}.route_profile must be a stable lowercase alias")
+    final_stage = profile.get("final_stage")
+    if (
+        not isinstance(final_stage, str)
+        or final_stage not in set(ALLOWED_STAGES) | {"none"}
+    ):
+        errors.append(f"{prefix}.final_stage must be an allowed route stage")
+    sample_count = _positive_int(
+        profile.get("sample_count"),
+        f"{prefix}.sample_count",
+        errors,
+    )
+    route_depth_sum = _non_negative_int(
+        profile.get("route_depth_sum"),
+        f"{prefix}.route_depth_sum",
+        errors,
+    )
+    _validate_depth_sum_bounds(
+        route_depth_sum,
+        sample_count,
+        f"{prefix}.route_depth_sum",
+        errors,
+    )
+    buckets = profile.get("cumulative_buckets")
+    if not isinstance(buckets, dict):
+        errors.append(f"{prefix}.cumulative_buckets must be an object")
+        normalized_buckets = {}
+    else:
+        normalized_buckets = {
+            label: buckets.get(label) for label in ROUTE_DEPTH_BUCKET_LABELS
+        }
+        _validate_cumulative_buckets(
+            buckets,
+            expected_sample_count=sample_count,
+            errors=errors,
+            prefix=f"{prefix}.cumulative_buckets",
+        )
+    if (
+        not isinstance(route_profile, str)
+        or not isinstance(final_stage, str)
+        or sample_count is None
+        or route_depth_sum is None
+        or not isinstance(buckets, dict)
+    ):
+        return None
+    return {
+        "route_profile": route_profile,
+        "final_stage": final_stage,
+        "sample_count": sample_count,
+        "route_depth_sum": route_depth_sum,
+        "cumulative_buckets": normalized_buckets,
     }
 
 
@@ -783,6 +1172,269 @@ def _validate_production_route_depth_histogram_artifact(
             errors.append("production histogram artifact_digest_sha256 mismatch")
 
 
+def _validate_production_capture_window_attachment(
+    attachment: Mapping[str, Any],
+    errors: list[str],
+) -> None:
+    if (
+        attachment.get("schema_version")
+        != PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_SCHEMA_VERSION
+    ):
+        errors.append("production capture attachment schema_version is not recognized")
+    if (
+        attachment.get("capture_window_schema_version")
+        != PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION
+    ):
+        errors.append(
+            "production capture attachment capture_window_schema_version is not recognized"
+        )
+    status = attachment.get("attachment_status")
+    if status not in {
+        "capture_window_attachment_contract_available",
+        "operator_capture_window_attached",
+    }:
+        errors.append("production capture attachment attachment_status is not recognized")
+    for field in SAFE_FALSE_FIELDS:
+        if attachment.get(field) is not False:
+            errors.append(
+                f"production capture attachment {field} must be exact false bool"
+            )
+    if attachment.get("network_access") != "not_used":
+        errors.append("production capture attachment network_access must be not_used")
+    if attachment.get("cloud_api_calls") != 0:
+        errors.append("production capture attachment cloud_api_calls must be 0")
+    if attachment.get("metric_names") != list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES):
+        errors.append("production capture attachment metric_names mismatch")
+    if attachment.get("label_names") != list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES):
+        errors.append("production capture attachment label_names mismatch")
+    if attachment.get("bucket_labels") != list(ROUTE_DEPTH_BUCKET_LABELS):
+        errors.append("production capture attachment bucket_labels mismatch")
+    if attachment.get("allowed_source_kinds") != list(ALLOWED_CAPTURE_SOURCE_KINDS):
+        errors.append("production capture attachment allowed_source_kinds mismatch")
+
+    capture_count = attachment.get("capture_window_count")
+    if (
+        not isinstance(capture_count, int)
+        or isinstance(capture_count, bool)
+        or capture_count < 0
+    ):
+        errors.append(
+            "production capture attachment capture_window_count must be a non-negative int"
+        )
+    capture_windows = attachment.get("capture_windows")
+    if not isinstance(capture_windows, list):
+        errors.append("production capture attachment capture_windows must be a list")
+        capture_windows = []
+    if isinstance(capture_count, int) and len(capture_windows) != capture_count:
+        errors.append("production capture attachment capture_window_count mismatch")
+
+    attached = attachment.get("production_runtime_data_attached")
+    source = attachment.get("production_data_source")
+    if capture_windows:
+        if attached is not True:
+            errors.append(
+                "production capture attachment production_runtime_data_attached "
+                "must be true when capture_windows are attached"
+            )
+        if source not in ALLOWED_CAPTURE_SOURCE_KINDS:
+            errors.append(
+                "production capture attachment production_data_source is not recognized"
+            )
+        if status != "operator_capture_window_attached":
+            errors.append(
+                "production capture attachment attachment_status must mark attached window"
+            )
+    else:
+        if attached is not False:
+            errors.append(
+                "production capture attachment production_runtime_data_attached "
+                "must be false when no capture_windows are attached"
+            )
+        if source != "not_attached":
+            errors.append(
+                "production capture attachment production_data_source must be not_attached"
+            )
+        if status != "capture_window_attachment_contract_available":
+            errors.append(
+                "production capture attachment attachment_status must mark contract available"
+            )
+
+    for index, window in enumerate(capture_windows):
+        if not isinstance(window, dict):
+            errors.append(
+                f"production capture attachment capture_windows[{index}] must be an object"
+            )
+            continue
+        _validate_capture_window_record(index, window, errors)
+
+    digest = attachment.get("attachment_digest_sha256")
+    if not _is_lower_sha256(digest):
+        errors.append(
+            "production capture attachment attachment_digest_sha256 must be lowercase sha256"
+        )
+    else:
+        digest_source = {
+            "schema_version": attachment.get("schema_version"),
+            "metric_names": attachment.get("metric_names"),
+            "label_names": attachment.get("label_names"),
+            "bucket_labels": attachment.get("bucket_labels"),
+            "capture_windows": attachment.get("capture_windows"),
+        }
+        if _canonical_digest(digest_source) != digest:
+            errors.append(
+                "production capture attachment attachment_digest_sha256 mismatch"
+            )
+
+
+def _validate_capture_window_record(
+    index: int,
+    window: Mapping[str, Any],
+    errors: list[str],
+) -> None:
+    prefix = f"production capture attachment capture_windows[{index}]"
+    if window.get("schema_version") != PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION:
+        errors.append(f"{prefix}.schema_version is not recognized")
+    window_id = window.get("capture_window_id")
+    if not isinstance(window_id, str) or not _is_stable_case_id(window_id):
+        errors.append(f"{prefix}.capture_window_id must be a stable lowercase alias")
+    source_kind = window.get("source_kind")
+    if source_kind not in ALLOWED_CAPTURE_SOURCE_KINDS:
+        errors.append(f"{prefix}.source_kind is not recognized")
+    if window.get("operator_owned_export") is not True:
+        errors.append(f"{prefix}.operator_owned_export must be true")
+
+    start = _parse_capture_timestamp(window.get("window_start_utc"), "start", errors)
+    end = _parse_capture_timestamp(window.get("window_end_utc"), "end", errors)
+    if start is not None and end is not None and end <= start:
+        errors.append(f"{prefix}.window_end_utc must be after start")
+
+    if window.get("metric_names") != list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES):
+        errors.append(f"{prefix}.metric_names mismatch")
+    if window.get("label_names") != list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES):
+        errors.append(f"{prefix}.label_names mismatch")
+    if window.get("bucket_labels") != list(ROUTE_DEPTH_BUCKET_LABELS):
+        errors.append(f"{prefix}.bucket_labels mismatch")
+    sample_count = _positive_int(window.get("sample_count"), f"{prefix}.sample_count", errors)
+    route_depth_sum = _non_negative_int(
+        window.get("route_depth_sum"),
+        f"{prefix}.route_depth_sum",
+        errors,
+    )
+    profile_count = _positive_int(
+        window.get("route_profile_count"),
+        f"{prefix}.route_profile_count",
+        errors,
+    )
+    _validate_depth_sum_bounds(route_depth_sum, sample_count, f"{prefix}.route_depth_sum", errors)
+
+    aggregate = window.get("aggregate_cumulative_buckets")
+    if not isinstance(aggregate, dict):
+        errors.append(f"{prefix}.aggregate_cumulative_buckets must be an object")
+    else:
+        _validate_cumulative_buckets(
+            aggregate,
+            expected_sample_count=sample_count,
+            errors=errors,
+            prefix=f"{prefix}.aggregate_cumulative_buckets",
+        )
+
+    profiles = window.get("route_profiles")
+    if not isinstance(profiles, list):
+        errors.append(f"{prefix}.route_profiles must be a list")
+        profiles = []
+    if profile_count is not None and len(profiles) != profile_count:
+        errors.append(f"{prefix}.route_profile_count mismatch")
+    total_samples = 0
+    total_depth_sum = 0
+    recomputed_aggregate = {label: 0 for label in ROUTE_DEPTH_BUCKET_LABELS}
+    seen_profiles: set[str] = set()
+    for profile_index, profile in enumerate(profiles):
+        if not isinstance(profile, dict):
+            errors.append(f"{prefix}.route_profiles[{profile_index}] must be an object")
+            continue
+        route_profile = profile.get("route_profile")
+        if not isinstance(route_profile, str) or not _is_stable_case_id(route_profile):
+            errors.append(
+                f"{prefix}.route_profiles[{profile_index}].route_profile "
+                "must be a stable lowercase alias"
+            )
+        elif route_profile in seen_profiles:
+            errors.append(f"{prefix}.route_profiles route_profile aliases must be unique")
+        else:
+            seen_profiles.add(route_profile)
+        final_stage = profile.get("final_stage")
+        if (
+            not isinstance(final_stage, str)
+            or final_stage not in set(ALLOWED_STAGES) | {"none"}
+        ):
+            errors.append(
+                f"{prefix}.route_profiles[{profile_index}].final_stage "
+                "must be an allowed route stage"
+            )
+        profile_sample_count = _positive_int(
+            profile.get("sample_count"),
+            f"{prefix}.route_profiles[{profile_index}].sample_count",
+            errors,
+        )
+        profile_depth_sum = _non_negative_int(
+            profile.get("route_depth_sum"),
+            f"{prefix}.route_profiles[{profile_index}].route_depth_sum",
+            errors,
+        )
+        _validate_depth_sum_bounds(
+            profile_depth_sum,
+            profile_sample_count,
+            f"{prefix}.route_profiles[{profile_index}].route_depth_sum",
+            errors,
+        )
+        buckets = profile.get("cumulative_buckets")
+        if not isinstance(buckets, dict):
+            errors.append(
+                f"{prefix}.route_profiles[{profile_index}].cumulative_buckets "
+                "must be an object"
+            )
+        else:
+            _validate_cumulative_buckets(
+                buckets,
+                expected_sample_count=profile_sample_count,
+                errors=errors,
+                prefix=f"{prefix}.route_profiles[{profile_index}].cumulative_buckets",
+            )
+            for label in ROUTE_DEPTH_BUCKET_LABELS:
+                value = buckets.get(label)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    recomputed_aggregate[label] += value
+        if profile_sample_count is not None:
+            total_samples += profile_sample_count
+        if profile_depth_sum is not None:
+            total_depth_sum += profile_depth_sum
+    if sample_count is not None and total_samples != sample_count:
+        errors.append(f"{prefix}.route_profiles sample_count mismatch")
+    if route_depth_sum is not None and total_depth_sum != route_depth_sum:
+        errors.append(f"{prefix}.route_profiles route_depth_sum mismatch")
+    if isinstance(aggregate, dict) and recomputed_aggregate != aggregate:
+        errors.append(f"{prefix}.aggregate does not match route_profiles")
+
+    for field in (
+        "raw_payload_included",
+        "query_text_included",
+        "local_paths_recorded",
+    ):
+        if window.get(field) is not False:
+            errors.append(f"{prefix}.{field} must be false")
+    if window.get("network_access") != "not_used":
+        errors.append(f"{prefix}.network_access must be not_used")
+    if window.get("cloud_api_calls") != 0:
+        errors.append(f"{prefix}.cloud_api_calls must be 0")
+
+    digest = window.get("window_digest_sha256")
+    if not _is_lower_sha256(digest):
+        errors.append(f"{prefix}.window_digest_sha256 must be lowercase sha256")
+    else:
+        if _canonical_digest(_capture_window_digest_source(window)) != digest:
+            errors.append(f"{prefix}.window_digest_sha256 mismatch")
+
+
 def _validate_cumulative_buckets(
     buckets: Mapping[str, Any],
     *,
@@ -804,6 +1456,54 @@ def _validate_cumulative_buckets(
         previous = value
     if expected_sample_count is not None and buckets.get("+Inf") != expected_sample_count:
         errors.append(f"{prefix}.+Inf must equal sample_count")
+
+
+def _positive_int(value: Any, field_name: str, errors: list[str]) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        errors.append(f"{field_name} must be a positive int")
+        return None
+    return value
+
+
+def _non_negative_int(value: Any, field_name: str, errors: list[str]) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        errors.append(f"{field_name} must be a non-negative int")
+        return None
+    return value
+
+
+def _validate_depth_sum_bounds(
+    route_depth_sum: int | None,
+    sample_count: int | None,
+    field_name: str,
+    errors: list[str],
+) -> None:
+    if route_depth_sum is None or sample_count is None:
+        return
+    if route_depth_sum > sample_count * len(ALLOWED_STAGES):
+        errors.append(f"{field_name} exceeds max route depth for sample_count")
+
+
+def _parse_capture_timestamp(
+    raw: Any,
+    field_name: str,
+    errors: list[str],
+) -> datetime | None:
+    if not isinstance(raw, str):
+        errors.append(f"production capture window {field_name} must be a UTC Z string")
+        return None
+    if not raw.endswith("Z"):
+        errors.append(f"production capture window {field_name} must use UTC Z")
+        return None
+    try:
+        parsed = _parse_utc(raw)
+    except ValueError:
+        errors.append(f"production capture window {field_name} must be valid UTC")
+        return None
+    if _format_utc(parsed) != raw:
+        errors.append(f"production capture window {field_name} must be canonical UTC")
+        return None
+    return parsed
 
 
 def _validate_case_record(index: int, case: Any, errors: list[str]) -> None:
@@ -871,6 +1571,38 @@ def _git_text(*args: str) -> str:
 def _canonical_digest(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _capture_window_digest_source(window: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": window.get("schema_version"),
+        "capture_window_id": window.get("capture_window_id"),
+        "source_kind": window.get("source_kind"),
+        "operator_owned_export": window.get("operator_owned_export"),
+        "window_start_utc": window.get("window_start_utc"),
+        "window_end_utc": window.get("window_end_utc"),
+        "metric_names": window.get("metric_names"),
+        "label_names": window.get("label_names"),
+        "bucket_labels": window.get("bucket_labels"),
+        "sample_count": window.get("sample_count"),
+        "route_depth_sum": window.get("route_depth_sum"),
+        "aggregate_cumulative_buckets": window.get("aggregate_cumulative_buckets"),
+        "route_profile_count": window.get("route_profile_count"),
+        "route_profiles": window.get("route_profiles"),
+        "raw_payload_included": window.get("raw_payload_included"),
+        "query_text_included": window.get("query_text_included"),
+        "local_paths_recorded": window.get("local_paths_recorded"),
+        "network_access": window.get("network_access"),
+        "cloud_api_calls": window.get("cloud_api_calls"),
+    }
+
+
+def _is_lower_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _is_stable_case_id(value: str) -> bool:

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,13 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     evaluate_paths,
     load_charter,
 )
+from waggledance.core.autonomy_growth.counterfactual_replay import (  # noqa: E402
+    A3_LABEL_MEASURED_LOCAL_PARTIAL,
+    DEFAULT_A3_MIN_SAMPLES,
+    compute_counterfactual_delta,
+    summarize_counterfactual_observability,
+)
+from waggledance.core.leak_policy import looks_like_leak_simple  # noqa: E402
 from waggledance.core.magma.canonical import (  # noqa: E402
     canonical_json_bytes,
     sha256_digest,
@@ -32,6 +39,7 @@ from waggledance.core.magma.receipt_bundle import (  # noqa: E402
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
+from waggledance.core.solver_synthesis.declarative_solver_spec import SolverSpec  # noqa: E402
 
 
 REPORT_VERSION = "wd.v12.a3_counterfactual_axis_proof.v0"
@@ -53,6 +61,8 @@ new file mode 100644
 +Stored consensus replay proposes documenting only the local A3 candidate diff.
 +No write, PR creation, merge, or external effect is executed by this replay.
 """
+RUNTIME_CONDITION_SMOKE_VERSION = "wd.v12.a3_runtime_condition_replay_smoke.v0"
+RUNTIME_SMOKE_PRIVACY_CANARY = "operator_secret_goal_marker_DO_NOT_LEAK"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,6 +135,7 @@ def build_a3_counterfactual_axis_proof(
     factual = demo["factual"]
     counterfactual = demo["counterfactual"]
     delta = demo["delta"]
+    runtime_smoke = _build_runtime_condition_replay_smoke()
     delta_fields = [
         field
         for field, values in sorted(delta.items())
@@ -166,6 +177,7 @@ def build_a3_counterfactual_axis_proof(
         "ok": bool(
             counterfactual_delta_proven
             and stored_consensus_replay["candidate_diff_charter_allowed"]
+            and runtime_smoke["ok"]
         ),
         "axis_id": "A3",
         "axis_name": "counterfactual_evaluation_delta",
@@ -194,8 +206,10 @@ def build_a3_counterfactual_axis_proof(
             stored_consensus_replay["receipt_bound"]
         ),
         "stored_consensus_replay": stored_consensus_replay,
+        "runtime_condition_replay_smoke": runtime_smoke,
         "evidence_sources": [
             "tools/run_pdam_counterfactual_demo.py",
+            "waggledance/core/autonomy_growth/counterfactual_replay.py",
             "schemas/v3_13_0/evaluation_result.v1.json",
             "tools/verify_magma_receipt.py",
             "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
@@ -207,6 +221,7 @@ def build_a3_counterfactual_axis_proof(
             "does_not_apply_writes": True,
             "measures_one_local_domain_fixture": True,
             "measures_three_deterministic_variants": True,
+            "runtime_smoke_is_not_axis_claim_upgrade": True,
         },
     }
 
@@ -230,6 +245,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- stored_consensus_replay_verified: `{str(report['stored_consensus_replay_verified']).lower()}`",
         f"- stored_consensus_replay_receipt_bound: `{str(report['receipt_bound_stored_consensus_replay']).lower()}`",
         f"- stored_consensus_replay_decision: `{report['stored_consensus_replay']['decision']}`",
+        f"- runtime_condition_replay_smoke: `{str(report['runtime_condition_replay_smoke']['ok']).lower()}`",
+        f"- runtime_replay_claim_label: `{report['runtime_condition_replay_smoke']['claim_label']}`",
+        f"- runtime_replay_sample_count: `{report['runtime_condition_replay_smoke']['sample_count']}`",
         "",
         "| Field | Factual | Counterfactual |",
         "|---|---|---|",
@@ -250,7 +268,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "This is a three-variant local measured counterfactual row. It is not a rival benchmark,",
         "does not execute an external effect, and does not claim broad semantic",
-        "counterfactual coverage beyond this fixture.",
+        "counterfactual coverage beyond this fixture. The runtime-condition smoke only",
+        "proves the sample-floor, same-sample-set, deterministic, and privacy guards",
+        "on a deterministic local fixture; it does not upgrade the top-level axis claim.",
         "",
     ]
     return "\n".join(lines)
@@ -311,6 +331,97 @@ def _receipt_summary(receipt_bundle: dict[str, Any] | None) -> dict[str, Any]:
         "verifier_ok": bool(verifier["ok"]),
         "verifier_error_count": len(verifier["errors"]),
     }
+
+
+def _build_runtime_condition_replay_smoke() -> dict[str, Any]:
+    samples = [
+        {"x": float(index), "note": RUNTIME_SMOKE_PRIVACY_CANARY}
+        for index in range(DEFAULT_A3_MIN_SAMPLES + 4)
+    ]
+    delta = compute_counterfactual_delta(
+        shadow_samples=samples,
+        candidate=_runtime_smoke_spec("candidate_kelvin", 273.15),
+        incumbent=_runtime_smoke_spec("incumbent_identity", 0.0),
+        oracle=_runtime_smoke_oracle,
+        oracle_kind="deterministic_formula_recompute",
+    )
+    summary = summarize_counterfactual_observability(delta)
+    rendered_summary = repr(summary)
+    privacy_canary_absent = RUNTIME_SMOKE_PRIVACY_CANARY not in rendered_summary
+    raw_fields_absent = all(
+        field not in summary
+        for field in ("per_arm", "divergences", "candidate_hash", "incumbent_hash")
+    )
+    emitted_text_fields = (
+        "scalar_unit_conversion_24_same_sample_set",
+        "runtime_condition_smoke_only_not_axis_claim_upgrade",
+    )
+    emitted_text_passes_leak_policy = all(
+        not looks_like_leak_simple(value) for value in emitted_text_fields
+    )
+    runtime_conditions_met = (
+        summary["sample_count"] >= DEFAULT_A3_MIN_SAMPLES
+        and summary["same_sample_set"] is True
+        and summary["deterministic"] is True
+        and summary["delta_digest_present"] is True
+    )
+    ok = (
+        runtime_conditions_met
+        and summary["runtime_authority_granted"] is False
+        and summary["external_writes_applied"] is False
+        and summary["payload_fields_exported"] is False
+        and privacy_canary_absent
+        and raw_fields_absent
+        and emitted_text_passes_leak_policy
+    )
+    return {
+        "schema_version": RUNTIME_CONDITION_SMOKE_VERSION,
+        "ok": bool(ok),
+        "sample_family": "scalar_unit_conversion_24_same_sample_set",
+        "min_samples": DEFAULT_A3_MIN_SAMPLES,
+        "sample_count": summary["sample_count"],
+        "compute_status": summary["compute_status"],
+        "observability_status": "measured_local_partial",
+        "claim_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
+        "runtime_conditions_met": runtime_conditions_met,
+        "divergence_count": summary["divergence_count"],
+        "same_sample_set": summary["same_sample_set"],
+        "deterministic": summary["deterministic"],
+        "no_delta": summary["no_delta"],
+        "delta_digest_present": summary["delta_digest_present"],
+        "source_available": summary["source_available"],
+        "claim_gate_satisfied": False,
+        "claim_safe": False,
+        "literal_future_claim_safe": False,
+        "required_runtime_evidence_present": False,
+        "controls_present": summary["controls_present"],
+        "runtime_authority_granted": summary["runtime_authority_granted"],
+        "external_writes_applied": summary["external_writes_applied"],
+        "payload_fields_exported": summary["payload_fields_exported"],
+        "raw_fields_exported": False,
+        "privacy_canary_absent": privacy_canary_absent,
+        "emitted_text_passes_leak_policy": emitted_text_passes_leak_policy,
+        "claim_boundary": "runtime_condition_smoke_only_not_axis_claim_upgrade",
+    }
+
+
+def _runtime_smoke_spec(name: str, offset: float) -> SolverSpec:
+    return SolverSpec(
+        schema_version=1,
+        spec_id=f"a3_runtime_smoke_{name}",
+        family_kind="scalar_unit_conversion",
+        solver_name=name,
+        cell_id="general",
+        spec={"from_unit": "C", "to_unit": "K", "factor": 1.0, "offset": offset},
+        source="v12_a3_runtime_smoke",
+        source_kind="hand_authored_fixture",
+    )
+
+
+def _runtime_smoke_oracle(inputs: Mapping[str, Any], artifact: Mapping[str, Any]) -> float:
+    return float(inputs["x"]) * float(artifact["factor"]) + float(
+        artifact.get("offset", 0.0)
+    )
 
 
 def _build_stored_consensus_replay() -> dict[str, Any]:

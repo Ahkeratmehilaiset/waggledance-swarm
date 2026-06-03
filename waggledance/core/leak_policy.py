@@ -12,10 +12,10 @@ Exposed surface:
 - looks_like_leak(field_path, value, allowed_metadata_paths): path-aware, allowlist-only
   for repo-relative paths in *named* metadata fields; everything else fail-closed.
 - looks_like_leak_simple(value)
+- is_finite_number(value)
 - CLAIM_GATES (the exact list of gates that contracts must emit as literal false)
 
 All operations deterministic, no network, no wallclock, no random, no model pulls.
-Non-finite numbers are out of scope here (handled by callers).
 
 Claim gates: N/A (pure utility module). Any artifact consuming this must set
 claim_gate_satisfied=false, claim_safe=false, literal_future_claim_safe=false,
@@ -26,6 +26,7 @@ See docs/architecture/LEAK_POLICY.md for contract, invariants, and usage.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, FrozenSet
 
@@ -177,6 +178,15 @@ def looks_like_leak_simple(value: Any) -> bool:
     if REPO_RELATIVE_PATH_PATTERN.match(value):
         return True
     return any(pattern.search(value) for pattern in LEAK_PATTERNS)
+
+
+def is_finite_number(value: Any) -> bool:
+    """Return True only for finite int/float scalars; bool is not numeric here."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 # Exact list of claim gates that benchmark / manifest / contract artifacts must

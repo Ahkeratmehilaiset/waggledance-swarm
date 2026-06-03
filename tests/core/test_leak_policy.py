@@ -31,6 +31,7 @@ from waggledance.core.leak_policy import (
     LEAK_PATTERNS,
     MODEL_PROVIDER_TOKEN_PATTERN,
     REPO_RELATIVE_PATH_PATTERN,
+    is_finite_number,
     looks_like_leak,
     looks_like_leak_simple,
 )
@@ -274,6 +275,15 @@ def test_non_string_values_never_leak_via_this_checker():
     assert looks_like_leak("$.bool", True, frozenset()) is False
     assert looks_like_leak("$.none", None, frozenset()) is False
     assert looks_like_leak("$.list", ["gpt"], frozenset()) is False  # caller walks
+
+
+def test_finite_number_helper_rejects_bool_and_non_finite_values():
+    assert is_finite_number(0) is True
+    assert is_finite_number(1.25) is True
+    assert is_finite_number(True) is False
+    assert is_finite_number(float("inf")) is False
+    assert is_finite_number(float("nan")) is False
+    assert is_finite_number("1.0") is False
 
 
 def test_walk_style_defense_in_depth_still_works_via_simple():

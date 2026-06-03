@@ -66,6 +66,15 @@ def _bridge_event(
     }
 
 
+def _rco_pass(task_id: str = "idle-consensus-001", *, pr: int = 477) -> dict:
+    return _bridge_event(
+        agent="claude-rco-1",
+        type_="decision",
+        status="rco_pass",
+        task_id=task_id,
+    ) | {"message": f"RCO_PASS exact head {HEAD}", "payload": {"pr": pr, "head": HEAD}}
+
+
 def _auto_merge_event(index: int, *, ts: str = "2026-05-18T01:00:00Z") -> dict:
     return {
         "ts_utc": ts,
@@ -122,7 +131,7 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
-        events_path=_events_path(tmp_path),
+        events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
         runner=runner,
@@ -157,7 +166,7 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        events_path=_events_path(tmp_path),
+        events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
         runner=runner,
@@ -406,6 +415,27 @@ def test_bridge_peer_block_blocks_automerge_without_runner(tmp_path: Path) -> No
     )
 
 
+def test_exact_head_rco_pass_required_when_bridge_events_checked(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert report["rco_pass_gate"]["has_qualifying_rco_pass_at_head"] is False
+    assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
+
+
 def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
     calls: list[str] = []
 
@@ -524,6 +554,7 @@ def test_bridge_peer_approval_clears_same_peer_block(tmp_path: Path) -> None:
                     status="changes_requested",
                     ts="2026-05-18T01:05:00Z",
                 ),
+                _rco_pass(),
                 _bridge_event(
                     agent="codex",
                     type_="decision",
@@ -635,7 +666,7 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
             receipt_bundle_path="docs/receipts/manifest.json",
-            events_path=_events_path(tmp_path),
+            events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
             runner=runner,
@@ -668,7 +699,7 @@ def test_runner_failure_recovers_when_pr_view_confirms_merge(
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
-        events_path=_events_path(tmp_path),
+        events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         repo="Ahkeratmehilaiset/waggledance-swarm",
         apply=True,
@@ -703,7 +734,7 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
             receipt_bundle_path="docs/receipts/manifest.json",
-            events_path=_events_path(tmp_path),
+            events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
             runner=runner,
@@ -731,7 +762,7 @@ def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> No
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            events_path=_events_path(tmp_path),
+            events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
             runner=lambda command: calls.append(list(command)),

@@ -57,6 +57,12 @@ def _rco_pass(task: str, *, pr: int, head: str, ts: str, frm: str = "claude") ->
     }
 
 
+def _rco_gate_pass(task: str, *, pr: int, head: str, ts: str) -> dict:
+    event = _rco_pass(task, pr=pr, head=head, ts=ts, frm="claude-rco-1")
+    event["message"] = f"RCO_PASS exact head {head}"
+    return event
+
+
 def _done_merged(task: str, *, pr: int, ts: str) -> dict:
     return {
         "ts_utc": ts,
@@ -243,8 +249,11 @@ def _candidate(pr=900, head=HEAD, task="t1"):
 
 
 def test_merge_ready_when_green_clean_headmatch():
-    events = [_rco_request("t1", ts="2026-05-22T13:00:00Z"),
-              _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
+    events = [
+        _rco_request("t1", ts="2026-05-22T13:00:00Z"),
+        _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
+        _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
+    ]
     r = evaluate_merge_ready(
         _candidate(), events=events, agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr),
@@ -257,7 +266,10 @@ def test_merge_ready_with_short_approved_head_prefix():
     # Real bridge rco_pass payloads carry a short head; gh returns the full sha.
     short = "862d34bd"
     full = "862d34bd27c15b870242faf333f7961629137cb8"
-    events = [_rco_pass("t1", pr=566, head=short, ts="2026-05-22T13:30:00Z")]
+    events = [
+        _rco_pass("t1", pr=566, head=short, ts="2026-05-22T13:30:00Z"),
+        _rco_gate_pass("t1", pr=566, head=full, ts="2026-05-22T13:31:00Z"),
+    ]
     r = evaluate_merge_ready(
         {"task_id": "t1", "pr": 566, "approved_head": short},
         events=events, agent="claude",
@@ -352,6 +364,17 @@ def test_no_snapshot_fn_is_unchecked_not_ready():
     assert r["ready"] is False and "pr_status_unchecked" in r["blockers"]
 
 
+def test_not_ready_without_exact_head_rco_pass():
+    events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
+    r = evaluate_merge_ready(
+        _candidate(), events=events, agent="claude",
+        snapshot_fn=lambda pr: _green_snapshot(pr),
+    )
+    assert r["ready"] is False
+    assert "rco_pass_missing_or_stale" in r["blockers"]
+    assert r["rco_pass_gate"]["decision"] == "no_rco_events_for_task"
+
+
 def test_snapshot_error_decision_is_reported_as_blocker():
     class SnapshotError(Exception):
         report = {
@@ -375,8 +398,11 @@ def test_snapshot_error_decision_is_reported_as_blocker():
 # --- build_loop_tick + adaptive wakeup -------------------------------------
 
 def test_loop_tick_merge_ready_short_wakeup(tmp_path):
-    events = [_rco_request("t1", ts="2026-05-22T13:00:00Z"),
-              _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
+    events = [
+        _rco_request("t1", ts="2026-05-22T13:00:00Z"),
+        _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
+        _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
+    ]
     report = build_loop_tick(
         agent="claude", events=events, claims=[], inbox_dir=tmp_path,
         now_utc=NOW, snapshot_fn=lambda pr: _green_snapshot(pr),

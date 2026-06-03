@@ -23,8 +23,9 @@ That opt-in mutation is intentionally limited to keeping the peer active; it
 does not resolve operator packs, merge PRs, or claim work.
 
 Merge-readiness here encodes the CLAUDE.md Rule 9 peer-RCO criteria (head-match
-+ CI green + mergeable clean + no standing peer block), which is the flow used
-for direct peer-RCO PRs. Idle-consensus-protocol PRs keep using
++ exact-head ``claude-rco-1`` RCO_PASS + CI green + mergeable clean + no
+standing peer block), which is the flow used for direct peer-RCO PRs.
+Idle-consensus-protocol PRs keep using
 ``idle_consensus_auto_merge.evaluate_auto_merge_gate`` (consensus + MAGMA
 receipt) and are out of scope for this aggregator.
 """
@@ -53,6 +54,9 @@ from tools.bridge_next_action import (  # noqa: E402
 )
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
+)
+from tools.check_rco_pass_present import (  # noqa: E402
+    check_rco_pass_present,
 )
 from tools.idle_consensus_auto_merge import (  # noqa: E402
     MERGEABLE_STATES,
@@ -718,6 +722,15 @@ def evaluate_merge_ready(
     result["snapshot_head"] = head_sha
     result["mergeable"] = mergeable
     result["checks_green"] = _checks_green(snapshot)
+
+    rco_pass_gate = check_rco_pass_present(
+        events=events,
+        task_id=task,
+        head=head_sha,
+    )
+    result["rco_pass_gate"] = rco_pass_gate
+    if not bool(rco_pass_gate.get("ok", False)):
+        result["blockers"].append("rco_pass_missing_or_stale")
 
     if not approved_head:
         result["blockers"].append("rco_pass_missing_head")

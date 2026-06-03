@@ -19,7 +19,9 @@ This tool fills that gap. It refuses if a peer has emitted a
 RCO pass / acknowledgement event from the SAME peer (so a fresh approval
 overrides an older block).
 
-Designed to be called BEFORE ``gh pr merge --squash --match-head-commit``:
+Designed to be called BEFORE ``gh pr merge --squash --match-head-commit`` and
+ANDed with ``tools/check_rco_pass_present.py``. Absence of a peer block is not
+an approval signal by itself.
 
     python tools/check_bridge_changes_requested.py \\
         --task-id <task_id> --from-agent claude --bridge-root .agent-bridge

@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 from waggledance.core.magma.share_manifest import (  # noqa: E402
+    DEFAULT_IMPORT_HANDOFF_EXPECTED_PURPOSE,
     DEFAULT_IMPORT_MAX_AGE_HOURS,
     IMPORT_HANDOFF_DECISIONS,
     PURPOSES,
@@ -140,6 +141,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 bridge_event_ref=args.bridge_event_ref,
                 import_decision=args.import_decision,
                 decision_reason_ref=args.decision_reason_ref,
+                expected_purpose=(
+                    args.expected_purpose
+                    or DEFAULT_IMPORT_HANDOFF_EXPECTED_PURPOSE
+                ),
                 now_utc=now_utc,
             )
     except (OSError, ValueError) as exc:

@@ -38,6 +38,7 @@ An autonomous merge is permitted to modify files **only** within these paths. Ev
 * `tests/**`
 * `schemas/v3_13_0/**` (except gate fields — see code pattern denylist)
 * `docs/architecture/**` (except denylist below)
+* `docs/benchmarks/**` (benchmark evidence and benchmark companion docs)
 * `waggledance/core/magma/**`
 * `waggledance/core/idle_protocol*`
 * `waggledance/core/pdam_close_solver.py`

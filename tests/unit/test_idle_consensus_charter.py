@@ -26,6 +26,7 @@ def test_charter_allowlist_contains_known_substrate_paths() -> None:
     charter = load_charter()
     assert "tools/**" in charter.allowlist
     assert "tests/**" in charter.allowlist
+    assert "docs/benchmarks/**" in charter.allowlist
     assert "waggledance/core/magma/**" in charter.allowlist
 
 
@@ -34,6 +35,7 @@ def test_charter_denylist_contains_known_charter_paths() -> None:
     assert "CLAUDE.md" in charter.file_denylist
     assert "memory/**" in charter.file_denylist
     assert ".agent-bridge/bin/**" in charter.file_denylist
+    assert "docs/architecture/IDLE_AUTONOMY_CHARTER.md" in charter.file_denylist
     assert "README.md" in charter.file_denylist
     assert "pyproject.toml" in charter.file_denylist
     assert "**/*secret*" in charter.file_denylist
@@ -46,11 +48,32 @@ def test_evaluate_paths_allows_substrate_path() -> None:
     assert decision.reason == "allowlist match, no denylist hit"
 
 
+def test_evaluate_paths_allows_benchmark_docs_path() -> None:
+    charter = load_charter()
+    decision = evaluate_paths(
+        charter,
+        ["docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md"],
+    )
+    assert decision.allowed is True
+    assert decision.reason == "allowlist match, no denylist hit"
+
+
 def test_evaluate_paths_blocks_denylisted_path() -> None:
     charter = load_charter()
     decision = evaluate_paths(charter, ["CLAUDE.md"])
     assert decision.allowed is False
     assert "CLAUDE.md" in decision.blocked_paths
+
+
+def test_evaluate_paths_still_blocks_charter_self_modification() -> None:
+    charter = load_charter()
+    decision = evaluate_paths(
+        charter,
+        ["docs/architecture/IDLE_AUTONOMY_CHARTER.md"],
+    )
+    assert decision.allowed is False
+    assert decision.blocked_paths == ("docs/architecture/IDLE_AUTONOMY_CHARTER.md",)
+    assert decision.reason == "denylist hit"
 
 
 def test_evaluate_paths_blocks_memory_subpath() -> None:

@@ -217,7 +217,7 @@ def _marker_matches_diff(marker: str, diff_text: str) -> bool:
         return False
     pattern = (
         rf"(?<![A-Za-z0-9_])"
-        rf"['\"]?{re.escape(lhs)}['\"]?"
+        rf"(?i:['\"]?{re.escape(lhs)}['\"]?)"
         rf"\s*[:=]\s*"
         rf"(?i:['\"]?{re.escape(rhs)}['\"]?)"
         rf"(?![A-Za-z0-9_])"

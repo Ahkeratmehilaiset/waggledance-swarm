@@ -1560,8 +1560,9 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert summary["feed_health_drill_evidence_verifier_smoke_ok"] is True
     assert summary["solver_trace_receipt_proof_ok"] is True
     assert summary["required_runtime_evidence_present"] is False
-    assert summary["runtime_evidence_axis_count"] == 5
-    assert summary["unmeasured_axis_count"] == 3
+    assert summary["runtime_evidence_axis_count"] == 8
+    assert summary["unmeasured_axis_count"] == 0
+    assert summary["unmeasured_axes"] == []
     assert "route_depth" in summary["required_runtime_axes"]
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
@@ -1614,12 +1615,52 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     )
     assert (
         axes["useful_composite_paths"]["runtime_evidence"]["status"]
-        == "unmeasured"
+        == "benchmark_contract_available"
     )
     assert (
-        axes["contradiction_rate"]["runtime_evidence"]["status"] == "unmeasured"
+        axes["useful_composite_paths"]["runtime_evidence"]["sample"][
+            "useful_composite_paths_total"
+        ]
+        > 0
     )
-    assert axes["insight_score"]["runtime_evidence"]["status"] == "unmeasured"
+    assert (
+        axes["contradiction_rate"]["runtime_evidence"]["status"]
+        == "benchmark_contract_available"
+    )
+    assert (
+        axes["contradiction_rate"]["runtime_evidence"]["sample"][
+            "contradiction_rate"
+        ]
+        == 0.333333
+    )
+    assert (
+        axes["contradiction_rate"]["runtime_evidence"]["sample"][
+            "false_positive_count"
+        ]
+        == 0
+    )
+    assert (
+        axes["contradiction_rate"]["runtime_evidence"]["sample"][
+            "false_negative_count"
+        ]
+        == 0
+    )
+    assert (
+        axes["insight_score"]["runtime_evidence"]["status"]
+        == "schema_contract_available"
+    )
+    assert (
+        axes["insight_score"]["runtime_evidence"]["sample"][
+            "producer_harness_present"
+        ]
+        is False
+    )
+    assert (
+        axes["insight_score"]["runtime_evidence"]["sample"][
+            "schema_version"
+        ]
+        == "insight_score_benchmark.v1"
+    )
     assert all(
         item["runtime_evidence"]["claim_gate_satisfied"] is False
         for item in axes.values()
@@ -1714,7 +1755,8 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
         ]
         is False
     )
-    assert "benchmark artifacts" in capability["next_smallest_pr"]
+    assert "insight-score benchmark producer" in capability["next_smallest_pr"]
+    assert "route-depth histogram artifacts" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

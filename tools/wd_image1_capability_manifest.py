@@ -39,6 +39,12 @@ from tools.hex_shadow_subdivision_replay import (  # noqa: E402
     verify_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
 )
+from tools.run_future_scale_composite_path_benchmark import (  # noqa: E402
+    build_composite_path_benchmark,
+)
+from tools.run_future_scale_contradiction_rate_benchmark import (  # noqa: E402
+    build_future_scale_contradiction_rate_benchmark,
+)
 from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
     build_future_scale_route_depth_benchmark,
 )
@@ -4950,6 +4956,220 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
     }
 
 
+def _future_scale_composite_path_benchmark_evidence() -> dict:
+    composite_artifacts = [
+        "tools/run_future_scale_composite_path_benchmark.py",
+        "tests/tools/test_future_scale_composite_path_benchmark.py",
+        "docs/benchmarks/FUTURE_SCALE_COMPOSITE_PATH_BENCHMARK.md",
+        "waggledance/core/learning/composition_graph.py",
+        "configs/axioms",
+    ]
+    try:
+        report = build_composite_path_benchmark()
+    except Exception:
+        return {
+            "status": "benchmark_contract_unavailable",
+            "measurement_scope": (
+                "composite-path benchmark artifact contract could not be built"
+            ),
+            "metric_names": [],
+            "artifact_paths": composite_artifacts,
+            "sample": {},
+            "evidence_freshness": "local_offline_benchmark_contract_failed",
+            "blockers": [
+                "composite-path benchmark artifact contract failed to build",
+                "needs production corpus binding before runtime scalability claims",
+            ],
+            "claim_gate_satisfied": False,
+        }
+
+    summary = report.get("summary") if isinstance(report, dict) else {}
+    source = report.get("source") if isinstance(report, dict) else {}
+    scan = source.get("axiom_scan_summary") if isinstance(source, dict) else {}
+    if not isinstance(summary, dict):
+        summary = {}
+    if not isinstance(scan, dict):
+        scan = {}
+    report_ok = isinstance(report, dict) and report.get("ok") is True
+    return {
+        "status": (
+            "benchmark_contract_available"
+            if report_ok
+            else "benchmark_contract_unavailable"
+        ),
+        "measurement_scope": (
+            "local offline axiom-library composition graph, not production "
+            "composite-path usefulness"
+        ),
+        "metric_names": [],
+        "artifact_paths": composite_artifacts,
+        "sample": {
+            "solver_nodes": summary.get("solver_nodes"),
+            "bridge_candidates_total": summary.get("bridge_candidates_total"),
+            "useful_composite_paths_total": summary.get(
+                "useful_composite_paths_total"
+            ),
+            "useful_composite_paths_by_depth": summary.get(
+                "useful_composite_paths_by_depth"
+            ),
+            "axiom_files_loaded": scan.get("files_loaded"),
+            "evidence_status": report.get("evidence_status")
+            if isinstance(report, dict)
+            else None,
+            "measurement_scope": report.get("measurement_scope")
+            if isinstance(report, dict)
+            else None,
+        },
+        "evidence_freshness": "local_offline_benchmark_contract",
+        "blockers": list(report.get("blockers") or [])
+        if isinstance(report, dict)
+        else [
+            "needs repeated versioned benchmark windows before trend claims",
+            "needs production corpus binding before runtime scalability claims",
+        ],
+        "claim_gate_satisfied": False,
+    }
+
+
+def _future_scale_contradiction_rate_benchmark_evidence() -> dict:
+    contradiction_artifacts = [
+        "tools/run_future_scale_contradiction_rate_benchmark.py",
+        "tests/tools/test_future_scale_contradiction_rate_benchmark.py",
+        "docs/benchmarks/FUTURE_SCALE_CONTRADICTION_RATE_BENCHMARK.md",
+        "tools/propose_solver.py",
+    ]
+    try:
+        report = build_future_scale_contradiction_rate_benchmark(
+            now_utc=datetime(2026, 6, 1, 20, 55, tzinfo=timezone.utc),
+        )
+    except Exception:
+        return {
+            "status": "benchmark_contract_unavailable",
+            "measurement_scope": (
+                "contradiction-rate benchmark artifact contract could not be built"
+            ),
+            "metric_names": [],
+            "artifact_paths": contradiction_artifacts,
+            "sample": {},
+            "evidence_freshness": "local_offline_benchmark_contract_failed",
+            "blockers": [
+                "contradiction-rate benchmark artifact contract failed to build",
+                "needs proposal-gate verdicts exported as production metrics",
+            ],
+            "claim_gate_satisfied": False,
+        }
+
+    result = report.get("benchmark_result") if isinstance(report, dict) else {}
+    if not isinstance(result, dict):
+        result = {}
+    report_ok = isinstance(report, dict) and report.get("ok") is True
+    return {
+        "status": (
+            "benchmark_contract_available"
+            if report_ok
+            else "benchmark_contract_unavailable"
+        ),
+        "measurement_scope": (
+            "local deterministic proposal-gate fixture, not a production "
+            "contradiction-rate baseline"
+        ),
+        "metric_names": [],
+        "artifact_paths": contradiction_artifacts,
+        "sample": {
+            "proposal_count": result.get("proposal_count"),
+            "expected_contradictions": result.get("expected_contradictions"),
+            "contradiction_rejections": result.get(
+                "contradiction_rejections"
+            ),
+            "contradiction_rate": result.get("contradiction_rate"),
+            "false_positive_count": result.get("false_positive_count"),
+            "false_negative_count": result.get("false_negative_count"),
+            "benchmark_scope": report.get("benchmark_scope")
+            if isinstance(report, dict)
+            else None,
+        },
+        "evidence_freshness": "local_offline_benchmark_contract",
+        "blockers": list(report.get("blockers_to_full_claim") or [])
+        if isinstance(report, dict)
+        else [
+            "proposal-gate verdicts are not yet exported as production metrics",
+            "fixture denominator is intentionally small and local-only",
+        ],
+        "claim_gate_satisfied": False,
+    }
+
+
+def _future_scale_insight_score_contract_evidence() -> dict:
+    insight_artifacts = [
+        "schemas/future_scale_insight_score_benchmark.v1.json",
+        "tests/contracts/test_future_scale_insight_score_benchmark_schema.py",
+        "docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md",
+    ]
+    missing = [rel_path for rel_path in insight_artifacts if not (ROOT / rel_path).exists()]
+    if missing:
+        return {
+            "status": "schema_contract_unavailable",
+            "measurement_scope": "insight-score schema contract is incomplete",
+            "metric_names": [],
+            "artifact_paths": insight_artifacts,
+            "sample": {"missing_artifacts": missing},
+            "evidence_freshness": "local_schema_contract_missing",
+            "blockers": [
+                "insight-score schema contract files are missing",
+                "needs deterministic producer harness before benchmark results",
+            ],
+            "claim_gate_satisfied": False,
+        }
+
+    schema_text = (
+        ROOT / "schemas/future_scale_insight_score_benchmark.v1.json"
+    ).read_text(encoding="utf-8")
+    docs_text = (
+        ROOT / "docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md"
+    ).read_text(encoding="utf-8")
+    tests_text = (
+        ROOT / "tests/contracts/test_future_scale_insight_score_benchmark_schema.py"
+    ).read_text(encoding="utf-8")
+    contract_ok = all(
+        token in "\n".join((schema_text, docs_text, tests_text))
+        for token in (
+            "future_scale_insight_score.v1",
+            "insight_score_benchmark.v1",
+            "claim_gate_satisfied",
+            "literal_future_claim_safe",
+            "required_runtime_evidence_present",
+            "validate_scalar_safety",
+            "No claim that insight_score predicts production performance.",
+        )
+    )
+    return {
+        "status": (
+            "schema_contract_available" if contract_ok else "schema_contract_unavailable"
+        ),
+        "measurement_scope": (
+            "strict local offline schema and executable contract, not produced "
+            "benchmark results"
+        ),
+        "metric_names": [],
+        "artifact_paths": insight_artifacts,
+        "sample": {
+            "benchmark_version": "future_scale_insight_score.v1",
+            "schema_version": "insight_score_benchmark.v1",
+            "producer_harness_present": False,
+            "contract_test_present": "validate_insight_benchmark_artifact"
+            in tests_text,
+            "scalar_safety_guard_present": "validate_scalar_safety" in tests_text,
+        },
+        "evidence_freshness": "local_schema_contract",
+        "blockers": [
+            "needs deterministic producer harness before benchmark results",
+            "needs versioned dream-mode benchmark corpus artifact",
+            "needs repeated windows before insight trend claims",
+        ],
+        "claim_gate_satisfied": False,
+    }
+
+
 def _build_future_scale_runtime_evidence(
     route_stage_runtime_metrics_smoke: dict,
     solver_trace_receipt_proof: dict,
@@ -5039,27 +5259,9 @@ def _build_future_scale_runtime_evidence(
             "claim_gate_satisfied": False,
         },
         "route_depth": _future_scale_route_depth_benchmark_evidence(),
-        "useful_composite_paths": _unmeasured_future_scale_axis_evidence(
-            blockers=(
-                "needs replayable composite-path usefulness receipts",
-                "needs benchmark corpus proving composite value lift",
-            ),
-            artifact_paths=("docs/architecture/HONEYCOMB_SOLVER_SCALING.md",),
-        ),
-        "contradiction_rate": _unmeasured_future_scale_axis_evidence(
-            blockers=(
-                "needs proposal-gate contradiction verdict metrics",
-                "needs verifier-backed contradiction-rate benchmark",
-            ),
-            artifact_paths=("docs/architecture/HONEYCOMB_SOLVER_SCALING.md",),
-        ),
-        "insight_score": _unmeasured_future_scale_axis_evidence(
-            blockers=(
-                "needs reproducible insight scoring rubric",
-                "needs versioned dream-mode benchmark corpus",
-            ),
-            artifact_paths=("docs/architecture/HONEYCOMB_SOLVER_SCALING.md",),
-        ),
+        "useful_composite_paths": _future_scale_composite_path_benchmark_evidence(),
+        "contradiction_rate": _future_scale_contradiction_rate_benchmark_evidence(),
+        "insight_score": _future_scale_insight_score_contract_evidence(),
         "latency": {
             "status": "runtime_metric_defined",
             "measurement_scope": (
@@ -6254,9 +6456,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "The repo has future scale architecture and a scale-axis "
                 "scorecard with first runtime evidence bindings for "
                 "route-stage coverage, fallback, latency, a local "
-                "route-depth benchmark contract, and opt-in audit "
-                "completeness proxies; unlimited scalability remains a "
-                "target, not a fact."
+                "route-depth benchmark contract, local composite-path and "
+                "contradiction-rate benchmark contracts, an insight-score "
+                "schema contract, and opt-in audit completeness proxies; "
+                "unlimited scalability remains a target, not a fact."
             ),
             status=_status_for(future_evidence),
             claim_safe=False,
@@ -6266,13 +6469,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Future claims must be tied to measured axes such as "
                 "coverage, fallback rate, latency, and audit completeness.",
                 "The current scorecard binds some existing runtime evidence; "
-                "composite-path usefulness, contradiction rate, and insight "
-                "score remain unmeasured in the scorecard, and route-depth "
-                "still needs production histogram exports.",
+                "composite-path usefulness and contradiction rate are still "
+                "local offline benchmark contracts, insight score is still a "
+                "schema contract without a producer, and route-depth still "
+                "needs production histogram exports.",
             ),
             next_smallest_pr=(
-                "Bind remaining composite-path, contradiction-rate, and "
-                "insight-score benchmark artifacts into the future-scale "
+                "Add an insight-score benchmark producer and production "
+                "route-depth histogram artifacts to the future-scale "
                 "scorecard without upgrading claims."
             ),
             proof=future_scale_scorecard,

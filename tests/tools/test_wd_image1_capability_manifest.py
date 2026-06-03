@@ -1647,19 +1647,37 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     )
     assert (
         axes["insight_score"]["runtime_evidence"]["status"]
-        == "schema_contract_available"
+        == "benchmark_contract_available"
     )
     assert (
         axes["insight_score"]["runtime_evidence"]["sample"][
             "producer_harness_present"
         ]
-        is False
+        is True
     )
     assert (
         axes["insight_score"]["runtime_evidence"]["sample"][
             "schema_version"
         ]
         == "insight_score_benchmark.v1"
+    )
+    assert (
+        axes["insight_score"]["runtime_evidence"]["sample"][
+            "corpus_case_count"
+        ]
+        == 12
+    )
+    assert (
+        axes["insight_score"]["runtime_evidence"]["sample"][
+            "mean_insight_score"
+        ]
+        == 0.166667
+    )
+    assert (
+        axes["insight_score"]["runtime_evidence"]["sample"][
+            "controls_measured"
+        ]
+        is True
     )
     assert all(
         item["runtime_evidence"]["claim_gate_satisfied"] is False

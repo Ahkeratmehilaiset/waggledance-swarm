@@ -11,6 +11,9 @@ import pytest
 
 from tools.idle_consensus_artifact import (
     ArtifactError,
+    CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
+    REPLAY_SEED_REQUIRED_FALSE_KEYS,
+    build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_replay_seed,
     write_idle_consensus_artifact,
 )
@@ -292,6 +295,202 @@ def test_replay_seed_refuses_existing_seed() -> None:
     assert excinfo.value.report["decision"] == "replay_seed_refused"
     assert excinfo.value.report["errors"] == [
         "existing replay_seed must not be provided"
+    ]
+
+
+def test_candidate_diff_replay_admission_reports_charter_gates_without_writes(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed = artifact["replay_seed"]
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+new file mode 100644
+--- /dev/null
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -0,0 +1,3 @@
++# Replay
++
++Candidate diff is admitted for later operator review only.
+"""
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=seed,
+        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        candidate_diff_text=diff_text,
+    )
+    serialized = json.dumps(admission, sort_keys=True)
+
+    assert admission["report_version"] == CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION
+    assert admission["ok"] is True
+    assert admission["decision"] == "candidate_diff_charter_passed"
+    assert admission["dry_run"] is True
+    assert admission["external_effect"] is False
+    assert admission["writes_applied"] is False
+    assert admission["would_create_task"] is False
+    assert admission["would_create_branch"] is False
+    assert admission["would_create_pr"] is False
+    assert admission["would_merge"] is False
+    assert admission["candidate_diff_charter_allowed"] is True
+    assert admission["replay_seed"] == {
+        "seed_version": "idle_consensus_replay_seed.v0",
+        "digest": sha256_digest(seed),
+        "consensus_artifact_digest": seed["consensus_artifact"]["digest"],
+        "transcript_digest": seed["transcript_digest"],
+        "convergence_digest": seed["convergence_digest"],
+    }
+    assert admission["candidate_diff"] == {
+        "changed_paths": ["docs/architecture/consensus_artifacts/replay.md"],
+        "digest": sha256_digest(
+            {
+                "changed_paths": [
+                    "docs/architecture/consensus_artifacts/replay.md"
+                ],
+                "diff_text": diff_text,
+            }
+        ),
+        "line_count": len(diff_text.splitlines()),
+        "diff_text_included": False,
+    }
+    assert admission["path_gate"]["allowed"] is True
+    assert admission["diff_gate"]["allowed"] is True
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "counterfactual_eval_receipt_missing",
+        "operator_review_gate_required",
+    ]
+    assert admission["next_required_gates"] == [
+        "counterfactual_eval_receipt",
+        "operator_review_gate",
+        "draft_pr_creation",
+        "ci_green",
+        "mergeable_clean",
+        "exact_head_merge",
+    ]
+    assert "diff --git" not in serialized
+    assert "Candidate diff is admitted" not in serialized
+
+
+def test_candidate_diff_replay_admission_blocks_charter_denied_path(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=["configs/bridge_event_validation_waivers.json"],
+        candidate_diff_text=(
+            "diff --git a/configs/bridge_event_validation_waivers.json "
+            "b/configs/bridge_event_validation_waivers.json\n"
+        ),
+    )
+
+    assert admission["ok"] is False
+    assert admission["decision"] == "operator_review_required"
+    assert admission["candidate_diff_charter_allowed"] is False
+    assert admission["path_gate"]["allowed"] is False
+    assert admission["path_gate"]["blocked_paths"] == [
+        "configs/bridge_event_validation_waivers.json"
+    ]
+    assert admission["diff_gate"]["allowed"] is True
+    assert admission["writes_applied"] is False
+    assert "diff --git" not in json.dumps(admission, sort_keys=True)
+
+
+def test_candidate_diff_replay_admission_refuses_private_marker(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=artifact["replay_seed"],
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text="diff --git a/x b/x\n+PRIVATE_MARKER",
+        )
+
+    assert excinfo.value.report["decision"] == "privacy_marker_detected"
+    assert excinfo.value.report["errors"] == [
+        "candidate diff contains PRIVATE_MARKER"
+    ]
+
+
+@pytest.mark.parametrize("flag", REPLAY_SEED_REQUIRED_FALSE_KEYS)
+def test_candidate_diff_replay_admission_refuses_replay_seed_authority_tamper(
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    tampered_seed = dict(artifact["replay_seed"])
+    tampered_seed[flag] = True
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=tampered_seed,
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+        )
+
+    assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
+    assert excinfo.value.report["errors"] == [
+        f"replay seed {flag} must be false"
+    ]
+
+
+def test_candidate_diff_replay_admission_refuses_replay_seed_dry_run_tamper(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    tampered_seed = dict(artifact["replay_seed"])
+    tampered_seed["dry_run_only"] = False
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=tampered_seed,
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+        )
+
+    assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
+    assert excinfo.value.report["errors"] == [
+        "replay seed dry_run_only must be true"
+    ]
+
+
+def test_candidate_diff_replay_admission_refuses_replay_seed_candidate_material(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    tampered_seed = dict(artifact["replay_seed"])
+    tampered_seed["candidate_diff_text"] = "diff --git a/x b/x\n"
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=tampered_seed,
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+        )
+
+    assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
+    assert excinfo.value.report["errors"] == [
+        "candidate diff material is not allowed in replay seed"
+    ]
+    assert excinfo.value.report["candidate_material_keys"] == [
+        "candidate_diff_text"
     ]
 
 

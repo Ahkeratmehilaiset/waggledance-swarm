@@ -21,6 +21,11 @@ if str(ROOT) not in sys.path:
 
 from tools.idle_check import DEFAULT_EVENTS_PATH
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.idle_consensus_charter import (
+    evaluate_diff_content,
+    evaluate_paths,
+    load_charter,
+)
 from waggledance.core.idle_protocol import detect_idle_convergence, validate_idle_proposal
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
@@ -33,6 +38,9 @@ from waggledance.core.magma.receipt_bundle import (
 
 DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
 REPLAY_SEED_VERSION = "idle_consensus_replay_seed.v0"
+CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION = (
+    "idle_consensus_candidate_diff_replay_admission.v0"
+)
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -42,6 +50,15 @@ CANDIDATE_MATERIAL_KEYS = (
     "candidate_changed_paths",
     "changed_paths",
     "diff_text",
+)
+REPLAY_SEED_REQUIRED_FALSE_KEYS = (
+    "candidate_diff_included",
+    "external_effect",
+    "writes_applied",
+    "would_create_task",
+    "would_create_branch",
+    "would_create_pr",
+    "would_merge",
 )
 IMPLEMENTATION_HINTS = (
     "create pr",
@@ -325,6 +342,140 @@ def build_idle_consensus_replay_seed(artifact: Mapping[str, Any]) -> dict[str, A
     }
 
 
+def build_idle_consensus_candidate_diff_replay_admission(
+    *,
+    replay_seed: Mapping[str, Any],
+    changed_paths: Sequence[str],
+    candidate_diff_text: str,
+) -> dict[str, Any]:
+    """Build a report-only admission check for replaying a candidate diff."""
+    _ensure_replay_seed_ready_for_candidate_diff_admission(replay_seed)
+    if not isinstance(candidate_diff_text, str):
+        raise ArtifactError(
+            "candidate diff replay admission requires diff text",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["candidate diff text must be a string"],
+                "exit_code": 2,
+            },
+        )
+    _refuse_private_text(candidate_diff_text, "candidate diff")
+    normalized_paths = _normalize_changed_paths(changed_paths)
+    charter = load_charter()
+    path_gate = evaluate_paths(charter, normalized_paths)
+    diff_gate = evaluate_diff_content(charter, candidate_diff_text)
+    candidate_diff_allowed = bool(path_gate.allowed and diff_gate.allowed)
+    decision = (
+        "candidate_diff_charter_passed"
+        if candidate_diff_allowed
+        else "operator_review_required"
+    )
+    replay_seed_digest = sha256_digest(replay_seed)
+    candidate_diff_digest = sha256_digest(
+        {
+            "changed_paths": normalized_paths,
+            "diff_text": candidate_diff_text,
+        }
+    )
+    return {
+        "report_version": CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
+        "ok": candidate_diff_allowed,
+        "decision": decision,
+        "dry_run": True,
+        "external_effect": False,
+        "writes_applied": False,
+        "would_create_task": False,
+        "would_create_branch": False,
+        "would_create_pr": False,
+        "would_merge": False,
+        "candidate_diff_charter_allowed": candidate_diff_allowed,
+        "replay_seed": {
+            "seed_version": replay_seed["seed_version"],
+            "digest": replay_seed_digest,
+            "consensus_artifact_digest": replay_seed.get(
+                "consensus_artifact",
+                {},
+            ).get("digest"),
+            "transcript_digest": replay_seed.get("transcript_digest"),
+            "convergence_digest": replay_seed.get("convergence_digest"),
+        },
+        "candidate_diff": {
+            "changed_paths": normalized_paths,
+            "digest": candidate_diff_digest,
+            "line_count": len(candidate_diff_text.splitlines()),
+            "diff_text_included": False,
+        },
+        "path_gate": _gate_decision_to_dict(path_gate),
+        "diff_gate": _gate_decision_to_dict(diff_gate),
+        "eligible_for_draft_pr_gate": False,
+        "draft_pr_gate_blockers": [
+            "counterfactual_eval_receipt_missing",
+            "operator_review_gate_required",
+        ],
+        "next_required_gates": [
+            "counterfactual_eval_receipt",
+            "operator_review_gate",
+            "draft_pr_creation",
+            "ci_green",
+            "mergeable_clean",
+            "exact_head_merge",
+        ],
+    }
+
+
+def _ensure_replay_seed_ready_for_candidate_diff_admission(
+    replay_seed: Mapping[str, Any],
+) -> None:
+    if replay_seed.get("seed_version") != REPLAY_SEED_VERSION:
+        raise ArtifactError(
+            "candidate diff replay admission requires an idle replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["invalid replay seed version"],
+                "exit_code": 2,
+            },
+        )
+    if replay_seed.get("purpose") != "future_counterfactual_candidate_diff_replay":
+        raise ArtifactError(
+            "candidate diff replay admission requires an idle replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["invalid replay seed purpose"],
+                "exit_code": 2,
+            },
+        )
+    if replay_seed.get("dry_run_only") is not True:
+        raise ArtifactError(
+            "candidate diff replay admission requires a dry-run replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["replay seed dry_run_only must be true"],
+                "exit_code": 2,
+            },
+        )
+    for key in REPLAY_SEED_REQUIRED_FALSE_KEYS:
+        if replay_seed.get(key) is not False:
+            raise ArtifactError(
+                "candidate diff replay admission requires a no-authority replay seed",
+                {
+                    "decision": "candidate_diff_replay_refused",
+                    "errors": [f"replay seed {key} must be false"],
+                    "exit_code": 2,
+                },
+            )
+    material_keys = sorted(key for key in CANDIDATE_MATERIAL_KEYS if key in replay_seed)
+    if material_keys:
+        raise ArtifactError(
+            "candidate diff replay admission requires a digest-only replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["candidate diff material is not allowed in replay seed"],
+                "candidate_material_keys": material_keys,
+                "exit_code": 2,
+            },
+        )
+
+
 def _read_events(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise ArtifactError(
@@ -377,16 +528,55 @@ def _idle_payloads(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 def _refuse_private_markers(payloads: Sequence[Mapping[str, Any]]) -> None:
     text = json.dumps(payloads, sort_keys=True)
+    _refuse_private_text(text, "idle transcript")
+
+
+def _refuse_private_text(text: str, label: str) -> None:
     for marker in PRIVATE_MARKERS:
         if marker in text:
             raise ArtifactError(
-                "privacy marker detected in idle transcript",
+                f"privacy marker detected in {label}",
                 {
                     "decision": "privacy_marker_detected",
-                    "errors": [f"idle transcript contains {marker}"],
+                    "errors": [f"{label} contains {marker}"],
                     "exit_code": 2,
                 },
             )
+
+
+def _normalize_changed_paths(changed_paths: Sequence[str]) -> list[str]:
+    normalized: list[str] = []
+    for index, path in enumerate(changed_paths, 1):
+        if not isinstance(path, str) or not path.strip():
+            raise ArtifactError(
+                "candidate diff replay admission requires changed paths",
+                {
+                    "decision": "candidate_diff_replay_refused",
+                    "errors": [f"changed path {index} must be a non-empty string"],
+                    "exit_code": 2,
+                },
+            )
+        normalized.append(path.strip().replace("\\", "/"))
+    if not normalized:
+        raise ArtifactError(
+            "candidate diff replay admission requires changed paths",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["changed paths must be non-empty"],
+                "exit_code": 2,
+            },
+        )
+    return normalized
+
+
+def _gate_decision_to_dict(gate: Any) -> dict[str, Any]:
+    return {
+        "allowed": bool(gate.allowed),
+        "reason": gate.reason,
+        "blocked_paths": list(gate.blocked_paths),
+        "unmatched_paths": list(gate.unmatched_paths),
+        "code_pattern_hits": list(gate.code_pattern_hits),
+    }
 
 
 def _artifact_id(

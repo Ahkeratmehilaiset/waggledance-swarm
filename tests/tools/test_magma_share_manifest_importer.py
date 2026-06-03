@@ -527,6 +527,37 @@ def test_peer_review_handoff_validates_admission_contract_when_present(
         )
 
 
+def test_peer_review_handoff_rejects_external_expected_purpose_mismatch(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    with pytest.raises(ValueError, match="expected_purpose"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=report,
+            operator_decision_id="operator:decision:magma-share-import:purpose",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+            expected_purpose="peer_review",
+        )
+
+    with pytest.raises(ValueError, match="expected_purpose is not allowed"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=report,
+            operator_decision_id="operator:decision:magma-share-import:invalid",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+            expected_purpose="runtime_activation",
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
@@ -571,6 +602,80 @@ def test_peer_review_handoff_rejects_recomputed_admission_contract_tamper(
         build_magma_share_import_peer_review_handoff(
             import_report=tampered,
             operator_decision_id=f"operator:decision:magma-share-import:{field}",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "mutations", "match"),
+    [
+        (
+            "max-age",
+            {
+                ("max_age_hours",): 999,
+                ("admission_contract", "max_age_hours"): 999,
+            },
+            "max_age_hours",
+        ),
+        (
+            "share-id",
+            {
+                ("share_id",): "magma:share:import:forged",
+                (
+                    "admission_contract",
+                    "expected_share_id",
+                ): "magma:share:import:forged",
+            },
+            "replay_plan entry 1 share_id",
+        ),
+        (
+            "purpose-invalid",
+            {
+                ("purpose",): "runtime_activation",
+                ("admission_contract", "expected_purpose"): "runtime_activation",
+            },
+            "purpose",
+        ),
+        (
+            "purpose-allowed",
+            {
+                ("purpose",): "peer_review",
+                ("admission_contract", "expected_purpose"): "peer_review",
+            },
+            "expected_purpose",
+        ),
+    ],
+)
+def test_peer_review_handoff_rejects_self_consistent_report_contract_tamper(
+    tmp_path: Path,
+    label: str,
+    mutations: dict[tuple[str, ...], object],
+    match: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    tampered = json.loads(json.dumps(report))
+    for path, value in mutations.items():
+        target = tampered
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+    tampered["admission_contract_digest"] = sha256_digest(
+        tampered["admission_contract"]
+    )
+
+    with pytest.raises(ValueError, match=match):
+        build_magma_share_import_peer_review_handoff(
+            import_report=tampered,
+            operator_decision_id=f"operator:decision:magma-share-import:{label}",
             operator_agent_id="operator:wd-image1",
             bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
         )

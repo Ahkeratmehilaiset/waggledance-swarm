@@ -764,22 +764,24 @@ def _ensure_import_report_ready_for_handoff(
         if import_report.get(field) != expected:
             raise ValueError(f"import report is not handoff-ready: {field}")
     admission_contract = import_report.get("admission_contract")
-    if not isinstance(admission_contract, Mapping):
+    admission_contract_digest = import_report.get("admission_contract_digest")
+    if admission_contract is None and admission_contract_digest is None:
+        pass
+    elif not isinstance(admission_contract, Mapping):
         raise ValueError("import report is not handoff-ready: admission_contract")
-    if (
-        admission_contract.get("contract_version")
-        != IMPORT_ADMISSION_CONTRACT_VERSION
-    ):
-        raise ValueError(
-            "import report is not handoff-ready: admission_contract.version"
-        )
-    _ensure_replay_admission_contract_ready(admission_contract)
-    if import_report.get("admission_contract_digest") != sha256_digest(
-        admission_contract
-    ):
-        raise ValueError(
-            "import report is not handoff-ready: admission_contract_digest"
-        )
+    else:
+        if (
+            admission_contract.get("contract_version")
+            != IMPORT_ADMISSION_CONTRACT_VERSION
+        ):
+            raise ValueError(
+                "import report is not handoff-ready: admission_contract.version"
+            )
+        _ensure_replay_admission_contract_ready(admission_contract)
+        if admission_contract_digest != sha256_digest(admission_contract):
+            raise ValueError(
+                "import report is not handoff-ready: admission_contract_digest"
+            )
     for field in ("share_id", "purpose"):
         if not isinstance(import_report.get(field), str):
             raise ValueError(f"import report is not handoff-ready: {field}")

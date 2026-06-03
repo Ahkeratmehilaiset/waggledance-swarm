@@ -477,7 +477,7 @@ def test_peer_review_handoff_write_refuses_failed_import_report(
     assert not (tmp_path / "share_import_peer_review_handoff.json").exists()
 
 
-def test_peer_review_handoff_requires_admission_contract(
+def test_peer_review_handoff_validates_admission_contract_when_present(
     tmp_path: Path,
 ) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
@@ -491,13 +491,14 @@ def test_peer_review_handoff_requires_admission_contract(
 
     missing_contract = dict(report)
     missing_contract.pop("admission_contract")
-    with pytest.raises(ValueError, match="admission_contract"):
-        build_magma_share_import_peer_review_handoff(
-            import_report=missing_contract,
-            operator_decision_id="operator:decision:magma-share-import:missing",
-            operator_agent_id="operator:wd-image1",
-            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
-        )
+    missing_contract.pop("admission_contract_digest")
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=missing_contract,
+        operator_decision_id="operator:decision:magma-share-import:missing",
+        operator_agent_id="operator:wd-image1",
+        bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+    )
+    assert handoff["handoff_version"] == IMPORT_HANDOFF_VERSION
 
     bad_digest = dict(report)
     bad_digest["admission_contract_digest"] = "sha256:" + "0" * 64

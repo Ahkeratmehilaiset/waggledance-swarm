@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
@@ -19,6 +21,63 @@ import run_future_scale_route_depth_benchmark as harness  # noqa: E402
 
 SCRIPT = ROOT / "tools" / "run_future_scale_route_depth_benchmark.py"
 FIXED_NOW = datetime(2026, 6, 2, 20, 55, tzinfo=timezone.utc)
+
+
+def _capture_buckets(depths: list[int]) -> dict[str, int]:
+    buckets: dict[str, int] = {}
+    for label in harness.ROUTE_DEPTH_BUCKET_LABELS:
+        if label == "+Inf":
+            buckets[label] = len(depths)
+        else:
+            buckets[label] = sum(1 for depth in depths if depth <= int(label))
+    return buckets
+
+
+def _valid_capture_window_payload() -> dict:
+    profile_depths = {
+        "prod_route_alpha": [5, 6],
+        "prod_route_beta": [7],
+    }
+    profiles = [
+        {
+            "route_profile": route_profile,
+            "final_stage": (
+                "deterministic_solver"
+                if route_profile == "prod_route_alpha"
+                else "hex_neighbor_assist_7_cell"
+            ),
+            "sample_count": len(depths),
+            "route_depth_sum": sum(depths),
+            "cumulative_buckets": _capture_buckets(depths),
+        }
+        for route_profile, depths in profile_depths.items()
+    ]
+    all_depths = [
+        depth
+        for depths in profile_depths.values()
+        for depth in depths
+    ]
+    return {
+        "schema_version": harness.PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION,
+        "capture_window_id": "prod_window_20260603_1800",
+        "source_kind": "operator_owned_metrics_export",
+        "operator_owned_export": True,
+        "window_start_utc": "2026-06-03T18:00:00Z",
+        "window_end_utc": "2026-06-03T18:15:00Z",
+        "metric_names": list(harness.ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES),
+        "label_names": list(harness.ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES),
+        "bucket_labels": list(harness.ROUTE_DEPTH_BUCKET_LABELS),
+        "sample_count": len(all_depths),
+        "route_depth_sum": sum(all_depths),
+        "aggregate_cumulative_buckets": _capture_buckets(all_depths),
+        "route_profile_count": len(profiles),
+        "route_profiles": profiles,
+        "raw_payload_included": False,
+        "query_text_included": False,
+        "local_paths_recorded": False,
+        "network_access": "not_used",
+        "cloud_api_calls": 0,
+    }
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -59,6 +118,9 @@ def test_route_depth_benchmark_reports_local_fixture_measurement() -> None:
     assert report["builder_jobs_delta"] == 0
     assert report["cloud_api_calls"] == 0
     assert report["network_access"] == "not_used"
+    assert harness.PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME in (
+        report["artifact_write_scope"]
+    )
     assert report["contract_validation"] == {
         "ok": True,
         "error_count": 0,
@@ -119,6 +181,47 @@ def test_route_depth_benchmark_reports_local_fixture_measurement() -> None:
     assert len(artifact["artifact_digest_sha256"]) == 64
     assert "live production" in artifact["blockers_to_runtime_claim"][0]
     assert "does not attach live production runtime data" in artifact["safe_conclusion"]
+    attachment = report["production_route_depth_capture_window_attachment"]
+    assert (
+        attachment["schema_version"]
+        == harness.PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_SCHEMA_VERSION
+    )
+    assert (
+        attachment["capture_window_schema_version"]
+        == harness.PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION
+    )
+    assert (
+        attachment["attachment_status"]
+        == "capture_window_attachment_contract_available"
+    )
+    assert attachment["production_runtime_data_attached"] is False
+    assert attachment["production_data_source"] == "not_attached"
+    assert attachment["required_runtime_evidence_present"] is False
+    assert attachment["claim_gate_satisfied"] is False
+    assert attachment["claim_safe"] is False
+    assert attachment["literal_future_claim_safe"] is False
+    assert attachment["runtime_authority_changed"] is False
+    assert attachment["runtime_authority_granted"] is False
+    assert attachment["controls_present"] is False
+    assert attachment["operator_gate_required"] is False
+    assert attachment["external_writes_applied"] is False
+    assert attachment["network_access"] == "not_used"
+    assert attachment["cloud_api_calls"] == 0
+    assert attachment["metric_names"] == list(
+        harness.ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES
+    )
+    assert attachment["label_names"] == list(
+        harness.ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES
+    )
+    assert attachment["bucket_labels"] == list(harness.ROUTE_DEPTH_BUCKET_LABELS)
+    assert attachment["allowed_source_kinds"] == ["operator_owned_metrics_export"]
+    assert attachment["capture_window_count"] == 0
+    assert attachment["capture_windows"] == []
+    assert len(attachment["attachment_digest_sha256"]) == 64
+    assert (
+        "does not by itself satisfy runtime evidence"
+        in attachment["safe_conclusion"]
+    )
     assert report["source"]["fixture_set_alias"] == "route_depth_static_trace_set_v1"
     assert len(report["source"]["fixture_set_sha256"]) == 64
     assert (
@@ -281,6 +384,139 @@ def test_validate_rejects_malformed_production_histogram_artifact() -> None:
     assert any("forbidden secret/path-like string" in error for error in errors)
 
 
+def test_operator_capture_window_attachment_validates_without_claim_upgrade() -> None:
+    report = harness.build_future_scale_route_depth_benchmark(
+        now_utc=FIXED_NOW,
+        production_capture_window=_valid_capture_window_payload(),
+    )
+
+    assert report["ok"] is True
+    assert report["required_runtime_evidence_present"] is False
+    assert report["claim_gate_satisfied"] is False
+    assert report["claim_safe"] is False
+    attachment = report["production_route_depth_capture_window_attachment"]
+    assert attachment["attachment_status"] == "operator_capture_window_attached"
+    assert attachment["production_runtime_data_attached"] is True
+    assert attachment["production_data_source"] == "operator_owned_metrics_export"
+    assert attachment["required_runtime_evidence_present"] is False
+    assert attachment["claim_gate_satisfied"] is False
+    assert attachment["claim_safe"] is False
+    assert attachment["literal_future_claim_safe"] is False
+    assert attachment["runtime_authority_changed"] is False
+    assert attachment["runtime_authority_granted"] is False
+    assert attachment["operator_gate_required"] is False
+    assert attachment["external_writes_applied"] is False
+    assert attachment["capture_window_count"] == 1
+    assert len(attachment["attachment_digest_sha256"]) == 64
+    window = attachment["capture_windows"][0]
+    assert window["capture_window_id"] == "prod_window_20260603_1800"
+    assert window["sample_count"] == 3
+    assert window["route_depth_sum"] == 18
+    assert window["aggregate_cumulative_buckets"]["+Inf"] == 3
+    assert window["route_profile_count"] == 2
+    assert window["raw_payload_included"] is False
+    assert window["query_text_included"] is False
+    assert window["local_paths_recorded"] is False
+    assert len(window["window_digest_sha256"]) == 64
+    json.dumps(report, allow_nan=False)
+
+
+def test_validate_rejects_malformed_capture_window_attachment() -> None:
+    report = harness.build_future_scale_route_depth_benchmark(
+        now_utc=FIXED_NOW,
+        production_capture_window=_valid_capture_window_payload(),
+    )
+
+    truthy_gate = deepcopy(report)
+    truthy_gate["production_route_depth_capture_window_attachment"][
+        "claim_gate_satisfied"
+    ] = True
+    errors = harness.validate_benchmark_report(truthy_gate)
+    assert (
+        "production capture attachment claim_gate_satisfied must be exact false bool"
+        in errors
+    )
+
+    raw_payload = deepcopy(report)
+    raw_payload["production_route_depth_capture_window_attachment"][
+        "capture_windows"
+    ][0]["raw_payload_included"] = True
+    errors = harness.validate_benchmark_report(raw_payload)
+    assert (
+        "production capture attachment capture_windows[0].raw_payload_included "
+        "must be false"
+        in errors
+    )
+
+    bad_bucket_total = deepcopy(report)
+    bad_bucket_total["production_route_depth_capture_window_attachment"][
+        "capture_windows"
+    ][0]["aggregate_cumulative_buckets"]["+Inf"] = 2
+    errors = harness.validate_benchmark_report(bad_bucket_total)
+    assert (
+        "production capture attachment capture_windows[0].aggregate_cumulative_buckets"
+        ".+Inf must equal sample_count"
+        in errors
+    )
+
+    bad_window_digest = deepcopy(report)
+    bad_window_digest["production_route_depth_capture_window_attachment"][
+        "capture_windows"
+    ][0]["window_digest_sha256"] = "0" * 64
+    errors = harness.validate_benchmark_report(bad_window_digest)
+    assert (
+        "production capture attachment capture_windows[0].window_digest_sha256 "
+        "mismatch"
+        in errors
+    )
+
+    bad_attachment_digest = deepcopy(report)
+    bad_attachment_digest["production_route_depth_capture_window_attachment"][
+        "attachment_digest_sha256"
+    ] = "0" * 64
+    errors = harness.validate_benchmark_report(bad_attachment_digest)
+    assert (
+        "production capture attachment attachment_digest_sha256 mismatch"
+        in errors
+    )
+
+
+def test_capture_window_input_rejects_extra_fields_and_unsafe_values() -> None:
+    extra = _valid_capture_window_payload()
+    extra["raw_payload"] = "not recorded"
+    with pytest.raises(ValueError, match="unsupported fields"):
+        harness.build_future_scale_route_depth_benchmark(
+            now_utc=FIXED_NOW,
+            production_capture_window=extra,
+        )
+
+    unsafe = _valid_capture_window_payload()
+    unsafe["local_paths_recorded"] = True
+    with pytest.raises(ValueError, match="local_paths_recorded must be false"):
+        harness.build_future_scale_route_depth_benchmark(
+            now_utc=FIXED_NOW,
+            production_capture_window=unsafe,
+        )
+
+    stale_time = _valid_capture_window_payload()
+    stale_time["window_end_utc"] = "2026-06-03T17:59:59Z"
+    with pytest.raises(ValueError, match="window_end_utc must be after start"):
+        harness.build_future_scale_route_depth_benchmark(
+            now_utc=FIXED_NOW,
+            production_capture_window=stale_time,
+        )
+
+    provider_alias = _valid_capture_window_payload()
+    provider_alias["route_profiles"][0]["route_profile"] = "cohere_internal_model"
+    with pytest.raises(ValueError) as exc_info:
+        harness.build_future_scale_route_depth_benchmark(
+            now_utc=FIXED_NOW,
+            production_capture_window=provider_alias,
+        )
+    assert "unsafe scalar values refused" in str(exc_info.value)
+    assert "cohere_internal_model" not in str(exc_info.value)
+
+
 def test_validate_rejects_path_and_secret_leaks() -> None:
     report = harness.build_future_scale_route_depth_benchmark(now_utc=FIXED_NOW)
 
@@ -383,6 +619,12 @@ def test_validate_rejects_path_and_secret_leaks() -> None:
 
 def test_cli_json_writes_artifacts_without_absolute_path_leak(tmp_path: Path) -> None:
     out_dir = tmp_path / "route-depth"
+    capture_path = tmp_path / "input" / "capture-window.json"
+    capture_path.parent.mkdir()
+    capture_path.write_text(
+        json.dumps(_valid_capture_window_payload(), sort_keys=True),
+        encoding="utf-8",
+    )
 
     result = _run_cli(
         "--json",
@@ -390,6 +632,8 @@ def test_cli_json_writes_artifacts_without_absolute_path_leak(tmp_path: Path) ->
         str(out_dir),
         "--now",
         "2026-06-02T20:55:00Z",
+        "--production-capture-window-json",
+        str(capture_path),
     )
 
     assert result.returncode == 0, result.stderr
@@ -398,9 +642,11 @@ def test_cli_json_writes_artifacts_without_absolute_path_leak(tmp_path: Path) ->
     assert payload["ok"] is True
     json_path = out_dir / harness.JSON_ARTIFACT_NAME
     histogram_path = out_dir / harness.PRODUCTION_HISTOGRAM_ARTIFACT_NAME
+    capture_attachment_path = out_dir / harness.PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME
     md_path = out_dir / harness.MARKDOWN_ARTIFACT_NAME
     assert json_path.exists()
     assert histogram_path.exists()
+    assert capture_attachment_path.exists()
     assert md_path.exists()
     assert json.loads(json_path.read_text(encoding="utf-8"))["ok"] is True
     histogram_payload = json.loads(histogram_path.read_text(encoding="utf-8"))
@@ -409,11 +655,19 @@ def test_cli_json_writes_artifacts_without_absolute_path_leak(tmp_path: Path) ->
         == "production_histogram_artifact_contract_available"
     )
     assert histogram_payload["production_runtime_data_attached"] is False
+    attachment_payload = json.loads(
+        capture_attachment_path.read_text(encoding="utf-8")
+    )
+    assert attachment_payload["attachment_status"] == "operator_capture_window_attached"
+    assert attachment_payload["production_runtime_data_attached"] is True
+    assert attachment_payload["capture_window_count"] == 1
     combined = result.stdout + result.stderr
     combined += json_path.read_text(encoding="utf-8")
     combined += histogram_path.read_text(encoding="utf-8")
+    combined += capture_attachment_path.read_text(encoding="utf-8")
     combined += md_path.read_text(encoding="utf-8")
     assert str(tmp_path) not in combined
+    assert str(capture_path) not in combined
     assert "C:\\Users" not in combined
     assert "Bearer " not in combined
 
@@ -448,5 +702,12 @@ def test_markdown_preserves_no_overclaim_guardrails() -> None:
         in markdown
     )
     assert "production_histogram_runtime_data_attached: `false`" in markdown
+    assert (
+        "production_capture_window_attachment: "
+        "`capture_window_attachment_contract_available`"
+        in markdown
+    )
+    assert "production_capture_window_runtime_data_attached: `false`" in markdown
+    assert "production_capture_window_count: `0`" in markdown
     assert "not a production baseline" in markdown
     assert "not proof of superior intelligence" in markdown

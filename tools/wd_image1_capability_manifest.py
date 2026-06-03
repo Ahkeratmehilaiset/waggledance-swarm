@@ -50,6 +50,7 @@ from tools.run_future_scale_insight_bench import (  # noqa: E402
     build_future_scale_insight_benchmark,
 )
 from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
+    PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME,
     PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
     build_future_scale_route_depth_benchmark,
 )
@@ -4898,6 +4899,7 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
         "tests/tools/test_future_scale_route_depth_benchmark.py",
         "docs/benchmarks/FUTURE_SCALE_ROUTE_DEPTH_BENCHMARK.md",
         PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
+        PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME,
         "waggledance/adapters/http/routes/chat.py",
     ]
     try:
@@ -4931,6 +4933,13 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
     )
     if not isinstance(histogram_artifact, dict):
         histogram_artifact = {}
+    capture_attachment = (
+        report.get("production_route_depth_capture_window_attachment")
+        if isinstance(report, dict)
+        else {}
+    )
+    if not isinstance(capture_attachment, dict):
+        capture_attachment = {}
     histogram_artifact_ok = (
         histogram_artifact.get("artifact_status")
         == "production_histogram_artifact_contract_available"
@@ -4939,11 +4948,20 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
         and histogram_artifact.get("required_runtime_evidence_present") is False
         and histogram_artifact.get("external_writes_applied") is False
     )
+    capture_attachment_ok = (
+        capture_attachment.get("attachment_status")
+        == "capture_window_attachment_contract_available"
+        and capture_attachment.get("production_runtime_data_attached") is False
+        and capture_attachment.get("capture_window_count") == 0
+        and capture_attachment.get("claim_gate_satisfied") is False
+        and capture_attachment.get("required_runtime_evidence_present") is False
+        and capture_attachment.get("external_writes_applied") is False
+    )
     report_ok = isinstance(report, dict) and report.get("ok") is True
     return {
         "status": (
-            "benchmark_and_histogram_artifact_contract_available"
-            if report_ok and histogram_artifact_ok
+            "benchmark_histogram_and_capture_attachment_contract_available"
+            if report_ok and histogram_artifact_ok and capture_attachment_ok
             else "benchmark_contract_available"
             if report_ok
             else "benchmark_contract_unavailable"
@@ -4951,7 +4969,8 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
         "measurement_scope": (
             "local deterministic sanitized route-stage trace fixtures, not a "
             "live production route-depth baseline; includes a production-shaped "
-            "histogram artifact contract with no production corpus attached"
+            "histogram artifact contract and capture-window attachment contract "
+            "with no production corpus attached by default"
         ),
         "metric_names": [],
         "artifact_paths": route_depth_artifacts,
@@ -4996,10 +5015,25 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
             "production_histogram_digest_sha256": histogram_artifact.get(
                 "artifact_digest_sha256"
             ),
+            "production_capture_window_attachment_status": capture_attachment.get(
+                "attachment_status"
+            ),
+            "production_capture_window_runtime_data_attached": capture_attachment.get(
+                "production_runtime_data_attached"
+            ),
+            "production_capture_window_count": capture_attachment.get(
+                "capture_window_count"
+            ),
+            "production_capture_window_required_runtime": capture_attachment.get(
+                "required_runtime_evidence_present"
+            ),
+            "production_capture_window_digest_sha256": capture_attachment.get(
+                "attachment_digest_sha256"
+            ),
         },
         "evidence_freshness": "local_offline_benchmark_contract",
         "blockers": [
-            "needs live production route-depth histogram capture window attached to the artifact contract",
+            "needs operator-owned live production route-depth exports run through the capture-window verifier",
             "needs repeated versioned benchmark windows before trend claims",
             "needs production trace corpus binding before efficiency claims",
         ],
@@ -6820,11 +6854,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "scorecard with first runtime evidence bindings for "
                 "route-stage coverage, fallback, latency, a local "
                 "route-depth benchmark contract plus a production-shaped "
-                "route-depth histogram artifact contract, local composite-path "
-                "and contradiction-rate benchmark contracts, an insight-score "
-                "benchmark producer, repeated local benchmark-window evidence, "
-                "and opt-in audit completeness proxies; unlimited scalability "
-                "remains a target, not a fact."
+                "route-depth histogram artifact contract and capture-window "
+                "attachment contract, local composite-path and "
+                "contradiction-rate benchmark contracts, an insight-score "
+                "benchmark producer, repeated local benchmark-window "
+                "evidence, and opt-in audit completeness proxies; unlimited "
+                "scalability remains a target, not a fact."
             ),
             status=_status_for(future_evidence),
             claim_safe=False,
@@ -6835,12 +6870,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "coverage, fallback rate, latency, and audit completeness.",
                 "The current scorecard binds some existing runtime evidence; "
                 "benchmark-window evidence is still deterministic local "
-                "replay, and route-depth histogram artifacts still need a live "
-                "production capture window and corpus binding.",
+                "replay, and route-depth capture-window artifacts still need "
+                "operator-owned live production exports and corpus binding.",
             ),
             next_smallest_pr=(
-                "Attach a live production route-depth histogram capture window "
-                "to the artifact contract without upgrading claims."
+                "Run an operator-owned live route-depth export through the "
+                "capture-window verifier without upgrading claims."
             ),
             proof=future_scale_scorecard,
         ),

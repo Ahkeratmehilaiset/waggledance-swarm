@@ -1564,6 +1564,44 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert summary["unmeasured_axis_count"] == 0
     assert summary["unmeasured_axes"] == []
     assert "route_depth" in summary["required_runtime_axes"]
+    window_summary = proof["benchmark_window_summary"]
+    assert window_summary["ok"] is True
+    assert (
+        window_summary["proof_id"]
+        == "future_scale_repeated_benchmark_window_summary_v1"
+    )
+    assert window_summary["status"] == "benchmark_windows_available"
+    assert window_summary["window_count"] == 2
+    assert window_summary["axis_count"] == 4
+    assert window_summary["record_count"] == 8
+    assert window_summary["ok_record_count"] == 8
+    assert window_summary["axis_ids"] == [
+        "route_depth",
+        "useful_composite_paths",
+        "contradiction_rate",
+        "insight_score",
+    ]
+    assert window_summary["axes_with_repeated_windows"] == window_summary["axis_ids"]
+    assert window_summary["stable_sample_axes"] == window_summary["axis_ids"]
+    assert window_summary["all_samples_stable_across_windows"] is True
+    assert window_summary["claim_gate_satisfied"] is False
+    assert window_summary["required_runtime_evidence_present"] is False
+    assert window_summary["literal_future_claim_safe"] is False
+    assert window_summary["runtime_authority_changed"] is False
+    assert window_summary["operator_gate_required"] is False
+    assert window_summary["external_writes_applied"] is False
+    assert all(
+        len(digests) == 1
+        for digests in window_summary["sample_digests_by_axis"].values()
+    )
+    assert all(
+        record["claim_gate_satisfied"] is False
+        and record["required_runtime_evidence_present"] is False
+        and record["literal_future_claim_safe"] is False
+        and record["runtime_authority_changed"] is False
+        and record["external_writes_applied"] is False
+        for record in window_summary["records"]
+    )
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
@@ -1773,7 +1811,8 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
         ]
         is False
     )
-    assert "insight-score benchmark producer" in capability["next_smallest_pr"]
+    assert capability["proof"]["benchmark_window_summary"]["ok"] is True
+    assert "benchmark-window evidence" in capability["safe_statement"]
     assert "route-depth histogram artifacts" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 

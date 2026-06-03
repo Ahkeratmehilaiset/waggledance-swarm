@@ -51,6 +51,15 @@ CANDIDATE_MATERIAL_KEYS = (
     "changed_paths",
     "diff_text",
 )
+REPLAY_SEED_REQUIRED_FALSE_KEYS = (
+    "candidate_diff_included",
+    "external_effect",
+    "writes_applied",
+    "would_create_task",
+    "would_create_branch",
+    "would_create_pr",
+    "would_merge",
+)
 IMPLEMENTATION_HINTS = (
     "create pr",
     "open pr",
@@ -340,15 +349,7 @@ def build_idle_consensus_candidate_diff_replay_admission(
     candidate_diff_text: str,
 ) -> dict[str, Any]:
     """Build a report-only admission check for replaying a candidate diff."""
-    if replay_seed.get("seed_version") != REPLAY_SEED_VERSION:
-        raise ArtifactError(
-            "candidate diff replay admission requires an idle replay seed",
-            {
-                "decision": "candidate_diff_replay_refused",
-                "errors": ["invalid replay seed version"],
-                "exit_code": 2,
-            },
-        )
+    _ensure_replay_seed_ready_for_candidate_diff_admission(replay_seed)
     if not isinstance(candidate_diff_text, str):
         raise ArtifactError(
             "candidate diff replay admission requires diff text",
@@ -420,6 +421,59 @@ def build_idle_consensus_candidate_diff_replay_admission(
             "exact_head_merge",
         ],
     }
+
+
+def _ensure_replay_seed_ready_for_candidate_diff_admission(
+    replay_seed: Mapping[str, Any],
+) -> None:
+    if replay_seed.get("seed_version") != REPLAY_SEED_VERSION:
+        raise ArtifactError(
+            "candidate diff replay admission requires an idle replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["invalid replay seed version"],
+                "exit_code": 2,
+            },
+        )
+    if replay_seed.get("purpose") != "future_counterfactual_candidate_diff_replay":
+        raise ArtifactError(
+            "candidate diff replay admission requires an idle replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["invalid replay seed purpose"],
+                "exit_code": 2,
+            },
+        )
+    if replay_seed.get("dry_run_only") is not True:
+        raise ArtifactError(
+            "candidate diff replay admission requires a dry-run replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["replay seed dry_run_only must be true"],
+                "exit_code": 2,
+            },
+        )
+    for key in REPLAY_SEED_REQUIRED_FALSE_KEYS:
+        if replay_seed.get(key) is not False:
+            raise ArtifactError(
+                "candidate diff replay admission requires a no-authority replay seed",
+                {
+                    "decision": "candidate_diff_replay_refused",
+                    "errors": [f"replay seed {key} must be false"],
+                    "exit_code": 2,
+                },
+            )
+    material_keys = sorted(key for key in CANDIDATE_MATERIAL_KEYS if key in replay_seed)
+    if material_keys:
+        raise ArtifactError(
+            "candidate diff replay admission requires a digest-only replay seed",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["candidate diff material is not allowed in replay seed"],
+                "candidate_material_keys": material_keys,
+                "exit_code": 2,
+            },
+        )
 
 
 def _read_events(path: Path) -> list[dict[str, Any]]:

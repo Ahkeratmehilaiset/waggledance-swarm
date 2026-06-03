@@ -12,6 +12,7 @@ import pytest
 from tools.idle_consensus_artifact import (
     ArtifactError,
     CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
+    REPLAY_SEED_REQUIRED_FALSE_KEYS,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_replay_seed,
     write_idle_consensus_artifact,
@@ -413,6 +414,83 @@ def test_candidate_diff_replay_admission_refuses_private_marker(
     assert excinfo.value.report["decision"] == "privacy_marker_detected"
     assert excinfo.value.report["errors"] == [
         "candidate diff contains PRIVATE_MARKER"
+    ]
+
+
+@pytest.mark.parametrize("flag", REPLAY_SEED_REQUIRED_FALSE_KEYS)
+def test_candidate_diff_replay_admission_refuses_replay_seed_authority_tamper(
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    tampered_seed = dict(artifact["replay_seed"])
+    tampered_seed[flag] = True
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=tampered_seed,
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+        )
+
+    assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
+    assert excinfo.value.report["errors"] == [
+        f"replay seed {flag} must be false"
+    ]
+
+
+def test_candidate_diff_replay_admission_refuses_replay_seed_dry_run_tamper(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    tampered_seed = dict(artifact["replay_seed"])
+    tampered_seed["dry_run_only"] = False
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=tampered_seed,
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+        )
+
+    assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
+    assert excinfo.value.report["errors"] == [
+        "replay seed dry_run_only must be true"
+    ]
+
+
+def test_candidate_diff_replay_admission_refuses_replay_seed_candidate_material(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    tampered_seed = dict(artifact["replay_seed"])
+    tampered_seed["candidate_diff_text"] = "diff --git a/x b/x\n"
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=tampered_seed,
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+        )
+
+    assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
+    assert excinfo.value.report["errors"] == [
+        "candidate diff material is not allowed in replay seed"
+    ]
+    assert excinfo.value.report["candidate_material_keys"] == [
+        "candidate_diff_text"
     ]
 
 

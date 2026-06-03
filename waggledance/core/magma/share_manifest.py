@@ -26,6 +26,9 @@ SCHEMA_NAME = "magma_share_manifest.v0.json"
 MANIFEST_VERSION = "magma.share_manifest.v0"
 EXPORT_REPORT_VERSION = "magma.share_manifest_export.v0"
 IMPORT_REPORT_VERSION = "magma.share_manifest_import.v0"
+IMPORT_ADMISSION_CONTRACT_VERSION = (
+    "magma.share_manifest_replay_admission_contract.v0"
+)
 IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
 IMPORT_HANDOFF_STATUS_VERSION = (
     "magma.share_manifest_import_handoff_status.v0"
@@ -319,10 +322,17 @@ def build_magma_share_manifest_import_report(
             }
         )
 
+    admission_contract = _replay_admission_contract(
+        max_age_hours=max_age_hours,
+        expected_share_id=expected_share_id,
+        expected_purpose=expected_purpose,
+    )
     return {
         "report_version": IMPORT_REPORT_VERSION,
         "ok": True,
         "blockers": [],
+        "admission_contract": admission_contract,
+        "admission_contract_digest": sha256_digest(admission_contract),
         "share_id": share_manifest["share_id"],
         "purpose": share_manifest["purpose"],
         "created_at_utc": share_manifest["created_at_utc"],
@@ -753,6 +763,23 @@ def _ensure_import_report_ready_for_handoff(
     for field, expected in required_values.items():
         if import_report.get(field) != expected:
             raise ValueError(f"import report is not handoff-ready: {field}")
+    admission_contract = import_report.get("admission_contract")
+    if not isinstance(admission_contract, Mapping):
+        raise ValueError("import report is not handoff-ready: admission_contract")
+    if (
+        admission_contract.get("contract_version")
+        != IMPORT_ADMISSION_CONTRACT_VERSION
+    ):
+        raise ValueError(
+            "import report is not handoff-ready: admission_contract.version"
+        )
+    _ensure_replay_admission_contract_ready(admission_contract)
+    if import_report.get("admission_contract_digest") != sha256_digest(
+        admission_contract
+    ):
+        raise ValueError(
+            "import report is not handoff-ready: admission_contract_digest"
+        )
     for field in ("share_id", "purpose"):
         if not isinstance(import_report.get(field), str):
             raise ValueError(f"import report is not handoff-ready: {field}")
@@ -798,6 +825,150 @@ def _ensure_import_report_ready_for_handoff(
         _ensure_sha256_digest(
             f"replay_plan entry {index} evaluation_result_digest",
             entry.get("evaluation_result_digest"),
+        )
+
+
+def _replay_admission_contract(
+    *,
+    max_age_hours: int,
+    expected_share_id: str | None,
+    expected_purpose: str | None,
+) -> dict[str, Any]:
+    """Describe the fail-closed checks for no-authority share replay."""
+    required_checks = [
+        {
+            "name": "share_manifest_schema_valid",
+            "input": "share_manifest",
+            "rejects_as": "schema_error",
+        },
+        {
+            "name": "expected_share_id_matches",
+            "input": "share_manifest.share_id",
+            "rejects_as": "expected_share_id_mismatch",
+            "required": expected_share_id is not None,
+        },
+        {
+            "name": "expected_purpose_matches",
+            "input": "share_manifest.purpose",
+            "rejects_as": "expected_purpose_mismatch",
+            "required": expected_purpose is not None,
+        },
+        {
+            "name": "freshness_window_satisfied",
+            "input": "share_manifest.created_at_utc",
+            "rejects_as": "stale_or_future_manifest",
+        },
+        {
+            "name": "source_receipt_manifest_verified",
+            "input": "source_manifest",
+            "rejects_as": "source_receipt_manifest_verification_failed",
+        },
+        {
+            "name": "sanitized_source_manifest_digest_matches",
+            "input": "share_manifest.sanitized_source_manifest_digest",
+            "rejects_as": "sanitized_source_manifest_digest_context_drift",
+        },
+        {
+            "name": "entry_count_matches",
+            "input": "share_manifest.entries",
+            "rejects_as": "share_manifest_entry_count_context_drift",
+        },
+        {
+            "name": "entry_receipt_digests_match",
+            "input": "share_manifest.entries[].receipt_digest",
+            "rejects_as": "receipt_digest_context_drift",
+        },
+        {
+            "name": "entry_evaluation_result_digests_match",
+            "input": "share_manifest.entries[].evaluation_result_digest",
+            "rejects_as": "evaluation_result_digest_context_drift",
+        },
+        {
+            "name": "entry_categorical_fields_match",
+            "input": "share_manifest.entries[] categorical replay refs",
+            "rejects_as": "categorical_context_drift",
+        },
+        {
+            "name": "forbidden_material_absence_preserved",
+            "input": "share_manifest export_policy and sanitization inventory",
+            "rejects_as": "raw_material_export_or_policy_relaxation",
+        },
+    ]
+    rejection_modes = [
+        {
+            "reason_code": item["rejects_as"],
+            "decision": "reject",
+            "blocker_visible": True,
+        }
+        for item in required_checks
+    ]
+    return {
+        "contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
+        "manifest_version": MANIFEST_VERSION,
+        "scope": "no_authority_metadata_replay",
+        "max_age_hours": max_age_hours,
+        "expected_share_id": expected_share_id,
+        "expected_purpose": expected_purpose,
+        "transport_enabled": False,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+        "operator_handoff_required_for_peer_review": True,
+        "required_checks": required_checks,
+        "rejection_modes": rejection_modes,
+        "report_invariants": {
+            "ok_requires_blockers_empty": True,
+            "ok_requires_context_verified": True,
+            "ok_requires_context_drift_detected_false": True,
+            "ok_requires_replay_metadata_only": True,
+            "ok_requires_no_authority_import": True,
+            "ok_requires_runtime_authority_granted_false": True,
+            "ok_requires_payload_files_imported_zero": True,
+            "ok_requires_raw_material_imported_false": True,
+        },
+    }
+
+
+def _ensure_replay_admission_contract_ready(
+    admission_contract: Mapping[str, Any],
+) -> None:
+    required_values = {
+        "contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
+        "manifest_version": MANIFEST_VERSION,
+        "scope": "no_authority_metadata_replay",
+        "transport_enabled": False,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+        "operator_handoff_required_for_peer_review": True,
+    }
+    for field, expected in required_values.items():
+        if admission_contract.get(field) != expected:
+            raise ValueError(
+                "import report is not handoff-ready: "
+                f"admission_contract.{field}"
+            )
+    if not isinstance(admission_contract.get("required_checks"), list):
+        raise ValueError(
+            "import report is not handoff-ready: admission_contract.required_checks"
+        )
+    if not isinstance(admission_contract.get("rejection_modes"), list):
+        raise ValueError(
+            "import report is not handoff-ready: admission_contract.rejection_modes"
+        )
+    if not isinstance(admission_contract.get("report_invariants"), Mapping):
+        raise ValueError(
+            "import report is not handoff-ready: admission_contract.report_invariants"
         )
 
 

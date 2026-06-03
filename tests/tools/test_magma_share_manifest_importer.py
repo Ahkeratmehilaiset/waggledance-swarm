@@ -13,7 +13,9 @@ from tools.run_runtime_receipt_emission_proof import (
     build_runtime_receipt_emission_proof,
 )
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.share_manifest import (
+    IMPORT_ADMISSION_CONTRACT_VERSION,
     IMPORT_HANDOFF_HISTORY_LIMIT,
     IMPORT_HANDOFF_STATUS_VERSION,
     IMPORT_HANDOFF_VERSION,
@@ -88,6 +90,50 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     assert report["report_version"] == IMPORT_REPORT_VERSION
     assert report["ok"] is True
     assert report["blockers"] == []
+    admission_contract = report["admission_contract"]
+    assert admission_contract["contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
+    assert report["admission_contract_digest"] == sha256_digest(
+        admission_contract
+    )
+    assert admission_contract["scope"] == "no_authority_metadata_replay"
+    assert admission_contract["max_age_hours"] == 24
+    assert admission_contract["expected_share_id"] == "magma:share:import:001"
+    assert admission_contract["expected_purpose"] == "cross_instance_replay"
+    assert admission_contract["transport_enabled"] is False
+    assert admission_contract["runtime_authority_granted"] is False
+    assert admission_contract["payload_files_imported"] == 0
+    assert admission_contract["operator_handoff_required_for_peer_review"] is True
+    check_names = {item["name"] for item in admission_contract["required_checks"]}
+    assert {
+        "share_manifest_schema_valid",
+        "freshness_window_satisfied",
+        "source_receipt_manifest_verified",
+        "sanitized_source_manifest_digest_matches",
+        "entry_receipt_digests_match",
+        "forbidden_material_absence_preserved",
+    }.issubset(check_names)
+    rejection_codes = {
+        item["reason_code"] for item in admission_contract["rejection_modes"]
+    }
+    assert {
+        "schema_error",
+        "stale_or_future_manifest",
+        "source_receipt_manifest_verification_failed",
+        "receipt_digest_context_drift",
+        "raw_material_export_or_policy_relaxation",
+    }.issubset(rejection_codes)
+    assert admission_contract["report_invariants"] == {
+        "ok_requires_blockers_empty": True,
+        "ok_requires_context_verified": True,
+        "ok_requires_context_drift_detected_false": True,
+        "ok_requires_replay_metadata_only": True,
+        "ok_requires_no_authority_import": True,
+        "ok_requires_runtime_authority_granted_false": True,
+        "ok_requires_payload_files_imported_zero": True,
+        "ok_requires_raw_material_imported_false": True,
+    }
     assert report["context_verified"] is True
     assert report["context_drift_detected"] is False
     assert report["replay_metadata_only"] is True
@@ -431,6 +477,55 @@ def test_peer_review_handoff_write_refuses_failed_import_report(
     assert not (tmp_path / "share_import_peer_review_handoff.json").exists()
 
 
+def test_peer_review_handoff_requires_admission_contract(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    missing_contract = dict(report)
+    missing_contract.pop("admission_contract")
+    with pytest.raises(ValueError, match="admission_contract"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=missing_contract,
+            operator_decision_id="operator:decision:magma-share-import:missing",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+    bad_digest = dict(report)
+    bad_digest["admission_contract_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="admission_contract_digest"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=bad_digest,
+            operator_decision_id="operator:decision:magma-share-import:digest",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+    relaxed_contract = json.loads(json.dumps(report))
+    relaxed_contract["admission_contract"]["runtime_authority_granted"] = True
+    relaxed_contract["admission_contract_digest"] = sha256_digest(
+        relaxed_contract["admission_contract"]
+    )
+    with pytest.raises(
+        ValueError,
+        match="admission_contract.runtime_authority_granted",
+    ):
+        build_magma_share_import_peer_review_handoff(
+            import_report=relaxed_contract,
+            operator_decision_id="operator:decision:magma-share-import:relaxed",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+
 def test_importer_rejects_stale_share_manifest(tmp_path: Path) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
 
@@ -557,6 +652,9 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
+    assert payload["admission_contract"]["contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
     assert payload["no_authority_import"] is True
     assert payload["runtime_authority_granted"] is False
     assert payload["payload_files_imported"] == 0

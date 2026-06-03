@@ -86,7 +86,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError:
         summary = _summary_from_blockers(["capture_window_summary_invalid_input"])
 
-    output = json.dumps(summary, indent=2, sort_keys=True, allow_nan=False)
+    try:
+        output = json.dumps(summary, indent=2, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        summary = _summary_from_blockers(["capture_window_summary_non_json_output"])
+        output = json.dumps(summary, indent=2, sort_keys=True, allow_nan=False)
     if args.json or summary["ok"]:
         print(output)
     else:
@@ -139,8 +143,8 @@ def build_capture_window_verification_summary(
     )
 
     capture_windows = _list_of_mappings(capture_attachment.get("capture_windows"))
-    capture_window_ids = _safe_window_ids(capture_windows)
-    capture_window_digests = _safe_window_digests(capture_windows)
+    capture_window_ids = _safe_window_ids(capture_windows, blockers=blockers)
+    capture_window_digests = _safe_window_digests(capture_windows, blockers=blockers)
     source_kinds = sorted(
         {
             str(window.get("source_kind"))
@@ -157,24 +161,40 @@ def build_capture_window_verification_summary(
             "benchmark_report_digest_sha256": _artifact_digest(
                 benchmark_bytes,
                 benchmark_report,
+                blockers=blockers,
+                blocker_code="benchmark_report_digest_unavailable",
             ),
             "capture_attachment_file_digest_sha256": _artifact_digest(
                 capture_attachment_bytes,
                 capture_attachment,
+                blockers=blockers,
+                blocker_code="capture_attachment_file_digest_unavailable",
             ),
-            "capture_attachment_schema_version": capture_attachment.get(
-                "schema_version"
+            "capture_attachment_schema_version": _safe_summary_scalar(
+                capture_attachment.get("schema_version"),
+                blockers=blockers,
+                blocker_code="capture_attachment_schema_version_unsafe",
             ),
-            "capture_window_schema_version": capture_attachment.get(
-                "capture_window_schema_version"
+            "capture_window_schema_version": _safe_summary_scalar(
+                capture_attachment.get("capture_window_schema_version"),
+                blockers=blockers,
+                blocker_code="capture_window_schema_version_unsafe",
             ),
-            "capture_attachment_status": capture_attachment.get(
-                "attachment_status"
+            "capture_attachment_status": _safe_summary_scalar(
+                capture_attachment.get("attachment_status"),
+                blockers=blockers,
+                blocker_code="capture_attachment_status_unsafe",
             ),
-            "capture_attachment_digest_sha256": capture_attachment.get(
-                "attachment_digest_sha256"
+            "capture_attachment_digest_sha256": _safe_summary_scalar(
+                capture_attachment.get("attachment_digest_sha256"),
+                blockers=blockers,
+                blocker_code="capture_attachment_digest_sha256_unsafe",
             ),
-            "capture_window_count": capture_attachment.get("capture_window_count"),
+            "capture_window_count": _safe_summary_scalar(
+                capture_attachment.get("capture_window_count"),
+                blockers=blockers,
+                blocker_code="capture_window_count_unsafe",
+            ),
             "capture_window_ids": capture_window_ids,
             "capture_window_digest_sha256s": capture_window_digests,
             "source_kinds": source_kinds,
@@ -202,6 +222,11 @@ def build_capture_window_verification_summary(
             "upgrade future-scale claim gates.",
         }
     )
+    if blockers:
+        summary["ok"] = False
+        summary["status"] = SUMMARY_STATUS_BLOCKED
+        summary["blockers"] = list(blockers)
+        summary["operator_owned_capture_window_contract_verified"] = False
     scalar_errors = validate_scalar_safety(summary)
     if scalar_errors:
         summary["ok"] = False
@@ -331,17 +356,44 @@ def _load_json_artifact(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     return raw, parsed
 
 
-def _artifact_digest(raw: bytes | None, value: Mapping[str, Any]) -> str:
+def _artifact_digest(
+    raw: bytes | None,
+    value: Mapping[str, Any],
+    *,
+    blockers: list[str],
+    blocker_code: str,
+) -> str:
     if raw is not None:
         return hashlib.sha256(raw).hexdigest()
-    return hashlib.sha256(
-        json.dumps(
+    try:
+        encoded = json.dumps(
             value,
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
-    ).hexdigest()
+    except (TypeError, ValueError):
+        blockers.append(blocker_code)
+        return "unavailable_non_json_artifact"
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_summary_scalar(
+    value: Any,
+    *,
+    blockers: list[str],
+    blocker_code: str,
+) -> Any:
+    errors = validate_scalar_safety({"value": value})
+    if errors:
+        blockers.append(blocker_code)
+        return None
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError):
+        blockers.append(blocker_code)
+        return None
+    return value
 
 
 def _list_of_mappings(value: Any) -> list[Mapping[str, Any]]:
@@ -350,20 +402,36 @@ def _list_of_mappings(value: Any) -> list[Mapping[str, Any]]:
     return [item for item in value if isinstance(item, Mapping)]
 
 
-def _safe_window_ids(windows: Sequence[Mapping[str, Any]]) -> list[str]:
+def _safe_window_ids(
+    windows: Sequence[Mapping[str, Any]],
+    *,
+    blockers: list[str],
+) -> list[str]:
     ids: list[str] = []
     for window in windows:
         window_id = window.get("capture_window_id")
-        if isinstance(window_id, str):
+        if isinstance(window_id, str) and _safe_summary_scalar(
+            window_id,
+            blockers=blockers,
+            blocker_code="capture_window_id_unsafe",
+        ) is not None:
             ids.append(window_id)
     return ids
 
 
-def _safe_window_digests(windows: Sequence[Mapping[str, Any]]) -> list[str]:
+def _safe_window_digests(
+    windows: Sequence[Mapping[str, Any]],
+    *,
+    blockers: list[str],
+) -> list[str]:
     digests: list[str] = []
     for window in windows:
         digest = window.get("window_digest_sha256")
-        if isinstance(digest, str):
+        if isinstance(digest, str) and _safe_summary_scalar(
+            digest,
+            blockers=blockers,
+            blocker_code="capture_window_digest_unsafe",
+        ) is not None:
             digests.append(digest)
     return digests
 

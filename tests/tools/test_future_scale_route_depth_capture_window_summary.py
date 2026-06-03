@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -181,6 +182,90 @@ def test_capture_window_summary_fails_closed_on_invalid_benchmark_report() -> No
     assert "benchmark_report_contract_invalid" in result["blockers"]
     assert result["benchmark_validation_error_count"] > 0
     assert result["claim_gate_satisfied"] is False
+
+
+def test_capture_window_summary_rejects_non_finite_without_echoing() -> None:
+    report = route_depth.build_future_scale_route_depth_benchmark(
+        now_utc=FIXED_NOW,
+        production_capture_window=_valid_capture_window_payload(),
+    )
+    attachment = deepcopy(report["production_route_depth_capture_window_attachment"])
+    attachment["capture_window_count"] = math.nan
+    report["production_route_depth_capture_window_attachment"] = attachment
+
+    result = summary.build_capture_window_verification_summary(
+        benchmark_report=report,
+        capture_attachment=attachment,
+    )
+
+    assert result["ok"] is False
+    assert "capture_window_count_not_int" in result["blockers"]
+    assert "capture_window_count_unsafe" in result["blockers"]
+    assert result["capture_window_count"] is None
+    json.dumps(result, allow_nan=False)
+
+
+def test_capture_window_summary_redacts_unsafe_capture_window_id() -> None:
+    report = route_depth.build_future_scale_route_depth_benchmark(
+        now_utc=FIXED_NOW,
+        production_capture_window=_valid_capture_window_payload(),
+    )
+    attachment = deepcopy(report["production_route_depth_capture_window_attachment"])
+    attachment["capture_windows"][0]["capture_window_id"] = (
+        "C:\\Users\\janik\\private\\capture.json"
+    )
+    report["production_route_depth_capture_window_attachment"] = attachment
+
+    result = summary.build_capture_window_verification_summary(
+        benchmark_report=report,
+        capture_attachment=attachment,
+    )
+
+    assert result["ok"] is False
+    assert "capture_window_id_unsafe" in result["blockers"]
+    assert result["capture_window_ids"] == []
+    rendered = json.dumps(result, allow_nan=False)
+    assert "C:\\Users" not in rendered
+    assert "capture.json" not in rendered
+
+
+def test_capture_window_summary_cli_rejects_non_finite_without_traceback(
+    tmp_path: Path,
+) -> None:
+    report = route_depth.build_future_scale_route_depth_benchmark(
+        now_utc=FIXED_NOW,
+        production_capture_window=_valid_capture_window_payload(),
+    )
+    attachment = deepcopy(report["production_route_depth_capture_window_attachment"])
+    attachment["capture_window_count"] = math.nan
+    report["production_route_depth_capture_window_attachment"] = attachment
+    benchmark_path = tmp_path / "benchmark.json"
+    attachment_path = tmp_path / "attachment.json"
+    benchmark_path.write_text(json.dumps(report), encoding="utf-8")
+    attachment_path.write_text(json.dumps(attachment), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--benchmark-json",
+            str(benchmark_path),
+            "--capture-attachment-json",
+            str(attachment_path),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["ok"] is False
+    assert "capture_window_count_unsafe" in payload["blockers"]
+    assert "NaN" not in proc.stdout
+    assert "Traceback" not in proc.stderr
 
 
 def test_capture_window_summary_cli_does_not_leak_input_paths(tmp_path: Path) -> None:

@@ -90,6 +90,16 @@ def test_dry_run_reports_next_step_without_bridge_write(tmp_path: Path) -> None:
     assert report["summary"]["next_required_event"]["event_type"] == (
         "idle_counter_proposal"
     )
+    scaffold = report["manual_payload_scaffold"]
+    assert scaffold["not_a_payload"] is True
+    assert scaffold["manual_content_required"] is True
+    assert scaffold["event_type"] == "idle_counter_proposal"
+    assert scaffold["round_number"] == 2
+    assert scaffold["reference_hints"]["responds_to"] == "idle-prop-20260518-001"
+    assert "alternative_proposal" in scaffold["required_fields"]
+    assert "reasoning_points" in scaffold["required_fields"]
+    assert "proposal" in scaffold["forbidden_fields"]
+    assert "idle_protocol_activate.py" in scaffold["dry_run_command"]
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 
@@ -104,6 +114,7 @@ def test_terminal_session_does_not_emit_request(tmp_path: Path) -> None:
 
     assert report["decision"] == "operator_review_required"
     assert report["read_only"] is True
+    assert "manual_payload_scaffold" not in report
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 
@@ -145,6 +156,7 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     assert report["decision"] == "next_required"
     assert report["read_only"] is True
     assert report["summary"]["next_required_event"]["round_number"] == 2
+    assert report["manual_payload_scaffold"]["not_a_payload"] is True
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 

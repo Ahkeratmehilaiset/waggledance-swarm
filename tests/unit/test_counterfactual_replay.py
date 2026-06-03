@@ -9,9 +9,11 @@ from waggledance.core.autonomy_growth.counterfactual_replay import (
     A3_LABEL_MEASURED_LOCAL_PARTIAL,
     A3_LABEL_NONDETERMINISTIC_ORACLE,
     A3_LABEL_RUNTIME_MEASURED,
+    COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
     CounterfactualReplayError,
     compute_counterfactual_delta,
     derive_a3_label,
+    summarize_counterfactual_observability,
 )
 from waggledance.core.solver_synthesis.declarative_solver_spec import SolverSpec
 
@@ -126,3 +128,67 @@ def test_canonical_digest_present_and_recomputes():
     )
     core = {k: v for k, v in delta.items() if k != "canonical_digest"}
     assert delta["canonical_digest"] == sha256_digest(core)
+
+
+def test_observability_summary_from_delta_is_privacy_safe():
+    samples = [{"x": float(i), "note": "operator-secret-token"} for i in range(24)]
+    delta = compute_counterfactual_delta(
+        shadow_samples=samples, candidate=_spec("cand", 273.15),
+        incumbent=_spec("inc", 0.0), oracle=_oracle,
+    )
+
+    status = summarize_counterfactual_observability(delta)
+
+    assert status == {
+        "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
+        "source_available": True,
+        "compute_status": "computed",
+        "status": "runtime_measured",
+        "a3_label": A3_LABEL_RUNTIME_MEASURED,
+        "sample_count": 24,
+        "divergence_count": 24,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest_present": True,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+    }
+    rendered = repr(status)
+    assert "operator-secret-token" not in rendered
+    assert "per_arm" not in rendered
+    assert "divergences" not in rendered
+    assert delta["canonical_digest"] not in rendered
+
+
+def test_observability_summary_from_promotion_summary_and_missing_source():
+    computed = summarize_counterfactual_observability({
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
+        "sample_count": 5,
+        "same_sample_set": True,
+        "deterministic": True,
+        "divergence_count": 3,
+        "no_delta": False,
+        "delta_digest": "sha256:private-digest",
+        "per_arm": {"candidate": "private"},
+    })
+    assert computed["status"] == "measured_local_partial"
+    assert computed["delta_digest_present"] is True
+    assert "private-digest" not in repr(computed)
+    assert "per_arm" not in computed
+
+    failed = summarize_counterfactual_observability({
+        "status": "failed",
+        "error_type": "CounterfactualReplayError",
+    })
+    assert failed["source_available"] is True
+    assert failed["status"] == "failed"
+    assert failed["a3_label"] == A3_LABEL_INSUFFICIENT
+
+    missing = summarize_counterfactual_observability(None)
+    assert missing["source_available"] is False
+    assert missing["status"] == "unavailable"

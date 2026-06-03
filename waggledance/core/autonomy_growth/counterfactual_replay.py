@@ -39,6 +39,26 @@ A3_LABEL_NONDETERMINISTIC_ORACLE = "NONDETERMINISTIC_ORACLE"
 # Minimum per-arm sample count to claim RUNTIME_MEASURED (below -> PARTIAL).
 DEFAULT_A3_MIN_SAMPLES = 20
 
+COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA = (
+    "magma.counterfactual_observability_status.v0"
+)
+COUNTERFACTUAL_OBSERVABILITY_STATES = (
+    "unavailable",
+    "skipped",
+    "failed",
+    "insufficient",
+    "measured_local_partial",
+    "nondeterministic_oracle",
+    "runtime_measured",
+)
+
+_A3_LABEL_TO_OBSERVABILITY_STATE = {
+    A3_LABEL_INSUFFICIENT: "insufficient",
+    A3_LABEL_MEASURED_LOCAL_PARTIAL: "measured_local_partial",
+    A3_LABEL_NONDETERMINISTIC_ORACLE: "nondeterministic_oracle",
+    A3_LABEL_RUNTIME_MEASURED: "runtime_measured",
+}
+
 
 class CounterfactualReplayError(RuntimeError):
     """Raised when the counterfactual replay cannot run on the given inputs.
@@ -183,3 +203,107 @@ def derive_a3_label(
     if n < min_samples:
         return A3_LABEL_MEASURED_LOCAL_PARTIAL
     return A3_LABEL_RUNTIME_MEASURED
+
+
+def summarize_counterfactual_observability(
+    snapshot: Any,
+    *,
+    min_samples: int = DEFAULT_A3_MIN_SAMPLES,
+) -> dict[str, Any]:
+    """Return a privacy-safe, read-only observability status.
+
+    ``snapshot`` may be either a raw ``compute_counterfactual_delta`` mapping or
+    the sanitized promotion counterfactual summary stored by the autogrowth
+    engine. The returned mapping intentionally contains no raw per-arm rows,
+    sample inputs, outputs, divergences, solver hashes, or digest strings.
+    """
+    if not isinstance(snapshot, Mapping):
+        return _counterfactual_observability_status(
+            source_available=False,
+            compute_status="unavailable",
+            status="unavailable",
+            a3_label=A3_LABEL_INSUFFICIENT,
+        )
+
+    if snapshot.get("schema_version") == COUNTERFACTUAL_DELTA_SCHEMA:
+        a3_label = derive_a3_label(snapshot, min_samples=min_samples)
+        return _counterfactual_observability_status(
+            source_available=True,
+            compute_status="computed",
+            status=_state_for_a3_label(a3_label),
+            a3_label=a3_label,
+            sample_count=_nonnegative_int(snapshot.get("sample_count")),
+            divergence_count=_nonnegative_int(snapshot.get("divergence_count")),
+            same_sample_set=(
+                snapshot.get("candidate_sample_set_digest")
+                == snapshot.get("incumbent_sample_set_digest")
+            ),
+            deterministic=snapshot.get("deterministic") is True,
+            no_delta=snapshot.get("no_delta") is True,
+            delta_digest_present=bool(snapshot.get("canonical_digest")),
+        )
+
+    compute_status = str(snapshot.get("status") or "unknown")
+    if compute_status == "failed":
+        status = "failed"
+    elif compute_status == "skipped":
+        status = "skipped"
+    else:
+        status = _state_for_a3_label(str(snapshot.get("a3_label") or ""))
+
+    return _counterfactual_observability_status(
+        source_available=True,
+        compute_status=compute_status,
+        status=status,
+        a3_label=str(snapshot.get("a3_label") or A3_LABEL_INSUFFICIENT),
+        sample_count=_nonnegative_int(snapshot.get("sample_count")),
+        divergence_count=_nonnegative_int(snapshot.get("divergence_count")),
+        same_sample_set=snapshot.get("same_sample_set") is True,
+        deterministic=snapshot.get("deterministic") is True,
+        no_delta=snapshot.get("no_delta") is True,
+        delta_digest_present=bool(snapshot.get("delta_digest")),
+    )
+
+
+def _counterfactual_observability_status(
+    *,
+    source_available: bool,
+    compute_status: str,
+    status: str,
+    a3_label: str,
+    sample_count: int = 0,
+    divergence_count: int = 0,
+    same_sample_set: bool = False,
+    deterministic: bool = False,
+    no_delta: bool = False,
+    delta_digest_present: bool = False,
+) -> dict[str, Any]:
+    if status not in COUNTERFACTUAL_OBSERVABILITY_STATES:
+        status = "insufficient" if source_available else "unavailable"
+    return {
+        "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
+        "source_available": bool(source_available),
+        "compute_status": compute_status,
+        "status": status,
+        "a3_label": a3_label,
+        "sample_count": sample_count,
+        "divergence_count": divergence_count,
+        "same_sample_set": bool(same_sample_set),
+        "deterministic": bool(deterministic),
+        "no_delta": bool(no_delta),
+        "delta_digest_present": bool(delta_digest_present),
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+    }
+
+
+def _state_for_a3_label(label: str) -> str:
+    return _A3_LABEL_TO_OBSERVABILITY_STATE.get(label, "insufficient")
+
+
+def _nonnegative_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)

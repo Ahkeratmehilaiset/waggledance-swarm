@@ -49,6 +49,10 @@ from waggledance.adapters.http.routes.compat_dashboard import (
     _magma_share_import_handoff_section,
     _route_stage_latency_feed_state,
 )
+from waggledance.core.autonomy_growth.counterfactual_replay import (
+    COUNTERFACTUAL_OBSERVABILITY_STATES,
+    summarize_counterfactual_observability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +238,7 @@ class _WaggleCollector:
         yield from self._collect_route_stage_runtime_metrics(container)
         yield from self._collect_route_stage_latency_feed_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
+        yield from self._collect_counterfactual_replay_metrics(container)
         yield from self._collect_magma_handoff_metrics(container)
 
     def _collect_hex_metrics(
@@ -728,6 +733,73 @@ class _WaggleCollector:
                 value=numeric,
             )
 
+    def _collect_counterfactual_replay_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        snapshot = _counterfactual_replay_snapshot(container)
+        try:
+            status = summarize_counterfactual_observability(snapshot)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "metrics: counterfactual replay status sanitization raised: %s",
+                exc,
+            )
+            status = summarize_counterfactual_observability(None)
+
+        yield GaugeMetricFamily(
+            "waggledance_counterfactual_replay_up",
+            (
+                "1 if the metrics collector could read a counterfactual replay "
+                "status snapshot this scrape."
+            ),
+            value=_as_bool_float(status.get("source_available")),
+        )
+
+        bool_gauges = {
+            "same_sample_set": status.get("same_sample_set"),
+            "deterministic": status.get("deterministic"),
+            "no_delta": status.get("no_delta"),
+            "delta_digest_present": status.get("delta_digest_present"),
+            "controls_present": status.get("controls_present"),
+            "runtime_authority_granted": status.get("runtime_authority_granted"),
+            "external_writes_applied": status.get("external_writes_applied"),
+            "payload_fields_exported": status.get("payload_fields_exported"),
+        }
+        for name, value in bool_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_counterfactual_replay_{name}",
+                f"read-only counterfactual replay observability gauge: {name}",
+                value=_as_bool_float(value),
+            )
+
+        numeric_gauges = {
+            "sample_count": status.get("sample_count"),
+            "divergence_count": status.get("divergence_count"),
+        }
+        for name, value in numeric_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_counterfactual_replay_{name}",
+                f"read-only counterfactual replay observability gauge: {name}",
+                value=_as_nonnegative_float(value),
+            )
+
+        status_metric = GaugeMetricFamily(
+            "waggledance_counterfactual_replay_status",
+            (
+                "Current counterfactual replay observability status as "
+                "fixed-state gauges."
+            ),
+            labels=["status"],
+        )
+        current_status = status.get("status")
+        for state in COUNTERFACTUAL_OBSERVABILITY_STATES:
+            status_metric.add_metric(
+                [state],
+                1.0 if current_status == state else 0.0,
+            )
+        yield status_metric
+
     def _collect_magma_handoff_metrics(self, container: Any) -> Iterable[Any]:
         up = GaugeMetricFamily(
             "waggledance_magma_handoff_provider_up",
@@ -956,6 +1028,25 @@ class _WaggleCollector:
                 1.0 if current_reason == reason else 0.0,
             )
         yield feed_failure_metric
+
+
+def _counterfactual_replay_snapshot(container: Any) -> Any:
+    for name in (
+        "counterfactual_replay_status",
+        "counterfactual_replay_observability",
+        "last_counterfactual",
+        "counterfactual",
+    ):
+        value = _safe_getattr(container, name)
+        if value is not None:
+            return value
+
+    promotion = _safe_getattr(container, "promotion")
+    if promotion is not None:
+        value = _safe_getattr(promotion, "counterfactual")
+        if value is not None:
+            return value
+    return None
 
 
 def _build_registry(get_container) -> CollectorRegistry:  # noqa: ANN001

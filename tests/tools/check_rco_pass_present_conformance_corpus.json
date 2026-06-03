@@ -1,0 +1,375 @@
+{
+  "corpus_version": "wd.rco_pass_gate.conformance_corpus.v1",
+  "title": "WaggleDance RCO Pass Presence Gate Conformance Corpus",
+  "description": "Versioned, deterministic, offline fixture locking the fail-closed behavior of the RCO-pass-presence merge gate (tools/check_rco_pass_present.py, merged in #837) per CLAUDE.md Rule 9a ('RCO absence = NO merge'). refuse_cases enumerate every must-REFUSE scenario: no rco_pass event / silence (no qualifying rco-agent pass on task); rco_pass at a DIFFERENT head than --head; a later changes_requested/finding/blocked veto after a pass (latest_is_veto or has_later_veto); type=message or type=handoff with status=rco_pass (non-decision type ignored even if status matches); wrong rco-agent identity posting the pass (only claude-rco-1 counts). allow_cases enumerate the must-ALLOW: type=decision or rco_review, status=rco_pass, exact --head SHA substring present in message, no later veto from the rco-agent, correct rco-agent. Synthetic events use append-order for latest, stable task_id and 40-hex heads. This corpus + test ensures any future weakening of the gate (e.g. allowing silence, stale head, non-qualifying type, wrong identity, or ignoring later veto) will break the locked test deterministically.",
+  "provenance": "hand-authored stable event shapes per RCO_PASS_PRESENCE_GATE spec, check_rco_pass_present.py logic (DECISION_TYPES_FOR_PASS, RCO_PASS_STATUSES, veto rules, head-in-message, rco-agent filter, latest-by-index), and BRIDGE_CONSENSUS_APPROVAL_V1; no wallclock, no network, no random, no real tokens/paths; deterministic by event list order only; stable synthetic task_id and heads only",
+  "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+  "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+  "other_head": "0000000000000000000000000000000000000000",
+  "rco_agent": "claude-rco-1",
+  "refuse_cases": [
+    {
+      "name": "silence_no_rco_pass_event",
+      "description": "No rco_pass event at all for the task (silence or only non-pass rco signals) -> REFUSE. RCO absence = no merge.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "handoff",
+          "status": "rco_requested",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "review requested, no decision yet"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "silence_no_rco_events_for_task",
+      "description": "Completely no rco-agent events for this task_id (other agents or other tasks only) -> REFUSE.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "pass at a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_rco_events_for_task",
+        "has_qualifying_rco_pass_at_head": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "rco_pass_at_different_head_stale",
+      "description": "rco_pass present but message contains DIFFERENT head than --head -> REFUSE (head-exact binding).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head 0000000000000000000000000000000000000000 for the task."
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "later_changes_requested_veto_after_pass",
+      "description": "Valid pass at exact head, followed by changes_requested veto from same rco-agent -> REFUSE (vetoed_after_pass).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 approved."
+        },
+        {
+          "ts_utc": "2026-06-03T10:05:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "changes_requested",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "found issues, needs rework"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "vetoed_after_pass",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": true
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "later_finding_type_veto_after_pass",
+      "description": "Pass at head, later type=finding (even with non-block status) counts as veto per _is_rco_veto_event -> REFUSE.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "approved at a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:05:00Z",
+          "agent": "claude-rco-1",
+          "type": "finding",
+          "status": "review_notes",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "minor finding after pass"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "vetoed_after_pass",
+        "has_qualifying_rco_pass_at_head": true
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "later_blocked_type_veto_after_pass",
+      "description": "Pass, later type=blocked with status=blocked -> veto -> REFUSE.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "pass at a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:05:00Z",
+          "agent": "claude-rco-1",
+          "type": "blocked",
+          "status": "blocked",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "blocked after pass"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "vetoed_after_pass",
+        "has_qualifying_rco_pass_at_head": true
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "non_qualifying_type_message_with_rco_pass_status",
+      "description": "type=message (not in {decision,rco_review}) even with status=rco_pass and head in message -> no_qualifying_pass REFUSE.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "message",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "non_qualifying_type_handoff_with_rco_pass_status",
+      "description": "type=handoff even with status=rco_pass and head in msg -> ignored, REFUSE.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "handoff",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "pass signal at a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 via handoff"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "wrong_rco_agent_identity_posting_the_pass",
+      "description": "The rco_pass at exact head is posted by wrong agent (codex-lead-1); the real rco-agent has only non-pass -> REFUSE (wrong identity not counted).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "claude-rco-1",
+          "type": "handoff",
+          "status": "rco_requested",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "request only"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false
+      },
+      "cli_expect_nonzero": true
+    }
+  ],
+  "allow_cases": [
+    {
+      "name": "decision_rco_pass_at_exact_head_no_later_veto",
+      "description": "type=decision, status=rco_pass, exact --head in message, correct agent, no later veto -> ALLOW (ok + exit 0).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS present at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 for the task."
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": false
+    },
+    {
+      "name": "rco_review_type_rco_pass_at_exact_head",
+      "description": "type=rco_review (also allowed in DECISION_TYPES_FOR_PASS), status=rco_pass, head in msg -> ALLOW.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "rco_review",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "Re-reviewed and RCO_PASS at a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true
+      },
+      "cli_expect_nonzero": false
+    },
+    {
+      "name": "pass_then_non_veto_later_signal_still_allows",
+      "description": "Pass at head, later non-veto non-pass signal (e.g. rco_pass_pending_ci) does not supersede -> ALLOW.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "approved at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:10:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass_pending_ci",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "noted CI pending but already passed at head"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true
+      },
+      "cli_expect_nonzero": false
+    },
+    {
+      "name": "veto_then_fresh_pass_at_head_allows",
+      "description": "Earlier veto, then fresh re-review pass at exact head with no later veto -> ALLOW (latest pass wins if not superseded).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T09:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "finding",
+          "status": "changes_requested",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "initial block"
+        },
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "rco_review",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "re-reviewed; RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": false
+    }
+  ],
+  "claim_gates": {
+    "note": "This is a pure test asset (conformance corpus for RCO pass gate). All claim gates are N/A and explicitly set false. No consumer may treat this as satisfying any claim gate. Mirrors leak_policy pattern.",
+    "claim_gate_satisfied": false,
+    "claim_safe": false,
+    "literal_future_claim_safe": false,
+    "controls_present": false,
+    "runtime_authority_granted": false,
+    "external_writes_applied": false,
+    "required_runtime_evidence_present": false
+  }
+}

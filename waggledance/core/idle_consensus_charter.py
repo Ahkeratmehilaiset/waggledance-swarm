@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import posixpath
 import re
 from typing import Sequence
 
@@ -91,7 +92,7 @@ def evaluate_paths(
     blocked: list[str] = []
     unmatched: list[str] = []
     for changed in changed_paths:
-        normalized = changed.replace("\\", "/")
+        normalized = _normalize_changed_path(changed)
         if _matches_any(normalized, charter.file_denylist):
             blocked.append(normalized)
             continue
@@ -214,8 +215,16 @@ def _marker_matches_diff(marker: str, diff_text: str) -> bool:
         return False
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", rhs):
         return False
-    pattern = rf"(?<![A-Za-z0-9_]){re.escape(lhs)}\s*=\s*{re.escape(rhs)}(?![A-Za-z0-9_])"
+    pattern = rf"(?<![A-Za-z0-9_]){re.escape(lhs)}\s*=\s*(?i:{re.escape(rhs)})(?![A-Za-z0-9_])"
     return re.search(pattern, diff_text) is not None
+
+
+def _normalize_changed_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    collapsed = posixpath.normpath(normalized)
+    if collapsed == ".":
+        return normalized
+    return collapsed
 
 
 def _pattern_markers(bullet: str) -> tuple[str, ...]:

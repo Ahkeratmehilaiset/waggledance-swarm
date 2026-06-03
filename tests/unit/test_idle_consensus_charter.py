@@ -74,6 +74,13 @@ def test_evaluate_paths_blocks_secret_like_path_case_insensitively() -> None:
     assert decision.blocked_paths == ("tools/SecretToken.py", "tools/API_TOKEN.py")
 
 
+def test_evaluate_paths_blocks_traversal_to_denylisted_path() -> None:
+    charter = load_charter()
+    decision = evaluate_paths(charter, ["tools/foo/../../CLAUDE.md"])
+    assert decision.allowed is False
+    assert decision.blocked_paths == ("CLAUDE.md",)
+
+
 def test_evaluate_paths_blocks_top_level_manual_review_paths() -> None:
     charter = load_charter()
     decision = evaluate_paths(charter, ["README.md", "pyproject.toml"])
@@ -123,6 +130,13 @@ def test_evaluate_diff_content_blocks_spaced_auto_execute_constant() -> None:
     assert decision.allowed is False
 
 
+def test_evaluate_diff_content_blocks_lowercase_auto_execute_value() -> None:
+    charter = load_charter()
+    diff = "+ auto_execute = false\n+ # other change"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
 def test_evaluate_diff_content_blocks_second_gate_constant() -> None:
     charter = load_charter()
     diff = "+ operator_gate_required=True\n"
@@ -133,6 +147,13 @@ def test_evaluate_diff_content_blocks_second_gate_constant() -> None:
 def test_evaluate_diff_content_blocks_spaced_second_gate_constant() -> None:
     charter = load_charter()
     diff = "+ operator_gate_required = True\n"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
+def test_evaluate_diff_content_blocks_lowercase_second_gate_value() -> None:
+    charter = load_charter()
+    diff = "+ operator_gate_required = true\n"
     decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is False
 

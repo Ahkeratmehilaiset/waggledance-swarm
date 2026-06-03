@@ -215,7 +215,13 @@ def _marker_matches_diff(marker: str, diff_text: str) -> bool:
         return False
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", rhs):
         return False
-    pattern = rf"(?<![A-Za-z0-9_]){re.escape(lhs)}\s*=\s*(?i:{re.escape(rhs)})(?![A-Za-z0-9_])"
+    pattern = (
+        rf"(?<![A-Za-z0-9_])"
+        rf"['\"]?{re.escape(lhs)}['\"]?"
+        rf"\s*[:=]\s*"
+        rf"(?i:['\"]?{re.escape(rhs)}['\"]?)"
+        rf"(?![A-Za-z0-9_])"
+    )
     return re.search(pattern, diff_text) is not None
 
 

@@ -826,6 +826,15 @@ def _normalize_production_capture_window(
         "network_access": "not_used",
         "cloud_api_calls": 0,
     }
+    scalar_errors = validate_scalar_safety(
+        normalized_window,
+        allowed_metadata_path_values=ALLOWED_METADATA_PATH_VALUES,
+    )
+    if scalar_errors:
+        raise ValueError(
+            "invalid production capture window: unsafe scalar values refused; "
+            + "; ".join(scalar_errors)
+        )
     digest = _canonical_digest(_capture_window_digest_source(normalized_window))
     supplied_digest = payload.get("window_digest_sha256")
     if supplied_digest is not None and supplied_digest != digest:

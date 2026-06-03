@@ -506,6 +506,16 @@ def test_capture_window_input_rejects_extra_fields_and_unsafe_values() -> None:
             production_capture_window=stale_time,
         )
 
+    provider_alias = _valid_capture_window_payload()
+    provider_alias["route_profiles"][0]["route_profile"] = "cohere_internal_model"
+    with pytest.raises(ValueError) as exc_info:
+        harness.build_future_scale_route_depth_benchmark(
+            now_utc=FIXED_NOW,
+            production_capture_window=provider_alias,
+        )
+    assert "unsafe scalar values refused" in str(exc_info.value)
+    assert "cohere_internal_model" not in str(exc_info.value)
+
 
 def test_validate_rejects_path_and_secret_leaks() -> None:
     report = harness.build_future_scale_route_depth_benchmark(now_utc=FIXED_NOW)

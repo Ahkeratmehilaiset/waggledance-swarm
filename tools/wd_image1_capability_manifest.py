@@ -50,6 +50,7 @@ from tools.run_future_scale_insight_bench import (  # noqa: E402
     build_future_scale_insight_benchmark,
 )
 from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
+    PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
     build_future_scale_route_depth_benchmark,
 )
 from waggledance.core.hex_topology.cell_message_contract import make_message
@@ -4896,6 +4897,7 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
         "tools/run_future_scale_route_depth_benchmark.py",
         "tests/tools/test_future_scale_route_depth_benchmark.py",
         "docs/benchmarks/FUTURE_SCALE_ROUTE_DEPTH_BENCHMARK.md",
+        PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
         "waggledance/adapters/http/routes/chat.py",
     ]
     try:
@@ -4922,16 +4924,34 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
     result = report.get("benchmark_result") if isinstance(report, dict) else {}
     if not isinstance(result, dict):
         result = {}
+    histogram_artifact = (
+        report.get("production_route_depth_histogram_artifact")
+        if isinstance(report, dict)
+        else {}
+    )
+    if not isinstance(histogram_artifact, dict):
+        histogram_artifact = {}
+    histogram_artifact_ok = (
+        histogram_artifact.get("artifact_status")
+        == "production_histogram_artifact_contract_available"
+        and histogram_artifact.get("production_runtime_data_attached") is False
+        and histogram_artifact.get("claim_gate_satisfied") is False
+        and histogram_artifact.get("required_runtime_evidence_present") is False
+        and histogram_artifact.get("external_writes_applied") is False
+    )
     report_ok = isinstance(report, dict) and report.get("ok") is True
     return {
         "status": (
-            "benchmark_contract_available"
+            "benchmark_and_histogram_artifact_contract_available"
+            if report_ok and histogram_artifact_ok
+            else "benchmark_contract_available"
             if report_ok
             else "benchmark_contract_unavailable"
         ),
         "measurement_scope": (
             "local deterministic sanitized route-stage trace fixtures, not a "
-            "production route-depth baseline"
+            "live production route-depth baseline; includes a production-shaped "
+            "histogram artifact contract with no production corpus attached"
         ),
         "metric_names": [],
         "artifact_paths": route_depth_artifacts,
@@ -4949,10 +4969,37 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
             "trace_stage_policy": report.get("trace_stage_policy")
             if isinstance(report, dict)
             else None,
+            "production_histogram_artifact_status": histogram_artifact.get(
+                "artifact_status"
+            ),
+            "production_histogram_metric_names": histogram_artifact.get(
+                "metric_names",
+                [],
+            ),
+            "production_histogram_label_names": histogram_artifact.get(
+                "label_names",
+                [],
+            ),
+            "production_histogram_bucket_labels": histogram_artifact.get(
+                "bucket_labels",
+                [],
+            ),
+            "production_histogram_sample_count": histogram_artifact.get(
+                "sample_count"
+            ),
+            "production_histogram_route_profile_count": histogram_artifact.get(
+                "route_profile_count"
+            ),
+            "production_histogram_runtime_data_attached": histogram_artifact.get(
+                "production_runtime_data_attached"
+            ),
+            "production_histogram_digest_sha256": histogram_artifact.get(
+                "artifact_digest_sha256"
+            ),
         },
         "evidence_freshness": "local_offline_benchmark_contract",
         "blockers": [
-            "needs exported runtime route-depth histograms by route/profile",
+            "needs live production route-depth histogram capture window attached to the artifact contract",
             "needs repeated versioned benchmark windows before trend claims",
             "needs production trace corpus binding before efficiency claims",
         ],
@@ -6772,11 +6819,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "The repo has future scale architecture and a scale-axis "
                 "scorecard with first runtime evidence bindings for "
                 "route-stage coverage, fallback, latency, a local "
-                "route-depth benchmark contract, local composite-path and "
-                "contradiction-rate benchmark contracts, an insight-score "
-                "benchmark producer, repeated local benchmark-window "
-                "evidence, and opt-in audit completeness proxies; unlimited "
-                "scalability remains a target, not a fact."
+                "route-depth benchmark contract plus a production-shaped "
+                "route-depth histogram artifact contract, local composite-path "
+                "and contradiction-rate benchmark contracts, an insight-score "
+                "benchmark producer, repeated local benchmark-window evidence, "
+                "and opt-in audit completeness proxies; unlimited scalability "
+                "remains a target, not a fact."
             ),
             status=_status_for(future_evidence),
             claim_safe=False,
@@ -6787,12 +6835,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "coverage, fallback rate, latency, and audit completeness.",
                 "The current scorecard binds some existing runtime evidence; "
                 "benchmark-window evidence is still deterministic local "
-                "replay, and route-depth still needs production histogram "
-                "exports.",
+                "replay, and route-depth histogram artifacts still need a live "
+                "production capture window and corpus binding.",
             ),
             next_smallest_pr=(
-                "Add production route-depth histogram artifacts to the "
-                "future-scale scorecard without upgrading claims."
+                "Attach a live production route-depth histogram capture window "
+                "to the artifact contract without upgrading claims."
             ),
             proof=future_scale_scorecard,
         ),

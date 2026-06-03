@@ -79,6 +79,46 @@ def test_route_depth_benchmark_reports_local_fixture_measurement() -> None:
     assert result["depth_histogram"]["7"] == 1
     assert result["depth_histogram"]["8"] == 1
     assert result["is_production_baseline"] is False
+    artifact = report["production_route_depth_histogram_artifact"]
+    assert (
+        artifact["schema_version"]
+        == harness.PRODUCTION_HISTOGRAM_SCHEMA_VERSION
+    )
+    assert (
+        artifact["artifact_status"]
+        == "production_histogram_artifact_contract_available"
+    )
+    assert artifact["production_runtime_data_attached"] is False
+    assert artifact["production_data_source"] == "not_attached"
+    assert artifact["required_runtime_evidence_present"] is False
+    assert artifact["claim_gate_satisfied"] is False
+    assert artifact["claim_safe"] is False
+    assert artifact["literal_future_claim_safe"] is False
+    assert artifact["runtime_authority_changed"] is False
+    assert artifact["runtime_authority_granted"] is False
+    assert artifact["controls_present"] is False
+    assert artifact["operator_gate_required"] is False
+    assert artifact["external_writes_applied"] is False
+    assert artifact["network_access"] == "not_used"
+    assert artifact["cloud_api_calls"] == 0
+    assert artifact["metric_names"] == list(
+        harness.ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES
+    )
+    assert artifact["label_names"] == list(
+        harness.ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES
+    )
+    assert artifact["bucket_labels"] == list(harness.ROUTE_DEPTH_BUCKET_LABELS)
+    assert artifact["route_profile_count"] == 5
+    assert artifact["sample_count"] == 5
+    assert artifact["route_depth_sum"] == 28
+    assert artifact["aggregate_cumulative_buckets"]["0"] == 0
+    assert artifact["aggregate_cumulative_buckets"]["2"] == 1
+    assert artifact["aggregate_cumulative_buckets"]["5"] == 2
+    assert artifact["aggregate_cumulative_buckets"]["8"] == 5
+    assert artifact["aggregate_cumulative_buckets"]["+Inf"] == 5
+    assert len(artifact["artifact_digest_sha256"]) == 64
+    assert "live production" in artifact["blockers_to_runtime_claim"][0]
+    assert "does not attach live production runtime data" in artifact["safe_conclusion"]
     assert report["source"]["fixture_set_alias"] == "route_depth_static_trace_set_v1"
     assert len(report["source"]["fixture_set_sha256"]) == 64
     assert (
@@ -191,6 +231,54 @@ def test_validate_rejects_non_finite_and_case_type_confusion() -> None:
     bad_histogram["benchmark_result"]["depth_histogram"]["8"] = 0
     errors = harness.validate_benchmark_report(bad_histogram)
     assert "benchmark_result.depth_histogram does not sum to sample_count" in errors
+
+
+def test_validate_rejects_malformed_production_histogram_artifact() -> None:
+    report = harness.build_future_scale_route_depth_benchmark(now_utc=FIXED_NOW)
+
+    truthy_gate = deepcopy(report)
+    truthy_gate["production_route_depth_histogram_artifact"][
+        "claim_gate_satisfied"
+    ] = True
+    errors = harness.validate_benchmark_report(truthy_gate)
+    assert (
+        "production histogram claim_gate_satisfied must be exact false bool"
+        in errors
+    )
+
+    attached_runtime = deepcopy(report)
+    attached_runtime["production_route_depth_histogram_artifact"][
+        "production_runtime_data_attached"
+    ] = "false"
+    errors = harness.validate_benchmark_report(attached_runtime)
+    assert (
+        "production histogram production_runtime_data_attached must be false"
+        in errors
+    )
+
+    bad_bucket_total = deepcopy(report)
+    bad_bucket_total["production_route_depth_histogram_artifact"][
+        "aggregate_cumulative_buckets"
+    ]["+Inf"] = 4
+    errors = harness.validate_benchmark_report(bad_bucket_total)
+    assert (
+        "production histogram aggregate_cumulative_buckets.+Inf must equal sample_count"
+        in errors
+    )
+
+    bad_digest = deepcopy(report)
+    bad_digest["production_route_depth_histogram_artifact"][
+        "artifact_digest_sha256"
+    ] = "0" * 64
+    errors = harness.validate_benchmark_report(bad_digest)
+    assert "production histogram artifact_digest_sha256 mismatch" in errors
+
+    leaked_label = deepcopy(report)
+    leaked_label["production_route_depth_histogram_artifact"]["route_profiles"][
+        0
+    ]["route_profile"] = "cohere_internal_model"
+    errors = harness.validate_benchmark_report(leaked_label)
+    assert any("forbidden secret/path-like string" in error for error in errors)
 
 
 def test_validate_rejects_path_and_secret_leaks() -> None:
@@ -309,12 +397,21 @@ def test_cli_json_writes_artifacts_without_absolute_path_leak(tmp_path: Path) ->
     assert payload["generated_at_utc"] == "2026-06-02T20:55:00Z"
     assert payload["ok"] is True
     json_path = out_dir / harness.JSON_ARTIFACT_NAME
+    histogram_path = out_dir / harness.PRODUCTION_HISTOGRAM_ARTIFACT_NAME
     md_path = out_dir / harness.MARKDOWN_ARTIFACT_NAME
     assert json_path.exists()
+    assert histogram_path.exists()
     assert md_path.exists()
     assert json.loads(json_path.read_text(encoding="utf-8"))["ok"] is True
+    histogram_payload = json.loads(histogram_path.read_text(encoding="utf-8"))
+    assert (
+        histogram_payload["artifact_status"]
+        == "production_histogram_artifact_contract_available"
+    )
+    assert histogram_payload["production_runtime_data_attached"] is False
     combined = result.stdout + result.stderr
     combined += json_path.read_text(encoding="utf-8")
+    combined += histogram_path.read_text(encoding="utf-8")
     combined += md_path.read_text(encoding="utf-8")
     assert str(tmp_path) not in combined
     assert "C:\\Users" not in combined
@@ -345,5 +442,11 @@ def test_markdown_preserves_no_overclaim_guardrails() -> None:
     assert "literal_future_claim_safe: `false`" in markdown
     assert "required_runtime_evidence_present: `false`" in markdown
     assert "external_writes_applied: `false`" in markdown
+    assert (
+        "production_histogram_artifact: "
+        "`production_histogram_artifact_contract_available`"
+        in markdown
+    )
+    assert "production_histogram_runtime_data_attached: `false`" in markdown
     assert "not a production baseline" in markdown
     assert "not proof of superior intelligence" in markdown

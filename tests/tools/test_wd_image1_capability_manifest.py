@@ -1640,7 +1640,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     )
     assert (
         axes["route_depth"]["runtime_evidence"]["status"]
-        == "benchmark_contract_available"
+        == "benchmark_and_histogram_artifact_contract_available"
     )
     assert axes["route_depth"]["runtime_evidence"]["metric_names"] == []
     assert axes["route_depth"]["runtime_evidence"]["sample"]["sample_count"] == 5
@@ -1648,7 +1648,39 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert axes["route_depth"]["runtime_evidence"]["sample"]["p95_depth"] == 7.8
     assert axes["route_depth"]["runtime_evidence"]["sample"]["p99_depth"] == 7.96
     assert (
-        "needs exported runtime route-depth histograms by route/profile"
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_artifact_status"
+        ]
+        == "production_histogram_artifact_contract_available"
+    )
+    assert (
+        "waggledance_route_depth_histogram_bucket"
+        in axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_metric_names"
+        ]
+    )
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_label_names"
+    ] == ["route_profile", "final_stage", "le"]
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_sample_count"
+    ] == 5
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_route_profile_count"
+    ] == 5
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_runtime_data_attached"
+    ] is False
+    assert (
+        len(
+            axes["route_depth"]["runtime_evidence"]["sample"][
+                "production_histogram_digest_sha256"
+            ]
+        )
+        == 64
+    )
+    assert (
+        "needs live production route-depth histogram capture window attached to the artifact contract"
         in axes["route_depth"]["runtime_evidence"]["blockers"]
     )
     assert (
@@ -1780,7 +1812,7 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     )
     assert (
         evidence_by_axis["route_depth"]["status"]
-        == "benchmark_contract_available"
+        == "benchmark_and_histogram_artifact_contract_available"
     )
     assert (
         "route-stage runtime metrics smoke failed"
@@ -1813,7 +1845,9 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
     )
     assert capability["proof"]["benchmark_window_summary"]["ok"] is True
     assert "benchmark-window evidence" in capability["safe_statement"]
-    assert "route-depth histogram artifacts" in capability["next_smallest_pr"]
+    assert "live production route-depth histogram capture window" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

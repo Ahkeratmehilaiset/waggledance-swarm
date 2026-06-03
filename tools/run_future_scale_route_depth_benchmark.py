@@ -36,6 +36,12 @@ SCHEMA_VERSION = "future_scale_route_depth_benchmark.v1"
 AXIS_ID = "route_depth"
 JSON_ARTIFACT_NAME = "future_scale_route_depth_benchmark.json"
 MARKDOWN_ARTIFACT_NAME = "future_scale_route_depth_benchmark.md"
+PRODUCTION_HISTOGRAM_ARTIFACT_NAME = (
+    "future_scale_route_depth_production_histogram_artifact.json"
+)
+PRODUCTION_HISTOGRAM_SCHEMA_VERSION = (
+    "future_scale_route_depth_production_histogram_artifact.v1"
+)
 BENCHMARK_SCOPE = "local_deterministic_sanitized_route_stage_trace_fixture"
 MEASUREMENT_LABEL = "MEASURED_LOCAL_ONLY"
 SOURCE_PATHS = (
@@ -57,6 +63,20 @@ SAFE_FALSE_FIELDS = (
 )
 ALLOWED_STAGES = tuple(CHAT_ROUTE_STAGE_ORDER)
 ALLOWED_STAGE_SET = set(ALLOWED_STAGES)
+ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES = (
+    "waggledance_route_depth_histogram_bucket",
+    "waggledance_route_depth_histogram_count",
+    "waggledance_route_depth_histogram_sum",
+    "waggledance_route_depth_observations_total",
+)
+ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES = (
+    "route_profile",
+    "final_stage",
+    "le",
+)
+ROUTE_DEPTH_BUCKET_LABELS = tuple(
+    str(depth) for depth in range(0, len(ALLOWED_STAGES) + 1)
+) + ("+Inf",)
 
 
 DEFAULT_TRACE_FIXTURES: tuple[dict[str, Any], ...] = (
@@ -155,6 +175,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
+        (args.out_dir / PRODUCTION_HISTOGRAM_ARTIFACT_NAME).write_text(
+            json.dumps(
+                report["production_route_depth_histogram_artifact"],
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         (args.out_dir / MARKDOWN_ARTIFACT_NAME).write_text(markdown, encoding="utf-8")
 
     if args.json:
@@ -174,6 +204,7 @@ def build_future_scale_route_depth_benchmark(
     depths = [case["route_depth"] for case in cases if case["route_depth"] > 0]
     measured = bool(depths)
     benchmark_result = _build_benchmark_result(depths)
+    histogram_artifact = _build_production_route_depth_histogram_artifact(cases)
     report: dict[str, Any] = {
         "report_version": REPORT_VERSION,
         "schema_version": SCHEMA_VERSION,
@@ -194,6 +225,7 @@ def build_future_scale_route_depth_benchmark(
         "trace_stage_policy": "allowlisted_stage_names_only_no_query_or_payload",
         "allowed_route_stage_order": list(ALLOWED_STAGES),
         "benchmark_result": benchmark_result,
+        "production_route_depth_histogram_artifact": histogram_artifact,
         "cases": cases,
         "claim_gate_satisfied": False,
         "claim_safe": False,
@@ -209,6 +241,7 @@ def build_future_scale_route_depth_benchmark(
         "cloud_api_calls": 0,
         "artifact_write_scope": [
             JSON_ARTIFACT_NAME,
+            PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
             MARKDOWN_ARTIFACT_NAME,
         ],
         "source_paths": list(SOURCE_PATHS),
@@ -239,7 +272,8 @@ def build_future_scale_route_depth_benchmark(
         },
         "blockers_to_full_claim": [
             "fixture traces are deterministic local examples, not production traffic",
-            "needs exported runtime route-depth histograms by route/profile",
+            "needs live production route-depth histogram capture window "
+            "attached to this artifact contract",
             "needs repeated versioned benchmark windows before trend claims",
             "needs manifest aggregation with sibling future-scale axes",
         ],
@@ -288,6 +322,11 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
         errors.append("benchmark_result must be an object")
     else:
         _validate_benchmark_result(result, errors)
+    artifact = report.get("production_route_depth_histogram_artifact")
+    if not isinstance(artifact, dict):
+        errors.append("production_route_depth_histogram_artifact must be an object")
+    else:
+        _validate_production_route_depth_histogram_artifact(artifact, errors)
 
     cases = report.get("cases")
     if not isinstance(cases, list):
@@ -311,6 +350,7 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
 
 def render_markdown(report: dict[str, Any]) -> str:
     result = report["benchmark_result"]
+    histogram_artifact = report["production_route_depth_histogram_artifact"]
     lines = [
         "# Future-Scale Route Depth Benchmark",
         "",
@@ -323,6 +363,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- p50_depth: `{result['p50_depth']}`",
         f"- p95_depth: `{result['p95_depth']}`",
         f"- p99_depth: `{result['p99_depth']}`",
+        "- production_histogram_artifact: "
+        f"`{histogram_artifact['artifact_status']}`",
+        "- production_histogram_runtime_data_attached: "
+        f"`{str(histogram_artifact['production_runtime_data_attached']).lower()}`",
         f"- claim_gate_satisfied: `{str(report['claim_gate_satisfied']).lower()}`",
         f"- claim_safe: `{str(report['claim_safe']).lower()}`",
         f"- literal_future_claim_safe: `{str(report['literal_future_claim_safe']).lower()}`",
@@ -379,6 +423,101 @@ def _build_case_records(fixtures: Sequence[Mapping[str, Any]]) -> list[dict[str,
             }
         )
     return records
+
+
+def _build_production_route_depth_histogram_artifact(
+    cases: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    route_profiles = []
+    aggregate_histogram = {label: 0 for label in ROUTE_DEPTH_BUCKET_LABELS}
+    total_count = 0
+    total_depth_sum = 0
+    for case in cases:
+        route_depth = case.get("route_depth")
+        final_stage = case.get("final_stage")
+        case_id = case.get("case_id")
+        if (
+            not isinstance(case_id, str)
+            or not isinstance(route_depth, int)
+            or isinstance(route_depth, bool)
+            or route_depth < 0
+            or not isinstance(final_stage, str)
+            or final_stage not in set(ALLOWED_STAGES) | {"none"}
+        ):
+            continue
+        profile_histogram = _cumulative_route_depth_buckets(route_depth)
+        route_profiles.append(
+            {
+                "route_profile": case_id,
+                "final_stage": final_stage,
+                "sample_count": 1,
+                "route_depth_sum": route_depth,
+                "observed_route_depth": route_depth,
+                "cumulative_buckets": profile_histogram,
+            }
+        )
+        total_count += 1
+        total_depth_sum += route_depth
+        for label, value in profile_histogram.items():
+            aggregate_histogram[label] += value
+
+    digest_source = {
+        "metric_names": list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES),
+        "label_names": list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES),
+        "bucket_labels": list(ROUTE_DEPTH_BUCKET_LABELS),
+        "route_profiles": route_profiles,
+    }
+    return {
+        "schema_version": PRODUCTION_HISTOGRAM_SCHEMA_VERSION,
+        "artifact_status": "production_histogram_artifact_contract_available",
+        "measurement_scope": (
+            "production-shaped route-depth histogram artifact contract from "
+            "sanitized route-stage depth samples; no live production corpus attached"
+        ),
+        "production_runtime_data_attached": False,
+        "production_data_source": "not_attached",
+        "required_runtime_evidence_present": False,
+        "claim_gate_satisfied": False,
+        "claim_safe": False,
+        "literal_future_claim_safe": False,
+        "runtime_authority_changed": False,
+        "runtime_authority_granted": False,
+        "controls_present": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "network_access": "not_used",
+        "cloud_api_calls": 0,
+        "metric_names": list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES),
+        "label_names": list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES),
+        "bucket_labels": list(ROUTE_DEPTH_BUCKET_LABELS),
+        "route_profile_count": len(route_profiles),
+        "sample_count": total_count,
+        "route_depth_sum": total_depth_sum,
+        "aggregate_cumulative_buckets": aggregate_histogram,
+        "route_profiles": route_profiles,
+        "artifact_digest_sha256": _canonical_digest(digest_source),
+        "blockers_to_runtime_claim": [
+            "artifact contract is production-shaped, not live production data",
+            "needs operator-owned production scrape/export attached to this contract",
+            "needs route/profile time-window retention before trend claims",
+        ],
+        "safe_conclusion": (
+            "The artifact contract defines a sanitized route-depth histogram "
+            "shape with route_profile, final_stage, and le labels. It does not "
+            "attach live production runtime data or satisfy the future-scale "
+            "claim gate."
+        ),
+    }
+
+
+def _cumulative_route_depth_buckets(route_depth: int) -> dict[str, int]:
+    buckets: dict[str, int] = {}
+    for label in ROUTE_DEPTH_BUCKET_LABELS:
+        if label == "+Inf":
+            buckets[label] = 1
+        else:
+            buckets[label] = 1 if route_depth <= int(label) else 0
+    return buckets
 
 
 def _sanitize_stage_names(trace: Any) -> list[str]:
@@ -476,6 +615,195 @@ def _validate_benchmark_result(result: Mapping[str, Any], errors: list[str]) -> 
             total += value
     if isinstance(sample_count, int) and not isinstance(sample_count, bool) and total != sample_count:
         errors.append("benchmark_result.depth_histogram does not sum to sample_count")
+
+
+def _validate_production_route_depth_histogram_artifact(
+    artifact: Mapping[str, Any],
+    errors: list[str],
+) -> None:
+    if artifact.get("schema_version") != PRODUCTION_HISTOGRAM_SCHEMA_VERSION:
+        errors.append("production histogram schema_version is not recognized")
+    if (
+        artifact.get("artifact_status")
+        != "production_histogram_artifact_contract_available"
+    ):
+        errors.append("production histogram artifact_status is not recognized")
+    for field in SAFE_FALSE_FIELDS:
+        if artifact.get(field) is not False:
+            errors.append(
+                f"production histogram {field} must be exact false bool"
+            )
+    if artifact.get("production_runtime_data_attached") is not False:
+        errors.append(
+            "production histogram production_runtime_data_attached must be false"
+        )
+    if artifact.get("production_data_source") != "not_attached":
+        errors.append("production histogram production_data_source must be not_attached")
+    if artifact.get("network_access") != "not_used":
+        errors.append("production histogram network_access must be not_used")
+    if artifact.get("cloud_api_calls") != 0:
+        errors.append("production histogram cloud_api_calls must be 0")
+    if artifact.get("metric_names") != list(ROUTE_DEPTH_HISTOGRAM_METRIC_NAMES):
+        errors.append("production histogram metric_names mismatch")
+    if artifact.get("label_names") != list(ROUTE_DEPTH_HISTOGRAM_LABEL_NAMES):
+        errors.append("production histogram label_names mismatch")
+    if artifact.get("bucket_labels") != list(ROUTE_DEPTH_BUCKET_LABELS):
+        errors.append("production histogram bucket_labels mismatch")
+    sample_count = artifact.get("sample_count")
+    if (
+        not isinstance(sample_count, int)
+        or isinstance(sample_count, bool)
+        or sample_count < 0
+    ):
+        errors.append("production histogram sample_count must be a non-negative int")
+    depth_sum = artifact.get("route_depth_sum")
+    if (
+        not isinstance(depth_sum, int)
+        or isinstance(depth_sum, bool)
+        or depth_sum < 0
+    ):
+        errors.append("production histogram route_depth_sum must be a non-negative int")
+    profile_count = artifact.get("route_profile_count")
+    if (
+        not isinstance(profile_count, int)
+        or isinstance(profile_count, bool)
+        or profile_count < 0
+    ):
+        errors.append("production histogram route_profile_count must be a non-negative int")
+
+    aggregate = artifact.get("aggregate_cumulative_buckets")
+    if not isinstance(aggregate, dict):
+        errors.append("production histogram aggregate_cumulative_buckets must be an object")
+    else:
+        _validate_cumulative_buckets(
+            aggregate,
+            expected_sample_count=sample_count if isinstance(sample_count, int) else None,
+            errors=errors,
+            prefix="production histogram aggregate_cumulative_buckets",
+        )
+
+    profiles = artifact.get("route_profiles")
+    if not isinstance(profiles, list):
+        errors.append("production histogram route_profiles must be a list")
+    else:
+        if isinstance(profile_count, int) and len(profiles) != profile_count:
+            errors.append("production histogram route_profile_count mismatch")
+        total_samples = 0
+        total_depth_sum = 0
+        recomputed_aggregate = {label: 0 for label in ROUTE_DEPTH_BUCKET_LABELS}
+        for index, profile in enumerate(profiles):
+            if not isinstance(profile, dict):
+                errors.append(
+                    f"production histogram route_profiles[{index}] must be an object"
+                )
+                continue
+            route_profile = profile.get("route_profile")
+            if (
+                not isinstance(route_profile, str)
+                or not _is_stable_case_id(route_profile)
+            ):
+                errors.append(
+                    "production histogram route_profiles"
+                    f"[{index}].route_profile must be a stable lowercase alias"
+                )
+            final_stage = profile.get("final_stage")
+            if (
+                not isinstance(final_stage, str)
+                or final_stage not in set(ALLOWED_STAGES) | {"none"}
+            ):
+                errors.append(
+                    "production histogram route_profiles"
+                    f"[{index}].final_stage must be an allowed route stage"
+                )
+            profile_sample_count = profile.get("sample_count")
+            if profile_sample_count != 1:
+                errors.append(
+                    f"production histogram route_profiles[{index}].sample_count must be 1"
+                )
+            observed_depth = profile.get("observed_route_depth")
+            if (
+                not isinstance(observed_depth, int)
+                or isinstance(observed_depth, bool)
+                or observed_depth < 0
+            ):
+                errors.append(
+                    "production histogram route_profiles"
+                    f"[{index}].observed_route_depth must be a non-negative int"
+                )
+            route_depth_sum = profile.get("route_depth_sum")
+            if route_depth_sum != observed_depth:
+                errors.append(
+                    "production histogram route_profiles"
+                    f"[{index}].route_depth_sum must match observed_route_depth"
+                )
+            buckets = profile.get("cumulative_buckets")
+            if not isinstance(buckets, dict):
+                errors.append(
+                    "production histogram route_profiles"
+                    f"[{index}].cumulative_buckets must be an object"
+                )
+            else:
+                _validate_cumulative_buckets(
+                    buckets,
+                    expected_sample_count=1,
+                    errors=errors,
+                    prefix=f"production histogram route_profiles[{index}].cumulative_buckets",
+                )
+                for label in ROUTE_DEPTH_BUCKET_LABELS:
+                    value = buckets.get(label)
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        recomputed_aggregate[label] += value
+            if isinstance(profile_sample_count, int) and not isinstance(
+                profile_sample_count,
+                bool,
+            ):
+                total_samples += profile_sample_count
+            if isinstance(route_depth_sum, int) and not isinstance(route_depth_sum, bool):
+                total_depth_sum += route_depth_sum
+        if isinstance(sample_count, int) and total_samples != sample_count:
+            errors.append("production histogram route_profiles sample_count mismatch")
+        if isinstance(depth_sum, int) and total_depth_sum != depth_sum:
+            errors.append("production histogram route_profiles route_depth_sum mismatch")
+        if isinstance(aggregate, dict) and recomputed_aggregate != aggregate:
+            errors.append("production histogram aggregate does not match route_profiles")
+
+    digest = artifact.get("artifact_digest_sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or not all(
+        character in "0123456789abcdef" for character in digest
+    ):
+        errors.append("production histogram artifact_digest_sha256 must be lowercase sha256")
+    else:
+        digest_source = {
+            "metric_names": artifact.get("metric_names"),
+            "label_names": artifact.get("label_names"),
+            "bucket_labels": artifact.get("bucket_labels"),
+            "route_profiles": artifact.get("route_profiles"),
+        }
+        if _canonical_digest(digest_source) != digest:
+            errors.append("production histogram artifact_digest_sha256 mismatch")
+
+
+def _validate_cumulative_buckets(
+    buckets: Mapping[str, Any],
+    *,
+    expected_sample_count: int | None,
+    errors: list[str],
+    prefix: str,
+) -> None:
+    if set(buckets) != set(ROUTE_DEPTH_BUCKET_LABELS):
+        errors.append(f"{prefix} bucket labels mismatch")
+        return
+    previous = -1
+    for label in ROUTE_DEPTH_BUCKET_LABELS:
+        value = buckets.get(label)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            errors.append(f"{prefix}.{label} must be a non-negative int")
+            continue
+        if value < previous:
+            errors.append(f"{prefix} must be monotonically non-decreasing")
+        previous = value
+    if expected_sample_count is not None and buckets.get("+Inf") != expected_sample_count:
+        errors.append(f"{prefix}.+Inf must equal sample_count")
 
 
 def _validate_case_record(index: int, case: Any, errors: list[str]) -> None:

@@ -1640,7 +1640,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     )
     assert (
         axes["route_depth"]["runtime_evidence"]["status"]
-        == "benchmark_histogram_and_capture_attachment_contract_available"
+        == "benchmark_histogram_capture_attachment_and_summary_contract_available"
     )
     assert axes["route_depth"]["runtime_evidence"]["metric_names"] == []
     assert axes["route_depth"]["runtime_evidence"]["sample"]["sample_count"] == 5
@@ -1712,7 +1712,35 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         == 64
     )
     assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_schema_version"
+        ]
+        == "future_scale_route_depth_capture_window_verification_summary.v1"
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_status"
+        ]
+        == "operator_capture_window_verification_summary_blocked"
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_ok"
+        ]
+        is False
+    )
+    assert (
+        "capture_window_count_insufficient"
+        in axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_blockers"
+        ]
+    )
+    assert (
         "needs operator-owned live production route-depth exports run through the capture-window verifier"
+        in axes["route_depth"]["runtime_evidence"]["blockers"]
+    )
+    assert (
+        "needs path-free capture-window verification summaries for attached operator-owned exports"
         in axes["route_depth"]["runtime_evidence"]["blockers"]
     )
     assert (
@@ -1844,7 +1872,7 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     )
     assert (
         evidence_by_axis["route_depth"]["status"]
-        == "benchmark_histogram_and_capture_attachment_contract_available"
+        == "benchmark_histogram_capture_attachment_and_summary_contract_available"
     )
     assert (
         "route-stage runtime metrics smoke failed"

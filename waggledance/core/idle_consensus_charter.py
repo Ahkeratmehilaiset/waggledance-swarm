@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import posixpath
 import re
 from typing import Sequence
 
@@ -91,7 +92,7 @@ def evaluate_paths(
     blocked: list[str] = []
     unmatched: list[str] = []
     for changed in changed_paths:
-        normalized = changed.replace("\\", "/")
+        normalized = _normalize_changed_path(changed)
         if _matches_any(normalized, charter.file_denylist):
             blocked.append(normalized)
             continue
@@ -118,10 +119,8 @@ def evaluate_diff_content(
 ) -> GateDecision:
     """Check diff content against the code-pattern denylist.
 
-    The patterns are matched as literal substrings within the diff body. A
-    future revision can substitute richer regex semantics, but charter-defensive
-    default is substring match because it is impossible to bypass via simple
-    whitespace tricks.
+    The patterns are matched as literal substrings within the diff body, with a
+    small whitespace-tolerant path for exact ``identifier=value`` markers.
     """
     if not diff_text:
         return GateDecision(allowed=True, reason="empty diff content")
@@ -129,7 +128,7 @@ def evaluate_diff_content(
     hits: list[str] = []
     for pattern in charter.code_pattern_denylist:
         markers = _pattern_markers(pattern)
-        if any(marker in diff_text for marker in markers):
+        if any(_marker_matches_diff(marker, diff_text) for marker in markers):
             hits.append(pattern)
     if hits:
         return GateDecision(
@@ -187,21 +186,51 @@ def _matches_any(path: str, patterns: Sequence[str]) -> bool:
 def _matches_glob(path: str, pattern: str) -> bool:
     if not pattern:
         return False
-    if pattern == path:
+    candidate = path.casefold()
+    glob = pattern.casefold()
+    if glob == candidate:
         return True
-    if pattern.endswith("/**"):
-        prefix = pattern[:-3]
-        if path == prefix or path.startswith(prefix + "/"):
+    if glob.endswith("/**"):
+        prefix = glob[:-3]
+        if candidate == prefix or candidate.startswith(prefix + "/"):
             return True
-    if pattern.endswith("/*"):
-        prefix = pattern[:-2]
-        if path.startswith(prefix + "/") and "/" not in path[len(prefix) + 1 :]:
+    if glob.endswith("/*"):
+        prefix = glob[:-2]
+        if candidate.startswith(prefix + "/") and "/" not in candidate[len(prefix) + 1 :]:
             return True
-    if "*" in pattern:
-        regex = re.escape(pattern).replace("\\*\\*", ".*").replace("\\*", "[^/]*")
-        if re.fullmatch(regex, path):
+    if "*" in glob:
+        regex = re.escape(glob).replace("\\*\\*", ".*").replace("\\*", "[^/]*")
+        if re.fullmatch(regex, candidate):
             return True
     return False
+
+
+def _marker_matches_diff(marker: str, diff_text: str) -> bool:
+    if marker in diff_text:
+        return True
+    lhs, separator, rhs = marker.partition("=")
+    if separator != "=":
+        return False
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", lhs):
+        return False
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", rhs):
+        return False
+    pattern = (
+        rf"(?<![A-Za-z0-9_])"
+        rf"['\"]?{re.escape(lhs)}['\"]?"
+        rf"\s*[:=]\s*"
+        rf"(?i:['\"]?{re.escape(rhs)}['\"]?)"
+        rf"(?![A-Za-z0-9_])"
+    )
+    return re.search(pattern, diff_text) is not None
+
+
+def _normalize_changed_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    collapsed = posixpath.normpath(normalized)
+    if collapsed == ".":
+        return normalized
+    return collapsed
 
 
 def _pattern_markers(bullet: str) -> tuple[str, ...]:

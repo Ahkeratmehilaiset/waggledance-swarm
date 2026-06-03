@@ -28,6 +28,9 @@ from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
 )
+from tools.check_rco_pass_present import (  # noqa: E402
+    check_rco_pass_present,
+)
 from tools.idle_consensus_artifact import (  # noqa: E402
     DEFAULT_OUT_DIR as DEFAULT_ARTIFACT_OUT_DIR,
     write_idle_consensus_artifact,
@@ -70,8 +73,6 @@ BUILD_CONSENSUS_STATUSES = frozenset(
 RCO_PASS_STATUSES = frozenset(
     {
         "rco_pass",
-        "rco_pass_operator_merge_required",
-        "rco_pass_pending_ci",
     }
 )
 # Mirrors tools/check_bridge_changes_requested.BLOCKING_STATUSES so the
@@ -286,6 +287,13 @@ def evaluate_auto_merge_gate(
     receipt_verified = bool(pr_status.get("receipt_verified", False))
     checks = _checks(pr_status)
     artifact_hook_configured = artifact_writer is not None
+    rco_pass_gate = _bridge_rco_pass_gate(
+        events=events,
+        task_id=bridge_gate_task_id,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        checked=events_path is not None,
+    )
 
     blockers: list[str] = []
     if head_sha != expected_head:
@@ -326,6 +334,8 @@ def evaluate_auto_merge_gate(
             )
         else:
             blockers.append("unresolved peer bridge block")
+    if events_path is not None and not bool(rco_pass_gate.get("ok", False)):
+        blockers.append("missing exact-head RCO_PASS from claude-rco-1")
     if not receipt_bundle_path and not (apply and artifact_hook_configured):
         blockers.append("receipt_bundle_path is required before merge")
     if (
@@ -367,6 +377,7 @@ def evaluate_auto_merge_gate(
         receipt_verified=receipt_verified,
         artifact_hook_configured=artifact_hook_configured,
         bridge_peer_gate=bridge_peer_gate,
+        rco_pass_gate=rco_pass_gate,
         path_gate=_gate_to_dict(path_gate),
         diff_gate=_gate_to_dict(diff_gate),
         base_gate=base_gate,
@@ -542,6 +553,7 @@ def _base_report(
     receipt_verified: bool,
     artifact_hook_configured: bool,
     bridge_peer_gate: Mapping[str, Any],
+    rco_pass_gate: Mapping[str, Any],
     path_gate: Mapping[str, Any],
     diff_gate: Mapping[str, Any],
     base_gate: Mapping[str, Any],
@@ -567,6 +579,7 @@ def _base_report(
         "diff_gate": dict(diff_gate),
         "base_gate": dict(base_gate),
         "bridge_peer_gate": dict(bridge_peer_gate),
+        "rco_pass_gate": dict(rco_pass_gate),
         "bridge_consensus": dict(bridge_consensus),
         "rate_gate": dict(rate_gate),
         "gh_command": list(command),
@@ -923,6 +936,35 @@ def _bridge_peer_gate(
         task_id=task_id,
         merging_agent=from_agent,
         pr_number=pr_number,
+    )
+
+
+def _bridge_rco_pass_gate(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    pr_number: int,
+    head_sha: str,
+    checked: bool,
+) -> dict[str, Any]:
+    if not checked:
+        return {
+            "ok": False,
+            "rco_pass_present": False,
+            "has_qualifying_rco_pass_at_head": False,
+            "decision": "not_checked_operator_review_required",
+            "task_id": task_id,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "rco_agent": BRIDGE_CONSENSUS_RCO,
+            "latest_rco_pass_event": None,
+            "latest_blocking_event": None,
+        }
+    return check_rco_pass_present(
+        events=events,
+        task_id=task_id,
+        head=head_sha,
+        rco_agent=BRIDGE_CONSENSUS_RCO,
     )
 
 

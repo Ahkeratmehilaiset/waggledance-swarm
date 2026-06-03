@@ -436,6 +436,106 @@ def test_exact_head_rco_pass_required_when_bridge_events_checked(
     assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
 
 
+def test_rco_gate_not_checked_defaults_fail_closed_report() -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+    )
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["rco_pass_gate"]["ok"] is False
+    assert report["rco_pass_gate"]["decision"] == (
+        "not_checked_operator_review_required"
+    )
+
+
+def test_operator_merge_required_rco_status_does_not_satisfy_merge_gate(
+    tmp_path: Path,
+) -> None:
+    rco = _bridge_event(
+        agent="claude-rco-1",
+        type_="decision",
+        status="rco_pass_operator_merge_required",
+    ) | {
+        "message": f"RCO_PASS_OPERATOR_MERGE_REQUIRED exact head {HEAD}",
+        "payload": {"head": HEAD},
+    }
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [rco]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=lambda command: pytest.fail(f"merge runner called: {command}"),
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["rco_pass_gate"]["ok"] is False
+    assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
+
+
+def test_pending_ci_rco_status_with_non_green_ci_refuses_merge_gate(
+    tmp_path: Path,
+) -> None:
+    rco = _bridge_event(
+        agent="claude-rco-1",
+        type_="decision",
+        status="rco_pass_pending_ci",
+    ) | {
+        "message": f"RCO_PASS_PENDING_CI exact head {HEAD}",
+        "payload": {"head": HEAD},
+    }
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(checks=[{"name": "unified", "state": "pending"}]),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [rco]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=lambda command: pytest.fail(f"merge runner called: {command}"),
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["rco_pass_gate"]["ok"] is False
+    assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
+    assert "status checks not green: unified" in report["reasons"]
+
+
+def test_consensus_rejects_operator_merge_required_rco_status(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(agent="codex-lead-1", type_="decision", status="approved")
+        | {"payload": {"head": HEAD}},
+        _bridge_event(agent="codex-tools-1", type_="decision", status="approved")
+        | {"payload": {"head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="decision",
+            status="rco_pass_operator_merge_required",
+        )
+        | {"message": f"operator must merge exact head {HEAD}", "payload": {"head": HEAD}},
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_consensus"]["ok"] is False
+    assert any("rco (claude-rco-1): no head-bound approval" in reason for reason in report["bridge_consensus"]["reasons"])
+
+
 def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
     calls: list[str] = []
 

@@ -73,8 +73,6 @@ BUILD_CONSENSUS_STATUSES = frozenset(
 RCO_PASS_STATUSES = frozenset(
     {
         "rco_pass",
-        "rco_pass_operator_merge_required",
-        "rco_pass_pending_ci",
     }
 )
 # Mirrors tools/check_bridge_changes_requested.BLOCKING_STATUSES so the
@@ -951,9 +949,10 @@ def _bridge_rco_pass_gate(
 ) -> dict[str, Any]:
     if not checked:
         return {
-            "ok": True,
-            "rco_pass_present": True,
-            "decision": "not_checked",
+            "ok": False,
+            "rco_pass_present": False,
+            "has_qualifying_rco_pass_at_head": False,
+            "decision": "not_checked_operator_review_required",
             "task_id": task_id,
             "pr_number": pr_number,
             "head_sha": head_sha,

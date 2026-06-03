@@ -11,8 +11,8 @@ Consumers (future contracts) import from here instead of re-implementing per-fil
 1. **Model/provider token pattern** (case-insensitive):
    - Built from an explicit internal allowlist of token *shapes* (`_PROVIDER_TOKENS`).
    - Covers at minimum: `anthropic|claude|cohere|command|command-r|deepseek|falcon|gemini|gemma|google|gpt|grok|hf|huggingface|llama|mistral|mixtral|mpt|ollama|openai|phi|poro|qwen|xai|yi`
-   - Matches glued forms required by spec: `gpt4o_hit`, `mpt7b`, `claude3`, `command-r`, `hf/...`, `org/model:tag` (via companion pattern), digit/underscore/hyphen/dot/slash/colon continuations.
-   - Tuned lookarounds + separator rules so that common false-positive words (`yield`, `command_center`, `command_center_v2`, `mycommandhelper`, `xai_helper` etc.) do **not** over-trigger.
+   - Matches glued forms required by spec: `gpt4o_hit`, `mpt7b`, `claude3`, `cohere_internal_model`, `command-r`, `hf/...`, `org/model:tag` (via companion pattern), digit/underscore/hyphen/dot/slash/colon continuations.
+   - Tuned lookarounds + separator rules + narrow explicit false-positive guards so that common non-model words (`yield`, `yield_route_case`, `command_center`, `command_center_v2`, `mycommandhelper`, `xai_helper` etc.) do **not** over-trigger.
 
 2. **Secret patterns**:
    - `Bearer ...`, `bearer ...`
@@ -46,7 +46,7 @@ Also exposes the compiled `LEAK_PATTERNS`, `REPO_RELATIVE_PATH_PATTERN`, and `MO
 - Deterministic, offline, no network, no model pulls, no wallclock, no random, no non-finite handling here (callers do).
 - Model list is the allowlist of shapes; regex is derived from it (prefer schema allowlists).
 - `command_center`, `yield`, and similar must not be falsely flagged by the model token matcher.
-- `gpt4o_hit`, `mpt7b`, `command-r`, bare `openai` etc. **must** be flagged.
+- `gpt4o_hit`, `mpt7b`, `cohere_internal_model`, `command-r`, bare `openai` etc. **must** be flagged.
 - Repo-relative paths only ever survive when both allowlist value + named field conditions hold.
 - All other appearances of the shapes are rejected.
 - Claim gates are irrelevant to this module; the test never sets any gate True.

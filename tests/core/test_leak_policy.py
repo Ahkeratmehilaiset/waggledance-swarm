@@ -99,6 +99,12 @@ def test_exports_are_stable():
         "phi3",
         "qwen2",
         # with separators common in refs
+        "cohere_internal_model",
+        "claude_secret_x",
+        "grok_internal",
+        "gemini.internal",
+        "openai:gpt-4o",
+        "mistral/instruct",
         "claude-3-sonnet",
         "llama-2-7b",
         "mistral-7b-instruct",
@@ -212,6 +218,7 @@ def test_repo_relative_paths_only_accepted_in_named_fields_when_allowlisted():
         "No claim that measured latency predicts production performance at scale.",
         "python tools/run_foo.py --fixtures v3.bar --offline --deterministic",
         "yield",
+        "yield_route_case",
         "command_center",
         "command_center_v2",
         "my_yield_helper",
@@ -234,10 +241,20 @@ def test_legit_values_and_false_positive_guards_are_accepted(legit_value: str):
 def test_model_token_pattern_does_not_over_trigger_on_fp_guards():
     """Explicit guard: the tuned pattern must not match command_center / yield etc."""
     pat = re.compile(MODEL_PROVIDER_TOKEN_PATTERN, re.IGNORECASE)
-    for fp in ("yield", "command_center", "command_center_v2", "mycommandcenter", "xai_helper"):
+    for fp in (
+        "yield",
+        "yield_route_case",
+        "hybrid_retrieval_8_cell",
+        "deterministic_solver",
+        "command_center",
+        "command_center_v2",
+        "mycommandcenter",
+        "xai_helper",
+        "xai_is_the_company_not_a_leak_here",
+    ):
         assert not pat.search(fp), f"pattern over-triggered on false-positive guard {fp}"
     # but the real forms still do
-    for real in ("command-r", "command", "xai", "gpt4o_hit"):
+    for real in ("command-r", "command", "xai", "gpt4o_hit", "cohere_internal_model"):
         assert pat.search(real), f"pattern missed real form {real}"
 
 

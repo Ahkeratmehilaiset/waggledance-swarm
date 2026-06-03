@@ -63,13 +63,19 @@ _PROVIDER_TOKENS: tuple[str, ...] = (
 )
 
 _MODEL_PROVIDER_NAME_PATTERN = "(?:" + "|".join(_PROVIDER_TOKENS) + ")"
+_MODEL_PROVIDER_FALSE_POSITIVE_PATTERN = (
+    r"(?:command_center(?:_[A-Za-z0-9]+)*|xai_(?:helper|is(?:_[A-Za-z0-9]+)*))"
+)
 
-# Matches bare tokens and glued forms: gpt4o, mpt7b, gpt4o_hit, command-r, llama3.1, hf/..., org/mod:tag (via companion), etc.
+# Matches bare tokens and glued forms: gpt4o, mpt7b, gpt4o_hit, cohere_internal,
+# command-r, llama3.1, hf/..., org/mod:tag (via companion), etc.
 # Case-insensitive at compile.
-# Tuned lookarounds and separators so that "command_center", "yield", "mygpthelper" etc. do not over-trigger.
+# Tuned lookarounds, separators, and narrow false-positive guards so that
+# "command_center", "yield", "mygpthelper", etc. do not over-trigger.
 MODEL_PROVIDER_TOKEN_PATTERN: str = (
-    rf"(?<![A-Za-z0-9_]){_MODEL_PROVIDER_NAME_PATTERN}"
-    r"(?:[0-9][A-Za-z0-9_.-]*|[-.:/][A-Za-z0-9_.:/-]+)?"
+    rf"(?<![A-Za-z0-9_])(?!(?:{_MODEL_PROVIDER_FALSE_POSITIVE_PATTERN})(?![A-Za-z0-9_]))"
+    rf"{_MODEL_PROVIDER_NAME_PATTERN}"
+    r"(?:[0-9][A-Za-z0-9_.-]*|[_.:/-][A-Za-z0-9_.:/-]+)?"
     r"(?![A-Za-z0-9_])"
 )
 

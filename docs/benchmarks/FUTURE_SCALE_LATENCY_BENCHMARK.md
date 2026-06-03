@@ -63,8 +63,8 @@ Latency metrics are constrained to use the existing
 `waggledance_route_stage_request_latency_histogram_ms` (and child
 _bucket / _sum / _count) names via enum fields in the schema. Stage aliases
 are allowlisted with the same stable grammar used for solvers/corpus in the
-insight slice; raw model or path names are rejected both by schema and by
-the executable walk.
+insight slice. The executable walk rejects raw model names, provider IDs, and
+path-like strings that still satisfy the stable alias grammar.
 
 ## Relation To WD
 
@@ -93,7 +93,7 @@ python -m pytest tests/contracts/test_future_scale_latency_benchmark_schema.py -
 Expected result:
 
 ```text
-43 passed
+56 passed
 ```
 
 ## Limits

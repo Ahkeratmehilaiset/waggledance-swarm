@@ -15,6 +15,7 @@ from tools.run_runtime_receipt_emission_proof import (
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.share_manifest import (
+    DEFAULT_IMPORT_MAX_AGE_HOURS,
     IMPORT_ADMISSION_CONTRACT_VERSION,
     IMPORT_HANDOFF_HISTORY_LIMIT,
     IMPORT_HANDOFF_STATUS_VERSION,
@@ -571,6 +572,69 @@ def test_peer_review_handoff_rejects_recomputed_admission_contract_tamper(
         build_magma_share_import_peer_review_handoff(
             import_report=tampered,
             operator_decision_id=f"operator:decision:magma-share-import:{field}",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+
+def test_peer_review_handoff_rejects_consistent_report_contract_tamper(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+        expected_share_id="magma:share:import:001",
+        expected_purpose="cross_instance_replay",
+    )
+
+    relaxed_age = json.loads(json.dumps(report))
+    relaxed_age["max_age_hours"] = DEFAULT_IMPORT_MAX_AGE_HOURS + 1
+    relaxed_age["admission_contract"]["max_age_hours"] = (
+        DEFAULT_IMPORT_MAX_AGE_HOURS + 1
+    )
+    relaxed_age["admission_contract_digest"] = sha256_digest(
+        relaxed_age["admission_contract"]
+    )
+    with pytest.raises(ValueError, match="max_age_hours"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=relaxed_age,
+            operator_decision_id="operator:decision:magma-share-import:max-age",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+    forged_share_id = json.loads(json.dumps(report))
+    forged_share_id["share_id"] = "magma:share:import:forged"
+    forged_share_id["admission_contract"]["expected_share_id"] = (
+        "magma:share:import:forged"
+    )
+    forged_share_id["admission_contract_digest"] = sha256_digest(
+        forged_share_id["admission_contract"]
+    )
+    with pytest.raises(ValueError, match="replay_plan entry 1 entry_id"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=forged_share_id,
+            operator_decision_id="operator:decision:magma-share-import:share-id",
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+    forged_purpose = json.loads(json.dumps(report))
+    forged_purpose["purpose"] = "runtime_activation"
+    forged_purpose["admission_contract"]["expected_purpose"] = (
+        "runtime_activation"
+    )
+    forged_purpose["admission_contract_digest"] = sha256_digest(
+        forged_purpose["admission_contract"]
+    )
+    with pytest.raises(ValueError, match="purpose"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=forged_purpose,
+            operator_decision_id="operator:decision:magma-share-import:purpose",
             operator_agent_id="operator:wd-image1",
             bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
         )

@@ -763,16 +763,24 @@ def _ensure_import_report_ready_for_handoff(
     for field, expected in required_values.items():
         if import_report.get(field) != expected:
             raise ValueError(f"import report is not handoff-ready: {field}")
-    for field in ("share_id", "purpose"):
-        if not isinstance(import_report.get(field), str):
-            raise ValueError(f"import report is not handoff-ready: {field}")
+    share_id = import_report.get("share_id")
+    if not isinstance(share_id, str):
+        raise ValueError("import report is not handoff-ready: share_id")
+    _ensure_ref("share_id", share_id)
+    purpose = import_report.get("purpose")
+    if not isinstance(purpose, str):
+        raise ValueError("import report is not handoff-ready: purpose")
+    if purpose not in PURPOSES:
+        raise ValueError("import report is not handoff-ready: purpose")
     admission_contract = import_report.get("admission_contract")
     admission_contract_digest = import_report.get("admission_contract_digest")
+    has_admission_contract = False
     if admission_contract is None and admission_contract_digest is None:
         pass
     elif not isinstance(admission_contract, Mapping):
         raise ValueError("import report is not handoff-ready: admission_contract")
     else:
+        has_admission_contract = True
         _ensure_replay_admission_contract_matches_import_report(
             import_report,
             admission_contract,
@@ -812,6 +820,18 @@ def _ensure_import_report_ready_for_handoff(
             raise ValueError(
                 "import report is not handoff-ready: "
                 f"replay_plan entry {index} missing {missing}"
+            )
+        entry_id = entry.get("entry_id")
+        if (
+            has_admission_contract
+            and (
+                not isinstance(entry_id, str)
+                or not entry_id.startswith(f"{share_id}:entry:")
+            )
+        ):
+            raise ValueError(
+                "import report is not handoff-ready: "
+                f"replay_plan entry {index} entry_id"
             )
         _ensure_sha256_digest(
             f"replay_plan entry {index} receipt_digest",
@@ -990,8 +1010,18 @@ def _ensure_replay_admission_contract_matches_import_report(
         not isinstance(max_age_hours, int)
         or isinstance(max_age_hours, bool)
         or max_age_hours <= 0
+        or max_age_hours > DEFAULT_IMPORT_MAX_AGE_HOURS
     ):
         raise ValueError("import report is not handoff-ready: max_age_hours")
+    age_seconds = import_report.get("age_seconds")
+    if (
+        not isinstance(age_seconds, int)
+        or isinstance(age_seconds, bool)
+        or age_seconds < 0
+    ):
+        raise ValueError("import report is not handoff-ready: age_seconds")
+    if age_seconds > max_age_hours * 3600:
+        raise ValueError("import report is not handoff-ready: age_seconds")
     expected_share_id = admission_contract.get("expected_share_id")
     if (
         expected_share_id is not None

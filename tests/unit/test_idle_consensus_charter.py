@@ -144,6 +144,13 @@ def test_evaluate_diff_content_blocks_colon_auto_execute_value() -> None:
     assert decision.allowed is False
 
 
+def test_evaluate_diff_content_blocks_cased_colon_auto_execute_key() -> None:
+    charter = load_charter()
+    diff = '+     "Auto_Execute": false,\n+ # other change'
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
 def test_evaluate_diff_content_blocks_lowercase_colon_auto_execute_value() -> None:
     charter = load_charter()
     diff = "+ auto_execute: false\n+ # other change"
@@ -161,6 +168,13 @@ def test_evaluate_diff_content_blocks_second_gate_constant() -> None:
 def test_evaluate_diff_content_blocks_spaced_second_gate_constant() -> None:
     charter = load_charter()
     diff = "+ operator_gate_required = True\n"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
+def test_evaluate_diff_content_blocks_cased_second_gate_constant() -> None:
+    charter = load_charter()
+    diff = "+ Operator_Gate_Required = True\n"
     decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is False
 

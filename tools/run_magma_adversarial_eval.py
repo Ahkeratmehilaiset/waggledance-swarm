@@ -20,6 +20,9 @@ from tools.validate_synthetic_adversarial_corpus import (  # noqa: E402
     DEFAULT_EXPECTATIONS,
     validate_corpus,
 )
+from waggledance.core.magma.adversarial_corpus_eval import (  # noqa: E402
+    build_per_case_coverage_report,
+)
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.demo_policy import (  # noqa: E402
     DEMO_POLICY_VERSION,
@@ -178,6 +181,7 @@ def build_adversarial_eval_report(
         "reason_code_accuracy": _ratio(reason_matches, case_count),
         "catch_agent_bucket_status": "redacted_hidden_expectations_v0",
         "coverage": _coverage_for_cases(corpus["cases"]),
+        "per_case_coverage": build_per_case_coverage_report(cases),
         "cases": cases,
         "failures": failures,
     }
@@ -319,6 +323,7 @@ def _receipt_payload_for_report(report: dict[str, Any]) -> dict[str, Any]:
         "verdict_accuracy": report["verdict_accuracy"],
         "reason_code_accuracy": report["reason_code_accuracy"],
         "coverage": report["coverage"],
+        "per_case_coverage": report["per_case_coverage"],
         "case_evaluation_result_digests": [
             {
                 "case_id": case["case_id"],

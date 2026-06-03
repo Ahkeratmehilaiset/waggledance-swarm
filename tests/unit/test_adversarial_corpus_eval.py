@@ -21,6 +21,11 @@ def test_real_corpus_all_caught_and_bound():
     assert r["case_count"] >= 40
     assert all(c["ok"] for c in r["cases"])
     assert all("defect_class" in c for c in r["cases"])
+    assert r["per_case_coverage"]["min_critical_defect_cases"] == 2
+    critical_caught = r["per_case_coverage"]["critical_defect_type_caught_counts"]
+    assert critical_caught["governance_bypass"] >= 2
+    assert critical_caught["path_escape"] >= 2
+    assert r["per_case_coverage"]["critical_defect_types_below_floor"] == {}
 
 
 def test_empty_solver_hash_fails_closed():

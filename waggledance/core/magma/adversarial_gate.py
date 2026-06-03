@@ -30,7 +30,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from waggledance.core.magma.adversarial_corpus_eval import (
+    CRITICAL_DEFECT_TYPES,
+    MIN_CRITICAL_DEFECT_CASES,
+    REQUIRED_DEFECT_TYPES,
+)
 
 
 @dataclass(frozen=True)
@@ -60,8 +64,9 @@ def verify_adversarial_corpus_gate(
     bound to ``expected_solver_hash``; it lists at least ``min_cases`` cases;
     every case is independently caught (per-case ``ok is True``); the declared
     ``case_count`` is an int equal to the number of case entries; every required
-    defect class is caught by at least one case; and there are no
-    invalid/type-confused entries. Any deviation refuses.
+    defect class is caught by at least one case; every critical defect class
+    meets the per-case caught coverage floor; and there are no invalid/type-
+    confused entries. Any deviation refuses.
     """
     reasons: list[str] = []
 
@@ -193,6 +198,20 @@ def verify_adversarial_corpus_gate(
         reasons.append(
             "required defect classes not caught: "
             + ", ".join(sorted(missing_defect_classes))
+        )
+    critical_below_floor = [
+        defect
+        for defect in sorted(CRITICAL_DEFECT_TYPES)
+        if caught_by_defect_class.get(defect, 0) < MIN_CRITICAL_DEFECT_CASES
+    ]
+    if critical_below_floor:
+        details = ", ".join(
+            f"{defect}={caught_by_defect_class.get(defect, 0)}"
+            for defect in critical_below_floor
+        )
+        reasons.append(
+            "critical defect classes below caught floor "
+            f"{MIN_CRITICAL_DEFECT_CASES}: {details}"
         )
 
     # Final verdict re-derived: every listed case caught, none invalid, floor met,

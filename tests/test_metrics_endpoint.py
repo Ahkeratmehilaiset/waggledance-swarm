@@ -25,6 +25,9 @@ from fastapi.testclient import TestClient
 from waggledance.adapters.http.middleware.auth import PUBLIC_PATHS, BearerAuthMiddleware
 from waggledance.adapters.http.routes.chat import RouteStageRuntimeMetrics
 from waggledance.adapters.http.routes.metrics import router as metrics_router
+from waggledance.core.autonomy_growth.counterfactual_replay import (
+    A3_LABEL_RUNTIME_MEASURED,
+)
 from waggledance.core.magma.share_manifest import (
     IMPORT_REPORT_VERSION,
     build_magma_share_import_peer_review_handoff,
@@ -58,12 +61,14 @@ class _FakeContainer:
         hybrid_retrieval=None,
         route_stage_runtime_metrics=None,
         hex_topology_registry=None,
+        counterfactual_replay_status=None,
     ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
         self.autogrowth_background_ticker = autogrowth_background_ticker
         self.hybrid_retrieval = hybrid_retrieval
         self.route_stage_runtime_metrics = route_stage_runtime_metrics
         self.hex_topology_registry = hex_topology_registry
+        self.counterfactual_replay_status = counterfactual_replay_status
 
 
 class _FakeHexCell:
@@ -461,6 +466,66 @@ def test_metrics_body_contains_autogrowth_boundary_counters():
     assert "waggledance_autogrowth_non_idle_ticks_total 3.0" in body
     assert "waggledance_autogrowth_errors_total 1.0" in body
     assert "autogrowth_wakeups_total_total" not in body
+
+
+def test_metrics_body_contains_counterfactual_replay_observability_gauges():
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": True}),
+        counterfactual_replay_status={
+            "schema_version": "magma.counterfactual_promotion_summary.v0",
+            "status": "computed",
+            "a3_label": A3_LABEL_RUNTIME_MEASURED,
+            "sample_count": 24,
+            "same_sample_set": True,
+            "deterministic": True,
+            "divergence_count": 7,
+            "no_delta": False,
+            "delta_digest": "sha256:operator-secret-digest",
+            "per_arm": {"candidate": "operator-secret-inputs"},
+        },
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_counterfactual_replay_up 1.0" in body
+    assert "waggledance_counterfactual_replay_sample_count 24.0" in body
+    assert "waggledance_counterfactual_replay_divergence_count 7.0" in body
+    assert "waggledance_counterfactual_replay_same_sample_set 1.0" in body
+    assert "waggledance_counterfactual_replay_deterministic 1.0" in body
+    assert "waggledance_counterfactual_replay_no_delta 0.0" in body
+    assert "waggledance_counterfactual_replay_delta_digest_present 1.0" in body
+    assert (
+        "waggledance_counterfactual_replay_runtime_authority_granted 0.0"
+        in body
+    )
+    assert "waggledance_counterfactual_replay_external_writes_applied 0.0" in body
+    assert "waggledance_counterfactual_replay_payload_fields_exported 0.0" in body
+    assert (
+        'waggledance_counterfactual_replay_status{'
+        'status="runtime_measured"} 1.0'
+    ) in body
+    assert "operator-secret-digest" not in body
+    assert "operator-secret-inputs" not in body
+    assert "per_arm" not in body
+
+
+def test_metrics_counterfactual_replay_missing_snapshot_reports_down():
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_counterfactual_replay_up 0.0" in body
+    assert (
+        'waggledance_counterfactual_replay_status{status="unavailable"} 1.0'
+        in body
+    )
+    assert "waggledance_counterfactual_replay_sample_count 0.0" in body
+    assert (
+        "waggledance_counterfactual_replay_runtime_authority_granted 0.0"
+        in body
+    )
 
 
 def test_metrics_body_contains_magma_handoff_provider_health_gauges():

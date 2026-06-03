@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, read-only hex topology boundary gauges, low-risk autogrowth ticker boundary metrics, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, read-only hex topology boundary gauges, low-risk autogrowth ticker boundary metrics, read-only counterfactual replay observability gauges, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -76,6 +76,15 @@ waggledance_autogrowth_background_enabled 1.0
 # HELP waggledance_autogrowth_wakeups_total low-risk autogrowth runtime-boundary counter: wakeups_total.
 # TYPE waggledance_autogrowth_wakeups_total counter
 waggledance_autogrowth_wakeups_total 0.0
+# HELP waggledance_counterfactual_replay_up 1 if the metrics collector could read a counterfactual replay status snapshot this scrape.
+# TYPE waggledance_counterfactual_replay_up gauge
+waggledance_counterfactual_replay_up 1.0
+waggledance_counterfactual_replay_status{status="runtime_measured"} 1.0
+waggledance_counterfactual_replay_sample_count 24.0
+waggledance_counterfactual_replay_divergence_count 7.0
+waggledance_counterfactual_replay_runtime_authority_granted 0.0
+waggledance_counterfactual_replay_external_writes_applied 0.0
+waggledance_counterfactual_replay_payload_fields_exported 0.0
 # HELP waggledance_route_stage_count Privacy-safe chat route-stage counts by group.
 # TYPE waggledance_route_stage_count gauge
 waggledance_route_stage_count{group="expected"} 8.0
@@ -142,6 +151,16 @@ watch `waggledance_autogrowth_up`, `waggledance_autogrowth_errors_total`,
 `waggledance_autogrowth_wakeups_total`, and
 `waggledance_autogrowth_non_idle_ticks_total`; they are read-only Prometheus
 checks and do not add start/stop or configuration controls.
+
+Counterfactual replay observability metrics are derived only from an existing
+runtime snapshot such as the sanitized promotion `counterfactual` summary. The
+`/metrics` route does not run `compute_counterfactual_delta`, does not influence
+`derive_a3_label`, and does not grant runtime authority. It exposes fixed-state
+status gauges (`unavailable`, `skipped`, `failed`, `insufficient`,
+`measured_local_partial`, `nondeterministic_oracle`, `runtime_measured`),
+aggregate sample/divergence counts, and boolean guardrail gauges. It does not
+publish raw per-arm rows, sample inputs, outputs, solver hashes, digest strings,
+divergence payloads, exception details, local paths, URLs, or operator material.
 
 MAGMA handoff provider-health metrics are also emitted from the same
 sanitized `/api/ops` summary. They use the `waggledance_magma_handoff_*`

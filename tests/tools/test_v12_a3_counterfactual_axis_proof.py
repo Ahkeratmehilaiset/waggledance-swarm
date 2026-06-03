@@ -32,6 +32,7 @@ def _run_a3(*args: str) -> subprocess.CompletedProcess[str]:
 def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     report = build_a3_counterfactual_axis_proof(now_utc=FIXED_NOW)
     replay = report["stored_consensus_replay"]
+    runtime_smoke = report["runtime_condition_replay_smoke"]
 
     assert report["report_version"] == "wd.v12.a3_counterfactual_axis_proof.v0"
     assert report["ok"] is True
@@ -89,6 +90,42 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
         "redaction_count": 0,
     }
     assert report["factual"]["subject_payload_size_bytes"] > 0
+    assert runtime_smoke == {
+        "schema_version": "wd.v12.a3_runtime_condition_replay_smoke.v0",
+        "ok": True,
+        "sample_family": "scalar_unit_conversion_24_same_sample_set",
+        "min_samples": 20,
+        "sample_count": 24,
+        "compute_status": "computed",
+        "observability_status": "measured_local_partial",
+        "claim_label": "MEASURED_LOCAL_PARTIAL",
+        "runtime_conditions_met": True,
+        "divergence_count": 24,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest_present": True,
+        "source_available": True,
+        "claim_gate_satisfied": False,
+        "claim_safe": False,
+        "literal_future_claim_safe": False,
+        "required_runtime_evidence_present": False,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+        "raw_fields_exported": False,
+        "privacy_canary_absent": True,
+        "emitted_text_passes_leak_policy": True,
+        "claim_boundary": "runtime_condition_smoke_only_not_axis_claim_upgrade",
+    }
+    assert report["no_overclaim_guardrails"][
+        "runtime_smoke_is_not_axis_claim_upgrade"
+    ] is True
+    assert "per_arm" not in runtime_smoke
+    assert "divergences" not in runtime_smoke
+    assert "candidate_hash" not in runtime_smoke
+    assert "incumbent_hash" not in runtime_smoke
 
 
 def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
@@ -186,6 +223,10 @@ def test_a3_markdown_preserves_no_rival_benchmark_guardrail(tmp_path: Path) -> N
     assert "stored_consensus_replay_verified: `true`" in markdown
     assert "stored_consensus_replay_receipt_bound: `true`" in markdown
     assert "stored_consensus_replay_decision: `candidate_diff_charter_passed`" in markdown
+    assert "runtime_condition_replay_smoke: `true`" in markdown
+    assert "runtime_replay_claim_label: `MEASURED_LOCAL_PARTIAL`" in markdown
+    assert "runtime_replay_sample_count: `24`" in markdown
+    assert "does not upgrade the top-level axis claim" in markdown
     assert "not a rival benchmark" in markdown
 
 
@@ -210,6 +251,23 @@ def test_a3_cli_json_with_receipts_is_deterministic(tmp_path: Path) -> None:
     assert payload["stored_consensus_replay"]["candidate_diff_charter_allowed"] is True
     assert payload["receipt_bundle"]["receipt_count"] == 6
     assert payload["evaluation_result_version"] == "magma.evaluation_result.v1"
+    assert payload["claim_label"] == "MEASURED_LOCAL_PARTIAL"
+    assert (
+        payload["runtime_condition_replay_smoke"]["claim_label"]
+        == "MEASURED_LOCAL_PARTIAL"
+    )
+    assert payload["runtime_condition_replay_smoke"]["runtime_conditions_met"] is True
+    assert payload["runtime_condition_replay_smoke"]["sample_count"] == 24
+    assert (
+        payload["runtime_condition_replay_smoke"][
+            "required_runtime_evidence_present"
+        ]
+        is False
+    )
+    assert (
+        payload["runtime_condition_replay_smoke"]["claim_boundary"]
+        == "runtime_condition_smoke_only_not_axis_claim_upgrade"
+    )
 
 
 def test_a3_cli_rejects_non_utc_now(tmp_path: Path) -> None:
@@ -235,6 +293,8 @@ def test_a3_output_does_not_leak_private_marker(tmp_path: Path) -> None:
     for path in out_dir.rglob("*.json"):
         combined += path.read_text(encoding="utf-8")
     assert "operator_secret_goal_marker_DO_NOT_LEAK" not in combined
+    assert "per_arm" not in result.stdout
+    assert "divergences" not in result.stdout
 
 
 def test_a3_v1_receipt_bundle_detects_tampered_axis_metadata(tmp_path: Path) -> None:

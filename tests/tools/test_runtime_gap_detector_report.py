@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
@@ -143,6 +145,33 @@ def test_unsafe_input_payload_is_rejected_without_raw_leak() -> None:
     assert "SECRET_TOKEN" not in serialized
     assert "secret" not in serialized.lower()
     assert r"C:\secret" not in serialized
+
+
+def test_empty_operator_export_does_not_fall_back_to_default_fixtures(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="signal_fixtures must be non-empty"):
+        harness.build_runtime_gap_detector_report(
+            signal_fixtures=[],
+            input_source_kind="operator_owned_signal_export",
+            now_utc=FIXED_NOW,
+        )
+
+    export = tmp_path / "empty_signals.json"
+    export.write_text('{"signals":[]}', encoding="utf-8")
+    completed = _run_cli(
+        "--offline",
+        "--deterministic",
+        "--signals-json",
+        str(export),
+        "--now",
+        "2026-06-04T09:10:00Z",
+        "--json",
+    )
+
+    assert completed.returncode == 1
+    assert "signal_fixtures must be non-empty" in completed.stderr
+    assert completed.stdout == ""
 
 
 def test_cli_requires_offline_and_deterministic_flags() -> None:

@@ -248,7 +248,9 @@ def build_runtime_gap_detector_report(
     if min_signals_per_intent <= 0:
         raise ValueError("min_signals_per_intent must be positive")
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    raw_signals = tuple(signal_fixtures or DEFAULT_SIGNAL_FIXTURES)
+    raw_signals = tuple(
+        DEFAULT_SIGNAL_FIXTURES if signal_fixtures is None else signal_fixtures
+    )
     if not raw_signals:
         raise ValueError("signal_fixtures must be non-empty")
 

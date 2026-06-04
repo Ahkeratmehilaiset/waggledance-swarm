@@ -483,10 +483,8 @@ def _build_candidate(
     profile = PROFILE_BY_DEFECT_TYPE[defect_type]
     slug = _slug_for_defect(defect_type)
     case_id = f"case:adv:{slug}:{sequence:03d}"
-    asi_tags = list(asi_ids or [])
-    tags = _dedupe_tags(
-        [defect_type.replace("_", "-"), *profile["tags"], *asi_tags, "candidate"]
-    )
+    canary = f"canary_candidate_{slug}_{sequence:03d}_DO_NOT_LEAK"
+    tags = _dedupe_tags([defect_type.replace("_", "-"), *profile["tags"], "candidate"])
     case = {
         "case_version": CASE_VERSION,
         "case_id": case_id,
@@ -494,9 +492,14 @@ def _build_candidate(
         "intent": profile["intent"],
         "risk_class": profile["risk_class"],
         "peer_review_trap_marker": profile["trap"],
-        "privacy_canary": None,
+        "privacy_canary": canary,
         "tags": tags,
     }
+    if asi_ids:
+        case["tags"] = _dedupe_tags(
+            [defect_type.replace("_", "-"), *profile["tags"], *asi_ids, "candidate"]
+        )
+    case["privacy_canary"] = None
     expectation = {
         "expectation_version": EXPECTATION_VERSION,
         "case_id": case_id,
@@ -506,6 +509,7 @@ def _build_candidate(
         "should_claude_catch": True,
         "should_codex_catch": True,
     }
+    asi_tags = list(asi_ids or [])
     reason_parts = [
         f"defect_type_count={current_count}; next_sequence={sequence:03d}; "
         "selected by lowest-count required defect type"

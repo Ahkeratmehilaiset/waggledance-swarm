@@ -11,6 +11,67 @@ from waggledance.core.idle_consensus_charter import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_PRIVACY_CANARY_MARKER = "PRIVATE" + "_MARKER"
+_SECOND_PRIVACY_CANARY_MARKER = "_DO" + "_NOT" + "_LEAK"
+LEGACY_ALLOWLIST_ENTRIES = {
+    "tools/**",
+    "tests/**",
+    "schemas/v3_13_0/**",
+    "docs/architecture/**",
+    "waggledance/core/magma/**",
+    "waggledance/core/idle_protocol*",
+    "waggledance/core/pdam_close_solver.py",
+    "waggledance/core/idle_consensus*",
+    "*_helper.py",
+    "shared_*.py",
+}
+LEGACY_FILE_DENYLIST_ENTRIES = {
+    "CLAUDE.md",
+    "memory/**",
+    ".agent-bridge/bin/**",
+    "configs/bridge_event_validation_waivers.json",
+    "docs/architecture/STAGE2_CUTOVER_RFC.md",
+    "docs/architecture/HUMAN_APPROVAL*.yaml*",
+    "docs/architecture/IDLE_PROTOCOL_V1.md",
+    "docs/architecture/MAGMA_SUBSTRATE_AUDIT_2026_05_17.md",
+    "docs/architecture/POLICY_SURFACE_V0.md",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+    "docs/architecture/IDLE_CONSENSUS_ARTIFACT_V1.md",
+    "docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md",
+    "tools/idle_consensus_auto_merge.py",
+    "tools/check_bridge_changes_requested.py",
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "*secret*",
+    "**/*secret*",
+    "*token*",
+    "**/*token*",
+    "*credential*",
+    "**/*credential*",
+    "deploy/**",
+    "deployment/**",
+    "configs/deployment/**",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+}
+LEGACY_CODE_PATTERN_MARKERS = {
+    "auto_execute=False",
+    "operator_gate_required=True",
+    "DEFAULT_MAX_INSTANCES_PER_DAY",
+    "_safe_label",
+    "_sequence_errors",
+    "verify_manifest",
+    "write_receipt_bundle",
+    _PRIVACY_CANARY_MARKER,
+    _SECOND_PRIVACY_CANARY_MARKER,
+}
+
+
+def _privacy_canary_markers() -> tuple[str, str]:
+    return _PRIVACY_CANARY_MARKER, _SECOND_PRIVACY_CANARY_MARKER
 
 
 def test_charter_loads_from_default_path() -> None:
@@ -29,6 +90,28 @@ def test_charter_allowlist_contains_known_substrate_paths() -> None:
     assert "waggledance/core/magma/**" in charter.allowlist
 
 
+def test_charter_preserves_existing_allowlist_entries() -> None:
+    charter = load_charter()
+    assert LEGACY_ALLOWLIST_ENTRIES <= set(charter.allowlist)
+
+
+def test_charter_allowlist_contains_expanded_low_risk_doc_paths() -> None:
+    charter = load_charter()
+    assert "docs/benchmarks/**" in charter.allowlist
+    assert "docs/operations/**" in charter.allowlist
+    assert "docs/security/**" in charter.allowlist
+
+    decision = evaluate_paths(
+        charter,
+        [
+            "docs/benchmarks/latency.md",
+            "docs/operations/bridge_runbook.md",
+            "docs/security/canary_policy.md",
+        ],
+    )
+    assert decision.allowed is True
+
+
 def test_charter_denylist_contains_known_charter_paths() -> None:
     charter = load_charter()
     assert "CLAUDE.md" in charter.file_denylist
@@ -37,6 +120,18 @@ def test_charter_denylist_contains_known_charter_paths() -> None:
     assert "README.md" in charter.file_denylist
     assert "pyproject.toml" in charter.file_denylist
     assert "**/*secret*" in charter.file_denylist
+
+
+def test_charter_preserves_existing_file_denylist_entries() -> None:
+    charter = load_charter()
+    assert LEGACY_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
+def test_charter_preserves_existing_code_pattern_markers() -> None:
+    charter = load_charter()
+    code_patterns = "\n".join(charter.code_pattern_denylist)
+    for marker in LEGACY_CODE_PATTERN_MARKERS:
+        assert marker in code_patterns
 
 
 def test_evaluate_paths_allows_substrate_path() -> None:
@@ -72,6 +167,32 @@ def test_evaluate_paths_blocks_secret_like_path_case_insensitively() -> None:
     decision = evaluate_paths(charter, ["tools/SecretToken.py", "tools/API_TOKEN.py"])
     assert decision.allowed is False
     assert decision.blocked_paths == ("tools/SecretToken.py", "tools/API_TOKEN.py")
+
+
+def test_evaluate_paths_keeps_required_stay_gated_paths_denied() -> None:
+    charter = load_charter()
+    for path in (
+        ".agent-bridge/bin/Write-AgentEvent.ps1",
+        "configs/bridge_event_validation_waivers.json",
+        "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+        "docs/security/client_secret_findings.md",
+    ):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False
+        assert decision.blocked_paths == (path,)
+
+
+def test_evaluate_paths_keeps_runtime_http_paths_operator_gated() -> None:
+    charter = load_charter()
+    decision = evaluate_paths(
+        charter,
+        ["waggledance/adapters/http/client.py", "bootstrap/container.py"],
+    )
+    assert decision.allowed is False
+    assert decision.unmatched_paths == (
+        "waggledance/adapters/http/client.py",
+        "bootstrap/container.py",
+    )
 
 
 def test_evaluate_paths_blocks_traversal_to_denylisted_path() -> None:
@@ -238,6 +359,76 @@ def test_evaluate_diff_content_allows_substrate_diff() -> None:
 def test_evaluate_diff_content_empty_allowed() -> None:
     charter = load_charter()
     decision = evaluate_diff_content(charter, "")
+    assert decision.allowed is True
+
+
+def test_evaluate_diff_content_allows_test_only_privacy_canary_fixture() -> None:
+    charter = load_charter()
+    first_canary, second_canary = _privacy_canary_markers()
+    diff = f"""diff --git a/tests/unit/test_privacy_canary.py b/tests/unit/test_privacy_canary.py
+--- a/tests/unit/test_privacy_canary.py
++++ b/tests/unit/test_privacy_canary.py
+@@ -0,0 +1,4 @@
++{first_canary} = "fixture"
++output = render_payload()
++assert {first_canary} not in output
++assert {second_canary} not in output
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is True
+
+
+def test_evaluate_diff_content_blocks_non_test_privacy_canary_leak() -> None:
+    charter = load_charter()
+    first_canary, _ = _privacy_canary_markers()
+    diff = f"""diff --git a/docs/security/canary_report.md b/docs/security/canary_report.md
+--- a/docs/security/canary_report.md
++++ b/docs/security/canary_report.md
+@@ -0,0 +1 @@
++leaked_marker = "{first_canary}"
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert decision.code_pattern_hits
+
+
+def test_evaluate_diff_content_blocks_non_test_source_renamed_to_test_target() -> None:
+    charter = load_charter()
+    first_canary, _ = _privacy_canary_markers()
+    diff = f"""diff --git a/docs/security/canary_report.md b/tests/unit/test_privacy_canary.py
+--- a/docs/security/canary_report.md
++++ b/tests/unit/test_privacy_canary.py
+@@ -0,0 +1 @@
++leaked_marker = "{first_canary}"
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert decision.code_pattern_hits
+
+
+def test_evaluate_diff_content_blocks_test_source_renamed_to_non_test_target() -> None:
+    charter = load_charter()
+    first_canary, _ = _privacy_canary_markers()
+    diff = f"""diff --git a/tests/unit/test_privacy_canary.py b/docs/security/canary_report.md
+--- a/tests/unit/test_privacy_canary.py
++++ b/docs/security/canary_report.md
+@@ -0,0 +1 @@
++leaked_marker = "{first_canary}"
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert decision.code_pattern_hits
+
+
+def test_evaluate_diff_content_allows_privacy_scope_text_without_marker() -> None:
+    charter = load_charter()
+    diff = """diff --git a/docs/security/canary_policy.md b/docs/security/canary_policy.md
+--- a/docs/security/canary_policy.md
++++ b/docs/security/canary_policy.md
+@@ -0,0 +1 @@
++Test-only privacy fixtures live under `tests/**`.
+"""
+    decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is True
 
 

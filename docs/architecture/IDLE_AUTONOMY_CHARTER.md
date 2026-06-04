@@ -38,6 +38,9 @@ An autonomous merge is permitted to modify files **only** within these paths. Ev
 * `tests/**`
 * `schemas/v3_13_0/**` (except gate fields — see code pattern denylist)
 * `docs/architecture/**` (except denylist below)
+* `docs/benchmarks/**`
+* `docs/operations/**`
+* `docs/security/**`
 * `waggledance/core/magma/**`
 * `waggledance/core/idle_protocol*`
 * `waggledance/core/pdam_close_solver.py`
@@ -129,6 +132,19 @@ lands in Track T0b). In summary, a bridge consensus requires **all** of:
 This path governs **MERGE only**. It does **not** authorize the Stage-2 cutover,
 which stays operator-signed (Rule 10 / escalation category 5) until a separate
 future amendment.
+
+## 2026-06-04 consolidated allowlist amendment
+
+This amendment supersedes the narrower benchmark-docs-only proposal and keeps
+the charter self-modification ban intact: this file remains on the file
+denylist, so the amendment must be operator-merged.
+
+The amendment expands the low-risk documentation surface to
+`docs/benchmarks/**`, `docs/operations/**`, and `docs/security/**`, while
+preserving all existing file denylist entries. It also narrows only the
+privacy-canary code-pattern false positive for test fixtures under `tests/**`.
+The same canary markers in non-test runtime, documentation, or data files still
+block autonomous merge.
 
 ## Escalation categories (always operator-required)
 

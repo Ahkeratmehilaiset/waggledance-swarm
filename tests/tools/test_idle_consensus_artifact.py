@@ -371,6 +371,126 @@ new file mode 100644
     assert "Candidate diff is admitted" not in serialized
 
 
+def test_cli_candidate_diff_replay_admission_reports_without_writes(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed_path = tmp_path / "replay-seed.json"
+    seed_path.write_text(
+        json.dumps(artifact["replay_seed"], sort_keys=True),
+        encoding="utf-8",
+    )
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+new file mode 100644
+--- /dev/null
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -0,0 +1,3 @@
++# Replay
++
++Candidate diff is admitted for later operator review only.
+"""
+    diff_path = tmp_path / "candidate.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+    artifact_out_dir = tmp_path / "should-not-write-artifacts"
+    receipt_out_dir = tmp_path / "should-not-write-receipts"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_consensus_artifact.py"),
+            "--candidate-diff-replay-admission",
+            "--replay-seed",
+            str(seed_path),
+            "--candidate-diff",
+            str(diff_path),
+            "--changed-path",
+            "docs/architecture/consensus_artifacts/replay.md",
+            "--out-dir",
+            str(artifact_out_dir),
+            "--receipt-out-dir",
+            str(receipt_out_dir),
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    admission = json.loads(completed.stdout)
+    assert admission["ok"] is True
+    assert admission["decision"] == "candidate_diff_charter_passed"
+    assert admission["exit_code"] == 0
+    assert admission["dry_run"] is True
+    assert admission["external_effect"] is False
+    assert admission["writes_applied"] is False
+    assert admission["would_create_task"] is False
+    assert admission["would_create_branch"] is False
+    assert admission["would_create_pr"] is False
+    assert admission["would_merge"] is False
+    assert admission["candidate_diff"]["diff_text_included"] is False
+    assert admission["candidate_diff"]["digest"] == sha256_digest(
+        {
+            "changed_paths": [
+                "docs/architecture/consensus_artifacts/replay.md"
+            ],
+            "diff_text": diff_text,
+        }
+    )
+    assert "diff --git" not in completed.stdout
+    assert "Candidate diff is admitted" not in completed.stdout
+    assert not artifact_out_dir.exists()
+    assert not receipt_out_dir.exists()
+
+
+def test_cli_candidate_diff_replay_admission_returns_one_for_operator_gate(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    report = _write_artifact(tmp_path, _soft_events())
+    diff_text = (
+        "diff --git a/configs/bridge_event_validation_waivers.json "
+        "b/configs/bridge_event_validation_waivers.json\n"
+    )
+    diff_path = tmp_path / "candidate.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_consensus_artifact.py"),
+            "--candidate-diff-replay-admission",
+            "--replay-seed",
+            str(report["json_path"]),
+            "--candidate-diff",
+            str(diff_path),
+            "--changed-path",
+            "configs/bridge_event_validation_waivers.json",
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1, completed.stderr
+    admission = json.loads(completed.stdout)
+    assert admission["ok"] is False
+    assert admission["decision"] == "operator_review_required"
+    assert admission["exit_code"] == 1
+    assert admission["path_gate"]["allowed"] is False
+    assert admission["path_gate"]["blocked_paths"] == [
+        "configs/bridge_event_validation_waivers.json"
+    ]
+    assert admission["diff_gate"]["allowed"] is True
+    assert admission["writes_applied"] is False
+    assert "diff --git" not in completed.stdout
+
+
 def test_candidate_diff_replay_admission_blocks_charter_denied_path(
     tmp_path: Path,
 ) -> None:

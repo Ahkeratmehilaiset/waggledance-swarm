@@ -62,9 +62,14 @@ would swallow charter constraints:
    `schemas/v3_13_0/magma_share_manifest.v0.json`,
    `waggledance/core/magma/share_manifest.py`,
    `tools/export_magma_share_manifest.py`, and
-   `tools/import_magma_share_manifest.py`. The replay flywheel still
-   needs an explicit replay-admission contract surface before any
-   cross-instance transport or runtime authority is considered.
+   `tools/import_magma_share_manifest.py`. The replay-admission
+   contract surface now exists in the importer report / peer-review
+   handoff path and is documented in
+   `docs/architecture/MAGMA_SHARE_MANIFEST_CONTRACT.md`. The replay
+   flywheel still needs admission-status observability,
+   transport-gated cross-instance exchange design, and operator /
+   authority gates before any transport or runtime authority is
+   considered.
 3. **Counterfactual eval pipeline** — replay a stored consensus
    against a candidate diff. *Status:* partial; see
    `tools/run_pdam_counterfactual_demo.py`,
@@ -108,7 +113,7 @@ landscape):
 | **Local intelligence + distillation** | `waggledance/core/local_intelligence/`, `LOCAL_MODEL_DISTILLATION.md` | Local-first claim vs. cloud-fallback budget; sweep against newer Ollama models. |
 | **World model + reality view** | `waggledance/core/world_model/`, `waggledance/ui/hologram/` | Truthfulness audit cadence; calibration-drift detector progress. |
 | **Synthetic adversarial corpus** | `tests/fixtures/magma_adversarial_corpus/`, `tools/validate_synthetic_adversarial_corpus.py`, `tools/run_magma_adversarial_eval.py` | Grow critical/ASI-aligned coverage without changing runtime authority; maintain blind replay split and expansion boundaries. |
-| **Multi-instance replay flywheel** | `waggledance/core/magma/share_manifest.py`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `tools/export_magma_share_manifest.py`, `tools/import_magma_share_manifest.py` | Replay-admission contract; cross-instance signed MAGMA share; no-authority import boundary. |
+| **Multi-instance replay flywheel** | `waggledance/core/magma/share_manifest.py`, `schemas/v3_13_0/magma_share_manifest.v0.json`, `tools/export_magma_share_manifest.py`, `tools/import_magma_share_manifest.py` | Admission-status observability; transport-gated cross-instance signed MAGMA share; no-authority import boundary hardening. |
 
 ## Strategic seed categories
 
@@ -200,10 +205,11 @@ demonstrable improvement that ships as a PR ≤ 400 LoC and passes the
 This is the strategic backbone (see §Five-ingredient roadmap above for
 the enumeration and current per-ingredient status). Allowed seeds:
 
-* Ingredient #2 (multi-instance flywheel): "Tighten the replay
-  admission contract for a received `magma.share_manifest.v0`: list
-  the required no-payload/no-authority checks, rejection modes, and
-  report invariants before adding any cross-instance transport."
+* Ingredient #2 (multi-instance flywheel): "Design admission-status
+  observability for a received `magma.share_manifest.v0`: expose
+  status, blocker class, and admission-contract digest signals that
+  reviewers can inspect without local paths, payloads, transport, or
+  runtime authority."
 * Ingredient #3 (counterfactual eval pipeline): "Identify the
   smallest extension to `tools/idle_consensus_artifact.py` that
   would let a stored consensus be replayed against a candidate diff

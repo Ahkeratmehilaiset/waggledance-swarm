@@ -15,6 +15,7 @@ import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import gc
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -49,7 +50,14 @@ from tools.run_future_scale_insight_bench import (  # noqa: E402
     build_future_scale_insight_benchmark,
 )
 from tools.run_future_scale_route_depth_benchmark import (  # noqa: E402
+    PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME,
+    PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
     build_future_scale_route_depth_benchmark,
+)
+from tools.verify_future_scale_route_depth_capture_window_summary import (  # noqa: E402
+    SUMMARY_SCHEMA_VERSION as ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_SCHEMA_VERSION,
+    SUMMARY_STATUS_BLOCKED as ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_STATUS_BLOCKED,
+    build_capture_window_verification_summary,
 )
 from waggledance.core.hex_topology.cell_message_contract import make_message
 from waggledance.core.hex_topology.parent_child_relations import (
@@ -4893,8 +4901,13 @@ def _unmeasured_future_scale_axis_evidence(
 def _future_scale_route_depth_benchmark_evidence() -> dict:
     route_depth_artifacts = [
         "tools/run_future_scale_route_depth_benchmark.py",
+        "tools/verify_future_scale_route_depth_capture_window_summary.py",
         "tests/tools/test_future_scale_route_depth_benchmark.py",
+        "tests/tools/test_future_scale_route_depth_capture_window_summary.py",
+        "docs/architecture/FUTURE_SCALE_ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY.md",
         "docs/benchmarks/FUTURE_SCALE_ROUTE_DEPTH_BENCHMARK.md",
+        PRODUCTION_HISTOGRAM_ARTIFACT_NAME,
+        PRODUCTION_CAPTURE_WINDOW_ATTACHMENT_NAME,
         "waggledance/adapters/http/routes/chat.py",
     ]
     try:
@@ -4921,16 +4934,76 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
     result = report.get("benchmark_result") if isinstance(report, dict) else {}
     if not isinstance(result, dict):
         result = {}
+    histogram_artifact = (
+        report.get("production_route_depth_histogram_artifact")
+        if isinstance(report, dict)
+        else {}
+    )
+    if not isinstance(histogram_artifact, dict):
+        histogram_artifact = {}
+    capture_attachment = (
+        report.get("production_route_depth_capture_window_attachment")
+        if isinstance(report, dict)
+        else {}
+    )
+    if not isinstance(capture_attachment, dict):
+        capture_attachment = {}
+    histogram_artifact_ok = (
+        histogram_artifact.get("artifact_status")
+        == "production_histogram_artifact_contract_available"
+        and histogram_artifact.get("production_runtime_data_attached") is False
+        and histogram_artifact.get("claim_gate_satisfied") is False
+        and histogram_artifact.get("required_runtime_evidence_present") is False
+        and histogram_artifact.get("external_writes_applied") is False
+    )
+    capture_attachment_ok = (
+        capture_attachment.get("attachment_status")
+        == "capture_window_attachment_contract_available"
+        and capture_attachment.get("production_runtime_data_attached") is False
+        and capture_attachment.get("capture_window_count") == 0
+        and capture_attachment.get("claim_gate_satisfied") is False
+        and capture_attachment.get("required_runtime_evidence_present") is False
+        and capture_attachment.get("external_writes_applied") is False
+    )
+    try:
+        capture_summary = build_capture_window_verification_summary(
+            benchmark_report=report,
+            capture_attachment=capture_attachment,
+        )
+    except Exception:
+        capture_summary = {}
+    capture_summary_contract_ok = (
+        isinstance(capture_summary, dict)
+        and capture_summary.get("summary_schema_version")
+        == ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_SCHEMA_VERSION
+        and capture_summary.get("status")
+        == ROUTE_DEPTH_CAPTURE_WINDOW_SUMMARY_STATUS_BLOCKED
+        and capture_summary.get("ok") is False
+        and capture_summary.get("claim_gate_satisfied") is False
+        and capture_summary.get("required_runtime_evidence_present") is False
+        and capture_summary.get("external_writes_applied") is False
+        and "capture_window_count_insufficient"
+        in capture_summary.get("blockers", [])
+    )
     report_ok = isinstance(report, dict) and report.get("ok") is True
     return {
         "status": (
-            "benchmark_contract_available"
+            "benchmark_histogram_capture_attachment_and_summary_contract_available"
+            if (
+                report_ok
+                and histogram_artifact_ok
+                and capture_attachment_ok
+                and capture_summary_contract_ok
+            )
+            else "benchmark_contract_available"
             if report_ok
             else "benchmark_contract_unavailable"
         ),
         "measurement_scope": (
             "local deterministic sanitized route-stage trace fixtures, not a "
-            "production route-depth baseline"
+            "live production route-depth baseline; includes a production-shaped "
+            "histogram artifact contract and capture-window attachment contract "
+            "with no production corpus attached by default"
         ),
         "metric_names": [],
         "artifact_paths": route_depth_artifacts,
@@ -4948,10 +5021,73 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
             "trace_stage_policy": report.get("trace_stage_policy")
             if isinstance(report, dict)
             else None,
+            "production_histogram_artifact_status": histogram_artifact.get(
+                "artifact_status"
+            ),
+            "production_histogram_metric_names": histogram_artifact.get(
+                "metric_names",
+                [],
+            ),
+            "production_histogram_label_names": histogram_artifact.get(
+                "label_names",
+                [],
+            ),
+            "production_histogram_bucket_labels": histogram_artifact.get(
+                "bucket_labels",
+                [],
+            ),
+            "production_histogram_sample_count": histogram_artifact.get(
+                "sample_count"
+            ),
+            "production_histogram_route_profile_count": histogram_artifact.get(
+                "route_profile_count"
+            ),
+            "production_histogram_runtime_data_attached": histogram_artifact.get(
+                "production_runtime_data_attached"
+            ),
+            "production_histogram_digest_sha256": histogram_artifact.get(
+                "artifact_digest_sha256"
+            ),
+            "production_capture_window_attachment_status": capture_attachment.get(
+                "attachment_status"
+            ),
+            "production_capture_window_runtime_data_attached": capture_attachment.get(
+                "production_runtime_data_attached"
+            ),
+            "production_capture_window_count": capture_attachment.get(
+                "capture_window_count"
+            ),
+            "production_capture_window_required_runtime": capture_attachment.get(
+                "required_runtime_evidence_present"
+            ),
+            "production_capture_window_digest_sha256": capture_attachment.get(
+                "attachment_digest_sha256"
+            ),
+            "production_capture_window_summary_schema_version": (
+                capture_summary.get("summary_schema_version")
+                if isinstance(capture_summary, dict)
+                else None
+            ),
+            "production_capture_window_summary_status": (
+                capture_summary.get("status")
+                if isinstance(capture_summary, dict)
+                else None
+            ),
+            "production_capture_window_summary_ok": (
+                capture_summary.get("ok")
+                if isinstance(capture_summary, dict)
+                else None
+            ),
+            "production_capture_window_summary_blockers": (
+                capture_summary.get("blockers", [])
+                if isinstance(capture_summary, dict)
+                else []
+            ),
         },
         "evidence_freshness": "local_offline_benchmark_contract",
         "blockers": [
-            "needs exported runtime route-depth histograms by route/profile",
+            "needs operator-owned live production route-depth exports run through the capture-window verifier",
+            "needs path-free capture-window verification summaries for attached operator-owned exports",
             "needs repeated versioned benchmark windows before trend claims",
             "needs production trace corpus binding before efficiency claims",
         ],
@@ -5200,6 +5336,285 @@ def _future_scale_insight_score_contract_evidence() -> dict:
         ],
         "claim_gate_satisfied": False,
     }
+
+
+_FUTURE_SCALE_BENCHMARK_WINDOWS: tuple[tuple[str, datetime], ...] = (
+    (
+        "window_2026_06_01_2055z",
+        datetime(2026, 6, 1, 20, 55, tzinfo=timezone.utc),
+    ),
+    (
+        "window_2026_06_02_2055z",
+        datetime(2026, 6, 2, 20, 55, tzinfo=timezone.utc),
+    ),
+)
+_FUTURE_SCALE_BENCHMARK_WINDOW_AXIS_IDS = (
+    "route_depth",
+    "useful_composite_paths",
+    "contradiction_rate",
+    "insight_score",
+)
+_FUTURE_SCALE_BENCHMARK_REQUIRED_FALSE_FIELDS = (
+    "claim_gate_satisfied",
+    "claim_safe",
+    "literal_future_claim_safe",
+    "external_writes_applied",
+)
+_FUTURE_SCALE_BENCHMARK_OPTIONAL_FALSE_FIELDS = (
+    "required_runtime_evidence_present",
+    "runtime_authority_changed",
+    "runtime_authority_granted",
+    "controls_present",
+    "operator_gate_required",
+)
+
+
+def _future_scale_benchmark_window_summary() -> dict:
+    """Replay benchmark producers across fixed windows without claim authority."""
+
+    records = [
+        _future_scale_benchmark_window_record(axis_id, window_id, window_start_utc)
+        for window_id, window_start_utc in _FUTURE_SCALE_BENCHMARK_WINDOWS
+        for axis_id in _FUTURE_SCALE_BENCHMARK_WINDOW_AXIS_IDS
+    ]
+    axis_ids = list(_FUTURE_SCALE_BENCHMARK_WINDOW_AXIS_IDS)
+    axes_with_repeated_windows = []
+    stable_sample_axes = []
+    sample_digests_by_axis: dict[str, list[str]] = {}
+    for axis_id in axis_ids:
+        axis_records = [record for record in records if record["axis_id"] == axis_id]
+        ok_records = [record for record in axis_records if record["ok"] is True]
+        digests = sorted(
+            {
+                str(record["sample_digest"])
+                for record in ok_records
+                if isinstance(record.get("sample_digest"), str)
+            }
+        )
+        sample_digests_by_axis[axis_id] = digests
+        if len(ok_records) == len(_FUTURE_SCALE_BENCHMARK_WINDOWS):
+            axes_with_repeated_windows.append(axis_id)
+        if len(digests) == 1 and len(ok_records) == len(_FUTURE_SCALE_BENCHMARK_WINDOWS):
+            stable_sample_axes.append(axis_id)
+
+    all_records_ok = all(record["ok"] is True for record in records)
+    all_samples_stable = len(stable_sample_axes) == len(axis_ids)
+    summary = {
+        "proof_id": "future_scale_repeated_benchmark_window_summary_v1",
+        "ok": all_records_ok and all_samples_stable,
+        "status": (
+            "benchmark_windows_available"
+            if all_records_ok and all_samples_stable
+            else "benchmark_windows_incomplete"
+        ),
+        "window_count": len(_FUTURE_SCALE_BENCHMARK_WINDOWS),
+        "axis_count": len(axis_ids),
+        "record_count": len(records),
+        "ok_record_count": sum(1 for record in records if record["ok"] is True),
+        "window_ids": [window_id for window_id, _ in _FUTURE_SCALE_BENCHMARK_WINDOWS],
+        "axis_ids": axis_ids,
+        "axes_with_repeated_windows": axes_with_repeated_windows,
+        "stable_sample_axes": stable_sample_axes,
+        "sample_digests_by_axis": sample_digests_by_axis,
+        "all_samples_stable_across_windows": all_samples_stable,
+        "measurement_scope": (
+            "local deterministic replay of benchmark producers across fixed "
+            "UTC windows; not production runtime evidence"
+        ),
+        "records": records,
+        "claim_gate_satisfied": False,
+        "required_runtime_evidence_present": False,
+        "literal_future_claim_safe": False,
+        "runtime_authority_changed": False,
+        "operator_gate_required": False,
+        "external_writes_applied": False,
+        "blockers": [
+            "fixed windows are deterministic local replays, not live runtime windows",
+            "needs exported production route-depth histograms by route/profile",
+            "needs production corpus binding before trend claims",
+        ],
+        "safe_conclusion": (
+            "The benchmark producers can be replayed across repeated fixed "
+            "windows with stable sanitized samples. This is benchmark-window "
+            "evidence only; it does not satisfy production runtime evidence "
+            "or any future-scale claim gate."
+        ),
+    }
+    json.dumps(summary, sort_keys=True, allow_nan=False)
+    return summary
+
+
+def _future_scale_benchmark_window_record(
+    axis_id: str,
+    window_id: str,
+    window_start_utc: datetime,
+) -> dict:
+    try:
+        report = _future_scale_benchmark_report_for_axis(
+            axis_id,
+            window_start_utc,
+        )
+        if not isinstance(report, dict):
+            raise ValueError("benchmark report must be a dict")
+        sample = _future_scale_benchmark_window_sample(axis_id, report)
+        false_field_checks = _future_scale_benchmark_false_field_checks(report)
+        producer_ok = report.get("ok") is True or (
+            axis_id == "insight_score"
+            and report.get("schema_version") == "insight_score_benchmark.v1"
+            and report.get("benchmark_version") == "future_scale_insight_score.v1"
+        )
+        report_ok = (
+            producer_ok
+            and all(false_field_checks.values())
+            and report.get("required_runtime_evidence_present") is not True
+            and report.get("runtime_authority_changed") is not True
+            and report.get("runtime_authority_granted") is not True
+            and report.get("operator_gate_required") is not True
+            and report.get("controls_present") is not True
+        )
+        record = {
+            "window_id": window_id,
+            "window_start_utc": _format_manifest_utc(window_start_utc),
+            "axis_id": axis_id,
+            "ok": report_ok,
+            "status": "benchmark_window_available"
+            if report_ok
+            else "benchmark_window_unavailable",
+            "schema_version": (
+                report.get("schema_version") or report.get("benchmark_version")
+            ),
+            "measurement_scope": (
+                report.get("benchmark_scope") or report.get("measurement_scope")
+            ),
+            "sample": sample,
+            "sample_digest": _future_scale_benchmark_digest(sample),
+            "false_field_checks": false_field_checks,
+            "claim_gate_satisfied": False,
+            "required_runtime_evidence_present": False,
+            "literal_future_claim_safe": False,
+            "runtime_authority_changed": False,
+            "operator_gate_required": False,
+            "external_writes_applied": False,
+        }
+        json.dumps(record, sort_keys=True, allow_nan=False)
+        return record
+    except Exception as exc:
+        return {
+            "window_id": window_id,
+            "window_start_utc": _format_manifest_utc(window_start_utc),
+            "axis_id": axis_id,
+            "ok": False,
+            "status": "benchmark_window_unavailable",
+            "error_kind": exc.__class__.__name__,
+            "schema_version": None,
+            "measurement_scope": "benchmark producer failed closed",
+            "sample": {},
+            "sample_digest": "",
+            "false_field_checks": {},
+            "claim_gate_satisfied": False,
+            "required_runtime_evidence_present": False,
+            "literal_future_claim_safe": False,
+            "runtime_authority_changed": False,
+            "operator_gate_required": False,
+            "external_writes_applied": False,
+        }
+
+
+def _future_scale_benchmark_report_for_axis(
+    axis_id: str,
+    window_start_utc: datetime,
+) -> dict:
+    if axis_id == "route_depth":
+        return build_future_scale_route_depth_benchmark(now_utc=window_start_utc)
+    if axis_id == "useful_composite_paths":
+        return build_composite_path_benchmark()
+    if axis_id == "contradiction_rate":
+        return build_future_scale_contradiction_rate_benchmark(
+            now_utc=window_start_utc,
+        )
+    if axis_id == "insight_score":
+        return build_future_scale_insight_benchmark(now_utc=window_start_utc)
+    raise ValueError(f"unknown future-scale benchmark axis: {axis_id}")
+
+
+def _future_scale_benchmark_window_sample(axis_id: str, report: dict) -> dict:
+    if axis_id == "route_depth":
+        result = report.get("benchmark_result")
+        if not isinstance(result, dict):
+            result = {}
+        return {
+            "sample_count": result.get("sample_count"),
+            "p50_depth": result.get("p50_depth"),
+            "p95_depth": result.get("p95_depth"),
+            "p99_depth": result.get("p99_depth"),
+        }
+    if axis_id == "useful_composite_paths":
+        summary = report.get("summary")
+        if not isinstance(summary, dict):
+            summary = {}
+        return {
+            "solver_nodes": summary.get("solver_nodes"),
+            "bridge_candidates_total": summary.get("bridge_candidates_total"),
+            "useful_composite_paths_total": summary.get(
+                "useful_composite_paths_total"
+            ),
+            "useful_composite_paths_by_depth": summary.get(
+                "useful_composite_paths_by_depth"
+            ),
+        }
+    if axis_id == "contradiction_rate":
+        result = report.get("benchmark_result")
+        if not isinstance(result, dict):
+            result = {}
+        return {
+            "proposal_count": result.get("proposal_count"),
+            "contradiction_rejections": result.get("contradiction_rejections"),
+            "contradiction_rate": result.get("contradiction_rate"),
+            "false_positive_count": result.get("false_positive_count"),
+            "false_negative_count": result.get("false_negative_count"),
+        }
+    if axis_id == "insight_score":
+        aggregate = report.get("aggregate")
+        controls = report.get("internal_controls")
+        if not isinstance(aggregate, dict):
+            aggregate = {}
+        if not isinstance(controls, dict):
+            controls = {}
+        return {
+            "corpus_case_count": report.get("corpus_case_count"),
+            "mean_insight_score": aggregate.get("mean_insight_score"),
+            "median_insight_score": aggregate.get("median_insight_score"),
+            "scale_trend_slope": aggregate.get("scale_trend_slope"),
+            "p95_insight": aggregate.get("p95_insight"),
+            "controls_measured": controls.get("controls_measured"),
+        }
+    return {}
+
+
+def _future_scale_benchmark_false_field_checks(report: dict) -> dict[str, bool]:
+    checks = {
+        field: report.get(field) is False
+        for field in _FUTURE_SCALE_BENCHMARK_REQUIRED_FALSE_FIELDS
+    }
+    checks.update(
+        {
+            field: report.get(field) is not True
+            for field in _FUTURE_SCALE_BENCHMARK_OPTIONAL_FALSE_FIELDS
+            if field in report
+        }
+    )
+    return checks
+
+
+def _future_scale_benchmark_digest(value: dict) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _format_manifest_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 def _build_future_scale_runtime_evidence(
@@ -5513,6 +5928,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
             solver_trace_receipt_proof,
         )
     )
+    benchmark_window_summary = _future_scale_benchmark_window_summary()
 
     axes = []
     for axis in _FUTURE_SCALE_AXES:
@@ -5593,6 +6009,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         and eig_disabled_by_default
         and eig_benchmark_only
         and scorecard_doc_present
+        and benchmark_window_summary.get("ok") is True
     )
     return {
         "proof_id": "future_scale_axis_scorecard_v1",
@@ -5608,6 +6025,7 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
         "eig_benchmark_only": eig_benchmark_only,
         "scorecard_doc_present": scorecard_doc_present,
         "runtime_evidence_summary": runtime_evidence_summary,
+        "benchmark_window_summary": benchmark_window_summary,
         "axes": axes,
         "claim_decomposition": claim_decomposition,
         "runtime_authority_changed": False,
@@ -5617,8 +6035,9 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
             "The future swarm wording is decomposed into measurable scale "
             "axes. First runtime evidence bindings now populate route-stage "
             "coverage, fallback, latency, route-depth benchmark-contract, "
-            "and opt-in audit-completeness proxies, but the literal claims "
-            "for emergent intelligence, "
+            "repeated local benchmark-window evidence, and opt-in "
+            "audit-completeness proxies, but the literal claims for "
+            "emergent intelligence, "
             "infinite scalability, and industrial-grade efficiency remain "
             "unsafe until all axes have versioned metrics and benchmark "
             "artifacts."
@@ -6488,10 +6907,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "The repo has future scale architecture and a scale-axis "
                 "scorecard with first runtime evidence bindings for "
                 "route-stage coverage, fallback, latency, a local "
-                "route-depth benchmark contract, local composite-path and "
+                "route-depth benchmark contract plus a production-shaped "
+                "route-depth histogram artifact contract and capture-window "
+                "attachment contract, local composite-path and "
                 "contradiction-rate benchmark contracts, an insight-score "
-                "schema contract, and opt-in audit completeness proxies; "
-                "unlimited scalability remains a target, not a fact."
+                "benchmark producer, repeated local benchmark-window "
+                "evidence, and opt-in audit completeness proxies; unlimited "
+                "scalability remains a target, not a fact."
             ),
             status=_status_for(future_evidence),
             claim_safe=False,
@@ -6501,15 +6923,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Future claims must be tied to measured axes such as "
                 "coverage, fallback rate, latency, and audit completeness.",
                 "The current scorecard binds some existing runtime evidence; "
-                "composite-path usefulness and contradiction rate are still "
-                "local offline benchmark contracts, insight score is still a "
-                "schema contract without a producer, and route-depth still "
-                "needs production histogram exports.",
+                "benchmark-window evidence is still deterministic local "
+                "replay, and route-depth capture-window artifacts still need "
+                "operator-owned live production exports and corpus binding.",
             ),
             next_smallest_pr=(
-                "Add an insight-score benchmark producer and production "
-                "route-depth histogram artifacts to the future-scale "
-                "scorecard without upgrading claims."
+                "Run an operator-owned live route-depth export through the "
+                "capture-window verifier and render the path-free summary "
+                "without upgrading claims."
             ),
             proof=future_scale_scorecard,
         ),

@@ -1564,6 +1564,44 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert summary["unmeasured_axis_count"] == 0
     assert summary["unmeasured_axes"] == []
     assert "route_depth" in summary["required_runtime_axes"]
+    window_summary = proof["benchmark_window_summary"]
+    assert window_summary["ok"] is True
+    assert (
+        window_summary["proof_id"]
+        == "future_scale_repeated_benchmark_window_summary_v1"
+    )
+    assert window_summary["status"] == "benchmark_windows_available"
+    assert window_summary["window_count"] == 2
+    assert window_summary["axis_count"] == 4
+    assert window_summary["record_count"] == 8
+    assert window_summary["ok_record_count"] == 8
+    assert window_summary["axis_ids"] == [
+        "route_depth",
+        "useful_composite_paths",
+        "contradiction_rate",
+        "insight_score",
+    ]
+    assert window_summary["axes_with_repeated_windows"] == window_summary["axis_ids"]
+    assert window_summary["stable_sample_axes"] == window_summary["axis_ids"]
+    assert window_summary["all_samples_stable_across_windows"] is True
+    assert window_summary["claim_gate_satisfied"] is False
+    assert window_summary["required_runtime_evidence_present"] is False
+    assert window_summary["literal_future_claim_safe"] is False
+    assert window_summary["runtime_authority_changed"] is False
+    assert window_summary["operator_gate_required"] is False
+    assert window_summary["external_writes_applied"] is False
+    assert all(
+        len(digests) == 1
+        for digests in window_summary["sample_digests_by_axis"].values()
+    )
+    assert all(
+        record["claim_gate_satisfied"] is False
+        and record["required_runtime_evidence_present"] is False
+        and record["literal_future_claim_safe"] is False
+        and record["runtime_authority_changed"] is False
+        and record["external_writes_applied"] is False
+        for record in window_summary["records"]
+    )
     assert proof["runtime_authority_changed"] is False
     assert proof["operator_gate_required"] is False
     assert proof["external_writes_applied"] is False
@@ -1602,7 +1640,7 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     )
     assert (
         axes["route_depth"]["runtime_evidence"]["status"]
-        == "benchmark_contract_available"
+        == "benchmark_histogram_capture_attachment_and_summary_contract_available"
     )
     assert axes["route_depth"]["runtime_evidence"]["metric_names"] == []
     assert axes["route_depth"]["runtime_evidence"]["sample"]["sample_count"] == 5
@@ -1610,7 +1648,99 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert axes["route_depth"]["runtime_evidence"]["sample"]["p95_depth"] == 7.8
     assert axes["route_depth"]["runtime_evidence"]["sample"]["p99_depth"] == 7.96
     assert (
-        "needs exported runtime route-depth histograms by route/profile"
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_artifact_status"
+        ]
+        == "production_histogram_artifact_contract_available"
+    )
+    assert (
+        "waggledance_route_depth_histogram_bucket"
+        in axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_metric_names"
+        ]
+    )
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_label_names"
+    ] == ["route_profile", "final_stage", "le"]
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_sample_count"
+    ] == 5
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_route_profile_count"
+    ] == 5
+    assert axes["route_depth"]["runtime_evidence"]["sample"][
+        "production_histogram_runtime_data_attached"
+    ] is False
+    assert (
+        len(
+            axes["route_depth"]["runtime_evidence"]["sample"][
+                "production_histogram_digest_sha256"
+            ]
+        )
+        == 64
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_attachment_status"
+        ]
+        == "capture_window_attachment_contract_available"
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_runtime_data_attached"
+        ]
+        is False
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_count"
+        ]
+        == 0
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_required_runtime"
+        ]
+        is False
+    )
+    assert (
+        len(
+            axes["route_depth"]["runtime_evidence"]["sample"][
+                "production_capture_window_digest_sha256"
+            ]
+        )
+        == 64
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_schema_version"
+        ]
+        == "future_scale_route_depth_capture_window_verification_summary.v1"
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_status"
+        ]
+        == "operator_capture_window_verification_summary_blocked"
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_ok"
+        ]
+        is False
+    )
+    assert (
+        "capture_window_count_insufficient"
+        in axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_capture_window_summary_blockers"
+        ]
+    )
+    assert (
+        "needs operator-owned live production route-depth exports run through the capture-window verifier"
+        in axes["route_depth"]["runtime_evidence"]["blockers"]
+    )
+    assert (
+        "needs path-free capture-window verification summaries for attached operator-owned exports"
         in axes["route_depth"]["runtime_evidence"]["blockers"]
     )
     assert (
@@ -1742,7 +1872,7 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     )
     assert (
         evidence_by_axis["route_depth"]["status"]
-        == "benchmark_contract_available"
+        == "benchmark_histogram_capture_attachment_and_summary_contract_available"
     )
     assert (
         "route-stage runtime metrics smoke failed"
@@ -1773,8 +1903,11 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
         ]
         is False
     )
-    assert "insight-score benchmark producer" in capability["next_smallest_pr"]
-    assert "route-depth histogram artifacts" in capability["next_smallest_pr"]
+    assert capability["proof"]["benchmark_window_summary"]["ok"] is True
+    assert "benchmark-window evidence" in capability["safe_statement"]
+    assert "operator-owned live route-depth export" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

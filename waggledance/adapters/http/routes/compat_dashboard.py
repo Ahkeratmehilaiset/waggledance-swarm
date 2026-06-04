@@ -354,8 +354,8 @@ def _throttle_section(container) -> dict:
         return {}
 
 
-def _autogrowth_disabled_section() -> dict:
-    section = {
+def _autogrowth_disabled_base() -> dict:
+    return {
         "enabled": False,
         "up": False,
         "running": False,
@@ -365,7 +365,11 @@ def _autogrowth_disabled_section() -> dict:
         "non_idle_ticks": 0,
         "errors_total": 0,
     }
-    return _with_autogrowth_alert_state(section)
+
+
+def _autogrowth_disabled_section(container=None) -> dict:  # noqa: ANN001
+    section = _autogrowth_disabled_base()
+    return _with_autogrowth_alert_state(section, container)
 
 
 def _safe_getattr(obj, name: str, default=None):  # noqa: ANN001
@@ -390,7 +394,75 @@ def _int_or_zero(value) -> int:  # noqa: ANN001
         return 0
 
 
-def _autogrowth_alert_state(section: dict) -> dict:
+AUTOGROWTH_ALERT_IDS = {
+    "AutogrowthSourceDown": "warning",
+    "AutogrowthErrorsObserved": "warning",
+    "AutogrowthErrorBurst": "critical",
+    "AutogrowthWakeupStalled": "warning",
+    "AutogrowthWakeupBurst": "warning",
+    "AutogrowthNonIdleBurst": "warning",
+}
+AUTOGROWTH_ALERT_METRICS = {
+    "AutogrowthSourceDown": "waggledance_autogrowth_up",
+    "AutogrowthErrorsObserved": "waggledance_autogrowth_errors_total",
+    "AutogrowthErrorBurst": "waggledance_autogrowth_errors_total",
+    "AutogrowthWakeupStalled": "waggledance_autogrowth_wakeups_total",
+    "AutogrowthWakeupBurst": "waggledance_autogrowth_wakeups_total",
+    "AutogrowthNonIdleBurst": "waggledance_autogrowth_non_idle_ticks_total",
+}
+AUTOGROWTH_ALERT_SUMMARIES = {
+    "AutogrowthSourceDown": "Autogrowth metrics source is unavailable.",
+    "AutogrowthErrorsObserved": "Autogrowth ticker errors have been observed.",
+    "AutogrowthErrorBurst": "Autogrowth ticker error burst is active.",
+    "AutogrowthWakeupStalled": "Autogrowth ticker wakeups appear stalled.",
+    "AutogrowthWakeupBurst": "Autogrowth ticker wakeup rate is above threshold.",
+    "AutogrowthNonIdleBurst": "Autogrowth non-idle tick rate is above threshold.",
+}
+AUTOGROWTH_ALERT_FEED_FAILURE_REASONS = {
+    "none",
+    "BACKOFF_ACTIVE",
+    "NETWORK_TIMEOUT",
+    "NETWORK_REQUEST_FAILED",
+    "RESPONSE_SHAPE_REFUSED",
+    "RESPONSE_BODY_REFUSED",
+    "RESPONSE_STATUS_REFUSED",
+    "RESPONSE_JSON_REFUSED",
+    "RESPONSE_TOO_LARGE",
+    "RESPONSE_CONTENT_TYPE_REFUSED",
+    "RESPONSE_SOURCE_URL_REFUSED",
+    "ALERTMANAGER_RESULT_REFUSED",
+    "AUTOGROWTH_ALERT_FEED_UNAVAILABLE",
+    "FEED_READ_FAILED",
+}
+AUTOGROWTH_ALERT_FEED_SLO_PANELS = [
+    {
+        "id": "autogrowth_alert_feed_availability_5m",
+        "title": "Autogrowth alert feed availability",
+        "metric": "waggledance_autogrowth_alert_feed_available",
+        "query": "avg_over_time(waggledance_autogrowth_alert_feed_available[5m])",
+    },
+    {
+        "id": "autogrowth_alert_feed_fetch_failures_total",
+        "title": "Autogrowth alert feed fetch failures total",
+        "metric": "waggledance_autogrowth_alert_feed_fetch_failures_total",
+        "query": "waggledance_autogrowth_alert_feed_fetch_failures_total",
+    },
+    {
+        "id": "autogrowth_alert_feed_backoff_15m",
+        "title": "Autogrowth alert feed backoff active",
+        "metric": "waggledance_autogrowth_alert_feed_backoff_active",
+        "query": "max_over_time(waggledance_autogrowth_alert_feed_backoff_active[15m])",
+    },
+    {
+        "id": "autogrowth_alert_feed_cache_stale_15m",
+        "title": "Autogrowth alert feed cache stale",
+        "metric": "waggledance_autogrowth_alert_feed_cache_stale",
+        "query": "max_over_time(waggledance_autogrowth_alert_feed_cache_stale[15m])",
+    },
+]
+
+
+def _autogrowth_local_alerts(section: dict) -> list[dict[str, object]]:
     """Build read-only alert status from the local Ops snapshot."""
 
     active_alerts = []
@@ -398,36 +470,439 @@ def _autogrowth_alert_state(section: dict) -> dict:
         active_alerts.append({
             "id": "AutogrowthSourceDown",
             "severity": "warning",
-            "summary": "Autogrowth metrics source is unavailable.",
+            "summary": AUTOGROWTH_ALERT_SUMMARIES["AutogrowthSourceDown"],
         })
 
     if _int_or_zero(section.get("errors_total", 0)) > 0:
         active_alerts.append({
             "id": "AutogrowthErrorsObserved",
             "severity": "warning",
-            "summary": "Autogrowth ticker errors have been observed.",
+            "summary": AUTOGROWTH_ALERT_SUMMARIES["AutogrowthErrorsObserved"],
         })
+    return active_alerts
+
+
+def _autogrowth_alert_feed_health_default(source: str) -> dict:
+    return {
+        "source": source,
+        "status": "not_configured",
+        "configured": False,
+        "available": False,
+        "cache_enabled": False,
+        "cache_present": False,
+        "cache_stale": False,
+        "backoff_active": False,
+        "cache_ttl_seconds": 0.0,
+        "failure_backoff_seconds": 0.0,
+        "timeout_seconds": 0.0,
+        "max_response_bytes": 0.0,
+        "last_response_bytes": 0.0,
+        "cache_hit_count": 0.0,
+        "cache_miss_count": 0.0,
+        "fetch_success_count": 0.0,
+        "fetch_failure_count": 0.0,
+        "backoff_skip_count": 0.0,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "last_failure_reason": "none",
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
+
+
+def _autogrowth_alert_feed_reason(reason) -> str:  # noqa: ANN001
+    if reason is None:
+        return "none"
+    if not isinstance(reason, str):
+        return "FEED_READ_FAILED"
+    clean = reason.strip().upper()
+    if clean in AUTOGROWTH_ALERT_FEED_FAILURE_REASONS:
+        return clean
+    return "FEED_READ_FAILED"
+
+
+def _autogrowth_alert_feed_health(provider, snapshot=None) -> dict:  # noqa: ANN001
+    if provider is None:
+        return _autogrowth_alert_feed_health_default("not_configured")
+    raw_health = {}
+    if isinstance(snapshot, Mapping):
+        candidate = snapshot.get("provider_health")
+        if isinstance(candidate, Mapping):
+            raw_health = dict(candidate)
+    if not raw_health:
+        health_method = _safe_getattr(provider, "provider_health", None)
+        if callable(health_method):
+            try:
+                candidate = health_method()
+            except Exception:
+                candidate = {}
+            if isinstance(candidate, Mapping):
+                raw_health = dict(candidate)
+
+    health = _autogrowth_alert_feed_health_default("alertmanager_adapter")
+    for key in (
+        "configured",
+        "available",
+        "cache_enabled",
+        "cache_present",
+        "cache_stale",
+        "backoff_active",
+    ):
+        if key in raw_health:
+            health[key] = bool(raw_health.get(key))
+    health["controls_present"] = False
+    health["runtime_authority_granted"] = False
+    health["external_writes_applied"] = False
+    for key in (
+        "cache_ttl_seconds",
+        "failure_backoff_seconds",
+        "timeout_seconds",
+        "max_response_bytes",
+        "last_response_bytes",
+        "cache_hit_count",
+        "cache_miss_count",
+        "fetch_success_count",
+        "fetch_failure_count",
+        "backoff_skip_count",
+    ):
+        value = _number_or_none(raw_health.get(key))
+        if value is not None and value >= 0:
+            health[key] = round(value, 3)
+    for key in ("last_success_at", "last_failure_at"):
+        value = raw_health.get(key)
+        health[key] = (
+            _route_stage_latency_updated_at({"updated_at": value})
+            if isinstance(value, str)
+            else None
+        )
+    health["last_failure_reason"] = _autogrowth_alert_feed_reason(
+        raw_health.get("last_failure_reason")
+    )
+    raw_status = raw_health.get("status")
+    if raw_status in {"not_configured", "nominal", "warning"}:
+        health["status"] = raw_status
+    elif health["backoff_active"] or health["fetch_failure_count"] > 0:
+        health["status"] = "warning"
+    elif health["configured"]:
+        health["status"] = "nominal"
+    return health
+
+
+def _autogrowth_alert_feed_provider(container):  # noqa: ANN001
+    for name in (
+        "autogrowth_alert_feed",
+        "autogrowth_metrics_alert_feed",
+        "autogrowth_prometheus_alertmanager_feed",
+    ):
+        provider = _safe_getattr(container, name, None)
+        if provider is not None:
+            return provider
+    return None
+
+
+def _autogrowth_alert_feed_status(container):  # noqa: ANN001
+    provider = _autogrowth_alert_feed_provider(container)
+    if provider is None:
+        return None, "not_configured", _autogrowth_alert_feed_health(provider)
+    if isinstance(provider, Mapping):
+        snapshot = dict(provider)
+        return snapshot, "", _autogrowth_alert_feed_health(provider, snapshot)
+    for method_name in ("snapshot", "get_status", "status"):
+        method = _safe_getattr(provider, method_name, None)
+        if callable(method):
+            try:
+                snapshot = method()
+            except Exception:
+                return None, "unavailable", _autogrowth_alert_feed_health(provider)
+            if isinstance(snapshot, Mapping):
+                snapshot = dict(snapshot)
+                return snapshot, "", _autogrowth_alert_feed_health(
+                    provider,
+                    snapshot,
+                )
+            return None, "invalid", _autogrowth_alert_feed_health(provider)
+    return None, "invalid", _autogrowth_alert_feed_health(provider)
+
+
+def _autogrowth_alert_id(item: dict) -> str | None:
+    labels = item.get("labels")
+    if not isinstance(labels, Mapping):
+        labels = {}
+    alert_id = item.get("id", item.get("alertname", labels.get("alertname")))
+    if isinstance(alert_id, str) and alert_id in AUTOGROWTH_ALERT_IDS:
+        return alert_id
+    return None
+
+
+def _autogrowth_alert_value(item: dict) -> float | None:
+    for key in ("value", "current_value", "sample_value"):
+        value = _number_or_none(item.get(key))
+        if value is not None:
+            return round(value, 3)
+    return None
+
+
+def _sanitize_autogrowth_active_alerts(snapshot: dict) -> list[dict[str, object]]:
+    raw_alerts = snapshot.get(
+        "active",
+        snapshot.get("active_alerts", snapshot.get("alerts", [])),
+    )
+    if not isinstance(raw_alerts, list):
+        return []
+    alerts: list[dict[str, object]] = []
+    for raw in raw_alerts:
+        if not isinstance(raw, dict):
+            continue
+        labels = raw.get("labels")
+        if not isinstance(labels, Mapping):
+            labels = {}
+        alert_id = _autogrowth_alert_id(raw)
+        if alert_id is None:
+            continue
+        state = raw.get("state", raw.get("status", raw.get("alert_state")))
+        if isinstance(state, Mapping):
+            state = state.get("state")
+        if isinstance(state, str) and state.lower() not in {"active", "firing"}:
+            continue
+        severity = raw.get("severity", labels.get("severity"))
+        if severity not in {"warning", "critical"}:
+            severity = AUTOGROWTH_ALERT_IDS[alert_id]
+        item = {
+            "id": alert_id,
+            "severity": severity,
+            "summary": AUTOGROWTH_ALERT_SUMMARIES[alert_id],
+            "metric": AUTOGROWTH_ALERT_METRICS[alert_id],
+        }
+        value = _autogrowth_alert_value(raw)
+        if value is not None:
+            item["value"] = value
+        alerts.append(item)
+    return alerts
+
+
+def _autogrowth_alert_max_severity(items: list[dict]) -> str:
+    severity = "none"
+    for item in items:
+        candidate = item.get("severity", "none")
+        if (
+            isinstance(candidate, str)
+            and ROUTE_STAGE_LATENCY_SEVERITY_RANK.get(candidate, 0)
+            > ROUTE_STAGE_LATENCY_SEVERITY_RANK.get(severity, 0)
+        ):
+            severity = candidate
+    return severity
+
+
+def _autogrowth_alert_feed_nonnegative_float(value) -> float:  # noqa: ANN001
+    numeric = _number_or_none(value)
+    if numeric is None or numeric < 0:
+        return 0.0
+    return float(numeric)
+
+
+def _autogrowth_alert_feed_slo_panel_status(
+    panel_id: str,
+    feed_health: Mapping[str, object],
+) -> str:
+    if not feed_health.get("configured"):
+        return "not_configured"
+    if panel_id == "autogrowth_alert_feed_availability_5m":
+        return "nominal" if feed_health.get("available") else "warning"
+    if panel_id == "autogrowth_alert_feed_fetch_failures_total":
+        failures = _autogrowth_alert_feed_nonnegative_float(
+            feed_health.get("fetch_failure_count")
+        )
+        return "warning" if failures > 0 else "nominal"
+    if panel_id == "autogrowth_alert_feed_backoff_15m":
+        return "warning" if feed_health.get("backoff_active") else "nominal"
+    if panel_id == "autogrowth_alert_feed_cache_stale_15m":
+        return "warning" if feed_health.get("cache_stale") else "nominal"
+    return "nominal"
+
+
+def _autogrowth_alert_feed_slo_current_value(
+    panel_id: str,
+    feed_health: Mapping[str, object],
+) -> float:
+    if panel_id == "autogrowth_alert_feed_availability_5m":
+        return 1.0 if feed_health.get("available") else 0.0
+    if panel_id == "autogrowth_alert_feed_fetch_failures_total":
+        return _autogrowth_alert_feed_nonnegative_float(
+            feed_health.get("fetch_failure_count")
+        )
+    if panel_id == "autogrowth_alert_feed_backoff_15m":
+        return 1.0 if feed_health.get("backoff_active") else 0.0
+    if panel_id == "autogrowth_alert_feed_cache_stale_15m":
+        return 1.0 if feed_health.get("cache_stale") else 0.0
+    return 0.0
+
+
+def _autogrowth_alert_feed_slo_panels(
+    feed_health: Mapping[str, object],
+) -> list[dict[str, object]]:
+    return [
+        {
+            **panel,
+            "current_value": _autogrowth_alert_feed_slo_current_value(
+                str(panel["id"]),
+                feed_health,
+            ),
+            "status": _autogrowth_alert_feed_slo_panel_status(
+                str(panel["id"]),
+                feed_health,
+            ),
+            "controls_present": False,
+        }
+        for panel in AUTOGROWTH_ALERT_FEED_SLO_PANELS
+    ]
+
+
+def _autogrowth_alert_feed_drill_evidence() -> dict[str, object]:
+    return {
+        "source": "operator_runbook",
+        "runbook_path": "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md",
+        "required_artifacts": [
+            {
+                "id": "metrics_scrape",
+                "source": "/metrics",
+                "fields": [
+                    "waggledance_autogrowth_alert_feed_status",
+                    "waggledance_autogrowth_alert_feed_failure_reason",
+                    "waggledance_autogrowth_alert_feed_backoff_active",
+                ],
+            },
+            {
+                "id": "ops_snapshot",
+                "source": "/api/ops",
+                "fields": [
+                    "autogrowth.alert_state.feed_health",
+                    "autogrowth.alert_state.slo_panels",
+                    "autogrowth.alert_state.drill_evidence",
+                ],
+            },
+            {
+                "id": "operator_log_window",
+                "source": "operator_log_window",
+                "fields": ["timestamp", "commit", "sanitized_reason"],
+            },
+        ],
+        "privacy_exclusions": [
+            "urls",
+            "hosts",
+            "headers",
+            "filesystem_paths",
+            "exception_text",
+            "raw_alertmanager_labels",
+        ],
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
+
+
+def _autogrowth_dedupe_alerts(
+    *groups: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    alerts: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            alert_id = item.get("id")
+            if not isinstance(alert_id, str) or alert_id in seen:
+                continue
+            seen.add(alert_id)
+            alerts.append(item)
+    return alerts
+
+
+def _autogrowth_alert_state(section: dict, container=None) -> dict:  # noqa: ANN001
+    """Build read-only alert status from local and optional feed snapshots."""
+
+    local_alerts = _autogrowth_local_alerts(section)
+    snapshot, state, feed_health = _autogrowth_alert_feed_status(container)
+    slo_panels = _autogrowth_alert_feed_slo_panels(feed_health)
+    drill_evidence = _autogrowth_alert_feed_drill_evidence()
+
+    if state == "not_configured":
+        return {
+            "status": "warning" if local_alerts else "nominal",
+            "severity": "warning" if local_alerts else "none",
+            "source": "local_ops_snapshot",
+            "prometheus_alertmanager_feed": False,
+            "active_count": len(local_alerts),
+            "active": local_alerts,
+            "deferred_rules": [
+                "AutogrowthErrorBurst",
+                "AutogrowthWakeupStalled",
+                "AutogrowthWakeupBurst",
+                "AutogrowthNonIdleBurst",
+            ],
+            "feed_health": feed_health,
+            "slo_panels": slo_panels,
+            "drill_evidence": drill_evidence,
+            "controls_present": False,
+        }
+
+    if snapshot is None:
+        invalid = state == "invalid"
+        alert_id = (
+            "AutogrowthAlertFeedInvalid"
+            if invalid
+            else "AutogrowthAlertFeedUnavailable"
+        )
+        active_alerts = _autogrowth_dedupe_alerts(
+            [{
+                "id": alert_id,
+                "severity": "warning",
+                "summary": (
+                    "Autogrowth alert feed snapshot is invalid."
+                    if invalid
+                    else "Autogrowth alert feed snapshot is unavailable."
+                ),
+            }],
+            local_alerts,
+        )
+        return {
+            "status": "warning",
+            "severity": "warning",
+            "source": (
+                "prometheus_alertmanager_invalid"
+                if invalid
+                else "prometheus_alertmanager_unavailable"
+            ),
+            "prometheus_alertmanager_feed": False,
+            "updated_at": None,
+            "active_count": len(active_alerts),
+            "active": active_alerts,
+            "feed_health": feed_health,
+            "slo_panels": slo_panels,
+            "drill_evidence": drill_evidence,
+            "controls_present": False,
+        }
+
+    feed_alerts = _sanitize_autogrowth_active_alerts(snapshot)
+    active_alerts = _autogrowth_dedupe_alerts(feed_alerts, local_alerts)
+    severity = _autogrowth_alert_max_severity(active_alerts)
 
     return {
-        "status": "warning" if active_alerts else "nominal",
-        "severity": "warning" if active_alerts else "none",
-        "source": "local_ops_snapshot",
-        "prometheus_alertmanager_feed": False,
+        "status": severity if severity != "none" else "nominal",
+        "severity": severity,
+        "source": "prometheus_alertmanager_snapshot",
+        "prometheus_alertmanager_feed": True,
+        "updated_at": _route_stage_latency_updated_at(snapshot),
         "active_count": len(active_alerts),
         "active": active_alerts,
-        "deferred_rules": [
-            "AutogrowthErrorBurst",
-            "AutogrowthWakeupStalled",
-            "AutogrowthWakeupBurst",
-            "AutogrowthNonIdleBurst",
-        ],
+        "feed_health": feed_health,
+        "slo_panels": slo_panels,
+        "drill_evidence": drill_evidence,
         "controls_present": False,
     }
 
 
-def _with_autogrowth_alert_state(section: dict) -> dict:
+def _with_autogrowth_alert_state(section: dict, container=None) -> dict:  # noqa: ANN001
     section = dict(section)
-    section["alert_state"] = _autogrowth_alert_state(section)
+    section["alert_state"] = _autogrowth_alert_state(section, container)
     return section
 
 
@@ -1049,11 +1524,11 @@ def _autogrowth_section(container) -> dict:
         ticker = getattr(container, "autogrowth_background_ticker", None)
     except Exception as exc:
         logger.debug("Autogrowth ticker lookup failed: %s", exc)
-        return _autogrowth_disabled_section()
+        return _autogrowth_disabled_section(container)
     if ticker is None:
-        return _autogrowth_disabled_section()
+        return _autogrowth_disabled_section(container)
 
-    section = _autogrowth_disabled_section()
+    section = _autogrowth_disabled_base()
     section["enabled"] = True
     section["running"] = bool(_safe_getattr(ticker, "is_running", False))
 
@@ -1066,7 +1541,7 @@ def _autogrowth_section(container) -> dict:
 
     stats = _safe_getattr(ticker, "stats", None)
     if stats is None:
-        return _with_autogrowth_alert_state(section)
+        return _with_autogrowth_alert_state(section, container)
 
     section["up"] = True
     section["wakeups_total"] = _int_or_zero(
@@ -1078,7 +1553,7 @@ def _autogrowth_section(container) -> dict:
     section["errors_total"] = _int_or_zero(
         _safe_getattr(stats, "errors_total", 0)
     )
-    return _with_autogrowth_alert_state(section)
+    return _with_autogrowth_alert_state(section, container)
 
 
 def _magma_share_import_handoff_snapshot(container):  # noqa: ANN001

@@ -894,12 +894,22 @@ def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() 
     assert proof["proof_id"] == ("low_risk_autogrowth_ops_alert_state_smoke_v1")
     assert proof["ops_endpoint"] == "/api/ops"
     assert proof["dashboard_path"] == "web/hologram-brain-v6.html"
+    assert proof["runbook_path"] == (
+        "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md"
+    )
     assert proof["api_contract_present"] is True
+    assert proof["alertmanager_adapter_contract_present"] is True
+    assert proof["provider_health_metrics_visible"] is True
     assert proof["ui_contract_present"] is True
     assert proof["test_contract_present"] is True
     assert proof["docs_contract_present"] is True
     assert proof["alert_state_visible"] is True
     assert proof["local_snapshot_source"] is True
+    assert proof["prometheus_alertmanager_feed_supported"] is True
+    assert proof["feed_slo_panels_visible"] is True
+    assert proof["feed_drill_evidence_visible"] is True
+    assert proof["fixed_alert_ids_enforced"] is True
+    assert proof["raw_alertmanager_labels_excluded"] is True
     assert proof["rate_rules_deferred"] is True
     assert proof["forbidden_controls_absent"] is True
     assert proof["forbidden_control_tokens_found"] == []
@@ -916,6 +926,9 @@ def test_low_risk_autogrowth_ops_alert_state_smoke_blocks_missing_inputs(
     assert proof["ok"] is False
     assert proof["blocked_reason"] == "missing_required_inputs"
     assert "waggledance/adapters/http/routes/compat_dashboard.py" in (
+        proof["missing_inputs"]
+    )
+    assert "waggledance/adapters/http/autogrowth_alert_feed.py" in (
         proof["missing_inputs"]
     )
     assert "web/hologram-brain-v6.html" in proof["missing_inputs"]
@@ -1339,9 +1352,12 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
         capability["proof"]["ops_alert_state_smoke"]["runtime_authority_changed"]
         is False
     )
-    assert "Prometheus/Alertmanager feed" in capability["next_smallest_pr"]
+    assert "alert-feed drill evidence verifier" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
-    assert "local alert state" in capability["safe_statement"]
+    assert "local fallback alert state" in capability["safe_statement"]
+    assert "optional sanitized Alertmanager alert feed" in (
+        capability["safe_statement"]
+    )
     assert "operator alert thresholds" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 

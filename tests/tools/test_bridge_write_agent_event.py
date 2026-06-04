@@ -173,6 +173,28 @@ def test_task_scoped_event_with_task_id_writes_valid_event(tmp_path: Path) -> No
     validate_event_line(line)
 
 
+def test_wake_request_requires_to_before_runtime_write(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "wake_request",
+        "-TaskId",
+        "wake-request-missing-to",
+        "-Message",
+        "missing wake target",
+    )
+
+    assert completed.returncode != 0
+    assert "type=wake_request requires non-empty -To" in completed.stderr
+    assert not runtime_root.exists()
+
+
 def test_regex_agent_id_writes_valid_event_and_outbox(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"

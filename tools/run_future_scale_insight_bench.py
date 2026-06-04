@@ -428,7 +428,10 @@ def _source_branch_alias() -> str:
     alias = _SAFE_BRANCH_CHARS.sub("-", branch).strip(".-_")
     if not alias or not alias[0].isalpha():
         alias = f"branch-{alias}" if alias else "branch-unknown"
-    return alias[:80]
+    alias = alias[:80]
+    if validate_scalar_safety({"source_branch": alias}):
+        return "branch-redacted"
+    return alias
 
 
 def _is_finite_number(value: Any) -> bool:

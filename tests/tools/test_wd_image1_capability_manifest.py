@@ -1031,6 +1031,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tests/test_legacy_consolidation.py",
         "docs/API.md",
         "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
+        "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1387,6 +1389,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_verification_summary_bridge_event_template_supported"
+        ]
+        is True
+    )
     verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
         "drill_evidence_verifier_smoke"
     ]
@@ -1396,6 +1404,16 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert verifier_smoke["network_access_performed"] is False
     assert verifier_smoke["runtime_authority_granted"] is False
     assert verifier_smoke["external_writes_applied"] is False
+    template_smoke = verifier_smoke[
+        "verification_summary_bridge_event_template_smoke"
+    ]
+    assert template_smoke["ok"] is True
+    assert template_smoke["template_only"] is True
+    assert template_smoke["manual_review_required"] is True
+    assert template_smoke["direct_bridge_write_performed"] is False
+    assert template_smoke["artifact_payloads_included"] is False
+    assert template_smoke["local_paths_recorded"] is False
+    assert template_smoke["network_access_performed"] is False
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -1405,7 +1423,10 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "operator SLO/drill evidence" in capability["safe_statement"]
     assert "offline" in capability["safe_statement"]
     assert "drill evidence verifier" in capability["safe_statement"]
-    assert "verification summary bridge-event template" in (
+    assert "verification-summary bridge-event template" in (
+        capability["safe_statement"]
+    )
+    assert "local index entry" in (
         capability["next_smallest_pr"]
     )
     assert "route-stage feed-health drill evidence" in capability["next_smallest_pr"]

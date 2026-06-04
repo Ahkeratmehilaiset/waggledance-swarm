@@ -35,7 +35,7 @@ cachetools==6.2.6
 certifi==2025.4.26
 cffi==2.0.0
 charset-normalizer==3.4.2
-chromadb==1.5.1
+chromadb==1.5.9
 click==8.2.1
 cloudpickle==3.1.2
 colorama==0.4.6
@@ -188,7 +188,7 @@ playwright==1.58.0
 plotly==6.3.0
 pluggy==1.6.0
 pooch==1.9.0
-posthog==5.4.0
+posthog==7.17.0
 primp==1.0.0
 proglog==0.1.12
 prometheus_client==0.24.1
@@ -207,6 +207,7 @@ pybase64==1.4.3
 pycaw==20251023
 pycparser==2.22
 pydantic==2.11.5
+pydantic-settings==2.14.1
 pydantic_core==2.33.2
 pydeck==0.9.1
 pyee==13.0.0

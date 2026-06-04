@@ -8,6 +8,14 @@
       "reason": "pre-guard historical handoff emitted without task_id on 2026-05-17; append-only bridge history is not rewritten",
       "created_at_utc": "2026-05-17T11:40:00Z",
       "ticket_ref": "bridge-event-hygiene-2026-05-17"
+    },
+    {
+      "line_no": 25603,
+      "raw_line_sha256": "sha256:d2baf9c221e2b36ca7c773094cb0401d6bfa4894fb43f859fc2404edfa8498d1",
+      "error": "line 25603: <event>: Value error, wake_request requires to",
+      "reason": "pre-guard historical wake_request emitted without to on 2026-06-04; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-04T14:47:00Z",
+      "ticket_ref": "bridge-wake-request-to-guard-hygiene-20260604"
     }
   ]
 }

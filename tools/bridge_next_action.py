@@ -82,6 +82,7 @@ ANSWER_STATUS_FRAGMENTS = (
     "validated",
     "verified",
 )
+DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 
 
 class BridgeNextActionError(ValueError):
@@ -110,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Ignore unanswered incoming requests older than this many hours "
             "when choosing the next action."
+        ),
+    )
+    parser.add_argument(
+        "--stale-report-max-age-hours",
+        type=float,
+        default=DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS,
+        help=(
+            "Keep stale incoming task IDs in the normal stale report for this "
+            "many hours; older stale requests are counted as archived "
+            "historical noise instead of current follow-up."
         ),
     )
     parser.add_argument(
@@ -144,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             claims=claims,
             now_utc=now_utc,
             open_request_max_age_hours=args.open_request_max_age_hours,
+            stale_report_max_age_hours=args.stale_report_max_age_hours,
         )
     except (BridgeNextActionError, WorkQueueError) as exc:
         if isinstance(exc, BridgeNextActionError):
@@ -224,6 +236,9 @@ def recommend_next_action(
     claims: Sequence[Claim],
     now_utc: datetime | None = None,
     open_request_max_age_hours: float | None = DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
+    stale_report_max_age_hours: float | None = (
+        DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS
+    ),
 ) -> dict[str, Any]:
     """Return a deterministic next-action recommendation for ``agent``."""
     if not AGENT_ID_PATTERN.fullmatch(agent):
@@ -248,6 +263,20 @@ def recommend_next_action(
                 "errors": ["open_request_max_age_hours must be positive"],
             }
         )
+    if (
+        stale_report_max_age_hours is not None
+        and (
+            not math.isfinite(stale_report_max_age_hours)
+            or stale_report_max_age_hours <= 0
+        )
+    ):
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": ["stale_report_max_age_hours must be positive"],
+            }
+        )
 
     own_claims = [claim for claim in claims if claim.agent == agent]
     foreign_write_claims = [
@@ -259,6 +288,13 @@ def recommend_next_action(
         all_open_requests,
         now_utc=effective_now,
         max_age_hours=open_request_max_age_hours,
+    )
+    reported_stale_open_requests, archived_stale_open_requests = (
+        _split_reported_and_archived_stale_requests(
+            stale_open_requests,
+            now_utc=effective_now,
+            max_age_hours=stale_report_max_age_hours,
+        )
     )
 
     if own_claims:
@@ -272,7 +308,8 @@ def recommend_next_action(
             events=events,
             claims=claims,
             open_requests=open_requests,
-            stale_open_requests=stale_open_requests,
+            stale_open_requests=reported_stale_open_requests,
+            archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
         )
     if open_requests:
@@ -289,7 +326,8 @@ def recommend_next_action(
             events=events,
             claims=claims,
             open_requests=open_requests,
-            stale_open_requests=stale_open_requests,
+            stale_open_requests=reported_stale_open_requests,
+            archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             request=request,
         )
@@ -305,7 +343,8 @@ def recommend_next_action(
             events=events,
             claims=claims,
             open_requests=open_requests,
-            stale_open_requests=stale_open_requests,
+            stale_open_requests=reported_stale_open_requests,
+            archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
         )
     return _report(
@@ -317,7 +356,8 @@ def recommend_next_action(
         events=events,
         claims=claims,
         open_requests=open_requests,
-        stale_open_requests=stale_open_requests,
+        stale_open_requests=reported_stale_open_requests,
+        archived_stale_open_requests=archived_stale_open_requests,
         foreign_write_claims=foreign_write_claims,
     )
 
@@ -379,6 +419,26 @@ def _split_fresh_and_stale_requests(
         else:
             fresh.append(request)
     return fresh, stale
+
+
+def _split_reported_and_archived_stale_requests(
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
+    max_age_hours: float | None,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    if max_age_hours is None:
+        return list(requests), []
+    cutoff = now_utc.astimezone(timezone.utc) - timedelta(hours=max_age_hours)
+    reported: list[Mapping[str, Any]] = []
+    archived: list[Mapping[str, Any]] = []
+    for request in requests:
+        request_ts = _parse_utc(_event_ts(request))
+        if request_ts is not None and request_ts < cutoff:
+            archived.append(request)
+        else:
+            reported.append(request)
+    return reported, archived
 
 
 def _idle_protocol_progressed(
@@ -573,6 +633,18 @@ def _message(event: Mapping[str, Any], *, limit: int = 220) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _unique_task_ids(events: Sequence[Mapping[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    task_ids: list[str] = []
+    for event in events:
+        task_id = _task_id(event)
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        task_ids.append(task_id)
+    return task_ids
+
+
 def _report(
     *,
     agent: str,
@@ -584,9 +656,12 @@ def _report(
     claims: Sequence[Claim],
     open_requests: Sequence[Mapping[str, Any]],
     stale_open_requests: Sequence[Mapping[str, Any]],
+    archived_stale_open_requests: Sequence[Mapping[str, Any]],
     foreign_write_claims: Sequence[Claim],
     request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    stale_task_ids = _unique_task_ids(stale_open_requests)
+    archived_stale_task_ids = _unique_task_ids(archived_stale_open_requests)
     payload: dict[str, Any] = {
         "ok": True,
         "decision": "bridge_next_action",
@@ -597,7 +672,7 @@ def _report(
         "summary": summary,
         "active_claim_count": len(claims),
         "open_incoming_count": len(open_requests),
-        "stale_incoming_count": len(stale_open_requests),
+        "stale_incoming_count": len(stale_task_ids),
         "foreign_write_claim_count": len(foreign_write_claims),
     }
     agent_profile = _latest_agent_metadata(agent=agent, events=events)
@@ -611,9 +686,14 @@ def _report(
     if claim_snapshot["own"] or claim_snapshot["foreign_write"]:
         payload["claim_snapshot"] = claim_snapshot
     if stale_open_requests:
-        payload["stale_incoming_task_ids"] = [
-            _task_id(request) for request in stale_open_requests
-        ]
+        payload["stale_incoming_task_ids"] = stale_task_ids
+        payload["stale_incoming_event_count"] = len(stale_open_requests)
+    if archived_stale_open_requests:
+        payload["archived_stale_incoming_count"] = len(archived_stale_task_ids)
+        payload["archived_stale_incoming_task_ids"] = archived_stale_task_ids
+        payload["archived_stale_incoming_event_count"] = len(
+            archived_stale_open_requests
+        )
     if request is not None:
         incoming = {
             "agent": _event_agent(request),
@@ -666,6 +746,15 @@ def _print_human(report: Mapping[str, Any]) -> None:
         )
         if task_ids:
             print(f"stale_incoming_task_ids: {task_ids}")
+    archived_count = int(report.get("archived_stale_incoming_count", 0) or 0)
+    if archived_count:
+        print(f"archived_stale_incoming_count: {archived_count}")
+        task_ids = ", ".join(
+            str(item)
+            for item in report.get("archived_stale_incoming_task_ids", [])
+        )
+        if task_ids:
+            print(f"archived_stale_incoming_task_ids: {task_ids}")
     print(f"summary: {report.get('summary', '')}")
 
 

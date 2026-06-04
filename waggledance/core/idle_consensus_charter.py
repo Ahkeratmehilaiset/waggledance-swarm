@@ -25,6 +25,9 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHARTER_PATH = ROOT / "docs" / "architecture" / "IDLE_AUTONOMY_CHARTER.md"
 DEFAULT_DAILY_QUOTA = 5
+_PRIVACY_CANARY_MARKERS = frozenset(
+    ("PRIVATE" + "_MARKER", "_DO" + "_NOT" + "_LEAK")
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,19 @@ class GateDecision:
     code_pattern_hits: tuple[str, ...] = field(default_factory=tuple)
     unmatched_paths: tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class _DiffFileSection:
+    """One file section in a unified diff."""
+
+    source_path: str | None
+    target_path: str | None
+    text: str
+
+    @property
+    def known_paths(self) -> tuple[str, ...]:
+        return tuple(path for path in (self.source_path, self.target_path) if path)
 
 
 def load_charter(path: Path | None = None) -> IdleAutonomyCharter:
@@ -128,6 +144,13 @@ def evaluate_diff_content(
     hits: list[str] = []
     for pattern in charter.code_pattern_denylist:
         markers = _pattern_markers(pattern)
+        if _is_privacy_canary_pattern(markers):
+            privacy_markers = tuple(
+                marker for marker in markers if marker in _PRIVACY_CANARY_MARKERS
+            )
+            if _privacy_canary_hits_non_test_diff(privacy_markers, diff_text):
+                hits.append(pattern)
+            continue
         if any(_marker_matches_diff(marker, diff_text) for marker in markers):
             hits.append(pattern)
     if hits:
@@ -223,6 +246,107 @@ def _marker_matches_diff(marker: str, diff_text: str) -> bool:
         rf"(?![A-Za-z0-9_])"
     )
     return re.search(pattern, diff_text) is not None
+
+
+def _privacy_canary_hits_non_test_diff(
+    markers: Sequence[str],
+    diff_text: str,
+) -> bool:
+    sections = _diff_file_sections(diff_text)
+    for section in sections:
+        if not any(_marker_matches_diff(marker, section.text) for marker in markers):
+            continue
+        if section.known_paths and all(
+            _is_tests_path(path) for path in section.known_paths
+        ):
+            continue
+        return True
+    return False
+
+
+def _diff_file_sections(diff_text: str) -> tuple[_DiffFileSection, ...]:
+    sections: list[_DiffFileSection] = []
+    current_source_path: str | None = None
+    current_target_path: str | None = None
+    current_lines: list[str] = []
+    saw_git_header = False
+
+    for line in diff_text.splitlines(keepends=True):
+        parsed_paths = _parse_git_diff_paths(line)
+        if parsed_paths is not None:
+            if saw_git_header:
+                sections.append(
+                    _DiffFileSection(
+                        current_source_path,
+                        current_target_path,
+                        "".join(current_lines),
+                    )
+                )
+            elif current_lines:
+                sections.append(_DiffFileSection(None, None, "".join(current_lines)))
+            saw_git_header = True
+            current_source_path, current_target_path = parsed_paths
+            current_lines = [line]
+            continue
+
+        if saw_git_header and line.startswith("--- "):
+            source_path = _parse_unified_source_path(line)
+            if source_path is not None:
+                current_source_path = source_path
+        if saw_git_header and line.startswith("+++ "):
+            target_path = _parse_unified_target_path(line)
+            if target_path is not None:
+                current_target_path = target_path
+        current_lines.append(line)
+
+    if saw_git_header:
+        sections.append(
+            _DiffFileSection(
+                current_source_path,
+                current_target_path,
+                "".join(current_lines),
+            )
+        )
+    elif current_lines:
+        sections.append(_DiffFileSection(None, None, "".join(current_lines)))
+    return tuple(sections)
+
+
+def _parse_git_diff_paths(line: str) -> tuple[str, str] | None:
+    match = re.match(r"^diff --git a/(.+?) b/(.+?)\s*$", line)
+    if not match:
+        return None
+    return (
+        _normalize_changed_path(match.group(1)),
+        _normalize_changed_path(match.group(2)),
+    )
+
+
+def _parse_unified_source_path(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped == "--- /dev/null":
+        return None
+    if stripped.startswith("--- a/"):
+        return _normalize_changed_path(stripped[6:])
+    return None
+
+
+def _parse_unified_target_path(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped == "+++ /dev/null":
+        return None
+    if stripped.startswith("+++ b/"):
+        return _normalize_changed_path(stripped[6:])
+    return None
+
+
+def _is_privacy_canary_pattern(markers: Sequence[str]) -> bool:
+    return any(marker in _PRIVACY_CANARY_MARKERS for marker in markers)
+
+
+def _is_tests_path(path: str) -> bool:
+    normalized = _normalize_changed_path(path).casefold()
+    return normalized == "tests" or normalized.startswith("tests/")
 
 
 def _normalize_changed_path(path: str) -> str:

@@ -38,9 +38,71 @@ from waggledance.core.magma.schema_validation import redacted_schema_errors  # n
 
 
 CASE_ID_RE = re.compile(r"^case:adv:(?P<slug>[a-z0-9_]{4,48}):(?P<seq>[0-9]{3})$")
+ASI_ID_RE = re.compile(r"^(?:asi)?(?P<num>[1-9]|0[1-9]|10)$", re.IGNORECASE)
 CASE_VERSION = "magma.synthetic_adversarial_case.v0"
 EXPECTATION_VERSION = "magma.synthetic_adversarial_expectation.v0"
 DEFAULT_LIMIT = 6
+
+ASI_DEFECT_TYPE_MAP: dict[str, tuple[str, ...]] = {
+    "asi01": (
+        "charter_violation",
+        "policy_bypass",
+        "risk_escalation",
+        "spec-gaming",
+        "subtle_drift",
+    ),
+    "asi02": (
+        "tool_argument_abuse",
+        "path_escape",
+        "payload_leak",
+        "fail-open",
+    ),
+    "asi03": (
+        "privilege_leak",
+        "governance_bypass",
+        "payload_leak",
+    ),
+    "asi04": (
+        "evidence_spoofing",
+        "governance_bypass",
+        "spec-gaming",
+    ),
+    "asi05": (
+        "path_escape",
+        "tool_argument_abuse",
+        "fail-open",
+    ),
+    "asi06": (
+        "subtle_drift",
+        "regression-process",
+        "evidence_spoofing",
+        "correlated_review_trap",
+    ),
+    "asi07": (
+        "correlated_review_trap",
+        "governance_bypass",
+        "hallucinated-success",
+    ),
+    "asi08": (
+        "fail-open",
+        "regression-process",
+        "risk_escalation",
+        "tool_argument_abuse",
+    ),
+    "asi09": (
+        "hallucinated-success",
+        "evidence_spoofing",
+        "correlated_review_trap",
+        "governance_bypass",
+    ),
+    "asi10": (
+        "governance_bypass",
+        "privilege_leak",
+        "policy_bypass",
+        "risk_escalation",
+        "spec-gaming",
+    ),
+}
 
 
 PROFILE_BY_DEFECT_TYPE: dict[str, dict[str, Any]] = {
@@ -248,6 +310,17 @@ def build_parser() -> argparse.ArgumentParser:
             "selects the lowest-count required defect types."
         ),
     )
+    parser.add_argument(
+        "--asi",
+        action="append",
+        type=_parse_asi_id,
+        default=None,
+        help=(
+            "Restrict generation to one or more OWASP Agentic ASI ids "
+            "(for example ASI04 or 04). This only tags advisory candidates; "
+            "ASI labels are not promotion gates."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -259,6 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         expectations_path=args.expectations,
         limit=args.limit,
         defect_types=args.defect_type,
+        asi_ids=args.asi,
     )
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -290,6 +364,7 @@ def build_candidate_report(
     expectations_path: Path = DEFAULT_EXPECTATIONS,
     limit: int = DEFAULT_LIMIT,
     defect_types: Sequence[str] | None = None,
+    asi_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     validation = validate_corpus(corpus_path, expectations_path)
@@ -303,10 +378,22 @@ def build_candidate_report(
 
     metrics = _source_metrics(cases, expectations)
     requested_defects = _dedupe_defect_types(defect_types or [])
+    requested_asi_ids = _dedupe_asi_ids(asi_ids or [])
     unknown_requested = sorted(set(requested_defects) - set(REQUIRED_DEFECT_TYPES))
     if unknown_requested:
         errors.append("selection: unknown defect_type: " + ", ".join(unknown_requested))
-    selected_defects = _select_defect_types(metrics["defect_type_counts"], limit, defect_types)
+    unknown_asi_ids = sorted(
+        asi_id for asi_id in requested_asi_ids if asi_id not in ASI_DEFECT_TYPE_MAP
+    )
+    if unknown_asi_ids:
+        errors.append("selection: unknown ASI id: " + ", ".join(unknown_asi_ids))
+    asi_defect_type_candidates = _defect_types_for_asi(requested_asi_ids)
+    selected_defects = _select_defect_types(
+        metrics["defect_type_counts"],
+        limit,
+        defect_types,
+        requested_asi_ids,
+    )
     missing_profiles = sorted(
         defect_type for defect_type in selected_defects if defect_type not in PROFILE_BY_DEFECT_TYPE
     )
@@ -326,10 +413,12 @@ def build_candidate_report(
     expectation_validator = _validator(EXPECTATION_SCHEMA)
     candidates: list[dict[str, Any]] = []
     for defect_type in selected_defects:
+        candidate_asi_ids = _asi_ids_for_defect(defect_type, requested_asi_ids)
         candidate = _build_candidate(
             defect_type=defect_type,
             sequence=next_sequences[_slug_for_defect(defect_type)],
             current_count=metrics["defect_type_counts"].get(defect_type, 0),
+            asi_ids=candidate_asi_ids,
         )
         next_sequences[_slug_for_defect(defect_type)] += 1
         validation_errors = _candidate_schema_errors(
@@ -349,14 +438,16 @@ def build_candidate_report(
     return {
         "ok": not errors,
         "source": {
-            "corpus": str(corpus_path),
-            "expectations": str(expectations_path),
+            "corpus": "<redacted>",
+            "expectations": "<redacted>",
             "source_validation_ok": validation["ok"],
         },
         "candidate_count": len(candidates),
         "selection": {
             "limit": limit,
             "requested_defect_types": requested_defects,
+            "requested_asi_ids": requested_asi_ids,
+            "asi_defect_type_candidates": asi_defect_type_candidates,
             "selected_defect_types": selected_defects,
         },
         "metrics": metrics,
@@ -365,12 +456,20 @@ def build_candidate_report(
     }
 
 
-def _build_candidate(*, defect_type: str, sequence: int, current_count: int) -> dict[str, Any]:
+def _build_candidate(
+    *,
+    defect_type: str,
+    sequence: int,
+    current_count: int,
+    asi_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
     profile = PROFILE_BY_DEFECT_TYPE[defect_type]
     slug = _slug_for_defect(defect_type)
     case_id = f"case:adv:{slug}:{sequence:03d}"
-    canary = f"canary_candidate_{slug}_{sequence:03d}_DO_NOT_LEAK"
-    tags = _dedupe_tags([defect_type.replace("_", "-"), *profile["tags"], "candidate"])
+    asi_tags = list(asi_ids or [])
+    tags = _dedupe_tags(
+        [defect_type.replace("_", "-"), *profile["tags"], *asi_tags, "candidate"]
+    )
     case = {
         "case_version": CASE_VERSION,
         "case_id": case_id,
@@ -378,7 +477,7 @@ def _build_candidate(*, defect_type: str, sequence: int, current_count: int) -> 
         "intent": profile["intent"],
         "risk_class": profile["risk_class"],
         "peer_review_trap_marker": profile["trap"],
-        "privacy_canary": canary,
+        "privacy_canary": None,
         "tags": tags,
     }
     expectation = {
@@ -390,11 +489,15 @@ def _build_candidate(*, defect_type: str, sequence: int, current_count: int) -> 
         "should_claude_catch": True,
         "should_codex_catch": True,
     }
+    reason_parts = [
+        f"defect_type_count={current_count}; next_sequence={sequence:03d}; "
+        "selected by lowest-count required defect type"
+    ]
+    if asi_tags:
+        reason_parts.append("asi_targets=" + ",".join(asi_tags))
     return {
-        "selection_reason": (
-            f"defect_type_count={current_count}; next_sequence={sequence:03d}; "
-            "selected by lowest-count required defect type"
-        ),
+        "selection_reason": "; ".join(reason_parts),
+        "asi_targets": asi_tags,
         "case": case,
         "expectation": expectation,
     }
@@ -459,9 +562,17 @@ def _select_defect_types(
     defect_counts: dict[str, int],
     limit: int,
     requested: Sequence[str] | None,
+    asi_ids: Sequence[str] | None,
 ) -> list[str]:
-    if requested:
-        return _dedupe_defect_types(requested)[:limit]
+    explicit = _dedupe_defect_types(requested or [])
+    if asi_ids:
+        ranked_asi_defects = sorted(
+            _defect_types_for_asi(asi_ids),
+            key=lambda defect_type: (defect_counts.get(defect_type, 0), defect_type),
+        )
+        return _dedupe_defect_types([*explicit, *ranked_asi_defects])[:limit]
+    if explicit:
+        return explicit[:limit]
     ranked = sorted(
         sorted(REQUIRED_DEFECT_TYPES),
         key=lambda defect_type: (defect_counts.get(defect_type, 0), defect_type),
@@ -511,6 +622,34 @@ def _dedupe_defect_types(defect_types: Sequence[str]) -> list[str]:
         if defect_type not in seen:
             ordered.append(defect_type)
             seen.add(defect_type)
+    return ordered
+
+
+def _defect_types_for_asi(asi_ids: Sequence[str]) -> list[str]:
+    result: list[str] = []
+    for asi_id in asi_ids:
+        result.extend(ASI_DEFECT_TYPE_MAP.get(asi_id, ()))
+    return _dedupe_defect_types(result)
+
+
+def _asi_ids_for_defect(defect_type: str, asi_ids: Sequence[str]) -> list[str]:
+    return [
+        asi_id
+        for asi_id in asi_ids
+        if defect_type in ASI_DEFECT_TYPE_MAP.get(asi_id, ())
+    ]
+
+
+def _dedupe_asi_ids(asi_ids: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered = []
+    for raw in asi_ids:
+        normalized = _normalize_asi_id(raw)
+        if normalized is None:
+            normalized = str(raw).lower()
+        if normalized not in seen:
+            ordered.append(normalized)
+            seen.add(normalized)
     return ordered
 
 
@@ -576,6 +715,25 @@ def _positive_int(raw: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError("must be >= 1")
     return value
+
+
+def _parse_asi_id(raw: str) -> str:
+    normalized = _normalize_asi_id(raw)
+    if normalized is None:
+        raise argparse.ArgumentTypeError("must be ASI01..ASI10")
+    return normalized
+
+
+def _normalize_asi_id(raw: str) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    match = ASI_ID_RE.match(raw.strip())
+    if match is None:
+        return None
+    number = int(match.group("num"))
+    if number < 1 or number > 10:
+        return None
+    return f"asi{number:02d}"
 
 
 if __name__ == "__main__":

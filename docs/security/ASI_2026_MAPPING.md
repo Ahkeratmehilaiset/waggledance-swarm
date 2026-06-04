@@ -129,6 +129,9 @@ implementation slices:
 - Keep the validator authoritative for existing defect-type coverage.
 - Do not make ASI labels promotion gates until the labels are represented in
   schema, fixture, and test updates in a separate PR.
+- Use `tools/generate_magma_adversarial_candidates.py --asi <ASI-ID>` only as
+  an advisory case-discovery helper; it does not mutate the strict corpus and
+  does not make ASI labels runtime authority.
 - When adding cases, prefer preserving the existing 15 defect types until a
   real need for a new defect type is proven.
 - Preserve the held-out split and strict critical floors introduced before
@@ -140,7 +143,8 @@ WD already covers the shape of all ten OWASP ASI 2026 categories, with strong
 coverage for goal hijack, tool misuse, privilege abuse, memory/context
 poisoning, and human-agent trust exploitation. The former weak spots now have
 first explicit strict-v0 seeds, but broader supply-chain, inter-agent,
-cascade, and rogue-agent variants remain future work. No broader ASI-aware
-runtime reporting or promotion-gate behavior should be attempted until those
-labels are represented in schema, fixture, and test updates in a separate
+cascade, and rogue-agent variants remain future work. The offline advisory
+generator can now target ASI IDs for candidate discovery, but broader ASI-aware
+runtime reporting or promotion-gate behavior should not be attempted until
+those labels are represented in schema, fixture, and test updates in a separate
 reviewed PR.

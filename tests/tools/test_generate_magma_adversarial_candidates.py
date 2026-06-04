@@ -7,6 +7,7 @@ import sys
 
 import jsonschema
 from tools.generate_magma_adversarial_candidates import (
+    ASI_DEFECT_TYPE_MAP,
     PROFILE_BY_DEFECT_TYPE,
     build_candidate_report,
 )
@@ -45,6 +46,8 @@ def test_default_report_produces_schema_valid_non_colliding_candidates() -> None
     assert report["ok"] is True
     assert report["candidate_count"] == 6
     assert report["source"]["source_validation_ok"] is True
+    assert report["source"]["corpus"] == "<redacted>"
+    assert report["source"]["expectations"] == "<redacted>"
     assert report["metrics"]["diversity"]["required_defect_type_coverage_ratio"] == 1.0
 
     generated_ids: set[str] = set()
@@ -59,7 +62,7 @@ def test_default_report_produces_schema_valid_non_colliding_candidates() -> None
         assert case["case_id"] not in generated_ids
         generated_ids.add(case["case_id"])
         assert case["defect_type"] in REQUIRED_DEFECT_TYPES
-        assert case["privacy_canary"] not in case["intent"]
+        assert case["privacy_canary"] is None
 
         case_validator.validate(case)
         expectation_validator.validate(expectation)
@@ -67,6 +70,12 @@ def test_default_report_produces_schema_valid_non_colliding_candidates() -> None
 
 def test_generation_profiles_cover_required_defect_types() -> None:
     assert set(PROFILE_BY_DEFECT_TYPE) == set(REQUIRED_DEFECT_TYPES)
+
+
+def test_asi_map_uses_known_defect_types() -> None:
+    assert set(ASI_DEFECT_TYPE_MAP) == {f"asi{number:02d}" for number in range(1, 11)}
+    for defect_types in ASI_DEFECT_TYPE_MAP.values():
+        assert set(defect_types) <= set(REQUIRED_DEFECT_TYPES)
 
 
 def test_default_selection_prioritizes_lowest_defect_counts() -> None:
@@ -90,6 +99,27 @@ def test_requested_defect_type_is_respected() -> None:
     ]
 
 
+def test_requested_asi_id_selects_mapped_lowest_count_defects() -> None:
+    report = build_candidate_report(limit=2, asi_ids=["ASI04"])
+    counts = report["metrics"]["defect_type_counts"]
+    expected = sorted(
+        ASI_DEFECT_TYPE_MAP["asi04"],
+        key=lambda item: (counts[item], item),
+    )[:2]
+
+    assert report["ok"] is True
+    assert report["selection"]["requested_asi_ids"] == ["asi04"]
+    assert report["selection"]["asi_defect_type_candidates"] == list(
+        ASI_DEFECT_TYPE_MAP["asi04"]
+    )
+    assert report["selection"]["selected_defect_types"] == expected
+    for candidate in report["candidates"]:
+        assert candidate["case"]["defect_type"] in ASI_DEFECT_TYPE_MAP["asi04"]
+        assert candidate["asi_targets"] == ["asi04"]
+        assert "asi04" in candidate["case"]["tags"]
+        assert "asi_targets=asi04" in candidate["selection_reason"]
+
+
 def test_cli_json_output_is_machine_readable() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--limit", "2", "--json"],
@@ -104,3 +134,26 @@ def test_cli_json_output_is_machine_readable() -> None:
     assert report["ok"] is True
     assert report["candidate_count"] == 2
     assert len(report["candidates"]) == 2
+    assert str(ROOT) not in result.stdout
+    assert "_DO_NOT_LEAK" not in result.stdout
+
+
+def test_cli_asi_json_output_is_machine_readable() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--asi", "05", "--limit", "2", "--json"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    assert report["selection"]["requested_asi_ids"] == ["asi05"]
+    assert set(report["selection"]["selected_defect_types"]) <= set(
+        ASI_DEFECT_TYPE_MAP["asi05"]
+    )
+    assert all("asi05" in candidate["case"]["tags"] for candidate in report["candidates"])
+    assert str(ROOT) not in result.stdout
+    assert "_DO_NOT_LEAK" not in result.stdout

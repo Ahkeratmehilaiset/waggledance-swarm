@@ -188,7 +188,7 @@ playwright==1.58.0
 plotly==6.3.0
 pluggy==1.6.0
 pooch==1.9.0
-posthog==5.4.0
+posthog==7.17.0
 primp==1.0.0
 proglog==0.1.12
 prometheus_client==0.24.1

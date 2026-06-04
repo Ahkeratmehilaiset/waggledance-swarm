@@ -120,6 +120,39 @@ def test_requested_asi_id_selects_mapped_lowest_count_defects() -> None:
         assert "asi_targets=asi04" in candidate["selection_reason"]
 
 
+def test_requested_asi_id_rejects_explicit_defect_outside_mapping() -> None:
+    report = build_candidate_report(
+        limit=1,
+        asi_ids=["ASI04"],
+        defect_types=["path_escape"],
+    )
+
+    assert report["ok"] is False
+    assert report["candidate_count"] == 0
+    assert report["selection"]["requested_asi_ids"] == ["asi04"]
+    assert report["selection"]["requested_defect_types"] == ["path_escape"]
+    assert report["selection"]["selected_defect_types"] == []
+    assert report["errors"] == [
+        "selection: defect_type outside requested ASI mapping: path_escape"
+    ]
+
+
+def test_requested_asi_id_accepts_explicit_defect_inside_mapping() -> None:
+    report = build_candidate_report(
+        limit=1,
+        asi_ids=["ASI04"],
+        defect_types=["governance_bypass"],
+    )
+
+    assert report["ok"] is True
+    assert report["candidate_count"] == 1
+    assert report["selection"]["selected_defect_types"] == ["governance_bypass"]
+    candidate = report["candidates"][0]
+    assert candidate["case"]["defect_type"] == "governance_bypass"
+    assert candidate["asi_targets"] == ["asi04"]
+    assert "asi04" in candidate["case"]["tags"]
+
+
 def test_cli_json_output_is_machine_readable() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--limit", "2", "--json"],
@@ -157,3 +190,32 @@ def test_cli_asi_json_output_is_machine_readable() -> None:
     assert all("asi05" in candidate["case"]["tags"] for candidate in report["candidates"])
     assert str(ROOT) not in result.stdout
     assert "_DO_NOT_LEAK" not in result.stdout
+
+
+def test_cli_rejects_asi_defect_type_outside_mapping() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--asi",
+            "ASI04",
+            "--defect-type",
+            "path_escape",
+            "--limit",
+            "1",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert report["candidate_count"] == 0
+    assert report["selection"]["selected_defect_types"] == []
+    assert report["errors"] == [
+        "selection: defect_type outside requested ASI mapping: path_escape"
+    ]

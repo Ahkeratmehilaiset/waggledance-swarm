@@ -388,10 +388,22 @@ def build_candidate_report(
     if unknown_asi_ids:
         errors.append("selection: unknown ASI id: " + ", ".join(unknown_asi_ids))
     asi_defect_type_candidates = _defect_types_for_asi(requested_asi_ids)
+    asi_defect_type_set = set(asi_defect_type_candidates)
+    if requested_asi_ids and requested_defects:
+        outside_asi_map = [
+            defect_type
+            for defect_type in requested_defects
+            if defect_type not in asi_defect_type_set
+        ]
+        if outside_asi_map:
+            errors.append(
+                "selection: defect_type outside requested ASI mapping: "
+                + ", ".join(outside_asi_map)
+            )
     selected_defects = _select_defect_types(
         metrics["defect_type_counts"],
         limit,
-        defect_types,
+        requested_defects,
         requested_asi_ids,
     )
     missing_profiles = sorted(
@@ -570,7 +582,14 @@ def _select_defect_types(
             _defect_types_for_asi(asi_ids),
             key=lambda defect_type: (defect_counts.get(defect_type, 0), defect_type),
         )
-        return _dedupe_defect_types([*explicit, *ranked_asi_defects])[:limit]
+        if explicit:
+            asi_defect_set = set(ranked_asi_defects)
+            return [
+                defect_type
+                for defect_type in explicit
+                if defect_type in asi_defect_set
+            ][:limit]
+        return ranked_asi_defects[:limit]
     if explicit:
         return explicit[:limit]
     ranked = sorted(

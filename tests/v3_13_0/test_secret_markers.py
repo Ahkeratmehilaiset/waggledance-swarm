@@ -31,7 +31,11 @@ def test_contains_secret_marker_allows_substrings_inside_words(value: str) -> No
         "relative/secrets.json",
         "credential:operator-session",
         "metadata with x-api-key marker",
+        "metadata with x_api_key marker",
         "contains api_key field",
+        "contains api-key field",
+        "query access-key=abc",
+        "source has private-key material",
         "private_key",
         "Bearer session",
     ],
@@ -48,9 +52,11 @@ def test_contains_secret_marker_rejects_bounded_markers(value: str) -> None:
         "private_keyed value",
     ],
 )
-def test_contains_secret_marker_substring_is_stricter(value: str) -> None:
+def test_contains_secret_marker_substring_allows_substrings_inside_words(
+    value: str,
+) -> None:
     assert contains_secret_marker(value) is False
-    assert contains_secret_marker_substring(value) is True
+    assert contains_secret_marker_substring(value) is False
 
 
 @pytest.mark.parametrize(

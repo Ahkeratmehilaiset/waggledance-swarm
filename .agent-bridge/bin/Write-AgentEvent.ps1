@@ -91,8 +91,9 @@ function Assert-BridgeAgentTargets {
     if ($targetList.Count -eq 0) {
         throw "to must be empty or comma-separated agents"
     }
+    $allowedNonAgentTargets = @('github/main')
     foreach ($target in $targetList) {
-        if ($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+        if (($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') -and ($allowedNonAgentTargets -cnotcontains $target)) {
             throw "to contains invalid bridge agent id: $target"
         }
     }
@@ -232,16 +233,25 @@ function Assert-GrokFreshnessPayload {
         throw "grok freshness main sha mismatch"
     }
     $worktreeHead = Get-BridgeObjectField -Object $freshness -Name 'worktree_head'
-    if ($worktreeHead -cne $localOriginMainSha) {
-        throw "grok freshness worktree sha mismatch"
-    }
+    $expectedPrReviewWorktreeHeads = @()
     foreach ($fieldName in $grokOptionalFreshnessShaFields) {
         if (Test-BridgeObjectHasField -Object $freshness -Name $fieldName) {
             $value = Get-BridgeObjectField -Object $freshness -Name $fieldName
             if ($null -ne $value -and -not (Test-FullGitSha -Value $value)) {
                 throw "grok freshness $fieldName must be lowercase 40-hex sha"
             }
+            if ($null -ne $value) {
+                $expectedPrReviewWorktreeHeads += $value
+            }
         }
+    }
+    $expectedWorktreeHeads = if ($expectedPrReviewWorktreeHeads.Count -gt 0) {
+        $expectedPrReviewWorktreeHeads
+    } else {
+        @($localOriginMainSha)
+    }
+    if ($expectedWorktreeHeads -cnotcontains $worktreeHead) {
+        throw "grok freshness worktree sha mismatch"
     }
 }
 

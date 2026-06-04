@@ -316,7 +316,7 @@ def build_future_scale_route_depth_benchmark(
         ),
         "git": {
             "sha": _git_text("rev-parse", "HEAD"),
-            "branch": _git_text("branch", "--show-current"),
+            "branch": _safe_git_branch(),
         },
         "source": {
             "fixture_set_alias": "route_depth_static_trace_set_v1",
@@ -1575,6 +1575,19 @@ def _git_text(*args: str) -> str:
     if result.returncode != 0:
         return "unavailable"
     return result.stdout.strip() or "unavailable"
+
+
+def _safe_git_branch() -> str:
+    branch = _git_text("branch", "--show-current")
+    if branch == "unavailable":
+        return branch
+    errors = validate_scalar_safety(
+        {"git": {"branch": branch}},
+        allowed_metadata_path_values=ALLOWED_METADATA_PATH_VALUES,
+    )
+    if errors:
+        return "branch_ref_redacted"
+    return branch
 
 
 def _canonical_digest(value: Any) -> str:

@@ -53,7 +53,9 @@ KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
 FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
 GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
 GROK_REVIEW_STATUSES = frozenset({"grok_response"})
+ALLOWED_NON_AGENT_TARGETS = frozenset({"github/main"})
 GROK_FRESHNESS_EPOCH_UTC = "2026-05-31T19:24:00Z"
+GROK_PR_WORKTREE_STRICT_EPOCH_UTC = "2026-06-04T08:32:00Z"
 GROK_FRESHNESS_REQUIRED_SHA_FIELDS = (
     "remote_main_sha",
     "local_origin_main_sha",
@@ -132,7 +134,12 @@ class BridgeEvent(BaseModel):
         targets = [item.strip() for item in value.split(",") if item.strip()]
         if not targets:
             raise ValueError("to must be empty or comma-separated agents")
-        invalid = sorted(target for target in set(targets) if not _is_valid_agent_id(target))
+        invalid = sorted(
+            target
+            for target in set(targets)
+            if not _is_valid_agent_id(target)
+            and target not in ALLOWED_NON_AGENT_TARGETS
+        )
         if invalid:
             raise ValueError(f"to contains invalid bridge agent id: {invalid[0]}")
         return value
@@ -209,14 +216,27 @@ class BridgeEvent(BaseModel):
         if remote_main_sha != local_origin_main_sha:
             raise ValueError("grok freshness main sha mismatch")
         worktree_head = freshness["worktree_head"]
-        if worktree_head != local_origin_main_sha:
-            raise ValueError("grok freshness worktree sha mismatch")
+        pr_review_worktree_heads = []
         for field_name in GROK_FRESHNESS_OPTIONAL_SHA_FIELDS:
             value = freshness.get(field_name)
             if value is not None and not _is_full_git_sha(value):
                 raise ValueError(
                     f"grok freshness {field_name} must be lowercase 40-hex sha"
                 )
+            if value is not None:
+                pr_review_worktree_heads.append(value)
+        if pr_review_worktree_heads and _is_at_or_after_utc(
+            self.ts_utc,
+            GROK_PR_WORKTREE_STRICT_EPOCH_UTC,
+        ):
+            expected_worktree_heads = pr_review_worktree_heads
+        else:
+            expected_worktree_heads = [
+                local_origin_main_sha,
+                *pr_review_worktree_heads,
+            ]
+        if worktree_head not in expected_worktree_heads:
+            raise ValueError("grok freshness worktree sha mismatch")
 
 
 @dataclass(frozen=True)

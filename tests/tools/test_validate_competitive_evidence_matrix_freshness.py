@@ -87,6 +87,26 @@ def test_fresh_matrix_can_be_fresh_for_planning() -> None:
     assert report["historical_stale_allowed"] is False
 
 
+def test_age_equal_to_max_age_is_still_fresh() -> None:
+    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    text = _matrix(
+        snapshot_date="2026-05-21",
+        audit_date="2026-05-21",
+        metadata=(
+            "`snapshot_date=2026-05-21`; `freshness_audit_date=2026-05-21`; "
+            "`max_age_days=14`; `status=current`; "
+            "`fresh_for_planning=true`; `priority_rows=G,J,L`; "
+            "`historical_labels_until_refreshed=false`."
+        ),
+    )
+
+    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 4))
+
+    assert report["ok"] is True
+    assert report["snapshot_age_days"] == 14
+    assert report["fresh_for_planning"] is True
+
+
 def test_require_fresh_fails_historical_stale_matrix(capsys) -> None:
     mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
 
@@ -115,6 +135,30 @@ def test_metadata_fresh_for_planning_must_match_age() -> None:
 
     assert report["ok"] is False
     assert "fresh_for_planning_mismatch" in report["blockers"]
+
+
+def test_invalid_metadata_values_fail_closed() -> None:
+    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    text = _matrix(
+        snapshot_date="2026-05-06",
+        audit_date="2026-05-27",
+        metadata=(
+            "`snapshot_date=2026-05-06`; `freshness_audit_date=not-a-date`; "
+            "`max_age_days=nan`; `status=historical_stale`; "
+            "`fresh_for_planning=maybe`; `priority_rows=G,too-long`; "
+            "`historical_labels_until_refreshed=maybe`."
+        ),
+    )
+
+    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 4))
+
+    assert report["ok"] is False
+    assert "freshness_audit_date_invalid" in report["blockers"]
+    assert "max_age_days_invalid" in report["blockers"]
+    assert "fresh_for_planning_invalid" in report["blockers"]
+    assert "priority_rows_invalid" in report["blockers"]
+    assert "historical_labels_until_refreshed_invalid" in report["blockers"]
+    assert "stale_evidence_not_marked_historical" in report["blockers"]
 
 
 def test_priority_rows_must_point_to_evidence_bearing_axes() -> None:

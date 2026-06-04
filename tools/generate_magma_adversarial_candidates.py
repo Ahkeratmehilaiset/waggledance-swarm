@@ -389,6 +389,7 @@ def build_candidate_report(
         errors.append("selection: unknown ASI id: " + ", ".join(unknown_asi_ids))
     asi_defect_type_candidates = _defect_types_for_asi(requested_asi_ids)
     asi_defect_type_set = set(asi_defect_type_candidates)
+    outside_asi_map: list[str] = []
     if requested_asi_ids and requested_defects:
         outside_asi_map = [
             defect_type
@@ -400,11 +401,15 @@ def build_candidate_report(
                 "selection: defect_type outside requested ASI mapping: "
                 + ", ".join(outside_asi_map)
             )
-    selected_defects = _select_defect_types(
-        metrics["defect_type_counts"],
-        limit,
-        requested_defects,
-        requested_asi_ids,
+    selected_defects = (
+        []
+        if outside_asi_map
+        else _select_defect_types(
+            metrics["defect_type_counts"],
+            limit,
+            requested_defects,
+            requested_asi_ids,
+        )
     )
     missing_profiles = sorted(
         defect_type for defect_type in selected_defects if defect_type not in PROFILE_BY_DEFECT_TYPE

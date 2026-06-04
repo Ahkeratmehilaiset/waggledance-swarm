@@ -142,7 +142,7 @@ multiprocess==0.70.16
 mypy_extensions==1.1.0
 namex==0.1.0
 narwhals==2.1.2
-networkx==3.5
+networkx==3.6.1
 nltk==3.9.4
 numba==0.64.0
 numpy==2.2.6

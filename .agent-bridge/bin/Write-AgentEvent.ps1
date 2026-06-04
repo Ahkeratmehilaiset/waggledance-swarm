@@ -149,6 +149,9 @@ if ($requiresTaskId -and [string]::IsNullOrWhiteSpace($TaskId)) {
     }
     throw "Bridge event $reason requires non-empty -TaskId before writing"
 }
+if (($Type -eq 'wake_request') -and [string]::IsNullOrWhiteSpace($To)) {
+    throw "Bridge event type=wake_request requires non-empty -To before writing"
+}
 
 $payload = $null
 try {

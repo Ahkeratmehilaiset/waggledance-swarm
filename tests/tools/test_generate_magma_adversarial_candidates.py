@@ -21,6 +21,7 @@ from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "generate_magma_adversarial_candidates.py"
+SENSITIVE_CANARY = "_DO" + "_NOT" + "_LEAK"
 
 
 def _load_corpus() -> dict:
@@ -206,7 +207,7 @@ def test_cli_json_output_is_machine_readable() -> None:
     assert report["candidate_count"] == 2
     assert len(report["candidates"]) == 2
     assert str(ROOT) not in result.stdout
-    assert "_DO_NOT_LEAK" not in result.stdout
+    assert SENSITIVE_CANARY not in result.stdout
 
 
 def test_cli_asi_json_output_is_machine_readable() -> None:
@@ -227,7 +228,7 @@ def test_cli_asi_json_output_is_machine_readable() -> None:
     )
     assert all("asi05" in candidate["case"]["tags"] for candidate in report["candidates"])
     assert str(ROOT) not in result.stdout
-    assert "_DO_NOT_LEAK" not in result.stdout
+    assert SENSITIVE_CANARY not in result.stdout
 
 
 def test_cli_rejects_asi_defect_type_outside_mapping() -> None:

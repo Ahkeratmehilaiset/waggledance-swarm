@@ -368,7 +368,7 @@ class TestApiOpsExtended:
                         },
                     ],
                     "provider_health": {
-                        "source": "alertmanager_adapter",
+                        "source": "C:/private/alertmanager-token",
                         "status": "nominal",
                         "configured": True,
                         "available": True,
@@ -402,6 +402,7 @@ class TestApiOpsExtended:
             "waggledance_autogrowth_errors_total"
         )
         assert alert_state["active"][0]["value"] == 3.0
+        assert feed_health["source"] == "alertmanager_adapter"
         assert feed_health["controls_present"] is False
         assert feed_health["runtime_authority_granted"] is False
         assert feed_health["external_writes_applied"] is False

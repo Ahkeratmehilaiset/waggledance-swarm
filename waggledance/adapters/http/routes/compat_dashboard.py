@@ -540,9 +540,7 @@ def _autogrowth_alert_feed_health(provider, snapshot=None) -> dict:  # noqa: ANN
             if isinstance(candidate, Mapping):
                 raw_health = dict(candidate)
 
-    health = _autogrowth_alert_feed_health_default(
-        str(raw_health.get("source") or "alertmanager_adapter")
-    )
+    health = _autogrowth_alert_feed_health_default("alertmanager_adapter")
     for key in (
         "configured",
         "available",

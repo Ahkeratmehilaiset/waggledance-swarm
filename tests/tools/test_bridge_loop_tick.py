@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.bridge_loop_tick import (
+    MERGE_DRIVER_COMMAND,
     WAKEUP_ACT_NOW,
     WAKEUP_IN_FLIGHT,
     WAKEUP_QUIET,
@@ -61,6 +62,43 @@ def _rco_gate_pass(task: str, *, pr: int, head: str, ts: str) -> dict:
     event = _rco_pass(task, pr=pr, head=head, ts=ts, frm="claude-rco-1")
     event["message"] = f"RCO_PASS exact head {head}"
     return event
+
+
+def _build_consensus(
+    task: str,
+    *,
+    head: str,
+    agent: str,
+    ts: str,
+) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "to": "claude-rco-1,operator",
+        "type": "decision",
+        "task_id": task,
+        "status": "build_consensus_pass",
+        "message": f"build consensus at exact head {head}",
+        "payload": {},
+    }
+
+
+def _three_identity_consensus(task: str, *, pr: int, head: str) -> list[dict]:
+    return [
+        _build_consensus(
+            task,
+            head=head,
+            agent="codex-lead-1",
+            ts="2026-05-22T13:29:00Z",
+        ),
+        _build_consensus(
+            task,
+            head=head,
+            agent="codex-tools-1",
+            ts="2026-05-22T13:30:00Z",
+        ),
+        _rco_gate_pass(task, pr=pr, head=head, ts="2026-05-22T13:31:00Z"),
+    ]
 
 
 def _done_merged(task: str, *, pr: int, ts: str) -> dict:
@@ -252,14 +290,21 @@ def test_merge_ready_when_green_clean_headmatch():
     events = [
         _rco_request("t1", ts="2026-05-22T13:00:00Z"),
         _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
-        _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
+        *_three_identity_consensus("t1", pr=900, head=HEAD),
     ]
     r = evaluate_merge_ready(
         _candidate(), events=events, agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr),
     )
     assert r["ready"] is True
-    assert r["merge_command"] == f"gh pr merge 900 --squash --match-head-commit={HEAD}"
+    assert r["merge_command"] == MERGE_DRIVER_COMMAND
+    assert r["merge_driver_command"] == MERGE_DRIVER_COMMAND
+    assert not r["merge_command"].startswith("gh pr merge")
+    assert r["merge_target"] == {
+        "pr": 900,
+        "head_sha": HEAD,
+        "canonical_task_id": "t1",
+    }
 
 
 def test_merge_ready_with_short_approved_head_prefix():
@@ -268,7 +313,7 @@ def test_merge_ready_with_short_approved_head_prefix():
     full = "862d34bd27c15b870242faf333f7961629137cb8"
     events = [
         _rco_pass("t1", pr=566, head=short, ts="2026-05-22T13:30:00Z"),
-        _rco_gate_pass("t1", pr=566, head=full, ts="2026-05-22T13:31:00Z"),
+        *_three_identity_consensus("t1", pr=566, head=full),
     ]
     r = evaluate_merge_ready(
         {"task_id": "t1", "pr": 566, "approved_head": short},
@@ -276,8 +321,25 @@ def test_merge_ready_with_short_approved_head_prefix():
         snapshot_fn=lambda pr: _green_snapshot(pr, head=full),
     )
     assert r["ready"] is True
-    # Merge command pins the FULL sha, not the short approved head.
-    assert r["merge_command"] == f"gh pr merge 566 --squash --match-head-commit={full}"
+    assert r["merge_command"] == MERGE_DRIVER_COMMAND
+    # The driver rechecks and pins the full snapshot sha from GitHub.
+    assert r["merge_target"]["head_sha"] == full
+
+
+def test_not_ready_without_full_bridge_consensus():
+    events = [
+        _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
+        _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
+    ]
+    r = evaluate_merge_ready(
+        _candidate(), events=events, agent="claude",
+        snapshot_fn=lambda pr: _green_snapshot(pr),
+    )
+    assert r["ready"] is False
+    assert "bridge_consensus_incomplete" in r["blockers"]
+    reasons = r["bridge_consensus_gate"]["reasons"]
+    assert any("build_lead" in reason for reason in reasons)
+    assert any("build_tools" in reason for reason in reasons)
 
 
 def test_not_ready_when_head_moved():
@@ -401,7 +463,7 @@ def test_loop_tick_merge_ready_short_wakeup(tmp_path):
     events = [
         _rco_request("t1", ts="2026-05-22T13:00:00Z"),
         _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
-        _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
+        *_three_identity_consensus("t1", pr=900, head=HEAD),
     ]
     report = build_loop_tick(
         agent="claude", events=events, claims=[], inbox_dir=tmp_path,

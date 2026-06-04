@@ -29,6 +29,11 @@ CLI:
 
     python tools/validate_phase18a_benchmark_bundle.py --bundle-dir <path>
 
+Optional freshness gate for current-planning use:
+
+    python tools/validate_phase18a_benchmark_bundle.py --bundle-dir <path> \
+        --max-age-days 14 --now 2026-06-04T00:00:00Z
+
 Exit code 0 only if all validations pass.
 """
 
@@ -39,6 +44,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -353,10 +359,87 @@ def _safe_bundle_path(
 
 
 # ---------------------------------------------------------------------------
+# Freshness helpers
+# ---------------------------------------------------------------------------
+
+def _parse_utc_datetime(
+    value: Any,
+    context: str,
+    errors: list[str],
+) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        errors.append(f"{context}: required UTC timestamp string missing")
+        return None
+    text = value
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        errors.append(f"{context}: invalid UTC timestamp {value!r}: {exc}")
+        return None
+    if parsed.tzinfo is None:
+        errors.append(f"{context}: timestamp must include UTC offset or Z")
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_bundle_freshness(
+    manifest: dict[str, Any],
+    max_age_days: int | None,
+    now_utc: datetime | None,
+    errors: list[str],
+) -> None:
+    if max_age_days is None:
+        return
+    if max_age_days <= 0:
+        errors.append("max_age_days must be positive")
+        return
+
+    generated_at = _parse_utc_datetime(
+        manifest.get("generated_at_utc"),
+        "manifest.generated_at_utc",
+        errors,
+    )
+    if generated_at is None:
+        return
+    if now_utc is None:
+        now = datetime.now(timezone.utc)
+    else:
+        if now_utc.tzinfo is None:
+            errors.append("now_utc must include UTC offset or Z")
+            return
+        now = now_utc.astimezone(timezone.utc)
+    if now < generated_at:
+        errors.append(
+            "manifest.generated_at_utc is in the future: "
+            f"generated_at_utc={generated_at.isoformat()} "
+            f"now={now.isoformat()}"
+        )
+        return
+
+    age_seconds = (now - generated_at).total_seconds()
+    max_age_seconds = max_age_days * 24 * 60 * 60
+    if age_seconds > max_age_seconds:
+        errors.append(
+            "manifest.generated_at_utc age exceeds max_age_days: "
+            f"generated_at_utc={generated_at.isoformat()} "
+            f"now={now.isoformat()} "
+            f"age_days={age_seconds / (24 * 60 * 60):.2f} "
+            f"max_age_days={max_age_days}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main validator
 # ---------------------------------------------------------------------------
 
-def validate_bundle(bundle_dir: Path) -> tuple[bool, list[str]]:
+def validate_bundle(
+    bundle_dir: Path,
+    *,
+    max_age_days: int | None = None,
+    now_utc: datetime | None = None,
+) -> tuple[bool, list[str]]:
     errors: list[str] = []
     bundle_dir = bundle_dir.resolve()
     if not bundle_dir.is_dir():
@@ -592,14 +675,50 @@ def validate_bundle(bundle_dir: Path) -> tuple[bool, list[str]]:
         errors.append(f"manifest.claim_count={manifest.get('claim_count')} "
                         f"!= claim_ledger length {claim_count_actual}")
 
+    _validate_bundle_freshness(manifest, max_age_days, now_utc, errors)
+
     return (len(errors) == 0), errors
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def _parse_cli_utc(value: str) -> datetime:
+    errors: list[str] = []
+    parsed = _parse_utc_datetime(value, "--now", errors)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(errors[0])
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-dir", type=Path, required=True)
+    parser.add_argument(
+        "--max-age-days",
+        type=_positive_int,
+        default=None,
+        help="Optional fail-closed freshness gate using manifest.generated_at_utc.",
+    )
+    parser.add_argument(
+        "--now",
+        type=_parse_cli_utc,
+        default=None,
+        help="UTC timestamp override for deterministic freshness checks.",
+    )
     args = parser.parse_args(argv)
-    ok, errors = validate_bundle(args.bundle_dir)
+    ok, errors = validate_bundle(
+        args.bundle_dir,
+        max_age_days=args.max_age_days,
+        now_utc=args.now,
+    )
     if ok:
         print(f"Phase 18A bundle validation: PASS  ({args.bundle_dir})")
         return 0

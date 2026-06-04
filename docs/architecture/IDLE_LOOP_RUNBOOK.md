@@ -206,24 +206,26 @@ Self-wakeup harnesses that are allowed to keep the peer active pass
 handoff.
 
 By default it chains the existing primitives (read-only; no `--apply`, never
-runs `gh pr merge`) and reports an ordered worklist:
+runs a merge command) and reports an ordered worklist:
 
 1. **Drain inbox** — `next_action` from `recommend_next_action`; if
    `answer_incoming`, handle the peer RCO request / handoff first.
 2. **Complete approved merges** — each entry in `merge_ready` with `ready:true`
    is a PR this agent rco_pass'd that is now CI-green + mergeable clean +
-   preflight-clear + head-matched. Complete it in the SAME tick via the existing
-   gated flow, then record the close so the next tick does not re-detect it:
+   preflight-clear + head-matched + full bridge consensus verified. Complete it
+   only through the fail-closed bridge merge-driver, which rechecks
+   `check_rco_pass_present`, `verify_bridge_consensus`, and
+   `check_bridge_changes_requested` against the canonical branch task id before
+   running `gh pr merge`. Do not run direct `gh pr merge` from a lead or peer
+   shell. The driver records the close so the next tick does not re-detect it:
    ```text
-   python tools/pr_status_snapshot.py <pr> --expected-base-sha <fresh-current-main-sha> --out snap.json
-   gh pr merge <pr> --squash --match-head-commit=<approved_head>   # Rule 9 peer-RCO
-   .\.agent-bridge\bin\Write-AgentEvent.ps1 -Agent <me> -Type done \
-       -TaskId <task> -Status merged -PayloadJson '{"pr":<pr>}'
+   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\Invoke-BridgeMergeDriver.ps1 -Apply -MaxMergesPerRun 1
    ```
    (Idle-consensus-protocol PRs instead go through
-   `idle_consensus_auto_merge.py --apply --expected-base-sha <fresh-current-main-sha>`,
-   which adds the consensus + MAGMA receipt + 5/day gates. `bridge_loop_tick`
-   covers the direct peer-RCO path.)
+   `idle_consensus_auto_merge.py --apply --require-bridge-consensus
+   --expected-base-sha <fresh-current-main-sha>`, which adds the consensus +
+   MAGMA receipt + 5/day gates. `bridge_loop_tick` is a read-only detector; it
+   does not authorize direct peer-RCO merges.)
 3. **Surface operator packs** — each `open_operator_packs` entry is a
    charter-gated decision needing a one-step operator sign-off
    (`docs/operator_inbox/<id>.yaml`, schema `OPERATOR_DECISION_PACK_V1.md`).

@@ -13,6 +13,7 @@ import hashlib
 import importlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,108 @@ def test_validator_accepts_valid_bundle(bundle: Path):
     ok, errors = validator.validate_bundle(bundle)
     assert ok, f"validator unexpectedly failed: {errors}"
     assert errors == []
+
+
+def test_validator_freshness_gate_is_opt_in_for_historical_committed_bundle():
+    validator = _load_validator()
+    committed = (
+        ROOT
+        / "docs"
+        / "runs"
+        / "phase18a_benchmark_externalization_2026_05_05"
+        / "export_bundle"
+    )
+    ok, errors = validator.validate_bundle(committed)
+    assert ok, f"default validation should remain historical-compatible: {errors}"
+
+    ok, errors = validator.validate_bundle(
+        committed,
+        max_age_days=14,
+        now_utc=datetime(2026, 6, 4, tzinfo=timezone.utc),
+    )
+    assert not ok
+    assert any("max_age_days=14" in e for e in errors)
+
+
+def test_validator_freshness_gate_accepts_exact_max_age_boundary(bundle: Path):
+    validator = _load_validator()
+    ok, errors = validator.validate_bundle(
+        bundle,
+        max_age_days=14,
+        now_utc=datetime(2026, 5, 19, 6, 30, tzinfo=timezone.utc),
+    )
+    assert ok, f"exact max-age boundary should pass: {errors}"
+
+
+def test_validator_freshness_gate_rejects_stale_bundle(bundle: Path):
+    validator = _load_validator()
+    ok, errors = validator.validate_bundle(
+        bundle,
+        max_age_days=14,
+        now_utc=datetime(2026, 6, 4, tzinfo=timezone.utc),
+    )
+    assert not ok
+    assert any(
+        "manifest.generated_at_utc age exceeds max_age_days" in e
+        for e in errors
+    )
+
+
+def test_validator_freshness_gate_rejects_naive_now(bundle: Path):
+    validator = _load_validator()
+    ok, errors = validator.validate_bundle(
+        bundle,
+        max_age_days=14,
+        now_utc=datetime(2026, 6, 4),
+    )
+    assert not ok
+    assert "now_utc must include UTC offset or Z" in errors
+
+
+def test_validator_freshness_gate_rejects_malformed_generated_at(bundle: Path):
+    validator = _load_validator()
+    manifest_path = bundle / "benchmark_bundle_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["generated_at_utc"] = "2026-05-05 06:30:00"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    _refresh_one_checksum(bundle, "benchmark_bundle_manifest.json")
+
+    ok, errors = validator.validate_bundle(
+        bundle,
+        max_age_days=14,
+        now_utc=datetime(2026, 6, 4, tzinfo=timezone.utc),
+    )
+    assert not ok
+    assert any(
+        "manifest.generated_at_utc" in e and "timestamp" in e
+        for e in errors
+    )
+
+
+def test_validator_cli_freshness_gate_rejects_stale_bundle(capsys):
+    validator = _load_validator()
+    committed = (
+        ROOT
+        / "docs"
+        / "runs"
+        / "phase18a_benchmark_externalization_2026_05_05"
+        / "export_bundle"
+    )
+    exit_code = validator.main([
+        "--bundle-dir",
+        str(committed),
+        "--max-age-days",
+        "14",
+        "--now",
+        "2026-06-04T00:00:00Z",
+    ])
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "Phase 18A bundle validation: FAIL" in out
+    assert "max_age_days=14" in out
 
 
 # ---------------------------------------------------------------------------

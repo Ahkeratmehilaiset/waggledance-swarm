@@ -11,8 +11,8 @@ By default this tool is read-only: it has no ``--apply`` and never runs
 ``gh pr merge``. It only REPORTS:
   * the next-action recommendation (drain peer RCO requests / handoffs to me),
   * my own rco_pass'd PRs that are now CI-green + mergeable + preflight-clear +
-    head-matched -- i.e. ready for me to complete the merge in this same tick
-    via the existing ``gh pr merge --squash --match-head-commit`` flow,
+    head-matched + full three-identity bridge-consensus verified -- i.e. ready
+    for the fail-closed bridge merge-driver to complete,
   * open operator decision packs (surface-only; never auto-resolved),
   * stale heartbeat-only peer sessions that need an explicit bridge activation,
   * a recommended ScheduleWakeup interval derived from bridge state.
@@ -24,7 +24,8 @@ does not resolve operator packs, merge PRs, or claim work.
 
 Merge-readiness here encodes the CLAUDE.md Rule 9 peer-RCO criteria (head-match
 + exact-head ``claude-rco-1`` RCO_PASS + CI green + mergeable clean + no
-standing peer block), which is the flow used for direct peer-RCO PRs.
+standing peer block + full bridge consensus). The reported command is the
+fail-closed merge driver, not a direct merge command.
 Idle-consensus-protocol PRs keep using
 ``idle_consensus_auto_merge.evaluate_auto_merge_gate`` (consensus + MAGMA
 receipt) and are out of scope for this aggregator.
@@ -61,6 +62,7 @@ from tools.check_rco_pass_present import (  # noqa: E402
 from tools.idle_consensus_auto_merge import (  # noqa: E402
     MERGEABLE_STATES,
     _check_passed,
+    verify_bridge_consensus,
 )
 from tools.operator_decision_pack import scan_inbox  # noqa: E402
 from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
@@ -107,6 +109,11 @@ PEER_TERMINAL_STATUSES = frozenset({"blocked", "abandoned", "released"})
 # gh pr view returns the full 40-char head_sha. Treat the approved head as an
 # unambiguous prefix of the full sha, with a sane minimum length.
 MIN_HEAD_PREFIX = 7
+MERGE_DRIVER_COMMAND = (
+    "powershell -NoProfile -ExecutionPolicy Bypass "
+    "-File C:\\Python\\Invoke-BridgeMergeDriver.ps1 "
+    "-Apply -MaxMergesPerRun 1"
+)
 
 
 def head_matches(approved_head: str, full_head_sha: str) -> bool:
@@ -679,9 +686,9 @@ def evaluate_merge_ready(
 ) -> dict[str, Any]:
     """Decide whether one rco_pass'd candidate is ready for me to merge now.
 
-    Read-only: queries PR status (gh pr view via snapshot_fn) and the bridge
-    peer-block preflight; emits the exact head-matched merge command but never
-    runs it.
+    Read-only: queries PR status (gh pr view via snapshot_fn), the bridge
+    peer-block preflight, and the three-identity bridge-consensus verifier.
+    Emits the fail-closed merge-driver command but never runs it.
     """
     task = candidate["task_id"]
     pr = candidate["pr"]
@@ -732,6 +739,16 @@ def evaluate_merge_ready(
     if not bool(rco_pass_gate.get("ok", False)):
         result["blockers"].append("rco_pass_missing_or_stale")
 
+    bridge_consensus_gate = verify_bridge_consensus(
+        events=events,
+        task_id=task,
+        head_sha=head_sha,
+        pr_number=pr,
+    )
+    result["bridge_consensus_gate"] = bridge_consensus_gate
+    if not bool(bridge_consensus_gate.get("ok", False)):
+        result["blockers"].append("bridge_consensus_incomplete")
+
     if not approved_head:
         result["blockers"].append("rco_pass_missing_head")
     elif not head_matches(approved_head, head_sha):
@@ -743,10 +760,13 @@ def evaluate_merge_ready(
 
     result["ready"] = not result["blockers"]
     if result["ready"]:
-        # Pin the FULL snapshot sha, not the (possibly short) approved head.
-        result["merge_command"] = (
-            f"gh pr merge {pr} --squash --match-head-commit={head_sha}"
-        )
+        result["merge_target"] = {
+            "pr": pr,
+            "head_sha": head_sha,
+            "canonical_task_id": task,
+        }
+        result["merge_command"] = MERGE_DRIVER_COMMAND
+        result["merge_driver_command"] = MERGE_DRIVER_COMMAND
     return result
 
 

@@ -1284,6 +1284,48 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
         ]
         is True
     )
+    summary_template_index_entry = capability["proof"][
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry"
+    ]
+    summary_template_index_artifact = summary_template_index_entry["artifacts"][0]
+    summary_template_index = summary_template_index_entry["template_index_entry"]
+    assert summary_template_index_entry["ok"] is True
+    assert (
+        summary_template_index_entry["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_v1"
+    )
+    assert (
+        summary_template_index_entry["index_entry_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.v1"
+    )
+    assert summary_template_index_entry["artifact_count"] == 1
+    assert (
+        summary_template_index_artifact["artifact_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template"
+    )
+    assert summary_template_index_artifact["payload_included"] is False
+    assert summary_template_index_artifact["local_path_recorded"] is False
+    assert (
+        summary_template_index["source_summary_proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_v1"
+    )
+    assert (
+        summary_template_index["template_proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_v1"
+    )
+    assert summary_template_index["source_contract_check"] == "match"
+    assert summary_template_index["bridge_event_schema_validated"] is True
+    assert summary_template_index["template_only"] is True
+    assert summary_template_index_entry["template_only"] is True
+    assert summary_template_index_entry["direct_bridge_write_performed"] is False
+    assert summary_template_index_entry["transport_added"] is False
+    assert summary_template_index_entry["external_fetch_performed"] is False
+    assert (
+        summary_template_index_entry["runtime_subdivision_authority_granted"]
+        is False
+    )
+    assert summary_template_index_entry["artifact_payloads_included"] is False
+    assert summary_template_index_entry["local_paths_recorded"] is False
     assert "local verifier" in capability["safe_statement"]
     assert "reviewer summary" in capability["safe_statement"]
     assert "bridge-event template" in capability["safe_statement"]
@@ -1292,9 +1334,13 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert (
         "template-only bridge-event template renderer" in capability["safe_statement"]
     )
-    assert "local index entry" in capability["next_smallest_pr"]
+    assert "verification summary bridge-event template digest" in (
+        capability["safe_statement"]
+    )
+    assert "local verifier" in capability["next_smallest_pr"]
     assert (
-        "verification summary bridge-event template" in capability["next_smallest_pr"]
+        "verification summary bridge-event template index entry"
+        in capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True
 

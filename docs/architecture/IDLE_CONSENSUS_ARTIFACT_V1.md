@@ -36,6 +36,24 @@ tool intentionally does not accept or store candidate diff bytes or changed-path
 values; that later evaluator must perform path confinement, re-derive the diff
 digest, and enforce the charter gates before any separate receipt is emitted.
 
+The replay seed can be checked against a local candidate diff without writing a
+new artifact:
+
+```powershell
+.\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
+  --candidate-diff-replay-admission `
+  --replay-seed .codex-audit\idle-replay-seed.json `
+  --candidate-diff .codex-audit\candidate.patch `
+  --changed-path docs\architecture\consensus_artifacts\replay.md `
+  --json
+```
+
+This mode emits a digest-only admission report. It does not include the diff
+text, append bridge events, create tasks, create branches, open pull requests,
+merge, or write artifact files. The command exits `0` when the candidate diff
+passes the charter gates and `1` when the report is valid but operator review is
+required.
+
 An optional local MAGMA receipt bundle can be written for the artifact:
 
 ```powershell

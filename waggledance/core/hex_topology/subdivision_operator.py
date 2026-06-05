@@ -98,7 +98,13 @@ def apply_plan_to_topology(topology: dict,
             parent_children.append(c)
     parent["child_cell_ids"] = sorted(parent_children)
     cells[plan.parent_cell_id] = parent
-    # Register new children as shadow_only leaves
+    # Register new children as shadow_only leaves.
+    # Sibling-only adjacency lets the shadow ring be replayed without
+    # granting live topology mutation authority.
+    child_neighbors = {
+        c: sorted(other for other in plan.new_child_cell_ids if other != c)
+        for c in plan.new_child_cell_ids
+    }
     for c in plan.new_child_cell_ids:
         if c not in cells:
             cells[c] = {
@@ -106,7 +112,7 @@ def apply_plan_to_topology(topology: dict,
                 "cell_id": c,
                 "parent_cell_id": plan.parent_cell_id,
                 "child_cell_ids": [],
-                "neighbor_cell_ids": [],
+                "neighbor_cell_ids": child_neighbors[c],
                 "shards": {
                     "curiosity": True, "self_model": True,
                     "vector": True, "event_log": True,

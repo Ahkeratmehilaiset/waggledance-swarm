@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Contracts for machine-checkable Grok review freshness proof."""
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,6 @@ from waggledance.core.bridge_event_schema import (
     validate_event_line,
 )
 
-
 MAIN_SHA = "a" * 40
 PR_HEAD_SHA = "b" * 40
 REVIEWED_HEAD_SHA = "c" * 40
@@ -25,7 +25,7 @@ def _freshness(**overrides: object) -> dict[str, object]:
         "freshness_ok": True,
         "remote_main_sha": MAIN_SHA,
         "local_origin_main_sha": MAIN_SHA,
-        "worktree_head": MAIN_SHA,
+        "worktree_head": PR_HEAD_SHA,
         "pr_head_sha": PR_HEAD_SHA,
     }
     freshness.update(overrides)
@@ -103,12 +103,67 @@ def test_grok_response_accepts_optional_review_head_when_full_sha() -> None:
 
 
 def test_grok_response_allows_absent_pr_head_for_non_pr_plan_review() -> None:
-    freshness = _freshness()
+    freshness = _freshness(worktree_head=MAIN_SHA)
     freshness.pop("pr_head_sha")
 
     model = validate_event(_grok_event(payload={"freshness": freshness}))
 
     assert "pr_head_sha" not in model.payload["freshness"]
+
+
+def test_grok_response_accepts_pr_head_worktree_when_bound_to_pr_head() -> None:
+    model = validate_event(
+        _grok_event(payload={"freshness": _freshness(worktree_head=PR_HEAD_SHA)})
+    )
+
+    assert model.payload["freshness"]["worktree_head"] == PR_HEAD_SHA
+
+
+def test_grok_response_accepts_historical_main_worktree_when_pr_head_is_recorded() -> (
+    None
+):
+    model = validate_event(
+        _grok_event(payload={"freshness": _freshness(worktree_head=MAIN_SHA)})
+    )
+
+    assert model.payload["freshness"]["worktree_head"] == MAIN_SHA
+
+
+def test_grok_response_accepts_new_main_worktree_when_pr_head_is_recorded() -> None:
+    model = validate_event(
+        _grok_event(
+            ts_utc="2026-06-04T08:40:00.000000Z",
+            payload={"freshness": _freshness(worktree_head=MAIN_SHA)},
+        )
+    )
+
+    assert model.payload["freshness"]["worktree_head"] == MAIN_SHA
+
+
+def test_grok_response_rejects_self_declared_pr_head_after_strict_epoch() -> None:
+    with pytest.raises(Exception, match="grok freshness worktree sha mismatch"):
+        validate_event(
+            _grok_event(
+                ts_utc="2026-06-04T08:40:00.000000Z",
+                payload={"freshness": _freshness(worktree_head=PR_HEAD_SHA)},
+            )
+        )
+
+
+def test_github_main_target_ref_is_allowed_for_merge_observation() -> None:
+    model = validate_event(
+        _grok_event(
+            agent="codex-tools-1",
+            type="done",
+            task_id="bridge-main-merge-observed",
+            status="merged_observed",
+            to="github/main",
+            role="tools",
+            payload={},
+        )
+    )
+
+    assert model.to == "github/main"
 
 
 @pytest.mark.parametrize(
@@ -143,7 +198,7 @@ def test_grok_response_allows_absent_pr_head_for_non_pr_plan_review() -> None:
             "worktree_head",
         ),
         (
-            {"freshness": _freshness(worktree_head=PR_HEAD_SHA)},
+            {"freshness": _freshness(worktree_head="d" * 40)},
             "grok freshness worktree sha mismatch",
         ),
         (
@@ -197,10 +252,12 @@ def test_validate_event_file_reports_missing_grok_freshness(
 ) -> None:
     events_path = tmp_path / "events.jsonl"
     events_path.write_text(
-        "\n".join([
-            json.dumps(_grok_event()),
-            json.dumps(_grok_event(payload={})),
-        ])
+        "\n".join(
+            [
+                json.dumps(_grok_event()),
+                json.dumps(_grok_event(payload={})),
+            ]
+        )
         + "\n",
         encoding="utf-8",
     )

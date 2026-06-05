@@ -24,6 +24,7 @@ def _status(**overrides) -> dict:
         "base_sha": BASE,
         "title": "Idle consensus follow-up",
         "mergeable": "clean",
+        "author_agent": "codex-lead-1",
         "operator_approved": False,
         "receipt_verified": True,
         "changed_paths": ["tools/idle_daily_summary.py"],
@@ -63,6 +64,12 @@ def _bridge_event(
         "message": "",
         "payload": {},
     }
+
+
+def _claim(agent: str, task_id: str, *, ts: str = "2026-05-18T00:59:00Z") -> dict:
+    return _bridge_event(
+        agent=agent, type_="claim", status="active", task_id=task_id, ts=ts
+    )
 
 
 def _rco_pass(task_id: str = "idle-consensus-001", *, pr: int = 477) -> dict:
@@ -685,6 +692,67 @@ def test_bridge_peer_approval_clears_same_peer_block(tmp_path: Path) -> None:
     assert report["bridge_peer_gate"]["clear_to_merge"] is True
     assert report["bridge_peer_gate"]["latest_approval_event"]["status"] == (
         "rco_pass_pr531"
+    )
+
+
+def test_author_resolves_from_bridge_claim_not_operator_github_login(
+    tmp_path: Path,
+) -> None:
+    task = "wd/rco/rule9a-backup-rco"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            author_agent=None,
+            author_login="Ahkeratmehilaiset",
+            author={"login": "Ahkeratmehilaiset"},
+        ),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=task,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(
+            tmp_path,
+            [
+                _claim("claude-rco-1", task),
+                _rco_pass(task_id=task),
+            ],
+        ),
+        bridge_task_id=task,
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["rco_pass_gate"]["author_agent"] == "claude-rco-1"
+    assert report["rco_pass_gate"]["eligible_rco_agents"] == ["claude-rco-2"]
+    assert report["rco_pass_gate"]["ok"] is False
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
+
+
+def test_unresolvable_author_fails_closed_instead_of_guessing_task_prefix(
+    tmp_path: Path,
+) -> None:
+    task = "wd/rco/rule9a-backup-rco"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            author_agent=None,
+            author_login="Ahkeratmehilaiset",
+            author={"login": "Ahkeratmehilaiset"},
+        ),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=task,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass(task_id=task)]),
+        bridge_task_id=task,
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["rco_pass_gate"]["author_agent"] == ""
+    assert report["rco_pass_gate"]["decision"] == "invalid_author_agent"
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
     )
 
 

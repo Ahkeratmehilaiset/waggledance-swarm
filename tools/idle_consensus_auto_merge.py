@@ -44,6 +44,7 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
 )
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+BRIDGE_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 PASS_STATES = {"pass", "passed", "success", "successful", "ok"}
 MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
@@ -57,6 +58,11 @@ BRIDGE_CONSENSUS_LEAD = "codex-lead-1"
 BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"
 BRIDGE_CONSENSUS_RCO = "claude-rco-1"
 BRIDGE_CONSENSUS_RCO_AGENTS = DEFAULT_RCO_AGENTS
+BRIDGE_CONSENSUS_AUTHOR_AGENTS = (
+    BRIDGE_CONSENSUS_LEAD,
+    BRIDGE_CONSENSUS_TOOLS,
+    *BRIDGE_CONSENSUS_RCO_AGENTS,
+)
 DECISION_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
 # Note: a bare "acknowledged" is deliberately NOT a build-consensus vote — an
 # ack of receipt is not an approval (RCO T0b note N2).
@@ -252,7 +258,11 @@ def evaluate_auto_merge_gate(
     events = _read_bridge_events(events_path) if events_path is not None else []
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = bridge_task_id.strip() or consensus_proposal_id
-    author_agent = _pr_author_agent(pr_status, bridge_gate_task_id)
+    author_agent = _pr_author_agent(
+        pr_status,
+        bridge_gate_task_id,
+        events=events,
+    )
     bridge_peer_gate = _bridge_peer_gate(
         events=events,
         task_id=bridge_gate_task_id,
@@ -704,20 +714,99 @@ def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-def _pr_author_agent(pr_status: Mapping[str, Any], bridge_task_id: str) -> str:
-    """Best-effort author-agent extraction; empty means the gate fails closed."""
+def _pr_author_agent(
+    pr_status: Mapping[str, Any],
+    bridge_task_id: str,
+    *,
+    events: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """Resolve the author to a bridge-agent id, or empty to fail closed.
+
+    GitHub authorship is not a bridge identity in this repository: PRs are
+    pushed by the operator account, while the merge gate compares reviewers
+    against bridge agents such as ``claude-rco-1``. Prefer the bridge claim
+    that owns the task and only accept explicit/fallback values when they are
+    known bridge-agent ids.
+    """
+    known_agents = _known_bridge_agents(events)
+    claimed_author = _bridge_claim_author_agent(
+        events=events,
+        bridge_task_id=bridge_task_id,
+        known_agents=known_agents,
+    )
+    if claimed_author:
+        return claimed_author
+
     for key in ("author_agent", "author_login", "author"):
         value = pr_status.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if isinstance(value, Mapping):
-            login = value.get("login")
-            if isinstance(login, str) and login.strip():
-                return login.strip()
+        candidate = _known_bridge_agent_from_value(value, known_agents=known_agents)
+        if candidate:
+            return candidate
+
     task_prefix = bridge_task_id.split("/", 1)[0].strip()
-    if re.fullmatch(r"[a-z][a-z0-9_-]{1,32}", task_prefix):
-        return task_prefix
+    return _known_bridge_agent_from_value(task_prefix, known_agents=known_agents)
+
+
+def _known_bridge_agents(events: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    known: list[str] = []
+    for agent in BRIDGE_CONSENSUS_AUTHOR_AGENTS:
+        if agent not in known:
+            known.append(agent)
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        agent = str(event.get("agent", "")).strip()
+        if _is_bridge_agent_id(agent) and agent not in known:
+            known.append(agent)
+    return tuple(known)
+
+
+def _bridge_claim_author_agent(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_task_id: str,
+    known_agents: Sequence[str],
+) -> str:
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if str(event.get("task_id", "")) != bridge_task_id:
+            continue
+        if str(event.get("type", "")).lower() != "claim":
+            continue
+        candidate = _known_bridge_agent_from_value(
+            event.get("agent"),
+            known_agents=known_agents,
+        )
+        if candidate:
+            return candidate
     return ""
+
+
+def _known_bridge_agent_from_value(
+    value: Any,
+    *,
+    known_agents: Sequence[str],
+) -> str:
+    candidates: list[Any] = [value]
+    if isinstance(value, Mapping):
+        candidates = [
+            value.get("author_agent"),
+            value.get("bridge_agent"),
+            value.get("agent"),
+            value.get("login"),
+        ]
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = candidate.strip()
+        if _is_bridge_agent_id(normalized) and normalized in known_agents:
+            return normalized
+    return ""
+
+
+def _is_bridge_agent_id(value: str) -> bool:
+    return bool(BRIDGE_AGENT_ID_RE.fullmatch(value))
 
 
 def verify_bridge_consensus(

@@ -63,6 +63,7 @@ from tools.check_rco_pass_present import (  # noqa: E402
 from tools.idle_consensus_auto_merge import (  # noqa: E402
     MERGEABLE_STATES,
     _check_passed,
+    _pr_author_agent,
     verify_bridge_consensus,
 )
 from tools.operator_decision_pack import scan_inbox  # noqa: E402
@@ -624,19 +625,13 @@ def _checks_green(snapshot: Mapping[str, Any]) -> bool:
     return all(_check_passed(check) for check in checks if isinstance(check, Mapping))
 
 
-def _snapshot_author_agent(snapshot: Mapping[str, Any], task_id: str) -> str:
-    for key in ("author_agent", "author_login", "author"):
-        value = snapshot.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if isinstance(value, Mapping):
-            login = value.get("login")
-            if isinstance(login, str) and login.strip():
-                return login.strip()
-    task_prefix = task_id.split("/", 1)[0].strip()
-    if re.fullmatch(r"[a-z][a-z0-9_-]{1,32}", task_prefix):
-        return task_prefix
-    return ""
+def _snapshot_author_agent(
+    snapshot: Mapping[str, Any],
+    task_id: str,
+    *,
+    events: Sequence[Mapping[str, Any]],
+) -> str:
+    return _pr_author_agent(snapshot, task_id, events=events)
 
 
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -740,7 +735,7 @@ def evaluate_merge_ready(
     result["snapshot_head"] = head_sha
     result["mergeable"] = mergeable
     result["checks_green"] = _checks_green(snapshot)
-    author_agent = _snapshot_author_agent(snapshot, task)
+    author_agent = _snapshot_author_agent(snapshot, task, events=events)
     result["author_agent"] = author_agent
 
     rco_pass_gate = check_rco_pass_present(

@@ -912,9 +912,12 @@ def verify_bridge_consensus(
         agent = str(event.get("agent", ""))
         if agent not in watched_agents:
             continue
-        if not _consensus_scope_match(event, task_id=task_id, pr_number=pr_number):
-            continue
         status = str(event.get("status", "")).lower()
+        scoped = _consensus_scope_match(
+            event,
+            task_id=task_id,
+            pr_number=pr_number,
+        )
         # Block detection is TYPE-AGNOSTIC (fail-closed): a veto from an
         # on-scope expected identity must invalidate consensus regardless of
         # the event type the vetoer used. If this honoured the
@@ -922,6 +925,14 @@ def verify_bridge_consensus(
         # type=blocked/status=blocked would be silently dropped and a stale
         # earlier approval would stand -- the exact fail-open T0b prevents.
         if _is_consensus_block(status):
+            if not _consensus_block_scope_match(
+                event,
+                task_id=task_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                canonical_scope=scoped,
+            ):
+                continue
             if agent in recognized_rco_agents:
                 latest_rco_block[agent] = index
             else:
@@ -930,12 +941,20 @@ def verify_bridge_consensus(
         # Approvals remain type-restricted to decision/rco_review/finding.
         if str(event.get("type", "")).lower() not in DECISION_EVENT_TYPES:
             continue
-        if not _event_binds_head(event, head_sha):
+        binds_head = _event_binds_head(event, head_sha)
+        if not binds_head:
             continue
         if agent in recognized_rco_agents:
+            if not scoped:
+                continue
             if agent != author_agent and status in RCO_PASS_STATUSES:
                 latest_rco_approval[agent] = (index, event)
         elif status in BUILD_CONSENSUS_STATUSES:
+            if not scoped and not _build_consensus_head_scope_match(
+                event,
+                head_sha=head_sha,
+            ):
+                continue
             latest_build_approval[agent] = (index, event)
 
     reasons: list[str] = []
@@ -1114,6 +1133,43 @@ def _consensus_scope_match(
                 return True
     pattern = re.compile(rf"(?i)(?:\bpr\s*#?\s*|#){pr_number}\b")
     return pattern.search(str(event.get("task_id", ""))) is not None
+
+
+def _build_consensus_head_scope_match(
+    event: Mapping[str, Any], *, head_sha: str
+) -> bool:
+    """Allow build approvals to scope by exact structured head binding.
+
+    This is intentionally narrower than _event_binds_head: message text can
+    prove head freshness after scope is established, but it must not by itself
+    attach a build approval to an otherwise unrelated PR.
+    """
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    for key in ("head", "head_sha", "expected_head", "head_oid", "head_commit"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip().lower() == head_sha:
+            return True
+    return False
+
+
+def _consensus_block_scope_match(
+    event: Mapping[str, Any],
+    *,
+    task_id: str,
+    pr_number: int | None,
+    head_sha: str,
+    canonical_scope: bool | None = None,
+) -> bool:
+    scoped = (
+        canonical_scope
+        if canonical_scope is not None
+        else _consensus_scope_match(event, task_id=task_id, pr_number=pr_number)
+    )
+    if scoped:
+        return True
+    return _build_consensus_head_scope_match(event, head_sha=head_sha)
 
 
 def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:

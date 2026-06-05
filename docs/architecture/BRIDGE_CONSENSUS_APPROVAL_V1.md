@@ -32,7 +32,21 @@ missing, duplicated, forged, or stale signal fails closed to
 
 1. **Build consensus** — two distinct verified identities, the lead
    (`codex-lead-1`) and the tools/impl peer (`codex-tools-1`), both concur on
-   the change.
+   the change. **Identity matching is head-bound, not label-bound (2026-06-05):**
+   a `build_consensus_pass` event counts for a PR when its canonical PR scope
+   matches and the event still binds the PR's exact head SHA, or when a
+   descriptive `task_id` carries a structured head field (`payload.head`,
+   `payload.head_sha`, etc.) that equals the PR's exact head SHA. `payload.pr`
+   is PR scope only: it never proves head freshness, never substitutes for the
+   exact head binding required by clause 6, and cannot make a stale or
+   missing-head approval count. `head_sha` is a precise, unforgeable binding
+   (the exact commit), strictly stronger than a free-form `task_id` string, so
+   this *tightens* rather than loosens the gate while removing a class of silent
+   stalls where valid concurrence under a descriptive `task_id` (e.g.
+   `prNNN-refresh-current-main`) was invisible. Canonical-`task_id` match remains
+   accepted; exact structured head match is the additional, authoritative key
+   for descriptive labels. Build consensus still requires **two distinct** build
+   identities and is still subject to head-exact binding (clause 6).
 2. **Independent RCO pass** — a **recognized RCO identity** posts an explicit
    `RCO_PASS` (`type=decision` with a status in the approval set) on the PR's
    **canonical task_id** (= branch name) at the **exact head SHA**. The
@@ -47,6 +61,14 @@ missing, duplicated, forged, or stale signal fails closed to
    one recognized RCO passes while the other holds an unretracted veto at the
    same head, the gate is blocked. RCO is never out-voted, and the backup RCO
    can never be used to out-vote a veto.
+   **Descriptive veto symmetry (2026-06-05):** a later `changes_requested`,
+   `blocked`, or equivalent consensus-block event from a build identity or
+   recognized RCO under a descriptive `task_id` invalidates that identity's
+   approval when the block carries the same exact structured `payload.head` (or
+   equivalent head field) as the PR head. A stale head does not attach to the
+   current head, and a missing or unverifiable descriptive head fails closed
+   instead of silently cancelling or approving unrelated work. `payload.pr`
+   remains PR scope only and never relaxes exact head binding.
 4. **RCO absence = NO merge** — if no recognized RCO `RCO_PASS` at the exact head
    is present, the gate refuses even when build-consensus and every charter
    condition pass. Silence blocks; it does not default-allow.
@@ -106,6 +128,36 @@ stale head → blocked; duplicate identity → not three-distinct.
 `tools/idle_consensus_auto_merge.py` and `CLAUDE.md` are on the charter file
 denylist, so this amendment is **operator-gated** and lands with the operator's
 signature (per "Bootstrap authority" below); it cannot ride its own gate.
+
+## Enforcement of head-bound build-consensus matching (2026-06-05 amendment)
+
+The head-bound matching (clause 1) requires (impl-lane implements, the other RCO
+reviews):
+
+* `tools/idle_consensus_auto_merge.py` (`verify_bridge_consensus`) — when
+  collecting build identities for a PR, count a `build_consensus_pass` event if
+  the existing `event.task_id == canonical_task_id`/PR scope matches and the
+  event still binds the exact head, or if a descriptive event carries
+  `event.payload.head == head_sha` (exact; including equivalent structured head
+  keys such as `payload.head_sha`). The structured head match is the
+  authoritative key for descriptive labels; `payload.pr` is never a head binding
+  and must not make a stale or missing-head event count. Still require two
+  **distinct** build identities.
+* `tools/check_promotion_eligible.py` — thread the same head-bound match so the
+  promotion verifier and the merge gate agree.
+* Tests (fail-closed): build_consensus under a descriptive task_id but
+  `payload.head == head` counts; build_consensus whose `payload.head != head`
+  does NOT count (stale head rejected); two build events from the same identity
+  still count as one (distinctness preserved); a forged event with no resolvable
+  head does NOT count; `payload.pr` alone never satisfies head-exact binding.
+  A later descriptive `changes_requested`/`blocked` event with
+  `payload.head == head` invalidates that identity's approval at the same head;
+  a descriptive block with a stale `payload.head` does not attach to the current
+  head.
+
+This removes the silent-stall class where valid concurrence under a descriptive
+`task_id` (e.g. `prNNN-refresh-current-main`) was invisible to the gate, while
+keeping head-exact binding and the distinct-identity requirement intact.
 
 ## Out of scope (stays operator-gated)
 

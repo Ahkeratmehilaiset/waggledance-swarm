@@ -1,26 +1,30 @@
 # Future Scale Latency Benchmark
 
-Status: Option A round 1, latency contract artifact with shared safety
-validator follow-up.
+Status: Option A round 2, latency contract plus deterministic local producer.
 
 This slice defines a versioned, offline, deterministic contract for a
-`latency` benchmark artifact on the `future_scale` axis. It is a schema
-and executable contract only. It does not add a producer, does not touch the
-image capability manifest, and does not aggregate the metric into any runtime
-claim.
+`latency` benchmark artifact on the `future_scale` axis. The follow-up
+producer emits that artifact from deterministic local latency fixtures. It
+does not touch the image capability manifest, does not read production metrics,
+and does not aggregate the metric into any runtime claim.
 
 ## Scope
 
 The latency contract surface is intentionally small:
 
 - `schemas/future_scale_latency_benchmark.v1.json`
+- `tools/run_future_scale_latency_bench.py`
 - `tests/contracts/test_future_scale_latency_benchmark_schema.py`
+- `tests/tools/test_future_scale_latency_benchmark.py`
 - `tools/future_scale_contract_safety.py`
 - `docs/benchmarks/FUTURE_SCALE_LATENCY_BENCHMARK.md`
 
-The schema and contract test define the latency artifact. The shared safety
-utility is imported by this contract and by sibling future-scale validators so
-provider/model/path scalar checks do not drift across slices.
+The schema and contract test define the latency artifact. The producer builds
+the artifact from an embedded, deterministic fixture set and validates the
+result through the same schema and shared scalar-safety checks before printing
+or writing it. The shared safety utility is imported by this contract and by
+sibling future-scale validators so provider/model/path scalar checks do not
+drift across slices.
 
 ## Safety Contract
 
@@ -87,6 +91,30 @@ and insight_score).
 Manifest aggregation is a later serialized round after all contracts have
 landed independently.
 
+## Producer
+
+Run the deterministic producer from the repository root:
+
+```bash
+python tools/run_future_scale_latency_bench.py --fixtures v3.latency_fixtures.local.v1 --offline --deterministic --json
+```
+
+The `--offline --deterministic` flags are required. The default embedded
+fixture set measures stable aliases only:
+
+- `language_detection`
+- `hot_cache`
+- `deterministic_solver`
+- `hybrid_retrieval_8_cell`
+
+With `--out-dir <dir>`, the tool writes only:
+
+- `future_scale_latency_benchmark.json`
+- `future_scale_latency_benchmark.md`
+
+The output records the fixture alias and digest, but not the local output
+directory or any production path.
+
 ## Reproduction
 
 Run the contract test from the repository root:
@@ -95,14 +123,15 @@ Run the contract test from the repository root:
 python -m pytest tests/contracts/test_future_scale_latency_benchmark_schema.py -q
 ```
 
-Expected result:
+Run the focused producer tests:
 
-```text
-70 passed
+```bash
+python -m pytest tests/tools/test_future_scale_latency_benchmark.py -q
 ```
 
 ## Limits
 
-This slice does not produce benchmark results. It does not claim a trend, runtime
-coverage, production corpus binding, or receipt-bound execution. It only defines
-the schema and fail-closed checks that a future producer must satisfy.
+This slice produces only local fixture benchmark results. It does not claim a
+trend, runtime coverage, production corpus binding, receipt-bound execution, or
+future-scaling safety. Production latency evidence still needs a separately
+reviewed capture-window/import path before any runtime claim can change.

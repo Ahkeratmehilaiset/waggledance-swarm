@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from tools.invoke_grok_review import load_grok_config, run_grok_review
+from tools.invoke_grok_review import GrokReviewError, load_grok_config, run_grok_review
 
 NOW = datetime(2026, 6, 5, 6, 30, tzinfo=timezone.utc)
 
@@ -165,3 +165,94 @@ def test_cli_json_refusal_shape(tmp_path: Path) -> None:
     report = json.loads(completed.stdout)
     assert report["decision"] == "grok_disabled"
     assert report["network_attempted"] is False
+
+
+def test_corrupt_config_json_refuses_with_clean_cli_report(tmp_path: Path) -> None:
+    config_path = tmp_path / "grok_budget.json"
+    config_path.write_text("{", encoding="utf-8")
+    script = Path(__file__).resolve().parents[2] / "tools" / "invoke_grok_review.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--prompt",
+            "Review this plan.",
+            "--config",
+            str(config_path),
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stderr == ""
+    report = json.loads(completed.stdout)
+    assert report["decision"] == "invalid_config"
+    assert report["reason"] == "config JSON is malformed"
+    assert report["network_attempted"] is False
+
+
+def test_corrupt_budget_state_json_refuses_before_network(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        enabled=True,
+        allow_network=True,
+        max_calls_per_day=1,
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(GrokReviewError) as exc_info:
+        run_grok_review(
+            prompt="Review this plan.",
+            config_path=config_path,
+            state_path=state_path,
+            now=NOW,
+            env={
+                "GROK_API_BASE_URL": "https://example.invalid",
+                "XAI_API_KEY": "not-used",
+            },
+        )
+
+    assert exc_info.value.report["decision"] == "invalid_state"
+    assert exc_info.value.report["reason"] == "budget state JSON is malformed"
+    assert exc_info.value.report["network_attempted"] is False
+
+
+def test_invalid_budget_state_counters_refuse_before_network(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        enabled=True,
+        allow_network=True,
+        max_calls_per_day=1,
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "date_utc": NOW.date().isoformat(),
+                "total_calls": "not-an-int",
+                "calls_by_model": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GrokReviewError) as exc_info:
+        run_grok_review(
+            prompt="Review this plan.",
+            config_path=config_path,
+            state_path=state_path,
+            now=NOW,
+            env={
+                "GROK_API_BASE_URL": "https://example.invalid",
+                "XAI_API_KEY": "not-used",
+            },
+        )
+
+    assert exc_info.value.report["decision"] == "invalid_state"
+    assert exc_info.value.report["reason"] == "budget state counters must be integers"
+    assert exc_info.value.report["network_attempted"] is False

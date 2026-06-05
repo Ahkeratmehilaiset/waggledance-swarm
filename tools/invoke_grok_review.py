@@ -197,7 +197,16 @@ def load_grok_config(path: Path | str | None) -> dict[str, Any]:
     if path is not None:
         p = Path(path)
         if p.is_file():
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise GrokReviewError(
+                    _base_report(
+                        ok=False,
+                        decision="invalid_config",
+                        reason="config JSON is malformed",
+                    )
+                ) from exc
             if not isinstance(raw, dict):
                 raise GrokReviewError(
                     _base_report(
@@ -309,17 +318,35 @@ def _load_state(path: Path | None, now: datetime) -> dict[str, Any]:
     date_utc = now.date().isoformat()
     if path is None or not path.is_file():
         return {"date_utc": date_utc, "total_calls": 0, "calls_by_model": {}}
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="invalid_state",
+                reason="budget state JSON is malformed",
+            )
+        ) from exc
     if not isinstance(raw, dict) or raw.get("date_utc") != date_utc:
         return {"date_utc": date_utc, "total_calls": 0, "calls_by_model": {}}
     calls_by_model = raw.get("calls_by_model")
     if not isinstance(calls_by_model, dict):
         calls_by_model = {}
-    return {
-        "date_utc": date_utc,
-        "total_calls": int(raw.get("total_calls", 0)),
-        "calls_by_model": {str(k): int(v) for k, v in calls_by_model.items()},
-    }
+    try:
+        return {
+            "date_utc": date_utc,
+            "total_calls": int(raw.get("total_calls", 0)),
+            "calls_by_model": {str(k): int(v) for k, v in calls_by_model.items()},
+        }
+    except (TypeError, ValueError) as exc:
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="invalid_state",
+                reason="budget state counters must be integers",
+            )
+        ) from exc
 
 
 def _budget_snapshot(

@@ -824,6 +824,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template.py",
         "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
+        "tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
+        "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
     )
     metric_names = (
         "waggledance_route_stage_observations_total",
@@ -912,6 +914,14 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     drill_template_index_entry_tests_text = (
         repo_root
         / "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py"
+    ).read_text(encoding="utf-8")
+    drill_template_index_entry_verifier_text = (
+        repo_root
+        / "tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py"
+    ).read_text(encoding="utf-8")
+    drill_template_index_entry_verifier_tests_text = (
+        repo_root
+        / "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py"
     ).read_text(encoding="utf-8")
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     runbook_text = (
@@ -1251,6 +1261,32 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             ).get("ok")
             is True
         ),
+        "ops_latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verifier_present": all(
+            token
+            in "\n".join(
+                (
+                    drill_template_index_entry_verifier_text,
+                    drill_template_index_entry_verifier_tests_text,
+                )
+            )
+            for token in (
+                "VERIFICATION_VERSION",
+                "bridge_event_template_index_entry_verification.v1",
+                "verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry",
+                "source_contract_check",
+                "rebuilt_index_entry_check",
+                "bridge_event_schema_check",
+                "network_access_performed",
+                "test_route_stage_feed_health_verification_summary_bridge_event_template_index_entry_verifier_recomputes_digests_without_authority",
+            )
+        )
+        and (
+            drill_verifier_smoke.get(
+                "verification_summary_bridge_event_template_index_entry_verification_smoke",
+                {},
+            ).get("ok")
+            is True
+        ),
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
@@ -1321,6 +1357,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_supported": checks[
             "ops_latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_present"
         ],
+        "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verifier_supported": checks[
+            "ops_latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verifier_present"
+        ],
         "drill_evidence_verifier_smoke": drill_verifier_smoke,
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
@@ -1335,9 +1374,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "health, TTL cache, bounded failure backoff, and operator "
             "SLO/drill evidence templates plus an offline local drill "
             "evidence verifier and verification-summary bridge-event "
-            "template with a local template index entry without storing raw "
-            "query, profile, language, context, full route trace payloads, "
-            "local paths, or appending bridge events."
+            "template with a local template index entry and verifier for that "
+            "index entry without storing raw query, profile, language, "
+            "context, full route trace payloads, local paths, or appending "
+            "bridge events."
         ),
     }
 
@@ -1363,6 +1403,10 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             INDEX_ENTRY_VERSION as DRILL_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION,
             build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry,
         )
+        from tools.verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry import (
+            VERIFICATION_VERSION as DRILL_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION,
+            verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry,
+        )
     except Exception as exc:  # pragma: no cover - defensive manifest guard.
         return {
             "ok": False,
@@ -1382,6 +1426,12 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
                 "ok": False,
                 "blocked_reason": f"index_entry_import_failed:{exc.__class__.__name__}",
                 "index_entry_version": None,
+                "direct_bridge_write_performed": False,
+            },
+            "verification_summary_bridge_event_template_index_entry_verification_smoke": {
+                "ok": False,
+                "blocked_reason": f"index_entry_verification_import_failed:{exc.__class__.__name__}",
+                "verification_version": None,
                 "direct_bridge_write_performed": False,
             },
             "network_access_performed": False,
@@ -1496,6 +1546,13 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         verification_summary_bytes=verification_summary_bytes,
         bridge_event_template_bytes=template_report_bytes,
     )
+    template_index_entry_verification = verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry(
+        index_entry=template_index_entry,
+        verification_summary=verification_summary,
+        bridge_event_template_report=template_report,
+        verification_summary_bytes=verification_summary_bytes,
+        bridge_event_template_bytes=template_report_bytes,
+    )
     template_event = template_report.get("bridge_event_template")
     template_payload = (
         template_event.get("payload") if isinstance(template_event, dict) else {}
@@ -1572,6 +1629,55 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         ),
         "blockers": template_index_entry.get("blockers", []),
     }
+    template_index_entry_verification_smoke = {
+        "ok": (
+            template_index_entry_verification.get("ok") is True
+            and template_index_entry_verification.get("verification_version")
+            == DRILL_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION
+            and template_index_entry_verification.get("source_contract_check")
+            == "match"
+            and template_index_entry_verification.get("rebuilt_index_entry_check")
+            == "match"
+            and template_index_entry_verification.get("bridge_event_schema_check")
+            == "match"
+            and set(template_index_entry_verification.get("digest_checks", {}).values())
+            == {"match"}
+            and template_index_entry_verification.get("direct_bridge_write_performed")
+            is False
+            and template_index_entry_verification.get("artifact_payloads_included")
+            is False
+            and template_index_entry_verification.get("local_paths_recorded")
+            is False
+            and template_index_entry_verification.get("network_access_performed")
+            is False
+        ),
+        "verification_version": template_index_entry_verification.get(
+            "verification_version"
+        ),
+        "source_contract_check": template_index_entry_verification.get(
+            "source_contract_check"
+        ),
+        "rebuilt_index_entry_check": template_index_entry_verification.get(
+            "rebuilt_index_entry_check"
+        ),
+        "bridge_event_schema_check": template_index_entry_verification.get(
+            "bridge_event_schema_check"
+        ),
+        "digest_checks": template_index_entry_verification.get("digest_checks", {}),
+        "direct_bridge_write_performed": template_index_entry_verification.get(
+            "direct_bridge_write_performed"
+        ),
+        "artifact_payloads_included": template_index_entry_verification.get(
+            "artifact_payloads_included"
+        ),
+        "local_paths_recorded": template_index_entry_verification.get(
+            "local_paths_recorded"
+        ),
+        "network_access_performed": template_index_entry_verification.get(
+            "network_access_performed"
+        ),
+        "blockers": template_index_entry_verification.get("blockers", []),
+    }
     tampered = deepcopy(package)
     tampered["api_ops"]["route_stage_latency"]["feed_state"]["feed_health"][
         "runtime_authority_granted"
@@ -1588,6 +1694,7 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             and rejects_authority_forgery
             and template_smoke["ok"] is True
             and template_index_entry_smoke["ok"] is True
+            and template_index_entry_verification_smoke["ok"] is True
         ),
         "package_schema_version": PACKAGE_SCHEMA_VERSION,
         "verification_schema_version": VERIFICATION_SCHEMA_VERSION,
@@ -1596,6 +1703,9 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "verification_summary_bridge_event_template_smoke": template_smoke,
         "verification_summary_bridge_event_template_index_entry_smoke": (
             template_index_entry_smoke
+        ),
+        "verification_summary_bridge_event_template_index_entry_verification_smoke": (
+            template_index_entry_verification_smoke
         ),
         "valid_report_blockers": valid_report.get("blockers", []),
         "tampered_report_blockers": tampered_report.get("blockers", []),
@@ -6427,6 +6537,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
                 "Local index entry for the route-stage feed-health drill evidence verification summary bridge-event template.",
             ),
+            (
+                "tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
+                "Local verifier for the route-stage feed-health drill evidence verification summary bridge-event template index entry.",
+            ),
         ),
     )
     solver_evidence = _evidence(
@@ -6982,8 +7096,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "backoff, credential, private-host guardrails, and read-only "
                 "operator SLO/drill evidence templates plus a local offline "
                 "drill evidence verifier and verification-summary "
-                "bridge-event template with a local template index entry; "
-                "exact runtime entry order depends on flags and call path."
+                "bridge-event template with a local template index entry and "
+                "verifier for that index entry; exact runtime entry order "
+                "depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -6995,9 +7110,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add a local verifier for the route-stage feed-health drill "
-                "evidence verification summary bridge-event template index "
-                "entry without appending it."
+                "Render a path-free verification summary for the route-stage "
+                "feed-health drill evidence verification summary bridge-event "
+                "template index-entry verifier without appending it."
             ),
             proof=hex_entry_proof,
         ),

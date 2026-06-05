@@ -1158,8 +1158,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             )
         ),
         "ops_latency_feed_slo_drill_contract_present": all(
-            token
-            in "\n".join((ops_text, ops_tests_text, docs_text, runbook_text))
+            token in "\n".join((ops_text, ops_tests_text, docs_text, runbook_text))
             for token in (
                 "ROUTE_STAGE_LATENCY_FEED_SLO_PANELS",
                 "_route_stage_latency_feed_slo_panels",
@@ -1195,8 +1194,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         )
         and drill_verifier_smoke.get("ok") is True,
         "ops_latency_feed_drill_evidence_verification_summary_bridge_event_template_present": all(
-            token
-            in "\n".join((drill_template_text, drill_template_tests_text))
+            token in "\n".join((drill_template_text, drill_template_tests_text))
             for token in (
                 "TEMPLATE_VERSION",
                 "route_stage_feed_health_drill_evidence_verification_summary_ready",
@@ -1255,8 +1253,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             and "allowed_private_hosts" in docs_text
             and "cache_ttl_s" in docs_text
             and "failure_backoff_s" in docs_text
-            and "waggledance_route_stage_latency_feed_cache_hits_total"
-            in docs_text
+            and "waggledance_route_stage_latency_feed_cache_hits_total" in docs_text
         ),
         "runtime_contract_ok": runtime_contract["ok"] is True,
     }
@@ -1433,9 +1430,7 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
     )
     template_event = template_report.get("bridge_event_template")
     template_payload = (
-        template_event.get("payload")
-        if isinstance(template_event, dict)
-        else {}
+        template_event.get("payload") if isinstance(template_event, dict) else {}
     )
     template_boundary = (
         template_payload.get("operator_boundary")
@@ -1465,9 +1460,7 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "direct_bridge_write_performed": template_report.get(
             "direct_bridge_write_performed"
         ),
-        "artifact_payloads_included": template_report.get(
-            "artifact_payloads_included"
-        ),
+        "artifact_payloads_included": template_report.get("artifact_payloads_included"),
         "local_paths_recorded": template_report.get("local_paths_recorded"),
         "network_access_performed": template_report.get("network_access_performed"),
         "blockers": template_report.get("blockers", []),
@@ -1477,10 +1470,10 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "runtime_authority_granted"
     ] = True
     tampered_report = verify_route_stage_feed_health_drill_evidence(tampered)
-    rejects_authority_forgery = (
-        tampered_report.get("ok") is False
-        and "feed_health_runtime_authority_granted_authority_flag_true"
-        in tampered_report.get("blockers", [])
+    rejects_authority_forgery = tampered_report.get(
+        "ok"
+    ) is False and "feed_health_runtime_authority_granted_authority_flag_true" in tampered_report.get(
+        "blockers", []
     )
     return {
         "ok": (
@@ -4836,9 +4829,7 @@ def build_low_risk_autogrowth_ops_alert_state_smoke(
     feed_text = (repo_root / feed_rel).read_text(encoding="utf-8")
     html_text = (repo_root / html_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
-    metrics_tests_text = (repo_root / metrics_tests_rel).read_text(
-        encoding="utf-8"
-    )
+    metrics_tests_text = (repo_root / metrics_tests_rel).read_text(encoding="utf-8")
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     combined_runtime_lower = "\n".join(
         (api_text, metrics_text, feed_text, html_text, docs_text)
@@ -4912,23 +4903,20 @@ def build_low_risk_autogrowth_ops_alert_state_smoke(
             "AutogrowthNonIdleBurst",
         )
     )
-    raw_alertmanager_labels_excluded = (
-        all(
-            token in api_text
-            for token in (
-                "labels",
-                "AUTOGROWTH_ALERT_SUMMARIES",
-                "raw_alertmanager_labels",
-            )
+    raw_alertmanager_labels_excluded = all(
+        token in api_text
+        for token in (
+            "labels",
+            "AUTOGROWTH_ALERT_SUMMARIES",
+            "raw_alertmanager_labels",
         )
-        and all(
-            token in tests_text
-            for token in (
-                "generatorURL",
-                "PRIVATE_ANNOTATION",
-                "prod-db",
-                "C:/private",
-            )
+    ) and all(
+        token in tests_text
+        for token in (
+            "generatorURL",
+            "PRIVATE_ANNOTATION",
+            "prod-db",
+            "C:/private",
         )
     )
     ui_contract_present = all(
@@ -5218,8 +5206,7 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
         and capture_summary.get("claim_gate_satisfied") is False
         and capture_summary.get("required_runtime_evidence_present") is False
         and capture_summary.get("external_writes_applied") is False
-        and "capture_window_count_insufficient"
-        in capture_summary.get("blockers", [])
+        and "capture_window_count_insufficient" in capture_summary.get("blockers", [])
     )
     report_ok = isinstance(report, dict) and report.get("ok") is True
     return {
@@ -5231,9 +5218,11 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
                 and capture_attachment_ok
                 and capture_summary_contract_ok
             )
-            else "benchmark_contract_available"
-            if report_ok
-            else "benchmark_contract_unavailable"
+            else (
+                "benchmark_contract_available"
+                if report_ok
+                else "benchmark_contract_unavailable"
+            )
         ),
         "measurement_scope": (
             "local deterministic sanitized route-stage trace fixtures, not a "
@@ -5251,12 +5240,12 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
             "p50_depth": result.get("p50_depth"),
             "p95_depth": result.get("p95_depth"),
             "p99_depth": result.get("p99_depth"),
-            "benchmark_scope": report.get("benchmark_scope")
-            if isinstance(report, dict)
-            else None,
-            "trace_stage_policy": report.get("trace_stage_policy")
-            if isinstance(report, dict)
-            else None,
+            "benchmark_scope": (
+                report.get("benchmark_scope") if isinstance(report, dict) else None
+            ),
+            "trace_stage_policy": (
+                report.get("trace_stage_policy") if isinstance(report, dict) else None
+            ),
             "production_histogram_artifact_status": histogram_artifact.get(
                 "artifact_status"
             ),
@@ -5272,9 +5261,7 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
                 "bucket_labels",
                 [],
             ),
-            "production_histogram_sample_count": histogram_artifact.get(
-                "sample_count"
-            ),
+            "production_histogram_sample_count": histogram_artifact.get("sample_count"),
             "production_histogram_route_profile_count": histogram_artifact.get(
                 "route_profile_count"
             ),
@@ -5310,9 +5297,7 @@ def _future_scale_route_depth_benchmark_evidence() -> dict:
                 else None
             ),
             "production_capture_window_summary_ok": (
-                capture_summary.get("ok")
-                if isinstance(capture_summary, dict)
-                else None
+                capture_summary.get("ok") if isinstance(capture_summary, dict) else None
             ),
             "production_capture_window_summary_blockers": (
                 capture_summary.get("blockers", [])
@@ -5381,27 +5366,27 @@ def _future_scale_composite_path_benchmark_evidence() -> dict:
         "sample": {
             "solver_nodes": summary.get("solver_nodes"),
             "bridge_candidates_total": summary.get("bridge_candidates_total"),
-            "useful_composite_paths_total": summary.get(
-                "useful_composite_paths_total"
-            ),
+            "useful_composite_paths_total": summary.get("useful_composite_paths_total"),
             "useful_composite_paths_by_depth": summary.get(
                 "useful_composite_paths_by_depth"
             ),
             "axiom_files_loaded": scan.get("files_loaded"),
-            "evidence_status": report.get("evidence_status")
-            if isinstance(report, dict)
-            else None,
-            "measurement_scope": report.get("measurement_scope")
-            if isinstance(report, dict)
-            else None,
+            "evidence_status": (
+                report.get("evidence_status") if isinstance(report, dict) else None
+            ),
+            "measurement_scope": (
+                report.get("measurement_scope") if isinstance(report, dict) else None
+            ),
         },
         "evidence_freshness": "local_offline_benchmark_contract",
-        "blockers": list(report.get("blockers") or [])
-        if isinstance(report, dict)
-        else [
-            "needs repeated versioned benchmark windows before trend claims",
-            "needs production corpus binding before runtime scalability claims",
-        ],
+        "blockers": (
+            list(report.get("blockers") or [])
+            if isinstance(report, dict)
+            else [
+                "needs repeated versioned benchmark windows before trend claims",
+                "needs production corpus binding before runtime scalability claims",
+            ]
+        ),
         "claim_gate_satisfied": False,
     }
 
@@ -5453,23 +5438,23 @@ def _future_scale_contradiction_rate_benchmark_evidence() -> dict:
         "sample": {
             "proposal_count": result.get("proposal_count"),
             "expected_contradictions": result.get("expected_contradictions"),
-            "contradiction_rejections": result.get(
-                "contradiction_rejections"
-            ),
+            "contradiction_rejections": result.get("contradiction_rejections"),
             "contradiction_rate": result.get("contradiction_rate"),
             "false_positive_count": result.get("false_positive_count"),
             "false_negative_count": result.get("false_negative_count"),
-            "benchmark_scope": report.get("benchmark_scope")
-            if isinstance(report, dict)
-            else None,
+            "benchmark_scope": (
+                report.get("benchmark_scope") if isinstance(report, dict) else None
+            ),
         },
         "evidence_freshness": "local_offline_benchmark_contract",
-        "blockers": list(report.get("blockers_to_full_claim") or [])
-        if isinstance(report, dict)
-        else [
-            "proposal-gate verdicts are not yet exported as production metrics",
-            "fixture denominator is intentionally small and local-only",
-        ],
+        "blockers": (
+            list(report.get("blockers_to_full_claim") or [])
+            if isinstance(report, dict)
+            else [
+                "proposal-gate verdicts are not yet exported as production metrics",
+                "fixture denominator is intentionally small and local-only",
+            ]
+        ),
         "claim_gate_satisfied": False,
     }
 
@@ -5483,9 +5468,7 @@ def _future_scale_insight_score_contract_evidence() -> dict:
         "docs/benchmarks/FUTURE_SCALE_INSIGHT_SCORE_BENCHMARK.md",
     ]
     missing = [
-        rel_path
-        for rel_path in insight_artifacts
-        if not (ROOT / rel_path).exists()
+        rel_path for rel_path in insight_artifacts if not (ROOT / rel_path).exists()
     ]
     if missing:
         return {
@@ -5547,16 +5530,16 @@ def _future_scale_insight_score_contract_evidence() -> dict:
         "metric_names": [],
         "artifact_paths": insight_artifacts,
         "sample": {
-            "benchmark_version": report.get("benchmark_version")
-            if isinstance(report, dict)
-            else None,
-            "schema_version": report.get("schema_version")
-            if isinstance(report, dict)
-            else None,
+            "benchmark_version": (
+                report.get("benchmark_version") if isinstance(report, dict) else None
+            ),
+            "schema_version": (
+                report.get("schema_version") if isinstance(report, dict) else None
+            ),
             "producer_harness_present": True,
-            "corpus_case_count": report.get("corpus_case_count")
-            if isinstance(report, dict)
-            else None,
+            "corpus_case_count": (
+                report.get("corpus_case_count") if isinstance(report, dict) else None
+            ),
             "mean_insight_score": aggregate.get("mean_insight_score"),
             "median_insight_score": aggregate.get("median_insight_score"),
             "scale_trend_slope": aggregate.get("scale_trend_slope"),
@@ -5630,7 +5613,9 @@ def _future_scale_benchmark_window_summary() -> dict:
         sample_digests_by_axis[axis_id] = digests
         if len(ok_records) == len(_FUTURE_SCALE_BENCHMARK_WINDOWS):
             axes_with_repeated_windows.append(axis_id)
-        if len(digests) == 1 and len(ok_records) == len(_FUTURE_SCALE_BENCHMARK_WINDOWS):
+        if len(digests) == 1 and len(ok_records) == len(
+            _FUTURE_SCALE_BENCHMARK_WINDOWS
+        ):
             stable_sample_axes.append(axis_id)
 
     all_records_ok = all(record["ok"] is True for record in records)
@@ -5713,9 +5698,11 @@ def _future_scale_benchmark_window_record(
             "window_start_utc": _format_manifest_utc(window_start_utc),
             "axis_id": axis_id,
             "ok": report_ok,
-            "status": "benchmark_window_available"
-            if report_ok
-            else "benchmark_window_unavailable",
+            "status": (
+                "benchmark_window_available"
+                if report_ok
+                else "benchmark_window_unavailable"
+            ),
             "schema_version": (
                 report.get("schema_version") or report.get("benchmark_version")
             ),
@@ -5791,9 +5778,7 @@ def _future_scale_benchmark_window_sample(axis_id: str, report: dict) -> dict:
         return {
             "solver_nodes": summary.get("solver_nodes"),
             "bridge_candidates_total": summary.get("bridge_candidates_total"),
-            "useful_composite_paths_total": summary.get(
-                "useful_composite_paths_total"
-            ),
+            "useful_composite_paths_total": summary.get("useful_composite_paths_total"),
             "useful_composite_paths_by_depth": summary.get(
                 "useful_composite_paths_by_depth"
             ),
@@ -5848,8 +5833,10 @@ def _future_scale_benchmark_digest(value: dict) -> str:
 
 
 def _format_manifest_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 
 
@@ -5866,16 +5853,13 @@ def _build_future_scale_runtime_evidence(
 
     route_stage_ok = route_stage_runtime_metrics_smoke.get("ok") is True
     runtime_contract_ok = route_contract.get("ok") is True
-    drill_smoke = route_stage_runtime_metrics_smoke.get(
-        "drill_evidence_verifier_smoke"
-    )
+    drill_smoke = route_stage_runtime_metrics_smoke.get("drill_evidence_verifier_smoke")
     if not isinstance(drill_smoke, dict):
         drill_smoke = {}
     drill_smoke_ok = drill_smoke.get("ok") is True
     receipt_ok = solver_trace_receipt_proof.get("ok") is True
     fallback_stage_observed = any(
-        isinstance(item, dict)
-        and item.get("stage") == "orchestrator_llm_fallback"
+        isinstance(item, dict) and item.get("stage") == "orchestrator_llm_fallback"
         for item in sanitized_trace
     )
 
@@ -6067,8 +6051,7 @@ def _build_future_scale_runtime_evidence(
         "unmeasured_axes": unmeasured_axes,
         "required_runtime_axes": list(required_runtime_axes),
         "required_runtime_evidence_present": all(
-            _has_required_runtime_evidence(axis_id)
-            for axis_id in required_runtime_axes
+            _has_required_runtime_evidence(axis_id) for axis_id in required_runtime_axes
         )
         and route_stage_ok
         and runtime_contract_ok
@@ -6154,8 +6137,8 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
     ).read_text(encoding="utf-8")
     honeycomb_lower = honeycomb_text.lower()
     eig_lower = eig_text.lower()
-    route_stage_runtime_metrics_smoke = build_hex_mesh_route_stage_runtime_metrics_smoke(
-        repo_root
+    route_stage_runtime_metrics_smoke = (
+        build_hex_mesh_route_stage_runtime_metrics_smoke(repo_root)
     )
     solver_trace_receipt_proof = build_solver_trace_magma_receipt_proof(repo_root)
     runtime_evidence_by_axis, runtime_evidence_summary = (
@@ -6752,7 +6735,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_bytes = json.dumps(
         hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template,
         sort_keys=True,
-    ).encode("utf-8")
+    ).encode(
+        "utf-8"
+    )
     hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
         hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template,
         template_report_bytes=(

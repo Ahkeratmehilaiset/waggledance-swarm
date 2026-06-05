@@ -2875,24 +2875,30 @@ def build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index
     """Return a path-free local index entry for the verification-summary template."""
 
     if not isinstance(template_report, Mapping):
-        return _index_entry_verification_summary_bridge_template_index_entry_error_report(
-            "summary_bridge_event_template_index_entry_verification_summary_"
-            "bridge_event_template_not_object"
+        return (
+            _index_entry_verification_summary_bridge_template_index_entry_error_report(
+                "summary_bridge_event_template_index_entry_verification_summary_"
+                "bridge_event_template_not_object"
+            )
         )
     if _contains_path_marker(template_report):
-        return _index_entry_verification_summary_bridge_template_index_entry_error_report(
-            "summary_bridge_event_template_index_entry_verification_summary_"
-            "bridge_event_template_path_free"
+        return (
+            _index_entry_verification_summary_bridge_template_index_entry_error_report(
+                "summary_bridge_event_template_index_entry_verification_summary_"
+                "bridge_event_template_path_free"
+            )
         )
     raw, raw_error = _index_entry_verification_summary_bridge_template_bytes(
         template_report,
         template_report_bytes,
     )
     if raw_error is not None or raw is None:
-        return _index_entry_verification_summary_bridge_template_index_entry_error_report(
-            raw_error
-            or "summary_bridge_event_template_index_entry_verification_summary_"
-            "bridge_event_template_bytes_invalid"
+        return (
+            _index_entry_verification_summary_bridge_template_index_entry_error_report(
+                raw_error
+                or "summary_bridge_event_template_index_entry_verification_summary_"
+                "bridge_event_template_bytes_invalid"
+            )
         )
     contract_blockers = (
         _index_entry_verification_summary_bridge_template_contract_blockers(
@@ -2900,16 +2906,16 @@ def build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index
         )
     )
     if contract_blockers:
-        return _index_entry_verification_summary_bridge_template_index_entry_error_report(
-            contract_blockers[0]
+        return (
+            _index_entry_verification_summary_bridge_template_index_entry_error_report(
+                contract_blockers[0]
+            )
         )
 
     event = _mapping_or_empty(template_report.get("bridge_event_template"))
     validate_event(event)
     template_digest = _raw_sha256(raw)
-    artifact_id = (
-        VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID
-    )
+    artifact_id = VERIFIER_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_ARTIFACT_ID
     artifact = {
         "artifact_id": artifact_id,
         "role": "template_only_bridge_handoff_context",
@@ -3015,9 +3021,11 @@ def build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index
     }
     serialized = json.dumps(entry, allow_nan=False, sort_keys=True)
     if _contains_path_marker(serialized):
-        return _index_entry_verification_summary_bridge_template_index_entry_error_report(
-            "summary_bridge_event_template_index_entry_verification_summary_"
-            "bridge_event_template_index_entry_output_path_marker"
+        return (
+            _index_entry_verification_summary_bridge_template_index_entry_error_report(
+                "summary_bridge_event_template_index_entry_verification_summary_"
+                "bridge_event_template_index_entry_output_path_marker"
+            )
         )
     return entry
 

@@ -894,9 +894,7 @@ def test_low_risk_autogrowth_ops_alert_state_smoke_reports_dashboard_contract() 
     assert proof["proof_id"] == ("low_risk_autogrowth_ops_alert_state_smoke_v1")
     assert proof["ops_endpoint"] == "/api/ops"
     assert proof["dashboard_path"] == "web/hologram-brain-v6.html"
-    assert proof["runbook_path"] == (
-        "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md"
-    )
+    assert proof["runbook_path"] == ("docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md")
     assert proof["api_contract_present"] is True
     assert proof["alertmanager_adapter_contract_present"] is True
     assert proof["provider_health_metrics_visible"] is True
@@ -1321,8 +1319,7 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert summary_template_index_entry["transport_added"] is False
     assert summary_template_index_entry["external_fetch_performed"] is False
     assert (
-        summary_template_index_entry["runtime_subdivision_authority_granted"]
-        is False
+        summary_template_index_entry["runtime_subdivision_authority_granted"] is False
     )
     assert summary_template_index_entry["artifact_payloads_included"] is False
     assert summary_template_index_entry["local_paths_recorded"] is False
@@ -1466,9 +1463,7 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert verifier_smoke["network_access_performed"] is False
     assert verifier_smoke["runtime_authority_granted"] is False
     assert verifier_smoke["external_writes_applied"] is False
-    template_smoke = verifier_smoke[
-        "verification_summary_bridge_event_template_smoke"
-    ]
+    template_smoke = verifier_smoke["verification_summary_bridge_event_template_smoke"]
     assert template_smoke["ok"] is True
     assert template_smoke["template_only"] is True
     assert template_smoke["manual_review_required"] is True
@@ -1488,9 +1483,7 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "verification-summary bridge-event template" in (
         capability["safe_statement"]
     )
-    assert "local index entry" in (
-        capability["next_smallest_pr"]
-    )
+    assert "local index entry" in (capability["next_smallest_pr"])
     assert "route-stage feed-health drill evidence" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
@@ -1745,15 +1738,24 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
     assert axes["route_depth"]["runtime_evidence"]["sample"][
         "production_histogram_label_names"
     ] == ["route_profile", "final_stage", "le"]
-    assert axes["route_depth"]["runtime_evidence"]["sample"][
-        "production_histogram_sample_count"
-    ] == 5
-    assert axes["route_depth"]["runtime_evidence"]["sample"][
-        "production_histogram_route_profile_count"
-    ] == 5
-    assert axes["route_depth"]["runtime_evidence"]["sample"][
-        "production_histogram_runtime_data_attached"
-    ] is False
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_sample_count"
+        ]
+        == 5
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_route_profile_count"
+        ]
+        == 5
+    )
+    assert (
+        axes["route_depth"]["runtime_evidence"]["sample"][
+            "production_histogram_runtime_data_attached"
+        ]
+        is False
+    )
     assert (
         len(
             axes["route_depth"]["runtime_evidence"]["sample"][
@@ -1841,21 +1843,15 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         == "benchmark_contract_available"
     )
     assert (
-        axes["contradiction_rate"]["runtime_evidence"]["sample"][
-            "contradiction_rate"
-        ]
+        axes["contradiction_rate"]["runtime_evidence"]["sample"]["contradiction_rate"]
         == 0.333333
     )
     assert (
-        axes["contradiction_rate"]["runtime_evidence"]["sample"][
-            "false_positive_count"
-        ]
+        axes["contradiction_rate"]["runtime_evidence"]["sample"]["false_positive_count"]
         == 0
     )
     assert (
-        axes["contradiction_rate"]["runtime_evidence"]["sample"][
-            "false_negative_count"
-        ]
+        axes["contradiction_rate"]["runtime_evidence"]["sample"]["false_negative_count"]
         == 0
     )
     assert (
@@ -1863,34 +1859,22 @@ def test_future_scale_axis_scorecard_gates_unbounded_claims() -> None:
         == "benchmark_contract_available"
     )
     assert (
-        axes["insight_score"]["runtime_evidence"]["sample"][
-            "producer_harness_present"
-        ]
+        axes["insight_score"]["runtime_evidence"]["sample"]["producer_harness_present"]
         is True
     )
     assert (
-        axes["insight_score"]["runtime_evidence"]["sample"][
-            "schema_version"
-        ]
+        axes["insight_score"]["runtime_evidence"]["sample"]["schema_version"]
         == "insight_score_benchmark.v1"
     )
     assert (
-        axes["insight_score"]["runtime_evidence"]["sample"][
-            "corpus_case_count"
-        ]
-        == 12
+        axes["insight_score"]["runtime_evidence"]["sample"]["corpus_case_count"] == 12
     )
     assert (
-        axes["insight_score"]["runtime_evidence"]["sample"][
-            "mean_insight_score"
-        ]
+        axes["insight_score"]["runtime_evidence"]["sample"]["mean_insight_score"]
         == 0.166667
     )
     assert (
-        axes["insight_score"]["runtime_evidence"]["sample"][
-            "controls_measured"
-        ]
-        is True
+        axes["insight_score"]["runtime_evidence"]["sample"]["controls_measured"] is True
     )
     assert all(
         item["runtime_evidence"]["claim_gate_satisfied"] is False
@@ -1950,9 +1934,7 @@ def test_future_scale_runtime_evidence_rejects_nested_type_confusion() -> None:
     assert summary["solver_trace_receipt_proof_ok"] is True
     assert summary["required_runtime_evidence_present"] is False
     assert evidence_by_axis["coverage"]["status"] == "runtime_contract_unavailable"
-    assert (
-        evidence_by_axis["latency"]["status"] == "runtime_contract_unavailable"
-    )
+    assert evidence_by_axis["latency"]["status"] == "runtime_contract_unavailable"
     assert (
         evidence_by_axis["route_depth"]["status"]
         == "benchmark_histogram_capture_attachment_and_summary_contract_available"
@@ -1988,9 +1970,7 @@ def test_manifest_embeds_future_scorecard_without_upgrading_claim() -> None:
     )
     assert capability["proof"]["benchmark_window_summary"]["ok"] is True
     assert "benchmark-window evidence" in capability["safe_statement"]
-    assert "operator-owned live route-depth export" in (
-        capability["next_smallest_pr"]
-    )
+    assert "operator-owned live route-depth export" in (capability["next_smallest_pr"])
     assert report["summary"]["proofs_ok"] is True
 
 

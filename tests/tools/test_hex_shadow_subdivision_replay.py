@@ -1376,7 +1376,9 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
     assert str(tmp_path) not in result.stderr
 
 
-def _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template() -> dict:
+def _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template() -> (
+    dict
+):
     summary = (
         _valid_verifier_summary_bridge_event_template_index_entry_verification_summary()
     )
@@ -1392,7 +1394,9 @@ def _valid_verifier_summary_bridge_event_template_index_entry_verification_summa
     )
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_is_path_free() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_is_path_free() -> (
+    None
+):
     template = (
         _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
     )
@@ -1453,7 +1457,9 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
     assert str(ROOT) not in serialized
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_blocks_authority() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_blocks_authority() -> (
+    None
+):
     template = (
         _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
     )
@@ -1466,14 +1472,15 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
 
     assert report["ok"] is False
     assert any(
-        "bridge_event_template_runtime_subdivision_authority_granted_not_false"
-        in item
+        "bridge_event_template_runtime_subdivision_authority_granted_not_false" in item
         for item in report["blockers"]
     )
     assert report["runtime_subdivision_authority_granted"] is False
 
 
-def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_blocks_path_leak() -> None:
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_blocks_path_leak() -> (
+    None
+):
     template = (
         _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
     )
@@ -1538,8 +1545,7 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
         _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
     )
     hidden_prefix = (
-        json.dumps({"warnings": ["C:/Python/project2-master/private.json"]})[:-1]
-        + ","
+        json.dumps({"warnings": ["C:/Python/project2-master/private.json"]})[:-1] + ","
     )
     template_raw = (hidden_prefix + json.dumps(template, sort_keys=True)[1:]).encode(
         "utf-8"
@@ -1569,8 +1575,7 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
     serialized = json.dumps(report, sort_keys=True)
     assert report["ok"] is False
     assert any(
-        "bridge_event_template_duplicate_key" in item
-        for item in report["blockers"]
+        "bridge_event_template_duplicate_key" in item for item in report["blockers"]
     )
     assert "project2-master" not in serialized
     assert "private.json" not in serialized

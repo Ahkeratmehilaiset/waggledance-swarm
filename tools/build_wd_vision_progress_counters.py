@@ -36,32 +36,42 @@ CAPABILITY_PANEL_ORDER = {
 
 
 def build_vision_progress_counters(
-    manifest: Mapping[str, Any],
+    manifest: Any,
     *,
     generated_at_utc: str | None = None,
 ) -> dict[str, Any]:
     """Build stable operator counters from a capability manifest mapping."""
 
     blockers = _manifest_blockers(manifest)
-    capabilities = [
-        item for item in manifest.get("capabilities", [])
-        if isinstance(item, Mapping)
-    ]
+    manifest_mapping = manifest if isinstance(manifest, Mapping) else {}
+    raw_capabilities = manifest_mapping.get("capabilities", [])
+    capabilities = (
+        [item for item in raw_capabilities if isinstance(item, Mapping)]
+        if isinstance(raw_capabilities, list)
+        else []
+    )
     capability_count = len(capabilities)
-    status_counts = _status_counts(manifest, capabilities)
-    claim_safe_count = sum(
+    status_counts = _status_counts(manifest_mapping, capabilities)
+    raw_claim_safe_count = sum(
         1 for capability in capabilities
         if capability.get("claim_safe") is True
     )
+    claim_safe_count = raw_claim_safe_count if not blockers else 0
     proof_ok_count = sum(
         1 for capability in capabilities
         if _proof_ok(capability)
     )
-    unsafe_literal_claim_ids = [
-        str(capability.get("capability_id"))
-        for capability in capabilities
-        if capability.get("claim_safe") is not True
-    ]
+    if blockers:
+        unsafe_literal_claim_ids = [
+            str(capability.get("capability_id") or "unknown")
+            for capability in capabilities
+        ]
+    else:
+        unsafe_literal_claim_ids = [
+            str(capability.get("capability_id"))
+            for capability in capabilities
+            if capability.get("claim_safe") is not True
+        ]
 
     panel_counters = [
         _capability_counter(capability)
@@ -72,7 +82,7 @@ def build_vision_progress_counters(
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at_utc": generated_at_utc or _utc_now(),
-        "source_schema_version": manifest.get("schema_version"),
+        "source_schema_version": manifest_mapping.get("schema_version"),
         "ok": not blockers,
         "blockers": blockers,
         "summary": {
@@ -81,7 +91,8 @@ def build_vision_progress_counters(
             "claim_safe_count": claim_safe_count,
             "unsafe_literal_claim_count": len(unsafe_literal_claim_ids),
             "unsafe_literal_claim_ids": unsafe_literal_claim_ids,
-            "all_literal_claims_safe": claim_safe_count == capability_count
+            "all_literal_claims_safe": not blockers
+            and claim_safe_count == capability_count
             and capability_count > 0,
             "proof_ok_count": proof_ok_count,
             "proof_ok_ratio": _ratio(proof_ok_count, capability_count),
@@ -275,14 +286,18 @@ def _status_counts(
     summary = manifest.get("summary")
     summary = summary if isinstance(summary, Mapping) else {}
     raw_counts = summary.get("status_counts")
-    if isinstance(raw_counts, Mapping):
+    if isinstance(raw_counts, Mapping) and all(
+        _is_non_negative_int(value) for value in raw_counts.values()
+    ):
         return {str(key): _int_value(value) for key, value in raw_counts.items()}
     counter = Counter(str(item.get("status") or "unknown") for item in capabilities)
     return dict(sorted(counter.items()))
 
 
-def _manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
+def _manifest_blockers(manifest: Any) -> list[str]:
     blockers: list[str] = []
+    if not isinstance(manifest, Mapping):
+        return ["manifest_not_mapping"]
     if manifest.get("schema_version") != "wd_image1_capability_manifest.v1":
         blockers.append("unexpected_manifest_schema_version")
     capabilities = manifest.get("capabilities")
@@ -296,6 +311,12 @@ def _manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
         blockers.append("summary_not_mapping")
     elif not isinstance(summary.get("status_counts"), Mapping):
         blockers.append("summary_status_counts_not_mapping")
+    else:
+        for key, value in summary["status_counts"].items():
+            if not _is_non_negative_int(value):
+                blockers.append(
+                    f"summary_status_counts_{key}_not_non_negative_int"
+                )
     for index, capability in enumerate(capabilities):
         if not isinstance(capability, Mapping):
             blockers.append(f"capability_{index}_not_mapping")
@@ -378,6 +399,10 @@ def _int_value(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _is_non_negative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def _ratio(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
@@ -431,7 +456,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     counters = build_vision_progress_counters(_load_manifest(args))
     print(json.dumps(counters, indent=2, sort_keys=True))
-    if args.strict_claims and not counters["summary"]["all_literal_claims_safe"]:
+    if args.strict_claims and (
+        not counters["ok"]
+        or not counters["summary"]["all_literal_claims_safe"]
+    ):
         return 2
     return 0
 

@@ -235,6 +235,55 @@ def test_malformed_manifest_reports_blockers_without_favorable_claims() -> None:
     assert counters["summary"]["literal_claim_safe_ratio"] == 0.0
 
 
+def test_invalid_summary_status_counts_fail_closed_and_rederive_counts() -> None:
+    counters = build_vision_progress_counters(
+        {
+            "schema_version": "wd_image1_capability_manifest.v1",
+            "summary": {"status_counts": {"implemented": "one"}},
+            "capabilities": [
+                {
+                    "capability_id": "hex_mesh_entry",
+                    "status": "partial",
+                    "claim_safe": False,
+                    "evidence": [],
+                    "proof": {"ok": True},
+                }
+            ],
+        }
+    )
+
+    assert counters["ok"] is False
+    assert (
+        "summary_status_counts_implemented_not_non_negative_int"
+        in counters["blockers"]
+    )
+    assert counters["summary"]["status_counts"] == {"partial": 1}
+    assert counters["summary"]["all_literal_claims_safe"] is False
+
+
+def test_non_mapping_manifest_returns_structured_blocker() -> None:
+    counters = build_vision_progress_counters([])
+
+    assert counters["ok"] is False
+    assert counters["blockers"] == ["manifest_not_mapping"]
+    assert counters["summary"]["capability_count"] == 0
+    assert counters["summary"]["all_literal_claims_safe"] is False
+    assert counters["panel_counters"] == []
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--json", "--manifest", "-"],
+        input="[]",
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    payload = json.loads(proc.stdout)
+
+    assert payload["ok"] is False
+    assert payload["blockers"] == ["manifest_not_mapping"]
+
+
 def test_cli_emits_json_from_manifest_file_and_strict_claims_fails(
     tmp_path: Path,
 ) -> None:
@@ -268,6 +317,43 @@ def test_cli_emits_json_from_manifest_file_and_strict_claims_fails(
     )
 
     assert strict.returncode == 2
+
+
+def test_cli_strict_claims_fails_when_manifest_has_blockers() -> None:
+    manifest = {
+        "schema_version": "unexpected",
+        "summary": {"status_counts": {"implemented": 1}},
+        "capabilities": [
+            {
+                "capability_id": "future_waggledance_swarm",
+                "status": "implemented",
+                "claim_safe": True,
+                "evidence": [],
+                "proof": {"ok": True},
+            }
+        ],
+    }
+
+    strict = subprocess.run(
+        [sys.executable, str(SCRIPT), "--strict-claims", "--manifest", "-"],
+        input=json.dumps(manifest),
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    payload = json.loads(strict.stdout)
+
+    assert strict.returncode == 2
+    assert payload["ok"] is False
+    assert "unexpected_manifest_schema_version" in payload["blockers"]
+    assert payload["summary"]["claim_safe_count"] == 0
+    assert payload["summary"]["all_literal_claims_safe"] is False
+    assert payload["summary"]["literal_claim_safe_ratio"] == 0.0
+    assert payload["summary"]["production_safe_capability_count"] == 0
+    assert payload["summary"]["unsafe_literal_claim_ids"] == [
+        "future_waggledance_swarm"
+    ]
 
 
 def test_cli_run_does_not_mutate_tracked_files(tmp_path: Path) -> None:

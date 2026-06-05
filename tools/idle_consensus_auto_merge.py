@@ -925,7 +925,13 @@ def verify_bridge_consensus(
         # type=blocked/status=blocked would be silently dropped and a stale
         # earlier approval would stand -- the exact fail-open T0b prevents.
         if _is_consensus_block(status):
-            if not scoped:
+            if not _consensus_block_scope_match(
+                event,
+                task_id=task_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                canonical_scope=scoped,
+            ):
                 continue
             if agent in recognized_rco_agents:
                 latest_rco_block[agent] = index
@@ -1146,6 +1152,24 @@ def _build_consensus_head_scope_match(
         if isinstance(value, str) and value.strip().lower() == head_sha:
             return True
     return False
+
+
+def _consensus_block_scope_match(
+    event: Mapping[str, Any],
+    *,
+    task_id: str,
+    pr_number: int | None,
+    head_sha: str,
+    canonical_scope: bool | None = None,
+) -> bool:
+    scoped = (
+        canonical_scope
+        if canonical_scope is not None
+        else _consensus_scope_match(event, task_id=task_id, pr_number=pr_number)
+    )
+    if scoped:
+        return True
+    return _build_consensus_head_scope_match(event, head_sha=head_sha)
 
 
 def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:

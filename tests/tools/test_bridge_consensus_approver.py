@@ -66,15 +66,21 @@ def _approval(
     return event
 
 
-def _block(agent: str, *, ts: str) -> dict:
+def _block(
+    agent: str,
+    *,
+    ts: str,
+    task_id: str = TASK,
+    payload: dict | None = None,
+) -> dict:
     return {
         "ts_utc": ts,
         "agent": agent,
         "type": "finding",
         "status": "changes_requested",
-        "task_id": TASK,
+        "task_id": task_id,
         "message": "blocking",
-        "payload": {},
+        "payload": {} if payload is None else payload,
     }
 
 
@@ -204,6 +210,89 @@ def test_descriptive_build_event_without_payload_head_or_pr_does_not_count() -> 
 
     assert result["ok"] is False
     assert result["identities"]["build_lead"]["approval_index"] is None
+
+
+def test_descriptive_build_block_with_payload_head_invalidates_approval() -> None:
+    events = [
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        {
+            **_approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "tools-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+        _block(
+            LEAD,
+            ts="2026-05-29T13:03:00Z",
+            task_id="lead-descriptive-veto",
+            payload={"head": HEAD},
+        ),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approved"] is False
+    assert result["identities"]["build_lead"]["block_index"] == 3
+
+
+def test_descriptive_build_block_with_stale_payload_head_does_not_attach() -> None:
+    events = [
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        {
+            **_approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "tools-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+        _block(
+            LEAD,
+            ts="2026-05-29T13:03:00Z",
+            task_id="lead-descriptive-veto",
+            payload={"head": OTHER_HEAD},
+        ),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is True
+    assert result["identities"]["build_lead"]["approved"] is True
+    assert result["identities"]["build_lead"]["block_index"] is None
+
+
+def test_descriptive_rco_block_with_payload_head_invalidates_approval() -> None:
+    events = [
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        {
+            **_approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "tools-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+        _block(
+            RCO,
+            ts="2026-05-29T13:03:00Z",
+            task_id="rco-descriptive-veto",
+            payload={"head": HEAD},
+        ),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    assert result["identities"]["rco"]["approved"] is False
 
 
 def test_author_rco_self_pass_does_not_satisfy_rco_slot() -> None:

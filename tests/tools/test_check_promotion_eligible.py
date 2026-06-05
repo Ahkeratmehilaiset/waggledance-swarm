@@ -175,6 +175,44 @@ def test_descriptive_build_consensus_stale_payload_head_fails_promotion() -> Non
     assert "bridge consensus incomplete" in report["reasons"]
 
 
+def test_descriptive_build_consensus_payload_head_block_fails_promotion() -> None:
+    events = [
+        _event(
+            "codex-lead-1",
+            "build_consensus_pass",
+            task_id="lead-descriptive-refresh",
+            payload={"head": HEAD},
+            ts="2026-06-05T05:30:00Z",
+        ),
+        _event(
+            "codex-tools-1",
+            "build_consensus_pass",
+            task_id="tools-descriptive-refresh",
+            payload={"head": HEAD},
+            ts="2026-06-05T05:31:00Z",
+        ),
+        _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+        _event(
+            "codex-lead-1",
+            "changes_requested",
+            task_id="lead-descriptive-block",
+            payload={"head": HEAD},
+            ts="2026-06-05T05:33:00Z",
+        ),
+    ]
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
+    assert (
+        report["gate_results"]["bridge_consensus"]["by_agent"]["claude-rco-1"][
+            "identities"
+        ]["build_lead"]["approved"]
+        is False
+    )
+
+
 def test_author_rco_self_pass_does_not_count() -> None:
     report = _evaluate(
         events=_full_events(rco_agent="claude-rco-2"),

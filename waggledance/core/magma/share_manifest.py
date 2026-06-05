@@ -33,6 +33,9 @@ IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
 IMPORT_HANDOFF_STATUS_VERSION = (
     "magma.share_manifest_import_handoff_status.v0"
 )
+IMPORT_ADMISSION_STATUS_VERSION = (
+    "magma.share_manifest_import_admission_status.v0"
+)
 SHARE_MANIFEST_NAME = "share_manifest.json"
 EXPORT_REPORT_NAME = "share_export_report.json"
 IMPORT_HANDOFF_NAME = "share_import_peer_review_handoff.json"
@@ -501,6 +504,111 @@ def write_magma_share_import_peer_review_handoff(
     )
     _write_json(out_path, handoff)
     return handoff
+
+
+def build_magma_share_import_admission_status_summary(
+    import_report: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a path-free no-authority admission status summary.
+
+    This is a reviewer-facing view over an import report, not a handoff and
+    not a bridge writer. It intentionally emits only digest/categorical status
+    fields so a receiving instance can inspect admission readiness without
+    local paths, payload material, transport, or runtime authority.
+    """
+    source = "magma_share_manifest_import_report"
+    if import_report is None:
+        return _empty_import_admission_status_summary("not_configured")
+    if not isinstance(import_report, Mapping):
+        return _blocked_import_admission_status_summary(
+            source,
+            "import_report_invalid",
+        )
+
+    try:
+        expected_purpose = _import_report_expected_purpose(import_report)
+        _ensure_import_report_ready_for_handoff(
+            import_report,
+            expected_purpose=expected_purpose,
+        )
+        admission_contract = import_report.get("admission_contract")
+        if not isinstance(admission_contract, Mapping):
+            raise ValueError(
+                "import report is not admission-summary-ready: "
+                "admission_contract"
+            )
+        admission_contract_digest = import_report.get(
+            "admission_contract_digest"
+        )
+        _ensure_sha256_digest(
+            "admission_contract_digest",
+            admission_contract_digest,
+        )
+        replay_plan = import_report.get("replay_plan")
+        if not isinstance(replay_plan, Mapping):
+            raise ValueError(
+                "import report is not admission-summary-ready: replay_plan"
+            )
+        entry_count = replay_plan.get("entry_count")
+        if (
+            isinstance(entry_count, bool)
+            or not isinstance(entry_count, int)
+            or entry_count < 0
+        ):
+            raise ValueError(
+                "import report is not admission-summary-ready: "
+                "replay_plan.entry_count"
+            )
+        age_seconds = import_report.get("age_seconds")
+        if (
+            isinstance(age_seconds, bool)
+            or not isinstance(age_seconds, int)
+            or age_seconds < 0
+        ):
+            raise ValueError(
+                "import report is not admission-summary-ready: age_seconds"
+            )
+    except (TypeError, ValueError) as exc:
+        return _blocked_import_admission_status_summary(
+            source,
+            _classify_import_admission_blocker(str(exc)),
+        )
+
+    return {
+        "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "source": source,
+        "status": "ready_for_peer_review_handoff",
+        "severity": "none",
+        "ok": True,
+        "blocker_class": "none",
+        "blockers": [],
+        "controls_present": False,
+        "transport_enabled": False,
+        "operator_handoff_required_for_peer_review": (
+            admission_contract["operator_handoff_required_for_peer_review"]
+        ),
+        "share_id": import_report["share_id"],
+        "purpose": import_report["purpose"],
+        "report_digest": sha256_digest(import_report),
+        "admission_contract_digest": admission_contract_digest,
+        "share_manifest_digest": import_report["share_manifest_digest"],
+        "source_manifest_digest": import_report["source_manifest_digest"],
+        "entry_count": entry_count,
+        "age_seconds": age_seconds,
+        "max_age_hours": import_report["max_age_hours"],
+        "context_verified": import_report["context_verified"],
+        "context_drift_detected": import_report["context_drift_detected"],
+        "replay_metadata_only": import_report["replay_metadata_only"],
+        "no_authority_import": import_report["no_authority_import"],
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
 
 
 def build_magma_share_import_handoff_status_summary(
@@ -1065,6 +1173,87 @@ def _ensure_replay_admission_contract_matches_import_report(
         raise ValueError(
             "import report is not handoff-ready: admission_contract.canonical"
         )
+
+
+def _import_report_expected_purpose(import_report: Mapping[str, Any]) -> str:
+    purpose = import_report.get("purpose")
+    if not isinstance(purpose, str):
+        raise ValueError("import report is not admission-summary-ready: purpose")
+    if purpose not in PURPOSES:
+        raise ValueError("import report is not admission-summary-ready: purpose")
+    return purpose
+
+
+def _empty_import_admission_status_summary(source: str) -> dict[str, Any]:
+    return {
+        "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "source": source,
+        "status": "not_configured",
+        "severity": "none",
+        "ok": False,
+        "blocker_class": "not_configured",
+        "blockers": [],
+        "controls_present": False,
+        "transport_enabled": False,
+        "operator_handoff_required_for_peer_review": True,
+        "entry_count": 0,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
+def _blocked_import_admission_status_summary(
+    source: str,
+    blocker_class: str,
+) -> dict[str, Any]:
+    return {
+        "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "source": source,
+        "status": "blocked",
+        "severity": "warning",
+        "ok": False,
+        "blocker_class": blocker_class,
+        "blockers": [blocker_class],
+        "controls_present": False,
+        "transport_enabled": False,
+        "operator_handoff_required_for_peer_review": True,
+        "entry_count": 0,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
+def _classify_import_admission_blocker(reason: str) -> str:
+    if "admission_contract" in reason:
+        return "admission_contract_invalid"
+    if "replay_plan" in reason:
+        return "replay_plan_invalid"
+    if "context_drift" in reason or "digest" in reason:
+        return "context_drift"
+    if (
+        "authority" in reason
+        or "payload_" in reason
+        or "raw_material" in reason
+        or "replacement_map" in reason
+        or "replay_metadata_only" in reason
+        or "no_authority_import" in reason
+    ):
+        return "authority_or_privacy_boundary"
+    if "purpose" in reason or "share_id" in reason:
+        return "identity_or_purpose_invalid"
+    return "import_report_invalid"
 
 
 def _empty_import_handoff_status_summary(source: str) -> dict[str, Any]:

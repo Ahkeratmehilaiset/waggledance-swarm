@@ -15,11 +15,13 @@ from tools.run_runtime_receipt_emission_proof import (
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.share_manifest import (
+    IMPORT_ADMISSION_STATUS_VERSION,
     IMPORT_ADMISSION_CONTRACT_VERSION,
     IMPORT_HANDOFF_HISTORY_LIMIT,
     IMPORT_HANDOFF_STATUS_VERSION,
     IMPORT_HANDOFF_VERSION,
     IMPORT_REPORT_VERSION,
+    build_magma_share_import_admission_status_summary,
     build_magma_share_import_handoff_status_summary,
     build_magma_share_import_peer_review_handoff,
     build_magma_share_manifest_import_report,
@@ -158,6 +160,98 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
         "verdict",
     }
     assert not any(marker in json.dumps(report) for marker in PRIVATE_MARKERS)
+
+
+def test_import_admission_status_summary_is_path_free_and_no_authority(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+        expected_share_id="magma:share:import:001",
+        expected_purpose="cross_instance_replay",
+    )
+
+    summary = build_magma_share_import_admission_status_summary(report)
+
+    assert summary["summary_version"] == IMPORT_ADMISSION_STATUS_VERSION
+    assert summary["source"] == "magma_share_manifest_import_report"
+    assert summary["status"] == "ready_for_peer_review_handoff"
+    assert summary["severity"] == "none"
+    assert summary["ok"] is True
+    assert summary["blocker_class"] == "none"
+    assert summary["blockers"] == []
+    assert summary["admission_contract_digest"] == report[
+        "admission_contract_digest"
+    ]
+    assert summary["entry_count"] == 1
+    assert summary["context_verified"] is True
+    assert summary["context_drift_detected"] is False
+    assert summary["replay_metadata_only"] is True
+    assert summary["no_authority_import"] is True
+    assert summary["controls_present"] is False
+    assert summary["transport_enabled"] is False
+    assert summary["runtime_export_enabled"] is False
+    assert summary["runtime_authority_granted"] is False
+    assert summary["runtime_authority_changed"] is False
+    assert summary["payload_files_imported"] == 0
+    assert summary["payload_digest_imported"] is False
+    assert summary["raw_material_imported"] is False
+    assert summary["replacement_map_imported"] is False
+    assert summary["local_paths_recorded"] is False
+    serialized = json.dumps(summary)
+    assert str(tmp_path) not in serialized
+    assert "operator:decision" not in serialized
+    assert "entry_id" not in serialized
+    assert "receipt_digest" not in serialized
+    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+
+    empty = build_magma_share_import_admission_status_summary(None)
+    assert empty["source"] == "not_configured"
+    assert empty["status"] == "not_configured"
+    assert empty["runtime_authority_granted"] is False
+    assert empty["payload_files_imported"] == 0
+
+
+def test_import_admission_status_summary_blocks_malformed_report_without_leak(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+        expected_share_id="magma:share:import:001",
+        expected_purpose="cross_instance_replay",
+    )
+    tampered = dict(report)
+    tampered["runtime_authority_granted"] = True
+    tampered["local_path"] = str(tmp_path / "DO_NOT_LEAK-admission.json")
+
+    summary = build_magma_share_import_admission_status_summary(tampered)
+
+    assert summary["summary_version"] == IMPORT_ADMISSION_STATUS_VERSION
+    assert summary["source"] == "magma_share_manifest_import_report"
+    assert summary["status"] == "blocked"
+    assert summary["severity"] == "warning"
+    assert summary["ok"] is False
+    assert summary["blocker_class"] == "authority_or_privacy_boundary"
+    assert summary["blockers"] == ["authority_or_privacy_boundary"]
+    assert summary["controls_present"] is False
+    assert summary["transport_enabled"] is False
+    assert summary["runtime_authority_granted"] is False
+    assert summary["payload_files_imported"] == 0
+    assert summary["local_paths_recorded"] is False
+    serialized = json.dumps(summary)
+    assert str(tmp_path) not in serialized
+    assert "DO_NOT_LEAK-admission" not in serialized
+    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
 
 
 def test_importer_builds_operator_owned_peer_review_handoff_without_authority(

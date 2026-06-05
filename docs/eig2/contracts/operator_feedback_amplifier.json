@@ -17,7 +17,7 @@
     {"id": "OFA-006", "name": "auditable_response", "description": "ops_feedback triggers feedback_action_taken event.", "must": ["echo event written to events.jsonl", "links feedback_id to action_id"]},
     {"id": "OFA-007", "name": "bounded_amplification", "description": "fast_track_per_hour_max=10 to prevent storms.", "must": ["excess feedback queued normally", "rate limit per operator_id"]}
   ],
-  "out_of_scope": ["Implementation (separate PR)", "Operator UI for feedback submission (separate PR)"],
+  "out_of_scope": ["Bridge event writer integration (separate PR)", "Autogrowth scheduler hookup (separate PR)", "Operator UI for feedback submission (separate PR)"],
   "related_adrs": ["031", "040", "048", "049"],
   "related_leaps_50_menu": ["L30"]
 }

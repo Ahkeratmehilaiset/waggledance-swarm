@@ -17,8 +17,11 @@ def test_adr_053_exists() -> None:
     assert ADR_PATH.exists()
 
 
-def test_substrate_only() -> None:
-    assert "substrate-only landing" in ADR_PATH.read_text(encoding="utf-8").lower()
+def test_planner_status_documents_deferred_integrations() -> None:
+    text = ADR_PATH.read_text(encoding="utf-8").lower()
+    assert "planner landing" in text
+    assert "bridge writer" in text
+    assert "scheduler hookup" in text
 
 
 def test_contract_exists() -> None:
@@ -61,3 +64,11 @@ def test_each_invariant_has_musts() -> None:
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     for item in c["invariants"]:
         assert item["must"]
+
+
+def test_remaining_out_of_scope_integrations_are_precise() -> None:
+    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    out_of_scope = " ".join(c["out_of_scope"]).lower()
+    assert "bridge event writer integration" in out_of_scope
+    assert "autogrowth scheduler hookup" in out_of_scope
+    assert "operator ui" in out_of_scope

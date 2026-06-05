@@ -1,6 +1,6 @@
 # ADR-053 — Operator-feedback amplifier (fast-track to canary)
 
-* Status: **substrate-only landing** (contract + ADR pinned; implementation deferred)
+* Status: **planner landing** (contract + ADR pinned; pure planner implemented; bridge writer, scheduler hookup, and UI deferred)
 * Date: 2026-05-12
 * Related: ADR-048 (portfolio promotion), ADR-049 (sleep consolidation)
 
@@ -42,4 +42,7 @@ Priority="high" feedback gets `fast_track_canary_minutes=15` (vs normal 24h cycl
 6. **Auditable**: every ops_feedback event triggers a `feedback_action_taken` event in response (echo audit trail).
 7. **Bounded amplification**: max `fast_track_per_hour=10` to prevent feedback storms; excess queued normally.
 
-Contract: `docs/eig2/contracts/operator_feedback_amplifier.json`. Tests: `tests/contracts/test_operator_feedback_amplifier.py`.
+Contract: `docs/eig2/contracts/operator_feedback_amplifier.json`. Pure planner:
+`waggledance/core/autonomy_growth/operator_feedback_amplifier.py`. Tests:
+`tests/contracts/test_operator_feedback_amplifier.py` and
+`tests/autonomy_growth/test_operator_feedback_amplifier.py`.

@@ -4,6 +4,7 @@
 All bridge state is synthetic and the PR-status query is an injected fake, so
 no real GitHub call fires and the live repo is never touched.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,6 +56,17 @@ def _rco_pass(task: str, *, pr: int, head: str, ts: str, frm: str = "claude") ->
         "status": "rco_pass",
         "message": "PASS",
         "payload": {"pr": pr, "head": head},
+    }
+
+
+def _claim(agent: str, task: str, *, ts: str = "2026-05-22T12:59:00Z") -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": "claim",
+        "task_id": task,
+        "status": "active",
+        "message": "claimed",
     }
 
 
@@ -151,13 +163,20 @@ def _green_snapshot(pr: int, head: str = HEAD) -> dict:
         "pr_number": pr,
         "head_sha": head,
         "mergeable": "MERGEABLE",
+        "author_agent": "codex-lead-1",
         "checks": [
-            {"name": "test", "state": "", "status": "COMPLETED", "conclusion": "SUCCESS"}
+            {
+                "name": "test",
+                "state": "",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            }
         ],
     }
 
 
 # --- stale-base checked PR snapshot function -------------------------------
+
 
 def test_git_ref_sha_reads_origin_main_sha():
     calls: list[list[str]] = []
@@ -240,6 +259,7 @@ def test_pr_status_snapshot_fn_prefers_explicit_expected_base_sha():
 
 # --- my_unmerged_rco_passes -------------------------------------------------
 
+
 def test_unmerged_rco_pass_detected():
     events = [
         _rco_request("t1", ts="2026-05-22T13:00:00Z"),
@@ -282,6 +302,7 @@ def test_pass_without_pr_skipped():
 
 # --- evaluate_merge_ready ---------------------------------------------------
 
+
 def _candidate(pr=900, head=HEAD, task="t1"):
     return {"task_id": task, "pr": pr, "approved_head": head}
 
@@ -293,7 +314,9 @@ def test_merge_ready_when_green_clean_headmatch():
         *_three_identity_consensus("t1", pr=900, head=HEAD),
     ]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude",
+        _candidate(),
+        events=events,
+        agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr),
     )
     assert r["ready"] is True
@@ -317,7 +340,8 @@ def test_merge_ready_with_short_approved_head_prefix():
     ]
     r = evaluate_merge_ready(
         {"task_id": "t1", "pr": 566, "approved_head": short},
-        events=events, agent="claude",
+        events=events,
+        agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr, head=full),
     )
     assert r["ready"] is True
@@ -332,7 +356,9 @@ def test_not_ready_without_full_bridge_consensus():
         _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
     ]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude",
+        _candidate(),
+        events=events,
+        agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr),
     )
     assert r["ready"] is False
@@ -345,7 +371,9 @@ def test_not_ready_without_full_bridge_consensus():
 def test_not_ready_when_head_moved():
     events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
     r = evaluate_merge_ready(
-        _candidate(head=HEAD), events=events, agent="claude",
+        _candidate(head=HEAD),
+        events=events,
+        agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr, head=OTHER_HEAD),
     )
     assert r["ready"] is False
@@ -355,9 +383,14 @@ def test_not_ready_when_head_moved():
 def test_not_ready_when_checks_red():
     events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
     snap = _green_snapshot(900)
-    snap["checks"] = [{"name": "test", "state": "", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    snap["checks"] = [
+        {"name": "test", "state": "", "status": "COMPLETED", "conclusion": "FAILURE"}
+    ]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude", snapshot_fn=lambda pr: snap,
+        _candidate(),
+        events=events,
+        agent="claude",
+        snapshot_fn=lambda pr: snap,
     )
     assert r["ready"] is False and "checks_not_green" in r["blockers"]
 
@@ -367,7 +400,10 @@ def test_not_ready_when_mergeable_dirty():
     snap = _green_snapshot(900)
     snap["mergeable"] = "CONFLICTING"
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude", snapshot_fn=lambda pr: snap,
+        _candidate(),
+        events=events,
+        agent="claude",
+        snapshot_fn=lambda pr: snap,
     )
     assert r["ready"] is False
     assert any(b.startswith("mergeable_not_clean") for b in r["blockers"])
@@ -377,11 +413,19 @@ def test_not_ready_when_peer_block_standing():
     # Codex (peer) posted a later changes_requested -> preflight not clear.
     events = [
         _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
-        {"ts_utc": "2026-05-22T13:45:00Z", "agent": "codex", "type": "decision",
-         "task_id": "t1", "status": "changes_requested", "message": "blocker"},
+        {
+            "ts_utc": "2026-05-22T13:45:00Z",
+            "agent": "codex",
+            "type": "decision",
+            "task_id": "t1",
+            "status": "changes_requested",
+            "message": "blocker",
+        },
     ]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude",
+        _candidate(),
+        events=events,
+        agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr),
     )
     assert r["ready"] is False
@@ -421,7 +465,10 @@ def test_not_ready_when_peer_block_mentions_same_pr_under_different_task_id():
 def test_no_snapshot_fn_is_unchecked_not_ready():
     events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude", snapshot_fn=None,
+        _candidate(),
+        events=events,
+        agent="claude",
+        snapshot_fn=None,
     )
     assert r["ready"] is False and "pr_status_unchecked" in r["blockers"]
 
@@ -429,12 +476,71 @@ def test_no_snapshot_fn_is_unchecked_not_ready():
 def test_not_ready_without_exact_head_rco_pass():
     events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude",
+        _candidate(),
+        events=events,
+        agent="claude",
         snapshot_fn=lambda pr: _green_snapshot(pr),
     )
     assert r["ready"] is False
     assert "rco_pass_missing_or_stale" in r["blockers"]
     assert r["rco_pass_gate"]["decision"] == "no_rco_events_for_task"
+
+
+def test_merge_ready_resolves_author_from_claim_and_rejects_rco_self_pass():
+    task = "wd/rco/rule9a-backup-rco"
+    events = [
+        _claim("claude-rco-1", task),
+        _build_consensus(
+            task,
+            head=HEAD,
+            agent="codex-lead-1",
+            ts="2026-05-22T13:29:00Z",
+        ),
+        _build_consensus(
+            task,
+            head=HEAD,
+            agent="codex-tools-1",
+            ts="2026-05-22T13:30:00Z",
+        ),
+        _rco_gate_pass(task, pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
+    ]
+    snapshot = _green_snapshot(900)
+    snapshot.pop("author_agent")
+    snapshot["author"] = {"login": "Ahkeratmehilaiset"}
+
+    r = evaluate_merge_ready(
+        _candidate(task=task),
+        events=events,
+        agent="codex-tools-1",
+        snapshot_fn=lambda pr: snapshot,
+    )
+
+    assert r["ready"] is False
+    assert r["author_agent"] == "claude-rco-1"
+    assert r["rco_pass_gate"]["eligible_rco_agents"] == ["claude-rco-2"]
+    assert "rco_pass_missing_or_stale" in r["blockers"]
+
+
+def test_merge_ready_fails_closed_when_author_unresolvable():
+    task = "wd/rco/rule9a-backup-rco"
+    events = [
+        *_three_identity_consensus(task, pr=900, head=HEAD),
+    ]
+    snapshot = _green_snapshot(900)
+    snapshot.pop("author_agent")
+    snapshot["author_login"] = "Ahkeratmehilaiset"
+
+    r = evaluate_merge_ready(
+        _candidate(task=task),
+        events=events,
+        agent="codex-tools-1",
+        snapshot_fn=lambda pr: snapshot,
+    )
+
+    assert r["ready"] is False
+    assert r["author_agent"] == ""
+    assert r["rco_pass_gate"]["decision"] == "invalid_author_agent"
+    assert "rco_pass_missing_or_stale" in r["blockers"]
 
 
 def test_snapshot_error_decision_is_reported_as_blocker():
@@ -450,7 +556,10 @@ def test_snapshot_error_decision_is_reported_as_blocker():
 
     events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
     r = evaluate_merge_ready(
-        _candidate(), events=events, agent="claude", snapshot_fn=snapshot_fn,
+        _candidate(),
+        events=events,
+        agent="claude",
+        snapshot_fn=snapshot_fn,
     )
     assert r["ready"] is False
     assert "pr_status_error:stale_base_ref" in r["blockers"]
@@ -459,6 +568,7 @@ def test_snapshot_error_decision_is_reported_as_blocker():
 
 # --- build_loop_tick + adaptive wakeup -------------------------------------
 
+
 def test_loop_tick_merge_ready_short_wakeup(tmp_path):
     events = [
         _rco_request("t1", ts="2026-05-22T13:00:00Z"),
@@ -466,8 +576,12 @@ def test_loop_tick_merge_ready_short_wakeup(tmp_path):
         *_three_identity_consensus("t1", pr=900, head=HEAD),
     ]
     report = build_loop_tick(
-        agent="claude", events=events, claims=[], inbox_dir=tmp_path,
-        now_utc=NOW, snapshot_fn=lambda pr: _green_snapshot(pr),
+        agent="claude",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=lambda pr: _green_snapshot(pr),
     )
     assert report["ok"] is True
     ready = [m for m in report["merge_ready"] if m["ready"]]
@@ -477,8 +591,12 @@ def test_loop_tick_merge_ready_short_wakeup(tmp_path):
 
 def test_loop_tick_genuinely_quiet_uses_long_wakeup(tmp_path):
     report = build_loop_tick(
-        agent="claude", events=[], claims=[], inbox_dir=tmp_path,
-        now_utc=NOW, snapshot_fn=None,
+        agent="claude",
+        events=[],
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
     )
     assert report["next_action"] == "claim_unblocked_work"
     assert report["merge_ready"] == []
@@ -505,8 +623,12 @@ operator_signoff:
     )
 
     report = build_loop_tick(
-        agent="claude", events=[], claims=[], inbox_dir=tmp_path,
-        now_utc=NOW, snapshot_fn=None,
+        agent="claude",
+        events=[],
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
     )
 
     assert [p["decision_id"] for p in report["open_operator_packs"]] == [
@@ -520,14 +642,19 @@ operator_signoff:
 def test_loop_tick_open_peer_rco_is_answer_incoming(tmp_path):
     events = [_rco_request("t2", ts="2026-05-22T13:50:00Z")]
     report = build_loop_tick(
-        agent="claude", events=events, claims=[], inbox_dir=tmp_path,
-        now_utc=NOW, snapshot_fn=None,
+        agent="claude",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
     )
     assert report["next_action"] == "answer_incoming"
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
 
 
 # --- peer activation --------------------------------------------------------
+
 
 def test_peer_activation_needed_for_heartbeat_only_peer():
     events = [
@@ -646,9 +773,10 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
     assert event["status"] == "scout_requested"
     assert event["payload"]["source"] == "bridge_loop_tick.peer_activation"
     assert (tmp_path / "outbox" / "codex" / "2026-05-22.jsonl").exists()
-    assert json.loads((tmp_path / "shared" / "last_codex.json").read_text())[
-        "task_id"
-    ] == event["task_id"]
+    assert (
+        json.loads((tmp_path / "shared" / "last_codex.json").read_text())["task_id"]
+        == event["task_id"]
+    )
 
 
 def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):
@@ -672,6 +800,7 @@ def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):
 
 # --- peer active PR-producing claim ----------------------------------------
 
+
 def _claim_active(agent: str, task: str, ts: str) -> dict:
     return {
         "ts_utc": ts,
@@ -686,9 +815,7 @@ def _claim_active(agent: str, task: str, ts: str) -> dict:
 def test_peer_active_claim_detected_when_recent_and_unclosed():
     events = [_claim_active("codex", "magma-slice-1", ts="2026-05-22T13:55:00Z")]
 
-    result = peer_has_active_pr_producing_claim(
-        events, agent="claude", now_utc=NOW
-    )
+    result = peer_has_active_pr_producing_claim(events, agent="claude", now_utc=NOW)
 
     assert result["active"] is True
     assert result["peer"] == "codex"
@@ -711,9 +838,7 @@ def test_peer_active_claim_cleared_by_done_event():
         },
     ]
 
-    result = peer_has_active_pr_producing_claim(
-        events, agent="claude", now_utc=NOW
-    )
+    result = peer_has_active_pr_producing_claim(events, agent="claude", now_utc=NOW)
 
     assert result["active"] is False
     assert result["reason"] == "peer_claim_closed_by_done"
@@ -739,9 +864,7 @@ def test_peer_active_claim_survives_intervening_non_terminal_event():
         _finding("codex", "2026-05-22T13:58:00Z"),
     ]
 
-    result = peer_has_active_pr_producing_claim(
-        events, agent="claude", now_utc=NOW
-    )
+    result = peer_has_active_pr_producing_claim(events, agent="claude", now_utc=NOW)
 
     assert result["active"] is True
     assert result["task_id"] == "magma-slice-1"
@@ -751,9 +874,7 @@ def test_peer_active_claim_survives_intervening_non_terminal_event():
 def test_peer_active_claim_too_old_does_not_anticipate():
     events = [_claim_active("codex", "magma-slice-1", ts="2026-05-22T13:20:00Z")]
 
-    result = peer_has_active_pr_producing_claim(
-        events, agent="claude", now_utc=NOW
-    )
+    result = peer_has_active_pr_producing_claim(events, agent="claude", now_utc=NOW)
 
     assert result["active"] is False
     assert result["reason"] == "peer_claim_event_too_old"
@@ -773,10 +894,7 @@ def test_loop_tick_in_flight_when_peer_has_active_pr_producing_claim(tmp_path):
 
     assert report["peer_active_claim"]["active"] is True
     assert report["recommended_wakeup_seconds"] == WAKEUP_IN_FLIGHT
-    assert (
-        report["wakeup_reason"]
-        == "peer has active PR-producing claim; anticipate"
-    )
+    assert report["wakeup_reason"] == "peer has active PR-producing claim; anticipate"
 
 
 def test_loop_tick_quiet_when_peer_claim_already_done(tmp_path):

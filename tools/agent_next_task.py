@@ -24,6 +24,7 @@ the three pieces let the operator install one scheduled tick that
 always returns something actionable for the next live agent session,
 without weakening any charter gate.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,6 @@ import json
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
-
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -49,7 +49,6 @@ from waggledance.core.work_queue import (  # noqa: E402
     WorkQueueError,
     list_claims,
 )
-
 
 DEFER_ACTIONS = {"continue_claim", "answer_incoming"}
 PICK_ACTIONS = {"claim_unblocked_work", "parallel_read_only"}
@@ -261,7 +260,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"claim_snapshot: own={own_count} foreign_write={foreign_count}")
         candidate = report.get("candidate")
         if candidate:
-            print(f"candidate: {candidate.get('kind')} target={candidate.get('target')}")
+            print(
+                f"candidate: {candidate.get('kind')} target={candidate.get('target')}"
+            )
             recommended = candidate.get("recommended_command")
             if recommended:
                 print(f"recommended_command: {recommended}")
@@ -380,15 +381,11 @@ def evaluate_agent_next_task(
                     "underlying_bridge_action": bridge_action,
                     "bridge_recommendation": bridge_recommendation,
                     **_bridge_context(bridge_recommendation),
-                    "completed_substrate_smoke_task_ids": sorted(
-                        completed_task_ids
-                    ),
+                    "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
                     ),
-                    "active_dream_mode_task_ids": sorted(
-                        active_dream_mode_task_ids
-                    ),
+                    "active_dream_mode_task_ids": sorted(active_dream_mode_task_ids),
                     "candidate": dream_candidate,
                     "notes": [
                         (
@@ -433,15 +430,11 @@ def evaluate_agent_next_task(
                     "underlying_bridge_action": bridge_action,
                     "bridge_recommendation": bridge_recommendation,
                     **_bridge_context(bridge_recommendation),
-                    "completed_substrate_smoke_task_ids": sorted(
-                        completed_task_ids
-                    ),
+                    "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
                     ),
-                    "active_dream_mode_task_ids": sorted(
-                        active_dream_mode_task_ids
-                    ),
+                    "active_dream_mode_task_ids": sorted(active_dream_mode_task_ids),
                     "completed_operational_scout_task_ids": sorted(
                         completed_operational_scout_task_ids
                     ),
@@ -494,15 +487,11 @@ def evaluate_agent_next_task(
                     "underlying_bridge_action": bridge_action,
                     "bridge_recommendation": bridge_recommendation,
                     **_bridge_context(bridge_recommendation),
-                    "completed_substrate_smoke_task_ids": sorted(
-                        completed_task_ids
-                    ),
+                    "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
                     ),
-                    "active_dream_mode_task_ids": sorted(
-                        active_dream_mode_task_ids
-                    ),
+                    "active_dream_mode_task_ids": sorted(active_dream_mode_task_ids),
                     "completed_operational_scout_task_ids": sorted(
                         completed_operational_scout_task_ids
                     ),
@@ -543,9 +532,7 @@ def evaluate_agent_next_task(
                 "bridge_recommendation": bridge_recommendation,
                 **_bridge_context(bridge_recommendation),
                 "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
-                "completed_dream_mode_task_ids": sorted(
-                    completed_dream_mode_task_ids
-                ),
+                "completed_dream_mode_task_ids": sorted(completed_dream_mode_task_ids),
                 "active_dream_mode_task_ids": sorted(active_dream_mode_task_ids),
                 "completed_operational_scout_task_ids": sorted(
                     completed_operational_scout_task_ids
@@ -675,9 +662,7 @@ def _pick_substrate_smoke(
             now_utc=now_utc,
             index=candidate_index,
         )
-        is_legacy_completion = (
-            candidate_offset == 0 and legacy_task_id in completed
-        )
+        is_legacy_completion = candidate_offset == 0 and legacy_task_id in completed
         if candidate_task_id not in completed and not is_legacy_completion:
             index = candidate_index
             offset = candidate_offset
@@ -962,9 +947,8 @@ def _continuous_operational_scout_task_id(
 
 
 def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
-    return (
-        task_id.startswith("dream-mode-")
-        and task_id.endswith(f"-{now_utc.strftime('%Y-%m-%d')}")
+    return task_id.startswith("dream-mode-") and task_id.endswith(
+        f"-{now_utc.strftime('%Y-%m-%d')}"
     )
 
 
@@ -972,9 +956,8 @@ def _is_same_day_operational_scout_task_id(
     task_id: str,
     now_utc: datetime,
 ) -> bool:
-    return (
-        task_id.startswith("operational-scout-")
-        and task_id.endswith(f"-{now_utc.strftime('%Y-%m-%d')}")
+    return task_id.startswith("operational-scout-") and task_id.endswith(
+        f"-{now_utc.strftime('%Y-%m-%d')}"
     )
 
 
@@ -1224,11 +1207,7 @@ def _is_successful_completion_event(event: Mapping[str, Any]) -> bool:
 
 
 def _status_is_successful(status: str) -> bool:
-    tokens = {
-        token
-        for token in status.lower().replace("-", "_").split("_")
-        if token
-    }
+    tokens = {token for token in status.lower().replace("-", "_").split("_") if token}
     return any(token in SUCCESSFUL_COMPLETION_STATUSES for token in tokens)
 
 

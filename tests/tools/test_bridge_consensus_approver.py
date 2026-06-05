@@ -6,6 +6,7 @@ stale-head approvals, duplicate/stand-in identity, and a block that
 invalidates an earlier approval. The happy path must pass; every forge must
 fail closed (never default-allow).
 """
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from tools.idle_consensus_auto_merge import (
     evaluate_auto_merge_gate,
-    verify_bridge_consensus,
+    verify_bridge_consensus as _verify_bridge_consensus,
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -23,7 +24,14 @@ TASK = "codex-lead/t0b-consensus-approver-20260529"
 LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
+RCO2 = "claude-rco-2"
+AUTHOR = "codex-lead-1"
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def verify_bridge_consensus(*args, **kwargs):
+    kwargs.setdefault("author_agent", AUTHOR)
+    return _verify_bridge_consensus(*args, **kwargs)
 
 
 def test_idle_loop_runbook_keeps_rco_timeout_fail_closed() -> None:
@@ -31,9 +39,7 @@ def test_idle_loop_runbook_keeps_rco_timeout_fail_closed() -> None:
         encoding="utf-8"
     )
     section = text.split("### RCO wakeup window", 1)[1].split("## Recovery", 1)[0]
-    bridge_tick = (ROOT / "tools" / "bridge_loop_tick.py").read_text(
-        encoding="utf-8"
-    )
+    bridge_tick = (ROOT / "tools" / "bridge_loop_tick.py").read_text(encoding="utf-8")
 
     assert "must not self-merge without an explicit head-bound" in section
     assert "operator_review_required" in section
@@ -44,7 +50,9 @@ def test_idle_loop_runbook_keeps_rco_timeout_fail_closed() -> None:
     assert "operator_review_required" in bridge_tick
 
 
-def _approval(agent: str, status: str, *, head: str = HEAD, ts: str, in_message: bool = False) -> dict:
+def _approval(
+    agent: str, status: str, *, head: str = HEAD, ts: str, in_message: bool = False
+) -> dict:
     """A head-bound decision/approval event for `agent`."""
     event = {
         "ts_utc": ts,
@@ -83,7 +91,9 @@ def _full_consensus() -> list[dict]:
 
 
 def test_happy_path_three_distinct_head_bound_identities() -> None:
-    result = verify_bridge_consensus(events=_full_consensus(), task_id=TASK, head_sha=HEAD)
+    result = verify_bridge_consensus(
+        events=_full_consensus(), task_id=TASK, head_sha=HEAD
+    )
     assert result["ok"] is True
     assert result["decision"] == "bridge_consensus_verified"
     assert result["identities"]["build_lead"]["approved"] is True
@@ -91,6 +101,49 @@ def test_happy_path_three_distinct_head_bound_identities() -> None:
     assert result["identities"]["rco"]["approved"] is True
     assert result["rco_pass_ref"]["agent"] == RCO
     assert result["head_sha"] == HEAD
+
+
+def test_backup_rco_can_satisfy_rco_slot() -> None:
+    events = [
+        _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+        _approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+        _approval(RCO2, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+    assert result["ok"] is True
+    assert result["identities"]["rco"]["approved"] is True
+    assert result["rco_pass_ref"]["agent"] == RCO2
+
+
+def test_author_rco_self_pass_does_not_satisfy_rco_slot() -> None:
+    events = [
+        _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+        _approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+        _approval(RCO2, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent=RCO2,
+    )
+    assert result["ok"] is False
+    assert result["identities"]["rco"]["by_agent"][RCO2]["eligible"] is False
+    assert result["rco_pass_ref"] is None
+    assert any("recognized non-author RCO" in reason for reason in result["reasons"])
+
+
+def test_veto_from_either_recognized_rco_blocks_consensus() -> None:
+    events = [
+        _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+        _approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+        _block(RCO2, ts="2026-05-29T13:03:00Z"),
+    ]
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+    assert result["ok"] is False
+    assert result["blocking_rco_agents"] == [RCO2]
+    assert result["identities"]["rco"]["approved"] is False
 
 
 def test_missing_rco_pass_fails_closed() -> None:
@@ -118,7 +171,9 @@ def test_stale_head_approvals_fail_closed() -> None:
     events = [
         _approval(LEAD, "build_consensus", head=OTHER_HEAD, ts="2026-05-29T13:00:00Z"),
         _approval(TOOLS, "build_consensus", head=OTHER_HEAD, ts="2026-05-29T13:01:00Z"),
-        _approval(RCO, "rco_pass", head=OTHER_HEAD, ts="2026-05-29T13:02:00Z", in_message=True),
+        _approval(
+            RCO, "rco_pass", head=OTHER_HEAD, ts="2026-05-29T13:02:00Z", in_message=True
+        ),
     ]
     result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
     assert result["ok"] is False
@@ -207,7 +262,9 @@ def test_non_decision_event_type_does_not_count_as_approval() -> None:
 
 
 def test_invalid_head_fails_closed() -> None:
-    result = verify_bridge_consensus(events=_full_consensus(), task_id=TASK, head_sha="not-a-sha")
+    result = verify_bridge_consensus(
+        events=_full_consensus(), task_id=TASK, head_sha="not-a-sha"
+    )
     assert result["ok"] is False
     assert result["decision"] == "invalid_consensus_head"
 
@@ -222,6 +279,7 @@ def _status(**overrides) -> dict:
         "title": "T0b consensus approver",
         "mergeable": "clean",
         "receipt_verified": True,
+        "author_agent": AUTHOR,
         # An allowlisted, non-denylisted path: the gate itself is now
         # self-modification-denylisted (T0a), so it cannot be the changed path.
         "changed_paths": ["tools/idle_daily_summary.py"],

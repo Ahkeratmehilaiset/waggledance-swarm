@@ -66,6 +66,7 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md` (consensus-approval contract — self-modification banned)
 * `tools/idle_consensus_auto_merge.py` (the merge gate itself — self-modification banned)
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
+* `waggledance/core/idle_consensus_charter.py` (charter allowlist/denylist evaluator — self-modification banned)
 * `.env`
 * `.env.*`
 * `**/.env`

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Contracts for MAGMA adversarial ASI/defect candidate selection."""
+
 from __future__ import annotations
 
 from tools.generate_magma_adversarial_candidates import build_candidate_report

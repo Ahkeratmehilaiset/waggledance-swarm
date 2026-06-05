@@ -8,6 +8,7 @@ existing dream-mode ``compute_insight_score`` helper over deterministic local
 synthetic outcomes. It is not a production baseline and never grants runtime
 authority.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,6 @@ import sys
 from typing import Any, Mapping, Sequence
 
 import jsonschema
-
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -39,7 +39,6 @@ from waggledance.core.learning.dream_mode import (  # noqa: E402
     DreamSession,
     compute_insight_score,
 )
-
 
 BENCHMARK_VERSION = "future_scale_insight_score.v1"
 SCHEMA_VERSION = "insight_score_benchmark.v1"
@@ -292,7 +291,10 @@ def validate_insight_benchmark_report(report: dict[str, Any]) -> list[str]:
             }
             for field, value in expected.items():
                 actual = aggregate.get(field)
-                if not _is_finite_number(actual) or abs(float(actual) - value) > 0.000001:
+                if (
+                    not _is_finite_number(actual)
+                    or abs(float(actual) - value) > 0.000001
+                ):
                     errors.append(f"aggregate.{field} does not match insight_runs")
             if aggregate.get("finite") is not True:
                 errors.append("aggregate.finite must be true")
@@ -391,8 +393,10 @@ def _canonical_digest(value: Any) -> str:
 
 
 def _format_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 
 
@@ -400,9 +404,7 @@ def _parse_utc(raw: str) -> datetime:
     if not raw.endswith("Z"):
         raise ValueError("--now must use Zulu UTC format")
     try:
-        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise ValueError("--now must match YYYY-MM-DDTHH:MM:SSZ") from exc
 
@@ -428,11 +430,18 @@ def _source_branch_alias() -> str:
     alias = _SAFE_BRANCH_CHARS.sub("-", branch).strip(".-_")
     if not alias or not alias[0].isalpha():
         alias = f"branch-{alias}" if alias else "branch-unknown"
-    return alias[:80]
+    alias = alias[:80]
+    if validate_scalar_safety({"source_branch": alias}):
+        return "branch-redacted"
+    return alias
 
 
 def _is_finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 def _round(value: float) -> float:

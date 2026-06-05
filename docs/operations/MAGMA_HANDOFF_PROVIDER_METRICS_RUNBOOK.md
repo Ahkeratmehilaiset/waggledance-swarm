@@ -407,6 +407,8 @@ The verifier recomputes `digest_checks`, size checks,
 local artifacts. It does not append bridge events, include payloads, record
 local paths, transport artifacts, approve, merge, promote, fetch endpoints, or
 grant runtime authority.
+The local operator decision-reference review bundle verification bridge-event
+template index-entry verification summary is a local operator decision-reference review bundle verification bridge-event template index-entry verification summary that renders that verifier result as path-free reviewer context and preserves the same no-authority boundary.
 
 Render the local operator decision-reference review bundle verification
 bridge-event template index-entry verification summary from the verifier report:

@@ -30,7 +30,6 @@ from tools.verify_magma_decision_review_verification_template_index_entry import
     verify_magma_decision_review_verification_template_index_entry,
 )
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (
     ROOT
@@ -43,7 +42,9 @@ FIXED_NOW = datetime(2026, 5, 29, 5, 45, tzinfo=timezone.utc)
 FORBIDDEN_OUTPUT_TOKENS = ("C:/private", "PRIVATE_", "http://", "https://")
 
 
-def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_renders_verifier_result_without_authority() -> None:
+def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_renders_verifier_result_without_authority() -> (
+    None
+):
     report = _index_entry_verification_report()
 
     summary = build_magma_decision_review_verification_template_index_entry_verification_summary(
@@ -117,9 +118,12 @@ def test_operator_decision_reference_review_bundle_verification_bridge_event_tem
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
-    assert payload[
-        "operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification"
-    ]["bridge_event_schema_check"] == "match"
+    assert (
+        payload[
+            "operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification"
+        ]["bridge_event_schema_check"]
+        == "match"
+    )
     assert payload["direct_bridge_write_performed"] is False
     assert payload["artifact_payloads_included"] is False
     assert payload["local_paths_recorded"] is False
@@ -128,7 +132,9 @@ def test_operator_decision_reference_review_bundle_verification_bridge_event_tem
     assert not any(marker in result.stdout for marker in FORBIDDEN_OUTPUT_TOKENS)
 
 
-def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_rejects_verifier_drift() -> None:
+def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_rejects_verifier_drift() -> (
+    None
+):
     report = _index_entry_verification_report()
     report["bridge_event_schema_check"] = "failed"
 
@@ -148,7 +154,9 @@ def test_operator_decision_reference_review_bundle_verification_bridge_event_tem
     assert summary["release_decision_made"] is False
 
 
-def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_rejects_authority_escalation() -> None:
+def test_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_rejects_authority_escalation() -> (
+    None
+):
     report = _index_entry_verification_report()
     report["approval_granted"] = True
 

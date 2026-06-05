@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Render a sanitized MAGMA template index-entry verification summary."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,6 @@ from pathlib import Path
 import re
 import sys
 from typing import Any, Mapping, Sequence
-
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -24,7 +24,6 @@ from tools.package_magma_alert_feed_release_evidence import (  # noqa: E402
 from tools.verify_magma_decision_review_verification_template_index_entry import (  # noqa: E402
     VERIFICATION_VERSION,
 )
-
 
 SUMMARY_VERSION = "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary.v1"
 
@@ -99,13 +98,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = _failure_summary(exc.code)
     else:
         try:
-            summary = (
-                build_magma_decision_review_verification_template_index_entry_verification_summary(
-                    verification_report=verification_report,
-                    reviewer_agent_id=args.reviewer_agent,
-                    handoff_ref=args.handoff_ref,
-                    now_utc=_parse_utc(args.now) if args.now else None,
-                )
+            summary = build_magma_decision_review_verification_template_index_entry_verification_summary(
+                verification_report=verification_report,
+                reviewer_agent_id=args.reviewer_agent,
+                handoff_ref=args.handoff_ref,
+                now_utc=_parse_utc(args.now) if args.now else None,
             )
         except SafeInputError as exc:
             summary = _failure_summary(exc.code)
@@ -152,9 +149,7 @@ def build_magma_decision_review_verification_template_index_entry_verification_s
         verification_report.get("ok") is True
         and verification_report.get("verification_version") == VERIFICATION_VERSION
     )
-    reference = _mapping(
-        verification_report.get("operator_decision_reference_review")
-    )
+    reference = _mapping(verification_report.get("operator_decision_reference_review"))
     decision_reference = _safe_ref_or_invalid(reference.get("decision_reference"))
     expected_decision_reference = _safe_ref_or_invalid(
         reference.get("expected_decision_reference")
@@ -442,9 +437,7 @@ def _verification_report_contract_blockers(report: Mapping[str, Any]) -> list[st
 
 def _operator_decision_reference_blockers(report: Mapping[str, Any]) -> list[str]:
     blockers: list[str] = []
-    reference = _mapping(
-        report.get("operator_decision_reference_review")
-    )
+    reference = _mapping(report.get("operator_decision_reference_review"))
     if not reference:
         blockers.append("operator_decision_reference_missing")
     decision_ref = _safe_ref_or_invalid(reference.get("decision_reference"))
@@ -571,10 +564,7 @@ def _parse_utc(raw: str) -> datetime:
         parsed = datetime.fromisoformat(raw[:-1] + "+00:00")
     except ValueError as exc:
         raise SafeInputError("now_utc_unsafe") from exc
-    if (
-        parsed.tzinfo is None
-        or parsed.utcoffset() != timezone.utc.utcoffset(parsed)
-    ):
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
         raise SafeInputError("now_utc_unsafe")
     return parsed.astimezone(timezone.utc)
 
@@ -596,9 +586,7 @@ def _assert_no_forbidden_input(artifact_id: str, value: Mapping[str, Any]) -> No
 def _forbidden_output_markers(text: str) -> list[str]:
     lower_text = text.lower()
     return sorted(
-        marker
-        for marker in FORBIDDEN_OUTPUT_MARKERS
-        if marker.lower() in lower_text
+        marker for marker in FORBIDDEN_OUTPUT_MARKERS if marker.lower() in lower_text
     )
 
 

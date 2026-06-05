@@ -13,11 +13,12 @@ approval. It accepts only a three-identity, head-bound bridge consensus:
 
 1. `codex-lead-1` posts a build-consensus approval at the exact PR head.
 2. `codex-tools-1` posts a build-consensus approval at the exact PR head.
-3. `claude-rco-1` posts an `rco_pass` at the exact PR head.
+3. One recognized RCO in `{claude-rco-1, claude-rco-2}` posts an `rco_pass`
+   at the exact PR head, and that RCO is not the PR author.
 
 Silence, stale approvals, duplicate identities, wrong identities, missing
-head binding, out-of-set statuses, or a later RCO veto must refuse. A 2-of-3
-set is never enough.
+head binding, author-RCO self-review, out-of-set statuses, or a later veto
+from either recognized RCO must refuse. A 2-of-3 set is never enough.
 
 ## Locked Corpus
 
@@ -34,7 +35,8 @@ The corpus intentionally locks:
 - approvals at a different or stale head;
 - lead/tools approvals that are not head-bound;
 - a wrong agent attempting to satisfy a required role;
-- later RCO veto events;
+- author-RCO self-pass attempts;
+- later veto events from either recognized RCO;
 - build statuses outside `BUILD_CONSENSUS_STATUSES`;
 - valid allow cases with three distinct, head-bound identities.
 

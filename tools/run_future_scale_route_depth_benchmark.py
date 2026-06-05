@@ -7,6 +7,7 @@ median number of hops from query to final answer. This tool measures that
 proxy from deterministic, sanitized route-stage trace fixtures. It is not a
 production baseline and never changes runtime routing, metrics, or authority.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +20,6 @@ import subprocess
 import sys
 from typing import Any, Mapping, Sequence
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -29,7 +29,6 @@ from waggledance.adapters.http.routes.chat import (  # noqa: E402
 )
 from tools.future_scale_contract_safety import validate_scalar_safety  # noqa: E402
 from waggledance.core.leak_policy import is_finite_number  # noqa: E402
-
 
 REPORT_VERSION = "wd.future_scale_route_depth_benchmark.v1"
 SCHEMA_VERSION = "future_scale_route_depth_benchmark.v1"
@@ -283,7 +282,9 @@ def build_future_scale_route_depth_benchmark(
         "required_runtime_evidence_present": False,
         "benchmark_artifact_present": True,
         "measured_value_present": measured,
-        "evidence_status": "measured_local" if measured else "blocked_no_route_depth_samples",
+        "evidence_status": (
+            "measured_local" if measured else "blocked_no_route_depth_samples"
+        ),
         "trace_source": "sanitized_route_stage_trace_fixture",
         "trace_stage_policy": "allowlisted_stage_names_only_no_query_or_payload",
         "allowed_route_stage_order": list(ALLOWED_STAGES),
@@ -394,7 +395,9 @@ def validate_benchmark_report(report: dict[str, Any]) -> list[str]:
         _validate_production_route_depth_histogram_artifact(artifact, errors)
     attachment = report.get("production_route_depth_capture_window_attachment")
     if not isinstance(attachment, dict):
-        errors.append("production_route_depth_capture_window_attachment must be an object")
+        errors.append(
+            "production_route_depth_capture_window_attachment must be an object"
+        )
     else:
         _validate_production_capture_window_attachment(attachment, errors)
 
@@ -466,20 +469,24 @@ def render_markdown(report: dict[str, Any]) -> str:
                 final_stage=case["final_stage"],
             )
         )
-    lines.extend([
-        "",
-        "## Blockers To Full Claim",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Blockers To Full Claim",
+            "",
+        ]
+    )
     for blocker in report["blockers_to_full_claim"]:
         lines.append(f"- {blocker}")
-    lines.extend([
-        "",
-        "## Reproduce",
-        "",
-        f"`{report['reproduce_command']}`",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Reproduce",
+            "",
+            f"`{report['reproduce_command']}`",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -677,9 +684,8 @@ def _normalize_production_capture_window(
     if payload.get("schema_version") != PRODUCTION_CAPTURE_WINDOW_SCHEMA_VERSION:
         errors.append("production capture window schema_version is not recognized")
     capture_window_id = payload.get("capture_window_id")
-    if (
-        not isinstance(capture_window_id, str)
-        or not _is_stable_case_id(capture_window_id)
+    if not isinstance(capture_window_id, str) or not _is_stable_case_id(
+        capture_window_id
     ):
         errors.append(
             "production capture window capture_window_id must be a stable lowercase alias"
@@ -758,7 +764,10 @@ def _normalize_production_capture_window(
     if not isinstance(profiles_payload, list):
         errors.append("production capture window route_profiles must be a list")
     else:
-        if route_profile_count is not None and len(profiles_payload) != route_profile_count:
+        if (
+            route_profile_count is not None
+            and len(profiles_payload) != route_profile_count
+        ):
             errors.append("production capture window route_profile_count mismatch")
         for index, profile in enumerate(profiles_payload):
             normalized = _normalize_capture_profile(index, profile, errors)
@@ -838,7 +847,9 @@ def _normalize_production_capture_window(
     digest = _canonical_digest(_capture_window_digest_source(normalized_window))
     supplied_digest = payload.get("window_digest_sha256")
     if supplied_digest is not None and supplied_digest != digest:
-        raise ValueError("invalid production capture window: window_digest_sha256 mismatch")
+        raise ValueError(
+            "invalid production capture window: window_digest_sha256 mismatch"
+        )
     normalized_window["window_digest_sha256"] = digest
     return normalized_window
 
@@ -856,10 +867,9 @@ def _normalize_capture_profile(
     if not isinstance(route_profile, str) or not _is_stable_case_id(route_profile):
         errors.append(f"{prefix}.route_profile must be a stable lowercase alias")
     final_stage = profile.get("final_stage")
-    if (
-        not isinstance(final_stage, str)
-        or final_stage not in set(ALLOWED_STAGES) | {"none"}
-    ):
+    if not isinstance(final_stage, str) or final_stage not in set(ALLOWED_STAGES) | {
+        "none"
+    }:
         errors.append(f"{prefix}.final_stage must be an allowed route stage")
     sample_count = _positive_int(
         profile.get("sample_count"),
@@ -986,7 +996,11 @@ def _percentile(values: Sequence[int], q: float) -> float:
 
 def _validate_benchmark_result(result: Mapping[str, Any], errors: list[str]) -> None:
     sample_count = result.get("sample_count")
-    if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count < 0:
+    if (
+        not isinstance(sample_count, int)
+        or isinstance(sample_count, bool)
+        or sample_count < 0
+    ):
         errors.append("benchmark_result.sample_count must be a non-negative int")
     for field in ("min_depth", "max_depth"):
         value = result.get(field)
@@ -1006,12 +1020,20 @@ def _validate_benchmark_result(result: Mapping[str, Any], errors: list[str]) -> 
     total = 0
     for key, value in histogram.items():
         if not isinstance(key, str) or not key.isdigit():
-            errors.append("benchmark_result.depth_histogram keys must be numeric strings")
+            errors.append(
+                "benchmark_result.depth_histogram keys must be numeric strings"
+            )
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            errors.append("benchmark_result.depth_histogram values must be non-negative ints")
+            errors.append(
+                "benchmark_result.depth_histogram values must be non-negative ints"
+            )
         else:
             total += value
-    if isinstance(sample_count, int) and not isinstance(sample_count, bool) and total != sample_count:
+    if (
+        isinstance(sample_count, int)
+        and not isinstance(sample_count, bool)
+        and total != sample_count
+    ):
         errors.append("benchmark_result.depth_histogram does not sum to sample_count")
 
 
@@ -1028,15 +1050,15 @@ def _validate_production_route_depth_histogram_artifact(
         errors.append("production histogram artifact_status is not recognized")
     for field in SAFE_FALSE_FIELDS:
         if artifact.get(field) is not False:
-            errors.append(
-                f"production histogram {field} must be exact false bool"
-            )
+            errors.append(f"production histogram {field} must be exact false bool")
     if artifact.get("production_runtime_data_attached") is not False:
         errors.append(
             "production histogram production_runtime_data_attached must be false"
         )
     if artifact.get("production_data_source") != "not_attached":
-        errors.append("production histogram production_data_source must be not_attached")
+        errors.append(
+            "production histogram production_data_source must be not_attached"
+        )
     if artifact.get("network_access") != "not_used":
         errors.append("production histogram network_access must be not_used")
     if artifact.get("cloud_api_calls") != 0:
@@ -1055,11 +1077,7 @@ def _validate_production_route_depth_histogram_artifact(
     ):
         errors.append("production histogram sample_count must be a non-negative int")
     depth_sum = artifact.get("route_depth_sum")
-    if (
-        not isinstance(depth_sum, int)
-        or isinstance(depth_sum, bool)
-        or depth_sum < 0
-    ):
+    if not isinstance(depth_sum, int) or isinstance(depth_sum, bool) or depth_sum < 0:
         errors.append("production histogram route_depth_sum must be a non-negative int")
     profile_count = artifact.get("route_profile_count")
     if (
@@ -1067,15 +1085,21 @@ def _validate_production_route_depth_histogram_artifact(
         or isinstance(profile_count, bool)
         or profile_count < 0
     ):
-        errors.append("production histogram route_profile_count must be a non-negative int")
+        errors.append(
+            "production histogram route_profile_count must be a non-negative int"
+        )
 
     aggregate = artifact.get("aggregate_cumulative_buckets")
     if not isinstance(aggregate, dict):
-        errors.append("production histogram aggregate_cumulative_buckets must be an object")
+        errors.append(
+            "production histogram aggregate_cumulative_buckets must be an object"
+        )
     else:
         _validate_cumulative_buckets(
             aggregate,
-            expected_sample_count=sample_count if isinstance(sample_count, int) else None,
+            expected_sample_count=(
+                sample_count if isinstance(sample_count, int) else None
+            ),
             errors=errors,
             prefix="production histogram aggregate_cumulative_buckets",
         )
@@ -1096,19 +1120,17 @@ def _validate_production_route_depth_histogram_artifact(
                 )
                 continue
             route_profile = profile.get("route_profile")
-            if (
-                not isinstance(route_profile, str)
-                or not _is_stable_case_id(route_profile)
+            if not isinstance(route_profile, str) or not _is_stable_case_id(
+                route_profile
             ):
                 errors.append(
                     "production histogram route_profiles"
                     f"[{index}].route_profile must be a stable lowercase alias"
                 )
             final_stage = profile.get("final_stage")
-            if (
-                not isinstance(final_stage, str)
-                or final_stage not in set(ALLOWED_STAGES) | {"none"}
-            ):
+            if not isinstance(final_stage, str) or final_stage not in set(
+                ALLOWED_STAGES
+            ) | {"none"}:
                 errors.append(
                     "production histogram route_profiles"
                     f"[{index}].final_stage must be an allowed route stage"
@@ -1156,20 +1178,30 @@ def _validate_production_route_depth_histogram_artifact(
                 bool,
             ):
                 total_samples += profile_sample_count
-            if isinstance(route_depth_sum, int) and not isinstance(route_depth_sum, bool):
+            if isinstance(route_depth_sum, int) and not isinstance(
+                route_depth_sum, bool
+            ):
                 total_depth_sum += route_depth_sum
         if isinstance(sample_count, int) and total_samples != sample_count:
             errors.append("production histogram route_profiles sample_count mismatch")
         if isinstance(depth_sum, int) and total_depth_sum != depth_sum:
-            errors.append("production histogram route_profiles route_depth_sum mismatch")
+            errors.append(
+                "production histogram route_profiles route_depth_sum mismatch"
+            )
         if isinstance(aggregate, dict) and recomputed_aggregate != aggregate:
-            errors.append("production histogram aggregate does not match route_profiles")
+            errors.append(
+                "production histogram aggregate does not match route_profiles"
+            )
 
     digest = artifact.get("artifact_digest_sha256")
-    if not isinstance(digest, str) or len(digest) != 64 or not all(
-        character in "0123456789abcdef" for character in digest
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or not all(character in "0123456789abcdef" for character in digest)
     ):
-        errors.append("production histogram artifact_digest_sha256 must be lowercase sha256")
+        errors.append(
+            "production histogram artifact_digest_sha256 must be lowercase sha256"
+        )
     else:
         digest_source = {
             "metric_names": artifact.get("metric_names"),
@@ -1202,7 +1234,9 @@ def _validate_production_capture_window_attachment(
         "capture_window_attachment_contract_available",
         "operator_capture_window_attached",
     }:
-        errors.append("production capture attachment attachment_status is not recognized")
+        errors.append(
+            "production capture attachment attachment_status is not recognized"
+        )
     for field in SAFE_FALSE_FIELDS:
         if attachment.get(field) is not False:
             errors.append(
@@ -1323,7 +1357,9 @@ def _validate_capture_window_record(
         errors.append(f"{prefix}.label_names mismatch")
     if window.get("bucket_labels") != list(ROUTE_DEPTH_BUCKET_LABELS):
         errors.append(f"{prefix}.bucket_labels mismatch")
-    sample_count = _positive_int(window.get("sample_count"), f"{prefix}.sample_count", errors)
+    sample_count = _positive_int(
+        window.get("sample_count"), f"{prefix}.sample_count", errors
+    )
     route_depth_sum = _non_negative_int(
         window.get("route_depth_sum"),
         f"{prefix}.route_depth_sum",
@@ -1334,7 +1370,9 @@ def _validate_capture_window_record(
         f"{prefix}.route_profile_count",
         errors,
     )
-    _validate_depth_sum_bounds(route_depth_sum, sample_count, f"{prefix}.route_depth_sum", errors)
+    _validate_depth_sum_bounds(
+        route_depth_sum, sample_count, f"{prefix}.route_depth_sum", errors
+    )
 
     aggregate = window.get("aggregate_cumulative_buckets")
     if not isinstance(aggregate, dict):
@@ -1368,14 +1406,15 @@ def _validate_capture_window_record(
                 "must be a stable lowercase alias"
             )
         elif route_profile in seen_profiles:
-            errors.append(f"{prefix}.route_profiles route_profile aliases must be unique")
+            errors.append(
+                f"{prefix}.route_profiles route_profile aliases must be unique"
+            )
         else:
             seen_profiles.add(route_profile)
         final_stage = profile.get("final_stage")
-        if (
-            not isinstance(final_stage, str)
-            or final_stage not in set(ALLOWED_STAGES) | {"none"}
-        ):
+        if not isinstance(final_stage, str) or final_stage not in set(
+            ALLOWED_STAGES
+        ) | {"none"}:
             errors.append(
                 f"{prefix}.route_profiles[{profile_index}].final_stage "
                 "must be an allowed route stage"
@@ -1463,7 +1502,10 @@ def _validate_cumulative_buckets(
         if value < previous:
             errors.append(f"{prefix} must be monotonically non-decreasing")
         previous = value
-    if expected_sample_count is not None and buckets.get("+Inf") != expected_sample_count:
+    if (
+        expected_sample_count is not None
+        and buckets.get("+Inf") != expected_sample_count
+    ):
         errors.append(f"{prefix}.+Inf must equal sample_count")
 
 
@@ -1523,10 +1565,16 @@ def _validate_case_record(index: int, case: Any, errors: list[str]) -> None:
     if not isinstance(case_id, str) or not _is_stable_case_id(case_id):
         errors.append(f"cases[{index}].case_id must be a stable lowercase alias")
     route_depth = case.get("route_depth")
-    if not isinstance(route_depth, int) or isinstance(route_depth, bool) or route_depth < 0:
+    if (
+        not isinstance(route_depth, int)
+        or isinstance(route_depth, bool)
+        or route_depth < 0
+    ):
         errors.append(f"cases[{index}].route_depth must be a non-negative int")
     final_stage = case.get("final_stage")
-    if not isinstance(final_stage, str) or final_stage not in set(ALLOWED_STAGES) | {"none"}:
+    if not isinstance(final_stage, str) or final_stage not in set(ALLOWED_STAGES) | {
+        "none"
+    }:
         errors.append(f"cases[{index}].final_stage must be an allowed route stage")
     stages = case.get("observed_stages")
     if not isinstance(stages, list):
@@ -1537,7 +1585,11 @@ def _validate_case_record(index: int, case: Any, errors: list[str]) -> None:
                 errors.append(
                     f"cases[{index}].observed_stages[{stage_index}] must be an allowed route stage"
                 )
-        if isinstance(route_depth, int) and not isinstance(route_depth, bool) and len(stages) != route_depth:
+        if (
+            isinstance(route_depth, int)
+            and not isinstance(route_depth, bool)
+            and len(stages) != route_depth
+        ):
             errors.append(f"cases[{index}].route_depth does not match observed_stages")
     ignored = case.get("ignored_event_count")
     if not isinstance(ignored, int) or isinstance(ignored, bool) or ignored < 0:
@@ -1555,8 +1607,11 @@ def _parse_utc(raw: str) -> datetime:
 
 
 def _format_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
@@ -1631,7 +1686,10 @@ def _is_stable_case_id(value: str) -> bool:
     return (
         3 <= len(value) <= 81
         and value[0].islower()
-        and all(character.islower() or character.isdigit() or character == "_" for character in value)
+        and all(
+            character.islower() or character.isdigit() or character == "_"
+            for character in value
+        )
     )
 
 

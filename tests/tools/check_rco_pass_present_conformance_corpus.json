@@ -248,6 +248,69 @@
         "has_qualifying_rco_pass_at_head": false
       },
       "cli_expect_nonzero": true
+    },
+    {
+      "name": "author_rco_self_pass_rejected",
+      "description": "claude-rco-2 authored the PR and posts the only RCO_PASS -> REFUSE (author != reviewer; self-pass is excluded).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-2",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 from PR author"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": [
+        "claude-rco-1",
+        "claude-rco-2"
+      ],
+      "author_agent": "claude-rco-2",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "other_recognized_rco_veto_blocks_pass",
+      "description": "claude-rco-1 passes at head, then claude-rco-2 vetoes -> REFUSE (either recognized RCO veto is absolute).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "claude-rco-2",
+          "type": "finding",
+          "status": "changes_requested",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "backup RCO veto at the same head"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": [
+        "claude-rco-1",
+        "claude-rco-2"
+      ],
+      "author_agent": "codex-lead-1",
+      "expected": {
+        "ok": false,
+        "decision": "vetoed_after_pass",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": true
+      },
+      "cli_expect_nonzero": true
     }
   ],
   "allow_cases": [
@@ -353,6 +416,34 @@
       "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
       "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
       "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": false
+    },
+    {
+      "name": "backup_rco_only_pass_at_exact_head_allows",
+      "description": "claude-rco-2 is in the recognized RCO set and can satisfy the RCO slot when not the PR author.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-2",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "Backup RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": [
+        "claude-rco-1",
+        "claude-rco-2"
+      ],
+      "author_agent": "codex-lead-1",
       "expected": {
         "ok": true,
         "decision": "rco_pass_present",

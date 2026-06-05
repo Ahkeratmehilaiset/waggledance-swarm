@@ -6,6 +6,7 @@ JSON fields, compares each open PR's ``baseRefOid`` to a caller-supplied
 current base SHA, and emits a queue report suitable for bridge handoffs.
 It does not refresh branches, post bridge events, or authorize merges.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -14,7 +15,6 @@ import re
 import subprocess
 import sys
 from typing import Any, Callable, Mapping, Sequence
-
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 GUARDED_TOKENS = ("PRIVATE_" + "MARKER", "_DO_NOT_" + "LEAK")
@@ -204,10 +204,12 @@ def _summarize_checks(value: object) -> dict[str, int]:
         status = str(item.get("status", "")).upper()
         if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} or state == "SUCCESS":
             summary["success"] += 1
-        elif (
-            conclusion in {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}
-            or state in {"FAILURE", "ERROR"}
-        ):
+        elif conclusion in {
+            "FAILURE",
+            "TIMED_OUT",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+        } or state in {"FAILURE", "ERROR"}:
             summary["failure"] += 1
         elif status in {"QUEUED", "IN_PROGRESS", "PENDING"} or state == "PENDING":
             summary["pending"] += 1

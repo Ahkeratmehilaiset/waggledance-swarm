@@ -12,7 +12,6 @@ from tools.report_open_pr_stale_base_queue import (
     main,
 )
 
-
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
 HEAD_ONE = "1234567890abcdef1234567890abcdef12345678"
@@ -178,7 +177,9 @@ def test_invalid_pr_shape_is_refused() -> None:
     assert excinfo.value.report["decision"] == "invalid_gh_json"
 
 
-def test_cli_json_can_fail_on_stale(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_json_can_fail_on_stale(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     payload = [_pr_payload(number=870, baseRefOid=OTHER_BASE)]
 
     def fake_build_open_pr_stale_base_report(**kwargs: object) -> dict[str, object]:

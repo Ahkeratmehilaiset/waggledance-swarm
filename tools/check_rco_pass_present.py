@@ -2,16 +2,16 @@
 """Rule 9a fail-closed RCO_PASS presence gate verifier.
 
 Enforces CLAUDE.md Rule 9a: "RCO absence = NO merge". A valid
-`claude-rco-1` (or --rco-agent) `RCO_PASS` (type=decision or rco_review,
-status=rco_pass) whose *message* contains the exact --head SHA string
-must be present for the --task-id (canonical branch name) at the
-*exact* --head. 
+recognized RCO `RCO_PASS` (type=decision or rco_review, status=rco_pass)
+whose *message* contains the exact --head SHA string must be present for
+the --task-id (canonical branch name) at the *exact* --head. The passing
+RCO must not be the PR author.
 
 Fail-closed rules (per spec):
-1. Scan only events authored by --rco-agent on the given --task-id.
+1. Scan only events authored by the recognized --rco-agent set on the given --task-id.
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
    AND message contains the exact --head (40-char SHA) string.
-3. If the MOST RECENT rco-agent event on task_id is a veto
+3. If the MOST RECENT event from any recognized RCO on task_id is a veto
    (changes_requested / finding / blocked / rco_block* etc), REFUSE
    regardless of any earlier pass.
 4. If NO qualifying RCO_PASS-at-exact-head exists, REFUSE. Silence/absence
@@ -36,10 +36,10 @@ import re
 import sys
 from typing import Any, Mapping, Sequence
 
-
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 DECISION_TYPES_FOR_PASS = frozenset({"decision", "rco_review"})
+DEFAULT_RCO_AGENTS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
 
 # Veto detection (fail-closed, mirrors blocking logic from sibling gate)
 BLOCKING_STATUSES = frozenset(
@@ -66,6 +66,7 @@ CLAIM_GATES: tuple[str, ...] = (
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,10 +95,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rco-agent",
-        default="claude-rco-1",
-        help="RCO agent identity to require (default: claude-rco-1)",
+        action="append",
+        default=None,
+        help=(
+            "Recognized RCO agent identity. Repeat to supply a set. "
+            "Defaults to claude-rco-1 and claude-rco-2."
+        ),
     )
-    parser.add_argument("--json", action="store_true", help="Emit JSON result to stdout")
+    parser.add_argument(
+        "--author-agent",
+        required=True,
+        help=(
+            "Bridge agent identity that authored the PR. A recognized RCO "
+            "cannot satisfy the RCO slot for its own PR."
+        ),
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit JSON result to stdout"
+    )
     return parser
 
 
@@ -105,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     task_id = (args.task_id or "").strip()
     head = (args.head or "").strip().lower()
-    rco_agent = (args.rco_agent or "").strip()
+    author_agent = (args.author_agent or "").strip()
 
     if not task_id:
         print("--task-id must not be empty", file=sys.stderr)
@@ -113,8 +128,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not SHA_RE.fullmatch(head):
         print("--head must be a 40-char lowercase hex SHA", file=sys.stderr)
         return 2
-    if not rco_agent:
-        print("--rco-agent must not be empty", file=sys.stderr)
+    if not author_agent:
+        print("--author-agent must not be empty", file=sys.stderr)
         return 2
 
     events_path: Path = args.events
@@ -124,7 +139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             decision="no_events_file",
             task_id=task_id,
             head=head,
-            rco_agent=rco_agent,
+            rco_agents=args.rco_agent,
+            author_agent=author_agent,
             error=f"bridge events file not found: {events_path}",
             has_qualifying_rco_pass_at_head=False,
             latest_rco_is_veto=None,
@@ -140,7 +156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             decision="invalid_events_file",
             task_id=task_id,
             head=head,
-            rco_agent=rco_agent,
+            rco_agents=args.rco_agent,
+            author_agent=author_agent,
             error=str(exc),
             has_qualifying_rco_pass_at_head=False,
             latest_rco_is_veto=None,
@@ -152,14 +169,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         events=events,
         task_id=task_id,
         head=head,
-        rco_agent=rco_agent,
+        rco_agent=args.rco_agent,
+        author_agent=author_agent,
     )
     _emit(result, args.json)
 
     if result.get("ok") and result.get("has_qualifying_rco_pass_at_head"):
         return 0
     # Distinguish arg/invalid (2) vs. gate refuse (3) - here gate cases use 3
-    return 3 if result.get("decision") in {"rco_pass_absent", "vetoed_after_pass", "no_qualifying_pass"} else 2
+    gate_refuse_decisions = {
+        "rco_pass_absent",
+        "vetoed_after_pass",
+        "no_qualifying_pass",
+        "no_rco_events_for_task",
+        "no_eligible_rco_agents",
+    }
+    return 3 if result.get("decision") in gate_refuse_decisions else 2
 
 
 def _emit(result: dict[str, Any], as_json: bool) -> None:
@@ -169,7 +194,8 @@ def _emit(result: dict[str, Any], as_json: bool) -> None:
         if result.get("ok") and result.get("has_qualifying_rco_pass_at_head"):
             print(
                 f"RCO_PASS present at exact head {result.get('head')} "
-                f"for task {result.get('task_id')} (agent {result.get('rco_agent')})"
+                f"for task {result.get('task_id')} "
+                f"(agent {result.get('satisfying_rco_agent')})"
             )
         else:
             print(f"REFUSED: {result.get('decision')}", file=sys.stderr)
@@ -190,7 +216,8 @@ def _make_result(
     decision: str,
     task_id: str,
     head: str,
-    rco_agent: str,
+    rco_agents: Sequence[str] | None,
+    author_agent: str,
     has_qualifying_rco_pass_at_head: bool,
     latest_rco_is_veto: bool | None,
     error: str | None = None,
@@ -202,11 +229,22 @@ def _make_result(
         "decision": decision,
         "task_id": task_id,
         "head": head,
-        "rco_agent": rco_agent,
+        "rco_agent": rco_agents[0] if rco_agents else "",
+        "rco_agents": list(rco_agents or []),
+        "recognized_rco_agents": list(rco_agents or []),
+        "eligible_rco_agents": [
+            agent for agent in list(rco_agents or []) if agent != author_agent
+        ],
+        "author_agent": author_agent,
+        "satisfying_rco_agent": None,
         "has_qualifying_rco_pass_at_head": bool(has_qualifying_rco_pass_at_head),
         "latest_rco_is_veto": latest_rco_is_veto,
-        "rco_pass_event": _summarize_event(rco_pass_event) if rco_pass_event is not None else None,
-        "latest_rco_event": _summarize_event(latest_rco_event) if latest_rco_event is not None else None,
+        "rco_pass_event": (
+            _summarize_event(rco_pass_event) if rco_pass_event is not None else None
+        ),
+        "latest_rco_event": (
+            _summarize_event(latest_rco_event) if latest_rco_event is not None else None
+        ),
         "error": error,
     }
     # Hard rule: emit all claim gates as false in every artifact.
@@ -220,27 +258,40 @@ def check_rco_pass_present(
     events: Sequence[Mapping[str, Any]],
     task_id: str,
     head: str,
-    rco_agent: str = "claude-rco-1",
+    rco_agent: str | Sequence[str] | None = None,
+    author_agent: str = "",
 ) -> dict[str, Any]:
-    """Return whether a valid RCO_PASS at exact head exists for the rco-agent on task_id.
+    """Return whether a valid RCO_PASS at exact head exists for the RCO set on task_id.
 
-    Fail-closed: absence, wrong identity, wrong head, or later veto from rco-agent -> not ok.
+    Fail-closed: absence, wrong identity, wrong head, missing author, self-review,
+    or later veto from any recognized RCO -> not ok.
     Latest is determined by append order in events list (index), not wallclock ts.
     """
     task_id = (task_id or "").strip()
     head = (head or "").strip().lower()
-    rco_agent = (rco_agent or "").strip()
+    recognized_rco_agents = _normalize_rco_agents(rco_agent)
+    author_agent = (author_agent or "").strip()
+    eligible_rco_agents = tuple(
+        agent for agent in recognized_rco_agents if agent != author_agent
+    )
 
     base: dict[str, Any] = {
         "ok": False,
         "decision": "rco_pass_absent",
         "task_id": task_id,
         "head": head,
-        "rco_agent": rco_agent,
+        "rco_agent": recognized_rco_agents[0] if recognized_rco_agents else "",
+        "rco_agents": list(recognized_rco_agents),
+        "recognized_rco_agents": list(recognized_rco_agents),
+        "eligible_rco_agents": list(eligible_rco_agents),
+        "author_agent": author_agent,
+        "satisfying_rco_agent": None,
         "has_qualifying_rco_pass_at_head": False,
         "latest_rco_is_veto": None,
         "rco_pass_event": None,
         "latest_rco_event": None,
+        "latest_rco_events": {},
+        "blocking_rco_agents": [],
         "error": None,
     }
     for key in CLAIM_GATES:
@@ -254,19 +305,39 @@ def check_rco_pass_present(
         base["decision"] = "invalid_head"
         base["error"] = "head must be a 40-char lowercase hex SHA"
         return base
-    if not rco_agent:
-        base["decision"] = "invalid_rco_agent"
-        base["error"] = "rco_agent must not be empty"
+    if not recognized_rco_agents:
+        base["decision"] = "invalid_rco_agents"
+        base["error"] = "at least one recognized rco_agent is required"
+        return base
+    invalid_rco_agents = [
+        agent for agent in recognized_rco_agents if not AGENT_ID_RE.fullmatch(agent)
+    ]
+    if invalid_rco_agents:
+        base["decision"] = "invalid_rco_agents"
+        base["error"] = "rco_agent entries must be bridge agent ids"
+        return base
+    if not author_agent:
+        base["decision"] = "invalid_author_agent"
+        base["error"] = "author_agent must not be empty"
+        return base
+    if not AGENT_ID_RE.fullmatch(author_agent):
+        base["decision"] = "invalid_author_agent"
+        base["error"] = "author_agent must be a bridge agent id"
+        return base
+    if not eligible_rco_agents:
+        base["decision"] = "no_eligible_rco_agents"
+        base["error"] = "all recognized RCO agents are excluded as the PR author"
+        base["latest_rco_is_veto"] = False
         return base
 
-    # Collect all rco-agent events scoped to this task_id (exact match per spec)
+    # Collect all recognized-RCO events scoped to this task_id (exact match per spec)
     rco_events: list[tuple[int, Mapping[str, Any]]] = []
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
         if str(event.get("task_id", "")) != task_id:
             continue
-        if str(event.get("agent", "")) != rco_agent:
+        if str(event.get("agent", "")) not in recognized_rco_agents:
             continue
         rco_events.append((index, event))
 
@@ -278,13 +349,22 @@ def check_rco_pass_present(
     # Most recent by list order (highest index)
     latest_idx, latest_ev = max(rco_events, key=lambda item: item[0])
     base["latest_rco_event"] = _summarize_event(latest_ev)
+    latest_by_agent: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    for idx, ev in rco_events:
+        latest_by_agent[str(ev.get("agent", ""))] = (idx, ev)
+    base["latest_rco_events"] = {
+        agent: _summarize_event(ev) for agent, (_idx, ev) in latest_by_agent.items()
+    }
     latest_is_veto = _is_rco_veto_event(latest_ev)
     base["latest_rco_is_veto"] = latest_is_veto
 
     # Find qualifying head-bound passes (type-restricted, status=rco_pass, message contains exact head)
     qualifying: list[tuple[int, Mapping[str, Any]]] = []
     for idx, ev in rco_events:
-        if _is_qualifying_rco_pass(ev, head, rco_agent):
+        agent = str(ev.get("agent", ""))
+        if agent not in eligible_rco_agents:
+            continue
+        if _is_qualifying_rco_pass(ev, head, agent):
             qualifying.append((idx, ev))
 
     if not qualifying:
@@ -294,17 +374,37 @@ def check_rco_pass_present(
 
     latest_pass_idx, latest_pass_ev = max(qualifying, key=lambda item: item[0])
     base["rco_pass_event"] = _summarize_event(latest_pass_ev)
+    base["satisfying_rco_agent"] = str(latest_pass_ev.get("agent", ""))
     base["has_qualifying_rco_pass_at_head"] = True
 
-    # Check for any later veto after the (latest) qualifying pass
-    has_later_veto = any(
-        idx > latest_pass_idx and _is_rco_veto_event(ev) for idx, ev in rco_events
-    )
+    # Check for any standing veto from any recognized RCO. A later pass from the
+    # same RCO clears that RCO's earlier veto; another RCO's unretracted veto
+    # remains absolute and cannot be out-voted.
+    blocking_agents: list[str] = []
+    for agent, (latest_agent_idx, latest_agent_ev) in latest_by_agent.items():
+        latest_agent_veto = _is_rco_veto_event(latest_agent_ev)
+        latest_agent_pass_idx = max(
+            (idx for idx, ev in qualifying if str(ev.get("agent", "")) == agent),
+            default=-1,
+        )
+        has_later_veto = any(
+            idx > latest_agent_pass_idx
+            and str(ev.get("agent", "")) == agent
+            and _is_rco_veto_event(ev)
+            for idx, ev in rco_events
+        )
+        if (
+            latest_agent_veto
+            or has_later_veto
+            or (
+                latest_agent_idx > latest_pass_idx
+                and _is_rco_veto_event(latest_agent_ev)
+            )
+        ):
+            blocking_agents.append(agent)
+    base["blocking_rco_agents"] = sorted(set(blocking_agents))
 
-    if has_later_veto or latest_is_veto:
-        # latest_is_veto covers the "most recent is veto" case; has_later_veto covers
-        # veto strictly after the pass (even if something non-veto after veto, but
-        # if most recent after veto is non-veto, still had later veto after pass)
+    if base["blocking_rco_agents"]:
         base["ok"] = False
         base["decision"] = "vetoed_after_pass"
         return base
@@ -315,7 +415,27 @@ def check_rco_pass_present(
     return base
 
 
-def _is_qualifying_rco_pass(event: Mapping[str, Any], head: str, rco_agent: str) -> bool:
+def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:
+    raw: Sequence[str]
+    if value is None:
+        raw = DEFAULT_RCO_AGENTS
+    elif isinstance(value, str):
+        raw = (value,)
+    else:
+        raw = value
+    normalized: list[str] = []
+    for item in raw:
+        agent = str(item or "").strip()
+        if not agent:
+            continue
+        if agent not in normalized:
+            normalized.append(agent)
+    return tuple(normalized)
+
+
+def _is_qualifying_rco_pass(
+    event: Mapping[str, Any], head: str, rco_agent: str
+) -> bool:
     if str(event.get("agent", "")) != rco_agent:
         return False
     typ = str(event.get("type", "")).lower()
@@ -392,11 +512,7 @@ def _is_approval_status(status: str) -> bool:
 
 
 def _status_tokens(status: str) -> set[str]:
-    return {
-        token
-        for token in re.split(r"[^a-z0-9]+", status.lower())
-        if token
-    }
+    return {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
 
 
 def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:

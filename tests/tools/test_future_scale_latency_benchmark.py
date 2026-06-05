@@ -7,14 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import run_future_scale_latency_bench as harness  # noqa: E402
-
 
 SCRIPT = ROOT / "tools" / "run_future_scale_latency_bench.py"
 FIXED_NOW = datetime(2026, 6, 4, 20, 15, tzinfo=timezone.utc)

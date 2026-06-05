@@ -7,6 +7,7 @@ inside that contract: deterministic local fixtures only, no network, no model
 pulls, no runtime authority, and no claim that the numbers are production
 latency evidence.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,6 @@ from typing import Any, Mapping, Sequence
 
 import jsonschema
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -30,7 +30,6 @@ from tools.future_scale_contract_safety import (  # noqa: E402
     validate_exact_false_fields,
     validate_scalar_safety,
 )
-
 
 BENCHMARK_VERSION = "future_scale_latency.v1"
 SCHEMA_VERSION = "latency_benchmark.v1"
@@ -250,7 +249,11 @@ def validate_latency_benchmark_report(report: dict[str, Any]) -> list[str]:
             if _is_finite_number(observation.get("p99_ms")):
                 p99_values.append(float(observation["p99_ms"]))
             samples = observation.get("samples")
-            if not isinstance(samples, int) or isinstance(samples, bool) or samples <= 0:
+            if (
+                not isinstance(samples, int)
+                or isinstance(samples, bool)
+                or samples <= 0
+            ):
                 errors.append(
                     f"latency_observations[{index}].samples must be a positive int"
                 )
@@ -386,8 +389,10 @@ def _canonical_digest(value: Any) -> str:
 
 
 def _format_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 
 
@@ -395,9 +400,7 @@ def _parse_utc(raw: str) -> datetime:
     if not raw.endswith("Z"):
         raise ValueError("--now requires a UTC timestamp ending in Z")
     try:
-        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise ValueError("--now must match YYYY-MM-DDTHH:MM:SSZ") from exc
 

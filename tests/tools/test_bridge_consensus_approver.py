@@ -115,6 +115,97 @@ def test_backup_rco_can_satisfy_rco_slot() -> None:
     assert result["rco_pass_ref"]["agent"] == RCO2
 
 
+def test_descriptive_build_task_id_counts_when_payload_head_matches() -> None:
+    events = [
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        {
+            **_approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "tools-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is True
+    assert result["identities"]["build_lead"]["approved"] is True
+    assert result["identities"]["build_tools"]["approved"] is True
+
+
+def test_descriptive_build_task_id_with_stale_payload_head_does_not_count() -> None:
+    events = [
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {"head": OTHER_HEAD},
+        },
+        {
+            **_approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "tools-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approval_index"] is None
+
+
+def test_duplicate_descriptive_build_identity_still_counts_once() -> None:
+    events = [
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        {
+            **_approval(LEAD, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "lead-second-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approved"] is True
+    assert result["identities"]["build_tools"]["approved"] is False
+
+
+def test_descriptive_build_event_without_payload_head_or_pr_does_not_count() -> None:
+    events = [
+        {
+            **_approval(
+                LEAD,
+                "build_consensus",
+                ts="2026-05-29T13:00:00Z",
+                in_message=True,
+            ),
+            "task_id": "lead-descriptive-refresh",
+            "payload": {},
+        },
+        {
+            **_approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+            "task_id": "tools-descriptive-refresh",
+            "payload": {"head": HEAD},
+        },
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approval_index"] is None
+
+
 def test_author_rco_self_pass_does_not_satisfy_rco_slot() -> None:
     events = [
         _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),

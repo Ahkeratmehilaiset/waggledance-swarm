@@ -41,6 +41,7 @@ def _event(
     head: str = HEAD,
     pr: int = 901,
     ts: str = "2026-06-05T05:30:00Z",
+    payload: dict | None = None,
 ) -> dict:
     return {
         "ts_utc": ts,
@@ -49,7 +50,7 @@ def _event(
         "status": status,
         "task_id": task_id,
         "message": f"{status} exact head {head}",
-        "payload": {"head": head, "pr": pr},
+        "payload": {"head": head, "pr": pr} if payload is None else payload,
     }
 
 
@@ -122,6 +123,56 @@ def test_rco2_can_satisfy_recognized_rco_slot() -> None:
         report["gate_results"]["bridge_consensus"]["satisfying_rco_agent"]
         == "claude-rco-2"
     )
+
+
+def test_descriptive_build_consensus_payload_head_counts_for_promotion() -> None:
+    events = [
+        _event(
+            "codex-lead-1",
+            "build_consensus_pass",
+            task_id="lead-descriptive-refresh",
+            payload={"head": HEAD},
+            ts="2026-06-05T05:30:00Z",
+        ),
+        _event(
+            "codex-tools-1",
+            "build_consensus_pass",
+            task_id="tools-descriptive-refresh",
+            payload={"head": HEAD},
+            ts="2026-06-05T05:31:00Z",
+        ),
+        _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+    ]
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+    assert report["gate_results"]["bridge_consensus"]["ok"] is True
+
+
+def test_descriptive_build_consensus_stale_payload_head_fails_promotion() -> None:
+    events = [
+        _event(
+            "codex-lead-1",
+            "build_consensus_pass",
+            task_id="lead-descriptive-refresh",
+            payload={"head": OTHER_BASE},
+            ts="2026-06-05T05:30:00Z",
+        ),
+        _event(
+            "codex-tools-1",
+            "build_consensus_pass",
+            task_id="tools-descriptive-refresh",
+            payload={"head": HEAD},
+            ts="2026-06-05T05:31:00Z",
+        ),
+        _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+    ]
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
 
 
 def test_author_rco_self_pass_does_not_count() -> None:

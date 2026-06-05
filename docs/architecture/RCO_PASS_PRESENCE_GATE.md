@@ -9,13 +9,13 @@ that enforces CLAUDE.md Rule 9a: **"RCO absence = NO merge"**.
 
 Per `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md` §4:
 
-> RCO absence = NO merge — if no explicit `claude-rco-1` `RCO_PASS` at the
+> RCO absence = NO merge — if no explicit recognized RCO `RCO_PASS` at the
 > exact head is present, the gate refuses even when build-consensus and every
 > charter condition pass. Silence blocks; it does not default-allow.
 
 A separate tool `tools/check_bridge_changes_requested.py` already provides the
 RCO-veto preflight (absolute veto on any later `changes_requested`/`finding`/`blocked`
-from the RCO agent).
+from a recognized RCO agent).
 
 This tool (`check_rco_pass_present.py`) is the **presence** side of the RCO gate.
 It must be **AND-ed** with the veto preflight in any merge decision path:
@@ -23,7 +23,8 @@ It must be **AND-ed** with the veto preflight in any merge decision path:
 - Merge only if:
   - `check_bridge_changes_requested.py` reports clear (no-block), **AND**
   - `check_rco_pass_present.py` reports a valid `RCO_PASS` present at the **exact**
-    head for the canonical `--task-id` (branch name) from the configured `--rco-agent`.
+    head for the canonical `--task-id` (branch name) from any configured
+    recognized `--rco-agent` that is not `--author-agent`.
 
 Any missing, stale (different head), wrong-identity, non-qualifying-type/status,
 or later-veto RCO signal fails closed to refusal (never default-allows).
@@ -35,21 +36,28 @@ python tools/check_rco_pass_present.py \
     --task-id <canonical-branch-name> \
     --head <40-char-sha> \
     [--events .agent-bridge/shared/events.jsonl] \
-    [--rco-agent claude-rco-1] \
+    [--rco-agent claude-rco-1] [--rco-agent claude-rco-2] \
+    --author-agent <bridge-agent-that-authored-pr> \
     [--json]
 ```
 
-- Scans only events where `agent == --rco-agent` **and** `task_id == --task-id`.
+- `--rco-agent` is repeatable. If omitted, the default recognized RCO set is
+  `{claude-rco-1, claude-rco-2}`.
+- `--author-agent` is required. A recognized RCO cannot satisfy the RCO slot
+  for a PR it authored.
+- Scans only events where `agent` is in the recognized RCO set **and**
+  `task_id == --task-id`.
 - A qualifying PASS requires:
   - `type` in {"decision", "rco_review"}
   - `status` in {"rco_pass"}
   - `message` contains the exact `--head` string (head-exact binding)
 - Veto rule (most-recent-wins by append order in events.jsonl):
-  - If the *most recent* RCO-agent event on the task is a veto
+  - If the *most recent* event from any recognized RCO on the task is a veto
     (status changes_requested / blocked* or type finding/blocked), refuse
     regardless of any earlier PASS.
-  - If a veto appears after a qualifying PASS in the event log, refuse
-    (superseded).
+  - If one recognized RCO passes while another recognized RCO holds an
+    unretracted veto, refuse. A later pass by the same RCO clears only that
+    RCO's earlier veto; it cannot out-vote a different RCO's veto.
 - Exit codes:
   - 0 : valid head-bound RCO_PASS present and not superseded by later veto
   - 3 : RCO_PASS absent / stale / vetoed / silence (the core fail-closed case)

@@ -33,17 +33,28 @@ missing, duplicated, forged, or stale signal fails closed to
 1. **Build consensus** — two distinct verified identities, the lead
    (`codex-lead-1`) and the tools/impl peer (`codex-tools-1`), both concur on
    the change.
-2. **Independent RCO pass** — `claude-rco-1` posts an explicit `RCO_PASS`
-   (`type=decision` with a status in the approval set) on the PR's **canonical
-   task_id** (= branch name) at the **exact head SHA**.
-3. **RCO veto is absolute** — any `finding`/`changes_requested` from
-   `claude-rco-1` on that task blocks the merge
-   (`tools/check_bridge_changes_requested.py`). RCO is never out-voted.
-4. **RCO absence = NO merge** — if no explicit `claude-rco-1` `RCO_PASS` at the
-   exact head is present, the gate refuses even when build-consensus and every
-   charter condition pass. Silence blocks; it does not default-allow.
-5. **Three distinct identities** — duplicate, missing, or unverifiable agent
-   identities are refused. A 2-of-3 or self-approving signal set fails closed.
+2. **Independent RCO pass** — a **recognized RCO identity** posts an explicit
+   `RCO_PASS` (`type=decision` with a status in the approval set) on the PR's
+   **canonical task_id** (= branch name) at the **exact head SHA**. The
+   recognized RCO set is `{claude-rco-1, claude-rco-2}` (backup-RCO co-authority,
+   added 2026-06-05). A valid `RCO_PASS` from **either** identity satisfies the
+   RCO slot, giving availability when one RCO is offline. The passing RCO **must
+   not be the PR author** (author ≠ reviewer): if a recognized RCO authored the
+   PR, only the *other* recognized RCO can satisfy the RCO slot.
+3. **RCO veto is absolute and per-identity** — any `finding`/`changes_requested`
+   from **any** recognized RCO identity on that task blocks the merge
+   (`tools/check_bridge_changes_requested.py`). A veto **outranks a pass**: if
+   one recognized RCO passes while the other holds an unretracted veto at the
+   same head, the gate is blocked. RCO is never out-voted, and the backup RCO
+   can never be used to out-vote a veto.
+4. **RCO absence = NO merge** — if no recognized RCO `RCO_PASS` at the exact head
+   is present, the gate refuses even when build-consensus and every charter
+   condition pass. Silence blocks; it does not default-allow.
+5. **Three distinct identities** — the approval set is build-lead + build-tools +
+   exactly one recognized RCO = three distinct verified identities. An RCO
+   identity counts for the RCO slot only, never a build slot. Duplicate, missing,
+   unverifiable, self-approving, or author-as-own-reviewer signal sets fail
+   closed.
 6. **Head-exact binding** — all three approvals bind to the exact head SHA. Any
    re-push invalidates all prior approvals; re-consensus is required (mirrors
    `gh pr merge --match-head-commit` and the PR #777 head-drift fail-close).
@@ -55,6 +66,35 @@ missing, duplicated, forged, or stale signal fails closed to
    identities, the head SHA, and the `RCO_PASS` event reference. A consumer
    must be able to **re-derive** the verdict from those fields; trusting a bare
    `ok` flag is forbidden (fail-open-recurs).
+
+## Enforcement of backup-RCO co-authority (2026-06-05 amendment)
+
+The recognized-RCO-set semantics above require these enforcement changes
+(implemented by the impl lane, reviewed independently by the *other* RCO):
+
+* `tools/check_rco_pass_present.py` — accept `--rco-agent` as a **set** (repeat
+  the flag). Return ok when a valid `RCO_PASS` at the exact head exists from
+  **any** recognized identity that is **not** the PR author, and is not
+  superseded by that identity's own later veto. Default set `{claude-rco-1,
+  claude-rco-2}`. Fail-closed on empty set / missing / malformed.
+* `tools/idle_consensus_auto_merge.py` (`verify_bridge_consensus`) — treat the
+  RCO slot as satisfied by exactly one recognized RCO identity (≠ author),
+  count it for the RCO slot only, and keep the three-distinct-identity check.
+  A veto from **either** recognized RCO at the head blocks (veto outranks pass).
+* `tools/check_bridge_changes_requested.py` — already honors *any* peer veto
+  (peer = agent ≠ merging-agent), so either RCO's `changes_requested` already
+  blocks; no change needed, but its behavior is now contractually required.
+* Executor (`Invoke-BridgeMergeDriver.ps1`, operator-side) — pass the recognized
+  RCO set; record which RCO satisfied the slot in the receipt.
+
+Required fail-closed tests: rco-1-only pass → ok; rco-2-only pass → ok;
+author-RCO self-pass (rco-2 authored + rco-2 pass, no rco-1 pass) → not ok;
+one passes + other vetoes at head → blocked; neither passes → blocked; pass at
+stale head → blocked; duplicate identity → not three-distinct.
+
+`tools/idle_consensus_auto_merge.py` and `CLAUDE.md` are on the charter file
+denylist, so this amendment is **operator-gated** and lands with the operator's
+signature (per "Bootstrap authority" below); it cannot ride its own gate.
 
 ## Out of scope (stays operator-gated)
 

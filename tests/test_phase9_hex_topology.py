@@ -209,6 +209,14 @@ def test_cell_message_rejects_unknown_kind():
         )
 
 
+def test_cell_message_rejects_runtime_mutation_authority():
+    with pytest.raises(ValueError, match="no_runtime_mutation must be true"):
+        cmc.CellMessage(
+            schema_version=1, from_cell_id="c1", to_cell_id="c2",
+            kind="ring_request", payload={}, no_runtime_mutation=False,
+        )
+
+
 def test_make_message_const_no_runtime_mutation():
     m = cmc.make_message(from_cell_id="c1", to_cell_id="c2",
                               kind="ring_request")
@@ -363,6 +371,39 @@ def test_apply_plan_to_topology_pure():
     for c in ("b1", "b2"):
         assert t_new["cells"][c]["live_state"] == "shadow_only"
         assert t_new["cells"][c]["parent_cell_id"] == "b"
+
+
+def test_apply_plan_wires_shadow_children_as_sibling_ring_neighbors():
+    t_orig = _topo()
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2", "b3"),
+    )
+
+    t_new = so.apply_plan_to_topology(t_orig, plan)
+
+    assert t_new["cells"]["b1"]["neighbor_cell_ids"] == ["b2", "b3"]
+    assert t_new["cells"]["b2"]["neighbor_cell_ids"] == ["b1", "b3"]
+    assert t_new["cells"]["b3"]["neighbor_cell_ids"] == ["b1", "b2"]
+
+
+def test_shadow_subdivision_children_can_exchange_ring_messages():
+    t_orig = _topo()
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2"),
+    )
+    t_new = so.apply_plan_to_topology(t_orig, plan)
+    msg = cmc.make_message(
+        from_cell_id="b1",
+        to_cell_id="b2",
+        kind="ring_request",
+    )
+
+    delivery = rm.deliver_one(t_new, msg, seq=0)
+
+    assert delivery.delivered is True
+    assert delivery.blocked_reason is None
 
 
 def test_apply_plan_rejects_unknown_parent():

@@ -25,6 +25,8 @@ class CellMessage:
     no_runtime_mutation: bool
 
     def __post_init__(self) -> None:
+        if self.no_runtime_mutation is not True:
+            raise ValueError("no_runtime_mutation must be true")
         if self.kind not in MESSAGE_KINDS:
             raise ValueError(
                 f"unknown message kind: {self.kind!r}; "

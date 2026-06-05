@@ -12,6 +12,14 @@ param(
     [string] $Model = '',
     [string] $ConfigPath = '',
     [string] $StatePath = '',
+    [switch] $RequireFreshness,
+    [string] $RemoteMainSha = '',
+    [string] $LocalOriginMainSha = '',
+    [string] $WorktreeHead = '',
+    [string] $PrHeadSha = '',
+    [string] $ReviewedHeadSha = '',
+    [string] $TargetHeadSha = '',
+    [string] $GitRoot = '',
     [switch] $DryRun,
     [switch] $Json
 )
@@ -34,6 +42,14 @@ if ($Agent) { $argsList += @('--agent', $Agent) }
 if ($Model) { $argsList += @('--model', $Model) }
 if ($ConfigPath) { $argsList += @('--config', $ConfigPath) }
 if ($StatePath) { $argsList += @('--state', $StatePath) }
+if ($RequireFreshness) { $argsList += '--require-freshness' }
+if ($RemoteMainSha) { $argsList += @('--remote-main-sha', $RemoteMainSha) }
+if ($LocalOriginMainSha) { $argsList += @('--local-origin-main-sha', $LocalOriginMainSha) }
+if ($WorktreeHead) { $argsList += @('--worktree-head', $WorktreeHead) }
+if ($PrHeadSha) { $argsList += @('--pr-head-sha', $PrHeadSha) }
+if ($ReviewedHeadSha) { $argsList += @('--reviewed-head-sha', $ReviewedHeadSha) }
+if ($TargetHeadSha) { $argsList += @('--target-head-sha', $TargetHeadSha) }
+if ($GitRoot) { $argsList += @('--git-root', $GitRoot) }
 if ($DryRun) { $argsList += '--dry-run' }
 if ($Json) { $argsList += '--json' }
 

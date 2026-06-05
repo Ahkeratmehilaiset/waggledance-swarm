@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -82,6 +84,17 @@ def _git_repo_with_origin_main(tmp_path: Path) -> tuple[Path, str]:
         check=True,
     )
     return repo, sha
+
+
+def _powershell() -> str:
+    shell = (
+        shutil.which("pwsh")
+        or shutil.which("powershell")
+        or shutil.which("powershell.exe")
+    )
+    if not shell:
+        pytest.skip("PowerShell is required for Invoke-GrokReview.ps1 smoke tests")
+    return shell
 
 
 def test_default_config_is_inactive_and_advisory_only() -> None:
@@ -405,6 +418,51 @@ def test_cli_valid_freshness_proof_reaches_disabled_gate(tmp_path: Path) -> None
         check=False,
         capture_output=True,
         text=True,
+    )
+
+    assert completed.returncode == 3
+    report = json.loads(completed.stdout)
+    assert report["decision"] == "grok_disabled"
+    assert report["freshness"]["freshness_ok"] is True
+    assert report["freshness"]["remote_main_sha"] == sha
+    assert report["freshness"]["pr_head_sha"] == OTHER_SHA
+
+
+def test_powershell_wrapper_forwards_freshness_proof(tmp_path: Path) -> None:
+    git_root, sha = _git_repo_with_origin_main(tmp_path)
+    config_path = _write_config(tmp_path)
+    wrapper = Path(__file__).resolve().parents[2] / "tools" / "Invoke-GrokReview.ps1"
+    env = {**os.environ, "PYTHON": sys.executable}
+
+    completed = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper),
+            "-Prompt",
+            "Review this plan.",
+            "-ConfigPath",
+            str(config_path),
+            "-RequireFreshness",
+            "-RemoteMainSha",
+            sha,
+            "-LocalOriginMainSha",
+            sha,
+            "-WorktreeHead",
+            sha,
+            "-PrHeadSha",
+            OTHER_SHA,
+            "-GitRoot",
+            str(git_root),
+            "-Json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
     )
 
     assert completed.returncode == 3

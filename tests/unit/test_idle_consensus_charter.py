@@ -9,7 +9,6 @@ from waggledance.core.idle_consensus_charter import (
     load_charter,
 )
 
-
 ROOT = Path(__file__).resolve().parents[2]
 _PRIVACY_CANARY_MARKER = "PRIVATE" + "_MARKER"
 _SECOND_PRIVACY_CANARY_MARKER = "_DO" + "_NOT" + "_LEAK"

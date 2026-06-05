@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Tests for .agent-bridge/bin/Write-AgentEvent.ps1."""
+
 from __future__ import annotations
 
 import json
@@ -11,7 +12,6 @@ import subprocess
 import pytest
 
 from waggledance.core.bridge_event_schema import validate_event_line
-
 
 REQUIRES_TASK_ID_CASES = [
     ("claim", ""),
@@ -298,7 +298,9 @@ def test_comma_separated_to_agent_ids_write_valid_event(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
     event = json.loads(line)
     assert event["to"] == targets
     validate_event_line(line)
@@ -333,7 +335,9 @@ def test_role_uuid_capability_metadata_is_optional_and_validated(
     )
 
     assert completed.returncode == 0, completed.stderr
-    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
     event = json.loads(line)
     assert event["role"] == "impl"
     assert event["agent_uuid"] == agent_uuid
@@ -396,7 +400,9 @@ def test_grok_response_with_freshness_payload_writes_valid_event(
     )
 
     assert completed.returncode == 0, completed.stderr
-    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
     event = json.loads(line)
     assert event["payload"]["freshness"]["freshness_ok"] is True
     validate_event_line(line)
@@ -669,7 +675,9 @@ def test_claim_records_role_uuid_capabilities_and_lease(tmp_path: Path) -> None:
     assert claim_payload["lease_seconds"] == 600
     assert claim_payload["claim_lease_expires_utc"]
 
-    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
     event = json.loads(line)
     assert event["role"] == "impl"
     assert event["agent_uuid"] == agent_uuid

@@ -13,11 +13,12 @@ from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.magma.demo_policy import demo_policy_for_case
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "run_magma_adversarial_eval.py"
 CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
-EXPECTATIONS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
+EXPECTATIONS = (
+    ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
+)
 EXPANSION = (
     ROOT
     / "tests"
@@ -45,7 +46,9 @@ def _run_eval(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _expected_case_count() -> int:
@@ -103,8 +106,7 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["verdict_accuracy"] == 1.0
     assert report["reason_code_accuracy"] == 1.0
     assert all(
-        case["defect_class"] in REQUIRED_DEFECT_TYPES
-        for case in report["cases"]
+        case["defect_class"] in REQUIRED_DEFECT_TYPES for case in report["cases"]
     )
     assert report["full_match_count"] == expected_case_count
     assert report["partial_match_count"] == 0
@@ -169,9 +171,12 @@ def test_gate_rederives_critical_floor_from_real_per_case_results(
         assert report["ok"] is False
         assert report["fail_count"] == mismatch_count
         assert {case["case_id"] for case in report["failures"]} == set(target_case_ids)
-        assert report["per_case_coverage"]["critical_defect_types_below_floor"][
-            defect_class
-        ] == 1
+        assert (
+            report["per_case_coverage"]["critical_defect_types_below_floor"][
+                defect_class
+            ]
+            == 1
+        )
         assert gate.ok is False
         assert gate.not_caught_count == mismatch_count
         assert any(
@@ -419,7 +424,9 @@ def test_validation_errors_are_redacted_on_cli_error(tmp_path: Path) -> None:
     corpus_path = tmp_path / "broken_corpus.json"
     _write_json(corpus_path, broken)
 
-    result = _run_eval("--corpus", str(corpus_path), "--expectations", str(EXPECTATIONS))
+    result = _run_eval(
+        "--corpus", str(corpus_path), "--expectations", str(EXPECTATIONS)
+    )
 
     assert result.returncode == 1
     combined = result.stdout + result.stderr

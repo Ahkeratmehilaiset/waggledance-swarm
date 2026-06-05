@@ -9,7 +9,6 @@ from waggledance.core.idle_consensus_charter import (
     load_charter,
 )
 
-
 ROOT = Path(__file__).resolve().parents[2]
 _PRIVACY_CANARY_MARKER = "PRIVATE" + "_MARKER"
 _SECOND_PRIVACY_CANARY_MARKER = "_DO" + "_NOT" + "_LEAK"
@@ -40,6 +39,7 @@ LEGACY_FILE_DENYLIST_ENTRIES = {
     "docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md",
     "tools/idle_consensus_auto_merge.py",
     "tools/check_bridge_changes_requested.py",
+    "waggledance/core/idle_consensus_charter.py",
     ".env",
     ".env.*",
     "**/.env",
@@ -176,10 +176,13 @@ def test_evaluate_paths_keeps_required_stay_gated_paths_denied() -> None:
         "configs/bridge_event_validation_waivers.json",
         "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
         "docs/security/client_secret_findings.md",
+        "waggledance/core/idle_consensus_charter.py",
+        "WAGGLEDANCE/CORE/IDLE_CONSENSUS_CHARTER.PY",
+        "waggledance\\core\\idle_consensus_charter.py",
     ):
         decision = evaluate_paths(charter, [path])
         assert decision.allowed is False
-        assert decision.blocked_paths == (path,)
+        assert decision.blocked_paths == (path.replace("\\", "/"),)
 
 
 def test_evaluate_paths_keeps_runtime_http_paths_operator_gated() -> None:

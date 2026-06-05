@@ -45,6 +45,10 @@ class CellRuntime:
             raise ValueError(
                 "cell_id cannot appear in own child_cell_ids"
             )
+        if self.cell_id in self.neighbor_cell_ids:
+            raise ValueError(
+                "cell_id cannot appear in own neighbor_cell_ids"
+            )
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +97,16 @@ def make_runtime(*,
 def make_topology(runtimes: list[CellRuntime]) -> dict:
     """Compose a topology dict from CellRuntime objects (deterministic
     sorted order)."""
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for runtime in runtimes:
+        if runtime.cell_id in seen:
+            duplicates.add(runtime.cell_id)
+        seen.add(runtime.cell_id)
+    if duplicates:
+        raise ValueError(
+            f"duplicate cell_id in topology: {sorted(duplicates)!r}"
+        )
     cells = {r.cell_id: r.to_dict()
               for r in sorted(runtimes, key=lambda x: x.cell_id)}
     return {"schema_version": HEX_RUNTIME_SCHEMA_VERSION, "cells": cells}

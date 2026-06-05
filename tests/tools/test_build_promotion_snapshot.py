@@ -1,0 +1,259 @@
+# SPDX-License-Identifier: BUSL-1.1
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+from tools.build_promotion_snapshot import build_promotion_snapshot, main
+
+REPO = "Ahkeratmehilaiset/waggledance-swarm"
+PR = 901
+TASK = "codex-tools-1/promotion-snapshot-fixture-20260605"
+HEAD = "1234567890abcdef1234567890abcdef12345678"
+BASE = "abcdef1234567890abcdef1234567890abcdef12"
+OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
+PATHS = ["tools/idle_daily_summary.py"]
+DIFF = "+ def helper():\n+     return 1\n"
+
+
+def _completed(stdout: str) -> SimpleNamespace:
+    return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+
+def _pr_view(*, base: str = BASE, checks: list[dict] | None = None) -> dict:
+    return {
+        "number": PR,
+        "headRefName": TASK,
+        "headRefOid": HEAD,
+        "baseRefOid": base,
+        "statusCheckRollup": (
+            checks
+            if checks is not None
+            else [
+                {"name": "unified", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"name": "test (3.13)", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            ]
+        ),
+    }
+
+
+def _runner(*, base: str = BASE, checks: list[dict] | None = None):
+    commands = {
+        (
+            "gh",
+            "pr",
+            "view",
+            str(PR),
+            "--repo",
+            REPO,
+            "--json",
+            "number,headRefName,headRefOid,baseRefOid,statusCheckRollup",
+        ): _completed(json.dumps(_pr_view(base=base, checks=checks))),
+        (
+            "gh",
+            "pr",
+            "diff",
+            str(PR),
+            "--repo",
+            REPO,
+            "--name-only",
+        ): _completed("\n".join(PATHS) + "\n"),
+        (
+            "gh",
+            "pr",
+            "diff",
+            str(PR),
+            "--repo",
+            REPO,
+            "--patch",
+        ): _completed(DIFF),
+    }
+
+    def run(command: tuple[str, ...]) -> SimpleNamespace:
+        if command not in commands:
+            raise AssertionError(f"unexpected command: {command!r}")
+        return commands[command]
+
+    return run
+
+
+def _event(
+    agent: str,
+    status: str,
+    *,
+    type_: str = "decision",
+    task_id: str = TASK,
+    head: str = HEAD,
+    ts: str = "2026-06-05T05:30:00Z",
+    write_scope: list[str] | None = None,
+) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": type_,
+        "status": status,
+        "task_id": task_id,
+        "message": f"{status} PR #{PR} exact head {head}",
+        "paths": [f"github:pull-requests/{PR}", *PATHS],
+        "write_scope": write_scope or [],
+        "payload": {"head": head, "pr": PR},
+    }
+
+
+def _events(
+    *, include_consensus: bool = True, include_claim: bool = True
+) -> list[dict]:
+    events: list[dict] = []
+    if include_claim:
+        events.append(
+            _event(
+                "codex-tools-1",
+                "active",
+                type_="claim",
+                ts="2026-06-05T05:29:00Z",
+                write_scope=list(PATHS),
+            )
+        )
+    if include_consensus:
+        events.extend(
+            [
+                _event(
+                    "codex-lead-1",
+                    "build_consensus_pass",
+                    ts="2026-06-05T05:30:00Z",
+                ),
+                _event(
+                    "codex-tools-1",
+                    "build_consensus_pass",
+                    ts="2026-06-05T05:31:00Z",
+                ),
+                _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+            ]
+        )
+    return events
+
+
+def _events_path(tmp_path: Path, events: list[dict]) -> Path:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in events),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _build(
+    tmp_path: Path,
+    *,
+    events: list[dict] | None = None,
+    base: str = BASE,
+    origin_main_sha: str = BASE,
+) -> dict:
+    return build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, events if events is not None else _events()),
+        origin_main_sha=origin_main_sha,
+        runner=_runner(base=base),
+    )
+
+
+def test_builds_eligible_dry_run_snapshot_from_gh_and_bridge_claim(
+    tmp_path: Path,
+) -> None:
+    report = _build(tmp_path)
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+    assert report["author_agent"] == "codex-tools-1"
+    assert report["pr_status"]["head_sha"] == HEAD
+    assert report["pr_status"]["base_sha"] == BASE
+    assert report["pr_status"]["changed_paths"] == PATHS
+    assert report["pr_status"]["checks"][0]["conclusion"] == "SUCCESS"
+    assert report["undraft_cmd"] == ["gh", "pr", "ready", str(PR), "--repo", REPO]
+    assert report["merge_cmd"] == [
+        "gh",
+        "pr",
+        "merge",
+        str(PR),
+        "--repo",
+        REPO,
+        "--match-head-commit",
+        HEAD,
+        "--squash",
+    ]
+    assert report["external_effect"] is False
+    assert report["would_execute"] is False
+
+
+def test_stale_base_returns_not_eligible_without_commands(tmp_path: Path) -> None:
+    report = _build(tmp_path, base=OTHER_BASE, origin_main_sha=BASE)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "base is stale" in report["reasons"]
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
+def test_missing_bridge_consensus_returns_not_eligible(tmp_path: Path) -> None:
+    report = _build(tmp_path, events=_events(include_consensus=False))
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "bridge consensus incomplete" in report["reasons"]
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
+
+
+def test_missing_author_claim_fails_closed(tmp_path: Path) -> None:
+    report = _build(tmp_path, events=_events(include_claim=False))
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "author_agent could not be derived" in report["errors"][0]
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
+def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
+    eligible_events = _events_path(tmp_path, _events())
+    eligible = main(
+        [
+            "--repo",
+            REPO,
+            "--pr-number",
+            str(PR),
+            "--events",
+            str(eligible_events),
+            "--origin-main-sha",
+            BASE,
+            "--json",
+        ],
+        runner=_runner(),
+    )
+
+    assert eligible == 0
+    assert json.loads(capsys.readouterr().out)["eligible"] is True
+
+    missing_claim_events = _events_path(tmp_path, _events(include_claim=False))
+    invalid = main(
+        [
+            "--repo",
+            REPO,
+            "--pr-number",
+            str(PR),
+            "--events",
+            str(missing_claim_events),
+            "--origin-main-sha",
+            BASE,
+            "--json",
+        ],
+        runner=_runner(),
+    )
+
+    assert invalid == 2
+    assert json.loads(capsys.readouterr().out)["decision"] == "invalid_input"

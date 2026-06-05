@@ -13,11 +13,12 @@ from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
 from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.magma.demo_policy import demo_policy_for_case
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "run_magma_adversarial_eval.py"
 CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
-EXPECTATIONS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
+EXPECTATIONS = (
+    ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
+)
 EXPANSION = (
     ROOT
     / "tests"
@@ -45,12 +46,50 @@ def _run_eval(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _expected_case_count() -> int:
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     return len(corpus["cases"])
+
+
+def _different_gate(actual_gate: str) -> str:
+    for candidate in ("allow", "refuse", "review", "require_approval"):
+        if candidate != actual_gate:
+            return candidate
+    raise AssertionError(f"no alternate gate for {actual_gate!r}")
+
+
+def _write_expectations_with_gate_mismatches(
+    tmp_path: Path,
+    *,
+    defect_class: str,
+    mismatch_count: int,
+) -> tuple[Path, list[str]]:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    expectations = json.loads(EXPECTATIONS.read_text(encoding="utf-8"))
+    cases_by_id = {case["case_id"]: case for case in corpus["cases"]}
+    target_case_ids = [
+        case["case_id"]
+        for case in corpus["cases"]
+        if case["defect_type"] == defect_class
+    ][:mismatch_count]
+    assert len(target_case_ids) == mismatch_count
+
+    broken = copy.deepcopy(expectations)
+    for expectation in broken["expectations"]:
+        case_id = expectation["case_id"]
+        if case_id not in target_case_ids:
+            continue
+        actual = demo_policy_for_case(cases_by_id[case_id])
+        expectation["expected_gate"] = _different_gate(actual["actual_gate"])
+
+    path = tmp_path / f"{defect_class}_mismatch_expectations.json"
+    _write_json(path, broken)
+    return path, target_case_ids
 
 
 def test_scores_fixture_corpus_against_hidden_expectations() -> None:
@@ -67,8 +106,7 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["verdict_accuracy"] == 1.0
     assert report["reason_code_accuracy"] == 1.0
     assert all(
-        case["defect_class"] in REQUIRED_DEFECT_TYPES
-        for case in report["cases"]
+        case["defect_class"] in REQUIRED_DEFECT_TYPES for case in report["cases"]
     )
     assert report["full_match_count"] == expected_case_count
     assert report["partial_match_count"] == 0
@@ -103,6 +141,49 @@ def test_report_can_feed_gate_when_bound_to_solver() -> None:
     assert report["bound_solver_hash"] == solver_hash
     assert gate.ok is True
     assert gate.reasons == ()
+
+
+def test_gate_rederives_critical_floor_from_real_per_case_results(
+    tmp_path: Path,
+) -> None:
+    solver_hash = "solver-artifact-hash"
+    for defect_class, mismatch_count in (
+        ("path_escape", 1),
+        ("governance_bypass", 2),
+    ):
+        expectations_path, target_case_ids = _write_expectations_with_gate_mismatches(
+            tmp_path,
+            defect_class=defect_class,
+            mismatch_count=mismatch_count,
+        )
+
+        report = build_adversarial_eval_report(
+            corpus_path=CORPUS,
+            expectations_path=expectations_path,
+            bound_solver_hash=solver_hash,
+        )
+        gate = verify_adversarial_corpus_gate(
+            report=report,
+            expected_solver_hash=solver_hash,
+            min_cases=len(REQUIRED_DEFECT_TYPES),
+        )
+
+        assert report["ok"] is False
+        assert report["fail_count"] == mismatch_count
+        assert {case["case_id"] for case in report["failures"]} == set(target_case_ids)
+        assert (
+            report["per_case_coverage"]["critical_defect_types_below_floor"][
+                defect_class
+            ]
+            == 1
+        )
+        assert gate.ok is False
+        assert gate.not_caught_count == mismatch_count
+        assert any(
+            f"{defect_class}=1" in reason
+            and "critical defect classes below caught floor" in reason
+            for reason in gate.reasons
+        )
 
 
 def test_scores_phase_d_folded_expansion_provenance() -> None:
@@ -343,7 +424,9 @@ def test_validation_errors_are_redacted_on_cli_error(tmp_path: Path) -> None:
     corpus_path = tmp_path / "broken_corpus.json"
     _write_json(corpus_path, broken)
 
-    result = _run_eval("--corpus", str(corpus_path), "--expectations", str(EXPECTATIONS))
+    result = _run_eval(
+        "--corpus", str(corpus_path), "--expectations", str(EXPECTATIONS)
+    )
 
     assert result.returncode == 1
     combined = result.stdout + result.stderr

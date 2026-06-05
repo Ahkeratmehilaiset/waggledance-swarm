@@ -91,8 +91,9 @@ function Assert-BridgeAgentTargets {
     if ($targetList.Count -eq 0) {
         throw "to must be empty or comma-separated agents"
     }
+    $allowedNonAgentTargets = @('github/main')
     foreach ($target in $targetList) {
-        if ($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+        if (($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') -and ($allowedNonAgentTargets -cnotcontains $target)) {
             throw "to contains invalid bridge agent id: $target"
         }
     }
@@ -132,6 +133,7 @@ $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
+$grokPrWorktreeStrictEpochUtc = '2026-06-04T08:32:00Z'
 $grokRequiredFreshnessShaFields = @('remote_main_sha', 'local_origin_main_sha', 'worktree_head')
 $grokOptionalFreshnessShaFields = @('pr_head_sha', 'reviewed_head_sha', 'target_head_sha')
 $fullGitShaPattern = '^[0-9a-f]{40}$'
@@ -175,6 +177,16 @@ function Test-BridgeObject {
 function Test-FullGitSha {
     param([AllowNull()] $Value)
     return ($Value -is [string] -and $Value -cmatch $fullGitShaPattern)
+}
+
+function Test-BridgeNowAtOrAfter {
+    param([Parameter(Mandatory)] [string] $EpochUtc)
+    $epoch = [DateTimeOffset]::Parse(
+        $EpochUtc,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal
+    ).ToUniversalTime()
+    return ([DateTimeOffset]::UtcNow -ge $epoch)
 }
 
 function Get-BridgeObjectField {
@@ -232,16 +244,27 @@ function Assert-GrokFreshnessPayload {
         throw "grok freshness main sha mismatch"
     }
     $worktreeHead = Get-BridgeObjectField -Object $freshness -Name 'worktree_head'
-    if ($worktreeHead -cne $localOriginMainSha) {
-        throw "grok freshness worktree sha mismatch"
-    }
+    $expectedPrReviewWorktreeHeads = @()
     foreach ($fieldName in $grokOptionalFreshnessShaFields) {
         if (Test-BridgeObjectHasField -Object $freshness -Name $fieldName) {
             $value = Get-BridgeObjectField -Object $freshness -Name $fieldName
             if ($null -ne $value -and -not (Test-FullGitSha -Value $value)) {
                 throw "grok freshness $fieldName must be lowercase 40-hex sha"
             }
+            if ($null -ne $value) {
+                $expectedPrReviewWorktreeHeads += $value
+            }
         }
+    }
+    $expectedWorktreeHeads = if (Test-BridgeNowAtOrAfter -EpochUtc $grokPrWorktreeStrictEpochUtc) {
+        @($localOriginMainSha)
+    } elseif ($expectedPrReviewWorktreeHeads.Count -gt 0) {
+        $expectedPrReviewWorktreeHeads + @($localOriginMainSha)
+    } else {
+        @($localOriginMainSha)
+    }
+    if ($expectedWorktreeHeads -cnotcontains $worktreeHead) {
+        throw "grok freshness worktree sha mismatch"
     }
 }
 

@@ -225,7 +225,6 @@ def test_regex_agent_id_writes_valid_event_and_outbox(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "target",
     [
-        "github/main",
         "docs/benchmarks/LOCAL_OLLAMA_MODEL_SWEEP_2026.md",
         "Gpt",
     ],
@@ -303,6 +302,36 @@ def test_comma_separated_to_agent_ids_write_valid_event(tmp_path: Path) -> None:
     )
     event = json.loads(line)
     assert event["to"] == targets
+    validate_event_line(line)
+
+
+def test_github_main_target_ref_writes_valid_event(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "done",
+        "-TaskId",
+        "bridge-main-merge-observed",
+        "-Status",
+        "merged_observed",
+        "-To",
+        "github/main",
+        "-Message",
+        "main branch merge observed",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
+    event = json.loads(line)
+    assert event["to"] == "github/main"
     validate_event_line(line)
 
 
@@ -431,7 +460,7 @@ def test_invalid_payload_json_fails_before_runtime_write(tmp_path: Path) -> None
     assert not runtime_root.exists()
 
 
-def test_grok_response_rejects_stale_worktree_freshness_before_runtime_write(
+def test_grok_response_rejects_self_declared_pr_head_worktree_freshness(
     tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[2]
@@ -454,6 +483,70 @@ def test_grok_response_rejects_stale_worktree_freshness_before_runtime_write(
         "stale worktree",
         "-PayloadJson",
         _grok_freshness_payload(worktree_head=PR_HEAD_SHA),
+    )
+
+    assert completed.returncode != 0
+    assert "grok freshness worktree sha mismatch" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_grok_response_accepts_main_worktree_with_pr_head_metadata(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "grok-scout-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "grok-dispatch-selftest",
+        "-Status",
+        "grok_response",
+        "-To",
+        "codex-lead-1",
+        "-Message",
+        "main-bound fresh response",
+        "-PayloadJson",
+        _grok_freshness_payload(worktree_head=MAIN_SHA),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
+    event = json.loads(line)
+    assert event["payload"]["freshness"]["worktree_head"] == MAIN_SHA
+    validate_event_line(line)
+
+
+def test_grok_response_rejects_unmatched_worktree_freshness_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "grok-scout-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "grok-dispatch-selftest",
+        "-Status",
+        "grok_response",
+        "-To",
+        "codex-lead-1",
+        "-Message",
+        "stale worktree",
+        "-PayloadJson",
+        _grok_freshness_payload(worktree_head="c" * 40),
     )
 
     assert completed.returncode != 0

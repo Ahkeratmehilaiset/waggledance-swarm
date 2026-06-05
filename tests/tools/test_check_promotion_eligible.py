@@ -101,6 +101,16 @@ def test_all_gates_pass_with_rco1() -> None:
     assert report["would_merge"] is True
     assert report["external_effect"] is False
     assert report["gate_results"]["rco_pass"]["satisfying_rco_agent"] == "claude-rco-1"
+    assert (
+        report["gate_results"]["rco_pass"]["by_agent"]["claude-rco-1"]["decision"]
+        == "rco_pass_present"
+    )
+    assert (
+        report["gate_results"]["bridge_consensus"]["by_agent"]["claude-rco-1"][
+            "decision"
+        ]
+        == "bridge_consensus_verified"
+    )
 
 
 def test_rco2_can_satisfy_recognized_rco_slot() -> None:

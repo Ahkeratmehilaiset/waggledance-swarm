@@ -11,7 +11,6 @@ from tools.idle_consensus_auto_merge import (
     evaluate_auto_merge_gate,
 )
 
-
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
@@ -265,9 +264,10 @@ def test_invalid_expected_base_sha_refused() -> None:
             receipt_bundle_path="docs/receipts/manifest.json",
         )
     assert excinfo.value.report["decision"] == "invalid_sha"
-    assert "expected_base_sha must be a 40-char lowercase sha" in excinfo.value.report[
-        "errors"
-    ]
+    assert (
+        "expected_base_sha must be a 40-char lowercase sha"
+        in excinfo.value.report["errors"]
+    )
 
 
 def test_denylisted_changed_path_blocks_without_runner() -> None:
@@ -433,7 +433,10 @@ def test_exact_head_rco_pass_required_when_bridge_events_checked(
     assert calls == []
     assert report["decision"] == "operator_review_required"
     assert report["rco_pass_gate"]["has_qualifying_rco_pass_at_head"] is False
-    assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
 
 
 def test_rco_gate_not_checked_defaults_fail_closed_report() -> None:
@@ -475,7 +478,10 @@ def test_operator_merge_required_rco_status_does_not_satisfy_merge_gate(
     )
     assert report["decision"] == "operator_review_required"
     assert report["rco_pass_gate"]["ok"] is False
-    assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
 
 
 def test_pending_ci_rco_status_with_non_green_ci_refuses_merge_gate(
@@ -502,7 +508,10 @@ def test_pending_ci_rco_status_with_non_green_ci_refuses_merge_gate(
     )
     assert report["decision"] == "operator_review_required"
     assert report["rco_pass_gate"]["ok"] is False
-    assert "missing exact-head RCO_PASS from claude-rco-1" in report["reasons"]
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
     assert "status checks not green: unified" in report["reasons"]
 
 
@@ -519,7 +528,10 @@ def test_consensus_rejects_operator_merge_required_rco_status(
             type_="decision",
             status="rco_pass_operator_merge_required",
         )
-        | {"message": f"operator must merge exact head {HEAD}", "payload": {"head": HEAD}},
+        | {
+            "message": f"operator must merge exact head {HEAD}",
+            "payload": {"head": HEAD},
+        },
     ]
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
@@ -533,7 +545,10 @@ def test_consensus_rejects_operator_merge_required_rco_status(
     )
     assert report["decision"] == "operator_review_required"
     assert report["bridge_consensus"]["ok"] is False
-    assert any("rco (claude-rco-1): no head-bound approval" in reason for reason in report["bridge_consensus"]["reasons"])
+    assert any(
+        "rco (recognized non-author RCO): no head-bound approval" in reason
+        for reason in report["bridge_consensus"]["reasons"]
+    )
 
 
 def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:

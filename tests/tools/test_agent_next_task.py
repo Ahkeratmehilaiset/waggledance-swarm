@@ -19,7 +19,6 @@ from tools.agent_next_task import (
 )
 from waggledance.core.work_queue import claim_task, release_task
 
-
 NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -71,7 +70,6 @@ def test_invalid_agent_id_is_rejected(tmp_path: Path) -> None:
     report = evaluate_agent_next_task(
         agent="Invalid Agent!",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -100,7 +98,6 @@ def test_defers_when_agent_has_active_claim(tmp_path: Path) -> None:
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -140,7 +137,6 @@ def test_defers_when_open_incoming_request(tmp_path: Path) -> None:
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -196,7 +192,6 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -272,7 +267,6 @@ def test_picks_substrate_smoke_when_bridge_says_parallel_read_only(
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -530,8 +524,7 @@ def test_active_same_day_dream_seed_advances_to_next_seed(
     assert report["completed_dream_mode_task_ids"] == []
     assert report["active_dream_mode_task_ids"] == [first["task_id_suggestion"]]
     assert (
-        first["task_id_suggestion"]
-        in candidate["rotation"]["skipped_active_task_ids"]
+        first["task_id_suggestion"] in candidate["rotation"]["skipped_active_task_ids"]
     )
 
 
@@ -555,9 +548,7 @@ def test_completed_smoke_and_dream_pools_fall_back_to_operational_scout(
             "ts_utc": "2026-05-20T12:20:00Z",
             "agent": "claude",
             "type": "done",
-            "task_id": (
-                f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
-            ),
+            "task_id": (f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"),
             "status": "done",
             "message": "dream-mode seed completed",
         }
@@ -602,9 +593,7 @@ def test_completed_smoke_and_dream_pools_fall_back_to_operational_scout(
     assert len(report["completed_substrate_smoke_task_ids"]) == len(
         SUBSTRATE_SMOKE_CANDIDATES
     )
-    assert len(report["completed_dream_mode_task_ids"]) == len(
-        DREAM_MODE_CANDIDATES
-    )
+    assert len(report["completed_dream_mode_task_ids"]) == len(DREAM_MODE_CANDIDATES)
     assert report["completed_operational_scout_task_ids"] == []
 
 
@@ -628,9 +617,7 @@ def test_active_same_day_operational_scout_advances_to_next_scout(
             "ts_utc": "2026-05-20T12:20:00Z",
             "agent": "claude",
             "type": "done",
-            "task_id": (
-                f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
-            ),
+            "task_id": (f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"),
             "status": "done",
             "message": "dream-mode seed completed",
         }
@@ -674,12 +661,9 @@ def test_active_same_day_operational_scout_advances_to_next_scout(
     assert report["decision"] == "claim_operational_scout"
     assert candidate["task_id_suggestion"] != first["task_id_suggestion"]
     assert candidate["rotation"]["offset"] == 1
-    assert report["active_operational_scout_task_ids"] == [
-        first["task_id_suggestion"]
-    ]
+    assert report["active_operational_scout_task_ids"] == [first["task_id_suggestion"]]
     assert (
-        first["task_id_suggestion"]
-        in candidate["rotation"]["skipped_active_task_ids"]
+        first["task_id_suggestion"] in candidate["rotation"]["skipped_active_task_ids"]
     )
 
 
@@ -703,9 +687,7 @@ def test_completed_daily_pools_fall_back_to_continuous_operational_scout(
             "ts_utc": "2026-05-20T12:20:00Z",
             "agent": "claude",
             "type": "done",
-            "task_id": (
-                f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"
-            ),
+            "task_id": (f"dream-mode-{entry['category']}-{entry['slug']}-2026-05-20"),
             "status": "done",
             "message": "dream-mode seed completed",
         }
@@ -753,9 +735,7 @@ def test_completed_daily_pools_fall_back_to_continuous_operational_scout(
     assert candidate["kind"] == "continuous_operational_read_only_scout"
     assert candidate["mode"] == "read-only"
     assert candidate["write_scope"] == []
-    assert candidate["task_id_suggestion"].startswith(
-        "continuous-operational-scout-"
-    )
+    assert candidate["task_id_suggestion"].startswith("continuous-operational-scout-")
     assert candidate["task_id_suggestion"].endswith("-2026-05-20-0")
     assert candidate["recommended_command"]
     assert len(report["completed_operational_scout_task_ids"]) == len(
@@ -832,7 +812,7 @@ def test_completed_continuous_operational_scout_advances_sequence(
                 "agent": "codex",
                 "type": "done",
                 "task_id": first_task_id,
-                "status": "done",
+                "status": "complete",
                 "message": "continuous operational scout completed",
             },
         ],
@@ -849,9 +829,7 @@ def test_completed_continuous_operational_scout_advances_sequence(
     assert report["decision"] == "claim_continuous_operational_scout"
     assert candidate["task_id_suggestion"] != first_task_id
     assert candidate["rotation"]["sequence"] == 1
-    assert report["completed_continuous_operational_scout_task_ids"] == [
-        first_task_id
-    ]
+    assert report["completed_continuous_operational_scout_task_ids"] == [first_task_id]
 
 
 # ---------------------------------------------------------------------------
@@ -876,18 +854,15 @@ def test_rotation_advances_with_day_of_year() -> None:
     later_day = datetime(2026, 5, 21, 12, 0, 0, tzinfo=timezone.utc)
     today_pick = _pick_substrate_smoke(agent="claude", now_utc=NOW)
     tomorrow_pick = _pick_substrate_smoke(agent="claude", now_utc=later_day)
-    assert (
-        tomorrow_pick["rotation"]["index"]
-        == (today_pick["rotation"]["index"] + 1) % len(SUBSTRATE_SMOKE_CANDIDATES)
-    )
+    assert tomorrow_pick["rotation"]["index"] == (
+        today_pick["rotation"]["index"] + 1
+    ) % len(SUBSTRATE_SMOKE_CANDIDATES)
 
 
 def test_rotation_wraps_around_pool() -> None:
     pool_size = len(SUBSTRATE_SMOKE_CANDIDATES)
     today = _pick_substrate_smoke(agent="claude", now_utc=NOW)
-    wrap_day = datetime(
-        NOW.year, NOW.month, NOW.day, tzinfo=timezone.utc
-    ).replace(
+    wrap_day = datetime(NOW.year, NOW.month, NOW.day, tzinfo=timezone.utc).replace(
         year=NOW.year + (NOW.timetuple().tm_yday + pool_size) // 366
     )
     # simpler: bump by exactly pool_size days using ordinal
@@ -932,7 +907,6 @@ def test_tick_does_not_write_bridge_events_or_claims(tmp_path: Path) -> None:
     evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -946,14 +920,12 @@ def test_evaluation_is_deterministic_for_identical_inputs(tmp_path: Path) -> Non
     first = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
     second = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -966,9 +938,7 @@ def test_evaluation_is_deterministic_for_identical_inputs(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_cli_main_emits_json(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_cli_main_emits_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     bridge, events_path, claims_dir = _empty_bridge(tmp_path)
 
     exit_code = main(
@@ -1022,10 +992,7 @@ def test_cli_infers_bridge_root_from_events_path_for_claims(
     parsed = json.loads(out)
     assert parsed["decision"] == "defer_to_bridge_next_action"
     assert parsed["bridge_recommendation"]["action"] == "continue_claim"
-    assert (
-        parsed["bridge_recommendation"]["task_id"]
-        == "claude-real-bridge-root-claim"
-    )
+    assert parsed["bridge_recommendation"]["task_id"] == "claude-real-bridge-root-claim"
 
 
 def test_cli_bridge_root_without_events_uses_bridge_root_events(
@@ -1208,7 +1175,4 @@ def test_active_claim_under_bridge_root_yields_continue_claim_regardless_of_exte
 
     assert report["decision"] == "defer_to_bridge_next_action"
     assert report["bridge_recommendation"]["action"] == "continue_claim"
-    assert (
-        report["bridge_recommendation"]["task_id"]
-        == "claude-real-bridge-root-claim"
-    )
+    assert report["bridge_recommendation"]["task_id"] == "claude-real-bridge-root-claim"

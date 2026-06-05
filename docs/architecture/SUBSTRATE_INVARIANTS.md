@@ -47,6 +47,16 @@ unrelated tests" — agents waste time debugging code that isn't broken.
 3. Either rebase each one immediately, or signal to its author that
    rebase is required before merge.
 
+The repeatable queue check is:
+
+```powershell
+python tools/report_open_pr_stale_base_queue.py --expected-base-sha <current-main-sha> --repo OWNER/NAME --json
+```
+
+The report is read-only: it compares each open PR's `baseRefOid` to the
+expected current main SHA and does not refresh branches, post bridge events,
+or authorize merges.
+
 ## INV-02 — Status matching is by whole token, never substring
 
 **Rule.** Any code that classifies bridge events by status string MUST

@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "allow_network": false,
+  "advisory_only": true,
+  "default_model": "grok-code-fast-1",
+  "api_key_env": "XAI_API_KEY",
+  "api_base_url_env": "GROK_API_BASE_URL",
+  "chat_completions_path": "/v1/chat/completions",
+  "max_calls_per_day": 0,
+  "max_prompt_bytes": 12000,
+  "max_response_bytes": 20000,
+  "timeout_sec": 60
+}

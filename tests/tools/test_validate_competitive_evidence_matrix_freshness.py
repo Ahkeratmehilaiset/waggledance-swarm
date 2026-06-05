@@ -44,7 +44,9 @@ def _matrix(
 
 
 def test_current_repo_matrix_is_valid_but_not_fresh_for_planning() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = mod.DEFAULT_MATRIX.read_text(encoding="utf-8")
 
     report = mod.validate_matrix_freshness(text, now=date(2026, 6, 4))
@@ -57,7 +59,9 @@ def test_current_repo_matrix_is_valid_but_not_fresh_for_planning() -> None:
 
 
 def test_stale_matrix_without_historical_metadata_fails() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = _matrix(metadata=None)
 
     report = mod.validate_matrix_freshness(text, now=date(2026, 6, 4))
@@ -68,7 +72,9 @@ def test_stale_matrix_without_historical_metadata_fails() -> None:
 
 
 def test_fresh_matrix_can_be_fresh_for_planning() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = _matrix(
         snapshot_date="2026-06-01",
         audit_date="2026-06-01",
@@ -88,7 +94,9 @@ def test_fresh_matrix_can_be_fresh_for_planning() -> None:
 
 
 def test_age_equal_to_max_age_is_still_fresh() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = _matrix(
         snapshot_date="2026-05-21",
         audit_date="2026-05-21",
@@ -108,7 +116,9 @@ def test_age_equal_to_max_age_is_still_fresh() -> None:
 
 
 def test_require_fresh_fails_historical_stale_matrix(capsys) -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
 
     rc = mod.main(["--now", "2026-06-04", "--require-fresh", "--json"])
 
@@ -121,7 +131,9 @@ def test_require_fresh_fails_historical_stale_matrix(capsys) -> None:
 
 
 def test_metadata_fresh_for_planning_must_match_age() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = _matrix(
         metadata=(
             "`snapshot_date=2026-05-06`; `freshness_audit_date=2026-05-27`; "
@@ -138,7 +150,9 @@ def test_metadata_fresh_for_planning_must_match_age() -> None:
 
 
 def test_invalid_metadata_values_fail_closed() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = _matrix(
         snapshot_date="2026-05-06",
         audit_date="2026-05-27",
@@ -162,7 +176,9 @@ def test_invalid_metadata_values_fail_closed() -> None:
 
 
 def test_priority_rows_must_point_to_evidence_bearing_axes() -> None:
-    mod = importlib.import_module("tools.validate_competitive_evidence_matrix_freshness")
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
     text = _matrix(
         metadata=(
             "`snapshot_date=2026-05-06`; `freshness_audit_date=2026-05-27`; "

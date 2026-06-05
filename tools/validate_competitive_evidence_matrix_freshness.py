@@ -11,6 +11,7 @@ be explicit and machine-checkable. This validator separates two questions:
 Default validation exits 0 for a stale-but-explicitly-historical matrix.
 Use ``--require-fresh`` when a workflow needs current <=N-day evidence.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,6 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Sequence
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "benchmarks" / "COMPETITIVE_EVIDENCE_MATRIX_2026.md"
@@ -82,7 +82,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"competitive evidence freshness FAILED: {exc}", file=sys.stderr)
         return 2
     if args.max_age_days <= 0:
-        print("competitive evidence freshness FAILED: --max-age-days must be > 0", file=sys.stderr)
+        print(
+            "competitive evidence freshness FAILED: --max-age-days must be > 0",
+            file=sys.stderr,
+        )
         return 2
     try:
         text = args.matrix.read_text(encoding="utf-8")
@@ -148,7 +151,11 @@ def validate_matrix_freshness(
     if require_fresh and stale:
         blockers.append("snapshot_age_exceeds_max_age")
 
-    if audit_date is not None and snapshot_date is not None and audit_date < snapshot_date:
+    if (
+        audit_date is not None
+        and snapshot_date is not None
+        and audit_date < snapshot_date
+    ):
         blockers.append("freshness_audit_before_snapshot")
 
     evidence_axes = [axis for axis in axes if axis.evidence_bearing]
@@ -158,7 +165,9 @@ def validate_matrix_freshness(
         row for row in priority_rows if row not in {axis.axis for axis in evidence_axes}
     ]
     if priority_rows and missing_priority:
-        blockers.append("priority_rows_not_evidence_bearing:" + ",".join(missing_priority))
+        blockers.append(
+            "priority_rows_not_evidence_bearing:" + ",".join(missing_priority)
+        )
     if stale and not priority_rows:
         blockers.append("stale_priority_rows_missing")
 
@@ -170,7 +179,9 @@ def validate_matrix_freshness(
         "snapshot_date": snapshot_date.isoformat() if snapshot_date else None,
         "snapshot_age_days": age_days,
         "freshness_audit_date": audit_date.isoformat() if audit_date else None,
-        "fresh_for_planning": False if stale else True if age_days is not None else None,
+        "fresh_for_planning": (
+            False if stale else True if age_days is not None else None
+        ),
         "historical_stale_allowed": bool(stale and stale_marked_historical),
         "require_fresh": bool(require_fresh),
         "status": status or None,
@@ -185,10 +196,16 @@ def validate_matrix_freshness(
 
 def _extract_metadata(text: str) -> dict[str, str]:
     metadata: dict[str, str] = {}
-    snapshot = re.search(r"^\*\*Evidence snapshot date:\*\*\s*(\d{4}-\d{2}-\d{2})\s*$", text, re.MULTILINE)
+    snapshot = re.search(
+        r"^\*\*Evidence snapshot date:\*\*\s*(\d{4}-\d{2}-\d{2})\s*$",
+        text,
+        re.MULTILINE,
+    )
     if snapshot:
         metadata["snapshot_date"] = snapshot.group(1)
-    audit = re.search(r"^\*\*Freshness audit:\*\*\s*(\d{4}-\d{2}-\d{2})\b", text, re.MULTILINE)
+    audit = re.search(
+        r"^\*\*Freshness audit:\*\*\s*(\d{4}-\d{2}-\d{2})\b", text, re.MULTILINE
+    )
     if audit:
         metadata["freshness_audit_date"] = audit.group(1)
     meta_line = re.search(r"^\*\*Freshness metadata:\*\*\s*(.+)$", text, re.MULTILINE)

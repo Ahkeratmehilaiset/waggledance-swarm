@@ -92,6 +92,14 @@ def test_validator_rejects_unknown_kind_priority_and_naive_time() -> None:
         )
 
 
+def test_validator_rejects_malformed_feedback_refs() -> None:
+    with pytest.raises(OperatorFeedbackValidationError, match="feedback_id"):
+        validate_operator_feedback_event(_event(feedback_id="../bad"))
+
+    with pytest.raises(OperatorFeedbackValidationError, match="query_class_hash"):
+        validate_operator_feedback_event(_event(query_class_hash="not-a-hash"))
+
+
 def test_high_priority_needs_solver_gets_bounded_fast_track_plan() -> None:
     plan = amplify_operator_feedback(_event())
     as_dict = plan.to_dict()
@@ -99,6 +107,7 @@ def test_high_priority_needs_solver_gets_bounded_fast_track_plan() -> None:
     assert plan.event_type == FEEDBACK_ACTION_TAKEN_EVENT_TYPE
     assert plan.action_id == "feedback_action:needs_solver:fb-001"
     assert plan.lane == "fast_track_canary"
+    assert plan.route_context_hash is None
     assert plan.scheduled_for_utc == "2026-06-05T12:15:00Z"
     assert plan.rate_limited is False
     assert plan.runtime_authority_granted is False
@@ -155,10 +164,29 @@ def test_fast_track_is_rate_limited_per_operator_per_hour() -> None:
     assert plan.rate_limit_window_start_utc == "2026-06-05T11:00:00Z"
 
 
+def test_broken_route_requires_route_context_hash() -> None:
+    with pytest.raises(OperatorFeedbackValidationError, match="route_context_required"):
+        amplify_operator_feedback(_event(feedback_kind="broken_route"))
+
+    with pytest.raises(OperatorFeedbackValidationError, match="route_context_hash"):
+        amplify_operator_feedback(
+            _event(
+                feedback_kind="broken_route",
+                route_context_hash="raw-from-cell-to-solver",
+            )
+        )
+
+
 def test_broken_route_schedules_negative_tunnel_without_gap_signal() -> None:
-    plan = amplify_operator_feedback(_event(feedback_kind="broken_route"))
+    plan = amplify_operator_feedback(
+        _event(
+            feedback_kind="broken_route",
+            route_context_hash="sha256:" + "B" * 64,
+        )
+    )
 
     assert plan.action_kind == "schedule_negative_tunnel_mining"
+    assert plan.route_context_hash == "sha256:" + "b" * 64
     assert plan.gap_signal is None
     assert plan.adversarial_probe_intent is None
     assert plan.runtime_authority_granted is False

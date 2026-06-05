@@ -54,6 +54,7 @@ class OperatorFeedbackActionPlan:
     feedback_id: str
     feedback_kind: str
     query_class_hash: str
+    route_context_hash: str | None
     operator_id: str
     priority: str
     lane: str
@@ -77,6 +78,7 @@ class OperatorFeedbackActionPlan:
             "feedback_id": self.feedback_id,
             "feedback_kind": self.feedback_kind,
             "query_class_hash": self.query_class_hash,
+            "route_context_hash": self.route_context_hash,
             "operator_id": self.operator_id,
             "priority": self.priority,
             "lane": self.lane,
@@ -180,12 +182,23 @@ def validate_operator_feedback_event(
             f"priority must be one of {sorted(policy.priority_enum)!r}"
         )
 
+    feedback_id = _validate_ref("feedback_id", _clean_string(event["feedback_id"]))
+    query_class_hash = _validate_sha256_ref(
+        "query_class_hash",
+        _clean_string(event["query_class_hash"]),
+    )
+    route_context_hash = _normalize_route_context_hash(event, feedback_kind)
     submitted = _parse_utc(_clean_string(event["submitted_at_utc"]))
     return {
         "event_type": event_type,
-        "feedback_id": _clean_string(event["feedback_id"]),
+        "feedback_id": feedback_id,
         "feedback_kind": feedback_kind,
-        "query_class_hash": _clean_string(event["query_class_hash"]),
+        "query_class_hash": query_class_hash,
+        **(
+            {"route_context_hash": route_context_hash}
+            if route_context_hash is not None
+            else {}
+        ),
         "operator_id": _clean_string(event["operator_id"]),
         "priority": priority,
         "submitted_at_utc": _utc_iso(submitted),
@@ -246,6 +259,7 @@ def amplify_operator_feedback(
         feedback_id=normalized["feedback_id"],
         feedback_kind=normalized["feedback_kind"],
         query_class_hash=normalized["query_class_hash"],
+        route_context_hash=normalized.get("route_context_hash"),
         operator_id=normalized["operator_id"],
         priority=normalized["priority"],
         lane="fast_track_canary" if fast_track else "normal_gap_queue",
@@ -357,6 +371,52 @@ def _action_id(feedback_id: str, feedback_kind: str) -> str:
     safe_feedback = _safe_ref(feedback_id)
     safe_kind = _safe_ref(feedback_kind)
     return f"feedback_action:{safe_kind}:{safe_feedback}"
+
+
+def _normalize_route_context_hash(
+    event: Mapping[str, Any],
+    feedback_kind: str,
+) -> str | None:
+    if feedback_kind != "broken_route":
+        return None
+    if not _non_empty_string(event.get("route_context_hash")):
+        raise OperatorFeedbackValidationError(
+            "route_context_required: broken_route feedback requires "
+            "route_context_hash"
+        )
+    return _validate_sha256_ref(
+        "route_context_hash",
+        _clean_string(event["route_context_hash"]),
+    )
+
+
+def _validate_sha256_ref(field_name: str, value: str) -> str:
+    if not value.startswith("sha256:"):
+        raise OperatorFeedbackValidationError(
+            f"{field_name} must be a sha256: hex digest"
+        )
+    digest = value.removeprefix("sha256:")
+    if len(digest) != 64 or any(
+        char not in "0123456789abcdefABCDEF" for char in digest
+    ):
+        raise OperatorFeedbackValidationError(
+            f"{field_name} must be a sha256: hex digest"
+        )
+    return "sha256:" + digest.lower()
+
+
+def _validate_ref(field_name: str, value: str) -> str:
+    if len(value) > 96:
+        raise OperatorFeedbackValidationError(f"{field_name} is too long")
+    if not value[0].isalnum():
+        raise OperatorFeedbackValidationError(
+            f"{field_name} must start with an alphanumeric character"
+        )
+    if any(not (char.isalnum() or char in ":._-") for char in value):
+        raise OperatorFeedbackValidationError(
+            f"{field_name} contains unsupported characters"
+        )
+    return value
 
 
 def _require_mapping(field_name: str, value: object) -> Mapping[str, Any]:

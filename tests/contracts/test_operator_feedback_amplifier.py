@@ -48,6 +48,11 @@ def test_required_fields_match() -> None:
     assert set(c["required_fields"]) == REQUIRED_FIELDS
 
 
+def test_conditional_fields_match() -> None:
+    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    assert c["conditional_fields"] == {"broken_route": ["route_context_hash"]}
+
+
 def test_defaults() -> None:
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     d = c["policy_defaults"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -150,6 +151,112 @@ def test_ignores_stale_incoming_request_with_powershell_fractional_timestamp() -
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 1
     assert report["stale_incoming_task_ids"] == ["old-task"]
+
+
+def test_deduplicates_stale_incoming_task_ids_but_preserves_event_count() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "repeat-task",
+            "status": "request",
+            "message": "old request",
+        },
+        {
+            "ts_utc": "2026-05-18T10:11:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "repeat-task",
+            "status": "request",
+            "message": "same task repeated",
+        },
+        {
+            "ts_utc": "2026-05-20T10:30:00Z",
+            "agent": "claude",
+            "type": "heartbeat",
+            "task_id": "heartbeat",
+            "status": "active",
+            "message": "bridge moved on",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == ["repeat-task"]
+    assert report["stale_incoming_event_count"] == 2
+
+
+def test_archives_very_old_stale_incoming_without_changing_next_action() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "historical-task",
+            "status": "request",
+            "message": "old request",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 5, 22, 10, 30, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+    assert "stale_incoming_task_ids" not in report
+    assert report["archived_stale_incoming_count"] == 1
+    assert report["archived_stale_incoming_task_ids"] == ["historical-task"]
+
+
+def test_cli_rejects_non_finite_stale_report_max_age(
+    tmp_path: Path, capsys
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-18T10:10:00Z",
+                "agent": "claude",
+                "to": "codex",
+                "type": "message",
+                "task_id": "old-task",
+                "status": "request",
+                "message": "old request",
+            }
+        ],
+    )
+
+    for value in ("nan", "inf"):
+        exit_code = main(
+            [
+                "--agent",
+                "codex",
+                "--bridge-root",
+                str(bridge),
+                "--events",
+                str(events_path),
+                "--stale-report-max-age-hours",
+                value,
+                "--json",
+            ]
+        )
+
+        assert exit_code == 2
+        report = json.loads(capsys.readouterr().out)
+        assert report["decision"] == "bridge_next_action_error"
+        assert report["errors"] == ["stale_report_max_age_hours must be positive"]
 
 
 def test_fresh_incoming_request_wins_over_stale_backlog() -> None:

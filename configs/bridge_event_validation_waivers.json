@@ -2,12 +2,148 @@
   "schema_version": "agent-bridge-event-waivers.v1",
   "waivers": [
     {
+      "line_no": 1933,
+      "raw_line_sha256": "sha256:985fe156f0328514d67eb495d5636fad3a00ff73a3b4fcffe0fdf76c26946db8",
+      "error": "line 1933: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2050,
+      "raw_line_sha256": "sha256:78df5d1c2213e9597cef21d98067af65f34d5171f85310caa2d74be74c364c86",
+      "error": "line 2050: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2051,
+      "raw_line_sha256": "sha256:b004f98b5b6399845039cc54c4e59cd72585ce2140484b016b6e09cbbc1dc611",
+      "error": "line 2051: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2057,
+      "raw_line_sha256": "sha256:2a2e4d652e06116f53f94e46230925796f7f61f08954ad2892f2b586c5d54959",
+      "error": "line 2057: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2058,
+      "raw_line_sha256": "sha256:9a776d02c1dc2017b5116d6761d40012a8ba9782c56aef7661fd9b4e8a4500f7",
+      "error": "line 2058: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2064,
+      "raw_line_sha256": "sha256:94107e7725d67ebd992fb38a4757d27d3375bf8c15eeb1e405b95fc4b5228531",
+      "error": "line 2064: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2065,
+      "raw_line_sha256": "sha256:e2e9f8b82d5f8e1fcdd1a1cb17ac2a5aa37cd8c7dd033021d1e1bec76a4724f8",
+      "error": "line 2065: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2070,
+      "raw_line_sha256": "sha256:9fbb8ab8d91bfac3c557f8cc8738e8a9381f3dd8e4cb597cd3801f2d6d03a55e",
+      "error": "line 2070: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2071,
+      "raw_line_sha256": "sha256:aa3a54ee9a0a95f58876130d5381f40da48cb3af8d1f1a1940e77b2a125b9349",
+      "error": "line 2071: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2076,
+      "raw_line_sha256": "sha256:aa9994ef465b4b4c5cb51b675b6c16c412474174512e8e86a30c4e145aa20e57",
+      "error": "line 2076: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2090,
+      "raw_line_sha256": "sha256:37c9f355cb2a1b16174ec1e146295e7002fc0c6a0d1ba12174770d5fa15c14b3",
+      "error": "line 2090: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2107,
+      "raw_line_sha256": "sha256:578605389451620029cada844c1992f6989e559d49622d88cf091ce508152779",
+      "error": "line 2107: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2125,
+      "raw_line_sha256": "sha256:be88047d4674ee977583bfb410c341f543b9466392caeb22a4191b31bfa75293",
+      "error": "line 2125: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2141,
+      "raw_line_sha256": "sha256:db3039bd6448a2509cf734715aa486580bd66889a889e2dd4469f4cbc572163f",
+      "error": "line 2141: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2168,
+      "raw_line_sha256": "sha256:6080593a952cad2164bdc820fef571b1e47c1bfd62ec518cd13e8539d0a70446",
+      "error": "line 2168: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
+      "line_no": 2195,
+      "raw_line_sha256": "sha256:57d90aca378b543a32b42cbb35264934ed72259584b3224bece0725c7b0c08b7",
+      "error": "line 2195: to: Value error, to contains invalid bridge agent id: github/main",
+      "reason": "pre-guard historical merge event used to=github/main as a target ref; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
+    },
+    {
       "line_no": 2824,
       "raw_line_sha256": "sha256:5283a8c01af6641ccf9d2e75f20bab7b638fcf006abfa8177da91e287235a67b",
       "error": "line 2824: <event>: Value error, handoff requires task_id",
       "reason": "pre-guard historical handoff emitted without task_id on 2026-05-17; append-only bridge history is not rewritten",
       "created_at_utc": "2026-05-17T11:40:00Z",
       "ticket_ref": "bridge-event-hygiene-2026-05-17"
+    },
+    {
+      "line_no": 17890,
+      "raw_line_sha256": "sha256:c38e859d5167a65caffd9d3cfc3fe352cc9480775025a4fcc9ccc37e56a95d9b",
+      "error": "line 17890: to: Value error, to contains invalid bridge agent id: docs/benchmarks/LOCAL_OLLAMA_MODEL_SWEEP_2026.md",
+      "reason": "pre-guard historical finding event used to as a file target; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-06-03T07:00:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-06-03"
     },
     {
       "line_no": 25603,

@@ -1,7 +1,8 @@
 # Low-risk autogrowth operator runbook
 
 **Status:** read-only operator runbook for the bounded low-risk autogrowth lane
-**Scope:** Prometheus alert thresholds for `waggledance_autogrowth_*`
+**Scope:** Prometheus alert thresholds and optional read-only Alertmanager feed
+for `waggledance_autogrowth_*`
 **Companion docs:** `docs/API.md`, `docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md`
 
 ## Purpose
@@ -14,6 +15,12 @@ deployments through the normal release process.
 
 The metric source is the auth-exempt `/metrics` endpoint. The dashboard
 `/api/ops` and hologram Ops panel show the same boundary as read-only status.
+When `autogrowth_alert_feed.enabled=true`, `/api/ops` can also show sanitized
+Alertmanager state under `autogrowth.alert_state`: fixed autogrowth alert IDs,
+fixed summaries, numeric values, `feed_health`, `slo_panels`, and
+`drill_evidence`. It does not add mutating endpoints, start/stop controls,
+runtime authority, raw Alertmanager labels, hostnames, URLs, filesystem paths,
+headers, or exception text.
 
 ## Metrics
 
@@ -27,6 +34,13 @@ The metric source is the auth-exempt `/metrics` endpoint. The dashboard
 | `waggledance_autogrowth_wakeups_total` | Total background wake attempts. |
 | `waggledance_autogrowth_non_idle_ticks_total` | Wakeups that found work and ran at least one scheduler tick. |
 | `waggledance_autogrowth_errors_total` | Background ticker error count. |
+| `waggledance_autogrowth_alert_feed_up` | `1` when feed provider health could be built for the current scrape. |
+| `waggledance_autogrowth_alert_feed_configured` | `1` when the optional Alertmanager feed is configured. |
+| `waggledance_autogrowth_alert_feed_available` | `1` when the optional Alertmanager feed has a usable snapshot or cache. |
+| `waggledance_autogrowth_alert_feed_status{status=...}` | Fixed-state gauges for `not_configured`, `nominal`, and `warning`. |
+| `waggledance_autogrowth_alert_feed_failure_reason{reason=...}` | Fixed sanitized failure-reason gauges; no raw provider exception text. |
+| `waggledance_autogrowth_alert_feed_cache_*` | Cache TTL, presence, stale state, hits, and misses for the optional feed. |
+| `waggledance_autogrowth_alert_feed_fetch_*` | Fetch success/failure counters for the optional feed. |
 
 ## Alert thresholds
 
@@ -47,12 +61,17 @@ be evidence collection, not automatic mutation.
 
 1. Confirm the alert is from the same commit currently deployed.
 2. Fetch `/metrics` and `/api/ops`; store both outputs with timestamps.
-3. Capture runtime logs for the alert window plus the preceding 10 minutes.
-4. Check whether `waggledance_autogrowth_background_running` changed during
+3. If `autogrowth.alert_state.feed_health.configured=true`, compare the
+   `active` alert IDs with `feed_health`, `slo_panels`, and `drill_evidence`.
+   Treat `AutogrowthAlertFeedUnavailable` or
+   `AutogrowthAlertFeedInvalid` as observability warnings, not runtime
+   authority changes.
+4. Capture runtime logs for the alert window plus the preceding 10 minutes.
+5. Check whether `waggledance_autogrowth_background_running` changed during
    the window. A restart can explain a short wakeup burst.
-5. For any `errors_total` increase, open a blocking issue before merging more
+6. For any `errors_total` increase, open a blocking issue before merging more
    low-risk autogrowth runtime changes.
-6. For wakeup or non-idle bursts, compare the observed rate with
+7. For wakeup or non-idle bursts, compare the observed rate with
    `waggledance_autogrowth_background_interval_seconds` and
    `waggledance_autogrowth_background_max_ticks_per_wake`.
 
@@ -63,5 +82,9 @@ be evidence collection, not automatic mutation.
 - No alert rule should auto-merge, auto-promote, or create solver authority.
 - Alert payloads must not include raw queries, user IDs, hostnames, filesystem
   paths, or exception strings. Metric names and numeric values are enough.
-- Recovery actions stay manual and operator-owned until a separate reviewed PR
-  adds a read-only alert-state surface or an approved operational control.
+- The optional `autogrowth_alert_feed` only reads operator-owned Alertmanager
+  `/api/v2/alerts`, is disabled by default, and must keep credential,
+  private-host, timeout, cache, and backoff guardrails.
+- Recovery actions stay manual and operator-owned. The read-only alert-state
+  surface does not approve deployments, merge PRs, promote solvers, change
+  config, or grant operational control.

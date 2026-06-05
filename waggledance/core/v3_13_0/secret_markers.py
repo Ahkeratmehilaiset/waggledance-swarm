@@ -23,14 +23,25 @@ _SECRET_MARKERS = (
     "tokens",
     "x-api-key",
 )
+_SECRET_MARKER_ALIASES = tuple(
+    sorted(
+        {
+            alias
+            for marker in _SECRET_MARKERS
+            for alias in (
+                marker,
+                marker.replace("_", "-"),
+                marker.replace("-", "_"),
+            )
+        },
+        key=len,
+        reverse=True,
+    )
+)
 _BOUNDARY = r"[\\/._?&=:\-\s]"
 _SECRET_MARKER_RE = re.compile(
     r"(?:^|" + _BOUNDARY + r")(?:"
-    + "|".join(re.escape(marker) for marker in sorted(
-        _SECRET_MARKERS,
-        key=len,
-        reverse=True,
-    ))
+    + "|".join(re.escape(marker) for marker in _SECRET_MARKER_ALIASES)
     + r")(?:$|" + _BOUNDARY + r")",
     re.IGNORECASE,
 )
@@ -42,14 +53,13 @@ def contains_secret_marker(value: str) -> bool:
 
 
 def contains_secret_marker_substring(value: str) -> bool:
-    """Return True for any marker substring in URL/header-like fields."""
-    lowered = value.casefold()
-    separator_normalized = lowered.replace("-", "_")
-    return any(
-        marker in lowered
-        or marker.replace("-", "_") in separator_normalized
-        for marker in _SECRET_MARKERS
-    )
+    """Return True for bounded markers in URL/header-like fields.
+
+    The legacy function name is intentionally kept for callers, but raw
+    substring matching produced false positives for benign metadata such as
+    ``tokenized`` and ``credentialed``.
+    """
+    return contains_secret_marker(value)
 
 
 __all__ = [

@@ -217,6 +217,28 @@ class Container:
             )
             return None
 
+    @cached_property
+    def autogrowth_alert_feed(self):
+        """Optional read-only Alertmanager feed for autogrowth alerts."""
+        cfg = self._settings.get("autogrowth_alert_feed", {}) or {}
+        if not cfg.get("enabled", False):
+            return None
+        try:
+            from waggledance.adapters.http.autogrowth_alert_feed import (
+                AutogrowthAlertmanagerFeed,
+            )
+            return AutogrowthAlertmanagerFeed.from_config(cfg)
+        except Exception as exc:
+            log.warning(
+                "Autogrowth alert feed configuration refused; "
+                "alert_state will report unavailable: %s",
+                exc,
+            )
+            from waggledance.adapters.http.autogrowth_alert_feed import (
+                UnavailableAutogrowthAlertFeed,
+            )
+            return UnavailableAutogrowthAlertFeed()
+
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
     @cached_property

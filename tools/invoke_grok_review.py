@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 from typing import Any, Mapping, MutableMapping, Sequence
 import urllib.error
@@ -23,6 +25,17 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "configs" / "grok_budget.json"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
+FULL_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+REQUIRED_FRESHNESS_SHA_FIELDS = (
+    "remote_main_sha",
+    "local_origin_main_sha",
+    "worktree_head",
+)
+OPTIONAL_FRESHNESS_SHA_FIELDS = (
+    "pr_head_sha",
+    "reviewed_head_sha",
+    "target_head_sha",
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
@@ -61,6 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--now", default="")
+    parser.add_argument("--require-freshness", action="store_true")
+    parser.add_argument("--remote-main-sha", default="")
+    parser.add_argument("--local-origin-main-sha", default="")
+    parser.add_argument("--worktree-head", default="")
+    parser.add_argument("--pr-head-sha", default="")
+    parser.add_argument("--reviewed-head-sha", default="")
+    parser.add_argument("--target-head-sha", default="")
+    parser.add_argument("--git-root", type=Path, default=ROOT)
     return parser
 
 
@@ -69,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         prompt = _read_prompt(args.prompt, args.prompt_file)
         now = _parse_now(args.now)
+        freshness = _freshness_from_args(args)
         report = run_grok_review(
             prompt=prompt,
             task_id=args.task_id,
@@ -79,6 +101,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
             now=now,
             env=os.environ,
+            require_freshness=args.require_freshness,
+            freshness=freshness,
+            git_root=args.git_root,
         )
     except GrokReviewError as exc:
         report = exc.report
@@ -111,12 +136,17 @@ def run_grok_review(
     dry_run: bool = False,
     now: datetime | None = None,
     env: Mapping[str, str] | None = None,
+    require_freshness: bool = False,
+    freshness: Mapping[str, Any] | None = None,
+    git_root: Path | str | None = ROOT,
 ) -> dict[str, Any]:
     """Run or preflight one advisory review request.
 
     ``dry_run`` validates the request and reports whether an actual call would
     be allowed, but it never reads secrets, writes budget state, or opens the
-    network.
+    network. Actual Grok network calls always require a validated freshness
+    proof; ``require_freshness`` also applies that preflight to disabled and
+    dry-run paths.
     """
     env = env or {}
     now = now or datetime.now(timezone.utc)
@@ -125,10 +155,17 @@ def run_grok_review(
     prompt_bytes = prompt.encode("utf-8")
     prompt_sha = hashlib.sha256(prompt_bytes).hexdigest()
     _validate_prompt(prompt, prompt_bytes, config)
+    freshness_proof = _validate_freshness_proof(
+        freshness,
+        required=require_freshness,
+        git_root=git_root,
+    )
 
     state = _load_state(_resolve_state_path(state_path, env), now)
     budget = _budget_snapshot(config, state, selected_model)
     active_gate = _active_gate(config, budget)
+    freshness_required = require_freshness or bool(active_gate["ok"])
+    freshness_missing = freshness_required and freshness_proof is None
     report = _base_report(
         ok=True,
         decision="dry_run_ready" if dry_run else "grok_review_ready",
@@ -142,11 +179,23 @@ def run_grok_review(
         network_attempted=False,
         budget=budget,
         dry_run=dry_run,
-        would_call=active_gate["ok"],
+        would_call=bool(active_gate["ok"]) and not freshness_missing,
+        freshness_required=freshness_required,
+        freshness=freshness_proof or {},
     )
     if dry_run:
+        if freshness_missing:
+            report["would_refuse_reason"] = "freshness proof required"
         if not active_gate["ok"]:
             report["would_refuse_reason"] = active_gate["reason"]
+        return report
+
+    if freshness_missing:
+        report.update(
+            ok=False,
+            decision="missing_freshness_proof",
+            reason="freshness proof required before Grok network call",
+        )
         return report
 
     if not active_gate["ok"]:
@@ -276,6 +325,143 @@ def _validate_prompt(
                 reason=f"{len(prompt_bytes)} > {max_prompt_bytes}",
             )
         )
+
+
+def _freshness_from_args(args: argparse.Namespace) -> dict[str, str] | None:
+    freshness = {
+        "remote_main_sha": str(args.remote_main_sha).strip(),
+        "local_origin_main_sha": str(args.local_origin_main_sha).strip(),
+        "worktree_head": str(args.worktree_head).strip(),
+        "pr_head_sha": str(args.pr_head_sha).strip(),
+        "reviewed_head_sha": str(args.reviewed_head_sha).strip(),
+        "target_head_sha": str(args.target_head_sha).strip(),
+    }
+    freshness = {key: value for key, value in freshness.items() if value}
+    return freshness or None
+
+
+def _validate_freshness_proof(
+    freshness: Mapping[str, Any] | None,
+    *,
+    required: bool,
+    git_root: Path | str | None,
+) -> dict[str, Any] | None:
+    if freshness is None:
+        if required:
+            raise GrokReviewError(
+                _base_report(
+                    ok=False,
+                    decision="missing_freshness_proof",
+                    reason="freshness proof required",
+                )
+            )
+        return None
+    if not isinstance(freshness, Mapping):
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="invalid_freshness_proof",
+                reason="freshness proof must be an object",
+            )
+        )
+
+    proof: dict[str, Any] = {"freshness_ok": True}
+    freshness_ok = freshness.get("freshness_ok")
+    if freshness_ok is not None and freshness_ok is not True:
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="stale_freshness_proof",
+                reason="freshness_ok must be true",
+            )
+        )
+    for field_name in REQUIRED_FRESHNESS_SHA_FIELDS:
+        value = freshness.get(field_name)
+        if not _is_full_git_sha(value):
+            raise GrokReviewError(
+                _base_report(
+                    ok=False,
+                    decision="invalid_freshness_proof",
+                    reason=f"{field_name} must be lowercase 40-hex sha",
+                )
+            )
+        proof[field_name] = str(value)
+
+    if proof["remote_main_sha"] != proof["local_origin_main_sha"]:
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="stale_freshness_proof",
+                reason="remote_main_sha must match local_origin_main_sha",
+            )
+        )
+    if proof["worktree_head"] != proof["local_origin_main_sha"]:
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="stale_freshness_proof",
+                reason="worktree_head must match local_origin_main_sha",
+            )
+        )
+
+    if git_root is not None:
+        git_origin_main = _git_rev_parse(git_root, "origin/main")
+        git_head = _git_rev_parse(git_root, "HEAD")
+        if proof["local_origin_main_sha"] != git_origin_main:
+            raise GrokReviewError(
+                _base_report(
+                    ok=False,
+                    decision="stale_freshness_proof",
+                    reason="local_origin_main_sha must match git origin/main",
+                )
+            )
+        if proof["worktree_head"] != git_head:
+            raise GrokReviewError(
+                _base_report(
+                    ok=False,
+                    decision="stale_freshness_proof",
+                    reason="worktree_head must match git HEAD",
+                )
+            )
+
+    for field_name in OPTIONAL_FRESHNESS_SHA_FIELDS:
+        value = freshness.get(field_name)
+        if value in (None, ""):
+            continue
+        if not _is_full_git_sha(value):
+            raise GrokReviewError(
+                _base_report(
+                    ok=False,
+                    decision="invalid_freshness_proof",
+                    reason=f"{field_name} must be lowercase 40-hex sha",
+                )
+            )
+        proof[field_name] = str(value)
+
+    return proof
+
+
+def _is_full_git_sha(value: object) -> bool:
+    return isinstance(value, str) and bool(FULL_GIT_SHA_RE.fullmatch(value))
+
+
+def _git_rev_parse(git_root: Path | str, ref: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(git_root), "rev-parse", ref],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    value = completed.stdout.strip()
+    if completed.returncode != 0 or not _is_full_git_sha(value):
+        raise GrokReviewError(
+            _base_report(
+                ok=False,
+                decision="invalid_freshness_proof",
+                reason=f"git rev-parse failed for {ref}",
+            )
+        )
+    return value
 
 
 def _active_gate(
@@ -505,6 +691,8 @@ def _base_report(**overrides: Any) -> dict[str, Any]:
         "dry_run": False,
         "would_call": False,
         "budget": {},
+        "freshness_required": False,
+        "freshness": {},
     }
     report.update(overrides)
     return report

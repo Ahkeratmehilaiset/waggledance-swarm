@@ -133,6 +133,7 @@ $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
+$grokPrWorktreeStrictEpochUtc = '2026-06-04T08:32:00Z'
 $grokRequiredFreshnessShaFields = @('remote_main_sha', 'local_origin_main_sha', 'worktree_head')
 $grokOptionalFreshnessShaFields = @('pr_head_sha', 'reviewed_head_sha', 'target_head_sha')
 $fullGitShaPattern = '^[0-9a-f]{40}$'
@@ -176,6 +177,16 @@ function Test-BridgeObject {
 function Test-FullGitSha {
     param([AllowNull()] $Value)
     return ($Value -is [string] -and $Value -cmatch $fullGitShaPattern)
+}
+
+function Test-BridgeNowAtOrAfter {
+    param([Parameter(Mandatory)] [string] $EpochUtc)
+    $epoch = [DateTimeOffset]::Parse(
+        $EpochUtc,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal
+    ).ToUniversalTime()
+    return ([DateTimeOffset]::UtcNow -ge $epoch)
 }
 
 function Get-BridgeObjectField {
@@ -245,8 +256,10 @@ function Assert-GrokFreshnessPayload {
             }
         }
     }
-    $expectedWorktreeHeads = if ($expectedPrReviewWorktreeHeads.Count -gt 0) {
-        $expectedPrReviewWorktreeHeads
+    $expectedWorktreeHeads = if (Test-BridgeNowAtOrAfter -EpochUtc $grokPrWorktreeStrictEpochUtc) {
+        @($localOriginMainSha)
+    } elseif ($expectedPrReviewWorktreeHeads.Count -gt 0) {
+        $expectedPrReviewWorktreeHeads + @($localOriginMainSha)
     } else {
         @($localOriginMainSha)
     }

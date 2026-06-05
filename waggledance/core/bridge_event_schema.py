@@ -8,6 +8,7 @@ event shape without changing the writer path: callers can validate events
 explicitly, and readers can degrade gracefully by reporting validation issues
 instead of failing the bridge loop.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,33 +22,33 @@ from typing import Any, Iterable, Mapping
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from pydantic import ValidationError, field_validator, model_validator
 
-
 BRIDGE_EVENT_SCHEMA_VERSION = "agent-bridge-event.v1"
 AGENT_ID_PATTERN = r"^[a-z][a-z0-9_-]{1,32}$"
 AGENT_UUID_PATTERN = (
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-" r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 SESSION_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 CAPABILITY_PATTERN = r"^[a-z][a-z0-9_.:-]{1,64}$"
 LEGACY_AGENTS = frozenset({"codex", "claude", "operator", "system"})
 KNOWN_AGENTS = LEGACY_AGENTS
-KNOWN_EVENT_TYPES = frozenset({
-    "blocked",
-    "claim",
-    "decision",
-    "done",
-    "finding",
-    "handoff",
-    "heartbeat",
-    "intent",
-    "liveness",
-    "message",
-    "release",
-    "status",
-    "test",
-    "wake_request",
-})
+KNOWN_EVENT_TYPES = frozenset(
+    {
+        "blocked",
+        "claim",
+        "decision",
+        "done",
+        "finding",
+        "handoff",
+        "heartbeat",
+        "intent",
+        "liveness",
+        "message",
+        "release",
+        "status",
+        "test",
+        "wake_request",
+    }
+)
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
 KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
 FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
@@ -99,7 +100,9 @@ class BridgeEvent(BaseModel):
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
             raise ValueError("ts_utc must be ISO-8601") from exc
-        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(
+            parsed
+        ):
             raise ValueError("ts_utc must carry UTC offset")
         return value
 
@@ -225,11 +228,11 @@ class BridgeEvent(BaseModel):
                 )
             if value is not None:
                 pr_review_worktree_heads.append(value)
-        if pr_review_worktree_heads and _is_at_or_after_utc(
+        if _is_at_or_after_utc(
             self.ts_utc,
             GROK_PR_WORKTREE_STRICT_EPOCH_UTC,
         ):
-            expected_worktree_heads = pr_review_worktree_heads
+            expected_worktree_heads = [local_origin_main_sha]
         else:
             expected_worktree_heads = [
                 local_origin_main_sha,

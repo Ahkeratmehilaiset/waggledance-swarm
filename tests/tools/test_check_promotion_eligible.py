@@ -9,6 +9,7 @@ import sys
 from tools.check_promotion_eligible import evaluate_promotion_eligibility
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
+NEW_HEAD = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
 TASK = "codex-lead-1/promotion-eligible-verifier-20260605"
@@ -64,15 +65,20 @@ def _evaluate(
     *,
     status: dict | None = None,
     events: list[dict] | None = None,
+    head: str = HEAD,
     origin_main_sha: str = BASE,
+    prior_approved_head: str = "",
+    prior_approved_diff_text: str | None = None,
     author_agent: str = "",
 ) -> dict:
     return evaluate_promotion_eligibility(
         pr_status=status or _status(),
         events=events if events is not None else _full_events(),
         task_id=TASK,
-        head=HEAD,
+        head=head,
         origin_main_sha=origin_main_sha,
+        prior_approved_head=prior_approved_head,
+        prior_approved_diff_text=prior_approved_diff_text,
         author_agent=author_agent,
     )
 
@@ -151,8 +157,76 @@ def test_stale_base_refuses() -> None:
     report = _evaluate(origin_main_sha=OTHER_BASE)
 
     assert report["eligible"] is False
-    assert "base sha mismatch" in report["reasons"]
+    assert "base is stale" in report["reasons"]
+    assert report["base_status"] == "stale"
     assert report["gate_results"]["base"]["origin_main_sha"] == OTHER_BASE
+
+
+def test_content_identical_rebase_carries_prior_approvals() -> None:
+    diff = "+ def helper():\n+     return 1\n"
+    report = _evaluate(
+        status=_status(head_sha=NEW_HEAD, diff_text=diff),
+        events=_full_events(),
+        head=NEW_HEAD,
+        prior_approved_head=HEAD,
+        prior_approved_diff_text=diff,
+    )
+
+    assert report["eligible"] is True
+    assert report["base_status"] == "content_identical_rebase"
+    assert report["carry_forward"] is True
+    assert report["approval_head"] == HEAD
+    assert report["gate_results"]["ci"]["ok"] is True
+    assert report["gate_results"]["rco_pass"]["satisfying_rco_agent"] == "claude-rco-1"
+
+
+def test_content_identical_rebase_still_requires_current_ci_green() -> None:
+    diff = "+ def helper():\n+     return 1\n"
+    report = _evaluate(
+        status=_status(
+            head_sha=NEW_HEAD,
+            diff_text=diff,
+            checks=[{"name": "unified", "state": "pending"}],
+        ),
+        events=_full_events(),
+        head=NEW_HEAD,
+        prior_approved_head=HEAD,
+        prior_approved_diff_text=diff,
+    )
+
+    assert report["eligible"] is False
+    assert report["carry_forward"] is True
+    assert "status checks not green: unified" in report["reasons"]
+
+
+def test_content_changed_repush_forfeits_carry_forward() -> None:
+    report = _evaluate(
+        status=_status(
+            head_sha=NEW_HEAD, diff_text="+ def helper():\n+     return 2\n"
+        ),
+        events=_full_events(),
+        head=NEW_HEAD,
+        prior_approved_head=HEAD,
+        prior_approved_diff_text="+ def helper():\n+     return 1\n",
+    )
+
+    assert report["eligible"] is False
+    assert report["base_status"] == "content_changed"
+    assert report["carry_forward"] is False
+    assert "content changed since prior approved head" in report["reasons"]
+
+
+def test_missing_prior_diff_for_rebased_head_fails_closed() -> None:
+    report = _evaluate(
+        status=_status(head_sha=NEW_HEAD),
+        events=_full_events(),
+        head=NEW_HEAD,
+        prior_approved_head=HEAD,
+    )
+
+    assert report["eligible"] is False
+    assert report["base_status"] == "content_changed"
+    assert "prior approved diff required for carry-forward" in report["reasons"]
 
 
 def test_backup_rco_veto_blocks_even_when_rco1_passes() -> None:

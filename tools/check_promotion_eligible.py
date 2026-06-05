@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--head", required=True)
     parser.add_argument("--pr-number", type=int, default=None)
     parser.add_argument("--origin-main-sha", required=True)
+    parser.add_argument("--prior-approved-head", default="")
+    parser.add_argument(
+        "--prior-approved-diff-file",
+        type=Path,
+        default=None,
+        help="Prior approved diff text for content-identical carry-forward.",
+    )
     parser.add_argument(
         "--rco-agent",
         action="append",
@@ -102,6 +109,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         events = _read_events_fail_closed(args.events)
+        prior_approved_diff_text = None
+        if args.prior_approved_diff_file is not None:
+            prior_approved_diff_text = args.prior_approved_diff_file.read_text(
+                encoding="utf-8"
+            )
         report = evaluate_promotion_eligibility(
             pr_status=pr_status,
             events=events,
@@ -109,6 +121,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             head=args.head,
             origin_main_sha=args.origin_main_sha,
             pr_number=args.pr_number,
+            prior_approved_head=args.prior_approved_head,
+            prior_approved_diff_text=prior_approved_diff_text,
             charter_path=args.charter,
             rco_agents=args.rco_agent,
             author_agent=args.author_agent,
@@ -141,6 +155,8 @@ def evaluate_promotion_eligibility(
     head: str,
     origin_main_sha: str,
     pr_number: int | None = None,
+    prior_approved_head: str = "",
+    prior_approved_diff_text: str | None = None,
     charter_path: Path = DEFAULT_CHARTER_PATH,
     rco_agents: Sequence[str] | None = None,
     author_agent: str = "",
@@ -155,6 +171,8 @@ def evaluate_promotion_eligibility(
             head=head,
             origin_main_sha=origin_main_sha,
             pr_number=pr_number,
+            prior_approved_head=prior_approved_head,
+            prior_approved_diff_text=prior_approved_diff_text,
             charter_path=charter_path,
             rco_agents=rco_agents,
             author_agent=author_agent,
@@ -172,6 +190,8 @@ def _evaluate_promotion_eligibility(
     head: str,
     origin_main_sha: str,
     pr_number: int | None,
+    prior_approved_head: str,
+    prior_approved_diff_text: str | None,
     charter_path: Path,
     rco_agents: Sequence[str] | None,
     author_agent: str,
@@ -183,6 +203,8 @@ def _evaluate_promotion_eligibility(
             "task_id": task_id,
             "head": head,
             "origin_main_sha": origin_main_sha,
+            "prior_approved_head": prior_approved_head,
+            "prior_approved_diff_text": prior_approved_diff_text or "",
             "rco_agents": list(rco_agents or DEFAULT_RCO_AGENTS),
             "author_agent": author_agent,
             "from_agent": from_agent,
@@ -191,6 +213,7 @@ def _evaluate_promotion_eligibility(
     task_id = _required_str(task_id, "task_id")
     head = _required_sha(head, "head")
     origin_main_sha = _required_sha(origin_main_sha, "origin_main_sha")
+    prior_approved_head = _optional_sha(prior_approved_head, "prior_approved_head")
     author_agent = (author_agent or "").strip()
     from_agent = (from_agent or "promotion-pipeline").strip()
     if not from_agent:
@@ -219,12 +242,18 @@ def _evaluate_promotion_eligibility(
         "expected_head": head,
         "snapshot_head": status_head,
     }
-    base_gate = {
-        "ok": base_sha == origin_main_sha,
-        "snapshot_base_sha": base_sha,
-        "origin_main_sha": origin_main_sha,
-        "reason": "" if base_sha == origin_main_sha else "base sha mismatch",
-    }
+    base_gate = _base_status_gate(
+        base_sha=base_sha,
+        origin_main_sha=origin_main_sha,
+        head=head,
+        prior_approved_head=prior_approved_head,
+        diff_text=diff_text,
+        prior_approved_diff_text=_prior_approved_diff_text(
+            pr_status=pr_status,
+            explicit=prior_approved_diff_text,
+        ),
+    )
+    approval_head = str(base_gate["approval_head"])
     peer_gate = check_bridge_clear_to_merge(
         events=events,
         task_id=task_id,
@@ -234,13 +263,13 @@ def _evaluate_promotion_eligibility(
     rco_pass_gate = _rco_pass_set_gate(
         events=events,
         task_id=task_id,
-        head=head,
+        head=approval_head,
         rco_agents=rco_agent_set,
     )
     bridge_consensus_gate = _bridge_consensus_set_gate(
         events=events,
         task_id=task_id,
-        head=head,
+        head=approval_head,
         pr_number=number,
         rco_agents=rco_agent_set,
     )
@@ -256,7 +285,8 @@ def _evaluate_promotion_eligibility(
         failing = ", ".join(ci_gate["failing_checks"]) or "unknown"
         reasons.append(f"status checks not green: {failing}")
     if not base_gate["ok"]:
-        reasons.append("base sha mismatch")
+        reason = str(base_gate["reason"])
+        reasons.append(reason if reason else "base gate failed")
     if not bool(peer_gate.get("clear_to_merge", False)):
         latest = peer_gate.get("latest_blocking_event") or {}
         agent = (
@@ -286,6 +316,10 @@ def _evaluate_promotion_eligibility(
         "pr_number": number,
         "head": head,
         "origin_main_sha": origin_main_sha,
+        "base_status": str(base_gate["base_status"]),
+        "carry_forward": bool(base_gate["carry_forward"]),
+        "approval_head": approval_head,
+        "prior_approved_head": prior_approved_head,
         "recognized_rco_agents": list(rco_agent_set),
         "author_agent": author_agent,
         "reasons": reasons,
@@ -360,6 +394,78 @@ def _bridge_consensus_set_gate(
         "recognized_rco_agents": list(rco_agents),
         "by_agent": by_agent,
     }
+
+
+def _base_status_gate(
+    *,
+    base_sha: str,
+    origin_main_sha: str,
+    head: str,
+    prior_approved_head: str,
+    diff_text: str,
+    prior_approved_diff_text: str | None,
+) -> dict[str, Any]:
+    gate: dict[str, Any] = {
+        "ok": True,
+        "base_status": "fresh",
+        "carry_forward": False,
+        "approval_head": head,
+        "snapshot_base_sha": base_sha,
+        "origin_main_sha": origin_main_sha,
+        "prior_approved_head": prior_approved_head,
+        "reason": "",
+    }
+    if base_sha != origin_main_sha:
+        return {
+            **gate,
+            "ok": False,
+            "base_status": "stale",
+            "reason": "base is stale",
+        }
+    if not prior_approved_head or prior_approved_head == head:
+        return gate
+    if prior_approved_diff_text is None:
+        return {
+            **gate,
+            "ok": False,
+            "base_status": "content_changed",
+            "reason": "prior approved diff required for carry-forward",
+        }
+    if diff_text != prior_approved_diff_text:
+        return {
+            **gate,
+            "ok": False,
+            "base_status": "content_changed",
+            "reason": "content changed since prior approved head",
+        }
+    return {
+        **gate,
+        "base_status": "content_identical_rebase",
+        "carry_forward": True,
+        "approval_head": prior_approved_head,
+    }
+
+
+def _prior_approved_diff_text(
+    *,
+    pr_status: Mapping[str, Any],
+    explicit: str | None,
+) -> str | None:
+    if explicit is not None:
+        return explicit
+    value = pr_status.get("prior_approved_diff_text")
+    if value is None:
+        value = pr_status.get("prior_diff_text")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PromotionEligibilityError(
+            _invalid_report(
+                "invalid_input",
+                "prior_approved_diff_text must be a string when provided",
+            )
+        )
+    return value
 
 
 def _recognized_rco_agents(
@@ -459,6 +565,17 @@ def _required_str(value: str, field: str) -> str:
 
 def _required_sha(value: str, field: str) -> str:
     cleaned = (value or "").strip().lower()
+    if not SHA_RE.fullmatch(cleaned):
+        raise PromotionEligibilityError(
+            _invalid_report("invalid_input", f"{field} must be a 40-char lowercase sha")
+        )
+    return cleaned
+
+
+def _optional_sha(value: str, field: str) -> str:
+    cleaned = (value or "").strip().lower()
+    if not cleaned:
+        return ""
     if not SHA_RE.fullmatch(cleaned):
         raise PromotionEligibilityError(
             _invalid_report("invalid_input", f"{field} must be a 40-char lowercase sha")

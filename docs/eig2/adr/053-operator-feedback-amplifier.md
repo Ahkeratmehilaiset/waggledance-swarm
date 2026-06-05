@@ -25,6 +25,11 @@ A new bridge event `ops_feedback`:
 }
 ```
 
+This landing implements the pure planner. The planner validates `ops_feedback`
+and returns a sanitized `feedback_action_taken` action plan; it does not write
+to `events.jsonl`, mutate solver state, or grant runtime authority until the
+separate bridge writer and scheduler integrations land.
+
 `autogrowth_scheduler` polls events, and on `ops_feedback`:
 
 1. If `feedback_kind="needs_solver"`: spawns a deep-bin gap_signal (per ADR-031) for that query_class_hash, with `priority="high"` flag → fast-tracked to canary lane.
@@ -40,7 +45,7 @@ Priority="high" feedback gets `fast_track_canary_minutes=15` (vs normal 24h cycl
 3. **Priority enum**: `{high, normal}`.
 4. **High priority fast-track 15 min**: pinned in contract.
 5. **Operator identity required**: anonymous feedback rejected.
-6. **Auditable**: every ops_feedback event triggers a `feedback_action_taken` event in response (echo audit trail).
+6. **Auditable plan**: every accepted ops_feedback event produces a `feedback_action_taken` action plan linking `feedback_id` to `action_id`; this planner keeps `bridge_event_written=false` until the separate bridge writer integration persists the echo audit event.
 7. **Bounded amplification**: max `fast_track_per_hour=10` to prevent feedback storms; excess queued normally.
 
 Contract: `docs/eig2/contracts/operator_feedback_amplifier.json`. Pure planner:

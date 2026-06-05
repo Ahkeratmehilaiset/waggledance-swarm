@@ -71,6 +71,21 @@ def test_each_invariant_has_musts() -> None:
         assert item["must"]
 
 
+def test_ofa006_is_planner_only_until_bridge_writer_lands() -> None:
+    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    ofa006 = next(item for item in c["invariants"] if item["id"] == "OFA-006")
+    text = " ".join([
+        ofa006["name"],
+        ofa006["description"],
+        *ofa006["must"],
+    ]).lower()
+
+    assert "feedback_action_taken" in text
+    assert "links feedback_id to action_id" in text
+    assert "bridge_event_written remains false" in text
+    assert "echo event written" not in text
+
+
 def test_remaining_out_of_scope_integrations_are_precise() -> None:
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     out_of_scope = " ".join(c["out_of_scope"]).lower()

@@ -113,6 +113,7 @@ def test_high_priority_needs_solver_gets_bounded_fast_track_plan() -> None:
     assert plan.runtime_authority_granted is False
     assert plan.canary_activation_applied is False
     assert plan.bridge_event_written is False
+    assert as_dict["bridge_event_written"] is False
     assert as_dict["gap_signal"]["gap_kind"] == "needs_solver"
     assert as_dict["gap_signal"]["fast_track_canary"] is True
     assert as_dict["gap_signal"]["raw_query_exported"] is False

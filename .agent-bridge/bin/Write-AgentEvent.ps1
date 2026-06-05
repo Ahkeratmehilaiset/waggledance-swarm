@@ -157,9 +157,9 @@ if (($Type -eq 'wake_request') -and [string]::IsNullOrWhiteSpace($To)) {
 
 $payload = $null
 try {
-    $payload = $PayloadJson | ConvertFrom-Json
+    $payload = $PayloadJson | ConvertFrom-Json -ErrorAction Stop
 } catch {
-    $payload = [pscustomobject]@{ raw = $PayloadJson; parse_error = $_.Exception.Message }
+    throw "Bridge event payload must be valid JSON before writing"
 }
 Assert-NoPrivateMarker -Label 'payload' -Value ($payload | ConvertTo-Json -Depth 12 -Compress)
 

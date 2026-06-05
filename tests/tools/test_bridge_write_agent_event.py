@@ -437,6 +437,29 @@ def test_grok_response_with_freshness_payload_writes_valid_event(
     validate_event_line(line)
 
 
+def test_invalid_payload_json_fails_before_runtime_write(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "invalid payload json",
+        "-PayloadJson",
+        "{not-json}",
+    )
+
+    assert completed.returncode != 0
+    assert "payload must be valid JSON" in completed.stderr
+    assert "{not-json}" not in completed.stderr + completed.stdout
+    assert not runtime_root.exists()
+
+
 def test_grok_response_rejects_self_declared_pr_head_worktree_freshness(
     tmp_path: Path,
 ) -> None:

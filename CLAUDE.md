@@ -122,22 +122,34 @@ evaluated fail-closed:
 
 * **Build consensus** — the lead (`codex-lead-1`) and the tools/impl peer
   (`codex-tools-1`) both concur on the change.
-* **Independent RCO** — `claude-rco-1` posts an explicit `RCO_PASS`
-  (`type=decision` with a status in the approval set) on the PR's **canonical
-  task_id** (= branch name) at the **exact head SHA**, and holds an absolute
-  veto: any `finding`/`changes_requested` from `claude-rco-1` on that task
-  blocks the merge (`tools/check_bridge_changes_requested.py`).
-* **RCO absence = NO merge** — if no explicit `claude-rco-1` `RCO_PASS` at the
-  exact head is present, the gate refuses even when build-consensus and every
-  charter condition pass. Silence blocks; it never default-allows.
-* **Three distinct identities** — duplicate, missing, or unverifiable
-  identities are refused; a 2-of-3 or self-approving signal set fails closed to
-  `operator_review_required`.
+* **Independent RCO** — a **recognized RCO identity** posts an explicit
+  `RCO_PASS` (`type=decision` with a status in the approval set) on the PR's
+  **canonical task_id** (= branch name) at the **exact head SHA**. The
+  recognized RCO set is `{claude-rco-1, claude-rco-2}` (backup-RCO co-authority,
+  added 2026-06-05 to relieve the single-RCO availability SPOF). A valid
+  `RCO_PASS` from **either** recognized identity satisfies the RCO slot, so a
+  merge can proceed when one RCO is offline. The passing RCO **must not be the
+  PR author** (author ≠ reviewer); if a recognized RCO authored the PR, only the
+  *other* recognized RCO can satisfy the RCO slot.
+* **RCO veto is absolute and per-identity** — any `finding`/`changes_requested`
+  from **any** recognized RCO identity on that task blocks the merge
+  (`tools/check_bridge_changes_requested.py`), and a veto **outranks a pass**: if
+  one recognized RCO passes while the other has an unretracted veto at the same
+  head, the gate is blocked. The backup RCO can never be used to out-vote a veto.
+* **RCO absence = NO merge** — if no recognized RCO `RCO_PASS` at the exact head
+  is present, the gate refuses even when build-consensus and every charter
+  condition pass. Silence blocks; it never default-allows.
+* **Three distinct identities** — the approval set is build-lead + build-tools +
+  exactly one recognized RCO = three distinct verified identities. An RCO
+  identity counts for the RCO slot only, never a build slot; duplicate, missing,
+  unverifiable, self-approving, or author-as-own-reviewer signal sets fail closed
+  to `operator_review_required`.
 * **Head-exact binding** — all three approvals bind to the exact head SHA; any
   re-push invalidates all prior approvals and requires re-consensus.
 * **MAGMA receipt** — the merge emits a MAGMA receipt recording the three
-  identities, the head SHA, and the `RCO_PASS` event reference; a consumer must
-  be able to re-derive the verdict from those fields (no trusting a bare flag).
+  identities (including **which** recognized RCO satisfied the RCO slot), the
+  head SHA, and the `RCO_PASS` event reference; a consumer must be able to
+  re-derive the verdict from those fields (no trusting a bare flag).
 
 This contract governs **MERGE** only. It does **not** authorize the Stage-2
 atomic-flip cutover, which remains operator-signed under Rule 10 until a

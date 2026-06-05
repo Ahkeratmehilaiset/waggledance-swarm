@@ -5,6 +5,7 @@ The tool is deliberately manual and local. It never creates work-queue tasks,
 branches, pull requests, or bridge events. It converts a completed soft/hard
 idle convergence into evidence for an operator decision.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,7 +27,10 @@ from waggledance.core.idle_consensus_charter import (
     evaluate_paths,
     load_charter,
 )
-from waggledance.core.idle_protocol import detect_idle_convergence, validate_idle_proposal
+from waggledance.core.idle_protocol import (
+    detect_idle_convergence,
+    validate_idle_proposal,
+)
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
@@ -34,7 +38,6 @@ from waggledance.core.magma.receipt_bundle import (
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
-
 
 DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
 REPLAY_SEED_VERSION = "idle_consensus_replay_seed.v0"
@@ -84,6 +87,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional non-existing output directory for a local MAGMA receipt bundle.",
     )
+    parser.add_argument(
+        "--candidate-diff-replay-admission",
+        action="store_true",
+        help=(
+            "Emit a report-only admission check for a candidate diff against an "
+            "idle replay seed. Writes no artifacts or bridge events."
+        ),
+    )
+    parser.add_argument(
+        "--replay-seed",
+        type=Path,
+        default=None,
+        help="Replay seed JSON, or an idle consensus artifact JSON containing replay_seed.",
+    )
+    parser.add_argument(
+        "--candidate-diff",
+        type=Path,
+        default=None,
+        help="Candidate diff text file for report-only replay admission.",
+    )
+    parser.add_argument(
+        "--changed-path",
+        action="append",
+        default=[],
+        dest="changed_paths",
+        help="Changed path for the candidate diff. Repeat for multiple paths.",
+    )
     parser.add_argument("--now", default=None)
     parser.add_argument("--json", action="store_true")
     return parser
@@ -91,6 +121,36 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if (
+        args.candidate_diff_replay_admission
+        or args.replay_seed is not None
+        or args.candidate_diff is not None
+        or args.changed_paths
+    ):
+        try:
+            report = build_candidate_diff_replay_admission_from_files(
+                enabled=bool(args.candidate_diff_replay_admission),
+                replay_seed_path=args.replay_seed,
+                candidate_diff_path=args.candidate_diff,
+                changed_paths=args.changed_paths,
+            )
+        except ArtifactError as exc:
+            if args.json:
+                print(json.dumps(exc.report, sort_keys=True))
+            else:
+                print(f"candidate diff replay admission FAILED: {exc}", file=sys.stderr)
+                for error in exc.report.get("errors", []):
+                    print(f"- {error}", file=sys.stderr)
+            return int(exc.report.get("exit_code", 2))
+
+        if args.json:
+            print(json.dumps(report, sort_keys=True))
+        else:
+            print(report["decision"])
+            print(f"ok: {str(report['ok']).lower()}")
+            print(f"candidate_diff_digest: {report['candidate_diff']['digest']}")
+        return int(report["exit_code"])
+
     try:
         report = write_idle_consensus_artifact(
             events_path=args.events,
@@ -240,7 +300,9 @@ def write_idle_consensus_artifact(
             ) from exc
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8"
+    )
     markdown_path.write_text(markdown, encoding="utf-8")
     report = {
         "decision": "operator_review_required",
@@ -279,7 +341,9 @@ def build_idle_consensus_replay_seed(artifact: Mapping[str, Any]) -> dict[str, A
             "idle consensus artifact is not replay-seed eligible",
             {
                 "decision": "replay_seed_refused",
-                "errors": ["candidate diff material is not allowed in replay seed source"],
+                "errors": [
+                    "candidate diff material is not allowed in replay seed source"
+                ],
                 "candidate_material_keys": material_keys,
                 "exit_code": 2,
             },
@@ -423,6 +487,60 @@ def build_idle_consensus_candidate_diff_replay_admission(
     }
 
 
+def build_candidate_diff_replay_admission_from_files(
+    *,
+    enabled: bool,
+    replay_seed_path: Path | None,
+    candidate_diff_path: Path | None,
+    changed_paths: Sequence[str],
+) -> dict[str, Any]:
+    """Load local files and build a report-only candidate diff admission."""
+    if not enabled:
+        raise ArtifactError(
+            "candidate diff replay admission mode is required",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": [
+                    "--candidate-diff-replay-admission is required with replay admission inputs"
+                ],
+                "exit_code": 2,
+            },
+        )
+    missing = []
+    if replay_seed_path is None:
+        missing.append("--replay-seed")
+    if candidate_diff_path is None:
+        missing.append("--candidate-diff")
+    if not changed_paths:
+        missing.append("--changed-path")
+    if missing:
+        raise ArtifactError(
+            "candidate diff replay admission inputs are incomplete",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": [f"missing required argument(s): {', '.join(missing)}"],
+                "exit_code": 2,
+            },
+        )
+
+    replay_seed = _read_replay_seed_file(replay_seed_path)
+    candidate_diff_text = _read_text_file(candidate_diff_path, "candidate diff")
+    report = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=replay_seed,
+        changed_paths=changed_paths,
+        candidate_diff_text=candidate_diff_text,
+    )
+    report["exit_code"] = 0 if report["ok"] else 1
+    return report
+
+
+def _read_replay_seed_file(path: Path) -> Mapping[str, Any]:
+    value = _read_json_object(path, "replay seed")
+    if isinstance(value.get("replay_seed"), Mapping):
+        value = value["replay_seed"]
+    return value
+
+
 def _ensure_replay_seed_ready_for_candidate_diff_admission(
     replay_seed: Mapping[str, Any],
 ) -> None:
@@ -514,6 +632,55 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def _read_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ArtifactError(
+            f"missing {label} file: {path}",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": [f"missing {label} file: {path}"],
+                "exit_code": 2,
+            },
+        ) from exc
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ArtifactError(
+            f"{label} file contains invalid JSON",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": [f"{label} JSON: {exc.msg}"],
+                "exit_code": 2,
+            },
+        ) from exc
+    if not isinstance(value, dict):
+        raise ArtifactError(
+            f"{label} file must contain a JSON object",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": [f"{label} must be a JSON object"],
+                "exit_code": 2,
+            },
+        )
+    return value
+
+
+def _read_text_file(path: Path, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ArtifactError(
+            f"missing {label} file: {path}",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": [f"missing {label} file: {path}"],
+                "exit_code": 2,
+            },
+        ) from exc
+
+
 def _idle_payloads(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for event in events:
@@ -521,7 +688,10 @@ def _idle_payloads(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             payloads.append(dict(event))
             continue
         payload = event.get("payload")
-        if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        if (
+            isinstance(payload, Mapping)
+            and payload.get("protocol_version") == "idle-protocol.v1"
+        ):
             payloads.append(dict(payload))
     return payloads
 
@@ -690,25 +860,33 @@ def _emit_receipt_bundle(
         evaluation_result=evaluation,
         previous_receipt=None,
         policy_digest=sha256_digest({"policy_version": evaluation["policy_version"]}),
-        charter_digest=sha256_digest({
-            "charter_version": evaluation["charter_version"],
-            "operator_gate_required": artifact["operator_gate_required"],
-            "auto_execute": artifact["auto_execute"],
-        }),
-        rco_decision_digest=sha256_digest({
-            "actual_gate": evaluation["actual_gate"],
-            "decision": artifact["decision"],
-            "prohibited_actions": artifact["prohibited_actions"],
-        }),
-        world_snapshot_digest=sha256_digest({
-            "artifact_id": artifact_id,
-            "created_at_utc": artifact["created_at_utc"],
-            "convergence_status": artifact["convergence"]["status"],
-        }),
-        solver_contract_digest=sha256_digest({
-            "solver_selection": evaluation["solver_selection"],
-            "policy_version": evaluation["policy_version"],
-        }),
+        charter_digest=sha256_digest(
+            {
+                "charter_version": evaluation["charter_version"],
+                "operator_gate_required": artifact["operator_gate_required"],
+                "auto_execute": artifact["auto_execute"],
+            }
+        ),
+        rco_decision_digest=sha256_digest(
+            {
+                "actual_gate": evaluation["actual_gate"],
+                "decision": artifact["decision"],
+                "prohibited_actions": artifact["prohibited_actions"],
+            }
+        ),
+        world_snapshot_digest=sha256_digest(
+            {
+                "artifact_id": artifact_id,
+                "created_at_utc": artifact["created_at_utc"],
+                "convergence_status": artifact["convergence"]["status"],
+            }
+        ),
+        solver_contract_digest=sha256_digest(
+            {
+                "solver_selection": evaluation["solver_selection"],
+                "policy_version": evaluation["policy_version"],
+            }
+        ),
     )
     receipt["operator_gate_required"] = True
     return write_receipt_bundle(

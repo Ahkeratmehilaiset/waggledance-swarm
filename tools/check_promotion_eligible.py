@@ -269,6 +269,7 @@ def _evaluate_promotion_eligibility(
         task_id=task_id,
         head=approval_head,
         rco_agents=rco_agent_set,
+        author_agent=author_agent,
     )
     bridge_consensus_gate = _bridge_consensus_set_gate(
         events=events,
@@ -276,6 +277,7 @@ def _evaluate_promotion_eligibility(
         head=approval_head,
         pr_number=number,
         rco_agents=rco_agent_set,
+        author_agent=author_agent,
     )
 
     reasons: list[str] = []
@@ -350,6 +352,7 @@ def _rco_pass_set_gate(
     task_id: str,
     head: str,
     rco_agents: Sequence[str],
+    author_agent: str,
 ) -> dict[str, Any]:
     by_agent = {
         agent: check_rco_pass_present(
@@ -357,6 +360,7 @@ def _rco_pass_set_gate(
             task_id=task_id,
             head=head,
             rco_agent=agent,
+            author_agent=author_agent,
         )
         for agent in rco_agents
     }
@@ -377,6 +381,7 @@ def _bridge_consensus_set_gate(
     head: str,
     pr_number: int,
     rco_agents: Sequence[str],
+    author_agent: str,
 ) -> dict[str, Any]:
     by_agent = {
         agent: verify_bridge_consensus(
@@ -385,6 +390,7 @@ def _bridge_consensus_set_gate(
             head_sha=head,
             pr_number=pr_number,
             rco_agent=agent,
+            author_agent=author_agent,
         )
         for agent in rco_agents
     }

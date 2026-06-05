@@ -5,6 +5,7 @@ The tool is deliberately manual and local. It never creates work-queue tasks,
 branches, pull requests, or bridge events. It converts a completed soft/hard
 idle convergence into evidence for an operator decision.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,7 +27,10 @@ from waggledance.core.idle_consensus_charter import (
     evaluate_paths,
     load_charter,
 )
-from waggledance.core.idle_protocol import detect_idle_convergence, validate_idle_proposal
+from waggledance.core.idle_protocol import (
+    detect_idle_convergence,
+    validate_idle_proposal,
+)
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
@@ -34,7 +38,6 @@ from waggledance.core.magma.receipt_bundle import (
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
-
 
 DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
 REPLAY_SEED_VERSION = "idle_consensus_replay_seed.v0"
@@ -297,7 +300,9 @@ def write_idle_consensus_artifact(
             ) from exc
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8"
+    )
     markdown_path.write_text(markdown, encoding="utf-8")
     report = {
         "decision": "operator_review_required",
@@ -336,7 +341,9 @@ def build_idle_consensus_replay_seed(artifact: Mapping[str, Any]) -> dict[str, A
             "idle consensus artifact is not replay-seed eligible",
             {
                 "decision": "replay_seed_refused",
-                "errors": ["candidate diff material is not allowed in replay seed source"],
+                "errors": [
+                    "candidate diff material is not allowed in replay seed source"
+                ],
                 "candidate_material_keys": material_keys,
                 "exit_code": 2,
             },
@@ -681,7 +688,10 @@ def _idle_payloads(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             payloads.append(dict(event))
             continue
         payload = event.get("payload")
-        if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        if (
+            isinstance(payload, Mapping)
+            and payload.get("protocol_version") == "idle-protocol.v1"
+        ):
             payloads.append(dict(payload))
     return payloads
 
@@ -850,25 +860,33 @@ def _emit_receipt_bundle(
         evaluation_result=evaluation,
         previous_receipt=None,
         policy_digest=sha256_digest({"policy_version": evaluation["policy_version"]}),
-        charter_digest=sha256_digest({
-            "charter_version": evaluation["charter_version"],
-            "operator_gate_required": artifact["operator_gate_required"],
-            "auto_execute": artifact["auto_execute"],
-        }),
-        rco_decision_digest=sha256_digest({
-            "actual_gate": evaluation["actual_gate"],
-            "decision": artifact["decision"],
-            "prohibited_actions": artifact["prohibited_actions"],
-        }),
-        world_snapshot_digest=sha256_digest({
-            "artifact_id": artifact_id,
-            "created_at_utc": artifact["created_at_utc"],
-            "convergence_status": artifact["convergence"]["status"],
-        }),
-        solver_contract_digest=sha256_digest({
-            "solver_selection": evaluation["solver_selection"],
-            "policy_version": evaluation["policy_version"],
-        }),
+        charter_digest=sha256_digest(
+            {
+                "charter_version": evaluation["charter_version"],
+                "operator_gate_required": artifact["operator_gate_required"],
+                "auto_execute": artifact["auto_execute"],
+            }
+        ),
+        rco_decision_digest=sha256_digest(
+            {
+                "actual_gate": evaluation["actual_gate"],
+                "decision": artifact["decision"],
+                "prohibited_actions": artifact["prohibited_actions"],
+            }
+        ),
+        world_snapshot_digest=sha256_digest(
+            {
+                "artifact_id": artifact_id,
+                "created_at_utc": artifact["created_at_utc"],
+                "convergence_status": artifact["convergence"]["status"],
+            }
+        ),
+        solver_contract_digest=sha256_digest(
+            {
+                "solver_selection": evaluation["solver_selection"],
+                "policy_version": evaluation["policy_version"],
+            }
+        ),
     )
     receipt["operator_gate_required"] = True
     return write_receipt_bundle(

@@ -20,7 +20,6 @@ from tools.idle_consensus_artifact import (
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.canonical import sha256_digest
 
-
 NOW = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
 PROHIBITED_HINTS = (
     "create pr",
@@ -55,14 +54,18 @@ def _base(proposal_id: str, event_type: str, round_number: int) -> dict:
 
 def _proposal() -> dict:
     payload = _base("idle-artifact-001", "idle_proposal", 1)
-    payload["proposal"] = "Write an operator review artifact for completed idle consensus."
+    payload["proposal"] = (
+        "Write an operator review artifact for completed idle consensus."
+    )
     return payload
 
 
 def _counter(proposal_id: str = "idle-artifact-002", round_number: int = 2) -> dict:
     payload = _base(proposal_id, "idle_counter_proposal", round_number)
     payload["responds_to"] = (
-        "idle-artifact-001" if round_number == 2 else f"idle-artifact-{round_number - 1:03d}"
+        "idle-artifact-001"
+        if round_number == 2
+        else f"idle-artifact-{round_number - 1:03d}"
     )
     payload["alternative_proposal"] = (
         "Use a read only artifact and require the operator to decide separately."
@@ -99,7 +102,9 @@ def _charter_violation() -> dict:
     payload = _base("idle-artifact-004", "idle_charter_violation", 4)
     payload["proposes_substrate_change"] = False
     payload["violating_proposal_id"] = "idle-artifact-002"
-    payload["violation_reason"] = "The reviewed idea would turn consensus into automatic work."
+    payload["violation_reason"] = (
+        "The reviewed idea would turn consensus into automatic work."
+    )
     payload["terminate_protocol"] = True
     payload["operator_escalation_required"] = True
     payload["charter_alignment"] = {
@@ -147,7 +152,10 @@ def _bridge_event(payload: dict) -> dict:
 
 def _write_events(path: Path, payloads: list[dict]) -> None:
     path.write_text(
-        "".join(json.dumps(_bridge_event(payload), sort_keys=True) + "\n" for payload in payloads),
+        "".join(
+            json.dumps(_bridge_event(payload), sort_keys=True) + "\n"
+            for payload in payloads
+        ),
         encoding="utf-8",
     )
 
@@ -343,9 +351,7 @@ new file mode 100644
         "changed_paths": ["docs/architecture/consensus_artifacts/replay.md"],
         "digest": sha256_digest(
             {
-                "changed_paths": [
-                    "docs/architecture/consensus_artifacts/replay.md"
-                ],
+                "changed_paths": ["docs/architecture/consensus_artifacts/replay.md"],
                 "diff_text": diff_text,
             }
         ),
@@ -434,9 +440,7 @@ new file mode 100644
     assert admission["candidate_diff"]["diff_text_included"] is False
     assert admission["candidate_diff"]["digest"] == sha256_digest(
         {
-            "changed_paths": [
-                "docs/architecture/consensus_artifacts/replay.md"
-            ],
+            "changed_paths": ["docs/architecture/consensus_artifacts/replay.md"],
             "diff_text": diff_text,
         }
     )
@@ -532,9 +536,7 @@ def test_candidate_diff_replay_admission_refuses_private_marker(
         )
 
     assert excinfo.value.report["decision"] == "privacy_marker_detected"
-    assert excinfo.value.report["errors"] == [
-        "candidate diff contains PRIVATE_MARKER"
-    ]
+    assert excinfo.value.report["errors"] == ["candidate diff contains PRIVATE_MARKER"]
 
 
 @pytest.mark.parametrize("flag", REPLAY_SEED_REQUIRED_FALSE_KEYS)
@@ -558,9 +560,7 @@ def test_candidate_diff_replay_admission_refuses_replay_seed_authority_tamper(
         )
 
     assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
-    assert excinfo.value.report["errors"] == [
-        f"replay seed {flag} must be false"
-    ]
+    assert excinfo.value.report["errors"] == [f"replay seed {flag} must be false"]
 
 
 def test_candidate_diff_replay_admission_refuses_replay_seed_dry_run_tamper(
@@ -582,9 +582,7 @@ def test_candidate_diff_replay_admission_refuses_replay_seed_dry_run_tamper(
         )
 
     assert excinfo.value.report["decision"] == "candidate_diff_replay_refused"
-    assert excinfo.value.report["errors"] == [
-        "replay seed dry_run_only must be true"
-    ]
+    assert excinfo.value.report["errors"] == ["replay seed dry_run_only must be true"]
 
 
 def test_candidate_diff_replay_admission_refuses_replay_seed_candidate_material(
@@ -609,9 +607,7 @@ def test_candidate_diff_replay_admission_refuses_replay_seed_candidate_material(
     assert excinfo.value.report["errors"] == [
         "candidate diff material is not allowed in replay seed"
     ]
-    assert excinfo.value.report["candidate_material_keys"] == [
-        "candidate_diff_text"
-    ]
+    assert excinfo.value.report["candidate_material_keys"] == ["candidate_diff_text"]
 
 
 def test_consensus_target_colon_is_sanitized_before_artifact_write(
@@ -706,7 +702,11 @@ def test_receipt_verifier_failure_blocks_artifact_write(
     _write_events(events_path, _soft_events())
 
     def fake_verify_manifest(path: Path) -> dict[str, object]:
-        return {"ok": False, "receipt_count": 1, "errors": ["simulated receipt failure"]}
+        return {
+            "ok": False,
+            "receipt_count": 1,
+            "errors": ["simulated receipt failure"],
+        }
 
     monkeypatch.setattr(artifact_tool, "verify_manifest", fake_verify_manifest)
 

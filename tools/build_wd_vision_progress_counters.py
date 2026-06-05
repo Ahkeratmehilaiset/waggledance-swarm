@@ -121,6 +121,7 @@ def _capability_counter(capability: Mapping[str, Any]) -> dict[str, Any]:
         "proof_ok": _proof_ok(capability),
         "evidence_present_count": _evidence_present_count(capability),
         "evidence_total_count": _evidence_total_count(capability),
+        "evidence_paths": _evidence_paths(capability),
         "gap_count": _sequence_count(capability.get("gaps")),
         "next_smallest_pr_present": bool(
             str(capability.get("next_smallest_pr") or "").strip()
@@ -338,6 +339,21 @@ def _evidence_present_count(capability: Mapping[str, Any]) -> int:
         1 for item in evidence
         if isinstance(item, Mapping) and item.get("present") is True
     )
+
+
+def _evidence_paths(capability: Mapping[str, Any]) -> list[str]:
+    evidence = capability.get("evidence")
+    if not isinstance(evidence, list):
+        return []
+    return [
+        str(item["path"])
+        for item in evidence
+        if (
+            isinstance(item, Mapping)
+            and isinstance(item.get("path"), str)
+            and item["path"].strip()
+        )
+    ]
 
 
 def _nested_flag(value: Any, field_name: str) -> bool:

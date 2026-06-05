@@ -30,7 +30,10 @@ def _minimal_manifest() -> dict:
                 "capability_id": "hex_mesh_entry",
                 "status": "partial",
                 "claim_safe": False,
-                "evidence": [{"present": True}, {"present": False}],
+                "evidence": [
+                    {"path": "configs/settings.yaml", "present": True},
+                    {"path": "configs/hex_cells.yaml", "present": False},
+                ],
                 "gaps": ["first hop is not authoritative"],
                 "next_smallest_pr": "add route-order counter",
                 "proof": {
@@ -49,7 +52,12 @@ def _minimal_manifest() -> dict:
                 "capability_id": "magma_audit_log",
                 "status": "partial",
                 "claim_safe": False,
-                "evidence": [{"present": True}],
+                "evidence": [
+                    {
+                        "path": "waggledance/instrumentation/magma_receipts.py",
+                        "present": True,
+                    }
+                ],
                 "gaps": ["default receipt sink not mandatory"],
                 "next_smallest_pr": "promote receipt coverage counter",
                 "proof": {
@@ -63,7 +71,12 @@ def _minimal_manifest() -> dict:
                 "capability_id": "future_waggledance_swarm",
                 "status": "implemented",
                 "claim_safe": True,
-                "evidence": [{"present": True}],
+                "evidence": [
+                    {
+                        "path": "tools/run_future_scale_route_depth_benchmark.py",
+                        "present": True,
+                    }
+                ],
                 "gaps": [],
                 "next_smallest_pr": "",
                 "proof": {
@@ -116,6 +129,10 @@ def test_panel_counters_expose_measurable_milestones() -> None:
     }
 
     assert by_id["hex_mesh_entry"]["panel"] == 1
+    assert by_id["hex_mesh_entry"]["evidence_paths"] == [
+        "configs/settings.yaml",
+        "configs/hex_cells.yaml",
+    ]
     assert by_id["hex_mesh_entry"]["milestones"] == {
         "authoritative_first_hop_safe": False,
         "literal_claim_safe": False,
@@ -169,6 +186,24 @@ def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:
         counters["milestone_counters"]["future_claim_gate_satisfied"]["satisfied"]
         is False
     )
+
+
+def test_empty_capability_manifest_blocks_and_keeps_zero_ratios() -> None:
+    counters = build_vision_progress_counters(
+        {
+            "schema_version": "wd_image1_capability_manifest.v1",
+            "summary": {"status_counts": {}},
+            "capabilities": [],
+        }
+    )
+
+    assert counters["ok"] is False
+    assert counters["blockers"] == ["capabilities_empty"]
+    assert counters["summary"]["capability_count"] == 0
+    assert counters["summary"]["all_literal_claims_safe"] is False
+    assert counters["summary"]["proof_ok_ratio"] == 0.0
+    assert counters["summary"]["literal_claim_safe_ratio"] == 0.0
+    assert counters["panel_counters"] == []
 
 
 def test_malformed_manifest_reports_blockers_without_favorable_claims() -> None:

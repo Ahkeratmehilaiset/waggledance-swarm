@@ -45,6 +45,10 @@ class CellRuntime:
             raise ValueError(
                 "cell_id cannot appear in own child_cell_ids"
             )
+        if self.cell_id in self.neighbor_cell_ids:
+            raise ValueError(
+                "cell_id cannot appear in own neighbor_cell_ids"
+            )
 
     def to_dict(self) -> dict:
         return {

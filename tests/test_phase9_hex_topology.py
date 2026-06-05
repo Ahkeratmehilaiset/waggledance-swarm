@@ -82,6 +82,14 @@ def test_make_runtime_rejects_self_in_children():
         )
 
 
+def test_make_runtime_rejects_self_in_neighbors():
+    with pytest.raises(ValueError, match="cannot appear in own neighbor"):
+        cr.make_runtime(
+            cell_id="c1",
+            neighbor_cell_ids=("c1", "c2"),
+        )
+
+
 def test_make_runtime_rejects_unknown_live_state():
     s = cls.CellLocalState(cell_id="c1")
     with pytest.raises(ValueError, match="unknown live_state"):

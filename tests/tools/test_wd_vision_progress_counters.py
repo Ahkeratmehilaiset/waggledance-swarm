@@ -149,15 +149,34 @@ def test_panel_counters_expose_measurable_milestones() -> None:
         == 0.0
     )
     assert (
-        counters["milestone_counters"]["per_query_receipt_coverage_percent"][
+        counters["milestone_counters"]["per_query_receipt_claim_gate"][
             "current_value"
         ]
-        == 0.0
+        is False
     )
+    assert "per_query_receipt_coverage_percent" not in counters["milestone_counters"]
     assert (
         counters["milestone_counters"]["future_claim_gate_satisfied"]["satisfied"]
         is True
     )
+
+
+def test_receipt_claim_gate_uses_same_condition_for_value_and_satisfied() -> None:
+    manifest = _minimal_manifest()
+    for capability in manifest["capabilities"]:
+        if capability["capability_id"] == "magma_audit_log":
+            capability["proof"]["default_sink_required"] = True
+            capability["proof"]["solver_call_trace_receipt_bound"] = False
+
+    counters = build_vision_progress_counters(manifest)
+    receipt_gate = counters["milestone_counters"]["per_query_receipt_claim_gate"]
+
+    assert receipt_gate["current_value"] is False
+    assert receipt_gate["target_value"] is True
+    assert receipt_gate["satisfied"] is False
+    assert receipt_gate["coverage_measurement_available"] is False
+    assert receipt_gate["measured_coverage_percent"] is None
+    assert receipt_gate["measurement_basis"] == "manifest_claim_gate_flags"
 
 
 def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:

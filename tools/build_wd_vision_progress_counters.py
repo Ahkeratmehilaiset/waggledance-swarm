@@ -237,6 +237,11 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
     low_risk = milestones("low_risk_autonomy_loop")
     hex_upgrades = milestones("hexagonal_upgrades")
     future = milestones("future_waggledance_swarm")
+    receipt_claim_gate_satisfied = (
+        deterministic.get("magma_execution_receipt_claimed") is True
+        and magma.get("solver_call_trace_receipt_bound") is True
+        and magma.get("default_sink_required") is True
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -245,16 +250,13 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "target_value": 1.0,
             "satisfied": hex_mesh.get("authoritative_first_hop_safe") is True,
         },
-        "per_query_receipt_coverage_percent": {
-            "current_value": 100.0
-            if (
-                deterministic.get("magma_execution_receipt_claimed") is True
-                and magma.get("solver_call_trace_receipt_bound") is True
-                and magma.get("default_sink_required") is True
-            )
-            else 0.0,
-            "target_value": 100.0,
-            "satisfied": magma.get("default_sink_required") is True,
+        "per_query_receipt_claim_gate": {
+            "current_value": receipt_claim_gate_satisfied,
+            "target_value": True,
+            "satisfied": receipt_claim_gate_satisfied,
+            "coverage_measurement_available": False,
+            "measured_coverage_percent": None,
+            "measurement_basis": "manifest_claim_gate_flags",
         },
         "end_to_end_gated_promotions_total": {
             "current_value": 0,

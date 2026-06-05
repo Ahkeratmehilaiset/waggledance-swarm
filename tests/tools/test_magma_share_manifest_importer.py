@@ -29,7 +29,6 @@ from waggledance.core.magma.share_manifest import (
     write_magma_share_manifest_export,
 )
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "import_magma_share_manifest.py"
 FIXED_NOW = datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc)
@@ -93,12 +92,8 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     assert report["ok"] is True
     assert report["blockers"] == []
     admission_contract = report["admission_contract"]
-    assert admission_contract["contract_version"] == (
-        IMPORT_ADMISSION_CONTRACT_VERSION
-    )
-    assert report["admission_contract_digest"] == sha256_digest(
-        admission_contract
-    )
+    assert admission_contract["contract_version"] == (IMPORT_ADMISSION_CONTRACT_VERSION)
+    assert report["admission_contract_digest"] == sha256_digest(admission_contract)
     assert admission_contract["scope"] == "no_authority_metadata_replay"
     assert admission_contract["max_age_hours"] == 24
     assert admission_contract["expected_share_id"] == "magma:share:import:001"
@@ -185,9 +180,7 @@ def test_import_admission_status_summary_is_path_free_and_no_authority(
     assert summary["ok"] is True
     assert summary["blocker_class"] == "none"
     assert summary["blockers"] == []
-    assert summary["admission_contract_digest"] == report[
-        "admission_contract_digest"
-    ]
+    assert summary["admission_contract_digest"] == report["admission_contract_digest"]
     assert summary["entry_count"] == 1
     assert summary["context_verified"] is True
     assert summary["context_drift_detected"] is False
@@ -442,8 +435,7 @@ def test_import_handoff_status_summary_retains_bounded_history(
     assert summary["active_count"] == sum(
         1
         for item in expected
-        if item["operator_ownership"]["import_decision"]
-        == "accepted_for_peer_review"
+        if item["operator_ownership"]["import_decision"] == "accepted_for_peer_review"
     )
     assert summary["controls_present"] is False
     assert summary["runtime_authority_granted"] is False
@@ -840,9 +832,9 @@ def test_importer_fail_closes_when_source_receipt_bundle_is_tampered(
 ) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
     manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
-    evaluation_path = source_manifest.parent / manifest["entries"][0][
-        "evaluation_result"
-    ]
+    evaluation_path = (
+        source_manifest.parent / manifest["entries"][0]["evaluation_result"]
+    )
     evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
     evaluation["verdict"] = "review"
     _write_json(evaluation_path, evaluation)
@@ -922,4 +914,6 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
         marker in _all_json_text(tmp_path / "share-export")
         for marker in PRIVATE_MARKERS
     )
-    assert not any(marker in handoff_path.read_text(encoding="utf-8") for marker in PRIVATE_MARKERS)
+    assert not any(
+        marker in handoff_path.read_text(encoding="utf-8") for marker in PRIVATE_MARKERS
+    )

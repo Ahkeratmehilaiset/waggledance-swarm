@@ -5,6 +5,7 @@ The exporter is a local artifact bridge from a verified MAGMA receipt bundle to
 the payload-free ``magma.share_manifest.v0`` contract. It does not enable
 runtime receipt emission or cross-instance transport.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -19,23 +20,16 @@ import jsonschema
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.schema_validation import redacted_schema_errors
 
-
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
 SCHEMA_NAME = "magma_share_manifest.v0.json"
 MANIFEST_VERSION = "magma.share_manifest.v0"
 EXPORT_REPORT_VERSION = "magma.share_manifest_export.v0"
 IMPORT_REPORT_VERSION = "magma.share_manifest_import.v0"
-IMPORT_ADMISSION_CONTRACT_VERSION = (
-    "magma.share_manifest_replay_admission_contract.v0"
-)
+IMPORT_ADMISSION_CONTRACT_VERSION = "magma.share_manifest_replay_admission_contract.v0"
 IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
-IMPORT_HANDOFF_STATUS_VERSION = (
-    "magma.share_manifest_import_handoff_status.v0"
-)
-IMPORT_ADMISSION_STATUS_VERSION = (
-    "magma.share_manifest_import_admission_status.v0"
-)
+IMPORT_HANDOFF_STATUS_VERSION = "magma.share_manifest_import_handoff_status.v0"
+IMPORT_ADMISSION_STATUS_VERSION = "magma.share_manifest_import_admission_status.v0"
 SHARE_MANIFEST_NAME = "share_manifest.json"
 EXPORT_REPORT_NAME = "share_export_report.json"
 IMPORT_HANDOFF_NAME = "share_import_peer_review_handoff.json"
@@ -315,9 +309,7 @@ def build_magma_share_manifest_import_report(
             {
                 "entry_id": share_entry["entry_id"],
                 "receipt_digest": share_entry["receipt_digest"],
-                "evaluation_result_digest": share_entry[
-                    "evaluation_result_digest"
-                ],
+                "evaluation_result_digest": share_entry["evaluation_result_digest"],
                 "subject_type": share_entry["subject_type"],
                 "risk_class": share_entry["risk_class"],
                 "expected_gate": share_entry["expected_gate"],
@@ -332,9 +324,7 @@ def build_magma_share_manifest_import_report(
         else share_manifest["share_id"]
     )
     contract_expected_purpose = (
-        expected_purpose
-        if expected_purpose is not None
-        else share_manifest["purpose"]
+        expected_purpose if expected_purpose is not None else share_manifest["purpose"]
     )
     admission_contract = _replay_admission_contract(
         max_age_hours=max_age_hours,
@@ -468,8 +458,7 @@ def build_magma_share_import_peer_review_handoff(
     handoff_digest = sha256_digest(payload)
     payload["handoff_digest"] = handoff_digest
     payload["handoff_id"] = (
-        "magma:share-import-handoff:"
-        f"{handoff_digest.removeprefix('sha256:')[:16]}"
+        "magma:share-import-handoff:" f"{handoff_digest.removeprefix('sha256:')[:16]}"
     )
     return payload
 
@@ -534,12 +523,9 @@ def build_magma_share_import_admission_status_summary(
         admission_contract = import_report.get("admission_contract")
         if not isinstance(admission_contract, Mapping):
             raise ValueError(
-                "import report is not admission-summary-ready: "
-                "admission_contract"
+                "import report is not admission-summary-ready: " "admission_contract"
             )
-        admission_contract_digest = import_report.get(
-            "admission_contract_digest"
-        )
+        admission_contract_digest = import_report.get("admission_contract_digest")
         _ensure_sha256_digest(
             "admission_contract_digest",
             admission_contract_digest,
@@ -640,9 +626,7 @@ def build_magma_share_import_handoff_status_summary(
         if item["import_decision"] == "accepted_for_peer_review"
     ]
     severity = (
-        "warning"
-        if any(item["severity"] == "warning" for item in retained)
-        else "none"
+        "warning" if any(item["severity"] == "warning" for item in retained) else "none"
     )
     return {
         "summary_version": IMPORT_HANDOFF_STATUS_VERSION,
@@ -734,9 +718,13 @@ def _artifact_count_errors(value: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     for field in ("entries", "receipts", "evaluation_results"):
         if counts.get(field) != expected:
-            errors.append(f"magma_share_manifest: count mismatch at artifact_counts.{field}")
+            errors.append(
+                f"magma_share_manifest: count mismatch at artifact_counts.{field}"
+            )
     if counts.get("payload_files") != 0:
-        errors.append("magma_share_manifest: count mismatch at artifact_counts.payload_files")
+        errors.append(
+            "magma_share_manifest: count mismatch at artifact_counts.payload_files"
+        )
     return errors
 
 
@@ -789,11 +777,10 @@ def _entry_path(
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError(f"source entry {index}: missing {field}")
     if "\\" in raw_path:
-        raise ValueError(f"source entry {index}: {field} path must use POSIX separators")
-    if (
-        PurePosixPath(raw_path).is_absolute()
-        or PureWindowsPath(raw_path).is_absolute()
-    ):
+        raise ValueError(
+            f"source entry {index}: {field} path must use POSIX separators"
+        )
+    if PurePosixPath(raw_path).is_absolute() or PureWindowsPath(raw_path).is_absolute():
         raise ValueError(f"source entry {index}: {field} path must be relative")
     parts = raw_path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -802,7 +789,9 @@ def _entry_path(
     try:
         path.relative_to(manifest_path.parent)
     except ValueError as exc:
-        raise ValueError(f"source entry {index}: {field} path escapes manifest") from exc
+        raise ValueError(
+            f"source entry {index}: {field} path escapes manifest"
+        ) from exc
     return path
 
 
@@ -899,9 +888,7 @@ def _ensure_import_report_ready_for_handoff(
     if import_report["purpose"] not in PURPOSES:
         raise ValueError("import report is not handoff-ready: purpose")
     if import_report["purpose"] != expected_purpose:
-        raise ValueError(
-            "import report is not handoff-ready: expected_purpose"
-        )
+        raise ValueError("import report is not handoff-ready: expected_purpose")
     admission_contract = import_report.get("admission_contract")
     admission_contract_digest = import_report.get("admission_contract_digest")
     require_replay_identity_binding = False
@@ -928,9 +915,7 @@ def _ensure_import_report_ready_for_handoff(
     if not isinstance(entries, list):
         raise ValueError("import report is not handoff-ready: replay_plan.entries")
     if replay_plan.get("entry_count") != len(entries):
-        raise ValueError(
-            "import report is not handoff-ready: replay_plan.entry_count"
-        )
+        raise ValueError("import report is not handoff-ready: replay_plan.entry_count")
     required_entry_fields = {
         "entry_id",
         "receipt_digest",
@@ -943,9 +928,7 @@ def _ensure_import_report_ready_for_handoff(
     }
     for index, entry in enumerate(entries, 1):
         if not isinstance(entry, Mapping):
-            raise ValueError(
-                "import report is not handoff-ready: replay_plan entry"
-            )
+            raise ValueError("import report is not handoff-ready: replay_plan entry")
         missing = sorted(required_entry_fields - set(entry))
         if missing:
             raise ValueError(
@@ -1102,8 +1085,7 @@ def _ensure_replay_admission_contract_ready(
     for field, expected in required_values.items():
         if admission_contract.get(field) != expected:
             raise ValueError(
-                "import report is not handoff-ready: "
-                f"admission_contract.{field}"
+                "import report is not handoff-ready: " f"admission_contract.{field}"
             )
     if not isinstance(admission_contract.get("required_checks"), list):
         raise ValueError(
@@ -1126,10 +1108,7 @@ def _ensure_replay_admission_contract_matches_import_report(
     *,
     expected_purpose: str,
 ) -> None:
-    if (
-        admission_contract.get("contract_version")
-        != IMPORT_ADMISSION_CONTRACT_VERSION
-    ):
+    if admission_contract.get("contract_version") != IMPORT_ADMISSION_CONTRACT_VERSION:
         raise ValueError(
             "import report is not handoff-ready: admission_contract.version"
         )
@@ -1160,8 +1139,7 @@ def _ensure_replay_admission_contract_matches_import_report(
         or admission_expected_purpose != expected_purpose
     ):
         raise ValueError(
-            "import report is not handoff-ready: "
-            "admission_contract.expected_purpose"
+            "import report is not handoff-ready: " "admission_contract.expected_purpose"
         )
 
     canonical_contract = _replay_admission_contract(
@@ -1365,9 +1343,7 @@ def _ensure_import_handoff_ready_for_summary(
     privacy = handoff.get("privacy")
     replay_plan = handoff.get("replay_plan")
     if not isinstance(ownership, Mapping):
-        raise ValueError(
-            "import handoff is not summary-ready: operator_ownership"
-        )
+        raise ValueError("import handoff is not summary-ready: operator_ownership")
     if not isinstance(authority, Mapping):
         raise ValueError("import handoff is not summary-ready: authority")
     if not isinstance(privacy, Mapping):
@@ -1383,9 +1359,7 @@ def _ensure_import_handoff_ready_for_summary(
     }
     for field, expected in ownership_required.items():
         if ownership.get(field) != expected:
-            raise ValueError(
-                f"import handoff is not summary-ready: {field}"
-            )
+            raise ValueError(f"import handoff is not summary-ready: {field}")
     decision = ownership.get("import_decision")
     if decision not in IMPORT_HANDOFF_DECISIONS:
         raise ValueError("import handoff is not summary-ready: import_decision")
@@ -1395,9 +1369,7 @@ def _ensure_import_handoff_ready_for_summary(
         "decision_reason_ref",
     ):
         if not isinstance(ownership.get(field), str):
-            raise ValueError(
-                f"import handoff is not summary-ready: {field}"
-            )
+            raise ValueError(f"import handoff is not summary-ready: {field}")
         _ensure_ref(field, ownership[field])
 
     authority_required = {
@@ -1412,9 +1384,7 @@ def _ensure_import_handoff_ready_for_summary(
     }
     for field, expected in authority_required.items():
         if authority.get(field) != expected:
-            raise ValueError(
-                f"import handoff is not summary-ready: {field}"
-            )
+            raise ValueError(f"import handoff is not summary-ready: {field}")
 
     privacy_required = {
         "replay_metadata_only": True,
@@ -1427,21 +1397,15 @@ def _ensure_import_handoff_ready_for_summary(
     }
     for field, expected in privacy_required.items():
         if privacy.get(field) != expected:
-            raise ValueError(
-                f"import handoff is not summary-ready: {field}"
-            )
+            raise ValueError(f"import handoff is not summary-ready: {field}")
 
     entries = replay_plan.get("entries")
     if replay_plan.get("mode") != "no_authority_metadata_replay":
         raise ValueError("import handoff is not summary-ready: replay_plan.mode")
     if not isinstance(entries, list):
-        raise ValueError(
-            "import handoff is not summary-ready: replay_plan.entries"
-        )
+        raise ValueError("import handoff is not summary-ready: replay_plan.entries")
     if replay_plan.get("entry_count") != len(entries):
-        raise ValueError(
-            "import handoff is not summary-ready: replay_plan.entry_count"
-        )
+        raise ValueError("import handoff is not summary-ready: replay_plan.entry_count")
     required_entry_fields = {
         "entry_id",
         "receipt_digest",
@@ -1454,9 +1418,7 @@ def _ensure_import_handoff_ready_for_summary(
     }
     for index, entry in enumerate(entries, 1):
         if not isinstance(entry, Mapping):
-            raise ValueError(
-                "import handoff is not summary-ready: replay_plan entry"
-            )
+            raise ValueError("import handoff is not summary-ready: replay_plan entry")
         missing = sorted(required_entry_fields - set(entry))
         if missing:
             raise ValueError(
@@ -1477,9 +1439,13 @@ def _read_json(path: Path, label: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ValueError(f"{label}: cannot read JSON file ({exc.__class__.__name__})") from exc
+        raise ValueError(
+            f"{label}: cannot read JSON file ({exc.__class__.__name__})"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{label}: invalid JSON at line {exc.lineno} column {exc.colno}") from exc
+        raise ValueError(
+            f"{label}: invalid JSON at line {exc.lineno} column {exc.colno}"
+        ) from exc
 
 
 def _ensure_ref(label: str, value: str) -> None:
@@ -1500,9 +1466,14 @@ def _ensure_sha256_digest(label: str, value: Any) -> None:
 
 
 def _format_utc(value: datetime) -> str:
-    return _ensure_utc(value, "timestamp").replace(microsecond=0).isoformat().replace(
-        "+00:00",
-        "Z",
+    return (
+        _ensure_utc(value, "timestamp")
+        .replace(microsecond=0)
+        .isoformat()
+        .replace(
+            "+00:00",
+            "Z",
+        )
     )
 
 
@@ -1520,10 +1491,7 @@ def _parse_created_at_utc(value: Mapping[str, Any]) -> datetime:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("created_at_utc must be a UTC date-time") from exc
-    if (
-        parsed.tzinfo is None
-        or parsed.utcoffset() != timezone.utc.utcoffset(parsed)
-    ):
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
         raise ValueError("created_at_utc must be UTC")
     return parsed.astimezone(timezone.utc)
 

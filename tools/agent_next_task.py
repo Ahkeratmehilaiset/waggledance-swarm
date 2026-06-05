@@ -55,6 +55,8 @@ DEFER_ACTIONS = {"continue_claim", "answer_incoming"}
 PICK_ACTIONS = {"claim_unblocked_work", "parallel_read_only"}
 SUCCESSFUL_COMPLETION_TYPES = {"done", "release", "test"}
 SUCCESSFUL_COMPLETION_STATUSES = {
+    "complete",
+    "completed",
     "done",
     "merged",
     "merged_verified",

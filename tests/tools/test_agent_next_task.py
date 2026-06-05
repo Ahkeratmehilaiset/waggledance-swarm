@@ -832,7 +832,7 @@ def test_completed_continuous_operational_scout_advances_sequence(
                 "agent": "codex",
                 "type": "done",
                 "task_id": first_task_id,
-                "status": "done",
+                "status": "complete",
                 "message": "continuous operational scout completed",
             },
         ],

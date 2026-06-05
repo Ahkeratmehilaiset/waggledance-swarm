@@ -69,7 +69,7 @@ def _evaluate(
     origin_main_sha: str = BASE,
     prior_approved_head: str = "",
     prior_approved_diff_text: str | None = None,
-    author_agent: str = "",
+    author_agent: str = "codex-lead-1",
 ) -> dict:
     return evaluate_promotion_eligibility(
         pr_status=status or _status(),
@@ -125,6 +125,14 @@ def test_author_rco_self_pass_does_not_count() -> None:
         "missing exact-head RCO_PASS from recognized non-author RCO"
         in report["reasons"]
     )
+
+
+def test_missing_author_agent_fails_closed() -> None:
+    report = _evaluate(author_agent="")
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "author_agent is required" in report["errors"]
 
 
 def test_operator_gated_path_refuses() -> None:
@@ -279,6 +287,8 @@ def test_cli_returns_zero_only_when_eligible(tmp_path: Path) -> None:
             HEAD,
             "--origin-main-sha",
             BASE,
+            "--author-agent",
+            "codex-lead-1",
             "--json",
         ],
         check=False,
@@ -314,6 +324,8 @@ def test_cli_returns_three_when_not_eligible(tmp_path: Path) -> None:
             HEAD,
             "--origin-main-sha",
             BASE,
+            "--author-agent",
+            "codex-lead-1",
             "--json",
         ],
         check=False,

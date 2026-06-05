@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--author-agent",
-        default="",
+        required=True,
         help="PR author agent; a recognized RCO cannot review its own PR.",
     )
     parser.add_argument(
@@ -215,6 +215,10 @@ def _evaluate_promotion_eligibility(
     origin_main_sha = _required_sha(origin_main_sha, "origin_main_sha")
     prior_approved_head = _optional_sha(prior_approved_head, "prior_approved_head")
     author_agent = (author_agent or "").strip()
+    if not author_agent:
+        raise PromotionEligibilityError(
+            _invalid_report("invalid_input", "author_agent is required")
+        )
     from_agent = (from_agent or "promotion-pipeline").strip()
     if not from_agent:
         raise PromotionEligibilityError(

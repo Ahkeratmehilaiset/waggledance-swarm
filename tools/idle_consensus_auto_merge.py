@@ -8,6 +8,7 @@ so no GitHub call is made by the suite. Idle-charter merges are intentionally
 not blocked on an operator approval flag; the charter's explicit merge gates
 are the authority for this narrow idle-consensus path.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +20,6 @@ import subprocess
 import sys
 from typing import Any, Callable, Mapping, Sequence
 
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -29,6 +29,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
 )
 from tools.check_rco_pass_present import (  # noqa: E402
+    DEFAULT_RCO_AGENTS,
     check_rco_pass_present,
 )
 from tools.idle_consensus_artifact import (  # noqa: E402
@@ -42,8 +43,8 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     load_charter,
 )
 
-
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+BRIDGE_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 PASS_STATES = {"pass", "passed", "success", "successful", "ok"}
 MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
@@ -56,6 +57,12 @@ MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
 BRIDGE_CONSENSUS_LEAD = "codex-lead-1"
 BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"
 BRIDGE_CONSENSUS_RCO = "claude-rco-1"
+BRIDGE_CONSENSUS_RCO_AGENTS = DEFAULT_RCO_AGENTS
+BRIDGE_CONSENSUS_AUTHOR_AGENTS = (
+    BRIDGE_CONSENSUS_LEAD,
+    BRIDGE_CONSENSUS_TOOLS,
+    *BRIDGE_CONSENSUS_RCO_AGENTS,
+)
 DECISION_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
 # Note: a bare "acknowledged" is deliberately NOT a build-consensus vote — an
 # ack of receipt is not an approval (RCO T0b note N2).
@@ -86,9 +93,7 @@ CONSENSUS_BLOCKING_STATUSES = frozenset(
         "block_requested",
     }
 )
-CONSENSUS_BLOCKING_NEGATION_TOKENS = frozenset(
-    {"no", "not", "non", "none", "without"}
-)
+CONSENSUS_BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
 
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
@@ -253,6 +258,11 @@ def evaluate_auto_merge_gate(
     events = _read_bridge_events(events_path) if events_path is not None else []
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = bridge_task_id.strip() or consensus_proposal_id
+    author_agent = _pr_author_agent(
+        pr_status,
+        bridge_gate_task_id,
+        events=events,
+    )
     bridge_peer_gate = _bridge_peer_gate(
         events=events,
         task_id=bridge_gate_task_id,
@@ -292,6 +302,7 @@ def evaluate_auto_merge_gate(
         task_id=bridge_gate_task_id,
         pr_number=pr_number,
         head_sha=head_sha,
+        author_agent=author_agent,
         checked=events_path is not None,
     )
 
@@ -310,11 +321,7 @@ def evaluate_auto_merge_gate(
         blockers.append(
             f"daily rate limit exceeded: {quota_used}/{quota_total} for {rate_date}"
         )
-    failing_checks = [
-        check
-        for check in checks
-        if not _check_passed(check)
-    ]
+    failing_checks = [check for check in checks if not _check_passed(check)]
     if not checks:
         blockers.append("status checks snapshot is required before merge")
     if failing_checks:
@@ -335,7 +342,7 @@ def evaluate_auto_merge_gate(
         else:
             blockers.append("unresolved peer bridge block")
     if events_path is not None and not bool(rco_pass_gate.get("ok", False)):
-        blockers.append("missing exact-head RCO_PASS from claude-rco-1")
+        blockers.append("missing exact-head RCO_PASS from recognized non-author RCO")
     if not receipt_bundle_path and not (apply and artifact_hook_configured):
         blockers.append("receipt_bundle_path is required before merge")
     if (
@@ -352,6 +359,7 @@ def evaluate_auto_merge_gate(
         task_id=bridge_gate_task_id,
         head_sha=head_sha,
         pr_number=pr_number,
+        author_agent=author_agent,
     )
     if require_bridge_consensus:
         if events_path is None:
@@ -386,9 +394,11 @@ def evaluate_auto_merge_gate(
     if blockers:
         return {
             **base,
-            "decision": "rate_limited"
-            if not rate_gate["allowed"]
-            else "operator_review_required",
+            "decision": (
+                "rate_limited"
+                if not rate_gate["allowed"]
+                else "operator_review_required"
+            ),
             "ok": False,
             "operator_review_required": True,
             "reasons": blockers,
@@ -422,8 +432,10 @@ def evaluate_auto_merge_gate(
             expected_head=expected_head,
             repo=repo,
             return_code=return_code,
-            verifier=merge_verifier if merge_verifier is not None else (
-                None if runner is not None else _query_pr_merge_state
+            verifier=(
+                merge_verifier
+                if merge_verifier is not None
+                else (None if runner is not None else _query_pr_merge_state)
             ),
         )
         if merge_recovery["merged"]:
@@ -686,6 +698,117 @@ def _base_ref_gate(
     return gate
 
 
+def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:
+    raw: Sequence[str]
+    if value is None:
+        raw = BRIDGE_CONSENSUS_RCO_AGENTS
+    elif isinstance(value, str):
+        raw = (value,)
+    else:
+        raw = value
+    normalized: list[str] = []
+    for item in raw:
+        agent = str(item or "").strip()
+        if agent and agent not in normalized:
+            normalized.append(agent)
+    return tuple(normalized)
+
+
+def _pr_author_agent(
+    pr_status: Mapping[str, Any],
+    bridge_task_id: str,
+    *,
+    events: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """Resolve the author to a bridge-agent id, or empty to fail closed.
+
+    GitHub authorship is not a bridge identity in this repository: PRs are
+    pushed by the operator account, while the merge gate compares reviewers
+    against bridge agents such as ``claude-rco-1``. Prefer the bridge claim
+    that owns the task and only accept explicit/fallback values when they are
+    known bridge-agent ids.
+    """
+    known_agents = _known_bridge_agents(events)
+    claimed_author = _bridge_claim_author_agent(
+        events=events,
+        bridge_task_id=bridge_task_id,
+        known_agents=known_agents,
+    )
+    if claimed_author:
+        return claimed_author
+
+    for key in ("author_agent", "author_login", "author"):
+        value = pr_status.get(key)
+        candidate = _known_bridge_agent_from_value(value, known_agents=known_agents)
+        if candidate:
+            return candidate
+
+    task_prefix = bridge_task_id.split("/", 1)[0].strip()
+    return _known_bridge_agent_from_value(task_prefix, known_agents=known_agents)
+
+
+def _known_bridge_agents(events: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    known: list[str] = []
+    for agent in BRIDGE_CONSENSUS_AUTHOR_AGENTS:
+        if agent not in known:
+            known.append(agent)
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        agent = str(event.get("agent", "")).strip()
+        if _is_bridge_agent_id(agent) and agent not in known:
+            known.append(agent)
+    return tuple(known)
+
+
+def _bridge_claim_author_agent(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_task_id: str,
+    known_agents: Sequence[str],
+) -> str:
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if str(event.get("task_id", "")) != bridge_task_id:
+            continue
+        if str(event.get("type", "")).lower() != "claim":
+            continue
+        candidate = _known_bridge_agent_from_value(
+            event.get("agent"),
+            known_agents=known_agents,
+        )
+        if candidate:
+            return candidate
+    return ""
+
+
+def _known_bridge_agent_from_value(
+    value: Any,
+    *,
+    known_agents: Sequence[str],
+) -> str:
+    candidates: list[Any] = [value]
+    if isinstance(value, Mapping):
+        candidates = [
+            value.get("author_agent"),
+            value.get("bridge_agent"),
+            value.get("agent"),
+            value.get("login"),
+        ]
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = candidate.strip()
+        if _is_bridge_agent_id(normalized) and normalized in known_agents:
+            return normalized
+    return ""
+
+
+def _is_bridge_agent_id(value: str) -> bool:
+    return bool(BRIDGE_AGENT_ID_RE.fullmatch(value))
+
+
 def verify_bridge_consensus(
     *,
     events: Sequence[Mapping[str, Any]],
@@ -694,13 +817,14 @@ def verify_bridge_consensus(
     pr_number: int | None = None,
     lead_agent: str = BRIDGE_CONSENSUS_LEAD,
     tools_agent: str = BRIDGE_CONSENSUS_TOOLS,
-    rco_agent: str = BRIDGE_CONSENSUS_RCO,
+    rco_agent: str | Sequence[str] | None = BRIDGE_CONSENSUS_RCO_AGENTS,
+    author_agent: str = "",
 ) -> dict[str, Any]:
     """Fail-closed three-identity bridge-consensus verification (T0b).
 
     Requires a positive, head-bound approval from THREE DISTINCT agent
     identities — the lead and the tools peer (build consensus) plus an
-    independent ``claude-rco-1`` ``rco_pass``. Any of the following refuses
+    independent recognized RCO ``rco_pass``. Any of the following refuses
     (``ok=False``); the function never default-allows on silence:
 
     * a missing approval from any of the three identities (RCO absence = no
@@ -716,7 +840,11 @@ def verify_bridge_consensus(
     the MAGMA receipt so a consumer can re-derive the verdict rather than
     trust a bare flag.
     """
-    expected = (lead_agent, tools_agent, rco_agent)
+    recognized_rco_agents = _normalize_rco_agents(rco_agent)
+    author_agent = (author_agent or "").strip()
+    eligible_rco_agents = tuple(
+        agent for agent in recognized_rco_agents if agent != author_agent
+    )
     base: dict[str, Any] = {
         "ok": False,
         "decision": "bridge_consensus_incomplete",
@@ -724,27 +852,65 @@ def verify_bridge_consensus(
         "head_sha": head_sha,
         "identities": {},
         "rco_pass_ref": None,
+        "recognized_rco_agents": list(recognized_rco_agents),
+        "eligible_rco_agents": list(eligible_rco_agents),
+        "author_agent": author_agent,
+        "blocking_rco_agents": [],
     }
-    if len({a for a in expected if a and a.strip()}) != 3:
+    build_expected = (lead_agent, tools_agent)
+    if len({a for a in build_expected if a and a.strip()}) != 2:
         return {
             **base,
             "decision": "invalid_consensus_config",
-            "reasons": ["bridge consensus requires three distinct agent identities"],
+            "reasons": ["bridge consensus requires distinct lead/tools identities"],
+        }
+    if not recognized_rco_agents:
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": [
+                "bridge consensus requires at least one recognized RCO identity"
+            ],
+        }
+    if any(agent in build_expected for agent in recognized_rco_agents):
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": [
+                "recognized RCO identities must be distinct from build identities"
+            ],
+        }
+    if not author_agent:
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": ["author_agent is required to enforce author != reviewer"],
+        }
+    if not eligible_rco_agents:
+        return {
+            **base,
+            "decision": "bridge_consensus_incomplete",
+            "reasons": ["no recognized RCO remains eligible after author exclusion"],
         }
     if not SHA_RE.fullmatch(head_sha or ""):
         return {
             **base,
             "decision": "invalid_consensus_head",
-            "reasons": ["head_sha must be a 40-char lowercase sha for consensus binding"],
+            "reasons": [
+                "head_sha must be a 40-char lowercase sha for consensus binding"
+            ],
         }
 
-    latest_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
-    latest_block: dict[str, int] = {}
+    latest_build_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    latest_build_block: dict[str, int] = {}
+    latest_rco_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    latest_rco_block: dict[str, int] = {}
+    watched_agents = set(build_expected) | set(recognized_rco_agents)
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
         agent = str(event.get("agent", ""))
-        if agent not in expected:
+        if agent not in watched_agents:
             continue
         if not _consensus_scope_match(event, task_id=task_id, pr_number=pr_number):
             continue
@@ -756,28 +922,30 @@ def verify_bridge_consensus(
         # type=blocked/status=blocked would be silently dropped and a stale
         # earlier approval would stand -- the exact fail-open T0b prevents.
         if _is_consensus_block(status):
-            latest_block[agent] = index
+            if agent in recognized_rco_agents:
+                latest_rco_block[agent] = index
+            else:
+                latest_build_block[agent] = index
             continue
         # Approvals remain type-restricted to decision/rco_review/finding.
         if str(event.get("type", "")).lower() not in DECISION_EVENT_TYPES:
             continue
         if not _event_binds_head(event, head_sha):
             continue
-        if agent == rco_agent:
-            if status in RCO_PASS_STATUSES:
-                latest_approval[agent] = (index, event)
+        if agent in recognized_rco_agents:
+            if agent != author_agent and status in RCO_PASS_STATUSES:
+                latest_rco_approval[agent] = (index, event)
         elif status in BUILD_CONSENSUS_STATUSES:
-            latest_approval[agent] = (index, event)
+            latest_build_approval[agent] = (index, event)
 
     reasons: list[str] = []
     identities: dict[str, Any] = {}
     for agent, role in (
         (lead_agent, "build_lead"),
         (tools_agent, "build_tools"),
-        (rco_agent, "rco"),
     ):
-        approval = latest_approval.get(agent)
-        block_index = latest_block.get(agent)
+        approval = latest_build_approval.get(agent)
+        block_index = latest_build_block.get(agent)
         approved = approval is not None and (
             block_index is None or approval[0] > block_index
         )
@@ -797,12 +965,67 @@ def verify_bridge_consensus(
                     f"{role} ({agent}): a later block invalidates the approval"
                 )
 
+    blocking_rco_agents: list[str] = []
+    rco_identities: dict[str, Any] = {}
+    for agent in recognized_rco_agents:
+        approval = latest_rco_approval.get(agent)
+        block_index = latest_rco_block.get(agent)
+        approved = (
+            agent in eligible_rco_agents
+            and approval is not None
+            and (block_index is None or approval[0] > block_index)
+        )
+        if block_index is not None and (approval is None or block_index > approval[0]):
+            blocking_rco_agents.append(agent)
+        rco_identities[agent] = {
+            "agent": agent,
+            "eligible": agent in eligible_rco_agents,
+            "approved": approved,
+            "approval_index": approval[0] if approval is not None else None,
+            "block_index": block_index,
+        }
+
+    rco_approval: tuple[int, Mapping[str, Any]] | None = None
+    satisfying_rco_agent = ""
+    if not blocking_rco_agents:
+        approved_rco = [
+            (agent, approval)
+            for agent, approval in latest_rco_approval.items()
+            if agent in eligible_rco_agents
+            and (
+                latest_rco_block.get(agent) is None
+                or approval[0] > latest_rco_block[agent]
+            )
+        ]
+        if approved_rco:
+            satisfying_rco_agent, rco_approval = max(
+                approved_rco, key=lambda item: item[1][0]
+            )
+
+    identities["rco"] = {
+        "agent": satisfying_rco_agent,
+        "recognized_agents": list(recognized_rco_agents),
+        "eligible_agents": list(eligible_rco_agents),
+        "approved": rco_approval is not None and not blocking_rco_agents,
+        "approval_index": rco_approval[0] if rco_approval is not None else None,
+        "block_index": None,
+        "by_agent": rco_identities,
+    }
+    if blocking_rco_agents:
+        reasons.append(
+            "recognized RCO veto blocks consensus: "
+            + ", ".join(sorted(blocking_rco_agents))
+        )
+    if rco_approval is None:
+        reasons.append(
+            "rco (recognized non-author RCO): no head-bound approval at " f"{head_sha}"
+        )
+
     rco_pass_ref: dict[str, Any] | None = None
-    rco_approval = latest_approval.get(rco_agent)
     if rco_approval is not None and identities["rco"]["approved"]:
         rco_event = rco_approval[1]
         rco_pass_ref = {
-            "agent": rco_agent,
+            "agent": satisfying_rco_agent,
             "ts_utc": str(rco_event.get("ts_utc", "")),
             "status": str(rco_event.get("status", "")),
             "task_id": str(rco_event.get("task_id", "")),
@@ -811,11 +1034,17 @@ def verify_bridge_consensus(
     ok = not reasons
     return {
         "ok": ok,
-        "decision": "bridge_consensus_verified" if ok else "bridge_consensus_incomplete",
+        "decision": (
+            "bridge_consensus_verified" if ok else "bridge_consensus_incomplete"
+        ),
         "reasons": reasons,
         "head_sha": head_sha,
         "identities": identities,
         "rco_pass_ref": rco_pass_ref,
+        "recognized_rco_agents": list(recognized_rco_agents),
+        "eligible_rco_agents": list(eligible_rco_agents),
+        "author_agent": author_agent,
+        "blocking_rco_agents": sorted(blocking_rco_agents),
     }
 
 
@@ -827,6 +1056,7 @@ def _evaluate_bridge_consensus(
     task_id: str,
     head_sha: str,
     pr_number: int | None,
+    author_agent: str,
 ) -> dict[str, Any]:
     """Wrap verify_bridge_consensus with a not-required passthrough.
 
@@ -844,12 +1074,17 @@ def _evaluate_bridge_consensus(
             "identities": {},
             "head_sha": head_sha,
             "rco_pass_ref": None,
+            "recognized_rco_agents": list(BRIDGE_CONSENSUS_RCO_AGENTS),
+            "eligible_rco_agents": [],
+            "author_agent": author_agent,
+            "blocking_rco_agents": [],
         }
     result = verify_bridge_consensus(
         events=events,
         task_id=task_id,
         head_sha=head_sha,
         pr_number=pr_number,
+        author_agent=author_agent,
     )
     result["required"] = True
     if events_path is None:
@@ -945,6 +1180,7 @@ def _bridge_rco_pass_gate(
     task_id: str,
     pr_number: int,
     head_sha: str,
+    author_agent: str,
     checked: bool,
 ) -> dict[str, Any]:
     if not checked:
@@ -957,6 +1193,8 @@ def _bridge_rco_pass_gate(
             "pr_number": pr_number,
             "head_sha": head_sha,
             "rco_agent": BRIDGE_CONSENSUS_RCO,
+            "rco_agents": list(BRIDGE_CONSENSUS_RCO_AGENTS),
+            "author_agent": author_agent,
             "latest_rco_pass_event": None,
             "latest_blocking_event": None,
         }
@@ -964,7 +1202,8 @@ def _bridge_rco_pass_gate(
         events=events,
         task_id=task_id,
         head=head_sha,
-        rco_agent=BRIDGE_CONSENSUS_RCO,
+        rco_agent=BRIDGE_CONSENSUS_RCO_AGENTS,
+        author_agent=author_agent,
     )
 
 
@@ -1099,7 +1338,9 @@ def _verified_artifact_manifest(report: Mapping[str, Any]) -> str:
         raise _artifact_receipt_error("artifact report did not include receipt_bundle")
     verifier = bundle.get("verifier_report")
     if not isinstance(verifier, Mapping) or verifier.get("ok") is not True:
-        raise _artifact_receipt_error("artifact receipt verifier did not return ok=True")
+        raise _artifact_receipt_error(
+            "artifact receipt verifier did not return ok=True"
+        )
     manifest = str(bundle.get("manifest", ""))
     if not manifest:
         raise _artifact_receipt_error("artifact receipt manifest path is missing")
@@ -1125,7 +1366,9 @@ def _read_bridge_events(events_path: Path) -> list[dict[str, Any]]:
     if not events_path.exists():
         raise _invalid("missing_events", f"missing bridge events file: {events_path}")
     events: list[dict[str, Any]] = []
-    for line_no, line in enumerate(events_path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_no, line in enumerate(
+        events_path.read_text(encoding="utf-8").splitlines(), 1
+    ):
         if not line.strip():
             continue
         try:
@@ -1144,7 +1387,9 @@ def _count_daily_auto_merges(events: Sequence[Mapping[str, Any]], utc_date: str)
     for event in events:
         if not str(event.get("ts_utc", "")).startswith(utc_date):
             continue
-        payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+        payload = (
+            event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+        )
         if _is_auto_merge_event(event, payload):
             count += 1
     return count

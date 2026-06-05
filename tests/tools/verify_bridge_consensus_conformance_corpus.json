@@ -361,6 +361,87 @@
         "ok": false,
         "decision": "bridge_consensus_incomplete"
       }
+    },
+    {
+      "name": "author_rco_self_pass_rejected",
+      "description": "lead+tools approve, but the only RCO_PASS is from claude-rco-2 while claude-rco-2 is the PR author -> REFUSE (author != reviewer).",
+      "author_agent": "claude-rco-2",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "lead approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "codex-tools-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "tools concurs at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:02:00Z",
+          "agent": "claude-rco-2",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "self RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "expected": {
+        "ok": false,
+        "decision": "bridge_consensus_incomplete"
+      }
+    },
+    {
+      "name": "other_recognized_rco_veto_blocks_pass",
+      "description": "lead+tools approve, claude-rco-1 passes, then claude-rco-2 vetoes -> REFUSE (either recognized RCO veto blocks; backup RCO cannot be out-voted).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "lead approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "codex-tools-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "tools concurs at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:02:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:03:00Z",
+          "agent": "claude-rco-2",
+          "type": "finding",
+          "status": "changes_requested",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "backup RCO veto blocks the head"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "expected": {
+        "ok": false,
+        "decision": "bridge_consensus_incomplete"
+      }
     }
   ],
   "allow_cases": [
@@ -471,6 +552,42 @@
           "status": "rco_pass",
           "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
           "message": "re-reviewed after fixes; RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "expected": {
+        "ok": true,
+        "decision": "bridge_consensus_verified"
+      }
+    },
+    {
+      "name": "backup_rco_only_pass_satisfies_rco_slot",
+      "description": "codex-lead-1 + codex-tools-1 approve and claude-rco-2 alone posts RCO_PASS at exact head -> ALLOW (backup RCO co-authority).",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "lead approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "codex-tools-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "tools concurs at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:02:00Z",
+          "agent": "claude-rco-2",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "Backup RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
         }
       ],
       "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",

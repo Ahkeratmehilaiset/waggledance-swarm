@@ -25,6 +25,7 @@ test_bridge_consensus_approver.py and test_idle_consensus_auto_merge.py for inte
 All claim gates are asserted false in the corpus artifact (per hard rule, mirroring rco/ leak_policy
 conformance). The verify result itself is not required to carry claim gates.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,7 +34,6 @@ import sys
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -41,7 +41,6 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
     verify_bridge_consensus,
 )
 from waggledance.core.leak_policy import CLAIM_GATES  # noqa: E402
-
 
 CORPUS_PATH = Path(__file__).parent / "verify_bridge_consensus_conformance_corpus.json"
 
@@ -58,11 +57,14 @@ REQUIRED_REFUSE_CASE_NAMES = {
     "rco_veto_changes_requested_after_pass",
     "rco_veto_blocked_type_after_pass",
     "build_status_not_in_BUILD_CONSENSUS_STATUSES",
+    "author_rco_self_pass_rejected",
+    "other_recognized_rco_veto_blocks_pass",
 }
 REQUIRED_ALLOW_CASE_NAMES = {
     "three_distinct_head_bound_identities",
     "allow_various_build_statuses_and_rco_review_type",
     "fresh_pass_after_earlier_rco_veto_still_allows",
+    "backup_rco_only_pass_satisfies_rco_slot",
 }
 
 
@@ -73,7 +75,9 @@ def _load_corpus() -> dict:
     gates = data.get("claim_gates", {})
     for gate in CLAIM_GATES:
         assert gate in gates, f"missing claim gate declaration for {gate}"
-        assert gates[gate] is False, f"claim gate {gate} must be literal false in conformance corpus"
+        assert (
+            gates[gate] is False
+        ), f"claim gate {gate} must be literal false in conformance corpus"
     return data
 
 
@@ -84,15 +88,24 @@ def corpus() -> dict:
 
 def test_corpus_is_versioned_and_complete(corpus: dict):
     """Lock the corpus shape, version prefix, case counts, and that it declares all gates false."""
-    assert corpus["corpus_version"].startswith("wd.bridge_consensus_verifier.conformance_corpus.v")
-    assert isinstance(corpus.get("refuse_cases"), list) and len(corpus["refuse_cases"]) >= 7
-    assert isinstance(corpus.get("allow_cases"), list) and len(corpus["allow_cases"]) >= 2
+    assert corpus["corpus_version"].startswith(
+        "wd.bridge_consensus_verifier.conformance_corpus.v"
+    )
+    assert (
+        isinstance(corpus.get("refuse_cases"), list)
+        and len(corpus["refuse_cases"]) >= 7
+    )
+    assert (
+        isinstance(corpus.get("allow_cases"), list) and len(corpus["allow_cases"]) >= 2
+    )
     # provenance is deterministic label, no wallclock/random
     prov = corpus.get("provenance", "").lower()
     assert "hand-authored" in prov or "stable event shapes" in prov
     # task/head stable synthetic
     assert corpus["task_id"].startswith("waggledance/grok-scout-1/")
-    assert len(corpus["head"]) == 40 and all(c in "0123456789abcdef" for c in corpus["head"])
+    assert len(corpus["head"]) == 40 and all(
+        c in "0123456789abcdef" for c in corpus["head"]
+    )
 
 
 def test_all_claim_gates_are_false_in_corpus_artifact(corpus: dict):
@@ -102,17 +115,23 @@ def test_all_claim_gates_are_false_in_corpus_artifact(corpus: dict):
         assert gates[gate] is False
 
 
-@pytest.mark.parametrize("case", _load_corpus()["refuse_cases"], ids=lambda c: c["name"])
+@pytest.mark.parametrize(
+    "case", _load_corpus()["refuse_cases"], ids=lambda c: c["name"]
+)
 def test_refuse_case_is_refused_by_verify(case: dict):
     """Every refuse_case must produce REFUSE verdict (ok=false, correct decision) from the real verifier."""
     events = case["events"]
     task_id = case["task_id"]
     head_sha = case["head"]
+    author_agent = case.get("author_agent", "codex-lead-1")
     expected = case["expected"]
 
     # Drive the REAL verify_bridge_consensus with keyword args only (no FS, no network, deterministic)
     result = verify_bridge_consensus(
-        events=events, task_id=task_id, head_sha=head_sha
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        author_agent=author_agent,
     )
     assert result["ok"] is expected["ok"]
     assert result["decision"] == expected["decision"]
@@ -125,11 +144,15 @@ def test_allow_case_is_allowed_by_verify(case: dict):
     events = case["events"]
     task_id = case["task_id"]
     head_sha = case["head"]
+    author_agent = case.get("author_agent", "codex-lead-1")
     expected = case["expected"]
 
     # Drive the REAL verify_bridge_consensus with keyword args only
     result = verify_bridge_consensus(
-        events=events, task_id=task_id, head_sha=head_sha
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        author_agent=author_agent,
     )
     assert result["ok"] is True
     assert result["decision"] == "bridge_consensus_verified"
@@ -159,7 +182,10 @@ def test_corpus_events_exercise_head_binding_veto_and_identity_logic(corpus: dic
         agents = [e.get("agent") for e in evs]
         statuses = [str(e.get("status", "")).lower() for e in evs]
         msgs = " ".join(str(e.get("message", "")) for e in evs)
-        if c["head"] == "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0" and "0000000000000000000000000000000000000000" in msgs:
+        if (
+            c["head"] == "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+            and "0000000000000000000000000000000000000000" in msgs
+        ):
             has_stale = True
         if "changes_requested" in statuses or "blocked" in statuses:
             # veto after would be in refuse
@@ -167,12 +193,19 @@ def test_corpus_events_exercise_head_binding_veto_and_identity_logic(corpus: dic
                 has_veto_after = True
         if len(set(a for a in agents if a)) < 3 and c["expected"]["ok"] is False:
             has_missing = True
-        if agents.count("codex-lead-1") > 1 and "codex-tools-1" not in agents and c["expected"]["ok"] is False:
+        if (
+            agents.count("codex-lead-1") > 1
+            and "codex-tools-1" not in agents
+            and c["expected"]["ok"] is False
+        ):
             has_duplicate = True
         # NOTE: the has_wrong_id heuristic is intentionally removed here; see name-bound guard below.
         if "test:pass" in statuses and c["expected"]["ok"] is False:
             has_bad_status = True
-        if "initial review veto" in msgs.lower() or "earlier" in c.get("description", "").lower():
+        if (
+            "initial review veto" in msgs.lower()
+            or "earlier" in c.get("description", "").lower()
+        ):
             if c["expected"]["ok"] is True:
                 has_fresh_after_veto = True
 
@@ -180,13 +213,18 @@ def test_corpus_events_exercise_head_binding_veto_and_identity_logic(corpus: dic
     # is a NON-RCO agent posting status=rco_pass (i.e. an rco_pass event whose agent != claude-rco-1),
     # so the property is bound to that named case rather than a corpus-wide any().
     wrong_agent_case = next(
-        (c for c in corpus["refuse_cases"] if c["name"] == "wrong_agent_identity_posting_a_role"),
+        (
+            c
+            for c in corpus["refuse_cases"]
+            if c["name"] == "wrong_agent_identity_posting_a_role"
+        ),
         None,
     )
     assert wrong_agent_case is not None
     wa_evs = wrong_agent_case["events"]
     non_rco_rco_pass = any(
-        str(e.get("status", "")).lower() == "rco_pass" and e.get("agent") != "claude-rco-1"
+        str(e.get("status", "")).lower() == "rco_pass"
+        and e.get("agent") != "claude-rco-1"
         for e in wa_evs
     )
     assert non_rco_rco_pass

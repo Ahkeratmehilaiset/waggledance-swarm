@@ -30,6 +30,7 @@ Idle-consensus-protocol PRs keep using
 ``idle_consensus_auto_merge.evaluate_auto_merge_gate`` (consensus + MAGMA
 receipt) and are out of scope for this aggregator.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,6 +63,7 @@ from tools.check_rco_pass_present import (  # noqa: E402
 from tools.idle_consensus_auto_merge import (  # noqa: E402
     MERGEABLE_STATES,
     _check_passed,
+    _pr_author_agent,
     verify_bridge_consensus,
 )
 from tools.operator_decision_pack import scan_inbox  # noqa: E402
@@ -172,10 +174,7 @@ def _is_my_rco_pass(event: Mapping[str, Any], agent: str) -> bool:
 
 
 def _is_merged_done(event: Mapping[str, Any]) -> bool:
-    return (
-        str(event.get("type", "")).lower() == "done"
-        and "merged" in _status(event)
-    )
+    return str(event.get("type", "")).lower() == "done" and "merged" in _status(event)
 
 
 # Only recent rco_passes are merge-completion candidates. Older approvals
@@ -232,9 +231,7 @@ def _age_minutes(event: Mapping[str, Any] | None, now_utc: datetime) -> float | 
 
 def _event_targets(event: Mapping[str, Any]) -> set[str]:
     return {
-        item.strip()
-        for item in str(event.get("to", "")).split(",")
-        if item.strip()
+        item.strip() for item in str(event.get("to", "")).split(",") if item.strip()
     }
 
 
@@ -628,6 +625,15 @@ def _checks_green(snapshot: Mapping[str, Any]) -> bool:
     return all(_check_passed(check) for check in checks if isinstance(check, Mapping))
 
 
+def _snapshot_author_agent(
+    snapshot: Mapping[str, Any],
+    task_id: str,
+    *,
+    events: Sequence[Mapping[str, Any]],
+) -> str:
+    return _pr_author_agent(snapshot, task_id, events=events)
+
+
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(command),
@@ -729,11 +735,14 @@ def evaluate_merge_ready(
     result["snapshot_head"] = head_sha
     result["mergeable"] = mergeable
     result["checks_green"] = _checks_green(snapshot)
+    author_agent = _snapshot_author_agent(snapshot, task, events=events)
+    result["author_agent"] = author_agent
 
     rco_pass_gate = check_rco_pass_present(
         events=events,
         task_id=task,
         head=head_sha,
+        author_agent=author_agent,
     )
     result["rco_pass_gate"] = rco_pass_gate
     if not bool(rco_pass_gate.get("ok", False)):
@@ -744,6 +753,7 @@ def evaluate_merge_ready(
         task_id=task,
         head_sha=head_sha,
         pr_number=pr,
+        author_agent=author_agent,
     )
     result["bridge_consensus_gate"] = bridge_consensus_gate
     if not bool(bridge_consensus_gate.get("ok", False)):
@@ -778,8 +788,14 @@ def _recommended_wakeup(
     peer_activation: Mapping[str, Any] | None = None,
     peer_active_claim: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if any(item.get("ready") for item in merge_ready) or next_action == "answer_incoming":
-        return {"seconds": WAKEUP_ACT_NOW, "reason": "actionable merge/RCO work pending"}
+    if (
+        any(item.get("ready") for item in merge_ready)
+        or next_action == "answer_incoming"
+    ):
+        return {
+            "seconds": WAKEUP_ACT_NOW,
+            "reason": "actionable merge/RCO work pending",
+        }
     if peer_activation and peer_activation.get("needed"):
         return {"seconds": WAKEUP_ACT_NOW, "reason": "peer activation needed"}
     if peer_active_claim and peer_active_claim.get("active"):

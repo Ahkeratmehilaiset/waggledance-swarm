@@ -201,6 +201,14 @@ def test_cell_message_rejects_unknown_kind():
         )
 
 
+def test_cell_message_rejects_runtime_mutation_authority():
+    with pytest.raises(ValueError, match="no_runtime_mutation must be true"):
+        cmc.CellMessage(
+            schema_version=1, from_cell_id="c1", to_cell_id="c2",
+            kind="ring_request", payload={}, no_runtime_mutation=False,
+        )
+
+
 def test_make_message_const_no_runtime_mutation():
     m = cmc.make_message(from_cell_id="c1", to_cell_id="c2",
                               kind="ring_request")

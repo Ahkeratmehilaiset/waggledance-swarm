@@ -123,6 +123,15 @@ def test_make_topology_sorts_by_cell_id():
     assert list(topology["cells"].keys()) == ["c1", "c2", "c3"]
 
 
+def test_make_topology_rejects_duplicate_cell_ids():
+    runtimes = [
+        cr.make_runtime(cell_id="c1"),
+        cr.make_runtime(cell_id="c1"),
+    ]
+    with pytest.raises(ValueError, match="duplicate cell_id"):
+        cr.make_topology(runtimes)
+
+
 # ═══════════════════ parent_child_relations ═══════════════════════
 
 def _topo() -> dict:

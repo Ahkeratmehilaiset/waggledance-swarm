@@ -48,6 +48,14 @@ def _freshness(**overrides: object) -> dict[str, object]:
     return freshness
 
 
+def _freshness_with_pr_head(sha: str = OTHER_SHA) -> dict[str, object]:
+    return _freshness(
+        pr_head_sha=sha,
+        reviewed_head_sha=sha,
+        target_head_sha=sha,
+    )
+
+
 def _git_repo_with_origin_main(tmp_path: Path) -> tuple[Path, str]:
     repo = tmp_path / "git-root"
     repo.mkdir()
@@ -157,7 +165,7 @@ def test_required_freshness_proof_is_reported_before_disabled_gate(
         prompt="Review this plan.",
         config_path=config_path,
         require_freshness=True,
-        freshness=_freshness(pr_head_sha=OTHER_SHA),
+        freshness=_freshness_with_pr_head(),
         git_root=None,
         now=NOW,
         env={},
@@ -170,6 +178,33 @@ def test_required_freshness_proof_is_reported_before_disabled_gate(
     assert report["freshness"]["remote_main_sha"] == MAIN_SHA
     assert report["freshness"]["pr_head_sha"] == OTHER_SHA
     assert report["network_attempted"] is False
+
+
+def test_required_freshness_rejects_mismatched_review_heads(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path)
+
+    with pytest.raises(GrokReviewError) as exc_info:
+        run_grok_review(
+            prompt="Review this plan.",
+            config_path=config_path,
+            require_freshness=True,
+            freshness=_freshness(
+                pr_head_sha=OTHER_SHA,
+                reviewed_head_sha=MAIN_SHA,
+                target_head_sha=OTHER_SHA,
+            ),
+            git_root=None,
+            now=NOW,
+            env={},
+        )
+
+    assert exc_info.value.report["decision"] == "stale_freshness_proof"
+    assert exc_info.value.report["reason"] == (
+        "pr_head_sha, reviewed_head_sha, target_head_sha must match"
+    )
+    assert exc_info.value.report["network_attempted"] is False
 
 
 def test_required_freshness_missing_refuses_before_state_or_network(
@@ -297,6 +332,35 @@ def test_active_call_without_freshness_refuses_before_secret_lookup(
     assert report["network_attempted"] is False
 
 
+def test_active_call_with_base_only_freshness_refuses_before_secret_lookup(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(
+        tmp_path,
+        enabled=True,
+        allow_network=True,
+        max_calls_per_day=1,
+    )
+
+    report = run_grok_review(
+        prompt="Review this plan.",
+        config_path=config_path,
+        state_path=tmp_path / "state.json",
+        freshness=_freshness(),
+        git_root=None,
+        now=NOW,
+        env={"GROK_API_BASE_URL": "https://example.invalid"},
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "missing_freshness_proof"
+    assert report["reason"] == (
+        "pr_head_sha, reviewed_head_sha, target_head_sha must all be provided"
+    )
+    assert report["freshness_required"] is True
+    assert report["network_attempted"] is False
+
+
 def test_dry_run_active_without_freshness_reports_refusal(
     tmp_path: Path,
 ) -> None:
@@ -336,7 +400,7 @@ def test_missing_api_key_refuses_without_network(tmp_path: Path) -> None:
         prompt="Review this plan.",
         config_path=config_path,
         state_path=tmp_path / "state.json",
-        freshness=_freshness(),
+        freshness=_freshness_with_pr_head(),
         git_root=None,
         now=NOW,
         env={"GROK_API_BASE_URL": "https://example.invalid"},
@@ -411,6 +475,10 @@ def test_cli_valid_freshness_proof_reaches_disabled_gate(tmp_path: Path) -> None
             sha,
             "--pr-head-sha",
             OTHER_SHA,
+            "--reviewed-head-sha",
+            OTHER_SHA,
+            "--target-head-sha",
+            OTHER_SHA,
             "--git-root",
             str(git_root),
             "--json",
@@ -454,6 +522,10 @@ def test_powershell_wrapper_forwards_freshness_proof(tmp_path: Path) -> None:
             "-WorktreeHead",
             sha,
             "-PrHeadSha",
+            OTHER_SHA,
+            "-ReviewedHeadSha",
+            OTHER_SHA,
+            "-TargetHeadSha",
             OTHER_SHA,
             "-GitRoot",
             str(git_root),

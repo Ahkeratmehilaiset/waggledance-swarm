@@ -164,6 +164,16 @@ def run_grok_review(
     state = _load_state(_resolve_state_path(state_path, env), now)
     budget = _budget_snapshot(config, state, selected_model)
     active_gate = _active_gate(config, budget)
+    freshness_error_report: dict[str, Any] | None = None
+    if bool(active_gate["ok"]) and freshness_proof is not None and not require_freshness:
+        try:
+            freshness_proof = _validate_freshness_proof(
+                freshness,
+                required=True,
+                git_root=git_root,
+            )
+        except GrokReviewError as exc:
+            freshness_error_report = exc.report
     freshness_required = require_freshness or bool(active_gate["ok"])
     freshness_missing = freshness_required and freshness_proof is None
     report = _base_report(
@@ -179,13 +189,21 @@ def run_grok_review(
         network_attempted=False,
         budget=budget,
         dry_run=dry_run,
-        would_call=bool(active_gate["ok"]) and not freshness_missing,
+        would_call=(
+            bool(active_gate["ok"])
+            and not freshness_missing
+            and freshness_error_report is None
+        ),
         freshness_required=freshness_required,
         freshness=freshness_proof or {},
     )
     if dry_run:
         if freshness_missing:
             report["would_refuse_reason"] = "freshness proof required"
+        if freshness_error_report is not None:
+            report["would_refuse_reason"] = str(
+                freshness_error_report.get("reason", "freshness proof required")
+            )
         if not active_gate["ok"]:
             report["would_refuse_reason"] = active_gate["reason"]
         return report
@@ -195,6 +213,14 @@ def run_grok_review(
             ok=False,
             decision="missing_freshness_proof",
             reason="freshness proof required before Grok network call",
+        )
+        return report
+
+    if freshness_error_report is not None:
+        report.update(
+            ok=False,
+            decision=freshness_error_report.get("decision", "stale_freshness_proof"),
+            reason=freshness_error_report.get("reason", "freshness proof required"),
         )
         return report
 
@@ -424,19 +450,53 @@ def _validate_freshness_proof(
                 )
             )
 
-    for field_name in OPTIONAL_FRESHNESS_SHA_FIELDS:
-        value = freshness.get(field_name)
-        if value in (None, ""):
-            continue
-        if not _is_full_git_sha(value):
+    exact_head_values = {
+        field_name: freshness.get(field_name)
+        for field_name in OPTIONAL_FRESHNESS_SHA_FIELDS
+    }
+    exact_head_present = any(
+        value not in (None, "") for value in exact_head_values.values()
+    )
+    if required or exact_head_present:
+        missing = [
+            field_name
+            for field_name, value in exact_head_values.items()
+            if value in (None, "")
+        ]
+        if missing:
             raise GrokReviewError(
                 _base_report(
                     ok=False,
-                    decision="invalid_freshness_proof",
-                    reason=f"{field_name} must be lowercase 40-hex sha",
+                    decision="missing_freshness_proof",
+                    reason=(
+                        "pr_head_sha, reviewed_head_sha, target_head_sha "
+                        "must all be provided"
+                    ),
                 )
             )
-        proof[field_name] = str(value)
+        exact_shas: list[str] = []
+        for field_name, value in exact_head_values.items():
+            if not _is_full_git_sha(value):
+                raise GrokReviewError(
+                    _base_report(
+                        ok=False,
+                        decision="invalid_freshness_proof",
+                        reason=f"{field_name} must be lowercase 40-hex sha",
+                    )
+                )
+            proof[field_name] = str(value)
+            exact_shas.append(str(value))
+        if len(set(exact_shas)) != 1:
+            raise GrokReviewError(
+                _base_report(
+                    ok=False,
+                    decision="stale_freshness_proof",
+                    reason=(
+                        "pr_head_sha, reviewed_head_sha, target_head_sha "
+                        "must match"
+                    ),
+                )
+            )
 
     return proof
 

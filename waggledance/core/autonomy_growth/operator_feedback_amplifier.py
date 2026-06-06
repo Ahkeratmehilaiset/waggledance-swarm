@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 from waggledance.core.magma.canonical import sha256_digest
@@ -29,6 +30,9 @@ FEEDBACK_ACTION_TAKEN_EVENT_TYPE = "feedback_action_taken"
 ACTION_SCHEMA_VERSION = "operator_feedback_action_plan.v1"
 GAP_SIGNAL_SCHEMA_VERSION = "operator_feedback_gap_signal.v1"
 PROBE_INTENT_SCHEMA_VERSION = "operator_feedback_adversarial_probe_intent.v1"
+SCHEDULER_PREFLIGHT_SCHEMA_VERSION = "operator_feedback_scheduler_preflight.v1"
+SCHEDULER_CANDIDATE_SCHEMA_VERSION = "operator_feedback_scheduler_candidate.v1"
+RATE_LIMIT_SOURCE_DURABLE_BRIDGE_LOG = "durable_bridge_log"
 
 
 class OperatorFeedbackValidationError(ValueError):
@@ -42,6 +46,7 @@ class OperatorFeedbackPolicy:
     required_fields: tuple[str, ...]
     fast_track_canary_minutes: int
     fast_track_per_hour_max: int
+    fast_track_global_per_hour_max: int
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,51 @@ class OperatorFeedbackActionPlan:
         }
 
 
+@dataclass(frozen=True)
+class OperatorFeedbackSchedulerPreflight:
+    """Scheduler-adjacent artifact for an operator feedback action plan.
+
+    This is deliberately preflight-only: it proves identity/rate-limit state and
+    renders a priority candidate, but it does not persist runtime gap signals,
+    enqueue growth intents, or run the scheduler.
+    """
+
+    schema_version: str
+    source_bridge_event_digest: str
+    verified_operator_id: str
+    rate_limit_source: str
+    operator_fast_track_count: int
+    global_fast_track_count: int
+    global_fast_track_per_hour_max: int
+    action_plan: OperatorFeedbackActionPlan
+    scheduler_candidate_artifact: Mapping[str, Any]
+    scheduler_enqueue_allowed: bool
+    scheduler_tick_allowed: bool
+    gate_skip_allowed: bool
+    bridge_event_written: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "source_bridge_event_digest": self.source_bridge_event_digest,
+            "verified_operator_id": self.verified_operator_id,
+            "rate_limit_source": self.rate_limit_source,
+            "operator_fast_track_count": self.operator_fast_track_count,
+            "global_fast_track_count": self.global_fast_track_count,
+            "global_fast_track_per_hour_max": (
+                self.global_fast_track_per_hour_max
+            ),
+            "action_plan": self.action_plan.to_dict(),
+            "scheduler_candidate_artifact": dict(
+                self.scheduler_candidate_artifact
+            ),
+            "scheduler_enqueue_allowed": self.scheduler_enqueue_allowed,
+            "scheduler_tick_allowed": self.scheduler_tick_allowed,
+            "gate_skip_allowed": self.gate_skip_allowed,
+            "bridge_event_written": self.bridge_event_written,
+        }
+
+
 def load_operator_feedback_policy(
     contract_path: Path | str = DEFAULT_CONTRACT_PATH,
 ) -> OperatorFeedbackPolicy:
@@ -136,6 +186,10 @@ def load_operator_feedback_policy(
         fast_track_per_hour_max=_require_positive_int(
             "policy_defaults.fast_track_per_hour_max",
             defaults.get("fast_track_per_hour_max"),
+        ),
+        fast_track_global_per_hour_max=_require_positive_int(
+            "policy_defaults.fast_track_global_per_hour_max",
+            defaults.get("fast_track_global_per_hour_max"),
         ),
     )
 
@@ -199,7 +253,10 @@ def validate_operator_feedback_event(
             if route_context_hash is not None
             else {}
         ),
-        "operator_id": _clean_string(event["operator_id"]),
+        "operator_id": _validate_ref(
+            "operator_id",
+            _clean_string(event["operator_id"]),
+        ),
         "priority": priority,
         "submitted_at_utc": _utc_iso(submitted),
     }
@@ -217,7 +274,7 @@ def amplify_operator_feedback(
     normalized = validate_operator_feedback_event(event, policy=policy)
     submitted = _parse_utc(normalized["submitted_at_utc"])
     window_start = submitted - timedelta(hours=1)
-    prior_fast_track_count = _count_prior_fast_track_feedback(
+    rate_counts = _count_prior_fast_track_feedback(
         prior_events=prior_events,
         operator_id=normalized["operator_id"],
         window_start=window_start,
@@ -227,7 +284,10 @@ def amplify_operator_feedback(
     wants_fast_track = normalized["priority"] == "high"
     rate_limited = (
         wants_fast_track
-        and prior_fast_track_count >= policy.fast_track_per_hour_max
+        and (
+            rate_counts["operator"] >= policy.fast_track_per_hour_max
+            or rate_counts["global"] >= policy.fast_track_global_per_hour_max
+        )
     )
     fast_track = wants_fast_track and not rate_limited
 
@@ -284,21 +344,117 @@ def _count_prior_fast_track_feedback(
     window_start: datetime,
     submitted: datetime,
     policy: OperatorFeedbackPolicy,
-) -> int:
-    count = 0
+) -> dict[str, int]:
+    operator_count = 0
+    global_count = 0
     for prior in prior_events:
         try:
             normalized = validate_operator_feedback_event(prior, policy=policy)
         except OperatorFeedbackValidationError:
             continue
-        if normalized["operator_id"] != operator_id:
-            continue
         if normalized["priority"] != "high":
             continue
         prior_submitted = _parse_utc(normalized["submitted_at_utc"])
         if window_start <= prior_submitted < submitted:
-            count += 1
-    return count
+            global_count += 1
+            if normalized["operator_id"] == operator_id:
+                operator_count += 1
+    return {"operator": operator_count, "global": global_count}
+
+
+def build_operator_feedback_scheduler_preflight(
+    event: Mapping[str, Any],
+    *,
+    source_bridge_event: Mapping[str, Any],
+    durable_bridge_events: Sequence[Mapping[str, Any]],
+    policy: OperatorFeedbackPolicy | None = None,
+) -> OperatorFeedbackSchedulerPreflight:
+    """Build a no-authority scheduler preflight from durable bridge evidence.
+
+    The current operator identity is derived from the bridge event envelope and
+    the source event must already be present in the passed durable bridge-log
+    window. This prevents callers from trusting a free-string ``operator_id`` or
+    an in-memory rate-limit list when preparing scheduler-adjacent work.
+    """
+
+    policy = policy or load_operator_feedback_policy()
+    source_digest, verified_operator_id = _verified_operator_from_bridge_log(
+        source_bridge_event=source_bridge_event,
+        durable_bridge_events=durable_bridge_events,
+    )
+
+    source_event_with_identity = _source_ops_feedback_event_from_bridge_payload(
+        source_bridge_event=source_bridge_event,
+        verified_operator_id=verified_operator_id,
+    )
+    source_normalized = validate_operator_feedback_event(
+        source_event_with_identity,
+        policy=policy,
+    )
+
+    supplied_event_with_identity = dict(event)
+    provided_operator_id = _clean_string(
+        supplied_event_with_identity.get("operator_id")
+    )
+    if provided_operator_id != verified_operator_id:
+        raise OperatorFeedbackValidationError(
+            "operator_id must match verified bridge identity"
+        )
+    supplied_event_with_identity["operator_id"] = verified_operator_id
+    supplied_normalized = validate_operator_feedback_event(
+        supplied_event_with_identity,
+        policy=policy,
+    )
+    if supplied_normalized != source_normalized:
+        mismatched = sorted(
+            field
+            for field in sorted(source_normalized.keys() | supplied_normalized.keys())
+            if source_normalized.get(field) != supplied_normalized.get(field)
+        )
+        raise OperatorFeedbackValidationError(
+            "ops_feedback event must match durable source payload: "
+            + ", ".join(mismatched)
+        )
+
+    durable_prior_events = _extract_durable_ops_feedback_events(
+        durable_bridge_events=durable_bridge_events,
+        exclude_source_digest=source_digest,
+    )
+    normalized = source_normalized
+    submitted = _parse_utc(normalized["submitted_at_utc"])
+    window_start = submitted - timedelta(hours=1)
+    rate_counts = _count_prior_fast_track_feedback(
+        prior_events=durable_prior_events,
+        operator_id=verified_operator_id,
+        window_start=window_start,
+        submitted=submitted,
+        policy=policy,
+    )
+    action_plan = amplify_operator_feedback(
+        source_event_with_identity,
+        prior_events=durable_prior_events,
+        policy=policy,
+    )
+    candidate = _scheduler_candidate_artifact_for(
+        action_plan=action_plan,
+        source_bridge_event_digest=source_digest,
+        verified_operator_id=verified_operator_id,
+    )
+    return OperatorFeedbackSchedulerPreflight(
+        schema_version=SCHEDULER_PREFLIGHT_SCHEMA_VERSION,
+        source_bridge_event_digest=source_digest,
+        verified_operator_id=verified_operator_id,
+        rate_limit_source=RATE_LIMIT_SOURCE_DURABLE_BRIDGE_LOG,
+        operator_fast_track_count=rate_counts["operator"],
+        global_fast_track_count=rate_counts["global"],
+        global_fast_track_per_hour_max=policy.fast_track_global_per_hour_max,
+        action_plan=action_plan,
+        scheduler_candidate_artifact=candidate,
+        scheduler_enqueue_allowed=False,
+        scheduler_tick_allowed=False,
+        gate_skip_allowed=False,
+        bridge_event_written=False,
+    )
 
 
 def _gap_signal_for(
@@ -327,11 +483,164 @@ def _gap_signal_for(
         "query_class_hash": normalized["query_class_hash"],
         "priority": normalized["priority"],
         "fast_track_canary": fast_track,
+        "queue_priority": "fast_track" if fast_track else "normal",
+        "queue_priority_only": True,
+        "gate_skip_allowed": False,
+        "promotion_gate_skip_allowed": False,
+        "adversarial_gate_skip_allowed": False,
+        "canary_gate_skip_allowed": False,
         "scheduled_for_utc": scheduled_for_utc,
         "feedback_digest": feedback_digest,
         "raw_query_exported": False,
         "runtime_authority_granted": False,
     }
+
+
+def _scheduler_candidate_artifact_for(
+    *,
+    action_plan: OperatorFeedbackActionPlan,
+    source_bridge_event_digest: str,
+    verified_operator_id: str,
+) -> dict[str, Any]:
+    fast_track_priority = (
+        action_plan.priority == "high"
+        and action_plan.rate_limited is False
+        and action_plan.gap_signal is not None
+    )
+    return {
+        "schema_version": SCHEDULER_CANDIDATE_SCHEMA_VERSION,
+        "candidate_kind": "operator_feedback_gap_signal",
+        "action_id": action_plan.action_id,
+        "feedback_id": action_plan.feedback_id,
+        "feedback_kind": action_plan.feedback_kind,
+        "query_class_hash": action_plan.query_class_hash,
+        "route_context_hash": action_plan.route_context_hash,
+        "verified_operator_id": verified_operator_id,
+        "source_bridge_event_digest": source_bridge_event_digest,
+        "queue_priority": "fast_track" if fast_track_priority else "normal",
+        "priority_weight": 100 if fast_track_priority else 0,
+        "fast_track_priority": fast_track_priority,
+        "rate_limited": action_plan.rate_limited,
+        "scheduler_enqueue_allowed": False,
+        "scheduler_tick_allowed": False,
+        "bridge_event_written": False,
+        "runtime_authority_granted": False,
+        "gate_skip_allowed": False,
+        "promotion_gate_skip_allowed": False,
+        "adversarial_gate_skip_allowed": False,
+        "canary_gate_skip_allowed": False,
+        "raw_query_exported": False,
+    }
+
+
+def _verified_operator_from_bridge_log(
+    *,
+    source_bridge_event: Mapping[str, Any],
+    durable_bridge_events: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    source_digest = sha256_digest(source_bridge_event)
+    durable_digests = {
+        sha256_digest(event)
+        for event in durable_bridge_events
+        if isinstance(event, Mapping)
+    }
+    if source_digest not in durable_digests:
+        raise OperatorFeedbackValidationError(
+            "source bridge event must be present in durable bridge log"
+        )
+
+    agent = _clean_string(source_bridge_event.get("agent"))
+    if agent != "operator":
+        raise OperatorFeedbackValidationError(
+            "operator feedback scheduler preflight requires operator bridge agent"
+        )
+    _parse_utc(_clean_string(source_bridge_event.get("ts_utc")))
+    agent_uuid = source_bridge_event.get("agent_uuid")
+    session_id = source_bridge_event.get("session_id")
+    if _non_empty_string(agent_uuid):
+        value = _clean_string(agent_uuid).lower()
+        if not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            r"[0-9a-f]{4}-[0-9a-f]{12}",
+            value,
+        ):
+            raise OperatorFeedbackValidationError(
+                "operator bridge agent_uuid is malformed"
+            )
+        return source_digest, _validate_ref("operator_id", f"bridge:{agent}:{value}")
+    if _non_empty_string(session_id):
+        safe_session = _safe_ref(_clean_string(session_id))
+        return (
+            source_digest,
+            _validate_ref("operator_id", f"bridge:{agent}:{safe_session}"),
+        )
+    return source_digest, _validate_ref("operator_id", f"bridge:{agent}")
+
+
+def _extract_durable_ops_feedback_events(
+    *,
+    durable_bridge_events: Sequence[Mapping[str, Any]],
+    exclude_source_digest: str,
+) -> list[Mapping[str, Any]]:
+    events: list[Mapping[str, Any]] = []
+    for bridge_event in durable_bridge_events:
+        if not isinstance(bridge_event, Mapping):
+            continue
+        if sha256_digest(bridge_event) == exclude_source_digest:
+            continue
+        payload = bridge_event.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        if payload.get("event_type") == OPS_FEEDBACK_EVENT_TYPE:
+            events.append(payload)
+            continue
+        for key in ("ops_feedback", "feedback_event"):
+            nested = payload.get(key)
+            if (
+                isinstance(nested, Mapping)
+                and nested.get("event_type") == OPS_FEEDBACK_EVENT_TYPE
+            ):
+                events.append(nested)
+                break
+    return events
+
+
+def _source_ops_feedback_event_from_bridge_payload(
+    *,
+    source_bridge_event: Mapping[str, Any],
+    verified_operator_id: str,
+) -> Mapping[str, Any]:
+    payload = source_bridge_event.get("payload")
+    if not isinstance(payload, Mapping):
+        raise OperatorFeedbackValidationError(
+            "source bridge event payload must be a mapping"
+        )
+
+    source_event: Mapping[str, Any] | None = None
+    if payload.get("event_type") == OPS_FEEDBACK_EVENT_TYPE:
+        source_event = payload
+    else:
+        for key in ("ops_feedback", "feedback_event"):
+            nested = payload.get(key)
+            if (
+                isinstance(nested, Mapping)
+                and nested.get("event_type") == OPS_FEEDBACK_EVENT_TYPE
+            ):
+                source_event = nested
+                break
+    if source_event is None:
+        raise OperatorFeedbackValidationError(
+            "source bridge event payload must contain ops_feedback"
+        )
+
+    event_with_identity = dict(source_event)
+    provided_operator_id = _clean_string(event_with_identity.get("operator_id"))
+    if provided_operator_id != verified_operator_id:
+        raise OperatorFeedbackValidationError(
+            "source ops_feedback operator_id must match verified bridge identity"
+        )
+    event_with_identity["operator_id"] = verified_operator_id
+    return event_with_identity
 
 
 def _probe_intent_for(
@@ -497,9 +806,14 @@ __all__ = [
     "OPS_FEEDBACK_EVENT_TYPE",
     "OperatorFeedbackActionPlan",
     "OperatorFeedbackPolicy",
+    "OperatorFeedbackSchedulerPreflight",
     "OperatorFeedbackValidationError",
     "PROBE_INTENT_SCHEMA_VERSION",
+    "RATE_LIMIT_SOURCE_DURABLE_BRIDGE_LOG",
+    "SCHEDULER_CANDIDATE_SCHEMA_VERSION",
+    "SCHEDULER_PREFLIGHT_SCHEMA_VERSION",
     "amplify_operator_feedback",
+    "build_operator_feedback_scheduler_preflight",
     "load_operator_feedback_policy",
     "validate_operator_feedback_event",
 ]

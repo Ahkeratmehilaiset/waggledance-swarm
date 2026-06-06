@@ -9,8 +9,10 @@ import pytest
 from waggledance.core.autonomy_growth.operator_feedback_amplifier import (
     FEEDBACK_ACTION_TAKEN_EVENT_TYPE,
     OPS_FEEDBACK_EVENT_TYPE,
+    OperatorFeedbackPolicy,
     OperatorFeedbackValidationError,
     amplify_operator_feedback,
+    build_operator_feedback_scheduler_preflight,
     load_operator_feedback_policy,
     validate_operator_feedback_event,
 )
@@ -30,6 +32,38 @@ def _event(**overrides):
     return base
 
 
+def _bridge_event(feedback, **overrides):
+    base = {
+        "ts_utc": "2026-06-05T12:00:00Z",
+        "agent": "operator",
+        "type": "message",
+        "task_id": "operator-feedback-test",
+        "status": "ops_feedback_received",
+        "message": "operator feedback",
+        "agent_uuid": "",
+        "session_id": "",
+        "payload": {"ops_feedback": feedback},
+    }
+    base.update(overrides)
+    return base
+
+
+def _policy(
+    *,
+    fast_track_per_hour_max: int = 10,
+    fast_track_global_per_hour_max: int = 30,
+) -> OperatorFeedbackPolicy:
+    loaded = load_operator_feedback_policy()
+    return OperatorFeedbackPolicy(
+        feedback_kinds=loaded.feedback_kinds,
+        priority_enum=loaded.priority_enum,
+        required_fields=loaded.required_fields,
+        fast_track_canary_minutes=loaded.fast_track_canary_minutes,
+        fast_track_per_hour_max=fast_track_per_hour_max,
+        fast_track_global_per_hour_max=fast_track_global_per_hour_max,
+    )
+
+
 def test_policy_loads_from_machine_readable_contract() -> None:
     policy = load_operator_feedback_policy()
 
@@ -41,6 +75,7 @@ def test_policy_loads_from_machine_readable_contract() -> None:
     assert set(policy.priority_enum) == {"high", "normal"}
     assert policy.fast_track_canary_minutes == 15
     assert policy.fast_track_per_hour_max == 10
+    assert policy.fast_track_global_per_hour_max == 30
 
 
 def test_validator_accepts_contract_fields_and_ignores_extras() -> None:
@@ -116,6 +151,12 @@ def test_high_priority_needs_solver_gets_bounded_fast_track_plan() -> None:
     assert as_dict["bridge_event_written"] is False
     assert as_dict["gap_signal"]["gap_kind"] == "needs_solver"
     assert as_dict["gap_signal"]["fast_track_canary"] is True
+    assert as_dict["gap_signal"]["queue_priority"] == "fast_track"
+    assert as_dict["gap_signal"]["queue_priority_only"] is True
+    assert as_dict["gap_signal"]["gate_skip_allowed"] is False
+    assert as_dict["gap_signal"]["promotion_gate_skip_allowed"] is False
+    assert as_dict["gap_signal"]["adversarial_gate_skip_allowed"] is False
+    assert as_dict["gap_signal"]["canary_gate_skip_allowed"] is False
     assert as_dict["gap_signal"]["raw_query_exported"] is False
     assert as_dict["adversarial_probe_intent"] is None
 
@@ -218,3 +259,132 @@ def test_invalid_prior_events_do_not_break_rate_limit_counting() -> None:
 
     assert plan.rate_limited is False
     assert plan.lane == "fast_track_canary"
+
+
+def test_scheduler_preflight_rejects_free_string_operator_id() -> None:
+    event = _event(operator_id="operator:jkh")
+    source = _bridge_event(event)
+
+    with pytest.raises(OperatorFeedbackValidationError, match="verified bridge"):
+        build_operator_feedback_scheduler_preflight(
+            event,
+            source_bridge_event=source,
+            durable_bridge_events=[source],
+        )
+
+
+def test_scheduler_preflight_requires_source_event_in_durable_log() -> None:
+    event = _event(operator_id="bridge:operator")
+    source = _bridge_event(event)
+
+    with pytest.raises(OperatorFeedbackValidationError, match="durable bridge log"):
+        build_operator_feedback_scheduler_preflight(
+            event,
+            source_bridge_event=source,
+            durable_bridge_events=[],
+        )
+
+
+def test_scheduler_preflight_rejects_event_mismatch_with_durable_payload() -> None:
+    source_event = _event(
+        operator_id="bridge:operator",
+        feedback_id="fb-durable",
+        query_class_hash="sha256:" + "a" * 64,
+    )
+    source = _bridge_event(source_event)
+    supplied_event = _event(
+        operator_id="bridge:operator",
+        feedback_id="fb-not-in-durable-log",
+        query_class_hash="sha256:" + "b" * 64,
+    )
+
+    with pytest.raises(OperatorFeedbackValidationError, match="durable source"):
+        build_operator_feedback_scheduler_preflight(
+            supplied_event,
+            source_bridge_event=source,
+            durable_bridge_events=[source],
+        )
+
+
+def test_scheduler_preflight_uses_durable_bridge_log_for_operator_rate_limit() -> None:
+    current = _event(operator_id="bridge:operator", feedback_id="fb-011")
+    source = _bridge_event(current)
+    prior = [
+        _bridge_event(
+            _event(
+                feedback_id=f"prior-{index}",
+                operator_id="bridge:operator",
+                submitted_at_utc=f"2026-06-05T11:{index:02d}:00Z",
+            ),
+            ts_utc=f"2026-06-05T11:{index:02d}:01Z",
+        )
+        for index in range(10)
+    ]
+
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[*prior, source],
+    )
+
+    assert preflight.rate_limit_source == "durable_bridge_log"
+    assert preflight.operator_fast_track_count == 10
+    assert preflight.action_plan.rate_limited is True
+    assert preflight.scheduler_candidate_artifact["fast_track_priority"] is False
+    assert preflight.scheduler_candidate_artifact["queue_priority"] == "normal"
+
+
+def test_scheduler_preflight_enforces_global_fast_track_ceiling() -> None:
+    current_uuid = "11111111-1111-1111-1111-111111111111"
+    current_operator = f"bridge:operator:{current_uuid}"
+    current = _event(operator_id=current_operator, feedback_id="fb-global")
+    source = _bridge_event(current, agent_uuid=current_uuid)
+    prior = [
+        _bridge_event(
+            _event(
+                feedback_id=f"global-{index}",
+                operator_id=f"bridge:operator:other-{index}",
+                submitted_at_utc=f"2026-06-05T11:1{index}:00Z",
+            ),
+            ts_utc=f"2026-06-05T11:1{index}:01Z",
+        )
+        for index in range(2)
+    ]
+
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[*prior, source],
+        policy=_policy(fast_track_per_hour_max=10, fast_track_global_per_hour_max=2),
+    )
+
+    assert preflight.operator_fast_track_count == 0
+    assert preflight.global_fast_track_count == 2
+    assert preflight.action_plan.rate_limited is True
+    assert preflight.scheduler_candidate_artifact["fast_track_priority"] is False
+
+
+def test_scheduler_preflight_marks_fast_track_as_queue_priority_only() -> None:
+    current = _event(operator_id="bridge:operator")
+    source = _bridge_event(current)
+
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[source],
+    )
+    artifact = preflight.scheduler_candidate_artifact
+
+    assert preflight.action_plan.rate_limited is False
+    assert artifact["queue_priority"] == "fast_track"
+    assert artifact["fast_track_priority"] is True
+    assert artifact["scheduler_enqueue_allowed"] is False
+    assert artifact["scheduler_tick_allowed"] is False
+    assert artifact["gate_skip_allowed"] is False
+    assert artifact["promotion_gate_skip_allowed"] is False
+    assert artifact["adversarial_gate_skip_allowed"] is False
+    assert artifact["canary_gate_skip_allowed"] is False
+    assert preflight.scheduler_enqueue_allowed is False
+    assert preflight.scheduler_tick_allowed is False
+    assert preflight.gate_skip_allowed is False
+    assert preflight.bridge_event_written is False

@@ -58,9 +58,11 @@ APPROVAL_STATUSES = frozenset(
         "rco_pass_pending_ci",
         "rco_pass_operator_merge_required",
         "approved",
+        "approved_ci_green",
         "acknowledged",
     }
 )
+DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -190,7 +192,9 @@ def check_bridge_clear_to_merge(
         if _is_blocking_status(status):
             peer_signals[agent] = (index, "block", event)
             continue
-        if event_type not in {"decision", "rco_review", "finding"}:
+        if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
+            continue
+        if event_type not in {"decision", "rco_review", "finding", "done"}:
             continue
         if _is_approval_status(status):
             peer_signals[agent] = (index, "approval", event)

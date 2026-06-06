@@ -82,6 +82,45 @@ def test_cleared_when_peer_approves_after_earlier_block() -> None:
     assert result["latest_approval_event"]["status"] == "rco_pass"
 
 
+def test_done_approved_ci_green_clears_same_peer_block() -> None:
+    events = [
+        _event("2026-06-06T17:53:00Z", "codex-tools-1", "finding", "changes_requested"),
+        _event("2026-06-06T18:12:00Z", "codex-tools-1", "done", "approved_ci_green"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_approval_event"]["type"] == "done"
+    assert result["latest_approval_event"]["status"] == "approved_ci_green"
+
+
+def test_plain_done_does_not_clear_same_peer_block() -> None:
+    events = [
+        _event("2026-06-06T17:53:00Z", "codex-tools-1", "finding", "changes_requested"),
+        _event("2026-06-06T18:12:00Z", "codex-tools-1", "done", "done"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+    assert result["latest_approval_event"] is None
+
+
+def test_done_acknowledged_does_not_clear_same_peer_block() -> None:
+    events = [
+        _event("2026-06-06T17:53:00Z", "codex-tools-1", "finding", "changes_requested"),
+        _event("2026-06-06T18:12:00Z", "codex-tools-1", "done", "acknowledged"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+    assert result["latest_approval_event"] is None
+
+
 def test_different_peer_approval_does_not_clear_block() -> None:
     events = [
         _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),

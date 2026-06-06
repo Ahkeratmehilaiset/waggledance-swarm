@@ -338,6 +338,46 @@ def test_evaluate_diff_content_blocks_receipt_bundle_write_marker() -> None:
     assert decision.allowed is False
 
 
+def test_evaluate_diff_content_allows_verify_manifest_test_addition() -> None:
+    charter = load_charter()
+    diff = """diff --git a/tests/tools/test_magma_share_manifest_importer.py b/tests/tools/test_magma_share_manifest_importer.py
+--- a/tests/tools/test_magma_share_manifest_importer.py
++++ b/tests/tools/test_magma_share_manifest_importer.py
+@@ -1,3 +1,5 @@
++from tools.verify_magma_receipt import verify_manifest
++
++report = build_report(verify_source_manifest=verify_manifest)
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is True
+
+
+def test_evaluate_diff_content_blocks_removed_verify_manifest_call() -> None:
+    charter = load_charter()
+    diff = """diff --git a/tools/example.py b/tools/example.py
+--- a/tools/example.py
++++ b/tools/example.py
+@@ -1,3 +1,2 @@
+-result = verify_manifest(manifest_path)
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert any("verify_manifest" in hit for hit in decision.code_pattern_hits)
+
+
+def test_evaluate_diff_content_blocks_receipt_guard_sensitive_path() -> None:
+    charter = load_charter()
+    diff = """diff --git a/waggledance/core/magma/share_manifest.py b/waggledance/core/magma/share_manifest.py
+--- a/waggledance/core/magma/share_manifest.py
++++ b/waggledance/core/magma/share_manifest.py
+@@ -1,3 +1,4 @@
++verify_manifest = lambda path: {"ok": True}
+"""
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert any("verify_manifest" in hit for hit in decision.code_pattern_hits)
+
+
 def test_evaluate_diff_content_blocks_private_marker() -> None:
     charter = load_charter()
     diff = "+ PRIVATE_MARKER = 'something'\n"

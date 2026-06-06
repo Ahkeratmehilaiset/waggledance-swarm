@@ -28,6 +28,7 @@ DEFAULT_DAILY_QUOTA = 5
 _PRIVACY_CANARY_MARKERS = frozenset(
     ("PRIVATE" + "_MARKER", "_DO" + "_NOT" + "_LEAK")
 )
+_RECEIPT_GUARD_MARKERS = frozenset(("verify_manifest", "write_receipt_bundle"))
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,13 @@ def evaluate_diff_content(
             if _privacy_canary_hits_non_test_diff(privacy_markers, diff_text):
                 hits.append(pattern)
             continue
+        if _is_receipt_guard_pattern(markers):
+            receipt_markers = tuple(
+                marker for marker in markers if marker in _RECEIPT_GUARD_MARKERS
+            )
+            if _receipt_guard_hits(receipt_markers, diff_text):
+                hits.append(pattern)
+            continue
         if any(_marker_matches_diff(marker, diff_text) for marker in markers):
             hits.append(pattern)
     if hits:
@@ -264,6 +272,33 @@ def _privacy_canary_hits_non_test_diff(
     return False
 
 
+def _receipt_guard_hits(markers: Sequence[str], diff_text: str) -> bool:
+    sections = _diff_file_sections(diff_text)
+    for section in sections:
+        if not any(_marker_matches_diff(marker, section.text) for marker in markers):
+            continue
+        if section.known_paths and all(
+            _is_tests_path(path) for path in section.known_paths
+        ):
+            continue
+        if any(_is_receipt_guard_sensitive_path(path) for path in section.known_paths):
+            return True
+        if any(_removed_line_matches_marker(section.text, marker) for marker in markers):
+            return True
+        if not section.known_paths:
+            return True
+    return False
+
+
+def _removed_line_matches_marker(section_text: str, marker: str) -> bool:
+    for line in section_text.splitlines():
+        if line.startswith("--- "):
+            continue
+        if line.startswith("-") and _marker_matches_diff(marker, line):
+            return True
+    return False
+
+
 def _diff_file_sections(diff_text: str) -> tuple[_DiffFileSection, ...]:
     sections: list[_DiffFileSection] = []
     current_source_path: str | None = None
@@ -342,6 +377,17 @@ def _parse_unified_target_path(line: str) -> str | None:
 
 def _is_privacy_canary_pattern(markers: Sequence[str]) -> bool:
     return any(marker in _PRIVACY_CANARY_MARKERS for marker in markers)
+
+
+def _is_receipt_guard_pattern(markers: Sequence[str]) -> bool:
+    return any(marker in _RECEIPT_GUARD_MARKERS for marker in markers)
+
+
+def _is_receipt_guard_sensitive_path(path: str) -> bool:
+    normalized = _normalize_changed_path(path).casefold()
+    return normalized == "tools/verify_magma_receipt.py" or normalized.startswith(
+        "waggledance/core/magma/"
+    )
 
 
 def _is_tests_path(path: str) -> bool:

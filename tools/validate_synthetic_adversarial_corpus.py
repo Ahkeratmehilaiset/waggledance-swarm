@@ -53,13 +53,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--expectations", type=Path, default=DEFAULT_EXPECTATIONS)
+    parser.add_argument(
+        "--folded-into-corpus",
+        type=Path,
+        default=None,
+        help=(
+            "Optional strict v0 corpus target used to verify that an expansion "
+            "fixture marked folded_into_v0 is actually present in the baseline."
+        ),
+    )
+    parser.add_argument(
+        "--folded-into-expectations",
+        type=Path,
+        default=None,
+        help=(
+            "Optional strict v0 expectations target paired with "
+            "--folded-into-corpus."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = validate_corpus(args.corpus, args.expectations)
+    report = validate_corpus(
+        args.corpus,
+        args.expectations,
+        folded_into_corpus_path=args.folded_into_corpus,
+        folded_into_expectations_path=args.folded_into_expectations,
+    )
     if args.json:
         print(json.dumps(report, sort_keys=True))
     elif report["ok"]:
@@ -74,7 +97,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if report["ok"] else 1
 
 
-def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any]:
+def validate_corpus(
+    corpus_path: Path,
+    expectations_path: Path,
+    *,
+    folded_into_corpus_path: Path | None = None,
+    folded_into_expectations_path: Path | None = None,
+) -> dict[str, Any]:
     errors: list[str] = []
     corpus = _read_json(corpus_path, errors, "corpus")
     expectations_doc = _read_json(expectations_path, errors, "expectations")
@@ -95,7 +124,17 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
         coverage,
         errors,
     )
+    _validate_expansion_metadata(corpus, expectations_doc, errors)
     _validate_cross_refs(case_ids, expectation_ids, errors)
+    fold_in = _validate_folded_into_target(
+        corpus=corpus,
+        expectations_doc=expectations_doc,
+        cases=cases,
+        expectations=expectations,
+        folded_into_corpus_path=folded_into_corpus_path,
+        folded_into_expectations_path=folded_into_expectations_path,
+        errors=errors,
+    )
     if full_coverage_required:
         _validate_split(corpus, case_ids, coverage, errors)
         _validate_coverage(coverage, errors)
@@ -108,6 +147,14 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
         "full_coverage_required": full_coverage_required,
         "split_required": full_coverage_required,
         "coverage": _coverage_report(coverage),
+        "expansion_summary": _expansion_summary(
+            corpus=corpus,
+            expectations_doc=expectations_doc,
+            case_count=len(cases),
+            expectation_count=len(expectations),
+            coverage=coverage,
+            fold_in=fold_in,
+        ),
         "errors": errors,
     }
 
@@ -142,6 +189,7 @@ def _validate_cases(
         coverage["defect_type"].add(defect_type)
         coverage["defect_type_counts"][defect_type] += 1
         coverage["risk_class"].add(risk_class)
+        coverage["risk_class_counts"][risk_class] += 1
 
         trap = str(case.get("peer_review_trap_marker", "none"))
         if trap != "none":
@@ -175,11 +223,102 @@ def _validate_expectations(
         if case_id in seen_ids:
             errors.append(f"{label}: duplicate expectation case_id {case_id}")
         seen_ids.add(case_id)
-        coverage["expected_gate"].add(str(expectation.get("expected_gate", "")))
-        coverage["expected_verdict"].add(str(expectation.get("expected_verdict", "")))
+        expected_gate = str(expectation.get("expected_gate", ""))
+        expected_verdict = str(expectation.get("expected_verdict", ""))
+        coverage["expected_gate"].add(expected_gate)
+        coverage["expected_gate_counts"][expected_gate] += 1
+        coverage["expected_verdict"].add(expected_verdict)
+        coverage["expected_verdict_counts"][expected_verdict] += 1
         if not expectation.get("should_claude_catch") and not expectation.get("should_codex_catch"):
             errors.append(f"{label}: no expected catching agent for {case_id}")
     return seen_ids
+
+
+def _validate_expansion_metadata(
+    corpus: Any,
+    expectations_doc: Any,
+    errors: list[str],
+) -> None:
+    if not isinstance(corpus, dict) or not isinstance(expectations_doc, dict):
+        return
+    corpus_label = _optional_str(corpus.get("expansion_label"))
+    expectations_label = _optional_str(expectations_doc.get("expansion_label"))
+    if corpus_label and expectations_label != corpus_label:
+        errors.append("expectations: expansion_label must match corpus expansion_label")
+    if expectations_label and not corpus_label:
+        errors.append("expectations: expansion_label requires corpus expansion_label")
+    if corpus_label and not _optional_str(corpus.get("expansion_status")):
+        errors.append("corpus: expansion_status must be present for expansion corpus")
+
+
+def _validate_folded_into_target(
+    *,
+    corpus: Any,
+    expectations_doc: Any,
+    cases: list[Any],
+    expectations: list[Any],
+    folded_into_corpus_path: Path | None,
+    folded_into_expectations_path: Path | None,
+    errors: list[str],
+) -> dict[str, Any]:
+    fold_errors: list[str] = []
+    if folded_into_corpus_path is None and folded_into_expectations_path is None:
+        return {
+            "status": "not_requested",
+            "missing_case_count": 0,
+            "missing_expectation_count": 0,
+            "error_count": 0,
+        }
+    if folded_into_corpus_path is None or folded_into_expectations_path is None:
+        fold_errors.append(
+            "expansion fold-in: folded corpus and expectations targets are both required"
+        )
+        errors.extend(fold_errors)
+        return _fold_in_report("fail", [], [], fold_errors)
+    if not isinstance(corpus, dict) or not isinstance(expectations_doc, dict):
+        fold_errors.append("expansion fold-in: source corpus and expectations must be objects")
+        errors.extend(fold_errors)
+        return _fold_in_report("fail", [], [], fold_errors)
+
+    expansion_label = _optional_str(corpus.get("expansion_label"))
+    expansion_status = _optional_str(corpus.get("expansion_status"))
+    if not expansion_label:
+        fold_errors.append("expansion fold-in: check requires an expansion corpus")
+    if expansion_status != "folded_into_v0":
+        fold_errors.append(
+            "expansion fold-in: expansion_status must be folded_into_v0 for target check"
+        )
+
+    target_corpus = _read_json(folded_into_corpus_path, fold_errors, "folded_into_corpus")
+    target_expectations = _read_json(
+        folded_into_expectations_path,
+        fold_errors,
+        "folded_into_expectations",
+    )
+    source_case_ids = _ids_from_items(cases, "case_id")
+    source_expectation_ids = _ids_from_items(expectations, "case_id")
+    target_case_ids = _case_ids_from_doc(target_corpus, "folded_into_corpus", fold_errors)
+    target_expectation_ids = _expectation_ids_from_doc(
+        target_expectations,
+        "folded_into_expectations",
+        fold_errors,
+    )
+    missing_cases = sorted(source_case_ids - target_case_ids)
+    missing_expectations = sorted(source_expectation_ids - target_expectation_ids)
+    if missing_cases:
+        fold_errors.append(
+            "expansion fold-in: target corpus missing case_id values: "
+            + ", ".join(missing_cases)
+        )
+    if missing_expectations:
+        fold_errors.append(
+            "expansion fold-in: target expectations missing case_id values: "
+            + ", ".join(missing_expectations)
+        )
+
+    errors.extend(fold_errors)
+    status = "pass" if not fold_errors else "fail"
+    return _fold_in_report(status, missing_cases, missing_expectations, fold_errors)
 
 
 def _validate_cross_refs(
@@ -193,6 +332,64 @@ def _validate_cross_refs(
         errors.append("corpus: missing expectations for: " + ", ".join(missing_expectations))
     if dangling_expectations:
         errors.append("expectations: dangling case_id values: " + ", ".join(dangling_expectations))
+
+
+def _ids_from_items(items: list[Any], key: str) -> set[str]:
+    return {
+        item[key]
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get(key), str)
+    }
+
+
+def _case_ids_from_doc(doc: Any, label: str, errors: list[str]) -> set[str]:
+    if not isinstance(doc, dict):
+        errors.append(f"{label}: must be an object")
+        return set()
+    return _ids_from_array(doc.get("cases"), f"{label}: cases", errors)
+
+
+def _expectation_ids_from_doc(doc: Any, label: str, errors: list[str]) -> set[str]:
+    if not isinstance(doc, dict):
+        errors.append(f"{label}: must be an object")
+        return set()
+    return _ids_from_array(doc.get("expectations"), f"{label}: expectations", errors)
+
+
+def _ids_from_array(value: Any, label: str, errors: list[str]) -> set[str]:
+    if not isinstance(value, list) or not value:
+        errors.append(f"{label} must be a non-empty array")
+        return set()
+    ids: set[str] = set()
+    duplicates: set[str] = set()
+    for index, item in enumerate(value, 1):
+        if not isinstance(item, dict):
+            errors.append(f"{label}[{index}] must be an object")
+            continue
+        case_id = item.get("case_id")
+        if not isinstance(case_id, str):
+            errors.append(f"{label}[{index}] must include a case_id string")
+            continue
+        if case_id in ids:
+            duplicates.add(case_id)
+        ids.add(case_id)
+    if duplicates:
+        errors.append(f"{label} duplicate case_id values: " + ", ".join(sorted(duplicates)))
+    return ids
+
+
+def _fold_in_report(
+    status: str,
+    missing_cases: Sequence[str],
+    missing_expectations: Sequence[str],
+    fold_errors: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "missing_case_count": len(missing_cases),
+        "missing_expectation_count": len(missing_expectations),
+        "error_count": len(fold_errors),
+    }
 
 
 def _validate_split(
@@ -288,8 +485,11 @@ def _empty_coverage() -> dict[str, Any]:
         "defect_type": set(),
         "defect_type_counts": Counter(),
         "risk_class": set(),
+        "risk_class_counts": Counter(),
         "expected_gate": set(),
+        "expected_gate_counts": Counter(),
         "expected_verdict": set(),
+        "expected_verdict_counts": Counter(),
         "privacy_canary_count": 0,
         "peer_review_trap_count": 0,
         "held_out_case_ids": set(),
@@ -304,14 +504,65 @@ def _coverage_report(coverage: dict[str, Any]) -> dict[str, Any]:
     return {
         "defect_type": sorted(coverage["defect_type"]),
         "critical_defect_type_counts": critical_counts,
+        "defect_type_counts": _sorted_counter(coverage["defect_type_counts"]),
         "risk_class": sorted(coverage["risk_class"]),
+        "risk_class_counts": _sorted_counter(coverage["risk_class_counts"]),
         "expected_gate": sorted(coverage["expected_gate"]),
+        "expected_gate_counts": _sorted_counter(coverage["expected_gate_counts"]),
         "expected_verdict": sorted(coverage["expected_verdict"]),
+        "expected_verdict_counts": _sorted_counter(coverage["expected_verdict_counts"]),
         "privacy_canary_count": coverage["privacy_canary_count"],
         "peer_review_trap_count": coverage["peer_review_trap_count"],
         "held_out_case_count": len(coverage["held_out_case_ids"]),
         "min_critical_defect_cases": MIN_CRITICAL_DEFECT_CASES,
     }
+
+
+def _expansion_summary(
+    *,
+    corpus: Any,
+    expectations_doc: Any,
+    case_count: int,
+    expectation_count: int,
+    coverage: dict[str, Any],
+    fold_in: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(corpus, dict):
+        return {
+            "is_expansion": False,
+            "label": "",
+            "status": "",
+            "case_count": 0,
+            "expectation_count": 0,
+            "fold_in": fold_in,
+        }
+    label = _optional_str(corpus.get("expansion_label"))
+    status = _optional_str(corpus.get("expansion_status"))
+    expectations_label = ""
+    if isinstance(expectations_doc, dict):
+        expectations_label = _optional_str(expectations_doc.get("expansion_label"))
+    return {
+        "is_expansion": bool(label),
+        "label": label,
+        "expectations_label": expectations_label,
+        "status": status,
+        "folded_into_v0_claim": status == "folded_into_v0",
+        "case_count": case_count if label else 0,
+        "expectation_count": expectation_count if label else 0,
+        "defect_type_counts": _sorted_counter(coverage["defect_type_counts"]) if label else {},
+        "risk_class_counts": _sorted_counter(coverage["risk_class_counts"]) if label else {},
+        "expected_gate_counts": _sorted_counter(coverage["expected_gate_counts"]) if label else {},
+        "expected_verdict_counts": _sorted_counter(coverage["expected_verdict_counts"]) if label else {},
+        "fold_in": fold_in,
+    }
+
+
+def _sorted_counter(counter: Counter[str]) -> dict[str, int]:
+    return {key: counter[key] for key in sorted(counter)}
+
+
+def _optional_str(value: Any) -> str:
+    return value if isinstance(value, str) else ""
 
 
 def _validator(path: Path) -> jsonschema.Draft7Validator:

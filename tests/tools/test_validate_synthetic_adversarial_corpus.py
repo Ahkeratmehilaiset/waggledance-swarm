@@ -271,6 +271,41 @@ def test_validator_rejects_duplicate_case_ids(tmp_path: Path) -> None:
     assert "duplicate case_id" in result.stderr
 
 
+def test_validator_redacts_manual_case_id_error_values(tmp_path: Path) -> None:
+    corpus = _load_corpus()
+    expectations = _load_expectations()
+    leaked_case_id = "case:adv:path_escape:999_DO_NOT_LEAK"
+    broken = copy.deepcopy(corpus)
+    broken["cases"][0]["case_id"] = leaked_case_id
+    broken["cases"][1]["case_id"] = leaked_case_id
+    corpus_path = tmp_path / "redacted_duplicate_case_id.json"
+    expectations_path = tmp_path / "redacted_duplicate_case_id_expectations.json"
+    _write_json(corpus_path, broken)
+    _write_json(expectations_path, expectations)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(corpus_path),
+            "--expectations",
+            str(expectations_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "duplicate case_id" in combined
+    assert "missing expectations for" in combined
+    assert "case_id_digest:" in combined
+    assert leaked_case_id not in combined
+
+
 def test_validator_requires_at_least_one_agent_expected_to_catch(tmp_path: Path) -> None:
     broken = copy.deepcopy(_load_expectations())
     broken["expectations"][0]["should_claude_catch"] = False
@@ -515,7 +550,8 @@ def test_validator_rejects_folded_expansion_missing_from_v0(tmp_path: Path) -> N
     combined = result.stdout + result.stderr
     assert result.returncode == 1
     assert "expansion fold-in: target corpus missing case_id values" in combined
-    assert removed_case_id in combined
+    assert "case_id_digest:" in combined
+    assert removed_case_id not in combined
     assert str(target_path) not in combined
 
 

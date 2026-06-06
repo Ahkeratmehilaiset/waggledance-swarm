@@ -399,11 +399,10 @@ def _hex_promotion_acceptance_gate(raw: object) -> dict[str, Any]:
         HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
         errors,
     )
-    operator_gate_must_be_required = bool(1)
     _require_bool(
         raw,
         "operator_gate_required",
-        operator_gate_must_be_required,
+        _hex_operator_gate_required_expected(),
         errors,
     )
     _require_bool(raw, "operator_gate_cleared", False, errors)
@@ -481,6 +480,10 @@ def _hex_acceptance_failure(
         "reason": reason,
         "errors": list(errors or [reason]),
     }
+
+
+def _hex_operator_gate_required_expected() -> bool:
+    return True
 
 
 def _require_exact(

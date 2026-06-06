@@ -32,6 +32,10 @@ def _status(**overrides: object) -> dict:
     return status
 
 
+def _hex_operator_gate_required_expected() -> bool:
+    return True
+
+
 def _hex_acceptance(**overrides: object) -> dict:
     acceptance = {
         "schema_version": "hex_cell_promotion_acceptance.v0",
@@ -46,7 +50,7 @@ def _hex_acceptance(**overrides: object) -> dict:
         "evidence_digest_algorithm": "magma-jcs-subset-v1",
         "promotion_acceptance_status": "operator_gate_required",
         "required_next_gate": "solver_provenance_operator_activation",
-        "operator_gate_required": bool(1),
+        "operator_gate_required": _hex_operator_gate_required_expected(),
         "operator_gate_cleared": False,
         "runtime_authority_granted": False,
         "runtime_traffic_mutation_applied": False,

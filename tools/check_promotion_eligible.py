@@ -36,12 +36,6 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     evaluate_paths,
     load_charter,
 )
-from waggledance.core.solver_synthesis.hex_cell_competition import (  # noqa: E402
-    HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
-    HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
-    HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
-    HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
-)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
@@ -362,6 +356,13 @@ def _evaluate_promotion_eligibility(
 
 
 def _hex_promotion_acceptance_gate(raw: object) -> dict[str, Any]:
+    from waggledance.core.solver_synthesis.hex_cell_competition import (
+        HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+        HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+        HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+    )
+
     if raw is None:
         return {
             "ok": True,

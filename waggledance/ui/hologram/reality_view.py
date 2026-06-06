@@ -94,6 +94,7 @@ def build_panels_from_state(*,
                                   dream_curriculum: dict | None = None,
                                   hive_review_bundle: dict | None = None,
                                   vector_graph: dict | None = None,
+                                  builder_lane_jobs: list | None = None,
                                   ) -> tuple[RealityPanel, ...]:
     """Construct panels from real artifact data. Each input is
     OPTIONAL; missing inputs yield an explicit unavailable panel.
@@ -311,11 +312,37 @@ def build_panels_from_state(*,
             "self_model.cells[] missing",
         ))
 
-    # builder_lane_status (optional; placeholder for Phase U2)
-    panels.append(_unavailable_panel(
-        "builder_lane_status", "Builder lane status",
-        "builder_lane status not yet wired (Phase U2)",
-    ))
+    # builder_lane_status
+    if builder_lane_jobs:
+        by_status: dict[str, int] = {}
+        for job in builder_lane_jobs:
+            if not isinstance(job, dict):
+                continue
+            status = str(job.get("status") or "").strip()
+            if not status:
+                continue
+            by_status[status] = by_status.get(status, 0) + 1
+        if by_status:
+            items = [
+                {"status": status, "count": count}
+                for status, count in sorted(by_status.items())
+            ]
+            panels.append(RealityPanel(
+                panel_id="builder_lane_status",
+                title="Builder lane status",
+                available=True,
+                items=tuple(items),
+            ))
+        else:
+            panels.append(_unavailable_panel(
+                "builder_lane_status", "Builder lane status",
+                "builder_lane_jobs[] contains no status values",
+            ))
+    else:
+        panels.append(_unavailable_panel(
+            "builder_lane_status", "Builder lane status",
+            "builder_lane_jobs data missing",
+        ))
 
     return tuple(panels)
 

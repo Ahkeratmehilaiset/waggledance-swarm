@@ -77,7 +77,12 @@ WAKEUP_QUIET = 1800  # nothing pending; operator's ball or idle
 
 SnapshotFn = Callable[[int], Mapping[str, Any]]
 CommandRunner = Callable[[Sequence[str]], Any]
-PEER_AGENT = {"claude": "codex", "codex": "claude"}
+PEER_AGENT = {
+    "claude": "codex",
+    "codex": "claude",
+    "codex-lead-1": "codex-tools-1",
+    "codex-tools-1": "codex-lead-1",
+}
 SUBSTANTIVE_IDLE_MINUTES = 30.0
 PEER_ACTIVATION_RECENT_MINUTES = 30.0
 NON_SUBSTANTIVE_TYPES = {"heartbeat", "liveness"}

@@ -285,6 +285,27 @@ def test_scheduler_preflight_requires_source_event_in_durable_log() -> None:
         )
 
 
+def test_scheduler_preflight_rejects_event_mismatch_with_durable_payload() -> None:
+    source_event = _event(
+        operator_id="bridge:operator",
+        feedback_id="fb-durable",
+        query_class_hash="sha256:" + "a" * 64,
+    )
+    source = _bridge_event(source_event)
+    supplied_event = _event(
+        operator_id="bridge:operator",
+        feedback_id="fb-not-in-durable-log",
+        query_class_hash="sha256:" + "b" * 64,
+    )
+
+    with pytest.raises(OperatorFeedbackValidationError, match="durable source"):
+        build_operator_feedback_scheduler_preflight(
+            supplied_event,
+            source_bridge_event=source,
+            durable_bridge_events=[source],
+        )
+
+
 def test_scheduler_preflight_uses_durable_bridge_log_for_operator_rate_limit() -> None:
     current = _event(operator_id="bridge:operator", feedback_id="fb-011")
     source = _bridge_event(current)

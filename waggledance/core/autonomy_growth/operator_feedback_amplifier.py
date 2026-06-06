@@ -383,22 +383,44 @@ def build_operator_feedback_scheduler_preflight(
         durable_bridge_events=durable_bridge_events,
     )
 
-    event_with_identity = dict(event)
-    provided_operator_id = _clean_string(event_with_identity.get("operator_id"))
+    source_event_with_identity = _source_ops_feedback_event_from_bridge_payload(
+        source_bridge_event=source_bridge_event,
+        verified_operator_id=verified_operator_id,
+    )
+    source_normalized = validate_operator_feedback_event(
+        source_event_with_identity,
+        policy=policy,
+    )
+
+    supplied_event_with_identity = dict(event)
+    provided_operator_id = _clean_string(
+        supplied_event_with_identity.get("operator_id")
+    )
     if provided_operator_id != verified_operator_id:
         raise OperatorFeedbackValidationError(
             "operator_id must match verified bridge identity"
         )
-    event_with_identity["operator_id"] = verified_operator_id
+    supplied_event_with_identity["operator_id"] = verified_operator_id
+    supplied_normalized = validate_operator_feedback_event(
+        supplied_event_with_identity,
+        policy=policy,
+    )
+    if supplied_normalized != source_normalized:
+        mismatched = sorted(
+            field
+            for field in sorted(source_normalized.keys() | supplied_normalized.keys())
+            if source_normalized.get(field) != supplied_normalized.get(field)
+        )
+        raise OperatorFeedbackValidationError(
+            "ops_feedback event must match durable source payload: "
+            + ", ".join(mismatched)
+        )
 
     durable_prior_events = _extract_durable_ops_feedback_events(
         durable_bridge_events=durable_bridge_events,
         exclude_source_digest=source_digest,
     )
-    normalized = validate_operator_feedback_event(
-        event_with_identity,
-        policy=policy,
-    )
+    normalized = source_normalized
     submitted = _parse_utc(normalized["submitted_at_utc"])
     window_start = submitted - timedelta(hours=1)
     rate_counts = _count_prior_fast_track_feedback(
@@ -409,7 +431,7 @@ def build_operator_feedback_scheduler_preflight(
         policy=policy,
     )
     action_plan = amplify_operator_feedback(
-        event_with_identity,
+        source_event_with_identity,
         prior_events=durable_prior_events,
         policy=policy,
     )
@@ -581,6 +603,44 @@ def _extract_durable_ops_feedback_events(
                 events.append(nested)
                 break
     return events
+
+
+def _source_ops_feedback_event_from_bridge_payload(
+    *,
+    source_bridge_event: Mapping[str, Any],
+    verified_operator_id: str,
+) -> Mapping[str, Any]:
+    payload = source_bridge_event.get("payload")
+    if not isinstance(payload, Mapping):
+        raise OperatorFeedbackValidationError(
+            "source bridge event payload must be a mapping"
+        )
+
+    source_event: Mapping[str, Any] | None = None
+    if payload.get("event_type") == OPS_FEEDBACK_EVENT_TYPE:
+        source_event = payload
+    else:
+        for key in ("ops_feedback", "feedback_event"):
+            nested = payload.get(key)
+            if (
+                isinstance(nested, Mapping)
+                and nested.get("event_type") == OPS_FEEDBACK_EVENT_TYPE
+            ):
+                source_event = nested
+                break
+    if source_event is None:
+        raise OperatorFeedbackValidationError(
+            "source bridge event payload must contain ops_feedback"
+        )
+
+    event_with_identity = dict(source_event)
+    provided_operator_id = _clean_string(event_with_identity.get("operator_id"))
+    if provided_operator_id != verified_operator_id:
+        raise OperatorFeedbackValidationError(
+            "source ops_feedback operator_id must match verified bridge identity"
+        )
+    event_with_identity["operator_id"] = verified_operator_id
+    return event_with_identity
 
 
 def _probe_intent_for(

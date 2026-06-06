@@ -83,6 +83,9 @@ ANSWER_STATUS_FRAGMENTS = (
     "verified",
 )
 DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
+DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
+PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
+HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
 
 
 class BridgeNextActionError(ValueError):
@@ -124,6 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--production-idle-warn-minutes",
+        type=float,
+        default=DEFAULT_PRODUCTION_IDLE_WARN_MINUTES,
+        help=(
+            "Report agents whose latest non-heartbeat bridge activity is older "
+            "than this many minutes while the selected event tail shows no "
+            "new production activity."
+        ),
+    )
+    parser.add_argument(
         "--now",
         default=None,
         help="Override current UTC time for request-age evaluation.",
@@ -156,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             now_utc=now_utc,
             open_request_max_age_hours=args.open_request_max_age_hours,
             stale_report_max_age_hours=args.stale_report_max_age_hours,
+            production_idle_warn_minutes=args.production_idle_warn_minutes,
         )
     except (BridgeNextActionError, WorkQueueError) as exc:
         if isinstance(exc, BridgeNextActionError):
@@ -239,6 +253,9 @@ def recommend_next_action(
     stale_report_max_age_hours: float | None = (
         DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS
     ),
+    production_idle_warn_minutes: float | None = (
+        DEFAULT_PRODUCTION_IDLE_WARN_MINUTES
+    ),
 ) -> dict[str, Any]:
     """Return a deterministic next-action recommendation for ``agent``."""
     if not AGENT_ID_PATTERN.fullmatch(agent):
@@ -277,6 +294,20 @@ def recommend_next_action(
                 "errors": ["stale_report_max_age_hours must be positive"],
             }
         )
+    if (
+        production_idle_warn_minutes is not None
+        and (
+            not math.isfinite(production_idle_warn_minutes)
+            or production_idle_warn_minutes <= 0
+        )
+    ):
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": ["production_idle_warn_minutes must be positive"],
+            }
+        )
 
     own_claims = [claim for claim in claims if claim.agent == agent]
     foreign_write_claims = [
@@ -296,6 +327,11 @@ def recommend_next_action(
             max_age_hours=stale_report_max_age_hours,
         )
     )
+    production_liveness = _production_liveness_report(
+        events=events,
+        now_utc=effective_now,
+        idle_warn_minutes=production_idle_warn_minutes,
+    )
 
     if own_claims:
         claim = own_claims[0]
@@ -311,6 +347,7 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            production_liveness=production_liveness,
         )
     if open_requests:
         request = open_requests[-1]
@@ -329,6 +366,7 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            production_liveness=production_liveness,
             request=request,
         )
     if foreign_write_claims:
@@ -346,6 +384,7 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            production_liveness=production_liveness,
         )
     return _report(
         agent=agent,
@@ -359,6 +398,7 @@ def recommend_next_action(
         stale_open_requests=reported_stale_open_requests,
         archived_stale_open_requests=archived_stale_open_requests,
         foreign_write_claims=foreign_write_claims,
+        production_liveness=production_liveness,
     )
 
 
@@ -591,6 +631,127 @@ def _latest_agent_metadata(
     return {}
 
 
+def _production_liveness_report(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    now_utc: datetime,
+    idle_warn_minutes: float | None,
+) -> dict[str, Any]:
+    if idle_warn_minutes is None:
+        return {}
+
+    states: dict[str, dict[str, Any]] = {}
+    for event in events:
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
+        event_agent = _event_agent(event)
+        if event_agent in PRODUCTION_LIVENESS_IGNORED_AGENTS:
+            continue
+        state = states.setdefault(
+            event_agent,
+            {
+                "first_event_ts": event_ts,
+                "last_event_ts": event_ts,
+                "last_heartbeat_ts": None,
+                "last_activity_ts": None,
+                "last_activity_type": "",
+                "last_activity_status": "",
+                "last_activity_task_id": "",
+            },
+        )
+        if event_ts < state["first_event_ts"]:
+            state["first_event_ts"] = event_ts
+        if event_ts > state["last_event_ts"]:
+            state["last_event_ts"] = event_ts
+        if _event_type(event) in HEARTBEAT_ONLY_EVENT_TYPES:
+            if (
+                state["last_heartbeat_ts"] is None
+                or event_ts > state["last_heartbeat_ts"]
+            ):
+                state["last_heartbeat_ts"] = event_ts
+            continue
+        if state["last_activity_ts"] is None or event_ts > state["last_activity_ts"]:
+            state["last_activity_ts"] = event_ts
+            state["last_activity_type"] = _event_type(event)
+            state["last_activity_status"] = _event_status(event)
+            state["last_activity_task_id"] = _task_id(event)
+
+    stalled: list[dict[str, Any]] = []
+    for event_agent, state in states.items():
+        first_event_ts = state["first_event_ts"]
+        last_heartbeat_ts = state["last_heartbeat_ts"]
+        last_activity_ts = state["last_activity_ts"]
+        if last_activity_ts is None:
+            observed_minutes = _elapsed_minutes(now_utc, first_event_ts)
+            if observed_minutes < idle_warn_minutes:
+                continue
+            stalled.append(
+                {
+                    "agent": event_agent,
+                    "reason": "heartbeat_only_in_selected_events",
+                    "first_observed_ts_utc": _format_utc(first_event_ts),
+                    "last_heartbeat_ts_utc": _format_utc(last_heartbeat_ts),
+                    "observed_minutes": _round_minutes(observed_minutes),
+                }
+            )
+            continue
+
+        idle_minutes = _elapsed_minutes(now_utc, last_activity_ts)
+        if idle_minutes < idle_warn_minutes:
+            continue
+        heartbeat_only = (
+            last_heartbeat_ts is not None and last_heartbeat_ts > last_activity_ts
+        )
+        reason = (
+            "heartbeat_only_since_activity"
+            if heartbeat_only
+            else "no_activity_since_last_event"
+        )
+        stalled.append(
+            {
+                "agent": event_agent,
+                "reason": reason,
+                "last_activity_ts_utc": _format_utc(last_activity_ts),
+                "last_activity_type": state["last_activity_type"],
+                "last_activity_status": state["last_activity_status"],
+                "last_activity_task_id": state["last_activity_task_id"],
+                "last_heartbeat_ts_utc": _format_utc(last_heartbeat_ts),
+                "idle_minutes": _round_minutes(idle_minutes),
+                "heartbeat_only_since_activity": heartbeat_only,
+            }
+        )
+
+    if not stalled:
+        return {}
+    stalled.sort(
+        key=lambda item: (
+            float(item.get("idle_minutes") or item.get("observed_minutes") or 0.0),
+            str(item.get("agent") or ""),
+        ),
+        reverse=True,
+    )
+    return {
+        "idle_warn_minutes": float(idle_warn_minutes),
+        "stalled_agent_count": len(stalled),
+        "stalled_agents": stalled,
+    }
+
+
+def _elapsed_minutes(later: datetime, earlier: datetime) -> float:
+    return max(0.0, (later - earlier).total_seconds() / 60.0)
+
+
+def _round_minutes(value: float) -> float:
+    return round(value, 3)
+
+
+def _format_utc(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _claim_metadata(claim: Claim) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "agent": claim.agent,
@@ -658,6 +819,7 @@ def _report(
     stale_open_requests: Sequence[Mapping[str, Any]],
     archived_stale_open_requests: Sequence[Mapping[str, Any]],
     foreign_write_claims: Sequence[Claim],
+    production_liveness: Mapping[str, Any],
     request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     stale_task_ids = _unique_task_ids(stale_open_requests)
@@ -694,6 +856,8 @@ def _report(
         payload["archived_stale_incoming_event_count"] = len(
             archived_stale_open_requests
         )
+    if production_liveness:
+        payload["production_liveness"] = dict(production_liveness)
     if request is not None:
         incoming = {
             "agent": _event_agent(request),
@@ -755,6 +919,11 @@ def _print_human(report: Mapping[str, Any]) -> None:
         )
         if task_ids:
             print(f"archived_stale_incoming_task_ids: {task_ids}")
+    liveness = report.get("production_liveness")
+    if isinstance(liveness, Mapping):
+        stalled_count = int(liveness.get("stalled_agent_count", 0) or 0)
+        if stalled_count:
+            print(f"production_liveness_stalled_agent_count: {stalled_count}")
     print(f"summary: {report.get('summary', '')}")
 
 

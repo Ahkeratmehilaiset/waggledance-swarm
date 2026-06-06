@@ -13,16 +13,16 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 log = logging.getLogger(__name__)
 
 # Conditional import of MemoryRecord: try Agent 1's domain module first,
 # fall back to a compatible local dataclass if it does not exist yet.
 try:
-    from waggledance.core.domain.memory_record import MemoryRecord
+    from waggledance.core.domain.memory_record import MemoryRecord, normalize_palace_path
 except ImportError:
-    from dataclasses import dataclass
+    from dataclasses import dataclass, field
 
     @dataclass
     class MemoryRecord:  # type: ignore[no-redef]
@@ -35,6 +35,10 @@ except ImportError:
         agent_id: str | None
         created_at: float
         ttl_seconds: int | None
+        metadata: dict[str, Any] = field(default_factory=dict)
+
+    def normalize_palace_path(path: str) -> str:
+        return "/".join(part.strip().strip("/") for part in path.split("/") if part.strip())
 
 if TYPE_CHECKING:
     from waggledance.core.ports.vector_store_port import VectorStorePort
@@ -62,6 +66,7 @@ class ChromaMemoryRepository:
         limit: int = 5,
         language: str = "en",
         tags: list[str] | None = None,
+        palace_path: str | None = None,
     ) -> list[MemoryRecord]:
         """Search via vector store, convert results to MemoryRecord.
 
@@ -69,9 +74,17 @@ class ChromaMemoryRepository:
         to narrow results before scoring. Language is stored in metadata
         but does not currently filter results (bilingual records are common).
         """
-        where: dict | None = None
+        where_parts: list[dict] = []
         if tags:
-            where = {"tags": {"$in": tags}}
+            where_parts.append({"tags": {"$in": tags}})
+        if palace_path:
+            where_parts.append({"palace_path": normalize_palace_path(palace_path)})
+
+        where: dict | None = None
+        if len(where_parts) == 1:
+            where = where_parts[0]
+        elif where_parts:
+            where = {"$and": where_parts}
 
         results = await self._vector_store.query(
             text=query,
@@ -94,6 +107,7 @@ class ChromaMemoryRepository:
         tags_serialised = json.dumps(record.tags) if record.tags else "[]"
 
         metadata: dict = {
+            **record.metadata,
             "source": record.source,
             "confidence": record.confidence,
             "tags": tags_serialised,
@@ -170,4 +184,5 @@ class ChromaMemoryRepository:
             agent_id=agent_id,
             created_at=float(meta.get("created_at", 0.0)),
             ttl_seconds=meta.get("ttl_seconds"),
+            metadata=dict(meta),
         )

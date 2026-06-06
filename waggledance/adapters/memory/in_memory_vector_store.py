@@ -106,10 +106,20 @@ class InMemoryVectorStore:
           - Direct equality: {"key": "value"}
           - $in operator:    {"key": {"$in": [...]}}
           - $eq operator:    {"key": {"$eq": "value"}}
+          - $and operator:   {"$and": [{...}, {...}]}
 
         Unrecognised operators are treated as non-matching.
         """
         for key, condition in where.items():
+            if key == "$and":
+                if not isinstance(condition, list):
+                    return False
+                return all(
+                    isinstance(part, dict)
+                    and InMemoryVectorStore._matches_where(metadata, part)
+                    for part in condition
+                )
+
             meta_value = metadata.get(key)
 
             if isinstance(condition, dict):

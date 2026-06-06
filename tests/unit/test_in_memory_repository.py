@@ -17,6 +17,7 @@ def _make_record(
     tags: list[str] | None = None,
     agent_id: str | None = None,
     ttl_seconds: int | None = None,
+    metadata: dict | None = None,
 ) -> MemoryRecord:
     return MemoryRecord(
         id=id,
@@ -28,6 +29,7 @@ def _make_record(
         agent_id=agent_id,
         created_at=time.time(),
         ttl_seconds=ttl_seconds,
+        metadata=metadata or {},
     )
 
 
@@ -56,6 +58,36 @@ class TestInMemoryRepositoryStoreAndSearch:
         results = await stub_memory_repo.search("varroa", tags=["beekeeping"])
         assert len(results) == 1
         assert results[0].id == "tagged"
+
+    @pytest.mark.asyncio
+    async def test_search_with_palace_path_filters_room_and_descendants(
+        self, stub_memory_repo: InMemoryRepository
+    ) -> None:
+        root = _make_record(
+            id="root",
+            content="runtime routing note",
+            metadata={"palace_path": "systems/runtime"},
+        )
+        child = _make_record(
+            id="child",
+            content="runtime routing detail",
+            metadata={"palace_path": "systems/runtime/routing"},
+        )
+        other = _make_record(
+            id="other",
+            content="runtime routing unrelated",
+            metadata={"palace_path": "systems/design"},
+        )
+        await stub_memory_repo.store(root)
+        await stub_memory_repo.store(child)
+        await stub_memory_repo.store(other)
+
+        results = await stub_memory_repo.search(
+            "runtime",
+            palace_path="systems/runtime",
+        )
+
+        assert {r.id for r in results} == {"root", "child"}
 
     @pytest.mark.asyncio
     async def test_store_correction_stores_entry(

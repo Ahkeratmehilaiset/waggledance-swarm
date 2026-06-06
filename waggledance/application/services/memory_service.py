@@ -8,7 +8,11 @@ import time
 import uuid
 
 from waggledance.core.domain.events import DomainEvent, EventType
-from waggledance.core.domain.memory_record import MemoryRecord
+from waggledance.core.domain.memory_record import (
+    MemoryLocation,
+    MemoryRecord,
+    palace_metadata_for,
+)
 from waggledance.core.ports.event_bus_port import EventBusPort
 from waggledance.core.ports.memory_repository_port import MemoryRepositoryPort
 from waggledance.core.ports.vector_store_port import VectorStorePort
@@ -43,6 +47,8 @@ class MemoryService:
         tags: list[str] | None = None,
         agent_id: str | None = None,
         intent: str = "chat",
+        metadata: dict | None = None,
+        palace_location: MemoryLocation | str | None = None,
     ) -> MemoryRecord:
         """Store a new fact in persistent memory and vector store.
 
@@ -50,6 +56,9 @@ class MemoryService:
         the correct cell-local FAISS index. Failure does not block
         the global ChromaDB path.
         """
+        record_metadata = dict(metadata or {})
+        record_metadata.update(palace_metadata_for(palace_location))
+
         record = MemoryRecord(
             id=str(uuid.uuid4()),
             content=content,
@@ -60,18 +69,22 @@ class MemoryService:
             agent_id=agent_id,
             created_at=time.time(),
             ttl_seconds=None,
+            metadata=record_metadata,
         )
 
         await self._memory.store(record)
 
+        vector_metadata = {
+            **record.metadata,
+            "source": record.source,
+            "agent_id": record.agent_id or "",
+            "tags": ",".join(record.tags),
+        }
+
         await self._vector_store.upsert(
             id=record.id,
             text=record.content,
-            metadata={
-                "source": record.source,
-                "agent_id": record.agent_id or "",
-                "tags": ",".join(record.tags),
-            },
+            metadata=vector_metadata,
             collection="waggle_memory",
         )
 
@@ -92,6 +105,7 @@ class MemoryService:
                             vector=vec,
                             intent=intent,
                             metadata={
+                                **record.metadata,
                                 "source": record.source,
                                 "agent_id": record.agent_id or "",
                             },
@@ -133,13 +147,13 @@ class MemoryService:
         query: str,
         language: str = "en",
         limit: int = 5,
+        palace_path: str | None = None,
     ) -> list[MemoryRecord]:
         """Search memory for relevant context."""
-        results = await self._memory.search(
-            query=query,
-            limit=limit,
-            language=language,
-        )
+        search_kwargs = {"query": query, "limit": limit, "language": language}
+        if palace_path is not None:
+            search_kwargs["palace_path"] = palace_path
+        results = await self._memory.search(**search_kwargs)
 
         if results:
             await self._event_bus.publish(DomainEvent(

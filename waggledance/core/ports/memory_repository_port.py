@@ -14,6 +14,7 @@ class MemoryRepositoryPort(Protocol):
         limit: int = 5,
         language: str = "en",
         tags: list[str] | None = None,
+        palace_path: str | None = None,
     ) -> list[MemoryRecord]: ...
 
     async def store(self, record: MemoryRecord) -> None: ...

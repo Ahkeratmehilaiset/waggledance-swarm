@@ -58,7 +58,8 @@ class TestDTOFields:
     def test_memory_record_fields(self):
         fields = {f.name for f in MemoryRecord.__dataclass_fields__.values()}
         expected = {"id", "content", "content_fi", "source", "confidence",
-                    "tags", "agent_id", "created_at", "ttl_seconds"}
+                    "tags", "agent_id", "created_at", "ttl_seconds",
+                    "metadata"}
         assert fields == expected
 
     def test_trust_signals_fields(self):
@@ -135,3 +136,4 @@ class TestPortSignatures:
         assert "limit" in params
         assert "language" in params
         assert "tags" in params
+        assert "palace_path" in params

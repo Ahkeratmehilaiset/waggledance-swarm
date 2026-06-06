@@ -19,6 +19,7 @@ def _make_record(
     tags: list[str] | None = None,
     agent_id: str | None = "agent-A",
     ttl_seconds: int | None = None,
+    metadata: dict | None = None,
 ) -> MemoryRecord:
     return MemoryRecord(
         id=id,
@@ -30,6 +31,7 @@ def _make_record(
         agent_id=agent_id,
         created_at=time.time(),
         ttl_seconds=ttl_seconds,
+        metadata=metadata or {},
     )
 
 
@@ -74,6 +76,24 @@ class TestChromaMemoryRepositoryStore:
         assert isinstance(metadata["tags"], str)
         assert json.loads(metadata["tags"]) == ["bee", "honey"]
 
+    @pytest.mark.asyncio
+    async def test_store_preserves_palace_metadata(self) -> None:
+        vs = _mock_vector_store()
+        repo = ChromaMemoryRepository(vector_store=vs)
+        record = _make_record(
+            metadata={
+                "palace_path": "systems/runtime",
+                "palace_wing": "systems",
+                "palace_room": "runtime",
+            }
+        )
+
+        await repo.store(record)
+
+        metadata = vs.upsert.call_args.kwargs["metadata"]
+        assert metadata["palace_path"] == "systems/runtime"
+        assert metadata["palace_wing"] == "systems"
+
 
 class TestChromaMemoryRepositorySearch:
     """search() delegates to vector_store.query() and converts results."""
@@ -117,6 +137,35 @@ class TestChromaMemoryRepositorySearch:
 
         call_kwargs = vs.query.call_args.kwargs
         assert call_kwargs["where"] == {"tags": {"$in": ["beekeeping", "varroa"]}}
+
+    @pytest.mark.asyncio
+    async def test_search_with_palace_path_passes_where_filter(self) -> None:
+        vs = _mock_vector_store()
+        repo = ChromaMemoryRepository(vector_store=vs)
+
+        await repo.search("query", palace_path="systems/runtime")
+
+        call_kwargs = vs.query.call_args.kwargs
+        assert call_kwargs["where"] == {"palace_path": "systems/runtime"}
+
+    @pytest.mark.asyncio
+    async def test_search_with_tags_and_palace_path_combines_filters(self) -> None:
+        vs = _mock_vector_store()
+        repo = ChromaMemoryRepository(vector_store=vs)
+
+        await repo.search(
+            "query",
+            tags=["beekeeping"],
+            palace_path="systems/runtime",
+        )
+
+        call_kwargs = vs.query.call_args.kwargs
+        assert call_kwargs["where"] == {
+            "$and": [
+                {"tags": {"$in": ["beekeeping"]}},
+                {"palace_path": "systems/runtime"},
+            ]
+        }
 
     @pytest.mark.asyncio
     async def test_empty_query_results_return_empty_list(self) -> None:

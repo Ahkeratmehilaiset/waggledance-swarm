@@ -1,7 +1,7 @@
 """Use case: store a new fact in memory."""
 
 from waggledance.application.services.memory_service import MemoryService
-from waggledance.core.domain.memory_record import MemoryRecord
+from waggledance.core.domain.memory_record import MemoryLocation, MemoryRecord
 
 
 async def store_memory(
@@ -9,6 +9,14 @@ async def store_memory(
     source: str,
     memory_service: MemoryService,
     tags: list[str] | None = None,
+    metadata: dict | None = None,
+    palace_location: MemoryLocation | str | None = None,
 ) -> MemoryRecord:
     """Ingest a new fact into persistent memory."""
-    return await memory_service.ingest(content=content, source=source, tags=tags)
+    return await memory_service.ingest(
+        content=content,
+        source=source,
+        tags=tags,
+        metadata=metadata,
+        palace_location=palace_location,
+    )

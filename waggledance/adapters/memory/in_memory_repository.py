@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 log = logging.getLogger(__name__)
 
 # Conditional import of MemoryRecord: try Agent 1's domain module first,
 # fall back to a compatible local dataclass if it does not exist yet.
 try:
-    from waggledance.core.domain.memory_record import MemoryRecord
+    from waggledance.core.domain.memory_record import (
+        MemoryRecord,
+        metadata_matches_palace_path,
+    )
 except ImportError:
-    from dataclasses import dataclass
+    from dataclasses import dataclass, field
 
     @dataclass
     class MemoryRecord:  # type: ignore[no-redef]
@@ -33,6 +37,11 @@ except ImportError:
         agent_id: str | None
         created_at: float
         ttl_seconds: int | None
+        metadata: dict[str, Any] = field(default_factory=dict)
+
+    def metadata_matches_palace_path(metadata: dict[str, Any], palace_path: str) -> bool:
+        actual = metadata.get("palace_path")
+        return isinstance(actual, str) and actual == palace_path
 
 
 class InMemoryRepository:
@@ -53,6 +62,7 @@ class InMemoryRepository:
         limit: int = 5,
         language: str = "en",
         tags: list[str] | None = None,
+        palace_path: str | None = None,
     ) -> list[MemoryRecord]:
         """Substring-based search across stored MemoryRecords.
 
@@ -75,6 +85,10 @@ class InMemoryRepository:
             # Tag filtering
             if tags is not None:
                 if not any(t in record.tags for t in tags):
+                    continue
+
+            if palace_path is not None:
+                if not metadata_matches_palace_path(record.metadata, palace_path):
                     continue
 
             # Build searchable text from both language fields

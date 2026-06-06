@@ -6,7 +6,7 @@ import pytest
 
 from waggledance.application.services.memory_service import MemoryService
 from waggledance.core.domain.events import EventType
-from waggledance.core.domain.memory_record import MemoryRecord
+from waggledance.core.domain.memory_record import MemoryLocation, MemoryRecord
 
 
 class TestMemoryServiceIngest:
@@ -106,6 +106,32 @@ class TestMemoryServiceIngest:
         assert record.created_at > 0
 
     @pytest.mark.asyncio
+    async def test_ingest_with_palace_location_adds_metadata(
+        self, mock_vector_store, mock_memory_repo, mock_event_bus
+    ):
+        svc = MemoryService(mock_vector_store, mock_memory_repo, mock_event_bus)
+        location = MemoryLocation(
+            wing="systems",
+            room="runtime",
+            assigned_by="rule",
+            rule_id="memory-palace-pr1",
+        )
+
+        record = await svc.ingest(
+            "palace fact",
+            source="api",
+            palace_location=location,
+            metadata={"custom": "kept"},
+        )
+
+        assert record.metadata["custom"] == "kept"
+        assert record.metadata["palace_path"] == "systems/runtime"
+        stored = mock_memory_repo.store.call_args[0][0]
+        assert stored.metadata["palace_rule_id"] == "memory-palace-pr1"
+        vector_metadata = mock_vector_store.upsert.call_args.kwargs["metadata"]
+        assert vector_metadata["palace_path"] == "systems/runtime"
+
+    @pytest.mark.asyncio
     async def test_hybrid_mirror_status_success(
         self, mock_vector_store, mock_memory_repo, mock_event_bus
     ):
@@ -177,6 +203,17 @@ class TestMemoryServiceRetrieve:
         await svc.retrieve_context("test", limit=10)
         mock_memory_repo.search.assert_awaited_once_with(
             query="test", limit=10, language="en"
+        )
+
+    @pytest.mark.asyncio
+    async def test_retrieve_with_palace_path_delegates_filter(
+        self, mock_vector_store, mock_memory_repo, mock_event_bus
+    ):
+        svc = MemoryService(mock_vector_store, mock_memory_repo, mock_event_bus)
+        await svc.retrieve_context("test", palace_path="systems/runtime")
+        mock_memory_repo.search.assert_awaited_once_with(
+            query="test", limit=5, language="en",
+            palace_path="systems/runtime",
         )
 
     @pytest.mark.asyncio

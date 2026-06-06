@@ -153,3 +153,31 @@ class TestInMemoryVectorStoreEdgeCases:
         )
         assert len(results) == 1
         assert results[0]["id"] == "x"
+
+    @pytest.mark.asyncio
+    async def test_where_filter_and_operator(
+        self, stub_vector_store: InMemoryVectorStore
+    ) -> None:
+        await stub_vector_store.upsert(
+            id="x",
+            text="runtime note",
+            metadata={"status": "active", "palace_path": "systems/runtime"},
+        )
+        await stub_vector_store.upsert(
+            id="y",
+            text="runtime note",
+            metadata={"status": "archived", "palace_path": "systems/runtime"},
+        )
+
+        results = await stub_vector_store.query(
+            "runtime",
+            where={
+                "$and": [
+                    {"status": {"$eq": "active"}},
+                    {"palace_path": "systems/runtime"},
+                ]
+            },
+        )
+
+        assert len(results) == 1
+        assert results[0]["id"] == "x"

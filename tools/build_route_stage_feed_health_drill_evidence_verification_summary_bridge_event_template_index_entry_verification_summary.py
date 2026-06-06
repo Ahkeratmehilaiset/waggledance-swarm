@@ -90,6 +90,7 @@ _FORBIDDEN_PATH_KEYS = frozenset(
 _FORBIDDEN_AUTHORITY_CONTAINER_KEYS = frozenset(
     {
         "operator_boundary",
+        "reviewer_ownership",
         "release_authority",
         "approval_authority",
         "runtime_authority",

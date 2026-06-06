@@ -285,6 +285,26 @@ def test_route_stage_feed_health_index_entry_verification_summary_rejects_nested
     assert summary["release_decision_made"] is False
 
 
+def test_route_stage_feed_health_index_entry_verification_summary_rejects_reviewer_ownership_container() -> None:
+    report = _index_entry_verification_report()
+    report["reviewer_ownership"] = {"manual_review_required": False}
+
+    summary = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary(
+        verification_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-template-index-verification",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_forbidden_authority_container:reviewer_ownership" in (
+        summary["blockers"]
+    )
+    assert summary["operator_boundary"]["verification_report_boundary_ok"] is False
+    assert summary["approval_granted"] is False
+    assert summary["automatic_release_decision"] is False
+
+
 def test_route_stage_feed_health_index_entry_verification_summary_rejects_raw_payload_key() -> None:
     report = _index_entry_verification_report()
     report["raw_payload"] = {"artifact": "inline-json"}

@@ -379,7 +379,10 @@ def _guard_report_contract_blockers(report: Mapping[str, Any]) -> list[str]:
         != COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA
     ):
         blockers.append("guard_report_observability_schema_mismatch")
-    if report.get("runtime_measured_claim_safe") is True:
+    runtime_measured_claim_safe = report.get("runtime_measured_claim_safe")
+    if not isinstance(runtime_measured_claim_safe, bool):
+        blockers.append("guard_report_runtime_measured_claim_safe_not_bool")
+    if runtime_measured_claim_safe is True:
         blockers.extend(_runtime_measured_claim_blockers(_mapping(observability)))
     return blockers
 

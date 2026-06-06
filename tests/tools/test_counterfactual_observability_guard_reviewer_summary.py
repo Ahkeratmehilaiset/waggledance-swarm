@@ -345,6 +345,40 @@ def test_counterfactual_guard_reviewer_summary_rejects_claim_inconsistent_report
     assert summary["release_decision_made"] is False
 
 
+def test_counterfactual_guard_reviewer_summary_rejects_missing_runtime_claim_flag() -> None:
+    report = _guard_report()
+    del report["runtime_measured_claim_safe"]
+
+    summary = build_counterfactual_observability_guard_reviewer_summary(
+        guard_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:counterfactual-observability-guard",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "guard_report_runtime_measured_claim_safe_not_bool" in summary["blockers"]
+    assert summary["operator_boundary"]["guard_report_boundary_ok"] is False
+
+
+def test_counterfactual_guard_reviewer_summary_rejects_non_bool_runtime_claim_flag() -> None:
+    report = _guard_report()
+    report["runtime_measured_claim_safe"] = "false"
+
+    summary = build_counterfactual_observability_guard_reviewer_summary(
+        guard_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:counterfactual-observability-guard",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "guard_report_runtime_measured_claim_safe_not_bool" in summary["blockers"]
+    assert summary["counterfactual_observability_guard"][
+        "runtime_measured_claim_safe"
+    ] is False
+
+
 def _write_temp_json(directory: Path, name: str, payload: object) -> str:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name

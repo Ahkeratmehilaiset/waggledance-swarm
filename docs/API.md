@@ -394,6 +394,27 @@ only local JSON packages using
 external-write flags, and reports `network_access_performed=false`. It does not
 call Prometheus, Alertmanager, `/api/ops`, or any mutating endpoint.
 
+`tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template.py`
+can render a verified route-stage feed-health drill evidence summary as
+template-only bridge `handoff` JSON. The local template keeps
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`, and
+`runtime_controls_added=false`; it does not append bridge events.
+`tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py`
+can bind that verified summary and bridge-event template by recording digest,
+size, schema, source-contract, rebuilt-template, and bridge-event-schema
+checks while keeping the same no-payload/no-path/no-transport/no-approval
+boundary. `tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py`
+can verify the local index entry by recomputing `digest_checks`, size checks,
+`schema_version_checks`, `source_contract_check`,
+`rebuilt_index_entry_check`, and `bridge_event_schema_check` from explicit
+local summary and bridge-event template artifacts while keeping
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`,
+`runtime_controls_added=false`, and `network_access_performed=false`.
+
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager

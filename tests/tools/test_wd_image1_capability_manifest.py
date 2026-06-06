@@ -242,6 +242,12 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["latency_panel_templates_visible"] is True
     assert smoke["prometheus_alertmanager_feed_supported"] is True
     assert smoke["prometheus_alertmanager_feed_provider_configured"] is True
+    assert (
+        smoke[
+            "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_supported"
+        ]
+        is True
+    )
     assert smoke["latency_feed_state_visible"] is True
     assert smoke["alert_thresholds_documented"] is True
     assert smoke["runbook_path"] == ("docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md")
@@ -1044,6 +1050,10 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
         "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template.py",
+        "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
+        "tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
+        "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1454,6 +1464,18 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verifier_supported"
+        ]
+        is True
+    )
     verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
         "drill_evidence_verifier_smoke"
     ]
@@ -1471,6 +1493,48 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert template_smoke["artifact_payloads_included"] is False
     assert template_smoke["local_paths_recorded"] is False
     assert template_smoke["network_access_performed"] is False
+    template_index_entry_smoke = verifier_smoke[
+        "verification_summary_bridge_event_template_index_entry_smoke"
+    ]
+    assert template_index_entry_smoke["ok"] is True
+    assert template_index_entry_smoke["template_only"] is True
+    assert template_index_entry_smoke["manual_review_required"] is True
+    assert template_index_entry_smoke["source_contract_check"] == "match"
+    assert template_index_entry_smoke["rebuilt_template_check"] == "match"
+    assert template_index_entry_smoke["direct_bridge_write_performed"] is False
+    assert template_index_entry_smoke["artifact_payloads_included"] is False
+    assert template_index_entry_smoke["local_paths_recorded"] is False
+    assert template_index_entry_smoke["network_access_performed"] is False
+    template_index_entry_verification_smoke = verifier_smoke[
+        "verification_summary_bridge_event_template_index_entry_verification_smoke"
+    ]
+    assert template_index_entry_verification_smoke["ok"] is True
+    assert (
+        template_index_entry_verification_smoke["source_contract_check"] == "match"
+    )
+    assert (
+        template_index_entry_verification_smoke["rebuilt_index_entry_check"]
+        == "match"
+    )
+    assert (
+        template_index_entry_verification_smoke["bridge_event_schema_check"]
+        == "match"
+    )
+    assert set(template_index_entry_verification_smoke["digest_checks"].values()) == {
+        "match"
+    }
+    assert (
+        template_index_entry_verification_smoke["direct_bridge_write_performed"]
+        is False
+    )
+    assert (
+        template_index_entry_verification_smoke["artifact_payloads_included"]
+        is False
+    )
+    assert template_index_entry_verification_smoke["local_paths_recorded"] is False
+    assert (
+        template_index_entry_verification_smoke["network_access_performed"] is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -1483,8 +1547,10 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "verification-summary bridge-event template" in (
         capability["safe_statement"]
     )
-    assert "local index entry" in (capability["next_smallest_pr"])
-    assert "route-stage feed-health drill evidence" in capability["next_smallest_pr"]
+    assert "local template index entry" in capability["safe_statement"]
+    assert "verifier for that index entry" in capability["safe_statement"]
+    assert "verification summary" in (capability["next_smallest_pr"])
+    assert "index-entry verifier" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

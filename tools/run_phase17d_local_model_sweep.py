@@ -82,6 +82,7 @@ PREFERRED_PANEL: tuple[str, ...] = (
     "gemma3:4b",
     "llama3.2:3b",
     "phi4-mini:latest",
+    "qwen3:4b",
     "qwen2.5:7b",
 )
 LARGE_MODEL_THRESHOLD_GB = 10.0

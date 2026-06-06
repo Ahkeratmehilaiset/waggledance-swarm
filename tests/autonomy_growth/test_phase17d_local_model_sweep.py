@@ -49,6 +49,7 @@ DEFAULT_FAKE_LIST = [
     ("gemma3:4b", "a2af6cc3eb7f", "3.3", "GB"),
     ("llama3.2:3b", "a80c4f17acd5", "2.0", "GB"),
     ("phi4-mini:latest", "78fad5d182a7", "2.5", "GB"),
+    ("qwen3:4b", "359d7dd4bcda", "2.5", "GB"),
     ("qwen2.5:7b", "845dbda0ea48", "4.7", "GB"),
 ]
 
@@ -221,6 +222,39 @@ def test_measured_panel_4_models_2_repeats(out_dir, monkeypatch):
         assert m["repeat_count"] == 2
         assert m["prompts_succeeded"] == 10  # 2 repeats x 5 prompts
         assert m["prompts_failed"] == 0
+
+
+def test_auto_panel_includes_qwen3_when_earlier_models_absent():
+    harness = _import_harness()
+    installed = [
+        {"name": "nomic-embed-text:latest", "id": "0a109f422b47",
+         "size_text": "274 MB", "size_gb_estimate": 274 / 1024},
+        {"name": "all-minilm:latest", "id": "1b226e2802db",
+         "size_text": "45 MB", "size_gb_estimate": 45 / 1024},
+        {"name": "gemma3:4b", "id": "a2af6cc3eb7f",
+         "size_text": "3.3 GB", "size_gb_estimate": 3.3},
+        {"name": "qwen3:4b", "id": "359d7dd4bcda",
+         "size_text": "2.5 GB", "size_gb_estimate": 2.5},
+        {"name": "llama3.2:3b", "id": "a80c4f17acd5",
+         "size_text": "2.0 GB", "size_gb_estimate": 2.0},
+        {"name": "llama3.1:8b", "id": "46e0c10c039e",
+         "size_text": "4.9 GB", "size_gb_estimate": 4.9},
+    ]
+
+    selected, deferred, rationale = harness.select_panel(
+        installed=installed,
+        override=None,
+        max_models=4,
+        prefer_larger=False,
+    )
+
+    assert [model["name"] for model in selected] == [
+        "gemma3:4b",
+        "llama3.2:3b",
+        "qwen3:4b",
+    ]
+    assert deferred == []
+    assert rationale == "auto preference order"
 
 
 def test_measured_panel_disclaimers_present(out_dir, monkeypatch):

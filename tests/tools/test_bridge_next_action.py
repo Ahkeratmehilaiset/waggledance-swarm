@@ -725,6 +725,94 @@ def test_recommends_claiming_unblocked_work_when_bridge_is_clear() -> None:
     assert report["safe_mode"] == "write-or-read-only"
 
 
+def test_reports_heartbeat_only_peer_production_liveness_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "codex-lead-1",
+            "type": "status",
+            "task_id": "lead-slice",
+            "status": "working",
+            "message": "coding",
+        },
+        {
+            "ts_utc": "2026-06-06T10:08:00Z",
+            "agent": "codex-lead-1",
+            "type": "heartbeat",
+            "task_id": "lead-heartbeat",
+            "status": "active",
+            "message": "background heartbeat",
+        },
+        {
+            "ts_utc": "2026-06-06T10:13:00Z",
+            "agent": "codex-lead-1",
+            "type": "heartbeat",
+            "task_id": "lead-heartbeat",
+            "status": "active",
+            "message": "background heartbeat",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 14, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    liveness = report["production_liveness"]
+    assert liveness["stalled_agent_count"] == 1
+    stalled = liveness["stalled_agents"][0]
+    assert stalled["agent"] == "codex-lead-1"
+    assert stalled["reason"] == "heartbeat_only_since_activity"
+    assert stalled["last_activity_task_id"] == "lead-slice"
+    assert stalled["last_activity_ts_utc"] == "2026-06-06T10:00:00Z"
+    assert stalled["last_heartbeat_ts_utc"] == "2026-06-06T10:13:00Z"
+    assert stalled["idle_minutes"] == 14.0
+    assert stalled["heartbeat_only_since_activity"] is True
+
+
+def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "codex-lead-1",
+            "type": "status",
+            "task_id": "lead-slice",
+            "status": "working",
+            "message": "coding",
+        },
+        {
+            "ts_utc": "2026-06-06T10:08:00Z",
+            "agent": "codex-lead-1",
+            "type": "status",
+            "task_id": "lead-slice",
+            "status": "tests_running",
+            "message": "tests running",
+        },
+        {
+            "ts_utc": "2026-06-06T10:13:00Z",
+            "agent": "codex-lead-1",
+            "type": "heartbeat",
+            "task_id": "lead-heartbeat",
+            "status": "active",
+            "message": "background heartbeat",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 14, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in report
+
+
 def test_idle_protocol_counter_is_closed_by_later_consensus_target() -> None:
     events = [
         {
@@ -1003,6 +1091,45 @@ def test_cli_rejects_non_finite_open_request_max_age(
         report = json.loads(capsys.readouterr().out)
         assert report["decision"] == "bridge_next_action_error"
         assert report["errors"] == ["open_request_max_age_hours must be positive"]
+
+
+def test_cli_rejects_non_finite_production_idle_warn_minutes(
+    tmp_path: Path, capsys
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-06-06T10:00:00Z",
+                "agent": "codex-lead-1",
+                "type": "heartbeat",
+                "task_id": "lead-heartbeat",
+                "status": "active",
+                "message": "background heartbeat",
+            }
+        ],
+    )
+
+    for value in ("nan", "inf"):
+        exit_code = main(
+            [
+                "--agent",
+                "codex-tools-1",
+                "--bridge-root",
+                str(bridge),
+                "--events",
+                str(events_path),
+                "--production-idle-warn-minutes",
+                value,
+                "--json",
+            ]
+        )
+
+        assert exit_code == 2
+        report = json.loads(capsys.readouterr().out)
+        assert report["decision"] == "bridge_next_action_error"
+        assert report["errors"] == ["production_idle_warn_minutes must be positive"]
 
 
 def test_private_marker_in_selected_output_is_refused() -> None:

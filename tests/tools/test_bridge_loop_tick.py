@@ -798,6 +798,55 @@ def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):
     assert report["wakeup_reason"] == "peer activation needed"
 
 
+@pytest.mark.parametrize(
+    ("agent", "peer"),
+    [
+        ("codex-tools-1", "codex-lead-1"),
+        ("codex-lead-1", "codex-tools-1"),
+    ],
+)
+def test_peer_activation_supports_current_production_agent_ids(agent, peer):
+    events = [
+        _finding(peer, "2026-05-22T13:00:00Z"),
+        _heartbeat(peer, "2026-05-22T13:55:00Z"),
+    ]
+
+    rec = peer_activation_recommendation(
+        agent=agent,
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is True
+    assert rec["peer"] == peer
+    assert rec["reason"] == "peer_heartbeat_only_without_recent_substantive_work"
+    assert rec["bridge_event"]["to"] == peer
+    assert rec["bridge_event"]["task_id"].startswith(f"peer-activation-{peer}-")
+
+
+def test_loop_tick_short_wakeup_for_current_production_peer_activation(tmp_path):
+    events = [
+        _finding("codex-lead-1", "2026-05-22T13:00:00Z"),
+        _heartbeat("codex-lead-1", "2026-05-22T13:55:00Z"),
+    ]
+
+    report = build_loop_tick(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
+    )
+
+    assert report["peer_activation"]["needed"] is True
+    assert report["peer_activation"]["peer"] == "codex-lead-1"
+    assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
+    assert report["wakeup_reason"] == "peer activation needed"
+
+
 # --- peer active PR-producing claim ----------------------------------------
 
 
@@ -822,6 +871,24 @@ def test_peer_active_claim_detected_when_recent_and_unclosed():
     assert result["task_id"] == "magma-slice-1"
     assert result["event_type"] == "claim"
     assert result["event_status"] == "active"
+    assert result["reason"] == "peer_has_active_pr_producing_claim"
+
+
+@pytest.mark.parametrize(
+    ("agent", "peer"),
+    [
+        ("codex-tools-1", "codex-lead-1"),
+        ("codex-lead-1", "codex-tools-1"),
+    ],
+)
+def test_peer_active_claim_detects_current_production_agent_ids(agent, peer):
+    events = [_claim_active(peer, "current-agent-slice", ts="2026-05-22T13:55:00Z")]
+
+    result = peer_has_active_pr_producing_claim(events, agent=agent, now_utc=NOW)
+
+    assert result["active"] is True
+    assert result["peer"] == peer
+    assert result["task_id"] == "current-agent-slice"
     assert result["reason"] == "peer_has_active_pr_producing_claim"
 
 

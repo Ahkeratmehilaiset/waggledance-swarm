@@ -22,6 +22,9 @@ if str(ROOT) not in sys.path:
 
 from tools.idle_check import DEFAULT_EVENTS_PATH
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.autonomy_growth.counterfactual_replay import (
+    summarize_counterfactual_observability,
+)
 from waggledance.core.idle_consensus_charter import (
     evaluate_diff_content,
     evaluate_paths,
@@ -43,6 +46,9 @@ DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
 REPLAY_SEED_VERSION = "idle_consensus_replay_seed.v0"
 CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION = (
     "idle_consensus_candidate_diff_replay_admission.v0"
+)
+COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION = (
+    "idle_consensus_counterfactual_eval_admission_summary.v0"
 )
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
@@ -72,6 +78,9 @@ IMPLEMENTATION_HINTS = (
     "implement next",
     "scaffold code",
     "work_queue",
+)
+COUNTERFACTUAL_EVAL_READY_STATES = frozenset(
+    {"measured_local_partial", "runtime_measured"}
 )
 
 
@@ -108,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Candidate diff text file for report-only replay admission.",
     )
     parser.add_argument(
+        "--counterfactual-eval-receipt",
+        type=Path,
+        default=None,
+        help=(
+            "Optional counterfactual eval receipt JSON. The admission report "
+            "exports only a digest and privacy-safe observability summary."
+        ),
+    )
+    parser.add_argument(
         "--changed-path",
         action="append",
         default=[],
@@ -125,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.candidate_diff_replay_admission
         or args.replay_seed is not None
         or args.candidate_diff is not None
+        or args.counterfactual_eval_receipt is not None
         or args.changed_paths
     ):
         try:
@@ -133,6 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 replay_seed_path=args.replay_seed,
                 candidate_diff_path=args.candidate_diff,
                 changed_paths=args.changed_paths,
+                counterfactual_eval_receipt_path=args.counterfactual_eval_receipt,
             )
         except ArtifactError as exc:
             if args.json:
@@ -411,6 +431,7 @@ def build_idle_consensus_candidate_diff_replay_admission(
     replay_seed: Mapping[str, Any],
     changed_paths: Sequence[str],
     candidate_diff_text: str,
+    counterfactual_eval_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a report-only admission check for replaying a candidate diff."""
     _ensure_replay_seed_ready_for_candidate_diff_admission(replay_seed)
@@ -441,6 +462,9 @@ def build_idle_consensus_candidate_diff_replay_admission(
             "diff_text": candidate_diff_text,
         }
     )
+    counterfactual_eval = _counterfactual_eval_admission_summary(
+        counterfactual_eval_receipt
+    )
     return {
         "report_version": CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
         "ok": candidate_diff_allowed,
@@ -469,22 +493,114 @@ def build_idle_consensus_candidate_diff_replay_admission(
             "line_count": len(candidate_diff_text.splitlines()),
             "diff_text_included": False,
         },
+        "counterfactual_eval": counterfactual_eval,
         "path_gate": _gate_decision_to_dict(path_gate),
         "diff_gate": _gate_decision_to_dict(diff_gate),
         "eligible_for_draft_pr_gate": False,
-        "draft_pr_gate_blockers": [
-            "counterfactual_eval_receipt_missing",
-            "operator_review_gate_required",
-        ],
-        "next_required_gates": [
-            "counterfactual_eval_receipt",
+        "draft_pr_gate_blockers": _candidate_diff_replay_blockers(
+            counterfactual_eval
+        ),
+        "next_required_gates": _candidate_diff_replay_next_required_gates(
+            counterfactual_eval
+        ),
+    }
+
+
+def _counterfactual_eval_admission_summary(
+    receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if receipt is None:
+        observability = summarize_counterfactual_observability(None)
+        return {
+            "summary_version": COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
+            "provided": False,
+            "source_digest": None,
+            "receipt_payload_included": False,
+            "satisfies_replay_gate": False,
+            "dry_run_only": True,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+            "observability": observability,
+        }
+    if not isinstance(receipt, Mapping):
+        raise ArtifactError(
+            "candidate diff replay admission requires a mapping counterfactual receipt",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["counterfactual eval receipt must be a mapping"],
+                "exit_code": 2,
+            },
+        )
+    try:
+        receipt_text = json.dumps(receipt, sort_keys=True)
+    except TypeError as exc:
+        raise ArtifactError(
+            "candidate diff replay admission requires a serializable counterfactual receipt",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["counterfactual eval receipt must be JSON serializable"],
+                "exit_code": 2,
+            },
+        ) from exc
+    _refuse_private_text(receipt_text, "counterfactual eval receipt")
+
+    observability = summarize_counterfactual_observability(receipt)
+    satisfies_replay_gate = _counterfactual_observability_satisfies_replay_gate(
+        observability
+    )
+    return {
+        "summary_version": COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
+        "provided": True,
+        "source_digest": sha256_digest(receipt),
+        "receipt_payload_included": False,
+        "satisfies_replay_gate": satisfies_replay_gate,
+        "dry_run_only": True,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "observability": observability,
+    }
+
+
+def _counterfactual_observability_satisfies_replay_gate(
+    observability: Mapping[str, Any],
+) -> bool:
+    return (
+        observability.get("source_available") is True
+        and observability.get("status") in COUNTERFACTUAL_EVAL_READY_STATES
+        and observability.get("same_sample_set") is True
+        and observability.get("deterministic") is True
+        and observability.get("delta_digest_present") is True
+    )
+
+
+def _candidate_diff_replay_blockers(
+    counterfactual_eval: Mapping[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    if counterfactual_eval.get("provided") is not True:
+        blockers.append("counterfactual_eval_receipt_missing")
+    elif counterfactual_eval.get("satisfies_replay_gate") is not True:
+        blockers.append("counterfactual_eval_receipt_insufficient")
+    blockers.append("operator_review_gate_required")
+    return blockers
+
+
+def _candidate_diff_replay_next_required_gates(
+    counterfactual_eval: Mapping[str, Any],
+) -> list[str]:
+    gates: list[str] = []
+    if counterfactual_eval.get("satisfies_replay_gate") is not True:
+        gates.append("counterfactual_eval_receipt")
+    gates.extend(
+        [
             "operator_review_gate",
             "draft_pr_creation",
             "ci_green",
             "mergeable_clean",
             "exact_head_merge",
-        ],
-    }
+        ]
+    )
+    return gates
 
 
 def build_candidate_diff_replay_admission_from_files(
@@ -493,6 +609,7 @@ def build_candidate_diff_replay_admission_from_files(
     replay_seed_path: Path | None,
     candidate_diff_path: Path | None,
     changed_paths: Sequence[str],
+    counterfactual_eval_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
     """Load local files and build a report-only candidate diff admission."""
     if not enabled:
@@ -525,10 +642,19 @@ def build_candidate_diff_replay_admission_from_files(
 
     replay_seed = _read_replay_seed_file(replay_seed_path)
     candidate_diff_text = _read_text_file(candidate_diff_path, "candidate diff")
+    counterfactual_eval_receipt = (
+        _read_json_object(
+            counterfactual_eval_receipt_path,
+            "counterfactual eval receipt",
+        )
+        if counterfactual_eval_receipt_path is not None
+        else None
+    )
     report = build_idle_consensus_candidate_diff_replay_admission(
         replay_seed=replay_seed,
         changed_paths=changed_paths,
         candidate_diff_text=candidate_diff_text,
+        counterfactual_eval_receipt=counterfactual_eval_receipt,
     )
     report["exit_code"] = 0 if report["ok"] else 1
     return report

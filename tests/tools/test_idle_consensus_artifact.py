@@ -12,6 +12,7 @@ import pytest
 from tools.idle_consensus_artifact import (
     ArtifactError,
     CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
+    COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
     REPLAY_SEED_REQUIRED_FALSE_KEYS,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_replay_seed,
@@ -179,6 +180,28 @@ def _write_artifact_with_receipt(tmp_path: Path, payloads: list[dict]) -> dict:
         receipt_out_dir=tmp_path / "receipt-bundle",
         now_utc=NOW,
     )
+
+
+def _measured_counterfactual_receipt() -> dict:
+    return {
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": "RUNTIME_MEASURED",
+        "sample_count": 20,
+        "divergence_count": 3,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest": "sha256:raw-delta-digest-not-exported",
+        "per_arm": {
+            "candidate": [
+                {"inputs": {"secret": "SAMPLE_PAYLOAD_DO_NOT_EXPORT"}}
+            ]
+        },
+        "divergences": [
+            {"inputs": {"secret": "DIVERGENCE_PAYLOAD_DO_NOT_EXPORT"}}
+        ],
+    }
 
 
 def test_soft_consensus_writes_operator_review_artifact(tmp_path: Path) -> None:
@@ -360,6 +383,33 @@ new file mode 100644
     }
     assert admission["path_gate"]["allowed"] is True
     assert admission["diff_gate"]["allowed"] is True
+    assert admission["counterfactual_eval"] == {
+        "summary_version": COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
+        "provided": False,
+        "source_digest": None,
+        "receipt_payload_included": False,
+        "satisfies_replay_gate": False,
+        "dry_run_only": True,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "observability": {
+            "schema_version": "magma.counterfactual_observability_status.v0",
+            "source_available": False,
+            "compute_status": "unavailable",
+            "status": "unavailable",
+            "a3_label": "INSUFFICIENT",
+            "sample_count": 0,
+            "divergence_count": 0,
+            "same_sample_set": False,
+            "deterministic": False,
+            "no_delta": False,
+            "delta_digest_present": False,
+            "controls_present": False,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+            "payload_fields_exported": False,
+        },
+    }
     assert admission["eligible_for_draft_pr_gate"] is False
     assert admission["draft_pr_gate_blockers"] == [
         "counterfactual_eval_receipt_missing",
@@ -375,6 +425,124 @@ new file mode 100644
     ]
     assert "diff --git" not in serialized
     assert "Candidate diff is admitted" not in serialized
+
+
+def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    receipt = _measured_counterfactual_receipt()
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++Measured counterfactual evidence is summarized without raw payload.
+"""
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+    )
+    summary = admission["counterfactual_eval"]
+    serialized = json.dumps(admission, sort_keys=True)
+
+    assert summary["summary_version"] == COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION
+    assert summary["provided"] is True
+    assert summary["source_digest"] == sha256_digest(receipt)
+    assert summary["receipt_payload_included"] is False
+    assert summary["satisfies_replay_gate"] is True
+    assert summary["dry_run_only"] is True
+    assert summary["runtime_authority_granted"] is False
+    assert summary["external_writes_applied"] is False
+    assert summary["observability"] == {
+        "schema_version": "magma.counterfactual_observability_status.v0",
+        "source_available": True,
+        "compute_status": "computed",
+        "status": "runtime_measured",
+        "a3_label": "RUNTIME_MEASURED",
+        "sample_count": 20,
+        "divergence_count": 3,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest_present": True,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+    }
+    assert admission["draft_pr_gate_blockers"] == ["operator_review_gate_required"]
+    assert admission["next_required_gates"] == [
+        "operator_review_gate",
+        "draft_pr_creation",
+        "ci_green",
+        "mergeable_clean",
+        "exact_head_merge",
+    ]
+    assert "SAMPLE_PAYLOAD_DO_NOT_EXPORT" not in serialized
+    assert "DIVERGENCE_PAYLOAD_DO_NOT_EXPORT" not in serialized
+    assert "raw-delta-digest-not-exported" not in serialized
+    assert "per_arm" not in serialized
+    assert "divergences" not in serialized
+
+
+def test_candidate_diff_replay_admission_blocks_insufficient_counterfactual_receipt(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        candidate_diff_text=(
+            "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+            "b/docs/architecture/consensus_artifacts/replay.md\n"
+        ),
+        counterfactual_eval_receipt={
+            "schema_version": "magma.counterfactual_promotion_summary.v0",
+            "status": "computed",
+            "a3_label": "INSUFFICIENT",
+            "same_sample_set": True,
+            "deterministic": True,
+            "delta_digest": "sha256:present-but-insufficient",
+        },
+    )
+
+    assert admission["counterfactual_eval"]["provided"] is True
+    assert admission["counterfactual_eval"]["satisfies_replay_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "counterfactual_eval_receipt_insufficient",
+        "operator_review_gate_required",
+    ]
+    assert admission["next_required_gates"][0] == "counterfactual_eval_receipt"
+
+
+def test_candidate_diff_replay_admission_refuses_private_counterfactual_receipt(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+
+    with pytest.raises(ArtifactError) as excinfo:
+        build_idle_consensus_candidate_diff_replay_admission(
+            replay_seed=artifact["replay_seed"],
+            changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+            candidate_diff_text=(
+                "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+                "b/docs/architecture/consensus_artifacts/replay.md\n"
+            ),
+            counterfactual_eval_receipt={"note": "PRIVATE_MARKER"},
+        )
+
+    assert excinfo.value.report["decision"] == "privacy_marker_detected"
+    assert excinfo.value.report["errors"] == [
+        "counterfactual eval receipt contains PRIVATE_MARKER"
+    ]
 
 
 def test_cli_candidate_diff_replay_admission_reports_without_writes(
@@ -448,6 +616,61 @@ new file mode 100644
     assert "Candidate diff is admitted" not in completed.stdout
     assert not artifact_out_dir.exists()
     assert not receipt_out_dir.exists()
+
+
+def test_cli_candidate_diff_replay_admission_accepts_counterfactual_receipt(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed_path = tmp_path / "replay-seed.json"
+    seed_path.write_text(
+        json.dumps(artifact["replay_seed"], sort_keys=True),
+        encoding="utf-8",
+    )
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++Measured counterfactual receipt available.
+"""
+    diff_path = tmp_path / "candidate.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+    receipt = _measured_counterfactual_receipt()
+    receipt_path = tmp_path / "counterfactual-receipt.json"
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_consensus_artifact.py"),
+            "--candidate-diff-replay-admission",
+            "--replay-seed",
+            str(seed_path),
+            "--candidate-diff",
+            str(diff_path),
+            "--changed-path",
+            "docs/architecture/consensus_artifacts/replay.md",
+            "--counterfactual-eval-receipt",
+            str(receipt_path),
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    admission = json.loads(completed.stdout)
+    assert admission["counterfactual_eval"]["provided"] is True
+    assert admission["counterfactual_eval"]["source_digest"] == sha256_digest(receipt)
+    assert admission["counterfactual_eval"]["satisfies_replay_gate"] is True
+    assert admission["draft_pr_gate_blockers"] == ["operator_review_gate_required"]
+    assert "SAMPLE_PAYLOAD_DO_NOT_EXPORT" not in completed.stdout
+    assert "raw-delta-digest-not-exported" not in completed.stdout
 
 
 def test_cli_candidate_diff_replay_admission_returns_one_for_operator_gate(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -181,7 +182,7 @@ def _validate_cases(
         _schema_errors(validator, case, label, errors)
         case_id = str(case.get("case_id", f"<missing:{index}>"))
         if case_id in seen_ids:
-            errors.append(f"{label}: duplicate case_id {case_id}")
+            errors.append(f"{label}: duplicate case_id {_case_id_label(case_id)}")
         seen_ids.add(case_id)
 
         defect_type = str(case.get("defect_type", ""))
@@ -202,7 +203,10 @@ def _validate_cases(
             seen_canaries.add(canary)
             coverage["privacy_canary_count"] += 1
             if canary in str(case.get("intent", "")):
-                errors.append(f"{label}: privacy canary leaked into intent for {case_id}")
+                errors.append(
+                    f"{label}: privacy canary leaked into intent for "
+                    f"{_case_id_label(case_id)}"
+                )
     return seen_ids
 
 
@@ -221,7 +225,9 @@ def _validate_expectations(
         _schema_errors(validator, expectation, label, errors)
         case_id = str(expectation.get("case_id", f"<missing:{index}>"))
         if case_id in seen_ids:
-            errors.append(f"{label}: duplicate expectation case_id {case_id}")
+            errors.append(
+                f"{label}: duplicate expectation case_id {_case_id_label(case_id)}"
+            )
         seen_ids.add(case_id)
         expected_gate = str(expectation.get("expected_gate", ""))
         expected_verdict = str(expectation.get("expected_verdict", ""))
@@ -230,7 +236,9 @@ def _validate_expectations(
         coverage["expected_verdict"].add(expected_verdict)
         coverage["expected_verdict_counts"][expected_verdict] += 1
         if not expectation.get("should_claude_catch") and not expectation.get("should_codex_catch"):
-            errors.append(f"{label}: no expected catching agent for {case_id}")
+            errors.append(
+                f"{label}: no expected catching agent for {_case_id_label(case_id)}"
+            )
     return seen_ids
 
 
@@ -308,12 +316,12 @@ def _validate_folded_into_target(
     if missing_cases:
         fold_errors.append(
             "expansion fold-in: target corpus missing case_id values: "
-            + ", ".join(missing_cases)
+            + _case_id_labels(missing_cases)
         )
     if missing_expectations:
         fold_errors.append(
             "expansion fold-in: target expectations missing case_id values: "
-            + ", ".join(missing_expectations)
+            + _case_id_labels(missing_expectations)
         )
 
     errors.extend(fold_errors)
@@ -329,9 +337,15 @@ def _validate_cross_refs(
     missing_expectations = sorted(case_ids - expectation_ids)
     dangling_expectations = sorted(expectation_ids - case_ids)
     if missing_expectations:
-        errors.append("corpus: missing expectations for: " + ", ".join(missing_expectations))
+        errors.append(
+            "corpus: missing expectations for: "
+            + _case_id_labels(missing_expectations)
+        )
     if dangling_expectations:
-        errors.append("expectations: dangling case_id values: " + ", ".join(dangling_expectations))
+        errors.append(
+            "expectations: dangling case_id values: "
+            + _case_id_labels(dangling_expectations)
+        )
 
 
 def _ids_from_items(items: list[Any], key: str) -> set[str]:
@@ -374,7 +388,9 @@ def _ids_from_array(value: Any, label: str, errors: list[str]) -> set[str]:
             duplicates.add(case_id)
         ids.add(case_id)
     if duplicates:
-        errors.append(f"{label} duplicate case_id values: " + ", ".join(sorted(duplicates)))
+        errors.append(
+            f"{label} duplicate case_id values: " + _case_id_labels(duplicates)
+        )
     return ids
 
 
@@ -424,14 +440,14 @@ def _validate_split(
     if duplicate_seen:
         errors.append(
             "corpus: duplicate held_out_case_id values: "
-            + ", ".join(sorted(duplicate_seen))
+            + _case_id_labels(duplicate_seen)
         )
 
     unknown = sorted(held_out - case_ids)
     if unknown:
         errors.append(
             "corpus: split.held_out_case_ids contains unknown case_id values: "
-            + ", ".join(unknown)
+            + _case_id_labels(unknown)
         )
 
     known_held_out = held_out & case_ids
@@ -464,6 +480,17 @@ def _require_coverage(
     missing = sorted(required - coverage[name])
     if missing:
         errors.append(f"coverage: missing {name}: " + ", ".join(missing))
+
+
+def _case_id_label(case_id: str) -> str:
+    digest = hashlib.sha256(
+        case_id.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    return f"case_id_digest:{digest[:12]}"
+
+
+def _case_id_labels(case_ids: Sequence[str]) -> str:
+    return ", ".join(_case_id_label(case_id) for case_id in sorted(case_ids))
 
 
 def _validate_critical_defect_floors(

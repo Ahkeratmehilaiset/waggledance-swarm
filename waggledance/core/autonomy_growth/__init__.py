@@ -191,6 +191,31 @@ _LAZY_EXPORTS: dict[str, tuple[str, str | None]] = {
         ".upstream_structured_request_extractor",
         "derive_upstream_structured_request",
     ),
+    # operator feedback amplifier (ADR-053)
+    "OperatorFeedbackActionPlan": (
+        ".operator_feedback_amplifier",
+        "OperatorFeedbackActionPlan",
+    ),
+    "OperatorFeedbackPolicy": (
+        ".operator_feedback_amplifier",
+        "OperatorFeedbackPolicy",
+    ),
+    "OperatorFeedbackValidationError": (
+        ".operator_feedback_amplifier",
+        "OperatorFeedbackValidationError",
+    ),
+    "amplify_operator_feedback": (
+        ".operator_feedback_amplifier",
+        "amplify_operator_feedback",
+    ),
+    "load_operator_feedback_policy": (
+        ".operator_feedback_amplifier",
+        "load_operator_feedback_policy",
+    ),
+    "validate_operator_feedback_event": (
+        ".operator_feedback_amplifier",
+        "validate_operator_feedback_event",
+    ),
 }
 
 __all__ = [
@@ -296,6 +321,13 @@ __all__ = [
     "UpstreamExtractionResult",
     "apply_upstream_structured_request",
     "derive_upstream_structured_request",
+    # operator feedback amplifier (ADR-053)
+    "OperatorFeedbackActionPlan",
+    "OperatorFeedbackPolicy",
+    "OperatorFeedbackValidationError",
+    "amplify_operator_feedback",
+    "load_operator_feedback_policy",
+    "validate_operator_feedback_event",
 ]
 
 

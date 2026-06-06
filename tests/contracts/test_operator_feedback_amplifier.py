@@ -17,8 +17,11 @@ def test_adr_053_exists() -> None:
     assert ADR_PATH.exists()
 
 
-def test_substrate_only() -> None:
-    assert "substrate-only landing" in ADR_PATH.read_text(encoding="utf-8").lower()
+def test_planner_status_documents_deferred_integrations() -> None:
+    text = ADR_PATH.read_text(encoding="utf-8").lower()
+    assert "planner landing" in text
+    assert "bridge writer" in text
+    assert "scheduler hookup" in text
 
 
 def test_contract_exists() -> None:
@@ -45,6 +48,11 @@ def test_required_fields_match() -> None:
     assert set(c["required_fields"]) == REQUIRED_FIELDS
 
 
+def test_conditional_fields_match() -> None:
+    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    assert c["conditional_fields"] == {"broken_route": ["route_context_hash"]}
+
+
 def test_defaults() -> None:
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     d = c["policy_defaults"]
@@ -61,3 +69,26 @@ def test_each_invariant_has_musts() -> None:
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     for item in c["invariants"]:
         assert item["must"]
+
+
+def test_ofa006_is_planner_only_until_bridge_writer_lands() -> None:
+    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    ofa006 = next(item for item in c["invariants"] if item["id"] == "OFA-006")
+    text = " ".join([
+        ofa006["name"],
+        ofa006["description"],
+        *ofa006["must"],
+    ]).lower()
+
+    assert "feedback_action_taken" in text
+    assert "links feedback_id to action_id" in text
+    assert "bridge_event_written remains false" in text
+    assert "echo event written" not in text
+
+
+def test_remaining_out_of_scope_integrations_are_precise() -> None:
+    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    out_of_scope = " ".join(c["out_of_scope"]).lower()
+    assert "bridge event writer integration" in out_of_scope
+    assert "autogrowth scheduler hookup" in out_of_scope
+    assert "operator ui" in out_of_scope

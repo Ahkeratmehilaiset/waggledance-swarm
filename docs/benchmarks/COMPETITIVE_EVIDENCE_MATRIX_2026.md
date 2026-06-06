@@ -2,8 +2,8 @@
 
 **Status:** Phase 17A + 17B + 17C + 17D + 18A + 18B + 18C + 18E + 18F snapshot, derived from reproducible artifacts only.
 **Evidence snapshot date:** 2026-05-06
-**Freshness audit:** 2026-05-27 read-only audit found the dated PROVEN/MEASURED evidence older than the dream-mode <=14-day freshness target. Labels below remain historical evidence labels until refreshed; this audit does not upgrade or invalidate any row.
-**Freshness metadata:** `snapshot_date=2026-05-06`; `freshness_audit_date=2026-05-27`; `max_age_days=14`; `status=historical_stale`; `fresh_for_planning=false`; `priority_rows=G,J,L`; `historical_labels_until_refreshed=true`.
+**Freshness audit:** 2026-06-06 read-only audit, following the 2026-05-27 read-only audit, found the dated PROVEN/MEASURED evidence older than the dream-mode <=14-day freshness target. On 2026-06-06, the referenced evidence bands were 31-33 days old. Labels below remain historical evidence labels until refreshed; these audits do not upgrade or invalidate any row.
+**Freshness metadata:** `snapshot_date=2026-05-06`; `freshness_audit_date=2026-06-06`; `prior_freshness_audit_date=2026-05-27`; `max_age_days=14`; `status=historical_stale`; `fresh_for_planning=false`; `priority_rows=G,J,L`; `historical_labels_until_refreshed=true`.
 **Branch lineage:** `phase18f/incremental-gap-replay` (Phase 18F at `c1ddded1`; 18E at `6c6ca859`; 18C at `e9aa1de1`; 18B at `b408b14a`; 18A at `4554b24a`; 17D at `d0704efe`; 17C at `db5d7db1`; 17B at `f4d0a4a4`; 17A on `main` at `c726995c`)
 **Anchor:** `v3.10.4-incremental-gap-replay-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0/v3.9.1/v3.9.2/v3.9.3/v3.10.0/v3.10.1/v3.10.2/v3.10.3 alphas remain the previous Pre-releases).
 **New evidence since the prior matrix header (Phase 18F):** the runtime-gap replay path is now cursor-incremental on the existing `runtime_gap_signals` table with replay state in `schema_meta`, no schema change, no allowlist widening, no new dispatcher, and no model/cloud/builder calls. The Phase 18F proof records cursor advancement, no-op replay idempotency, post-cursor learning in all six allowlisted families, strict malformed-row rejection, RuntimeGapDetector bridge validation, and `LOCKED_NOT_RUN` concurrency behavior. Release decision evidence reports Phase 18F targeted tests 46/46 PASS, targeted carry-forward suite 297/297 PASS, Docker `--network none` Phase 18F + 18E + 18C + 18B + 18A verification PASS, and `release_gate_pass = true`. Axis M remains the only row advanced by Phase 18E/18F. Detailed run reports: `docs/benchmarks/RUNTIME_GAP_REPLAY_2026.md`, `docs/benchmarks/INCREMENTAL_RUNTIME_GAP_REPLAY_2026.md`, and `docs/runs/phase18f_incremental_gap_replay_2026_05_06/release_decision.md`.
@@ -24,6 +24,8 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 ## Freshness notes
 
 The dream-mode agenda targets <=14-day staleness for PROVEN/MEASURED competitor-matrix rows. On the 2026-05-27 audit, the direct proof and measurement artifacts referenced here were 21-23 days old: Phase 17A/17B/17C mostly 2026-05-04, Phase 17D/18A/18B/18C mostly 2026-05-05, and Phase 18E/18F 2026-05-06.
+
+The 2026-06-06 bridge audit rechecked the same snapshot and found those evidence bands 31-33 days old. This is a staleness marker only, not a rerun, carry-forward proof, label upgrade, or row invalidation.
 
 Refresh priority is: measured rows G, J, and L first; then PROVEN rows A-H, M, N, and O via targeted reruns or explicit carry-forward evidence. The 2026-05-20/21 competitor-axis pilot artifacts are fresher but are not yet integrated into these matrix labels.
 

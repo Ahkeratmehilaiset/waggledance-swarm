@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -26,6 +27,7 @@ def _ev(
     task_id: str = "",
     message: str = "",
     to: str = "",
+    payload: Mapping[str, Any] | None = None,
 ) -> dict:
     return {
         "ts_utc": ts.isoformat(),
@@ -41,6 +43,7 @@ def _ev(
         "run_id": "",
         "pid": 0,
         "cwd": "",
+        "payload": dict(payload or {}),
     }
 
 
@@ -137,7 +140,7 @@ def test_empty_events_returns_all_insufficient() -> None:
     assert report["event_count_in_window"] == 0
     statuses = {m["name"]: m["status"] for m in report["metrics"]}
     # All measurable metrics report insufficient_data; the shadow→live one
-    # stays deferred regardless of input.
+    # stays deferred until lifecycle events carry payload.risk_class.
     for name in (
         "proposal_to_rco_latency",
         "unsafe_diff_blocked_rate",
@@ -472,12 +475,11 @@ def test_review_disagreement_rate_counts_multi_changes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# deferred metric stays deferred regardless of input
+# shadow/canary/live lifecycle latency
 # ---------------------------------------------------------------------------
 
 
-def test_shadow_to_live_latency_is_deferred_even_with_full_data() -> None:
-    # Throw plausible-looking events at it; metric still reports deferred.
+def test_shadow_to_live_latency_defers_without_risk_class_payload() -> None:
     events = [
         _ev(ts=NOW - timedelta(hours=2), agent="claude", type_="status",
             status="promotion_shadow", task_id="x",
@@ -498,6 +500,111 @@ def test_shadow_to_live_latency_is_deferred_even_with_full_data() -> None:
     )
     assert shadow["status"] == "deferred"
     assert shadow["sample_size"] == 0
+    assert shadow["observed_lifecycle_event_count"] == 3
+
+
+def test_shadow_to_live_latency_computes_by_risk_class() -> None:
+    events = []
+    layouts = [
+        ("low", 60),
+        ("low", 120),
+        ("low", 180),
+        ("medium", 240),
+        ("medium", 300),
+    ]
+    for i, (risk_class, total_minutes) in enumerate(layouts):
+        task_id = f"promotion-{i}"
+        start = NOW - timedelta(hours=12 - i)
+        payload = {"risk_class": risk_class}
+        events.extend([
+            _ev(
+                ts=start,
+                agent="claude",
+                type_="status",
+                status="promotion_shadow",
+                task_id=task_id,
+                message="promotion shadow start",
+                payload=payload,
+            ),
+            _ev(
+                ts=start + timedelta(minutes=total_minutes // 2),
+                agent="claude",
+                type_="status",
+                status="promotion_canary",
+                task_id=task_id,
+                message="promotion canary start",
+                payload=payload,
+            ),
+            _ev(
+                ts=start + timedelta(minutes=total_minutes),
+                agent="claude",
+                type_="done",
+                status="promotion_live",
+                task_id=task_id,
+                message="promotion live",
+                payload=payload,
+            ),
+        ])
+
+    report = compute_governance_throughput_report(
+        events=events, now_utc=NOW, insufficient_threshold=5,
+    )
+    shadow = next(
+        m for m in report["metrics"]
+        if m["name"] == "shadow_to_live_latency_per_risk_class"
+    )
+    assert shadow["status"] == "ok"
+    assert shadow["sample_size"] == 5
+    assert shadow["risk_class_count"] == 2
+    assert shadow["shadow_to_live_seconds"]["p50_seconds"] == 10800.0
+    assert shadow["shadow_to_live_seconds"]["min_seconds"] == 3600.0
+    assert shadow["shadow_to_live_seconds"]["max_seconds"] == 18000.0
+    low = shadow["by_risk_class"]["low"]
+    medium = shadow["by_risk_class"]["medium"]
+    assert low["sample_size"] == 3
+    assert low["shadow_to_live_seconds"]["p50_seconds"] == 7200.0
+    assert medium["sample_size"] == 2
+    assert medium["canary_to_live_seconds"]["max_seconds"] == 9000.0
+
+
+def test_shadow_to_live_latency_below_threshold_is_insufficient() -> None:
+    start = NOW - timedelta(hours=2)
+    events = [
+        _ev(
+            ts=start,
+            agent="claude",
+            type_="status",
+            status="promotion_shadow",
+            task_id="promotion-one",
+            payload={"risk_class": "low"},
+        ),
+        _ev(
+            ts=start + timedelta(minutes=30),
+            agent="claude",
+            type_="status",
+            status="promotion_canary",
+            task_id="promotion-one",
+            payload={"risk_class": "low"},
+        ),
+        _ev(
+            ts=start + timedelta(minutes=60),
+            agent="claude",
+            type_="done",
+            status="promotion_live",
+            task_id="promotion-one",
+            payload={"risk_class": "low"},
+        ),
+    ]
+
+    report = compute_governance_throughput_report(
+        events=events, now_utc=NOW, insufficient_threshold=5,
+    )
+    shadow = next(
+        m for m in report["metrics"]
+        if m["name"] == "shadow_to_live_latency_per_risk_class"
+    )
+    assert shadow["status"] == "insufficient_data"
+    assert shadow["sample_size"] == 1
 
 
 # ---------------------------------------------------------------------------

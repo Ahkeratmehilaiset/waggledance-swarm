@@ -16,9 +16,10 @@ Computes the eight metrics the 2026-05-20 V12 RFC named as the test for
 6. review disagreement rate (PRs with two or more
    finding/changes_requested events on the same task_id)
 7. promotion reversal rate (merges later reverted in same window)
-8. shadow -> canary -> live latency per risk class (DEFERRED — bridge
-   does not yet carry promotion-lifecycle state; reported as
-   status=deferred with the precise data fields that would unlock it)
+8. shadow -> canary -> live latency per risk class (computed only when
+   bridge events carry promotion-lifecycle transitions plus
+   payload.risk_class; otherwise reported as status=deferred or
+   status=insufficient_data)
 
 All inputs are read from the bridge event JSONL plus an optional PR
 history list. The tool never writes events, never claims work-queue
@@ -63,6 +64,7 @@ CHANGES_REQUESTED_TOKENS = {
 REJECTION_TOKENS = {"rejected", "rejection", "refused_live_db"}
 MERGE_TOKENS = {"merged", "merged_verified", "merged_pr", "merged_round"}
 REVERT_TOKENS = {"revert", "reverted", "promotion_reversal", "rolled_back"}
+PROMOTION_LIFECYCLE_STAGES = ("shadow", "canary", "live")
 
 PR_REFERENCE_RE = re.compile(r"\bpr[_ #]?(\d{2,5})\b", re.IGNORECASE)
 INSUFFICIENT_DATA_THRESHOLD = 5
@@ -198,7 +200,7 @@ def compute_governance_throughput_report(
         _metric_postmerge_failure_rate(windowed, insufficient_threshold),
         _metric_review_disagreement_rate(by_task, insufficient_threshold),
         _metric_promotion_reversal_rate(windowed, insufficient_threshold),
-        _metric_shadow_to_live_latency_deferred(),
+        _metric_shadow_to_live_latency(windowed, insufficient_threshold),
     ]
 
     return {
@@ -546,23 +548,134 @@ def _metric_promotion_reversal_rate(
     }
 
 
-def _metric_shadow_to_live_latency_deferred() -> dict[str, Any]:
+def _metric_shadow_to_live_latency(
+    events: Sequence[Mapping[str, Any]],
+    threshold: int,
+) -> dict[str, Any]:
+    lifecycle_events: list[Mapping[str, Any]] = []
+    by_lifecycle_id: dict[str, dict[str, Any]] = {}
+    for event in events:
+        stage = _promotion_lifecycle_stage(event)
+        if stage is None:
+            continue
+        lifecycle_events.append(event)
+        risk_class = _promotion_risk_class(event)
+        lifecycle_id = _promotion_lifecycle_id(event)
+        ts = _event_ts(event)
+        if not risk_class or not lifecycle_id or ts is None:
+            continue
+
+        record = by_lifecycle_id.setdefault(
+            lifecycle_id,
+            {
+                "risk_class": risk_class,
+                "risk_mismatch": False,
+                "stages": {},
+            },
+        )
+        if record["risk_class"] != risk_class:
+            record["risk_mismatch"] = True
+            continue
+
+        stages = record["stages"]
+        previous = stages.get(stage)
+        if previous is None or ts < previous:
+            stages[stage] = ts
+
+    by_risk_class: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: {
+            "shadow_to_canary": [],
+            "canary_to_live": [],
+            "shadow_to_live": [],
+        }
+    )
+    for record in by_lifecycle_id.values():
+        if record["risk_mismatch"]:
+            continue
+        stages = record["stages"]
+        if not all(stage in stages for stage in PROMOTION_LIFECYCLE_STAGES):
+            continue
+        shadow = stages["shadow"]
+        canary = stages["canary"]
+        live = stages["live"]
+        if not (shadow <= canary <= live):
+            continue
+        risk_samples = by_risk_class[record["risk_class"]]
+        risk_samples["shadow_to_canary"].append(
+            (canary - shadow).total_seconds()
+        )
+        risk_samples["canary_to_live"].append((live - canary).total_seconds())
+        risk_samples["shadow_to_live"].append((live - shadow).total_seconds())
+
+    complete_sample_size = sum(
+        len(samples["shadow_to_live"]) for samples in by_risk_class.values()
+    )
+    if complete_sample_size == 0:
+        return _metric_shadow_to_live_latency_deferred(
+            observed_lifecycle_event_count=len(lifecycle_events),
+        )
+    if complete_sample_size < threshold:
+        return _insufficient(
+            "shadow_to_live_latency_per_risk_class",
+            sample_size=complete_sample_size,
+            threshold=threshold,
+            unit_note=(
+                "complete shadow/canary/live lifecycle threads with a stable "
+                "payload.risk_class, grouped by task_id or payload lifecycle id"
+            ),
+        )
+
+    all_shadow_to_live: list[float] = []
+    summarized_by_risk: dict[str, dict[str, Any]] = {}
+    for risk_class in sorted(by_risk_class):
+        samples = by_risk_class[risk_class]
+        all_shadow_to_live.extend(samples["shadow_to_live"])
+        summarized_by_risk[risk_class] = {
+            "sample_size": len(samples["shadow_to_live"]),
+            "shadow_to_canary_seconds": _latency_stats(
+                samples["shadow_to_canary"]
+            ),
+            "canary_to_live_seconds": _latency_stats(
+                samples["canary_to_live"]
+            ),
+            "shadow_to_live_seconds": _latency_stats(
+                samples["shadow_to_live"]
+            ),
+        }
+
+    return {
+        "name": "shadow_to_live_latency_per_risk_class",
+        "status": "ok",
+        "sample_size": complete_sample_size,
+        "risk_class_count": len(summarized_by_risk),
+        "shadow_to_live_seconds": _latency_stats(all_shadow_to_live),
+        "by_risk_class": summarized_by_risk,
+        "notes": [
+            "computed from complete promotion shadow/canary/live transitions "
+            "with stable payload.risk_class on the same lifecycle id",
+            "this report remains read-only and does not promote, merge, claim, "
+            "or change queue gates",
+        ],
+    }
+
+
+def _metric_shadow_to_live_latency_deferred(
+    *,
+    observed_lifecycle_event_count: int = 0,
+) -> dict[str, Any]:
     return {
         "name": "shadow_to_live_latency_per_risk_class",
         "status": "deferred",
         "rate_pct": None,
         "sample_size": 0,
+        "observed_lifecycle_event_count": observed_lifecycle_event_count,
         "notes": [
-            "shadow/canary/live state is not yet tracked in bridge "
-            "events. Wiring needed before this metric can be computed:",
-            "1) define a promotion_lifecycle status taxonomy: "
-            "promotion/shadow, promotion/canary, promotion/live, "
-            "promotion/rolled_back",
-            "2) emit one event per lifecycle transition with "
-            "risk_class field in payload",
-            "3) then this metric reads transitions and reports "
-            "p50/p99 per risk_class",
-            "until then status stays deferred",
+            "no complete shadow/canary/live lifecycle sample with "
+            "payload.risk_class was found in bridge events",
+            "emit one event per promotion transition with status or payload "
+            "stage shadow/canary/live plus payload.risk_class",
+            "group transitions with a shared task_id or payload "
+            "promotion_lifecycle_id / lifecycle_id / promotion_id",
         ],
     }
 
@@ -597,6 +710,25 @@ def _summarize_latency(
         "min_seconds": round(ordered[0], 1),
         "max_seconds": round(ordered[-1], 1),
         "notes": [unit_note],
+    }
+
+
+def _latency_stats(samples: Sequence[float]) -> dict[str, Any]:
+    ordered = sorted(samples)
+    if not ordered:
+        return {
+            "sample_size": 0,
+            "p50_seconds": 0.0,
+            "p99_seconds": 0.0,
+            "min_seconds": 0.0,
+            "max_seconds": 0.0,
+        }
+    return {
+        "sample_size": len(ordered),
+        "p50_seconds": round(_percentile(ordered, 0.50), 1),
+        "p99_seconds": round(_percentile(ordered, 0.99), 1),
+        "min_seconds": round(ordered[0], 1),
+        "max_seconds": round(ordered[-1], 1),
     }
 
 
@@ -663,6 +795,75 @@ def _event_type(event: Mapping[str, Any]) -> str:
 
 def _event_message(event: Mapping[str, Any]) -> str:
     return str(event.get("message") or "")
+
+
+def _event_payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        return payload
+    return {}
+
+
+def _payload_str(payload: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        raw = payload.get(key)
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        if value:
+            return value
+    return ""
+
+
+def _promotion_lifecycle_stage(event: Mapping[str, Any]) -> str | None:
+    payload = _event_payload(event)
+    explicit_stage = _payload_str(
+        payload,
+        "promotion_lifecycle_stage",
+        "lifecycle_stage",
+        "promotion_stage",
+    )
+    normalized_stage = _normalize_lifecycle_text(explicit_stage)
+    for stage in PROMOTION_LIFECYCLE_STAGES:
+        if stage in normalized_stage.split():
+            return stage
+
+    text = _normalize_lifecycle_text(
+        " ".join([_event_status(event), _event_message(event)])
+    )
+    generic_stage = _normalize_lifecycle_text(_payload_str(payload, "stage"))
+    if "promotion" in text.split():
+        for stage in PROMOTION_LIFECYCLE_STAGES:
+            if stage in generic_stage.split():
+                return stage
+    if "promotion" not in text.split():
+        return None
+    for stage in PROMOTION_LIFECYCLE_STAGES:
+        if stage in text.split():
+            return stage
+    return None
+
+
+def _promotion_risk_class(event: Mapping[str, Any]) -> str:
+    raw = _payload_str(_event_payload(event), "risk_class", "risk")
+    return re.sub(r"[^a-z0-9_.:-]+", "_", raw.lower()).strip("_")
+
+
+def _promotion_lifecycle_id(event: Mapping[str, Any]) -> str:
+    payload = _event_payload(event)
+    raw = _payload_str(
+        payload,
+        "promotion_lifecycle_id",
+        "lifecycle_id",
+        "promotion_id",
+    )
+    if not raw:
+        raw = str(event.get("task_id") or "")
+    return raw.strip()
+
+
+def _normalize_lifecycle_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
 def _status_has_any(

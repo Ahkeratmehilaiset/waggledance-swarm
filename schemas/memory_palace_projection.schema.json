@@ -96,17 +96,7 @@
             "pattern": "^[A-Za-z0-9_.:/#@+-]{1,256}$"
           }
         },
-        "metadata": {
-          "type": "object",
-          "additionalProperties": true,
-          "properties": {
-            "runtime_authority": {"not": {"const": true}},
-            "storage_write_authority": {"not": {"const": true}},
-            "bridge_write_authority": {"not": {"const": true}},
-            "gate_skip_authority": {"not": {"const": true}},
-            "promotion_authority": {"not": {"const": true}}
-          }
-        }
+        "metadata": {"$ref": "#/definitions/authority_free_metadata"}
       }
     },
     "memory_placement": {
@@ -144,18 +134,32 @@
           ]
         },
         "dedup_anchor": {"type": "string", "minLength": 1},
-        "metadata": {
-          "type": "object",
-          "additionalProperties": true,
-          "properties": {
-            "runtime_authority": {"not": {"const": true}},
-            "storage_write_authority": {"not": {"const": true}},
-            "bridge_write_authority": {"not": {"const": true}},
-            "gate_skip_authority": {"not": {"const": true}},
-            "promotion_authority": {"not": {"const": true}}
-          }
-        }
+        "metadata": {"$ref": "#/definitions/authority_free_metadata"}
       }
+    },
+    "authority_free_metadata": {
+      "type": "object",
+      "properties": {
+        "runtime_authority": {"not": {}},
+        "storage_write_authority": {"not": {}},
+        "bridge_write_authority": {"not": {}},
+        "gate_skip_authority": {"not": {}},
+        "promotion_authority": {"not": {}}
+      },
+      "additionalProperties": {"$ref": "#/definitions/metadata_value"}
+    },
+    "metadata_value": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "number"},
+        {"type": "string"},
+        {
+          "type": "array",
+          "items": {"$ref": "#/definitions/metadata_value"}
+        },
+        {"$ref": "#/definitions/authority_free_metadata"}
+      ]
     },
     "string_array": {
       "type": "array",

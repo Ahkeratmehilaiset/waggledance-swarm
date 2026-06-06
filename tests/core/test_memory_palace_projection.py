@@ -153,6 +153,47 @@ def test_projection_rejects_authority_flags_and_unknown_placements() -> None:
         )
 
 
+def test_projection_rejects_authority_flag_keys_at_any_depth() -> None:
+    for metadata in (
+        {"runtime_authority": "true"},
+        {"runtime_authority": 1},
+        {"runtime_authority": False},
+        {"nested": {"gate_skip_authority": True}},
+        {"items": [{"bridge_write_authority": "false"}]},
+    ):
+        with pytest.raises(MemoryPalaceProjectionError, match="authority flag"):
+            build_memory_palace_projection(
+                [
+                    PalaceNode(
+                        node_id="wing.ops",
+                        kind="wing",
+                        label="Ops",
+                        metadata=metadata,
+                    )
+                ]
+            )
+
+    for metadata in (
+        {"gate_skip_authority": "true"},
+        {"promotion_authority": 0},
+        {"nested": {"storage_write_authority": False}},
+        {"items": [{"runtime_authority": 1}]},
+    ):
+        with pytest.raises(MemoryPalaceProjectionError, match="authority flag"):
+            build_memory_palace_projection(
+                [PalaceNode(node_id="wing.ops", kind="wing", label="Ops")],
+                [
+                    MemoryPlacement(
+                        memory_id="mem-1",
+                        palace_node_id="wing.ops",
+                        confidence=0.5,
+                        placement_source="manual",
+                        metadata=metadata,
+                    )
+                ],
+            )
+
+
 def test_schema_contract_declares_projection_only_authority_flags() -> None:
     schema_path = ROOT / "schemas" / "memory_palace_projection.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -198,3 +239,42 @@ def test_projection_document_validates_against_schema() -> None:
     )
 
     jsonschema.Draft7Validator(schema).validate(projection)
+
+
+def test_schema_rejects_authority_flag_keys_at_any_metadata_depth() -> None:
+    schema_path = ROOT / "schemas" / "memory_palace_projection.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+
+    projection = build_memory_palace_projection(
+        [PalaceNode(node_id="wing.ops", kind="wing", label="Ops")],
+        [
+            MemoryPlacement(
+                memory_id="memory-1",
+                palace_node_id="wing.ops",
+                confidence=0.6,
+                placement_source="manual",
+            )
+        ],
+    )
+
+    for metadata in (
+        {"runtime_authority": False},
+        {"runtime_authority": "true"},
+        {"nested": {"gate_skip_authority": True}},
+    ):
+        document = dict(projection)
+        document["nodes"] = [dict(projection["nodes"][0], metadata=metadata)]
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(document)
+
+    for metadata in (
+        {"gate_skip_authority": "true"},
+        {"nested": {"promotion_authority": 1}},
+    ):
+        document = dict(projection)
+        document["placements"] = [
+            dict(projection["placements"][0], metadata=metadata)
+        ]
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(document)

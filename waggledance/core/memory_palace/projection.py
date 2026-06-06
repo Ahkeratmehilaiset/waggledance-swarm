@@ -426,11 +426,25 @@ def _parent_first_order(by_id: Mapping[str, PalaceNode]) -> tuple[PalaceNode, ..
     return tuple(ordered)
 
 
-def _assert_no_authority_flags(metadata: Mapping[str, Any], *, label: str) -> None:
-    for key in AUTHORITY_FLAGS:
-        if metadata.get(key) is True:
-            raise MemoryPalaceProjectionError(
-                f"{label} cannot carry authority flag {key}=true"
+def _assert_no_authority_flags(
+    value: Any, *, label: str, path: str = "metadata"
+) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}" if path else key_text
+            if key_text in AUTHORITY_FLAGS:
+                raise MemoryPalaceProjectionError(
+                    f"{label} cannot carry authority flag {child_path}"
+                )
+            _assert_no_authority_flags(child, label=label, path=child_path)
+        return
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        for index, child in enumerate(value):
+            _assert_no_authority_flags(
+                child, label=label, path=f"{path}[{index}]"
             )
 
 

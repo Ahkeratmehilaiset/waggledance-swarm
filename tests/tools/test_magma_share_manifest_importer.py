@@ -67,6 +67,81 @@ def _share_export(tmp_path: Path) -> tuple[Path, Path]:
     return Path(report["share_manifest"]), source_manifest
 
 
+def _run_importer_json(
+    share_manifest: Path,
+    source_manifest: Path,
+    *,
+    now: str = "2026-05-28T09:00:00Z",
+    max_age_hours: int = 24,
+    expected_share_id: str | None = "magma:share:import:001",
+    expected_purpose: str | None = "cross_instance_replay",
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(SCRIPT),
+        "--json",
+        "--share-manifest",
+        str(share_manifest),
+        "--source-manifest",
+        str(source_manifest),
+        "--max-age-hours",
+        str(max_age_hours),
+        "--now",
+        now,
+    ]
+    if expected_share_id is not None:
+        command.extend(["--expected-share-id", expected_share_id])
+    if expected_purpose is not None:
+        command.extend(["--expected-purpose", expected_purpose])
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _assert_failed_admission_status(
+    result: subprocess.CompletedProcess[str],
+    *,
+    blocker_class: str,
+    tmp_path: Path,
+) -> dict[str, object]:
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["summary_version"] == IMPORT_ADMISSION_STATUS_VERSION
+    assert payload["source"] == "magma_share_manifest_import_failure"
+    assert payload["status"] == "rejected"
+    assert payload["severity"] == "warning"
+    assert payload["ok"] is False
+    assert payload["blocker_class"] == blocker_class
+    assert payload["blockers"] == [blocker_class]
+    admission_contract = payload["admission_contract"]
+    assert payload["admission_contract_digest"] == sha256_digest(
+        admission_contract
+    )
+    rejection_codes = {
+        item["reason_code"] for item in admission_contract["rejection_modes"]
+    }
+    assert blocker_class in rejection_codes
+    assert payload["replay_metadata_only"] is True
+    assert payload["no_authority_import"] is True
+    assert payload["transport_enabled"] is False
+    assert payload["runtime_export_enabled"] is False
+    assert payload["runtime_authority_granted"] is False
+    assert payload["runtime_authority_changed"] is False
+    assert payload["payload_files_imported"] == 0
+    assert payload["payload_digest_imported"] is False
+    assert payload["raw_material_imported"] is False
+    assert payload["replacement_map_imported"] is False
+    assert payload["local_paths_recorded"] is False
+    serialized = json.dumps(payload, sort_keys=True)
+    assert str(tmp_path) not in serialized
+    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    return payload
+
+
 def _all_json_text(root: Path) -> str:
     return "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(root.rglob("*.json"))
@@ -846,6 +921,109 @@ def test_importer_fail_closes_when_source_receipt_bundle_is_tampered(
             verify_source_manifest=verify_manifest,
             now_utc=FIXED_NOW,
         )
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        "2026-05-28T07:40:00Z",
+        "2026-05-29T09:00:00Z",
+    ],
+)
+def test_cli_json_failure_reports_stale_or_future_status(
+    tmp_path: Path,
+    now: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        now=now,
+        max_age_hours=24,
+    )
+
+    payload = _assert_failed_admission_status(
+        result,
+        blocker_class="stale_or_future_manifest",
+        tmp_path=tmp_path,
+    )
+    assert payload["admission_contract"]["max_age_hours"] == 24
+    assert payload["expected_share_id_configured"] is True
+    assert payload["expected_purpose_configured"] is True
+    assert "magma share manifest import FAILED:" in result.stderr
+
+
+def test_cli_json_failure_reports_expected_share_id_mismatch(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        expected_share_id="magma:share:import:wrong",
+    )
+
+    _assert_failed_admission_status(
+        result,
+        blocker_class="expected_share_id_mismatch",
+        tmp_path=tmp_path,
+    )
+
+
+def test_cli_json_failure_reports_source_manifest_digest_drift(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    source = json.loads(source_manifest.read_text(encoding="utf-8"))
+    source["chain_id"] = "magma:changed:after-share-export"
+    _write_json(source_manifest, source)
+
+    _assert_failed_admission_status(
+        _run_importer_json(share_manifest, source_manifest),
+        blocker_class="sanitized_source_manifest_digest_context_drift",
+        tmp_path=tmp_path,
+    )
+
+
+def test_cli_json_failure_reports_raw_material_policy_relaxation(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    manifest = json.loads(share_manifest.read_text(encoding="utf-8"))
+    manifest["export_policy"]["allow_raw_payloads"] = True
+    _write_json(share_manifest, manifest)
+
+    _assert_failed_admission_status(
+        _run_importer_json(share_manifest, source_manifest),
+        blocker_class="raw_material_export_or_policy_relaxation",
+        tmp_path=tmp_path,
+    )
+
+
+def test_cli_json_failure_does_not_echo_unsafe_expected_share_id(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        expected_share_id="C:/private/DO_NOT_LEAK",
+    )
+
+    payload = _assert_failed_admission_status(
+        result,
+        blocker_class="expected_share_id_mismatch",
+        tmp_path=tmp_path,
+    )
+    assert payload["expected_share_id_configured"] is False
+    assert payload["admission_contract"]["expected_share_id"] is None
+    assert "C:/private" not in result.stdout
+    assert "DO_NOT_LEAK" not in result.stdout
+    assert "C:/private" not in result.stderr
+    assert "DO_NOT_LEAK" not in result.stderr
 
 
 def test_cli_json_import_is_no_authority_and_redacts_payload_markers(

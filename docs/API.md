@@ -414,6 +414,14 @@ local summary and bridge-event template artifacts while keeping
 `transport_added=false`, `direct_bridge_write_performed=false`,
 `approval_granted=false`, `release_decision_made=false`,
 `runtime_controls_added=false`, and `network_access_performed=false`.
+`tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary.py`
+can render that verifier report as path-free reviewer context with digest,
+schema, source-contract, rebuilt-index-entry, bridge-event-schema, blocker, and
+guardrail status. The summary is context only: it keeps
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`,
+`runtime_controls_added=false`, and `network_access_performed=false`.
 
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded

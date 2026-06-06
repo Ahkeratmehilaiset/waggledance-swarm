@@ -1,24 +1,27 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "Operator-feedback amplifier contract (L30)",
-  "description": "Fast-track operator feedback to canary in 15min. See ADR-053.",
+  "description": "Fast-track operator feedback to scheduler queue priority in 15min without skipping promotion gates. See ADR-053.",
   "version": 1,
   "event_type": "ops_feedback",
   "feedback_kinds": ["needs_solver", "broken_route", "wrong_output"],
   "priority_enum": ["high", "normal"],
   "required_fields": ["event_type", "feedback_id", "feedback_kind", "query_class_hash", "operator_id", "priority", "submitted_at_utc"],
   "conditional_fields": {"broken_route": ["route_context_hash"]},
-  "policy_defaults": {"fast_track_canary_minutes": 15, "fast_track_per_hour_max": 10},
+  "policy_defaults": {"fast_track_canary_minutes": 15, "fast_track_per_hour_max": 10, "fast_track_global_per_hour_max": 30},
   "invariants": [
     {"id": "OFA-001", "name": "event_schema", "description": "7 required fields plus kind-specific conditional fields.", "must": ["validator rejects missing fields", "malformed feedback_id/query_class_hash/route_context_hash rejected", "extra fields ignored"]},
     {"id": "OFA-002", "name": "kind_enum", "description": "Kinds: needs_solver, broken_route, wrong_output.", "must": ["validator rejects other values", "kinds read from contract", "broken_route requires route_context_hash and fails closed without it"]},
     {"id": "OFA-003", "name": "priority_enum", "description": "Priorities: high, normal.", "must": ["validator rejects other values"]},
-    {"id": "OFA-004", "name": "high_priority_fast_track_15min", "description": "high priority -> canary in 15 min.", "must": ["fast_track_canary_minutes default 15", "scheduled before normal lane"]},
+    {"id": "OFA-004", "name": "high_priority_fast_track_15min", "description": "high priority -> scheduler queue priority in 15 min.", "must": ["fast_track_canary_minutes default 15", "scheduled before normal lane", "priority does not skip gates"]},
     {"id": "OFA-005", "name": "operator_identity_required", "description": "Anonymous feedback rejected.", "must": ["operator_id field non-empty", "validator rejects null/empty"]},
     {"id": "OFA-006", "name": "auditable_plan", "description": "ops_feedback produces a feedback_action_taken action plan; events.jsonl persistence is deferred to the bridge writer integration.", "must": ["plan event_type is feedback_action_taken", "links feedback_id to action_id", "bridge_event_written remains false until bridge writer integration"]},
-    {"id": "OFA-007", "name": "bounded_amplification", "description": "fast_track_per_hour_max=10 to prevent storms.", "must": ["excess feedback queued normally", "rate limit per operator_id"]}
+    {"id": "OFA-007", "name": "bounded_amplification", "description": "fast_track_per_hour_max=10 and fast_track_global_per_hour_max=30 prevent per-operator and global storms.", "must": ["excess feedback queued normally", "rate limit per operator_id", "rate limit across all operators"]},
+    {"id": "OFA-008", "name": "verified_bridge_identity", "description": "Scheduler preflight derives operator_id from a durable bridge event envelope, not a free-string payload.", "must": ["source bridge event present in durable bridge log", "operator_id matches derived bridge identity", "free-string operator_id rejected"]},
+    {"id": "OFA-009", "name": "durable_rate_limit_source", "description": "Scheduler preflight rate limits from persisted bridge-log feedback events.", "must": ["rate_limit_source is durable_bridge_log", "in-memory prior_events are not the scheduler preflight source"]},
+    {"id": "OFA-010", "name": "priority_only_fast_track", "description": "Fast-track is scheduler queue priority only.", "must": ["scheduler_enqueue_allowed remains false in preflight", "scheduler_tick_allowed remains false in preflight", "gate_skip_allowed remains false", "promotion/adversarial/canary gates are not skipped"]}
   ],
-  "out_of_scope": ["Bridge event writer integration (separate PR)", "Autogrowth scheduler hookup (separate PR)", "Operator UI for feedback submission (separate PR)"],
+  "out_of_scope": ["Bridge event writer integration (separate PR)", "Autogrowth scheduler execution/enqueue (separate PR)", "Operator UI for feedback submission (separate PR)"],
   "related_adrs": ["031", "040", "048", "049"],
   "related_leaps_50_menu": ["L30"]
 }

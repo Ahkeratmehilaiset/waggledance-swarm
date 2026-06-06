@@ -171,11 +171,30 @@ def test_mission_queue_top_sorts_by_priority():
     assert p.items[1]["mission_id"] == "c"
 
 
-def test_builder_lane_status_unavailable_until_phase_u2():
+def test_builder_lane_status_unavailable_without_input_data():
     panels = rv.build_panels_from_state()
     p = next(x for x in panels if x.panel_id == "builder_lane_status")
     assert not p.available
-    assert "Phase U2" in p.rationale_if_unavailable
+    assert p.rationale_if_unavailable == "builder_lane_jobs data missing"
+
+
+def test_builder_lane_status_groups_real_job_statuses():
+    panels = rv.build_panels_from_state(
+        builder_lane_jobs=[
+            {"status": "queued", "branch": "builder-a"},
+            {"status": "queued", "branch": "builder-b"},
+            {"status": "completed", "branch": "builder-c"},
+            {"status": "", "branch": "ignored-empty"},
+            "ignored-non-dict",
+        ],
+    )
+    p = next(x for x in panels if x.panel_id == "builder_lane_status")
+    assert p.available
+    assert p.rationale_if_unavailable == ""
+    assert {item["status"]: item["count"] for item in p.items} == {
+        "completed": 1,
+        "queued": 2,
+    }
 
 
 # ═══════════════════ snapshot construction ════════════════════════-

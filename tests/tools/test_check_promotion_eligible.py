@@ -337,6 +337,35 @@ def test_missing_tools_build_consensus_refuses() -> None:
     assert "bridge consensus incomplete" in report["reasons"]
 
 
+def test_lead_cosign_waiver_receipt_does_not_replace_lead_build_consensus() -> None:
+    events = [
+        _event(
+            "codex-tools-1",
+            "build_consensus_pass",
+            ts="2026-06-05T05:31:00Z",
+        ),
+        _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+        _event(
+            "claude-rco-1",
+            "autonomous_merge_receipt",
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": HEAD, "pr": 901, "lead_cosign_waived": True},
+        ),
+    ]
+
+    report = _evaluate(events=events, author_agent="codex-tools-1")
+
+    assert report["eligible"] is False
+    assert report["gate_results"]["rco_pass"]["ok"] is True
+    assert "bridge consensus incomplete" in report["reasons"]
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]
+    assert consensus["identities"]["build_tools"]["approved"] is True
+    assert consensus["identities"]["rco"]["approved"] is True
+    assert consensus["identities"]["build_lead"]["approved"] is False
+
+
 def test_pending_ci_refuses() -> None:
     report = _evaluate(status=_status(checks=[{"name": "unified", "state": "pending"}]))
 

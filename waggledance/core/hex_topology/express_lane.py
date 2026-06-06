@@ -265,12 +265,30 @@ def _coerce_edge(value: ExpressLaneEdge | Mapping[str, Any]) -> ExpressLaneEdge:
         ),
         cost_class=str(value.get("cost_class") or "medium"),
         rationale=str(value.get("rationale") or ""),
-        receipt_required=bool(value.get("receipt_required", True)),
-        no_runtime_mutation=bool(value.get("no_runtime_mutation", True)),
-        gate_skip_authority=bool(value.get("gate_skip_authority", False)),
-        solver_call_authority=bool(value.get("solver_call_authority", False)),
-        clinical_decision_authority=bool(
-            value.get("clinical_decision_authority", False)
+        receipt_required=_coerce_bool(
+            value.get("receipt_required"),
+            "receipt_required",
+            default=True,
+        ),
+        no_runtime_mutation=_coerce_bool(
+            value.get("no_runtime_mutation"),
+            "no_runtime_mutation",
+            default=True,
+        ),
+        gate_skip_authority=_coerce_bool(
+            value.get("gate_skip_authority"),
+            "gate_skip_authority",
+            default=False,
+        ),
+        solver_call_authority=_coerce_bool(
+            value.get("solver_call_authority"),
+            "solver_call_authority",
+            default=False,
+        ),
+        clinical_decision_authority=_coerce_bool(
+            value.get("clinical_decision_authority"),
+            "clinical_decision_authority",
+            default=False,
         ),
         metadata=metadata,
     )
@@ -378,6 +396,14 @@ def _coerce_non_negative_int(value: Any, label: str) -> int:
     if result < 0:
         raise HexExpressLaneError(f"{label} must be non-negative")
     return result
+
+
+def _coerce_bool(value: Any, label: str, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise HexExpressLaneError(f"{label} must be boolean")
+    return value
 
 
 def _normalize_known_cells(values: Sequence[str] | None) -> set[str] | None:

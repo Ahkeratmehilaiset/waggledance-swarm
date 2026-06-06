@@ -47,6 +47,26 @@
     "clinical_decision_authority": {"type": "boolean", "const": false},
     "receipt_required": {"type": "boolean", "const": true}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"selected": {"const": true}},
+        "required": ["selected"]
+      },
+      "then": {
+        "properties": {"route": {"$ref": "#/definitions/route"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"selected": {"const": false}},
+        "required": ["selected"]
+      },
+      "then": {
+        "properties": {"route": {"type": "null"}}
+      }
+    }
+  ],
   "definitions": {
     "cell_id": {
       "type": "string",

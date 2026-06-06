@@ -99,6 +99,21 @@ def test_authority_flags_fail_closed() -> None:
         plan_express_lane(_request(), [_edge(receipt_required=False)])
 
 
+def test_string_bool_authority_fields_fail_closed() -> None:
+    edge = _edge().to_dict()
+    edge["receipt_required"] = "false"
+    edge["no_runtime_mutation"] = "false"
+
+    with pytest.raises(HexExpressLaneError, match="receipt_required must be boolean"):
+        plan_express_lane(_request(), [edge], known_cell_ids=ALL_CELLS)
+
+    edge = _edge().to_dict()
+    edge["gate_skip_authority"] = "true"
+
+    with pytest.raises(HexExpressLaneError, match="gate_skip_authority must be boolean"):
+        plan_express_lane(_request(), [edge], known_cell_ids=ALL_CELLS)
+
+
 def test_unknown_cells_and_duplicate_edges_fail_closed() -> None:
     with pytest.raises(HexExpressLaneError, match="unknown target_cell_id"):
         plan_express_lane(_request(), [_edge(target_cell_id="ghost")], known_cell_ids=ALL_CELLS)
@@ -142,3 +157,25 @@ def test_schema_validates_plan_output() -> None:
     plan = plan_express_lane(_request(), [_edge()], known_cell_ids=ALL_CELLS)
 
     jsonschema.Draft7Validator(schema).validate(plan)
+
+
+def test_schema_rejects_inconsistent_selected_route_pairs() -> None:
+    schema = json.loads(
+        (ROOT / "schemas" / "hex_express_lane.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validator = jsonschema.Draft7Validator(schema)
+    valid = plan_express_lane(_request(), [_edge()], known_cell_ids=ALL_CELLS)
+
+    selected_true_route_null = dict(valid)
+    selected_true_route_null["selected"] = True
+    selected_true_route_null["route"] = None
+
+    selected_false_route_present = dict(valid)
+    selected_false_route_present["selected"] = False
+
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(selected_true_route_null)
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(selected_false_route_present)

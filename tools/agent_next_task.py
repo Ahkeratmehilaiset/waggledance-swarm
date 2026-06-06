@@ -947,9 +947,22 @@ def _continuous_operational_scout_task_id(
 
 
 def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
-    return task_id.startswith("dream-mode-") and task_id.endswith(
-        f"-{now_utc.strftime('%Y-%m-%d')}"
-    )
+    return _canonical_same_day_dream_mode_task_id(task_id, now_utc) is not None
+
+
+def _canonical_same_day_dream_mode_task_id(
+    task_id: str,
+    now_utc: datetime,
+) -> str | None:
+    if not task_id.startswith("dream-mode-"):
+        return None
+    hyphenated_day = now_utc.strftime("%Y-%m-%d")
+    compact_day = now_utc.strftime("%Y%m%d")
+    if task_id.endswith(f"-{hyphenated_day}"):
+        return task_id
+    if task_id.endswith(f"-{compact_day}"):
+        return task_id[: -len(compact_day)] + hyphenated_day
+    return None
 
 
 def _is_same_day_operational_scout_task_id(
@@ -1047,10 +1060,14 @@ def _completed_dream_mode_task_ids(
 
     for event in events:
         task_id = str(event.get("task_id", ""))
-        if not _is_same_day_dream_mode_task_id(task_id, now_utc):
+        canonical_task_id = _canonical_same_day_dream_mode_task_id(
+            task_id,
+            now_utc,
+        )
+        if canonical_task_id is None:
             continue
         if _is_successful_completion_event(event):
-            completed.add(task_id)
+            completed.add(canonical_task_id)
 
     done_dir = bridge_root / "work_queue" / "done"
     try:
@@ -1064,7 +1081,11 @@ def _completed_dream_mode_task_ids(
         except (OSError, json.JSONDecodeError):
             continue
         task_id = str(payload.get("task_id", ""))
-        if not _is_same_day_dream_mode_task_id(task_id, now_utc):
+        canonical_task_id = _canonical_same_day_dream_mode_task_id(
+            task_id,
+            now_utc,
+        )
+        if canonical_task_id is None:
             continue
         status = str(
             payload.get("release_status")
@@ -1073,7 +1094,7 @@ def _completed_dream_mode_task_ids(
             or ""
         )
         if _status_is_successful(status):
-            completed.add(task_id)
+            completed.add(canonical_task_id)
 
     return completed
 
@@ -1168,8 +1189,12 @@ def _active_dream_mode_task_ids(
     active: set[str] = set()
     for claim in claims:
         task_id = str(getattr(claim, "task_id", ""))
-        if _is_same_day_dream_mode_task_id(task_id, now_utc):
-            active.add(task_id)
+        canonical_task_id = _canonical_same_day_dream_mode_task_id(
+            task_id,
+            now_utc,
+        )
+        if canonical_task_id is not None:
+            active.add(canonical_task_id)
     return active
 
 

@@ -9,6 +9,12 @@ This document publishes the raw measured numbers produced by `tools/run_phase17d
 
 WaggleDance does **not** claim to be conscious, sentient, aware, alive, or AGI. The autonomy mechanisms in this release are bounded engineering primitives.
 
+## Freshness notes
+
+The 2026-06-06 bridge audit observed local Ollama 0.24.0 with these already-installed generation models: `gemma3:4b`, `qwen3:4b`, `llama3.2:3b`, and `llama3.1:8b`. Embedding models `nomic-embed-text:latest` and `all-minilm:latest` were also installed.
+
+This is an inventory check only. It does not rerun `tools/run_phase17d_local_model_sweep.py`, does not replace the 2026-05-05 artifact, and does not upgrade `MEASURED-LOCAL-OLLAMA-PANEL` or any competitive-matrix row. `qwen3:4b` and `llama3.1:8b` were installed on 2026-06-06 but were not measured by the Phase 17D artifact. `gemma3:4b` and `llama3.2:3b` are still installed and present in the Phase 17D panel, but their published numbers remain the 2026-05-05 measurements below.
+
 ## Reproduce
 
 ```

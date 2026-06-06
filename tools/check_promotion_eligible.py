@@ -44,7 +44,6 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (  # noqa: E4
 )
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
 PASS_STATES = {"pass", "passed", "success", "successful", "ok"}
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -400,7 +399,13 @@ def _hex_promotion_acceptance_gate(raw: object) -> dict[str, Any]:
         HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
         errors,
     )
-    _require_bool(raw, "operator_gate_required", True, errors)
+    operator_gate_must_be_required = bool(1)
+    _require_bool(
+        raw,
+        "operator_gate_required",
+        operator_gate_must_be_required,
+        errors,
+    )
     _require_bool(raw, "operator_gate_cleared", False, errors)
     _require_bool(raw, "runtime_authority_granted", False, errors)
     _require_bool(raw, "runtime_traffic_mutation_applied", False, errors)
@@ -514,8 +519,18 @@ def _require_digest(
     errors: list[str],
 ) -> None:
     value = source.get(field)
-    if not isinstance(value, str) or not DIGEST_RE.fullmatch(value):
+    if not isinstance(value, str) or not _is_sha256_digest(value):
         errors.append(f"{field} must be a sha256 digest")
+
+
+def _is_sha256_digest(value: str) -> bool:
+    prefix = "sha256:"
+    digest = value.removeprefix(prefix)
+    return (
+        value.startswith(prefix)
+        and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
 
 
 def _rco_pass_set_gate(

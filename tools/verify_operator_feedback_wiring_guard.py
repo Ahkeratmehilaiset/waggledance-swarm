@@ -32,6 +32,13 @@ OPS_FEEDBACK_EVENT_TYPE = "ops_feedback"
 FEEDBACK_ACTION_TAKEN_EVENT_TYPE = "feedback_action_taken"
 ACTION_SCHEMA_VERSION = "operator_feedback_action_plan.v1"
 VERIFIED_OPERATOR_ID_PREFIX = "bridge"
+NESTED_RELEVANT_PAYLOAD_KEYS = (
+    "ops_feedback",
+    "feedback_event",
+    "feedback_action",
+    "feedback_action_taken",
+    "action_plan",
+)
 GATE_SKIP_TOKENS = (
     "gate_skip",
     "skip_gate",
@@ -251,27 +258,43 @@ def _read_bridge_envelopes(
                 line_no=line_no,
             ))
             continue
-        payload = event.get("payload")
+        payload = _relevant_payload_from(event.get("payload"))
         envelopes.append(BridgeEnvelope(
             line_no=line_no,
             event=event,
-            payload=payload if isinstance(payload, Mapping) else {},
+            payload=payload or {},
         ))
     return envelopes
 
 
 def _raw_event_is_relevant(raw: Mapping[str, Any]) -> bool:
-    payload = raw.get("payload")
-    if isinstance(payload, Mapping) and (
-        payload.get("event_type")
-        in {OPS_FEEDBACK_EVENT_TYPE, FEEDBACK_ACTION_TAKEN_EVENT_TYPE}
-        or payload.get("schema_version") == ACTION_SCHEMA_VERSION
-    ):
+    if _relevant_payload_from(raw.get("payload")) is not None:
         return True
     return raw.get("type") in {
         OPS_FEEDBACK_EVENT_TYPE,
         FEEDBACK_ACTION_TAKEN_EVENT_TYPE,
     }
+
+
+def _relevant_payload_from(payload: Any) -> Mapping[str, Any] | None:
+    for candidate in _payload_candidates(payload):
+        if (
+            candidate.get("event_type")
+            in {OPS_FEEDBACK_EVENT_TYPE, FEEDBACK_ACTION_TAKEN_EVENT_TYPE}
+            or candidate.get("schema_version") == ACTION_SCHEMA_VERSION
+        ):
+            return candidate
+    return None
+
+
+def _payload_candidates(payload: Any) -> Iterable[Mapping[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return
+    yield payload
+    for key in NESTED_RELEVANT_PAYLOAD_KEYS:
+        nested = payload.get(key)
+        if isinstance(nested, Mapping):
+            yield nested
 
 
 def _collect_feedback_records(

@@ -140,6 +140,19 @@ def test_guard_ignores_unrelated_legacy_bridge_schema_lines(tmp_path: Path) -> N
     assert report.issues == ()
 
 
+def test_guard_accepts_nested_ops_feedback_bridge_payload(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    _write_events(events_path, [
+        _event(payload={"ops_feedback": _feedback(feedback_id="fb-001")}),
+    ])
+
+    report = verify_operator_feedback_wiring_guard(events_path)
+
+    assert report.ok is True
+    assert report.checked_bridge_events == 1
+    assert report.ops_feedback_events == 1
+
+
 def test_guard_rejects_free_string_operator_id(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     _write_events(events_path, [
@@ -256,6 +269,36 @@ def test_guard_rejects_fast_track_gate_skip_flags(tmp_path: Path) -> None:
 
     assert report.ok is False
     assert report.fast_track_gate_skip_ok is False
+    assert {issue.code for issue in report.issues} >= {
+        "fast_track_authority_grant",
+        "fast_track_gate_skip",
+    }
+
+
+def test_guard_rejects_gate_skip_in_nested_action_payload(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    _write_events(events_path, [
+        _event(payload={"ops_feedback": _feedback(feedback_id="fb-001")}),
+        _event(
+            payload={
+                "feedback_action": _action(
+                    feedback_id="fb-001",
+                    extra={
+                        "gate_decision": "skip",
+                        "runtime_authority_granted": True,
+                    },
+                )
+            },
+            ts_utc="2026-06-06T01:15:00Z",
+        ),
+    ])
+
+    report = verify_operator_feedback_wiring_guard(events_path)
+
+    assert report.ok is False
+    assert report.checked_bridge_events == 2
+    assert report.ops_feedback_events == 1
+    assert report.feedback_action_events == 1
     assert {issue.code for issue in report.issues} >= {
         "fast_track_authority_grant",
         "fast_track_gate_skip",

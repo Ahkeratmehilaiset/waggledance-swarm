@@ -36,6 +36,12 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     evaluate_paths,
     load_charter,
 )
+from waggledance.core.solver_synthesis.hex_cell_competition import (  # noqa: E402
+    HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+    HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+    HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+    HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
@@ -279,6 +285,9 @@ def _evaluate_promotion_eligibility(
         rco_agents=rco_agent_set,
         author_agent=author_agent,
     )
+    hex_acceptance_gate = _hex_promotion_acceptance_gate(
+        pr_status.get("hex_cell_promotion_acceptance")
+    )
 
     reasons: list[str] = []
     if not head_gate["ok"]:
@@ -308,6 +317,11 @@ def _evaluate_promotion_eligibility(
         reasons.append("missing exact-head RCO_PASS from recognized non-author RCO")
     if not bridge_consensus_gate["ok"]:
         reasons.append("bridge consensus incomplete")
+    if not hex_acceptance_gate["ok"]:
+        reasons.append(
+            "hex promotion acceptance failed: "
+            f"{hex_acceptance_gate['reason']}"
+        )
 
     eligible = not reasons
     report: dict[str, Any] = {
@@ -339,11 +353,187 @@ def _evaluate_promotion_eligibility(
             "peer_veto": dict(peer_gate),
             "rco_pass": rco_pass_gate,
             "bridge_consensus": bridge_consensus_gate,
+            "hex_promotion_acceptance": hex_acceptance_gate,
         },
     }
     for flag in SAFETY_FLAGS:
         report[flag] = False
     return report
+
+
+def _hex_promotion_acceptance_gate(raw: object) -> dict[str, Any]:
+    if raw is None:
+        return {
+            "ok": True,
+            "decision": "hex_promotion_acceptance_not_present",
+            "present": False,
+            "reason": "",
+        }
+    if not isinstance(raw, Mapping):
+        return _hex_acceptance_failure(
+            "hex_cell_promotion_acceptance must be object"
+        )
+
+    errors: list[str] = []
+    _require_exact(
+        raw,
+        "schema_version",
+        HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+        errors,
+    )
+    _require_exact(
+        raw,
+        "evidence_digest_algorithm",
+        HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        errors,
+    )
+    _require_exact(
+        raw,
+        "promotion_acceptance_status",
+        HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+        errors,
+    )
+    _require_exact(
+        raw,
+        "required_next_gate",
+        HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+        errors,
+    )
+    _require_bool(
+        raw,
+        "operator_gate_required",
+        _hex_operator_gate_required_expected(),
+        errors,
+    )
+    _require_bool(raw, "operator_gate_cleared", False, errors)
+    _require_bool(raw, "runtime_authority_granted", False, errors)
+    _require_bool(raw, "runtime_traffic_mutation_applied", False, errors)
+    _require_bool(raw, "candidate_state_mutation_applied", False, errors)
+
+    for field in (
+        "acceptance_id",
+        "competition_id",
+        "cell_id",
+        "capability_id",
+        "accepted_candidate_id",
+    ):
+        _require_non_empty_snapshot_str(raw, field, errors)
+    _require_digest(raw, "competition_evidence_digest", errors)
+    _require_digest(raw, "acceptance_digest", errors)
+
+    acceptance_id = raw.get("acceptance_id")
+    if isinstance(acceptance_id, str) and not acceptance_id.startswith(
+        "hexcellaccept:"
+    ):
+        errors.append("acceptance_id must start with hexcellaccept:")
+
+    rejected = raw.get("rejected_candidate_ids")
+    if not isinstance(rejected, list) or not rejected:
+        errors.append("rejected_candidate_ids must be a non-empty list")
+        rejected_values: list[str] = []
+    else:
+        rejected_values = []
+        for index, candidate_id in enumerate(rejected, 1):
+            if not isinstance(candidate_id, str) or not candidate_id.strip():
+                errors.append(
+                    "rejected_candidate_ids item "
+                    f"{index} must be a non-empty string"
+                )
+            else:
+                rejected_values.append(candidate_id.strip())
+    accepted = raw.get("accepted_candidate_id")
+    if isinstance(accepted, str) and accepted.strip() in rejected_values:
+        errors.append("accepted_candidate_id must not be rejected")
+
+    if errors:
+        return _hex_acceptance_failure(errors[0], errors=errors)
+    return {
+        "ok": True,
+        "decision": "hex_promotion_acceptance_valid",
+        "present": True,
+        "reason": "",
+        "schema_version": raw["schema_version"],
+        "acceptance_id": raw["acceptance_id"],
+        "accepted_candidate_id": raw["accepted_candidate_id"],
+        "rejected_candidate_count": len(rejected_values),
+        "operator_gate_required": raw["operator_gate_required"],
+        "operator_gate_cleared": raw["operator_gate_cleared"],
+        "runtime_authority_granted": raw["runtime_authority_granted"],
+        "runtime_traffic_mutation_applied": raw[
+            "runtime_traffic_mutation_applied"
+        ],
+        "candidate_state_mutation_applied": raw[
+            "candidate_state_mutation_applied"
+        ],
+    }
+
+
+def _hex_acceptance_failure(
+    reason: str,
+    *,
+    errors: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "decision": "hex_promotion_acceptance_invalid",
+        "present": True,
+        "reason": reason,
+        "errors": list(errors or [reason]),
+    }
+
+
+def _hex_operator_gate_required_expected() -> bool:
+    return True
+
+
+def _require_exact(
+    source: Mapping[str, Any],
+    field: str,
+    expected: str,
+    errors: list[str],
+) -> None:
+    if source.get(field) != expected:
+        errors.append(f"{field} must be {expected}")
+
+
+def _require_bool(
+    source: Mapping[str, Any],
+    field: str,
+    expected: bool,
+    errors: list[str],
+) -> None:
+    if source.get(field) is not expected:
+        errors.append(f"{field} must be {str(expected).lower()}")
+
+
+def _require_non_empty_snapshot_str(
+    source: Mapping[str, Any],
+    field: str,
+    errors: list[str],
+) -> None:
+    value = source.get(field)
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{field} must be a non-empty string")
+
+
+def _require_digest(
+    source: Mapping[str, Any],
+    field: str,
+    errors: list[str],
+) -> None:
+    value = source.get(field)
+    if not isinstance(value, str) or not _is_sha256_digest(value):
+        errors.append(f"{field} must be a sha256 digest")
+
+
+def _is_sha256_digest(value: str) -> bool:
+    prefix = "sha256:"
+    digest = value.removeprefix(prefix)
+    return (
+        value.startswith(prefix)
+        and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
 
 
 def _rco_pass_set_gate(

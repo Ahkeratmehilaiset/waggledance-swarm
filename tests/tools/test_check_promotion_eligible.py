@@ -32,6 +32,34 @@ def _status(**overrides: object) -> dict:
     return status
 
 
+def _hex_operator_gate_required_expected() -> bool:
+    return True
+
+
+def _hex_acceptance(**overrides: object) -> dict:
+    acceptance = {
+        "schema_version": "hex_cell_promotion_acceptance.v0",
+        "acceptance_id": "hexcellaccept:hex-thermal:frost-risk:abcdef1234567890",
+        "competition_id": "hexcellcomp:hex-thermal:frost-risk:0123456789abcdef",
+        "cell_id": "hex-thermal",
+        "capability_id": "frost-risk",
+        "accepted_candidate_id": "cand-alpha",
+        "rejected_candidate_ids": ["cand-beta"],
+        "competition_evidence_digest": "sha256:" + "1" * 64,
+        "acceptance_digest": "sha256:" + "2" * 64,
+        "evidence_digest_algorithm": "magma-jcs-subset-v1",
+        "promotion_acceptance_status": "operator_gate_required",
+        "required_next_gate": "solver_provenance_operator_activation",
+        "operator_gate_required": _hex_operator_gate_required_expected(),
+        "operator_gate_cleared": False,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+    acceptance.update(overrides)
+    return acceptance
+
+
 def _event(
     agent: str,
     status: str,
@@ -240,6 +268,62 @@ def test_operator_gated_path_refuses() -> None:
     assert report["eligible"] is False
     assert "path gate failed: denylist hit" in report["reasons"]
     assert report["gate_results"]["paths"]["blocked_paths"] == ["CLAUDE.md"]
+
+
+def test_hex_promotion_acceptance_snapshot_passes_without_authority() -> None:
+    report = _evaluate(
+        status=_status(hex_cell_promotion_acceptance=_hex_acceptance())
+    )
+
+    assert report["eligible"] is True
+    gate = report["gate_results"]["hex_promotion_acceptance"]
+    assert gate["ok"] is True
+    assert gate["decision"] == "hex_promotion_acceptance_valid"
+    assert gate["operator_gate_cleared"] is False
+    assert gate["runtime_authority_granted"] is False
+
+
+def test_hex_promotion_acceptance_refuses_runtime_authority() -> None:
+    report = _evaluate(
+        status=_status(
+            hex_cell_promotion_acceptance=_hex_acceptance(
+                runtime_authority_granted=True
+            )
+        )
+    )
+
+    assert report["eligible"] is False
+    assert (
+        "hex promotion acceptance failed: runtime_authority_granted must be false"
+        in report["reasons"]
+    )
+    assert report["gate_results"]["hex_promotion_acceptance"]["ok"] is False
+
+
+def test_hex_promotion_acceptance_refuses_precleared_operator_gate() -> None:
+    report = _evaluate(
+        status=_status(
+            hex_cell_promotion_acceptance=_hex_acceptance(
+                operator_gate_cleared=True
+            )
+        )
+    )
+
+    assert report["eligible"] is False
+    assert (
+        "hex promotion acceptance failed: operator_gate_cleared must be false"
+        in report["reasons"]
+    )
+
+
+def test_hex_promotion_acceptance_refuses_malformed_snapshot() -> None:
+    report = _evaluate(status=_status(hex_cell_promotion_acceptance="yes"))
+
+    assert report["eligible"] is False
+    assert (
+        "hex promotion acceptance failed: hex_cell_promotion_acceptance must be object"
+        in report["reasons"]
+    )
 
 
 def test_missing_tools_build_consensus_refuses() -> None:

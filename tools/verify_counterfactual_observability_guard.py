@@ -15,6 +15,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.autonomy_growth.counterfactual_replay import (  # noqa: E402
+    A3_LABEL_INSUFFICIENT,
+    A3_LABEL_MEASURED_LOCAL_PARTIAL,
+    A3_LABEL_NONDETERMINISTIC_ORACLE,
     A3_LABEL_RUNTIME_MEASURED,
     COUNTERFACTUAL_DELTA_SCHEMA,
     COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
@@ -46,6 +49,12 @@ _AUTHORITY_FALSE_FIELDS = (
     "external_writes_applied",
     "payload_fields_exported",
 )
+_KNOWN_A3_LABELS = frozenset({
+    A3_LABEL_INSUFFICIENT,
+    A3_LABEL_MEASURED_LOCAL_PARTIAL,
+    A3_LABEL_NONDETERMINISTIC_ORACLE,
+    A3_LABEL_RUNTIME_MEASURED,
+})
 
 
 class CounterfactualObservabilityGuardError(ValueError):
@@ -216,16 +225,16 @@ def _status_summary_from_artifact(
     if status not in COUNTERFACTUAL_OBSERVABILITY_STATES:
         blockers.append("status_summary_unknown_status")
         status = "insufficient"
+    a3_label = artifact.get("a3_label")
+    if not isinstance(a3_label, str) or a3_label not in _KNOWN_A3_LABELS:
+        blockers.append("status_summary_unknown_a3_label")
+        a3_label = A3_LABEL_INSUFFICIENT
     return {
         "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
         "source_available": artifact.get("source_available") is True,
         "compute_status": str(artifact.get("compute_status") or "unknown"),
         "status": status,
-        "a3_label": (
-            artifact.get("a3_label")
-            if isinstance(artifact.get("a3_label"), str)
-            else "INSUFFICIENT"
-        ),
+        "a3_label": a3_label,
         "sample_count": _strict_nonnegative_int(
             artifact,
             "sample_count",

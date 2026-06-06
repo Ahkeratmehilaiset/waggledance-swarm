@@ -141,6 +141,60 @@ def test_guard_rejects_authority_flags_on_status_summary() -> None:
     assert "runtime_authority_granted_must_be_false" in report["blockers"]
 
 
+def test_guard_bounds_unknown_status_summary_a3_label() -> None:
+    status = {
+        "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
+        "source_available": True,
+        "compute_status": "computed",
+        "status": "runtime_measured",
+        "a3_label": "gpt-4o-secret-raw-label",
+        "sample_count": 24,
+        "divergence_count": 3,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest_present": True,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+    }
+
+    report = verify_counterfactual_observability_artifact(status)
+    rendered = json.dumps(report, sort_keys=True)
+
+    assert report["ok"] is False
+    assert "status_summary_unknown_a3_label" in report["blockers"]
+    assert report["observability_summary"]["a3_label"] == "INSUFFICIENT"
+    assert "gpt-4o-secret-raw-label" not in rendered
+
+
+def test_guard_bounds_non_string_status_summary_a3_label() -> None:
+    status = {
+        "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
+        "source_available": True,
+        "compute_status": "computed",
+        "status": "runtime_measured",
+        "a3_label": ["RUNTIME_MEASURED"],
+        "sample_count": 24,
+        "divergence_count": 3,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest_present": True,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+    }
+
+    report = verify_counterfactual_observability_artifact(status)
+
+    assert report["ok"] is False
+    assert "status_summary_unknown_a3_label" in report["blockers"]
+    assert report["observability_summary"]["a3_label"] == "INSUFFICIENT"
+
+
 def test_guard_rejects_raw_fields_in_promotion_summary() -> None:
     report = verify_counterfactual_observability_artifact({
         "schema_version": "magma.counterfactual_promotion_summary.v0",

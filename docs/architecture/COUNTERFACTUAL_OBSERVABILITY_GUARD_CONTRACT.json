@@ -43,7 +43,8 @@
         "report omits per_arm rows",
         "report omits divergences",
         "report omits candidate/incumbent solver hashes",
-        "report omits digest strings from the input artifact"
+        "report omits digest strings from the input artifact",
+        "unknown status-summary a3_label values fail closed and are not exported"
       ]
     },
     {

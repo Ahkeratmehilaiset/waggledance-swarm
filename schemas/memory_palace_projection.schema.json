@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/memory_palace_projection.schema.json",
+  "title": "Memory Palace projection",
+  "description": "A read-side hierarchy projection over existing WD memory metadata. MAGMA, MemoryService, FAISS, and Chroma remain the sources of truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_of_truth",
+    "runtime_authority",
+    "storage_write_authority",
+    "bridge_write_authority",
+    "gate_skip_authority",
+    "promotion_authority",
+    "nodes",
+    "placements"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "memory_palace_projection.v1"
+    },
+    "source_of_truth": {
+      "type": "string",
+      "const": "projection_only"
+    },
+    "runtime_authority": {"type": "boolean", "const": false},
+    "storage_write_authority": {"type": "boolean", "const": false},
+    "bridge_write_authority": {"type": "boolean", "const": false},
+    "gate_skip_authority": {"type": "boolean", "const": false},
+    "promotion_authority": {"type": "boolean", "const": false},
+    "nodes": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/palace_node"}
+    },
+    "placements": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/memory_placement"}
+    }
+  },
+  "definitions": {
+    "palace_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "kind",
+        "label",
+        "parent_id",
+        "selectors",
+        "tags",
+        "source_refs"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["wing", "hall", "room", "closet", "drawer"]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "parent_id": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+            }
+          ]
+        },
+        "selectors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tags": {"$ref": "#/definitions/non_empty_string_array"},
+            "cell_id": {"$ref": "#/definitions/non_empty_string_array"},
+            "capsule_context": {"$ref": "#/definitions/non_empty_string_array"},
+            "source_type": {"$ref": "#/definitions/non_empty_string_array"},
+            "vector_kind": {"$ref": "#/definitions/non_empty_string_array"},
+            "anchor_status": {"$ref": "#/definitions/non_empty_string_array"},
+            "tier": {"$ref": "#/definitions/non_empty_string_array"}
+          }
+        },
+        "tags": {"$ref": "#/definitions/string_array"},
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:/#@+-]{1,256}$"
+          }
+        },
+        "metadata": {"$ref": "#/definitions/authority_free_metadata"}
+      }
+    },
+    "memory_placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_id",
+        "palace_node_id",
+        "confidence",
+        "placement_source"
+      ],
+      "properties": {
+        "memory_id": {"type": "string", "minLength": 1},
+        "vector_node_id": {"type": "string", "minLength": 1},
+        "palace_node_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "placement_source": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "tag_selector",
+            "hex_cell",
+            "capsule_context",
+            "source_type",
+            "vector_kind",
+            "anchor_status",
+            "tier"
+          ]
+        },
+        "dedup_anchor": {"type": "string", "minLength": 1},
+        "metadata": {"$ref": "#/definitions/authority_free_metadata"}
+      }
+    },
+    "authority_free_metadata": {
+      "type": "object",
+      "properties": {
+        "runtime_authority": {"not": {}},
+        "storage_write_authority": {"not": {}},
+        "bridge_write_authority": {"not": {}},
+        "gate_skip_authority": {"not": {}},
+        "promotion_authority": {"not": {}}
+      },
+      "additionalProperties": {"$ref": "#/definitions/metadata_value"}
+    },
+    "metadata_value": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "number"},
+        {"type": "string"},
+        {
+          "type": "array",
+          "items": {"$ref": "#/definitions/metadata_value"}
+        },
+        {"$ref": "#/definitions/authority_free_metadata"}
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

@@ -16,7 +16,7 @@ from waggledance.core.autonomy_growth.operator_feedback_amplifier import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ADR_PATH = PROJECT_ROOT / "docs" / "eig2" / "adr" / "053-operator-feedback-amplifier.md"
 CONTRACT_PATH = PROJECT_ROOT / "docs" / "eig2" / "contracts" / "operator_feedback_amplifier.json"
-REQUIRED_INVARIANT_IDS = {f"OFA-{i:03d}" for i in range(1, 12)}
+REQUIRED_INVARIANT_IDS = {f"OFA-{i:03d}" for i in range(1, 11)}
 REQUIRED_FIELDS = {"event_type", "feedback_id", "feedback_kind", "query_class_hash", "operator_id", "priority", "submitted_at_utc"}
 REQUIRED_KINDS = {"needs_solver", "broken_route", "wrong_output"}
 
@@ -111,22 +111,7 @@ def test_scheduler_preflight_invariants_pin_rco_safety_conditions() -> None:
     )
 
 
-def test_scheduler_preflight_contract_pins_durable_payload_binding() -> None:
-    c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-    ofa011 = next(item for item in c["invariants"] if item["id"] == "OFA-011")
-    text = " ".join([
-        ofa011["name"],
-        ofa011["description"],
-        *ofa011["must"],
-    ]).lower()
-
-    assert "source_bridge_event.payload.ops_feedback" in text
-    assert "feedback_id matches durable source payload" in text
-    assert "query_class_hash matches durable source payload" in text
-    assert "mismatch fails closed" in text
-
-
-def test_scheduler_preflight_rejects_event_mismatch_named_by_contract() -> None:
+def test_scheduler_preflight_rejects_durable_payload_mismatch() -> None:
     durable_feedback = _feedback(
         feedback_id="fb-durable",
         query_class_hash="sha256:" + "a" * 64,

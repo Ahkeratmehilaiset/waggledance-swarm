@@ -41,6 +41,13 @@ from tools.hex_shadow_subdivision_replay import (  # noqa: E402
     verify_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
 )
+from tools.build_runtime_gap_scheduler_candidate_artifact import (  # noqa: E402
+    build_runtime_gap_scheduler_candidate_artifact,
+    validate_runtime_gap_scheduler_candidate_artifact,
+)
+from tools.run_runtime_gap_detector_report import (  # noqa: E402
+    build_runtime_gap_detector_report,
+)
 from tools.run_future_scale_composite_path_benchmark import (  # noqa: E402
     build_composite_path_benchmark,
 )
@@ -6836,6 +6843,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md",
                 "Operator runbook documents read-only autogrowth alert thresholds.",
             ),
+            (
+                "tools/run_runtime_gap_detector_report.py",
+                "Read-only runtime gap signal report without detector writes, queue writes, or scheduler ticks.",
+            ),
+            (
+                "tools/build_runtime_gap_scheduler_candidate_artifact.py",
+                "Path-free scheduler-candidate preview artifact renderer for validated runtime gap reports; no enqueue, scheduler tick, bridge write, or fast-track gate skip.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -7039,16 +7054,28 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_ops_alert_state_smoke = build_low_risk_autogrowth_ops_alert_state_smoke(
         root
     )
+    low_risk_gap_report = build_runtime_gap_detector_report()
+    low_risk_scheduler_candidate_artifact = (
+        build_runtime_gap_scheduler_candidate_artifact(low_risk_gap_report)
+    )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
     low_risk_autonomy_proof["ops_alert_state_smoke"] = low_risk_ops_alert_state_smoke
+    low_risk_autonomy_proof["runtime_gap_report"] = low_risk_gap_report
+    low_risk_autonomy_proof["scheduler_candidate_artifact_preview"] = (
+        low_risk_scheduler_candidate_artifact
+    )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
         and low_risk_runtime_boundary_smoke.get("ok") is True
         and low_risk_operator_metrics_smoke.get("ok") is True
         and low_risk_alert_runbook_smoke.get("ok") is True
         and low_risk_ops_alert_state_smoke.get("ok") is True
+        and validate_runtime_gap_scheduler_candidate_artifact(
+            low_risk_scheduler_candidate_artifact
+        )
+        == []
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
@@ -7293,8 +7320,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "read-only dashboard ops overlay with local fallback alert "
                 "state, an optional sanitized Alertmanager alert feed, "
                 "fixed-label feed provider-health metrics, operator alert "
-                "thresholds, and proof fixtures; unrestricted "
-                "runtime authority is not claimed."
+                "thresholds, a read-only runtime gap detector report, and a "
+                "path-free scheduler-candidate preview artifact; "
+                "unrestricted runtime authority is not claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -7320,10 +7348,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "The alert thresholds are read-only Prometheus/operator "
                 "runbook guidance; they add no mutating endpoints or runtime "
                 "authority.",
+                "The runtime gap scheduler-candidate artifact is preview-only; "
+                "it does not enqueue growth intents, run the scheduler, append "
+                "bridge events, or grant fast-track gate skips.",
             ),
             next_smallest_pr=(
-                "Add an offline autogrowth alert-feed drill evidence verifier "
-                "without endpoint fetches or controls."
+                "Add a template-only bridge-event renderer for the runtime gap "
+                "scheduler-candidate preview without appending it or granting "
+                "scheduler authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

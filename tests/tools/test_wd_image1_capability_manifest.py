@@ -1405,13 +1405,25 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
         capability["proof"]["ops_alert_state_smoke"]["runtime_authority_changed"]
         is False
     )
-    assert "alert-feed drill evidence verifier" in capability["next_smallest_pr"]
+    gap_report = capability["proof"]["runtime_gap_report"]
+    assert gap_report["scheduler_candidate_count"] == 1
+    assert gap_report["queue_writes_applied"] is False
+    preview = capability["proof"]["scheduler_candidate_artifact_preview"]
+    assert preview["scheduler_candidate_count"] == 1
+    assert preview["scheduler_enqueue_allowed"] is False
+    assert preview["scheduler_tick_allowed"] is False
+    assert preview["bridge_event_written"] is False
+    assert preview["fast_track_priority"] is False
+    assert preview["scheduler_candidates"][0]["queue_priority"] == "normal"
+    assert preview["scheduler_candidates"][0]["gate_skip_allowed"] is False
+    assert "template-only bridge-event renderer" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert "local fallback alert state" in capability["safe_statement"]
     assert "optional sanitized Alertmanager alert feed" in (
         capability["safe_statement"]
     )
     assert "operator alert thresholds" in capability["safe_statement"]
+    assert "scheduler-candidate preview artifact" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 
 

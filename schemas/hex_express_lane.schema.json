@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/hex_express_lane.schema.json",
+  "title": "Hex express-lane route plan",
+  "description": "Simulation-only long-range hex routing plan. It records why a distant specialist cell may be queried later, but never mutates topology, calls solvers, skips gates, or carries clinical decision authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "source_cell_id",
+    "selected",
+    "route",
+    "rejected_edges",
+    "request",
+    "no_runtime_mutation",
+    "gate_skip_authority",
+    "solver_call_authority",
+    "clinical_decision_authority",
+    "receipt_required"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "hex_express_lane_plan.v1"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^hexexpr_[a-f0-9]{12}$"
+    },
+    "source_cell_id": {"$ref": "#/definitions/cell_id"},
+    "selected": {"type": "boolean"},
+    "route": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/definitions/route"}
+      ]
+    },
+    "rejected_edges": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/rejected_edge"}
+    },
+    "request": {"$ref": "#/definitions/request"},
+    "no_runtime_mutation": {"type": "boolean", "const": true},
+    "gate_skip_authority": {"type": "boolean", "const": false},
+    "solver_call_authority": {"type": "boolean", "const": false},
+    "clinical_decision_authority": {"type": "boolean", "const": false},
+    "receipt_required": {"type": "boolean", "const": true}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"selected": {"const": true}},
+        "required": ["selected"]
+      },
+      "then": {
+        "properties": {"route": {"$ref": "#/definitions/route"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"selected": {"const": false}},
+        "required": ["selected"]
+      },
+      "then": {
+        "properties": {"route": {"type": "null"}}
+      }
+    }
+  ],
+  "definitions": {
+    "cell_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+    },
+    "edge_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+    },
+    "tag_array": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/tag"}
+    },
+    "cost_class": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_cell_id",
+        "intent_tags",
+        "required_capability_tags",
+        "trust_min",
+        "freshness_max_age_days",
+        "cost_cap",
+        "allow_clinical_decision"
+      ],
+      "properties": {
+        "source_cell_id": {"$ref": "#/definitions/cell_id"},
+        "intent_tags": {"$ref": "#/definitions/tag_array"},
+        "required_capability_tags": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/tag"}
+        },
+        "trust_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "freshness_max_age_days": {"type": "integer", "minimum": 0},
+        "cost_cap": {"$ref": "#/definitions/cost_class"},
+        "allow_clinical_decision": {"type": "boolean", "const": false}
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "edge_id",
+        "source_cell_id",
+        "target_cell_id",
+        "matched_capability_tags",
+        "trust_score",
+        "freshness_age_days",
+        "cost_class",
+        "rationale",
+        "selection_reason",
+        "receipt_required",
+        "no_runtime_mutation",
+        "gate_skip_authority",
+        "solver_call_authority",
+        "clinical_decision_authority"
+      ],
+      "properties": {
+        "edge_id": {"$ref": "#/definitions/edge_id"},
+        "source_cell_id": {"$ref": "#/definitions/cell_id"},
+        "target_cell_id": {"$ref": "#/definitions/cell_id"},
+        "matched_capability_tags": {"$ref": "#/definitions/tag_array"},
+        "trust_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "freshness_age_days": {"type": "integer", "minimum": 0},
+        "cost_class": {"$ref": "#/definitions/cost_class"},
+        "rationale": {"type": "string"},
+        "selection_reason": {
+          "type": "string",
+          "const": "express_lane_constraints_satisfied"
+        },
+        "receipt_required": {"type": "boolean", "const": true},
+        "no_runtime_mutation": {"type": "boolean", "const": true},
+        "gate_skip_authority": {"type": "boolean", "const": false},
+        "solver_call_authority": {"type": "boolean", "const": false},
+        "clinical_decision_authority": {"type": "boolean", "const": false}
+      }
+    },
+    "rejected_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edge_id", "target_cell_id", "reason"],
+      "properties": {
+        "edge_id": {"$ref": "#/definitions/edge_id"},
+        "target_cell_id": {"$ref": "#/definitions/cell_id"},
+        "reason": {
+          "type": "string",
+          "enum": [
+            "source_cell_mismatch",
+            "target_is_source_cell",
+            "receipt_not_required",
+            "runtime_mutation_authority",
+            "gate_skip_authority",
+            "solver_call_authority",
+            "clinical_decision_authority",
+            "trust_below_minimum",
+            "freshness_too_old",
+            "cost_above_cap",
+            "missing_required_capability",
+            "intent_capability_mismatch"
+          ]
+        }
+      }
+    }
+  }
+}

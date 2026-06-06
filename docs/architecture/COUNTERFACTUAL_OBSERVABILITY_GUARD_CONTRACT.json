@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Counterfactual observability guard contract (V12 A3)",
+  "schema_version": "wd.counterfactual_observability_guard.contract.v1",
+  "guard_schema_version": "wd.counterfactual_observability_guard.v1",
+  "input_schemas": [
+    "magma.counterfactual_delta.v0",
+    "magma.counterfactual_observability_status.v0",
+    "magma.counterfactual_promotion_summary.v0"
+  ],
+  "purpose": "Verify one counterfactual replay observability artifact and emit a path-free, privacy-safe summary without granting runtime authority.",
+  "invariants": [
+    {
+      "id": "CFOG-001",
+      "name": "path_free_output",
+      "must": [
+        "report never records source path",
+        "CLI JSON output never echoes artifact path",
+        "source_path_recorded remains false"
+      ]
+    },
+    {
+      "id": "CFOG-002",
+      "name": "digest_rederived",
+      "must": [
+        "raw magma.counterfactual_delta.v0 canonical_digest is recomputed",
+        "missing or mismatched canonical_digest fails closed",
+        "malformed sha256 digests fail closed"
+      ]
+    },
+    {
+      "id": "CFOG-003",
+      "name": "non_finite_rejected",
+      "must": [
+        "NaN and Infinity JSON values fail closed",
+        "non-finite in-memory floats fail closed"
+      ]
+    },
+    {
+      "id": "CFOG-004",
+      "name": "privacy_safe_summary",
+      "must": [
+        "report omits per_arm rows",
+        "report omits divergences",
+        "report omits candidate/incumbent solver hashes",
+        "report omits digest strings from the input artifact"
+      ]
+    },
+    {
+      "id": "CFOG-005",
+      "name": "no_runtime_authority",
+      "must": [
+        "runtime_authority_granted remains false",
+        "external_writes_applied remains false",
+        "bridge_event_written remains false",
+        "payload_fields_exported remains false"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Running counterfactual replay",
+    "Changing promotion decisions",
+    "Scheduler enqueue or tick execution",
+    "Bridge event append/write",
+    "Claim upgrade to future-swarm autonomy"
+  ],
+  "related_files": [
+    "waggledance/core/autonomy_growth/counterfactual_replay.py",
+    "tools/run_v12_a3_counterfactual_axis_proof.py",
+    "tests/tools/test_verify_counterfactual_observability_guard.py"
+  ]
+}

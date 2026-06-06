@@ -431,3 +431,136 @@ def test_validator_allows_folded_expansion_provenance_partial_coverage() -> None
         for count in report["coverage"]["critical_defect_type_counts"].values()
     )
     assert report["coverage"]["privacy_canary_count"] >= 2
+    assert report["expansion_summary"]["is_expansion"] is True
+    assert report["expansion_summary"]["label"] == "phase_d_expansion_2026_05_23"
+    assert report["expansion_summary"]["status"] == "folded_into_v0"
+    assert report["expansion_summary"]["fold_in"]["status"] == "not_requested"
+
+
+def test_validator_reports_folded_expansion_summary_against_v0() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(EXPANSION),
+            "--expectations",
+            str(EXPANSION_EXPECTATIONS),
+            "--folded-into-corpus",
+            str(CORPUS),
+            "--folded-into-expectations",
+            str(EXPECTATIONS),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(ROOT) not in result.stdout
+    report = json.loads(result.stdout)
+    summary = report["expansion_summary"]
+    assert summary["is_expansion"] is True
+    assert summary["label"] == "phase_d_expansion_2026_05_23"
+    assert summary["expectations_label"] == "phase_d_expansion_2026_05_23"
+    assert summary["status"] == "folded_into_v0"
+    assert summary["folded_into_v0_claim"] is True
+    assert summary["case_count"] == 8
+    assert summary["expectation_count"] == 8
+    assert summary["fold_in"] == {
+        "status": "pass",
+        "missing_case_count": 0,
+        "missing_expectation_count": 0,
+        "error_count": 0,
+    }
+    assert summary["expected_gate_counts"] == {
+        "allow": 1,
+        "refuse": 6,
+        "require_approval": 1,
+    }
+    assert summary["defect_type_counts"]["payload_leak"] == 2
+
+
+def test_validator_rejects_folded_expansion_missing_from_v0(tmp_path: Path) -> None:
+    target_corpus = copy.deepcopy(_load_corpus(CORPUS))
+    removed_case_id = "case:adv:payload_leak:004"
+    target_corpus["cases"] = [
+        case for case in target_corpus["cases"] if case["case_id"] != removed_case_id
+    ]
+    target_path = tmp_path / "target_corpus.json"
+    _write_json(target_path, target_corpus)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(EXPANSION),
+            "--expectations",
+            str(EXPANSION_EXPECTATIONS),
+            "--folded-into-corpus",
+            str(target_path),
+            "--folded-into-expectations",
+            str(EXPECTATIONS),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "expansion fold-in: target corpus missing case_id values" in combined
+    assert removed_case_id in combined
+    assert str(target_path) not in combined
+
+
+def test_validator_requires_both_fold_in_targets() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(EXPANSION),
+            "--expectations",
+            str(EXPANSION_EXPECTATIONS),
+            "--folded-into-corpus",
+            str(CORPUS),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "folded corpus and expectations targets are both required" in result.stderr
+
+
+def test_validator_rejects_mismatched_expansion_labels(tmp_path: Path) -> None:
+    expectations = copy.deepcopy(_load_expectations(EXPANSION_EXPECTATIONS))
+    expectations["expansion_label"] = "phase_d_wrong_label"
+    path = tmp_path / "bad_expansion_expectations.json"
+    _write_json(path, expectations)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(EXPANSION),
+            "--expectations",
+            str(path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "expectations: expansion_label must match corpus expansion_label" in result.stderr

@@ -120,6 +120,15 @@ operator-owned peer-review handoff. It must keep:
   outputs, replacement maps, and deterministic raw-query digests out of the
   serialized handoff.
 
+When `--json` is set and admission is rejected, the importer still exits
+nonzero and writes the human failure line to stderr, but stdout contains a
+sanitized admission-status JSON object. That failure status records the
+contract digest, a `blocker_class` from the admission contract's
+`rejection_modes.reason_code` values, and the same no-authority/privacy flags
+as a successful report. It must not echo local paths, operator decision ids,
+payload text, raw context, raw solver outputs, replacement maps, deterministic
+raw-query digests, or private marker strings.
+
 A receiver must reject the admission attempt on schema failure, missing
 sanitization inventory, any relaxed payload/raw-material flag, stale or future
 timestamps, share-id or purpose mismatch, source-manifest digest drift,

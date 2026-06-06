@@ -20,6 +20,7 @@ from waggledance.core.magma.share_manifest import (  # noqa: E402
     DEFAULT_IMPORT_MAX_AGE_HOURS,
     IMPORT_HANDOFF_DECISIONS,
     PURPOSES,
+    build_magma_share_import_failed_admission_status_summary,
     build_magma_share_manifest_import_report,
     write_magma_share_import_peer_review_handoff,
 )
@@ -120,8 +121,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 + ", ".join(missing)
             )
 
-    now_utc = _parse_utc(args.now) if args.now else None
     try:
+        now_utc = _parse_utc(args.now) if args.now else None
         report = build_magma_share_manifest_import_report(
             share_manifest_path=args.share_manifest,
             source_manifest_path=args.source_manifest,
@@ -148,6 +149,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 now_utc=now_utc,
             )
     except (OSError, ValueError) as exc:
+        if args.json:
+            status = build_magma_share_import_failed_admission_status_summary(
+                reason=str(exc),
+                max_age_hours=args.max_age_hours,
+                expected_share_id=args.expected_share_id,
+                expected_purpose=args.expected_purpose,
+            )
+            print(json.dumps(status, indent=2, sort_keys=True))
         print(f"magma share manifest import FAILED: {exc}", file=sys.stderr)
         return 1
 

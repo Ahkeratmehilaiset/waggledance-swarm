@@ -597,6 +597,59 @@ def build_magma_share_import_admission_status_summary(
     }
 
 
+def build_magma_share_import_failed_admission_status_summary(
+    *,
+    reason: str,
+    max_age_hours: int = DEFAULT_IMPORT_MAX_AGE_HOURS,
+    expected_share_id: str | None = None,
+    expected_purpose: str | None = None,
+) -> dict[str, Any]:
+    """Return a sanitized fail-closed admission status for rejected imports."""
+    safe_max_age_hours = _safe_import_status_max_age_hours(max_age_hours)
+    safe_expected_share_id = _safe_import_status_expected_share_id(
+        expected_share_id
+    )
+    safe_expected_purpose = (
+        expected_purpose if expected_purpose in PURPOSES else None
+    )
+    admission_contract = _replay_admission_contract(
+        max_age_hours=safe_max_age_hours,
+        expected_share_id=safe_expected_share_id,
+        expected_purpose=safe_expected_purpose,
+    )
+    blocker_class = _classify_share_import_failure_reason(reason)
+    return {
+        "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "source": "magma_share_manifest_import_failure",
+        "status": "rejected",
+        "severity": "warning",
+        "ok": False,
+        "blocker_class": blocker_class,
+        "blockers": [blocker_class],
+        "controls_present": False,
+        "transport_enabled": False,
+        "operator_handoff_required_for_peer_review": True,
+        "admission_contract": admission_contract,
+        "admission_contract_digest": sha256_digest(admission_contract),
+        "max_age_hours": safe_max_age_hours,
+        "expected_share_id_configured": safe_expected_share_id is not None,
+        "expected_purpose_configured": safe_expected_purpose is not None,
+        "entry_count": 0,
+        "context_verified": False,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
 def build_magma_share_import_handoff_status_summary(
     handoff: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     *,
@@ -1232,6 +1285,69 @@ def _classify_import_admission_blocker(reason: str) -> str:
     if "purpose" in reason or "share_id" in reason:
         return "identity_or_purpose_invalid"
     return "import_report_invalid"
+
+
+def _classify_share_import_failure_reason(reason: str) -> str:
+    normalized = reason.lower()
+    if "expected_share_id" in normalized:
+        return "expected_share_id_mismatch"
+    if "expected_purpose" in normalized:
+        return "expected_purpose_mismatch"
+    if "stale" in normalized or "timestamp is in the future" in normalized:
+        return "stale_or_future_manifest"
+    if "source receipt manifest" in normalized or "source manifest" in normalized:
+        return "source_receipt_manifest_verification_failed"
+    if "sanitized_source_manifest_digest" in normalized:
+        return "sanitized_source_manifest_digest_context_drift"
+    if "share manifest entry count" in normalized:
+        return "share_manifest_entry_count_context_drift"
+    if "evaluation_result_digest context drift" in normalized:
+        return "evaluation_result_digest_context_drift"
+    if "receipt_digest context drift" in normalized:
+        return "receipt_digest_context_drift"
+    if any(
+        token in normalized
+        for token in (
+            "subject_type",
+            "risk_class",
+            "expected_gate",
+            "actual_gate",
+            "verdict",
+            "categorical",
+        )
+    ):
+        return "categorical_context_drift"
+    if any(
+        token in normalized
+        for token in (
+            "payload",
+            "raw_",
+            "raw material",
+            "replacement_map",
+            "export_policy",
+            "sanitization",
+        )
+    ):
+        return "raw_material_export_or_policy_relaxation"
+    return "schema_error"
+
+
+def _safe_import_status_max_age_hours(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return DEFAULT_IMPORT_MAX_AGE_HOURS
+    if value <= 0 or value > DEFAULT_IMPORT_MAX_AGE_HOURS:
+        return DEFAULT_IMPORT_MAX_AGE_HOURS
+    return value
+
+
+def _safe_import_status_expected_share_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        _ensure_ref("expected_share_id", value)
+    except ValueError:
+        return None
+    return value
 
 
 def _empty_import_handoff_status_summary(source: str) -> dict[str, Any]:

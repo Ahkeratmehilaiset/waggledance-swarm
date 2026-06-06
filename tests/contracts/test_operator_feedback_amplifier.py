@@ -5,6 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from waggledance.core.autonomy_growth.operator_feedback_amplifier import (
+    OPS_FEEDBACK_EVENT_TYPE,
+    OperatorFeedbackValidationError,
+    build_operator_feedback_scheduler_preflight,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ADR_PATH = PROJECT_ROOT / "docs" / "eig2" / "adr" / "053-operator-feedback-amplifier.md"
 CONTRACT_PATH = PROJECT_ROOT / "docs" / "eig2" / "contracts" / "operator_feedback_amplifier.json"
@@ -103,9 +111,58 @@ def test_scheduler_preflight_invariants_pin_rco_safety_conditions() -> None:
     )
 
 
+def test_scheduler_preflight_rejects_durable_payload_mismatch() -> None:
+    durable_feedback = _feedback(
+        feedback_id="fb-durable",
+        query_class_hash="sha256:" + "a" * 64,
+        operator_id="bridge:operator",
+    )
+    supplied_feedback = _feedback(
+        feedback_id="fb-supplied",
+        query_class_hash="sha256:" + "b" * 64,
+        operator_id="bridge:operator",
+    )
+    source = _bridge_event(durable_feedback)
+
+    with pytest.raises(OperatorFeedbackValidationError, match="durable source"):
+        build_operator_feedback_scheduler_preflight(
+            supplied_feedback,
+            source_bridge_event=source,
+            durable_bridge_events=[source],
+        )
+
+
 def test_remaining_out_of_scope_integrations_are_precise() -> None:
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     out_of_scope = " ".join(c["out_of_scope"]).lower()
     assert "bridge event writer integration" in out_of_scope
     assert "autogrowth scheduler execution/enqueue" in out_of_scope
     assert "operator ui" in out_of_scope
+
+
+def _feedback(**overrides: str) -> dict[str, str]:
+    base = {
+        "event_type": OPS_FEEDBACK_EVENT_TYPE,
+        "feedback_id": "fb-001",
+        "feedback_kind": "needs_solver",
+        "query_class_hash": "sha256:" + "a" * 64,
+        "operator_id": "bridge:operator",
+        "priority": "high",
+        "submitted_at_utc": "2026-06-05T12:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+def _bridge_event(feedback: dict[str, str]) -> dict[str, object]:
+    return {
+        "ts_utc": "2026-06-05T12:00:00Z",
+        "agent": "operator",
+        "type": "message",
+        "task_id": "operator-feedback-contract-test",
+        "status": "ops_feedback_received",
+        "message": "operator feedback",
+        "agent_uuid": "",
+        "session_id": "",
+        "payload": {"ops_feedback": feedback},
+    }

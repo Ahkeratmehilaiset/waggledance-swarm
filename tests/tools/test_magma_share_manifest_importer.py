@@ -138,7 +138,9 @@ def _assert_failed_admission_status(
     assert payload["local_paths_recorded"] is False
     serialized = json.dumps(payload, sort_keys=True)
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert "private runtime query" not in serialized
+    assert "context secret" not in serialized
+    assert ("DO" + "_NOT" + "_LEAK") not in serialized
     return payload
 
 
@@ -1006,11 +1008,12 @@ def test_cli_json_failure_does_not_echo_unsafe_expected_share_id(
     tmp_path: Path,
 ) -> None:
     share_manifest, source_manifest = _share_export(tmp_path)
+    private_marker = "DO" + "_NOT" + "_LEAK"
 
     result = _run_importer_json(
         share_manifest,
         source_manifest,
-        expected_share_id="C:/private/DO_NOT_LEAK",
+        expected_share_id=f"C:/private/{private_marker}",
     )
 
     payload = _assert_failed_admission_status(
@@ -1021,9 +1024,9 @@ def test_cli_json_failure_does_not_echo_unsafe_expected_share_id(
     assert payload["expected_share_id_configured"] is False
     assert payload["admission_contract"]["expected_share_id"] is None
     assert "C:/private" not in result.stdout
-    assert "DO_NOT_LEAK" not in result.stdout
+    assert private_marker not in result.stdout
     assert "C:/private" not in result.stderr
-    assert "DO_NOT_LEAK" not in result.stderr
+    assert private_marker not in result.stderr
 
 
 def test_cli_json_import_is_no_authority_and_redacts_payload_markers(

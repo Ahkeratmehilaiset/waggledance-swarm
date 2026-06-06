@@ -186,6 +186,8 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
     boundary_blockers = _boundary_blockers(verification_report)
     boundary_blockers.extend(_recursive_boundary_blockers(verification_report))
     contract_blockers = _verification_report_contract_blockers(verification_report)
+    contract_blockers.extend(_token_list_schema_blockers(verification_report, "blockers"))
+    contract_blockers.extend(_token_list_schema_blockers(verification_report, "warnings"))
     blockers = sorted(set(report_blockers + boundary_blockers + contract_blockers))
     verification_ok = (
         verification_report.get("ok") is True
@@ -501,6 +503,19 @@ def _verification_report_contract_blockers(report: Mapping[str, Any]) -> list[st
                 blockers.append(
                     f"verification_check_not_match:{check_name}:{artifact_id}"
                 )
+    return sorted(set(blockers))
+
+
+def _token_list_schema_blockers(report: Mapping[str, Any], field: str) -> list[str]:
+    value = report.get(field)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return [f"verification_report_{field}_not_list"]
+    blockers: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            blockers.append(f"verification_report_{field}_item_not_string")
+        elif _safe_token(item) == "invalid_token":
+            blockers.append(f"verification_report_{field}_item_unsafe")
     return sorted(set(blockers))
 
 

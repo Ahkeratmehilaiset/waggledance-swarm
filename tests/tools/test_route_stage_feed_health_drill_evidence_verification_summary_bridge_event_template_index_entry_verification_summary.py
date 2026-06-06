@@ -191,6 +191,57 @@ def test_route_stage_feed_health_index_entry_verification_summary_rejects_verifi
     assert summary["release_decision_made"] is False
 
 
+def test_route_stage_feed_health_index_entry_verification_summary_rejects_non_list_blockers() -> None:
+    report = _index_entry_verification_report()
+    report["blockers"] = "not-a-list"
+
+    summary = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary(
+        verification_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-template-index-verification",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_blockers_not_list" in summary["blockers"]
+    assert summary["operator_boundary"]["verification_report_boundary_ok"] is False
+    assert summary["approval_granted"] is False
+
+
+def test_route_stage_feed_health_index_entry_verification_summary_rejects_non_string_blocker_items() -> None:
+    report = _index_entry_verification_report()
+    report["blockers"] = [123]
+
+    summary = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary(
+        verification_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-template-index-verification",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_blockers_item_not_string" in summary["blockers"]
+    assert summary["operator_boundary"]["verification_report_boundary_ok"] is False
+    assert summary["release_decision_made"] is False
+
+
+def test_route_stage_feed_health_index_entry_verification_summary_rejects_malformed_warnings() -> None:
+    report = _index_entry_verification_report()
+    report["warnings"] = [123]
+
+    summary = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary(
+        verification_report=report,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-template-index-verification",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_warnings_item_not_string" in summary["blockers"]
+    assert summary["operator_boundary"]["verification_report_boundary_ok"] is False
+    assert summary["direct_bridge_write_performed"] is False
+
+
 def test_route_stage_feed_health_index_entry_verification_summary_rejects_authority_escalation() -> None:
     report = _index_entry_verification_report()
     report["approval_granted"] = True

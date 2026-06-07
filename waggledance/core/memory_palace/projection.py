@@ -476,6 +476,13 @@ def rank_shortcut_candidates_for_memory(
     ):
         raise MemoryPalaceProjectionError("min_rank_score must be 0..1")
 
+    normalized_nodes = validate_palace_hierarchy(
+        [
+            _coerce_node(node)
+            for node in _projection_sequence(projection, "nodes")
+        ]
+    )
+    known_node_ids = {node.node_id for node in normalized_nodes}
     placements = [
         _coerce_placement(placement)
         for placement in _projection_sequence(projection, "placements")
@@ -484,14 +491,33 @@ def rank_shortcut_candidates_for_memory(
         _coerce_shortcut_hint(shortcut)
         for shortcut in _projection_sequence(projection, "shortcuts")
     ]
+    for placement in placements:
+        _validate_placement(placement)
+        if placement.palace_node_id not in known_node_ids:
+            raise MemoryPalaceProjectionError(
+                f"placement references unknown palace node: {placement.palace_node_id}"
+            )
     by_source: dict[str, list[PalaceShortcutHint]] = {}
+    seen_shortcuts: set[str] = set()
     for shortcut in shortcuts:
         _validate_shortcut_hint(shortcut)
+        if shortcut.shortcut_id in seen_shortcuts:
+            raise MemoryPalaceProjectionError(
+                f"duplicate shortcut_id: {shortcut.shortcut_id}"
+            )
+        seen_shortcuts.add(shortcut.shortcut_id)
+        for label, node_id in (
+            ("source_node_id", shortcut.source_node_id),
+            ("target_node_id", shortcut.target_node_id),
+        ):
+            if node_id not in known_node_ids:
+                raise MemoryPalaceProjectionError(
+                    f"shortcut references unknown {label}: {node_id}"
+                )
         by_source.setdefault(shortcut.source_node_id, []).append(shortcut)
 
     candidates: list[PalaceShortcutCandidate] = []
     for placement in placements:
-        _validate_placement(placement)
         if placement.memory_id != memory_id:
             continue
         for shortcut in by_source.get(placement.palace_node_id, ()):

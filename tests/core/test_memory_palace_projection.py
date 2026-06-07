@@ -343,6 +343,77 @@ def test_shortcut_candidate_ranking_fails_closed_on_authority_flags() -> None:
         )
 
 
+def test_shortcut_candidate_ranking_validates_mutated_projection_refs() -> None:
+    projection = build_memory_palace_projection(
+        [
+            PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+            PalaceNode(
+                node_id="room.learning.imaging",
+                kind="room",
+                label="Imaging cases",
+                parent_id="wing.learning",
+            ),
+            PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+            PalaceNode(
+                node_id="room.research.pathology",
+                kind="room",
+                label="Pathology expertise",
+                parent_id="wing.research",
+            ),
+        ],
+        placements=[
+            MemoryPlacement(
+                memory_id="memory-imaging-1",
+                palace_node_id="room.learning.imaging",
+                confidence=0.8,
+                placement_source="manual",
+            )
+        ],
+        shortcuts=[
+            PalaceShortcutHint(
+                shortcut_id="shortcut.imaging.to.pathology",
+                source_node_id="room.learning.imaging",
+                target_node_id="room.research.pathology",
+                matched_selector_keys=["tags"],
+                matched_values={"tags": ["segmentation"]},
+                confidence=0.9,
+                hierarchy_hops=3,
+            )
+        ],
+    )
+
+    unknown_target = dict(projection)
+    unknown_target["shortcuts"] = [
+        dict(projection["shortcuts"][0], target_node_id="room.unknown.injected")
+    ]
+    with pytest.raises(MemoryPalaceProjectionError, match="unknown target_node_id"):
+        rank_shortcut_candidates_for_memory(
+            unknown_target,
+            "memory-imaging-1",
+        )
+
+    unknown_placement = dict(projection)
+    unknown_placement["placements"] = [
+        dict(projection["placements"][0], palace_node_id="room.unknown.injected")
+    ]
+    with pytest.raises(MemoryPalaceProjectionError, match="unknown palace node"):
+        rank_shortcut_candidates_for_memory(
+            unknown_placement,
+            "memory-imaging-1",
+        )
+
+    duplicate_shortcut = dict(projection)
+    duplicate_shortcut["shortcuts"] = [
+        dict(projection["shortcuts"][0]),
+        dict(projection["shortcuts"][0]),
+    ]
+    with pytest.raises(MemoryPalaceProjectionError, match="duplicate shortcut_id"):
+        rank_shortcut_candidates_for_memory(
+            duplicate_shortcut,
+            "memory-imaging-1",
+        )
+
+
 def test_hierarchy_rejects_unknown_parent_and_cycles() -> None:
     with pytest.raises(MemoryPalaceProjectionError, match="unknown parent"):
         validate_palace_hierarchy(

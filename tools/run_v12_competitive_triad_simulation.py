@@ -26,15 +26,29 @@ from tools.run_v12_rival_local_check_matrix import (  # noqa: E402
     build_rival_local_check_matrix,
 )
 from tools.show_v12_proof import collect_proof  # noqa: E402
+from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.adversarial_corpus_eval import (  # noqa: E402
     REQUIRED_DEFECT_TYPES,
 )
 from waggledance.core.solver_synthesis.hex_cell_competition import (  # noqa: E402
+    HEX_CELL_ACTIVATION_PREFLIGHT_STATUS,
     HEX_CELL_COMPETITION_AUTHORITY_STATUS,
+    HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS,
+    HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE,
+    HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+    build_hex_cell_activation_preflight,
     build_hex_cell_competition_result,
+    build_hex_cell_operator_gate_authorization,
+    build_hex_cell_promotion_acceptance,
 )
 from waggledance.core.solver_synthesis.solver_candidate_store import (  # noqa: E402
     SolverCandidate,
+)
+from waggledance.core.v3_13_0.solver_provenance import (  # noqa: E402
+    SolverCandidateRecord,
+    VerificationResult,
+    build_solver_provenance_transition_receipt,
+    canonicalize_manifest,
 )
 
 
@@ -259,7 +273,7 @@ def build_competitive_triad_simulation(
             "Keep consensus_grade=false until all four rival local manifests pass.",
             "Convert JamJet and Preloop from not_passed to pinned local_smoke or keep blocked.",
             "Add receipt-bound counterfactual replay for stored consensus artifacts.",
-            "Promote hex-cell competition from non-authority evidence to operator-gated authority in a separate PR.",
+            "Add the separate runtime-authority commit gate only after receipt-bound hex activation preflight is reviewed.",
             "Add performance measurements only after the evidence/authority boundary is sealed.",
         ],
         "no_overclaim_guardrails": {
@@ -274,6 +288,20 @@ def build_competitive_triad_simulation(
             "hex_competition_non_authority": (
                 hex_probe["authority_status"]
                 == HEX_CELL_COMPETITION_AUTHORITY_STATUS
+            ),
+            "hex_promotion_lifecycle_receipt_bound": (
+                hex_probe["receipt_bound_activation_verified"] is True
+            ),
+            "hex_promotion_lifecycle_no_runtime_authority": (
+                hex_probe["runtime_authority_granted"] is False
+            ),
+            "hex_promotion_lifecycle_statuses_expected": (
+                hex_probe["promotion_acceptance_status"]
+                == HEX_CELL_PROMOTION_ACCEPTANCE_STATUS
+                and hex_probe["operator_authorization_status"]
+                == HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS
+                and hex_probe["activation_preflight_status"]
+                == HEX_CELL_ACTIVATION_PREFLIGHT_STATUS
             ),
         },
     }
@@ -332,6 +360,13 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- authority_status: `{report['hex_cell_probe']['authority_status']}`",
         f"- winner_id: `{report['hex_cell_probe']['winner_id']}`",
         f"- candidate_count: `{report['hex_cell_probe']['candidate_count']}`",
+        f"- promotion_lifecycle: `{' -> '.join(report['hex_cell_probe']['promotion_lifecycle'])}`",
+        f"- promotion_acceptance_status: `{report['hex_cell_probe']['promotion_acceptance_status']}`",
+        f"- operator_authorization_status: `{report['hex_cell_probe']['operator_authorization_status']}`",
+        f"- activation_preflight_status: `{report['hex_cell_probe']['activation_preflight_status']}`",
+        f"- receipt_bound_activation_verified: `{str(report['hex_cell_probe']['receipt_bound_activation_verified']).lower()}`",
+        f"- operator_gate_cleared: `{str(report['hex_cell_probe']['operator_gate_cleared']).lower()}`",
+        f"- runtime_authority_granted: `{str(report['hex_cell_probe']['runtime_authority_granted']).lower()}`",
         f"- runtime_traffic_mutation_applied: `{str(report['hex_cell_probe']['runtime_traffic_mutation_applied']).lower()}`",
         f"- candidate_state_mutation_applied: `{str(report['hex_cell_probe']['candidate_state_mutation_applied']).lower()}`",
         "",
@@ -443,6 +478,14 @@ def _wd_signals(
             a4.get("solver_growth_proven")
             and hex_probe["authority_status"]
             == HEX_CELL_COMPETITION_AUTHORITY_STATUS
+            and not hex_probe["runtime_authority_granted"]
+            and not hex_probe["runtime_traffic_mutation_applied"]
+            and not hex_probe["candidate_state_mutation_applied"]
+        ),
+        "a4_hex_promotion_lifecycle_receipt_bound": bool(
+            hex_probe["receipt_bound_activation_verified"]
+            and hex_probe["operator_gate_cleared"]
+            and not hex_probe["runtime_authority_granted"]
             and not hex_probe["runtime_traffic_mutation_applied"]
             and not hex_probe["candidate_state_mutation_applied"]
         ),
@@ -468,10 +511,31 @@ def _blockers(
         blockers.append("rival_consensus_grade_must_remain_false")
     if hex_probe["authority_status"] != HEX_CELL_COMPETITION_AUTHORITY_STATUS:
         blockers.append("hex_competition_authority_status_drift")
+    if (
+        hex_probe["promotion_acceptance_status"]
+        != HEX_CELL_PROMOTION_ACCEPTANCE_STATUS
+    ):
+        blockers.append("hex_promotion_lifecycle_acceptance_status_drift")
+    if (
+        hex_probe["operator_authorization_status"]
+        != HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS
+    ):
+        blockers.append("hex_promotion_lifecycle_operator_status_drift")
+    if (
+        hex_probe["activation_preflight_status"]
+        != HEX_CELL_ACTIVATION_PREFLIGHT_STATUS
+    ):
+        blockers.append("hex_promotion_lifecycle_preflight_status_drift")
     if hex_probe["runtime_traffic_mutation_applied"]:
         blockers.append("hex_competition_runtime_mutation_applied")
     if hex_probe["candidate_state_mutation_applied"]:
         blockers.append("hex_competition_candidate_state_mutation_applied")
+    if hex_probe["receipt_bound_activation_verified"] is not True:
+        blockers.append("hex_promotion_lifecycle_not_receipt_bound")
+    if hex_probe["operator_gate_cleared"] is not True:
+        blockers.append("hex_promotion_lifecycle_operator_gate_not_cleared")
+    if hex_probe["runtime_authority_granted"]:
+        blockers.append("hex_promotion_lifecycle_runtime_authority_granted")
     return blockers
 
 
@@ -555,23 +619,100 @@ def _build_hex_competition_probe() -> dict[str, Any]:
             ],
         },
     )
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+    authorization = build_hex_cell_operator_gate_authorization(
+        acceptance=acceptance,
+        operator_approval_id="approval:triad:hex-promotion:lifecycle-probe",
+        approved_by="operator:triad-simulation-fixture",
+        acceptance_receipt_digest=_acceptance_receipt_digest(acceptance),
+    )
+    preflight = build_hex_cell_activation_preflight(
+        authorization=authorization,
+        solver_provenance_bundle=_solver_provenance_activation_bundle(
+            authorization.accepted_candidate_id,
+        ),
+    )
+
     return {
         "candidate_count": len(candidates),
         "competition_id": result.competition_id,
         "winner_id": result.winner_id,
         "loser_ids": list(result.loser_ids),
+        "promotion_lifecycle": [
+            "competition_non_authority",
+            "promotion_acceptance_operator_gate_required",
+            "operator_gate_authorization_cleared",
+            "receipt_bound_activation_preflight",
+        ],
         "authority_status": result.authority_status,
+        "promotion_acceptance_status": acceptance.promotion_acceptance_status,
+        "operator_authorization_status": authorization.authority_status,
+        "activation_preflight_status": preflight.activation_preflight_status,
+        "operator_gate_cleared": preflight.operator_gate_cleared,
+        "receipt_bound_activation_verified": (
+            preflight.receipt_bound_activation_verified
+        ),
+        "runtime_authority_granted": preflight.runtime_authority_granted,
         "runtime_traffic_mutation_applied": (
             result.runtime_traffic_mutation_applied
+            or acceptance.runtime_traffic_mutation_applied
+            or authorization.runtime_traffic_mutation_applied
+            or preflight.runtime_traffic_mutation_applied
         ),
         "candidate_state_mutation_applied": (
             result.candidate_state_mutation_applied
+            or acceptance.candidate_state_mutation_applied
+            or authorization.candidate_state_mutation_applied
+            or preflight.candidate_state_mutation_applied
         ),
         "operator_gate_required_for_authority": (
             result.operator_gate_required_for_authority
         ),
         "evidence_digest": result.evidence_digest,
+        "acceptance_digest": acceptance.acceptance_digest,
+        "authorization_digest": authorization.authorization_digest,
+        "activation_preflight_digest": preflight.preflight_digest,
     }
+
+
+def _acceptance_receipt_digest(acceptance: Any) -> str:
+    return sha256_digest({
+        "event_type": HEX_CELL_PROMOTION_ACCEPTANCE_RECEIPT_EVENT_TYPE,
+        "acceptance_id": acceptance.acceptance_id,
+        "acceptance_digest": acceptance.acceptance_digest,
+    })
+
+
+def _solver_provenance_activation_bundle(candidate_id: str) -> dict[str, Any]:
+    canonical, digest = canonicalize_manifest({
+        "candidate_id": candidate_id,
+        "template_family": "V12TriadHexPromotionProbeSolver",
+        "version": 1,
+    })
+    candidate = SolverCandidateRecord(
+        candidate_id=candidate_id,
+        manifest_canonical_json=canonical,
+        manifest_sha256=digest,
+        target_domain="DOM-011",
+        target_write_risk="local_artifact",
+        activation_state="signed",
+    )
+    verification = VerificationResult(
+        valid=True,
+        candidate_id=candidate_id,
+        activation_state="signed",
+        has_owner_signature=True,
+        has_peer_signature=True,
+        manifest_sha256_observed=digest,
+    )
+    return build_solver_provenance_transition_receipt(
+        candidate=candidate,
+        transition="activation_authorised",
+        audit_event_ref="evt_v12_triad_hex_promotion_preflight",
+        bridge_event_ref="bridge_v12_triad_hex_promotion_preflight",
+        verification=verification,
+        new_state="activated",
+    )
 
 
 def _candidate(

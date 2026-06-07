@@ -1056,6 +1056,10 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry.py",
         "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary.py",
+        "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
+        "tools/build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1590,6 +1594,18 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_supported"
+        ]
+        is True
+    )
     verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
         "drill_evidence_verifier_smoke"
     ]
@@ -1698,6 +1714,37 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         template_index_entry_verification_summary_smoke["network_access_performed"]
         is False
     )
+    summary_template_smoke = verifier_smoke[
+        "verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_smoke"
+    ]
+    assert summary_template_smoke["ok"] is True
+    assert summary_template_smoke["template_only"] is True
+    assert summary_template_smoke["manual_review_required"] is True
+    assert summary_template_smoke["direct_bridge_write_performed"] is False
+    assert summary_template_smoke["artifact_payloads_included"] is False
+    assert summary_template_smoke["local_paths_recorded"] is False
+    assert summary_template_smoke["network_access_performed"] is False
+    summary_template_index_entry_smoke = verifier_smoke[
+        "verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_smoke"
+    ]
+    assert summary_template_index_entry_smoke["ok"] is True
+    assert summary_template_index_entry_smoke["template_only"] is True
+    assert summary_template_index_entry_smoke["manual_review_required"] is True
+    assert (
+        summary_template_index_entry_smoke["source_contract_check"] == "match"
+    )
+    assert (
+        summary_template_index_entry_smoke["rebuilt_template_check"] == "match"
+    )
+    assert (
+        summary_template_index_entry_smoke["direct_bridge_write_performed"]
+        is False
+    )
+    assert (
+        summary_template_index_entry_smoke["artifact_payloads_included"] is False
+    )
+    assert summary_template_index_entry_smoke["local_paths_recorded"] is False
+    assert summary_template_index_entry_smoke["network_access_performed"] is False
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -1712,8 +1759,14 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     )
     assert "local template index entry" in capability["safe_statement"]
     assert "verifier summary renderer" in capability["safe_statement"]
-    assert "bridge-event template renderer" in capability["next_smallest_pr"]
-    assert "verifier summary" in capability["next_smallest_pr"]
+    assert "bridge-event renderer for the verifier summary" in (
+        capability["safe_statement"]
+    )
+    assert "local index entry for that renderer" in capability["safe_statement"]
+    assert "local verifier" in capability["next_smallest_pr"]
+    assert "verifier-summary bridge-event template index entry" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

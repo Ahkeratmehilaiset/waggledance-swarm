@@ -13,6 +13,7 @@ from waggledance.core.memory_palace import (
     build_memory_palace_projection,
     derive_candidate_placements,
     derive_shortcut_hints,
+    rank_shortcut_candidates_for_memory,
     validate_palace_hierarchy,
 )
 
@@ -145,6 +146,201 @@ def test_derives_cross_wing_shortcut_hints_from_shared_selectors() -> None:
     assert hint["gate_skip_authority"] is False
     assert hint["promotion_authority"] is False
     assert hint["solver_call_authority"] is False
+
+
+def test_ranks_read_side_shortcut_candidates_for_memory() -> None:
+    nodes = [
+        PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+        PalaceNode(
+            node_id="room.learning.imaging",
+            kind="room",
+            label="Imaging cases",
+            parent_id="wing.learning",
+        ),
+        PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        PalaceNode(
+            node_id="room.research.pathology",
+            kind="room",
+            label="Pathology expertise",
+            parent_id="wing.research",
+        ),
+        PalaceNode(node_id="wing.system", kind="wing", label="System"),
+        PalaceNode(
+            node_id="room.system.statistics",
+            kind="room",
+            label="Statistics expertise",
+            parent_id="wing.system",
+        ),
+    ]
+    projection = build_memory_palace_projection(
+        nodes,
+        placements=[
+            MemoryPlacement(
+                memory_id="memory-imaging-1",
+                palace_node_id="room.learning.imaging",
+                confidence=0.8,
+                placement_source="manual",
+            )
+        ],
+        shortcuts=[
+            PalaceShortcutHint(
+                shortcut_id="shortcut.imaging.to.pathology",
+                source_node_id="room.learning.imaging",
+                target_node_id="room.research.pathology",
+                matched_selector_keys=["tags", "vector_kind"],
+                matched_values={
+                    "tags": ["segmentation"],
+                    "vector_kind": ["claim"],
+                },
+                confidence=0.9,
+                hierarchy_hops=3,
+            ),
+            PalaceShortcutHint(
+                shortcut_id="shortcut.imaging.to.statistics",
+                source_node_id="room.learning.imaging",
+                target_node_id="room.system.statistics",
+                matched_selector_keys=["tags"],
+                matched_values={"tags": ["segmentation"]},
+                confidence=0.7,
+                hierarchy_hops=3,
+            ),
+        ],
+    )
+
+    candidates = rank_shortcut_candidates_for_memory(
+        projection,
+        "memory-imaging-1",
+    )
+
+    assert [candidate["target_node_id"] for candidate in candidates] == [
+        "room.research.pathology",
+        "room.system.statistics",
+    ]
+    assert candidates[0]["rank_score"] == pytest.approx(0.72)
+    assert candidates[0]["placement_confidence"] == pytest.approx(0.8)
+    assert candidates[0]["shortcut_confidence"] == pytest.approx(0.9)
+    assert candidates[0]["matched_selector_keys"] == ["tags", "vector_kind"]
+    assert candidates[0]["no_runtime_mutation"] is True
+    assert candidates[0]["runtime_authority"] is False
+    assert candidates[0]["storage_write_authority"] is False
+    assert candidates[0]["bridge_write_authority"] is False
+    assert candidates[0]["gate_skip_authority"] is False
+    assert candidates[0]["promotion_authority"] is False
+    assert candidates[0]["solver_call_authority"] is False
+
+
+def test_shortcut_candidate_ranking_filters_without_runtime_authority() -> None:
+    projection = build_memory_palace_projection(
+        [
+            PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+            PalaceNode(
+                node_id="room.learning.imaging",
+                kind="room",
+                label="Imaging cases",
+                parent_id="wing.learning",
+            ),
+            PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+            PalaceNode(
+                node_id="room.research.pathology",
+                kind="room",
+                label="Pathology expertise",
+                parent_id="wing.research",
+            ),
+        ],
+        placements=[
+            MemoryPlacement(
+                memory_id="memory-imaging-1",
+                palace_node_id="room.learning.imaging",
+                confidence=0.5,
+                placement_source="manual",
+            )
+        ],
+        shortcuts=[
+            PalaceShortcutHint(
+                shortcut_id="shortcut.imaging.to.pathology",
+                source_node_id="room.learning.imaging",
+                target_node_id="room.research.pathology",
+                matched_selector_keys=["tags"],
+                matched_values={"tags": ["segmentation"]},
+                confidence=0.8,
+                hierarchy_hops=3,
+            )
+        ],
+    )
+
+    assert rank_shortcut_candidates_for_memory(
+        projection,
+        "memory-imaging-1",
+        min_rank_score=0.5,
+    ) == ()
+    assert rank_shortcut_candidates_for_memory(
+        projection,
+        "memory-missing",
+    ) == ()
+
+    with pytest.raises(MemoryPalaceProjectionError, match="max_candidates"):
+        rank_shortcut_candidates_for_memory(
+            projection,
+            "memory-imaging-1",
+            max_candidates=0,
+        )
+
+
+def test_shortcut_candidate_ranking_fails_closed_on_authority_flags() -> None:
+    projection = build_memory_palace_projection(
+        [
+            PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+            PalaceNode(
+                node_id="room.learning.imaging",
+                kind="room",
+                label="Imaging cases",
+                parent_id="wing.learning",
+            ),
+            PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+            PalaceNode(
+                node_id="room.research.pathology",
+                kind="room",
+                label="Pathology expertise",
+                parent_id="wing.research",
+            ),
+        ],
+        placements=[
+            MemoryPlacement(
+                memory_id="memory-imaging-1",
+                palace_node_id="room.learning.imaging",
+                confidence=0.8,
+                placement_source="manual",
+            )
+        ],
+        shortcuts=[
+            PalaceShortcutHint(
+                shortcut_id="shortcut.imaging.to.pathology",
+                source_node_id="room.learning.imaging",
+                target_node_id="room.research.pathology",
+                matched_selector_keys=["tags"],
+                matched_values={"tags": ["segmentation"]},
+                confidence=0.9,
+                hierarchy_hops=3,
+            )
+        ],
+    )
+
+    unsafe_projection = dict(projection, runtime_authority=True)
+    with pytest.raises(MemoryPalaceProjectionError, match="runtime_authority"):
+        rank_shortcut_candidates_for_memory(
+            unsafe_projection,
+            "memory-imaging-1",
+        )
+
+    unsafe_projection = dict(projection)
+    unsafe_projection["shortcuts"] = [
+        dict(projection["shortcuts"][0], solver_call_authority=True)
+    ]
+    with pytest.raises(MemoryPalaceProjectionError, match="solver_call_authority"):
+        rank_shortcut_candidates_for_memory(
+            unsafe_projection,
+            "memory-imaging-1",
+        )
 
 
 def test_hierarchy_rejects_unknown_parent_and_cycles() -> None:

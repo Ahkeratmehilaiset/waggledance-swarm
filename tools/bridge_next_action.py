@@ -309,12 +309,18 @@ def recommend_next_action(
             }
         )
 
-    own_claims = [claim for claim in claims if claim.agent == agent]
+    effective_now = now_utc or _latest_event_time(events) or datetime.now(timezone.utc)
+    active_claims, stale_claims = _split_active_and_stale_claims(
+        claims,
+        now_utc=effective_now,
+    )
+    own_claims = [claim for claim in active_claims if claim.agent == agent]
     foreign_write_claims = [
-        claim for claim in claims if claim.agent != agent and claim.mode == "write"
+        claim
+        for claim in active_claims
+        if claim.agent != agent and claim.mode == "write"
     ]
     all_open_requests = _open_requests_for_agent(agent=agent, events=events)
-    effective_now = now_utc or _latest_event_time(events) or datetime.now(timezone.utc)
     open_requests, stale_open_requests = _split_fresh_and_stale_requests(
         all_open_requests,
         now_utc=effective_now,
@@ -342,7 +348,8 @@ def recommend_next_action(
             safe_mode=claim.mode,
             summary=f"continue active claim {claim.task_id}",
             events=events,
-            claims=claims,
+            claims=active_claims,
+            stale_claims=stale_claims,
             open_requests=open_requests,
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
@@ -361,7 +368,8 @@ def recommend_next_action(
             safe_mode="read-only",
             summary=summary,
             events=events,
-            claims=claims,
+            claims=active_claims,
+            stale_claims=stale_claims,
             open_requests=open_requests,
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
@@ -379,7 +387,8 @@ def recommend_next_action(
             safe_mode="read-only",
             summary=f"foreign write claim active; take read-only work outside scope: {scope}",
             events=events,
-            claims=claims,
+            claims=active_claims,
+            stale_claims=stale_claims,
             open_requests=open_requests,
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
@@ -393,7 +402,8 @@ def recommend_next_action(
         safe_mode="write-or-read-only",
         summary="no active claim or incoming blocker; claim the highest-value unblocked work",
         events=events,
-        claims=claims,
+        claims=active_claims,
+        stale_claims=stale_claims,
         open_requests=open_requests,
         stale_open_requests=reported_stale_open_requests,
         archived_stale_open_requests=archived_stale_open_requests,
@@ -479,6 +489,36 @@ def _split_reported_and_archived_stale_requests(
         else:
             reported.append(request)
     return reported, archived
+
+
+def _split_active_and_stale_claims(
+    claims: Sequence[Claim],
+    *,
+    now_utc: datetime,
+) -> tuple[list[Claim], list[Claim]]:
+    active: list[Claim] = []
+    stale: list[Claim] = []
+    for claim in claims:
+        if _is_stale_claim(claim, now_utc=now_utc):
+            stale.append(claim)
+        else:
+            active.append(claim)
+    return active, stale
+
+
+def _is_stale_claim(claim: Claim, *, now_utc: datetime) -> bool:
+    heartbeat = _parse_utc(claim.last_heartbeat_utc) or _parse_utc(
+        claim.claimed_at_utc
+    )
+    if heartbeat is None:
+        return False
+
+    lease_seconds = max(1, int(claim.lease_seconds or 0))
+    effective_expiry = heartbeat + timedelta(seconds=lease_seconds)
+    explicit_expiry = _parse_utc(claim.claim_lease_expires_utc)
+    if explicit_expiry is not None and explicit_expiry > effective_expiry:
+        effective_expiry = explicit_expiry
+    return now_utc.astimezone(timezone.utc) >= effective_expiry
 
 
 def _idle_protocol_progressed(
@@ -819,6 +859,7 @@ def _report(
     stale_open_requests: Sequence[Mapping[str, Any]],
     archived_stale_open_requests: Sequence[Mapping[str, Any]],
     foreign_write_claims: Sequence[Claim],
+    stale_claims: Sequence[Claim],
     production_liveness: Mapping[str, Any],
     request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -847,6 +888,11 @@ def _report(
     )
     if claim_snapshot["own"] or claim_snapshot["foreign_write"]:
         payload["claim_snapshot"] = claim_snapshot
+    if stale_claims:
+        payload["ignored_stale_claim_count"] = len(stale_claims)
+        payload["ignored_stale_claims"] = [
+            _claim_metadata(claim) for claim in stale_claims
+        ]
     if stale_open_requests:
         payload["stale_incoming_task_ids"] = stale_task_ids
         payload["stale_incoming_event_count"] = len(stale_open_requests)

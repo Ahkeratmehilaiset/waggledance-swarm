@@ -324,6 +324,108 @@ class TestReplayExpansion:
         mission = adapter.get_mission_replay("g1")
         assert mission.is_simulation is False
 
+    def test_counterfactual_candidates_use_peer_majority_baseline(self):
+        from waggledance.core.magma.replay_engine import ReplayAdapter
+
+        adapter = ReplayAdapter()
+        for goal_id in ("peer_1", "peer_2", "peer_3"):
+            adapter.record_mission_event(
+                goal_id,
+                "capability.executed",
+                payload={"private": "not exported"},
+                step_order=1,
+                capability_id="solve.math",
+                result="pass",
+            )
+            adapter.set_mission_metadata(goal_id, goal_type="SOLVE")
+
+        adapter.record_mission_event(
+            "target",
+            "capability.executed",
+            payload={"private": "not exported"},
+            step_order=1,
+            capability_id="solve.symbolic",
+            result="pass",
+        )
+        adapter.set_mission_metadata("target", goal_type="SOLVE")
+
+        candidates = adapter.get_counterfactual_candidates("target")
+
+        assert candidates == [
+            {
+                "step_order": 1,
+                "capability_id": "solve.symbolic",
+                "event_type": "capability.executed",
+                "result": "pass",
+                "baseline_capability_id": "solve.math",
+                "baseline_sample_count": 3,
+                "baseline_majority_count": 3,
+                "baseline_majority_ratio": 1.0,
+                "candidate_reason": "differs_from_peer_majority",
+            }
+        ]
+        assert "payload" not in candidates[0]
+
+    def test_counterfactual_candidates_skip_majority_route_and_ties(self):
+        from waggledance.core.magma.replay_engine import ReplayAdapter
+
+        adapter = ReplayAdapter()
+        adapter.record_mission_event(
+            "peer_1",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.math",
+        )
+        adapter.record_mission_event(
+            "peer_2",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.symbolic",
+        )
+        adapter.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.graph",
+        )
+
+        assert adapter.get_counterfactual_candidates("target") == []
+
+        adapter.record_mission_event(
+            "peer_3",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.math",
+        )
+        adapter.record_mission_event(
+            "majority_target",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.math",
+        )
+
+        assert adapter.get_counterfactual_candidates("majority_target") == []
+
+    def test_counterfactual_candidates_ignore_simulated_peers(self):
+        from waggledance.core.magma.replay_engine import ReplayAdapter
+
+        adapter = ReplayAdapter()
+        adapter.record_mission_event(
+            "sim_peer",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.math",
+            is_simulation=True,
+        )
+        adapter.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.symbolic",
+        )
+
+        assert adapter.get_counterfactual_candidates("target") == []
+
 
 # ---------------------------------------------------------------------------
 # L5 Trust expansion

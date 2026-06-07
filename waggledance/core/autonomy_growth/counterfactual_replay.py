@@ -238,6 +238,12 @@ def summarize_counterfactual_observability(
             deterministic=snapshot.get("deterministic") is True,
             no_delta=snapshot.get("no_delta") is True,
             delta_digest_present=bool(snapshot.get("canonical_digest")),
+            controls_present=snapshot.get("controls_present") is True,
+            runtime_authority_granted=(
+                snapshot.get("runtime_authority_granted") is True
+            ),
+            external_writes_applied=snapshot.get("external_writes_applied") is True,
+            payload_fields_exported=snapshot.get("payload_fields_exported") is True,
         )
 
     compute_status = str(snapshot.get("status") or "unknown")
@@ -260,6 +266,10 @@ def summarize_counterfactual_observability(
         deterministic=snapshot.get("deterministic") is True,
         no_delta=snapshot.get("no_delta") is True,
         delta_digest_present=bool(snapshot.get("delta_digest")),
+        controls_present=snapshot.get("controls_present") is True,
+        runtime_authority_granted=snapshot.get("runtime_authority_granted") is True,
+        external_writes_applied=snapshot.get("external_writes_applied") is True,
+        payload_fields_exported=snapshot.get("payload_fields_exported") is True,
     )
 
 
@@ -275,6 +285,10 @@ def _counterfactual_observability_status(
     deterministic: bool = False,
     no_delta: bool = False,
     delta_digest_present: bool = False,
+    controls_present: bool = False,
+    runtime_authority_granted: bool = False,
+    external_writes_applied: bool = False,
+    payload_fields_exported: bool = False,
 ) -> dict[str, Any]:
     if status not in COUNTERFACTUAL_OBSERVABILITY_STATES:
         status = "insufficient" if source_available else "unavailable"
@@ -290,10 +304,10 @@ def _counterfactual_observability_status(
         "deterministic": bool(deterministic),
         "no_delta": bool(no_delta),
         "delta_digest_present": bool(delta_digest_present),
-        "controls_present": False,
-        "runtime_authority_granted": False,
-        "external_writes_applied": False,
-        "payload_fields_exported": False,
+        "controls_present": bool(controls_present),
+        "runtime_authority_granted": bool(runtime_authority_granted),
+        "external_writes_applied": bool(external_writes_applied),
+        "payload_fields_exported": bool(payload_fields_exported),
     }
 
 

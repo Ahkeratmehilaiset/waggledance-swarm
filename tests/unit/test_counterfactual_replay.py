@@ -164,6 +164,32 @@ def test_observability_summary_from_delta_is_privacy_safe():
     assert delta["canonical_digest"] not in rendered
 
 
+def test_observability_summary_preserves_raw_delta_authority_drift_flags():
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(),
+        candidate=_spec("cand", 273.15),
+        incumbent=_spec("inc", 0.0),
+        oracle=_oracle,
+    )
+    drifted = {
+        **delta,
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    }
+
+    status = summarize_counterfactual_observability(drifted)
+
+    assert status["status"] == "runtime_measured"
+    assert status["controls_present"] is True
+    assert status["runtime_authority_granted"] is True
+    assert status["external_writes_applied"] is True
+    assert status["payload_fields_exported"] is True
+    assert "per_arm" not in repr(status)
+    assert "divergences" not in repr(status)
+
+
 def test_observability_summary_requires_explicit_sample_set_digests():
     malformed_delta = {
         "schema_version": COUNTERFACTUAL_DELTA_SCHEMA,
@@ -230,3 +256,28 @@ def test_observability_summary_bounds_stored_a3_label():
     assert status["status"] == "insufficient"
     assert status["a3_label"] == A3_LABEL_INSUFFICIENT
     assert "gpt-4o-RAW" not in repr(status)
+
+
+def test_observability_summary_preserves_explicit_authority_drift_flags():
+    status = summarize_counterfactual_observability({
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
+        "sample_count": 20,
+        "same_sample_set": True,
+        "deterministic": True,
+        "divergence_count": 3,
+        "no_delta": False,
+        "delta_digest": "sha256:private-digest",
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    })
+
+    assert status["status"] == "measured_local_partial"
+    assert status["controls_present"] is True
+    assert status["runtime_authority_granted"] is True
+    assert status["external_writes_applied"] is True
+    assert status["payload_fields_exported"] is True
+    assert "private-digest" not in repr(status)

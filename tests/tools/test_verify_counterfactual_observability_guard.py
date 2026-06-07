@@ -100,6 +100,27 @@ def test_guard_rejects_bad_raw_delta_digest() -> None:
     assert report["runtime_measured_claim_safe"] is False
 
 
+def test_guard_rejects_raw_delta_authority_flags_with_valid_digest() -> None:
+    delta = _raw_delta()
+    delta.update({
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    })
+    core = {key: value for key, value in delta.items() if key != "canonical_digest"}
+    delta["canonical_digest"] = sha256_digest(core)
+
+    report = verify_counterfactual_observability_artifact(delta)
+
+    assert report["ok"] is False
+    assert "controls_present_must_be_false" in report["blockers"]
+    assert "runtime_authority_granted_must_be_false" in report["blockers"]
+    assert "external_writes_applied_must_be_false" in report["blockers"]
+    assert "payload_fields_exported_must_be_false" in report["blockers"]
+    assert report["runtime_measured_claim_safe"] is False
+
+
 def test_cli_rejects_non_finite_json_without_echoing_path(tmp_path: Path) -> None:
     artifact = tmp_path / "nan-counterfactual.json"
     artifact.write_text(
@@ -139,6 +160,33 @@ def test_guard_rejects_authority_flags_on_status_summary() -> None:
 
     assert report["ok"] is False
     assert "runtime_authority_granted_must_be_false" in report["blockers"]
+
+
+def test_guard_rejects_authority_flags_on_promotion_summary() -> None:
+    summary = {
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": "MEASURED_LOCAL_PARTIAL",
+        "sample_count": 20,
+        "divergence_count": 3,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest": "sha256:" + "1" * 64,
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    }
+
+    report = verify_counterfactual_observability_artifact(summary)
+
+    assert report["ok"] is False
+    assert "controls_present_must_be_false" in report["blockers"]
+    assert "runtime_authority_granted_must_be_false" in report["blockers"]
+    assert "external_writes_applied_must_be_false" in report["blockers"]
+    assert "payload_fields_exported_must_be_false" in report["blockers"]
+    assert report["runtime_measured_claim_safe"] is False
 
 
 def test_guard_bounds_unknown_status_summary_a3_label() -> None:

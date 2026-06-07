@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+import tools.run_v12_competitive_triad_simulation as triad
 from tools.run_v12_competitive_triad_simulation import (
     REPORT_VERSION,
     build_competitive_triad_simulation,
@@ -46,6 +47,24 @@ def test_build_competitive_triad_simulation_keeps_guardrails() -> None:
     assert len(report["triad_profiles"]) == 3
     assert report["rival_matrix_summary"]["consensus_grade"] is False
     assert report["hex_cell_probe"]["authority_status"] == "non_authority_contract"
+    assert report["hex_cell_probe"]["promotion_lifecycle"] == [
+        "competition_non_authority",
+        "promotion_acceptance_operator_gate_required",
+        "operator_gate_authorization_cleared",
+        "receipt_bound_activation_preflight",
+    ]
+    assert report["hex_cell_probe"]["promotion_acceptance_status"] == (
+        triad.HEX_CELL_PROMOTION_ACCEPTANCE_STATUS
+    )
+    assert report["hex_cell_probe"]["operator_authorization_status"] == (
+        triad.HEX_CELL_OPERATOR_GATE_AUTHORIZATION_STATUS
+    )
+    assert report["hex_cell_probe"]["activation_preflight_status"] == (
+        triad.HEX_CELL_ACTIVATION_PREFLIGHT_STATUS
+    )
+    assert report["hex_cell_probe"]["operator_gate_cleared"] is True
+    assert report["hex_cell_probe"]["receipt_bound_activation_verified"] is True
+    assert report["hex_cell_probe"]["runtime_authority_granted"] is False
     assert report["hex_cell_probe"]["runtime_traffic_mutation_applied"] is False
     assert report["hex_cell_probe"]["candidate_state_mutation_applied"] is False
     assert report["no_overclaim_guardrails"] == {
@@ -56,6 +75,9 @@ def test_build_competitive_triad_simulation_keeps_guardrails() -> None:
         "does_not_claim_frontier_model_superiority": True,
         "keeps_consensus_grade_false": True,
         "hex_competition_non_authority": True,
+        "hex_promotion_lifecycle_receipt_bound": True,
+        "hex_promotion_lifecycle_no_runtime_authority": True,
+        "hex_promotion_lifecycle_statuses_expected": True,
     }
     assert "offline_adversarial_review" in report[
         "wd_local_evidence_only_scenarios"
@@ -233,8 +255,51 @@ def test_render_markdown_carries_scope_and_next_100h() -> None:
     assert "rival local checks: `1/4 rival local checks passed`" in markdown
     assert "consensus_grade: `false`" in markdown
     assert "solver_growth_hex_competition" in markdown
+    assert "receipt_bound_activation_preflight" in markdown
+    assert "runtime_authority_granted: `false`" in markdown
     assert "This report is a local evidence simulation" in markdown
-    assert "Promote hex-cell competition" in markdown
+    assert "runtime-authority commit gate" in markdown
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_blocker"),
+    [
+        (
+            "receipt_bound_activation_verified",
+            False,
+            "hex_promotion_lifecycle_not_receipt_bound",
+        ),
+        (
+            "runtime_authority_granted",
+            True,
+            "hex_promotion_lifecycle_runtime_authority_granted",
+        ),
+        (
+            "promotion_acceptance_status",
+            "runtime_authority_granted",
+            "hex_promotion_lifecycle_acceptance_status_drift",
+        ),
+    ],
+)
+def test_hex_promotion_lifecycle_drift_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+    expected_blocker: str,
+) -> None:
+    probe = triad._build_hex_competition_probe()
+    probe[field] = value
+    monkeypatch.setattr(triad, "_build_hex_competition_probe", lambda: probe)
+
+    report = build_competitive_triad_simulation(
+        now_utc=_fixed_now(),
+        v12_proof=_v12_proof(),
+        rival_matrix=_rival_matrix(),
+        adversarial_report=_adversarial_report(),
+    )
+
+    assert report["ok"] is False
+    assert expected_blocker in report["blockers"]
 
 
 def test_cli_json_reports_real_triad_simulation() -> None:
@@ -247,6 +312,8 @@ def test_cli_json_reports_real_triad_simulation() -> None:
     assert payload["scenario_count"] == 4
     assert payload["rival_matrix_summary"]["consensus_grade"] is False
     assert payload["no_overclaim_guardrails"]["not_a_competitor_benchmark"] is True
+    assert payload["hex_cell_probe"]["receipt_bound_activation_verified"] is True
+    assert payload["hex_cell_probe"]["runtime_authority_granted"] is False
 
 
 def test_cli_rejects_markdown_out_outside_repo(tmp_path: Path) -> None:

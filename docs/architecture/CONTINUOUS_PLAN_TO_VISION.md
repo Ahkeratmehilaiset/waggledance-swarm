@@ -16,7 +16,7 @@ state to the storyboard end-state. It complements `DREAM_MODE_AGENDA.md` (which
 keeps idle rounds on strategy) with an explicit gap-closing track structure and
 per-panel definition-of-done.
 
-## Where we are vs. the storyboard (honest gap, 2026-05-29)
+## Where we are vs. the storyboard (honest gap, refreshed 2026-06-07)
 
 The codebase is **ahead of the image's "v3.8.0" caption — it is v3.12.0 /
 v3.13.0**. Panels 1–3 are essentially done; the frontier is panel 4 flowing
@@ -30,13 +30,14 @@ runtime activation**, plus closing the V12 learning loop.
 | gap detector → autogrowth → lowrisk grower | Autonomous Growth | ✅ done (6-family envelope, consultable-only) | `autonomy_growth/*` |
 | subdivision, ring messaging, parent-child, gap replay, Axis B | Full Hexagonal | ⏳ ~70% — structures real, runtime activation gated | `hex_topology/*` (`no_runtime_mutation=True`), `run_release_axis_b_gate.py` |
 | ring transport + hierarchy in runtime | Ring Messaging & Hierarchy | ⏳ ~60% — delivery validated, no network transport | `hex_topology/ring_messaging.py` |
-| self-organizing mesh, emergent | Emergent Intelligence | ❌ early — counterfactual partial, competitive promo missing | A3 `MEASURED_LOCAL_PARTIAL`, `hex_cell_competition.py` |
+| self-organizing mesh, emergent | Emergent Intelligence | ⏳ partial — counterfactual partial; competitive promotion reaches operator-gated, receipt-bound activation preflight, but not runtime authority | A3 `MEASURED_LOCAL_PARTIAL`, `hex_cell_competition.py`, `run_v12_competitive_triad_simulation.py` |
 | unlimited scalability | Infinite Scalability | ❌ design-only | multi-instance flywheel = V12 #2 |
 | industrial-grade efficiency | Industrial-grade Efficiency | ❌ no measured program | no efficiency benchmark/budget gate |
 
 V12 five-ingredient spine: #1 MAGMA receipt v1 ✅ · #2 multi-instance flywheel
-❌ · #3 counterfactual eval ⏳ (A3) · #4 hex-cell competitive promotion ⏳ ·
-#5 synthetic adversarial corpus ⏳ (seed).
+❌ · #3 counterfactual eval ⏳ (A3) · #4 hex-cell competitive promotion ⏳
+(operator-gated, receipt-bound preflight; runtime commit still gated) · #5
+synthetic adversarial corpus ⏳ (seed).
 
 ## Roles
 - **`codex-lead-1` (Claude 4.8, temporary lead)** — lead/merge-decider,

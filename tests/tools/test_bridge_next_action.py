@@ -635,6 +635,89 @@ def test_recommends_parallel_read_only_when_foreign_write_claim_exists(
     assert report["foreign_write_claim_count"] == 1
 
 
+def test_ignores_expired_foreign_write_claim_when_recommending() -> None:
+    claim = Claim(
+        agent="claude",
+        task_id="expired-foreign-write",
+        summary="other agent stopped heartbeating",
+        mode="write",
+        write_scope=("tools/bridge_next_action.py",),
+        run_id="claude-run",
+        claimed_at_utc="2026-06-07T18:00:00Z",
+        last_heartbeat_utc="2026-06-07T18:00:00Z",
+        lease_seconds=300,
+        claim_lease_expires_utc="2026-06-07T18:05:00Z",
+    )
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[],
+        claims=[claim],
+        now_utc=datetime(2026, 6, 7, 18, 6, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["active_claim_count"] == 0
+    assert report["foreign_write_claim_count"] == 0
+    assert "claim_snapshot" not in report
+    assert report["ignored_stale_claim_count"] == 1
+    assert report["ignored_stale_claims"][0]["task_id"] == "expired-foreign-write"
+
+
+def test_keeps_foreign_write_claim_until_explicit_expiry() -> None:
+    claim = Claim(
+        agent="claude",
+        task_id="extended-foreign-write",
+        summary="other agent extended lease",
+        mode="write",
+        write_scope=("tools/bridge_next_action.py",),
+        run_id="claude-run",
+        claimed_at_utc="2026-06-07T18:00:00Z",
+        last_heartbeat_utc="2026-06-07T18:00:00Z",
+        lease_seconds=300,
+        claim_lease_expires_utc="2026-06-07T18:10:00Z",
+    )
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[],
+        claims=[claim],
+        now_utc=datetime(2026, 6, 7, 18, 6, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "parallel_read_only"
+    assert report["active_claim_count"] == 1
+    assert report["foreign_write_claim_count"] == 1
+    assert "ignored_stale_claim_count" not in report
+
+
+def test_ignores_expired_own_claim_when_recommending() -> None:
+    claim = Claim(
+        agent="codex",
+        task_id="expired-own-write",
+        summary="own claim stopped heartbeating",
+        mode="write",
+        write_scope=("tools/bridge_next_action.py",),
+        run_id="codex-run",
+        claimed_at_utc="2026-06-07T18:00:00Z",
+        last_heartbeat_utc="2026-06-07T18:00:00Z",
+        lease_seconds=300,
+        claim_lease_expires_utc="2026-06-07T18:05:00Z",
+    )
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[],
+        claims=[claim],
+        now_utc=datetime(2026, 6, 7, 18, 6, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["active_claim_count"] == 0
+    assert report["ignored_stale_claim_count"] == 1
+    assert report["ignored_stale_claims"][0]["task_id"] == "expired-own-write"
+
+
 def test_report_surfaces_agent_profile_and_claim_role_metadata() -> None:
     claim = Claim(
         agent="claude-rco-1",

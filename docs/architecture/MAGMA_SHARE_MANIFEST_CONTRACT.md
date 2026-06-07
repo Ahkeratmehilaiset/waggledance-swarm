@@ -120,10 +120,18 @@ operator-owned peer-review handoff. It must keep:
   outputs, replacement maps, and deterministic raw-query digests out of the
   serialized handoff.
 
+For reviewer-facing observability, `--admission-status-json` emits a compact
+path-free admission-status object instead of the full import report. A ready
+status records the report digest, admission-contract digest, share/source
+manifest digests, entry count, age, context state, and the same no-authority /
+privacy flags. It does not include the full replay plan, local paths, payload
+material, transport, or runtime authority.
+
 When `--json` is set and admission is rejected, the importer still exits
 nonzero and writes the human failure line to stderr, but stdout contains a
-sanitized admission-status JSON object. That failure status records the
-contract digest, a `blocker_class` from the admission contract's
+sanitized admission-status JSON object. `--admission-status-json` uses the same
+fail-closed stdout shape for rejected admissions. That failure status records
+the contract digest, a `blocker_class` from the admission contract's
 `rejection_modes.reason_code` values, and the same no-authority/privacy flags
 as a successful report. It must not echo local paths, operator decision ids,
 payload text, raw context, raw solver outputs, replacement maps, deterministic
@@ -137,6 +145,18 @@ verification, unsafe source-manifest paths, or a failed import report being
 handed to peer review.
 
 Example:
+
+```powershell
+python tools\import_magma_share_manifest.py `
+  --share-manifest <share-export-dir>\share_manifest.json `
+  --source-manifest <receipt-bundle>\manifest.json `
+  --expected-share-id magma:share:example:001 `
+  --expected-purpose cross_instance_replay `
+  --max-age-hours 168 `
+  --admission-status-json
+```
+
+Full report plus optional peer-review handoff:
 
 ```powershell
 python tools\import_magma_share_manifest.py `

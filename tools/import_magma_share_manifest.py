@@ -20,6 +20,7 @@ from waggledance.core.magma.share_manifest import (  # noqa: E402
     DEFAULT_IMPORT_MAX_AGE_HOURS,
     IMPORT_HANDOFF_DECISIONS,
     PURPOSES,
+    build_magma_share_import_admission_status_summary,
     build_magma_share_import_failed_admission_status_summary,
     build_magma_share_manifest_import_report,
     write_magma_share_import_peer_review_handoff,
@@ -99,6 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stable non-sensitive reason ref recorded in the handoff.",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--admission-status-json",
+        action="store_true",
+        help=(
+            "Emit the path-free no-authority admission-status summary instead "
+            "of the full import report."
+        ),
+    )
     return parser
 
 
@@ -149,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 now_utc=now_utc,
             )
     except (OSError, ValueError) as exc:
-        if args.json:
+        if args.json or args.admission_status_json:
             status = build_magma_share_import_failed_admission_status_summary(
                 reason=str(exc),
                 max_age_hours=args.max_age_hours,
@@ -160,7 +169,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"magma share manifest import FAILED: {exc}", file=sys.stderr)
         return 1
 
-    if args.json:
+    if args.admission_status_json:
+        status = build_magma_share_import_admission_status_summary(report)
+        print(json.dumps(status, indent=2, sort_keys=True))
+    elif args.json:
         if handoff is not None:
             report = dict(report)
             report["peer_review_handoff"] = handoff

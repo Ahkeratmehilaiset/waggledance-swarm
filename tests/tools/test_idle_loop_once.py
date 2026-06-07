@@ -7,12 +7,39 @@ from pathlib import Path
 
 import pytest
 
-from tools.idle_loop_once import evaluate_idle_loop_tick
+from tools.idle_loop_once import deferred_lift_state, evaluate_idle_loop_tick
 
 
 NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
 OLD_TS = "2026-01-01T00:00:00Z"
 RECENT_TS = "2026-05-20T11:55:00Z"
+
+
+def _assert_deferred_lift_state(state: dict) -> None:
+    assert state["source"] == "docs/architecture/IDLE_PROTOCOL_V1.md#deferred"
+    authority = state["authority"]
+    assert authority["read_only_report"] is True
+    for key in (
+        "emits_bridge_events",
+        "claims_work",
+        "creates_tasks",
+        "creates_branches",
+        "creates_pull_requests",
+        "merges",
+        "skips_gates",
+    ):
+        assert authority[key] is False
+
+    items = state["items"]
+    assert (
+        items["production_two_agent_activation_loop"]["state"]
+        == "partial_read_only_ready"
+    )
+    assert items["automatic_payload_generation"]["state"] == "deferred"
+    assert (
+        items["auto_conversion_consensus_to_implementation_work"]["state"]
+        == "report_only_partial"
+    )
 
 
 def _bridge_event(
@@ -222,6 +249,7 @@ def test_unknown_when_events_file_missing(tmp_path: Path) -> None:
     assert report["next_action"] == "operator_handles"
     assert report["exit_code"] == 2
     assert "missing bridge events file" in report["reason"]
+    _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
 def test_not_idle_when_pending_ci(tmp_path: Path) -> None:
@@ -237,6 +265,7 @@ def test_not_idle_when_pending_ci(tmp_path: Path) -> None:
     assert report["decision"] == "not_idle"
     assert report["next_action"] == "wait_for_quiet"
     assert "pending_ci" in report["blockers"]
+    _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
 def test_not_idle_when_recent_agent_message(tmp_path: Path) -> None:
@@ -265,6 +294,7 @@ def test_no_session_when_idle_and_no_idle_events(tmp_path: Path) -> None:
     assert report["next_action"] == "emit_round_1"
     assert "run_idle_protocol_once.py" in report["recommended_command"]
     assert report["session_summary"]["status"] == "no_session"
+    _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
 def test_mid_protocol_after_one_proposal(tmp_path: Path) -> None:
@@ -401,7 +431,7 @@ def test_tick_does_not_write_bridge_events_or_claims(tmp_path: Path) -> None:
     events_before = events_path.read_text(encoding="utf-8")
     claims_before = sorted(p.name for p in claims_dir.iterdir())
 
-    evaluate_idle_loop_tick(
+    report = evaluate_idle_loop_tick(
         events_path=events_path,
         claims_dir=claims_dir,
         now_utc=NOW,
@@ -412,6 +442,17 @@ def test_tick_does_not_write_bridge_events_or_claims(tmp_path: Path) -> None:
 
     assert events_path.read_text(encoding="utf-8") == events_before
     assert sorted(p.name for p in claims_dir.iterdir()) == claims_before
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_deferred_lift_state_returns_copy() -> None:
+    state = deferred_lift_state()
+    _assert_deferred_lift_state(state)
+
+    state["authority"]["claims_work"] = True
+
+    fresh = deferred_lift_state()
+    assert fresh["authority"]["claims_work"] is False
 
 
 def test_tick_is_deterministic_for_identical_inputs(tmp_path: Path) -> None:

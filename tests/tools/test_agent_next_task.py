@@ -11,6 +11,7 @@ from tools.agent_next_task import (
     DREAM_MODE_CANDIDATES,
     OPERATIONAL_SCOUT_CANDIDATES,
     SUBSTRATE_SMOKE_CANDIDATES,
+    deferred_lift_state,
     _pick_dream_mode_seed,
     _pick_operational_scout,
     _pick_substrate_smoke,
@@ -20,6 +21,33 @@ from tools.agent_next_task import (
 from waggledance.core.work_queue import claim_task, release_task
 
 NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _assert_deferred_lift_state(state: dict) -> None:
+    assert state["source"] == "docs/architecture/IDLE_PROTOCOL_V1.md#deferred"
+    authority = state["authority"]
+    assert authority["read_only_report"] is True
+    for key in (
+        "emits_bridge_events",
+        "claims_work",
+        "creates_tasks",
+        "creates_branches",
+        "creates_pull_requests",
+        "merges",
+        "skips_gates",
+    ):
+        assert authority[key] is False
+
+    items = state["items"]
+    assert (
+        items["production_two_agent_activation_loop"]["state"]
+        == "partial_read_only_ready"
+    )
+    assert items["automatic_payload_generation"]["state"] == "deferred"
+    assert (
+        items["auto_conversion_consensus_to_implementation_work"]["state"]
+        == "report_only_partial"
+    )
 
 
 def _events_file(bridge_root: Path, events: list[dict]) -> Path:
@@ -77,6 +105,7 @@ def test_invalid_agent_id_is_rejected(tmp_path: Path) -> None:
     assert report["decision"] == "agent_invalid"
     assert report["next_action"] == "operator_handles"
     assert report["exit_code"] == 2
+    _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +135,7 @@ def test_defers_when_agent_has_active_claim(tmp_path: Path) -> None:
     assert report["next_action"] == "follow_bridge_recommendation"
     assert report["bridge_recommendation"]["action"] == "continue_claim"
     assert report["bridge_recommendation"]["task_id"] == "claude-already-running"
+    _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
 def test_defers_when_open_incoming_request(tmp_path: Path) -> None:
@@ -211,6 +241,17 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
         f"-{candidate['rotation']['index']}"
     )
     assert "pytest" in candidate["recommended_command"]
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_deferred_lift_state_returns_copy() -> None:
+    state = deferred_lift_state()
+    _assert_deferred_lift_state(state)
+
+    state["authority"]["creates_pull_requests"] = True
+
+    fresh = deferred_lift_state()
+    assert fresh["authority"]["creates_pull_requests"] is False
 
 
 def test_agent_next_task_lifts_bridge_agent_profile_to_top_level(

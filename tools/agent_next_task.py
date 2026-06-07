@@ -28,6 +28,7 @@ without weakening any charter gate.
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -65,6 +66,59 @@ SUCCESSFUL_COMPLETION_STATUSES = {
     "success",
     "verified",
 }
+DEFERRED_LIFT_STATE: dict[str, Any] = {
+    "source": "docs/architecture/IDLE_PROTOCOL_V1.md#deferred",
+    "authority": {
+        "read_only_report": True,
+        "emits_bridge_events": False,
+        "claims_work": False,
+        "creates_tasks": False,
+        "creates_branches": False,
+        "creates_pull_requests": False,
+        "merges": False,
+        "skips_gates": False,
+    },
+    "items": {
+        "production_two_agent_activation_loop": {
+            "state": "partial_read_only_ready",
+            "implemented_by": [
+                "tools/idle_loop_once.py",
+                "tools/agent_next_task.py",
+                "docs/architecture/IDLE_LOOP_RUNBOOK.md",
+            ],
+            "safe_next": (
+                "Expose readiness and scheduler recommendations only; any "
+                "bridge write stays in an explicit caller-owned claim/release "
+                "step."
+            ),
+        },
+        "automatic_payload_generation": {
+            "state": "deferred",
+            "implemented_by": [],
+            "safe_next": (
+                "Keep idle-protocol payload composition outside tooling until "
+                "payload templates and quality gates are peer reviewed."
+            ),
+        },
+        "auto_conversion_consensus_to_implementation_work": {
+            "state": "report_only_partial",
+            "implemented_by": [
+                "tools/idle_consensus_artifact.py",
+                "tools/idle_consensus_to_pr.py",
+                "tools/idle_consensus_draft_pr.py",
+            ],
+            "safe_next": (
+                "Report candidate-diff readiness only; implementer agents "
+                "still create scoped diffs and PRs separately."
+            ),
+        },
+    },
+}
+
+
+def deferred_lift_state() -> dict[str, Any]:
+    """Return read-only status for idle protocol items still under lift review."""
+    return copy.deepcopy(DEFERRED_LIFT_STATE)
 
 
 # A small, stable, charter-safe pool of always-available read-only
@@ -290,18 +344,18 @@ def evaluate_agent_next_task(
     ``bridge_next_action.continue_claim``.
     """
     if not AGENT_ID_PATTERN.fullmatch(agent):
-        return {
+        return _with_deferred_lift_state({
             "decision": "agent_invalid",
             "next_action": "operator_handles",
             "exit_code": 2,
             "errors": [f"agent must match {AGENT_ID_PATTERN.pattern}"],
-        }
+        })
 
     try:
         events = read_events(events_path, tail=tail)
         claims = list_claims(bridge_root=Path(bridge_root))
     except (BridgeNextActionError, WorkQueueError, OSError) as exc:
-        return {
+        return _with_deferred_lift_state({
             "decision": "unknown",
             "next_action": "operator_handles",
             "exit_code": 2,
@@ -309,7 +363,7 @@ def evaluate_agent_next_task(
             "notes": [
                 "bridge state could not be read; the scheduler should leave the bridge alone"
             ],
-        }
+        })
 
     try:
         bridge_recommendation = recommend_next_action(
@@ -319,17 +373,17 @@ def evaluate_agent_next_task(
             now_utc=now_utc,
         )
     except BridgeNextActionError as exc:
-        return {
+        return _with_deferred_lift_state({
             "decision": "unknown",
             "next_action": "operator_handles",
             "exit_code": 2,
             "errors": [str(exc)],
-        }
+        })
 
     bridge_action = str(bridge_recommendation.get("action", ""))
 
     if bridge_action in DEFER_ACTIONS:
-        return {
+        return _with_deferred_lift_state({
             "decision": "defer_to_bridge_next_action",
             "next_action": "follow_bridge_recommendation",
             "exit_code": 0,
@@ -342,7 +396,7 @@ def evaluate_agent_next_task(
                     f"({bridge_action}); follow it verbatim"
                 )
             ],
-        }
+        })
 
     if bridge_action in PICK_ACTIONS:
         completed_task_ids = _completed_substrate_smoke_task_ids(
@@ -373,7 +427,7 @@ def evaluate_agent_next_task(
                 active_task_ids=active_dream_mode_task_ids,
             )
             if dream_candidate is not None:
-                return {
+                return _with_deferred_lift_state({
                     "decision": "claim_dream_mode_seed",
                     "next_action": "claim_and_run",
                     "exit_code": 0,
@@ -403,7 +457,7 @@ def evaluate_agent_next_task(
                             "is responsible for claiming it before running"
                         ),
                     ],
-                }
+                })
             completed_operational_scout_task_ids = (
                 _completed_operational_scout_task_ids(
                     events=events,
@@ -422,7 +476,7 @@ def evaluate_agent_next_task(
                 active_task_ids=active_operational_scout_task_ids,
             )
             if operational_candidate is not None:
-                return {
+                return _with_deferred_lift_state({
                     "decision": "claim_operational_scout",
                     "next_action": "claim_and_run",
                     "exit_code": 0,
@@ -458,7 +512,7 @@ def evaluate_agent_next_task(
                             "is responsible for claiming it before running"
                         ),
                     ],
-                }
+                })
             completed_continuous_operational_scout_task_ids = (
                 _completed_continuous_operational_scout_task_ids(
                     events=events,
@@ -479,7 +533,7 @@ def evaluate_agent_next_task(
                 active_task_ids=active_continuous_operational_scout_task_ids,
             )
             if continuous_candidate is not None:
-                return {
+                return _with_deferred_lift_state({
                     "decision": "claim_continuous_operational_scout",
                     "next_action": "claim_and_run",
                     "exit_code": 0,
@@ -522,8 +576,8 @@ def evaluate_agent_next_task(
                             "is responsible for claiming it before running"
                         ),
                     ],
-                }
-            return {
+                })
+            return _with_deferred_lift_state({
                 "decision": "dream_mode_pool_exhausted",
                 "next_action": "operator_handles",
                 "exit_code": 0,
@@ -558,7 +612,7 @@ def evaluate_agent_next_task(
                         "already-completed daily candidate"
                     ),
                 ],
-            }
+            })
         skip_note = []
         if candidate["rotation"]["offset"] > 0:
             skip_note = [
@@ -567,7 +621,7 @@ def evaluate_agent_next_task(
                     "so the picker advanced to the next pool entry"
                 )
             ]
-        return {
+        return _with_deferred_lift_state({
             "decision": "claim_substrate_smoke",
             "next_action": "claim_and_run",
             "exit_code": 0,
@@ -590,9 +644,9 @@ def evaluate_agent_next_task(
                 ),
                 *skip_note,
             ],
-        }
+        })
 
-    return {
+    return _with_deferred_lift_state({
         "decision": "unknown_bridge_action",
         "next_action": "operator_handles",
         "exit_code": 0,
@@ -605,7 +659,13 @@ def evaluate_agent_next_task(
                 f"({bridge_action!r}); the scheduler should escalate"
             )
         ],
-    }
+    })
+
+
+def _with_deferred_lift_state(report: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(report)
+    payload["deferred_lift_state"] = deferred_lift_state()
+    return payload
 
 
 def _bridge_context(bridge_recommendation: Mapping[str, Any]) -> dict[str, Any]:

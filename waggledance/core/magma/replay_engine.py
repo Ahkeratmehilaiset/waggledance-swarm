@@ -13,11 +13,12 @@ Extends L2 replay to support:
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -201,21 +202,70 @@ class ReplayAdapter:
         capability used in similar missions — candidates for LLM counterfactual
         analysis during night learning.
         """
-        mission = self.get_mission_replay(goal_id)
-        if not mission:
+        with self._lock:
+            mission = self._missions.get(goal_id)
+            if not mission:
+                return []
+            mission.entries.sort(key=lambda e: (e.step_order, e.timestamp))
+            if mission.is_simulation:
+                return []
+            target_goal_type = mission.goal_type
+            peer_missions = [
+                peer
+                for peer_goal_id, peer in self._missions.items()
+                if peer_goal_id != goal_id
+                and not peer.is_simulation
+                and peer.entries
+                and (
+                    not target_goal_type
+                    or peer.goal_type == target_goal_type
+                )
+            ]
+            target_entries = [
+                e
+                for e in mission.entries
+                if e.capability_id
+            ]
+
+        if not target_entries or not peer_missions:
             return []
-        capability_entries = [e for e in mission.entries if e.capability_id]
-        if len(capability_entries) < 2:
-            return []
-        return [
-            {
-                "step_order": e.step_order,
-                "capability_id": e.capability_id,
-                "event_type": e.event_type,
-                "result": e.result,
-            }
-            for e in capability_entries
-        ]
+
+        baselines: dict[Tuple[int, str], Counter[str]] = defaultdict(Counter)
+        for peer in peer_missions:
+            for entry in peer.entries:
+                if entry.capability_id:
+                    baselines[(entry.step_order, entry.event_type)][
+                        entry.capability_id
+                    ] += 1
+
+        candidates: List[Dict[str, Any]] = []
+        for entry in target_entries:
+            counts = baselines.get((entry.step_order, entry.event_type))
+            if not counts:
+                continue
+            most_common = counts.most_common()
+            majority_capability, majority_count = most_common[0]
+            if len(most_common) > 1 and most_common[1][1] == majority_count:
+                continue
+            if majority_capability == entry.capability_id:
+                continue
+            peer_sample_count = sum(counts.values())
+            candidates.append(
+                {
+                    "step_order": entry.step_order,
+                    "capability_id": entry.capability_id,
+                    "event_type": entry.event_type,
+                    "result": entry.result,
+                    "baseline_capability_id": majority_capability,
+                    "baseline_sample_count": peer_sample_count,
+                    "baseline_majority_count": majority_count,
+                    "baseline_majority_ratio": (
+                        majority_count / peer_sample_count
+                    ),
+                    "candidate_reason": "differs_from_peer_majority",
+                }
+            )
+        return candidates
 
     def record_dream_replay(self, goal_id: str, original_goal_id: str,
                              counterfactual_chain: list,

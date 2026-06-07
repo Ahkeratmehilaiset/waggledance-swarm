@@ -555,8 +555,12 @@ def _counterfactual_eval_admission_summary(
         "receipt_payload_included": False,
         "satisfies_replay_gate": satisfies_replay_gate,
         "dry_run_only": True,
-        "runtime_authority_granted": False,
-        "external_writes_applied": False,
+        "runtime_authority_granted": (
+            observability.get("runtime_authority_granted") is True
+        ),
+        "external_writes_applied": (
+            observability.get("external_writes_applied") is True
+        ),
         "observability": observability,
     }
 
@@ -570,6 +574,10 @@ def _counterfactual_observability_satisfies_replay_gate(
         and observability.get("same_sample_set") is True
         and observability.get("deterministic") is True
         and observability.get("delta_digest_present") is True
+        and observability.get("controls_present") is False
+        and observability.get("runtime_authority_granted") is False
+        and observability.get("external_writes_applied") is False
+        and observability.get("payload_fields_exported") is False
     )
 
 

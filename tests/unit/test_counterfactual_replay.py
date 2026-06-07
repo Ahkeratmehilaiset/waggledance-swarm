@@ -230,3 +230,28 @@ def test_observability_summary_bounds_stored_a3_label():
     assert status["status"] == "insufficient"
     assert status["a3_label"] == A3_LABEL_INSUFFICIENT
     assert "gpt-4o-RAW" not in repr(status)
+
+
+def test_observability_summary_preserves_explicit_authority_drift_flags():
+    status = summarize_counterfactual_observability({
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
+        "sample_count": 20,
+        "same_sample_set": True,
+        "deterministic": True,
+        "divergence_count": 3,
+        "no_delta": False,
+        "delta_digest": "sha256:private-digest",
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    })
+
+    assert status["status"] == "measured_local_partial"
+    assert status["controls_present"] is True
+    assert status["runtime_authority_granted"] is True
+    assert status["external_writes_applied"] is True
+    assert status["payload_fields_exported"] is True
+    assert "private-digest" not in repr(status)

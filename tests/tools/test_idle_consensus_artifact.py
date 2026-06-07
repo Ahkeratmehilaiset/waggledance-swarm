@@ -522,6 +522,46 @@ def test_candidate_diff_replay_admission_blocks_insufficient_counterfactual_rece
     assert admission["next_required_gates"][0] == "counterfactual_eval_receipt"
 
 
+def test_candidate_diff_replay_admission_blocks_authority_drift_receipt(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    receipt = {
+        **_measured_counterfactual_receipt(),
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    }
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        candidate_diff_text=(
+            "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+            "b/docs/architecture/consensus_artifacts/replay.md\n"
+        ),
+        counterfactual_eval_receipt=receipt,
+    )
+    summary = admission["counterfactual_eval"]
+
+    assert summary["provided"] is True
+    assert summary["runtime_authority_granted"] is True
+    assert summary["external_writes_applied"] is True
+    assert summary["satisfies_replay_gate"] is False
+    assert summary["observability"]["controls_present"] is True
+    assert summary["observability"]["runtime_authority_granted"] is True
+    assert summary["observability"]["external_writes_applied"] is True
+    assert summary["observability"]["payload_fields_exported"] is True
+    assert admission["draft_pr_gate_blockers"] == [
+        "counterfactual_eval_receipt_insufficient",
+        "operator_review_gate_required",
+    ]
+    assert admission["next_required_gates"][0] == "counterfactual_eval_receipt"
+    assert admission["eligible_for_draft_pr_gate"] is False
+
+
 def test_candidate_diff_replay_admission_refuses_private_counterfactual_receipt(
     tmp_path: Path,
 ) -> None:

@@ -197,6 +197,49 @@ def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_reject
     assert summary["runtime_authority_granted"] is False
 
 
+def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_rejects_nested_authority_container() -> None:
+    verification_report = _verification_report()
+    verification_report["nested"] = {
+        "scheduler_authority": {"scheduler_enqueue_allowed": False}
+    }
+
+    summary = build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry_verification_summary(
+        verification_report=verification_report,
+        reviewer_agent_id="codex-lead-1",
+        handoff_ref="runtime-gap-summary-review",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert (
+        "verification_report_forbidden_authority_container:scheduler_authority"
+        in summary["blockers"]
+    )
+    assert summary["scheduler_enqueue_allowed"] is False
+    assert summary["runtime_authority_granted"] is False
+
+
+def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_rejects_nested_payload_and_path_keys() -> None:
+    verification_report = _verification_report()
+    verification_report["nested"] = {
+        "raw_payload": "opaque",
+        "source_path": "artifact.json",
+    }
+
+    summary = build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry_verification_summary(
+        verification_report=verification_report,
+        reviewer_agent_id="codex-lead-1",
+        handoff_ref="runtime-gap-summary-review",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert "verification_report_forbidden_payload_key:raw_payload" in summary["blockers"]
+    assert "verification_report_forbidden_path_key:source_path" in summary["blockers"]
+    assert summary["artifact_payloads_included"] is False
+    assert summary["local_paths_recorded"] is False
+
+
 def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_rejects_digest_mismatch_report() -> None:
     artifacts = _artifact_set()
     index_entry = _index_entry(artifacts)

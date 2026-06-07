@@ -255,14 +255,14 @@ def _is_peer_request_like(event: Mapping[str, Any]) -> bool:
 
 
 def _is_substantive_answer_like(event: Mapping[str, Any]) -> bool:
-    if _is_answer_like(event):
-        return True
     event_type = _event_type(event)
     status = _event_status(event)
     if event_type in {"heartbeat", "liveness", "wake_request"}:
         return False
     if event_type == "message" and status in {"received", "seen", "acknowledged"}:
         return False
+    if _is_answer_like(event):
+        return True
     return event_type in {
         "message",
         "claim",

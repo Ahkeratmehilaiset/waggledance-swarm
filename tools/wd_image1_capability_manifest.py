@@ -40,6 +40,7 @@ from tools.hex_shadow_subdivision_replay import (  # noqa: E402
     build_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
+    verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry,
 )
 from tools.build_runtime_gap_scheduler_candidate_artifact import (  # noqa: E402
     build_runtime_gap_scheduler_candidate_artifact,
@@ -7038,7 +7039,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             (
                 "tools/hex_shadow_subdivision_replay.py",
-                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, template index-entry builder, index-entry verifier, index-entry verifier summary renderer, and index-entry verifier summary bridge-event template builder.",
+                "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, template index-entry builder, index-entry verifier, index-entry verifier summary renderer, index-entry verifier summary bridge-event template builder, and verification-summary template index-entry verifier.",
             ),
         ),
     )
@@ -7144,6 +7145,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_bytes
         ),
     )
+    hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification = verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry,
+        hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template,
+        template_report_bytes=(
+            hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_bytes
+        ),
+    )
     hex_upgrade_proof["runtime_boundary_smoke"] = hex_upgrade_runtime_smoke
     hex_upgrade_proof["shadow_subdivision_replay"] = hex_upgrade_shadow_replay
     hex_upgrade_proof["shadow_subdivision_replay_verification"] = (
@@ -7170,6 +7178,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof[
         "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry"
     ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry
+    hex_upgrade_proof[
+        "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification"
+    ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True
@@ -7195,6 +7206,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         )
         is True
         and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.get(
+            "ok"
+        )
+        is True
+        and hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification.get(
             "ok"
         )
         is True
@@ -7572,7 +7587,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "entry binds that verification summary bridge-event template "
                 "digest and schema without payload inclusion, local path "
                 "recording, transport, bridge writes, runtime controls, or "
-                "runtime subdivision authority."
+                "runtime subdivision authority. A local verifier for that "
+                "index entry recomputes digest, size, schema, source-contract, "
+                "rebuilt-entry, and bridge-event schema checks while keeping "
+                "payload inclusion, local path recording, bridge writes, "
+                "transport, runtime controls, and runtime subdivision "
+                "authority false."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -7586,11 +7606,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local verifier for the shadow subdivision replay "
-                "verifier summary bridge-event template index-entry "
-                "verification summary bridge-event template index entry "
-                "without appending it, including payloads, or activating "
-                "runtime subdivision authority."
+                "Add a path-free reviewer summary renderer for the shadow "
+                "subdivision replay verifier summary bridge-event template "
+                "index-entry verification summary bridge-event template "
+                "index-entry verifier without appending it, including "
+                "payloads, or activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

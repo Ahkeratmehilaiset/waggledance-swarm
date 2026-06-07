@@ -20,6 +20,7 @@ from tools.hex_shadow_subdivision_replay import (
     build_source_snapshot,
     verify_shadow_subdivision_replay_artifact,
     verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry,
+    verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry,
 )
 from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_proof,
@@ -1394,6 +1395,19 @@ def _valid_verifier_summary_bridge_event_template_index_entry_verification_summa
     )
 
 
+def _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry() -> (
+    dict
+):
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    return build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=_json_bytes(template),
+        now_utc=datetime(2026, 5, 31, 13, 25, tzinfo=timezone.utc),
+    )
+
+
 def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_is_path_free() -> (
     None
 ):
@@ -1576,6 +1590,247 @@ def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_ve
     assert report["ok"] is False
     assert any(
         "bridge_event_template_duplicate_key" in item for item in report["blockers"]
+    )
+    assert "project2-master" not in serialized
+    assert "private.json" not in serialized
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_recomputes_digest_without_authority() -> (
+    None
+):
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+        now_utc=datetime(2026, 5, 31, 13, 25, tzinfo=timezone.utc),
+    )
+
+    report = verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        entry,
+        template,
+        template_report_bytes=raw,
+    )
+    serialized = json.dumps(report, sort_keys=True)
+    artifact_id = (
+        "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_"
+        "index_entry_verification_summary_bridge_event_template"
+    )
+
+    assert report["ok"] is True
+    assert (
+        report["proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_v1"
+    )
+    assert (
+        report["verification_version"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification.v1"
+    )
+    assert (
+        report["verified_proof_id"]
+        == "hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_v1"
+    )
+    assert report["digest_checks"][artifact_id] == "match"
+    assert report["size_checks"][artifact_id] == "match"
+    assert report["schema_version_checks"][artifact_id] == "match"
+    assert report["source_contract_check"] == "match"
+    assert report["rebuilt_index_entry_check"] == "match"
+    assert report["bridge_event_schema_check"] == "match"
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+    assert report["artifact_payloads_included"] is False
+    assert report["local_paths_recorded"] is False
+    assert '"bridge_event_template":' not in serialized
+    assert str(ROOT) not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_rejects_digest_mismatch_path_free() -> (
+    None
+):
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+    )
+    tampered_template = json.loads(json.dumps(template))
+    tampered_template["warnings"] = ["reviewer_context_changed"]
+    tampered_raw = _json_bytes(tampered_template)
+
+    report = verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        entry,
+        tampered_template,
+        template_report_bytes=tampered_raw,
+    )
+    serialized = json.dumps(report, sort_keys=True)
+
+    assert report["ok"] is False
+    assert (
+        "digest_mismatch:hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template"
+        in report["blockers"]
+    )
+    assert "rebuilt_index_entry_mismatch" in report["blockers"]
+    assert "project2-master" not in serialized
+    assert "private.json" not in serialized
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_rejects_missing_record_and_nested_authority() -> (
+    None
+):
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+    )
+    entry["artifacts"] = []
+    entry["template_index_entry"]["runtime_subdivision_authority_granted"] = True
+
+    report = verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        entry,
+        template,
+        template_report_bytes=raw,
+    )
+
+    assert report["ok"] is False
+    assert (
+        "missing_artifact_record:hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template"
+        in report["blockers"]
+    )
+    assert (
+        "template_index_entry_runtime_subdivision_authority_granted_not_false"
+        in report["blockers"]
+    )
+    assert report["runtime_subdivision_authority_granted"] is False
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_rejects_deterministic_entry_drift() -> (
+    None
+):
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+    )
+    entry["reviewer_next_actions"] = ["review_changed"]
+
+    report = verify_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        entry,
+        template,
+        template_report_bytes=raw,
+    )
+
+    assert report["ok"] is False
+    assert "rebuilt_index_entry_mismatch" in report["blockers"]
+    assert report["rebuilt_index_entry_check"] == "mismatch"
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_cli_json_is_path_free(
+    tmp_path: Path,
+) -> None:
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+    )
+    template_path = tmp_path / "verification-summary-template.json"
+    index_path = tmp_path / "verification-summary-template-index-entry.json"
+    template_path.write_bytes(raw)
+    index_path.write_bytes(_json_bytes(entry))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--verify-summary-bridge-event-template-index-entry-verification-summary-bridge-event-template-index-entry-json",
+            str(index_path),
+            "--summary-bridge-event-template-index-entry-verification-summary-bridge-event-template-source-json",
+            str(template_path),
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    assert report["rebuilt_index_entry_check"] == "match"
+    assert report["direct_bridge_write_performed"] is False
+    assert report["runtime_subdivision_authority_granted"] is False
+    assert str(tmp_path) not in result.stdout
+    assert str(index_path) not in result.stdout
+    assert str(template_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_hex_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_cli_rejects_duplicate_key_hidden_path_free(
+    tmp_path: Path,
+) -> None:
+    template = (
+        _valid_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template()
+    )
+    raw = _json_bytes(template)
+    entry = build_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        template,
+        template_report_bytes=raw,
+    )
+    hidden_prefix = (
+        json.dumps(
+            {
+                "template_index_entry": {
+                    "note": "C:/Python/project2-master/private.json"
+                }
+            },
+            sort_keys=True,
+        )[:-1]
+        + ","
+    )
+    index_raw = (hidden_prefix + json.dumps(entry, sort_keys=True)[1:]).encode("utf-8")
+    template_path = tmp_path / "verification-summary-template.json"
+    index_path = tmp_path / "verification-summary-template-index-entry.json"
+    template_path.write_bytes(raw)
+    index_path.write_bytes(index_raw)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--verify-summary-bridge-event-template-index-entry-verification-summary-bridge-event-template-index-entry-json",
+            str(index_path),
+            "--summary-bridge-event-template-index-entry-verification-summary-bridge-event-template-source-json",
+            str(template_path),
+            "--strict",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 2
+    report = json.loads(result.stdout)
+    serialized = json.dumps(report, sort_keys=True)
+    assert report["ok"] is False
+    assert any(
+        "bridge_event_template_index_entry_duplicate_key" in item
+        for item in report["blockers"]
     )
     assert "project2-master" not in serialized
     assert "private.json" not in serialized

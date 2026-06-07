@@ -52,6 +52,9 @@ from tools.build_runtime_gap_scheduler_candidate_bridge_event_template import ( 
 from tools.build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry import (  # noqa: E402
     build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry,
 )
+from tools.verify_runtime_gap_scheduler_candidate_bridge_event_template_index_entry import (  # noqa: E402
+    verify_runtime_gap_scheduler_candidate_bridge_event_template_index_entry,
+)
 from tools.run_runtime_gap_detector_report import (  # noqa: E402
     build_runtime_gap_detector_report,
 )
@@ -7305,6 +7308,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry.py",
                 "Local index entry for runtime gap scheduler-candidate bridge-event templates; digest binding only, no artifact payload transport, scheduler authority, or bridge append.",
             ),
+            (
+                "tools/verify_runtime_gap_scheduler_candidate_bridge_event_template_index_entry.py",
+                "Local verifier for runtime gap scheduler-candidate bridge-event template index entries; recomputes digest, size, schema, source-contract, and no-authority checks.",
+            ),
+            (
+                "tests/tools/test_verify_runtime_gap_scheduler_candidate_bridge_event_template_index_entry.py",
+                "Verifier tests prove digest recomputation, path-free CLI output, source-contract failure, and no scheduler/runtime authority.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -7559,6 +7570,21 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
         )
     )
+    low_risk_scheduler_candidate_bridge_event_template_index_entry_verification = (
+        verify_runtime_gap_scheduler_candidate_bridge_event_template_index_entry(
+            index_entry=(
+                low_risk_scheduler_candidate_bridge_event_template_index_entry
+            ),
+            artifact=low_risk_scheduler_candidate_artifact,
+            bridge_event_template_report=(
+                low_risk_scheduler_candidate_bridge_event_template
+            ),
+            artifact_bytes=low_risk_scheduler_candidate_artifact_bytes,
+            bridge_event_template_bytes=(
+                low_risk_scheduler_candidate_bridge_event_template_bytes
+            ),
+        )
+    )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
@@ -7573,6 +7599,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_autonomy_proof[
         "scheduler_candidate_bridge_event_template_index_entry"
     ] = low_risk_scheduler_candidate_bridge_event_template_index_entry
+    low_risk_autonomy_proof[
+        "scheduler_candidate_bridge_event_template_index_entry_verification"
+    ] = (
+        low_risk_scheduler_candidate_bridge_event_template_index_entry_verification
+    )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
         and low_risk_runtime_boundary_smoke.get("ok") is True
@@ -7585,6 +7616,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         == []
         and low_risk_scheduler_candidate_bridge_event_template.get("ok") is True
         and low_risk_scheduler_candidate_bridge_event_template_index_entry.get("ok")
+        is True
+        and low_risk_scheduler_candidate_bridge_event_template_index_entry_verification.get(
+            "ok"
+        )
         is True
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
@@ -7836,8 +7871,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "thresholds, a read-only runtime gap detector report, and a "
                 "path-free scheduler-candidate preview artifact plus a "
                 "template-only bridge-event renderer for that preview, plus "
-                "a local index entry for that renderer; unrestricted runtime "
-                "authority is not claimed."
+                "a local index entry for that renderer and a local verifier "
+                "for that index entry; unrestricted runtime authority is not "
+                "claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -7874,12 +7910,17 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "digests and schema refs without transporting artifact "
                 "payloads, appending bridge events, enqueueing scheduler work, "
                 "or granting authority.",
+                "The runtime gap scheduler-candidate bridge-event template "
+                "index-entry verifier recomputes digest, size, schema, "
+                "source-contract, rebuilt-entry, and bridge-event-schema "
+                "checks without transporting payloads, appending bridge "
+                "events, enqueueing scheduler work, or granting authority.",
             ),
             next_smallest_pr=(
-                "Add a local verifier for the runtime gap scheduler-candidate "
-                "bridge-event template index entry without appending it, "
-                "transporting the artifact payload, or granting scheduler "
-                "authority."
+                "Add a path-free verification summary renderer for the "
+                "runtime gap scheduler-candidate bridge-event template "
+                "index-entry verifier without appending it, transporting "
+                "payloads, or granting scheduler authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

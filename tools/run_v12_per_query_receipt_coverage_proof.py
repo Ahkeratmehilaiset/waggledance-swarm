@@ -186,6 +186,7 @@ def build_v12_per_query_receipt_coverage_proof(
         query_reports.append(
             _run_query_case(
                 out_dir=out_dir / f"query_{index:03d}",
+                artifact_root=out_dir,
                 query_case=query_case,
                 now_utc=generated_at + timedelta(seconds=index - 1),
                 evaluation_version=evaluation_version,
@@ -264,7 +265,7 @@ def build_v12_per_query_receipt_coverage_proof(
             "not_a_competitor_benchmark": True,
             "no_release_boundary_change": True,
         },
-        "report_path": str(report_path),
+        "report_path": _artifact_path(report_path, out_dir),
     }
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -276,6 +277,7 @@ def build_v12_per_query_receipt_coverage_proof(
 def _run_query_case(
     *,
     out_dir: Path,
+    artifact_root: Path,
     query_case: QueryCase,
     now_utc: datetime,
     evaluation_version: str,
@@ -347,7 +349,7 @@ def _run_query_case(
         "solver_call_trace_receipt_bound": solver_trace_receipt_bound,
         "solver_selection": evaluation.get("solver_selection", []),
         "raw_payload_leak_check": leak_free,
-        "receipt_manifest": str(manifest_path),
+        "receipt_manifest": _artifact_path(manifest_path, artifact_root),
         "result_keys": sorted(str(key) for key in result.keys()),
     }
 
@@ -427,6 +429,10 @@ def _build_fixture_runtime(*, runtime_receipt_sink) -> AutonomyRuntime:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _artifact_path(path: Path, root: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def _raw_payload_leak_free(

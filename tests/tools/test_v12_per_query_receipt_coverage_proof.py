@@ -63,7 +63,8 @@ def test_build_reports_full_local_per_query_receipt_coverage(
     assert report["all_queries_receipt_bound"] is True
     assert report["all_solver_traces_receipt_bound"] is True
     assert report["raw_payload_leak_check"] is True
-    assert Path(report["report_path"]).exists()
+    assert not Path(report["report_path"]).is_absolute()
+    assert (out_dir / report["report_path"]).exists()
 
     for query_report in report["query_reports"]:
         assert query_report["ok"] is True
@@ -81,7 +82,8 @@ def test_build_reports_full_local_per_query_receipt_coverage(
         assert query_report["solver_call_trace_receipt_bound"] is True
         assert query_report["solver_selection"] == ["solve.v12_fixture"]
         assert query_report["raw_payload_leak_check"] is True
-        assert Path(query_report["receipt_manifest"]).exists()
+        assert not Path(query_report["receipt_manifest"]).is_absolute()
+        assert (out_dir / query_report["receipt_manifest"]).exists()
 
     authority = report["authority_boundary"]
     assert authority["local_artifacts_written"] is True
@@ -196,6 +198,8 @@ def test_cli_json_reports_coverage_without_raw_markers(tmp_path: Path) -> None:
     assert "DO_NOT_LEAK" not in result.stdout
     assert "private oncology query" not in result.stdout
     assert "context secret" not in result.stdout
+    assert "C:\\" not in result.stdout
+    assert ":\\\\" not in result.stdout
 
 
 def test_cli_rejects_non_utc_now(tmp_path: Path) -> None:

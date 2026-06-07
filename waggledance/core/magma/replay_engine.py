@@ -210,8 +210,12 @@ class ReplayAdapter:
             if mission.is_simulation:
                 return []
             target_goal_type = mission.goal_type
-            peer_missions = [
-                peer
+            peer_entry_snapshots = [
+                [
+                    (entry.step_order, entry.event_type, entry.capability_id)
+                    for entry in peer.entries
+                    if entry.capability_id
+                ]
                 for peer_goal_id, peer in self._missions.items()
                 if peer_goal_id != goal_id
                 and not peer.is_simulation
@@ -222,40 +226,42 @@ class ReplayAdapter:
                 )
             ]
             target_entries = [
-                e
+                {
+                    "step_order": e.step_order,
+                    "event_type": e.event_type,
+                    "capability_id": e.capability_id,
+                    "result": e.result,
+                }
                 for e in mission.entries
                 if e.capability_id
             ]
 
-        if not target_entries or not peer_missions:
+        if not target_entries or not peer_entry_snapshots:
             return []
 
         baselines: dict[Tuple[int, str], Counter[str]] = defaultdict(Counter)
-        for peer in peer_missions:
-            for entry in peer.entries:
-                if entry.capability_id:
-                    baselines[(entry.step_order, entry.event_type)][
-                        entry.capability_id
-                    ] += 1
+        for peer_entries in peer_entry_snapshots:
+            for step_order, event_type, capability_id in peer_entries:
+                baselines[(step_order, event_type)][capability_id] += 1
 
         candidates: List[Dict[str, Any]] = []
         for entry in target_entries:
-            counts = baselines.get((entry.step_order, entry.event_type))
+            counts = baselines.get((entry["step_order"], entry["event_type"]))
             if not counts:
                 continue
             most_common = counts.most_common()
             majority_capability, majority_count = most_common[0]
             if len(most_common) > 1 and most_common[1][1] == majority_count:
                 continue
-            if majority_capability == entry.capability_id:
+            if majority_capability == entry["capability_id"]:
                 continue
             peer_sample_count = sum(counts.values())
             candidates.append(
                 {
-                    "step_order": entry.step_order,
-                    "capability_id": entry.capability_id,
-                    "event_type": entry.event_type,
-                    "result": entry.result,
+                    "step_order": entry["step_order"],
+                    "capability_id": entry["capability_id"],
+                    "event_type": entry["event_type"],
+                    "result": entry["result"],
                     "baseline_capability_id": majority_capability,
                     "baseline_sample_count": peer_sample_count,
                     "baseline_majority_count": majority_count,

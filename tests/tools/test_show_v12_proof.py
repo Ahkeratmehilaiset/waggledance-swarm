@@ -302,6 +302,15 @@ def test_memory_palace_shortcut_section_reports_read_side_projection() -> None:
     assert palace["top_candidate_rank_score"] > 0
     assert palace["top_candidate_hierarchy_hops"] == 3
     assert "tags" in palace["top_candidate_matched_selector_keys"]
+    bypass = palace["bypass_analysis"]
+    assert bypass["hierarchy_hops"] == 3
+    assert bypass["projected_shortcut_hops"] == 1
+    assert bypass["intermediate_hops_skipped"] == 2
+    assert bypass["intermediate_node_traversal_required"] is False
+    assert bypass["intermediate_nodes_not_loaded"] is True
+    assert bypass["shortcut_ranked_without_runtime_dispatch"] is True
+    assert bypass["runtime_route_changed"] is False
+    assert bypass["solver_call_performed"] is False
     assert palace["authority_flags_false"] is True
     assert "projection-only local fixture" in palace["evidence_scope"]
     assert "not router/solver dispatch" in palace["evidence_scope"]
@@ -314,6 +323,9 @@ def test_memory_palace_shortcut_text_keeps_no_authority_boundary() -> None:
     assert "MEMORY PALACE SHORTCUTS" in result.stdout
     assert "read-side shortcut ranking" in result.stdout
     assert "source of truth                : projection_only" in result.stdout
+    assert "projected shortcut hops        : 1" in result.stdout
+    assert "bypass hops skipped            : 2" in result.stdout
+    assert "intermediate nodes not loaded  : True" in result.stdout
     assert "authority flags false          : True" in result.stdout
     assert "not router/solver dispatch" in result.stdout
 

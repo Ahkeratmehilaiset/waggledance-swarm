@@ -208,6 +208,14 @@ def _emit(result: dict[str, Any], as_json: bool) -> None:
                     f"status={latest.get('status')} type={latest.get('type')}",
                     file=sys.stderr,
                 )
+            for mismatch in result.get("task_id_mismatch_rco_events", []):
+                print(
+                    "  task-id mismatch pass candidate: "
+                    f"agent={mismatch.get('agent')} "
+                    f"task_id={mismatch.get('task_id')} "
+                    f"status={mismatch.get('status')} type={mismatch.get('type')}",
+                    file=sys.stderr,
+                )
 
 
 def _make_result(
@@ -238,6 +246,8 @@ def _make_result(
         "author_agent": author_agent,
         "satisfying_rco_agent": None,
         "has_qualifying_rco_pass_at_head": bool(has_qualifying_rco_pass_at_head),
+        "has_task_id_mismatch_rco_pass_at_head": False,
+        "task_id_mismatch_rco_events": [],
         "latest_rco_is_veto": latest_rco_is_veto,
         "rco_pass_event": (
             _summarize_event(rco_pass_event) if rco_pass_event is not None else None
@@ -287,6 +297,8 @@ def check_rco_pass_present(
         "author_agent": author_agent,
         "satisfying_rco_agent": None,
         "has_qualifying_rco_pass_at_head": False,
+        "has_task_id_mismatch_rco_pass_at_head": False,
+        "task_id_mismatch_rco_events": [],
         "latest_rco_is_veto": None,
         "rco_pass_event": None,
         "latest_rco_event": None,
@@ -329,6 +341,17 @@ def check_rco_pass_present(
         base["error"] = "all recognized RCO agents are excluded as the PR author"
         base["latest_rco_is_veto"] = False
         return base
+
+    task_id_mismatch_rco_events = _find_task_id_mismatch_rco_pass_events(
+        events=events,
+        task_id=task_id,
+        head=head,
+        eligible_rco_agents=eligible_rco_agents,
+    )
+    base["task_id_mismatch_rco_events"] = task_id_mismatch_rco_events
+    base["has_task_id_mismatch_rco_pass_at_head"] = bool(
+        task_id_mismatch_rco_events
+    )
 
     # Collect all recognized-RCO events scoped to this task_id (exact match per spec)
     rco_events: list[tuple[int, Mapping[str, Any]]] = []
@@ -413,6 +436,29 @@ def check_rco_pass_present(
     base["ok"] = True
     base["decision"] = "rco_pass_present"
     return base
+
+
+def _find_task_id_mismatch_rco_pass_events(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    head: str,
+    eligible_rco_agents: Sequence[str],
+) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if str(event.get("task_id", "")) == task_id:
+            continue
+        agent = str(event.get("agent", ""))
+        if agent not in eligible_rco_agents:
+            continue
+        if _is_qualifying_rco_pass(event, head, agent):
+            summary = _summarize_event(event)
+            if summary is not None:
+                mismatches.append(summary)
+    return mismatches
 
 
 def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:

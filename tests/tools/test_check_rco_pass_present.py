@@ -358,6 +358,62 @@ def test_other_task_events_ignored() -> None:
     assert result["ok"] is False
 
 
+def test_other_task_exact_head_pass_is_reported_without_counting() -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    slash_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
+    events = [
+        _rco_event(
+            ts="2026-06-07T18:10:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=slash_task,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=target_task, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "no_rco_events_for_task"
+    assert result["has_qualifying_rco_pass_at_head"] is False
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert result["task_id_mismatch_rco_events"] == [
+        {
+            "ts_utc": "2026-06-07T18:10:00Z",
+            "agent": "claude-rco-2",
+            "type": "decision",
+            "status": "rco_pass",
+            "task_id": slash_task,
+        }
+    ]
+
+
+def test_other_task_self_rco_pass_is_not_reported_as_mismatch() -> None:
+    other_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
+    events = [
+        _rco_event(
+            ts="2026-06-07T18:10:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=other_task,
+        ),
+    ]
+
+    result = check_rco_pass_present(
+        events=events,
+        task_id=TASK,
+        head=HEAD,
+        author_agent="claude-rco-2",
+    )
+
+    assert result["ok"] is False
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is False
+    assert result["task_id_mismatch_rco_events"] == []
+
+
 def test_wrong_status_not_pass() -> None:
     events = [
         _rco_event(
@@ -474,6 +530,94 @@ def test_cli_refuse_on_stale_head(tmp_path: Path) -> None:
     assert payload["has_qualifying_rco_pass_at_head"] is False
     for key in CLAIM_GATES:
         assert payload[key] is False
+
+
+def test_cli_json_reports_other_task_exact_head_pass_without_counting(
+    tmp_path: Path,
+) -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    slash_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
+    events_path = _seed_events(
+        tmp_path,
+        [
+            _rco_event(
+                agent="claude-rco-2",
+                status="rco_pass",
+                type_="decision",
+                message=f"RCO_PASS present at exact head {HEAD}",
+                task_id=slash_task,
+            ),
+        ],
+    )
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            target_task,
+            "--head",
+            HEAD,
+            "--events",
+            str(events_path),
+            "--author-agent",
+            AUTHOR,
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert res.returncode != 0
+    payload = json.loads(res.stdout)
+    assert payload["ok"] is False
+    assert payload["decision"] == "no_rco_events_for_task"
+    assert payload["has_qualifying_rco_pass_at_head"] is False
+    assert payload["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert payload["task_id_mismatch_rco_events"][0]["task_id"] == slash_task
+    assert payload["task_id_mismatch_rco_events"][0]["agent"] == "claude-rco-2"
+
+
+def test_cli_refuse_reports_other_task_mismatch_to_stderr(tmp_path: Path) -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    slash_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
+    events_path = _seed_events(
+        tmp_path,
+        [
+            _rco_event(
+                agent="claude-rco-2",
+                status="rco_pass",
+                type_="decision",
+                message=f"RCO_PASS present at exact head {HEAD}",
+                task_id=slash_task,
+            ),
+        ],
+    )
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            target_task,
+            "--head",
+            HEAD,
+            "--events",
+            str(events_path),
+            "--author-agent",
+            AUTHOR,
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert res.returncode != 0
+    assert "task-id mismatch pass candidate" in res.stderr
+    assert slash_task in res.stderr
 
 
 def test_cli_refuse_on_changes_requested_after_pass(tmp_path: Path) -> None:

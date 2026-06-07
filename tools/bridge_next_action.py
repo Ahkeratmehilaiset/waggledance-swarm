@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
@@ -67,6 +68,7 @@ OPEN_STATUS_FRAGMENTS = (
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
+    *tuple(sorted(KNOWN_ACK_STATUSES)),
     "answered",
     "approved",
     "block",

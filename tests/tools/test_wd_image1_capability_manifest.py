@@ -1514,7 +1514,21 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert index_entry["template_index_entry"]["gate_skip_allowed"] is False
     assert index_entry["artifact_payloads_included"] is False
     assert index_entry["local_paths_recorded"] is False
-    assert "local verifier" in capability["next_smallest_pr"]
+    verification = capability["proof"][
+        "scheduler_candidate_bridge_event_template_index_entry_verification"
+    ]
+    assert verification["ok"] is True
+    assert verification["source_contract_check"] == "match"
+    assert verification["rebuilt_index_entry_check"] == "match"
+    assert verification["bridge_event_schema_check"] == "match"
+    assert verification["scheduler_enqueue_allowed"] is False
+    assert verification["scheduler_tick_allowed"] is False
+    assert verification["bridge_event_written"] is False
+    assert verification["fast_track_priority"] is False
+    assert verification["gate_skip_allowed"] is False
+    assert verification["artifact_payloads_included"] is False
+    assert verification["local_paths_recorded"] is False
+    assert "verification summary renderer" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert "local fallback alert state" in capability["safe_statement"]
     assert "optional sanitized Alertmanager alert feed" in (
@@ -1524,6 +1538,7 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert "scheduler-candidate preview artifact" in capability["safe_statement"]
     assert "template-only bridge-event renderer" in capability["safe_statement"]
     assert "local index entry" in capability["safe_statement"]
+    assert "local verifier" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 
 

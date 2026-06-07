@@ -54,6 +54,7 @@ BLOCKING_STATUSES = frozenset(
     }
 )
 BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
+BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 APPROVAL_STATUSES = frozenset(
     {
         "rco_pass",
@@ -267,13 +268,13 @@ def _is_blocking_status(status: str) -> bool:
     if status in BLOCKING_STATUSES:
         return True
     tokens = _status_tokens(status)
-    has_blocking_shape = (
-        {"changes", "requested"}.issubset(tokens)
-        or any(token.startswith("block") for token in tokens)
-    )
-    if not has_blocking_shape:
+    if {"changes", "requested"}.issubset(tokens):
+        return not tokens.intersection(BLOCKING_NEGATION_TOKENS)
+    if not any(token.startswith("block") for token in tokens):
         return False
-    return not tokens.intersection(BLOCKING_NEGATION_TOKENS)
+    if tokens.intersection(BLOCKING_NEGATION_TOKENS):
+        return False
+    return not tokens.intersection(BLOCKING_CLEAR_TOKENS)
 
 
 def _is_approval_status(status: str) -> bool:

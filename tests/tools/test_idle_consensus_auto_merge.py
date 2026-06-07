@@ -558,6 +558,47 @@ def test_consensus_rejects_operator_merge_required_rco_status(
     )
 
 
+def test_bridge_consensus_allows_clear_preflight_status_with_block_context(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="test",
+            status="peer_block_preflight_clear_after_tools_build_consensus",
+            ts="2026-06-07T17:39:47Z",
+        ),
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True
+    assert report["bridge_consensus"]["ok"] is True
+
+
 def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
     calls: list[str] = []
 

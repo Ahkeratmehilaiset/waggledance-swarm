@@ -94,6 +94,7 @@ CONSENSUS_BLOCKING_STATUSES = frozenset(
     }
 )
 CONSENSUS_BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
+CONSENSUS_BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
@@ -1195,12 +1196,13 @@ def _is_consensus_block(status: str) -> bool:
     if status in CONSENSUS_BLOCKING_STATUSES:
         return True
     tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
-    has_blocking_shape = {"changes", "requested"}.issubset(tokens) or any(
-        token.startswith("block") for token in tokens
-    )
-    if not has_blocking_shape:
+    if {"changes", "requested"}.issubset(tokens):
+        return not tokens.intersection(CONSENSUS_BLOCKING_NEGATION_TOKENS)
+    if not any(token.startswith("block") for token in tokens):
         return False
-    return not tokens.intersection(CONSENSUS_BLOCKING_NEGATION_TOKENS)
+    if tokens.intersection(CONSENSUS_BLOCKING_NEGATION_TOKENS):
+        return False
+    return not tokens.intersection(CONSENSUS_BLOCKING_CLEAR_TOKENS)
 
 
 def _bridge_peer_gate(

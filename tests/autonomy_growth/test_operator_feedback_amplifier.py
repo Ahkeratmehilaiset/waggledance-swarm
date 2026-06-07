@@ -13,6 +13,7 @@ from waggledance.core.autonomy_growth.operator_feedback_amplifier import (
     OperatorFeedbackValidationError,
     amplify_operator_feedback,
     build_operator_feedback_scheduler_preflight,
+    build_operator_feedback_scheduler_preflight_from_bridge_log,
     load_operator_feedback_policy,
     validate_operator_feedback_event,
 )
@@ -388,3 +389,64 @@ def test_scheduler_preflight_marks_fast_track_as_queue_priority_only() -> None:
     assert preflight.scheduler_tick_allowed is False
     assert preflight.gate_skip_allowed is False
     assert preflight.bridge_event_written is False
+
+
+def test_scheduler_preflight_bridge_log_hookup_selects_feedback_id() -> None:
+    prior = _bridge_event(
+        _event(
+            feedback_id="prior-001",
+            operator_id="bridge:operator",
+            submitted_at_utc="2026-06-05T11:30:00Z",
+        ),
+        ts_utc="2026-06-05T11:30:01Z",
+    )
+    source_feedback = _event(
+        feedback_id="fb-hookup",
+        operator_id="bridge:operator",
+    )
+    source = _bridge_event(source_feedback)
+
+    preflight = build_operator_feedback_scheduler_preflight_from_bridge_log(
+        feedback_id="fb-hookup",
+        durable_bridge_events=[prior, source],
+    )
+
+    assert preflight.action_plan.feedback_id == "fb-hookup"
+    assert preflight.rate_limit_source == "durable_bridge_log"
+    assert preflight.operator_fast_track_count == 1
+    assert preflight.global_fast_track_count == 1
+    assert preflight.scheduler_candidate_artifact["queue_priority"] == "fast_track"
+    assert preflight.scheduler_enqueue_allowed is False
+    assert preflight.scheduler_tick_allowed is False
+    assert preflight.gate_skip_allowed is False
+    assert preflight.bridge_event_written is False
+
+
+def test_scheduler_preflight_bridge_log_hookup_rejects_duplicate_feedback_id() -> None:
+    first = _bridge_event(_event(feedback_id="fb-duplicate"))
+    second = _bridge_event(
+        _event(feedback_id="fb-duplicate"),
+        ts_utc="2026-06-05T12:01:00Z",
+    )
+
+    with pytest.raises(OperatorFeedbackValidationError, match="unique"):
+        build_operator_feedback_scheduler_preflight_from_bridge_log(
+            feedback_id="fb-duplicate",
+            durable_bridge_events=[first, second],
+        )
+
+
+def test_scheduler_preflight_bridge_log_hookup_rejects_free_string_identity() -> None:
+    source = _bridge_event(
+        _event(
+            feedback_id="fb-free-string",
+            operator_id="operator:jkh",
+        ),
+        agent_uuid="11111111-1111-4111-8111-111111111111",
+    )
+
+    with pytest.raises(OperatorFeedbackValidationError, match="verified bridge"):
+        build_operator_feedback_scheduler_preflight_from_bridge_log(
+            feedback_id="fb-free-string",
+            durable_bridge_events=[source],
+        )

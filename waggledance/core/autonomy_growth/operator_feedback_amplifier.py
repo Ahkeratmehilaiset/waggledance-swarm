@@ -457,6 +457,59 @@ def build_operator_feedback_scheduler_preflight(
     )
 
 
+def build_operator_feedback_scheduler_preflight_from_bridge_log(
+    *,
+    feedback_id: str,
+    durable_bridge_events: Sequence[Mapping[str, Any]],
+    policy: OperatorFeedbackPolicy | None = None,
+) -> OperatorFeedbackSchedulerPreflight:
+    """Build a no-authority scheduler preflight from durable bridge events.
+
+    Callers provide an already-read durable bridge-log window plus the feedback
+    id they want to prepare. The helper selects exactly one matching
+    ``ops_feedback`` bridge event and delegates to the existing preflight
+    validator, so operator identity, rate limits, global fast-track ceilings,
+    and gate-skip guardrails remain fail-closed. It does not read or write
+    bridge files, enqueue candidates, or run scheduler ticks.
+    """
+
+    requested_feedback_id = _validate_ref(
+        "feedback_id",
+        _clean_string(feedback_id),
+    )
+    bridge_events = [
+        event for event in durable_bridge_events if isinstance(event, Mapping)
+    ]
+    matches = [
+        event for event in bridge_events
+        if _bridge_event_feedback_id(event) == requested_feedback_id
+    ]
+    if not matches:
+        raise OperatorFeedbackValidationError(
+            "ops_feedback feedback_id not found in durable bridge log"
+        )
+    if len(matches) > 1:
+        raise OperatorFeedbackValidationError(
+            "ops_feedback feedback_id must be unique in durable bridge log"
+        )
+
+    source_bridge_event = matches[0]
+    _, verified_operator_id = _verified_operator_from_bridge_log(
+        source_bridge_event=source_bridge_event,
+        durable_bridge_events=bridge_events,
+    )
+    event = _source_ops_feedback_event_from_bridge_payload(
+        source_bridge_event=source_bridge_event,
+        verified_operator_id=verified_operator_id,
+    )
+    return build_operator_feedback_scheduler_preflight(
+        event,
+        source_bridge_event=source_bridge_event,
+        durable_bridge_events=bridge_events,
+        policy=policy,
+    )
+
+
 def _gap_signal_for(
     *,
     normalized: Mapping[str, str],
@@ -577,6 +630,22 @@ def _verified_operator_from_bridge_log(
     return source_digest, _validate_ref("operator_id", f"bridge:{agent}")
 
 
+def _bridge_event_feedback_id(bridge_event: Mapping[str, Any]) -> str | None:
+    payload = bridge_event.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    source_event = _ops_feedback_payload_from_bridge_payload(payload)
+    if source_event is None:
+        return None
+    value = source_event.get("feedback_id")
+    if not _non_empty_string(value):
+        return None
+    try:
+        return _validate_ref("feedback_id", _clean_string(value))
+    except OperatorFeedbackValidationError:
+        return None
+
+
 def _extract_durable_ops_feedback_events(
     *,
     durable_bridge_events: Sequence[Mapping[str, Any]],
@@ -591,17 +660,9 @@ def _extract_durable_ops_feedback_events(
         payload = bridge_event.get("payload")
         if not isinstance(payload, Mapping):
             continue
-        if payload.get("event_type") == OPS_FEEDBACK_EVENT_TYPE:
-            events.append(payload)
-            continue
-        for key in ("ops_feedback", "feedback_event"):
-            nested = payload.get(key)
-            if (
-                isinstance(nested, Mapping)
-                and nested.get("event_type") == OPS_FEEDBACK_EVENT_TYPE
-            ):
-                events.append(nested)
-                break
+        source_event = _ops_feedback_payload_from_bridge_payload(payload)
+        if source_event is not None:
+            events.append(source_event)
     return events
 
 
@@ -616,18 +677,7 @@ def _source_ops_feedback_event_from_bridge_payload(
             "source bridge event payload must be a mapping"
         )
 
-    source_event: Mapping[str, Any] | None = None
-    if payload.get("event_type") == OPS_FEEDBACK_EVENT_TYPE:
-        source_event = payload
-    else:
-        for key in ("ops_feedback", "feedback_event"):
-            nested = payload.get(key)
-            if (
-                isinstance(nested, Mapping)
-                and nested.get("event_type") == OPS_FEEDBACK_EVENT_TYPE
-            ):
-                source_event = nested
-                break
+    source_event = _ops_feedback_payload_from_bridge_payload(payload)
     if source_event is None:
         raise OperatorFeedbackValidationError(
             "source bridge event payload must contain ops_feedback"
@@ -641,6 +691,21 @@ def _source_ops_feedback_event_from_bridge_payload(
         )
     event_with_identity["operator_id"] = verified_operator_id
     return event_with_identity
+
+
+def _ops_feedback_payload_from_bridge_payload(
+    payload: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    if payload.get("event_type") == OPS_FEEDBACK_EVENT_TYPE:
+        return payload
+    for key in ("ops_feedback", "feedback_event"):
+        nested = payload.get(key)
+        if (
+            isinstance(nested, Mapping)
+            and nested.get("event_type") == OPS_FEEDBACK_EVENT_TYPE
+        ):
+            return nested
+    return None
 
 
 def _probe_intent_for(
@@ -814,6 +879,7 @@ __all__ = [
     "SCHEDULER_PREFLIGHT_SCHEMA_VERSION",
     "amplify_operator_feedback",
     "build_operator_feedback_scheduler_preflight",
+    "build_operator_feedback_scheduler_preflight_from_bridge_log",
     "load_operator_feedback_policy",
     "validate_operator_feedback_event",
 ]

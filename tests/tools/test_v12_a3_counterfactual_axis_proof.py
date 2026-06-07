@@ -179,7 +179,8 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
     )
     assert report["receipt_bundle"]["available"] is True
     assert report["receipt_bundle"]["receipt_count"] == 6
-    assert report["receipt_bundle"]["manifest"].endswith("manifest.json")
+    assert report["receipt_bundle"]["out_dir"] == "."
+    assert report["receipt_bundle"]["manifest"] == "manifest.json"
     assert report["receipt_chain_id"] == "magma:v12_a3_counterfactual_axis:v1"
     assert (out_dir / "manifest.json").exists()
     first_receipt = json.loads(
@@ -278,6 +279,8 @@ def test_a3_cli_json_with_receipts_is_deterministic(tmp_path: Path) -> None:
     assert payload["receipt_bound_stored_consensus_replay"] is True
     assert payload["stored_consensus_replay"]["candidate_diff_charter_allowed"] is True
     assert payload["receipt_bundle"]["receipt_count"] == 6
+    assert payload["receipt_bundle"]["out_dir"] == "."
+    assert payload["receipt_bundle"]["manifest"] == "manifest.json"
     assert payload["evaluation_result_version"] == "magma.evaluation_result.v1"
     assert payload["claim_label"] == "MEASURED_LOCAL_PARTIAL"
     assert (
@@ -296,6 +299,8 @@ def test_a3_cli_json_with_receipts_is_deterministic(tmp_path: Path) -> None:
         payload["runtime_condition_replay_smoke"]["claim_boundary"]
         == "runtime_condition_smoke_only_not_axis_claim_upgrade"
     )
+    assert "C:\\" not in result.stdout
+    assert ":\\\\" not in result.stdout
 
 
 def test_a3_cli_rejects_non_utc_now(tmp_path: Path) -> None:
@@ -323,6 +328,8 @@ def test_a3_output_does_not_leak_private_marker(tmp_path: Path) -> None:
     assert "operator_secret_goal_marker_DO_NOT_LEAK" not in combined
     assert "per_arm" not in result.stdout
     assert "divergences" not in result.stdout
+    assert "C:\\" not in result.stdout
+    assert ":\\\\" not in result.stdout
 
 
 def test_a3_v1_receipt_bundle_detects_tampered_axis_metadata(tmp_path: Path) -> None:
@@ -332,7 +339,7 @@ def test_a3_v1_receipt_bundle_detects_tampered_axis_metadata(tmp_path: Path) -> 
         receipt_out_dir=out_dir,
         now_utc=FIXED_NOW,
     )
-    manifest_path = Path(report["receipt_bundle"]["manifest"])
+    manifest_path = out_dir / report["receipt_bundle"]["manifest"]
     evaluation_path = out_dir / "evaluation-001-limited_to_idle-factual.json"
     evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
     evaluation["competitor_axis_reference"] = "A4"
@@ -354,7 +361,7 @@ def test_a3_v1_receipt_chain_detects_tampered_replay_binding(tmp_path: Path) -> 
         receipt_out_dir=out_dir,
         now_utc=FIXED_NOW,
     )
-    manifest_path = Path(report["receipt_bundle"]["manifest"])
+    manifest_path = out_dir / report["receipt_bundle"]["manifest"]
     receipt_path = out_dir / "receipt-001-limited_to_idle-factual.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["rco_decision_digest"] = "sha256:" + ("9" * 64)

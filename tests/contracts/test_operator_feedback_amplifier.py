@@ -19,6 +19,8 @@ CONTRACT_PATH = PROJECT_ROOT / "docs" / "eig2" / "contracts" / "operator_feedbac
 REQUIRED_INVARIANT_IDS = {f"OFA-{i:03d}" for i in range(1, 11)}
 REQUIRED_FIELDS = {"event_type", "feedback_id", "feedback_kind", "query_class_hash", "operator_id", "priority", "submitted_at_utc"}
 REQUIRED_KINDS = {"needs_solver", "broken_route", "wrong_output"}
+OPERATOR_UUID = "11111111-1111-4111-8111-111111111111"
+OPERATOR_ID = f"bridge:operator:{OPERATOR_UUID}"
 
 
 def test_adr_053_exists() -> None:
@@ -115,12 +117,12 @@ def test_scheduler_preflight_rejects_durable_payload_mismatch() -> None:
     durable_feedback = _feedback(
         feedback_id="fb-durable",
         query_class_hash="sha256:" + "a" * 64,
-        operator_id="bridge:operator",
+        operator_id=OPERATOR_ID,
     )
     supplied_feedback = _feedback(
         feedback_id="fb-supplied",
         query_class_hash="sha256:" + "b" * 64,
-        operator_id="bridge:operator",
+        operator_id=OPERATOR_ID,
     )
     source = _bridge_event(durable_feedback)
 
@@ -146,7 +148,7 @@ def _feedback(**overrides: str) -> dict[str, str]:
         "feedback_id": "fb-001",
         "feedback_kind": "needs_solver",
         "query_class_hash": "sha256:" + "a" * 64,
-        "operator_id": "bridge:operator",
+        "operator_id": OPERATOR_ID,
         "priority": "high",
         "submitted_at_utc": "2026-06-05T12:00:00Z",
     }
@@ -162,7 +164,7 @@ def _bridge_event(feedback: dict[str, str]) -> dict[str, object]:
         "task_id": "operator-feedback-contract-test",
         "status": "ops_feedback_received",
         "message": "operator feedback",
-        "agent_uuid": "",
-        "session_id": "",
+        "agent_uuid": OPERATOR_UUID,
+        "session_id": "operator-session",
         "payload": {"ops_feedback": feedback},
     }

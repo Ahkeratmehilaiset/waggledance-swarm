@@ -75,11 +75,12 @@ def _run_importer_json(
     max_age_hours: int = 24,
     expected_share_id: str | None = "magma:share:import:001",
     expected_purpose: str | None = "cross_instance_replay",
+    admission_status_json: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         sys.executable,
         str(SCRIPT),
-        "--json",
+        "--admission-status-json" if admission_status_json else "--json",
         "--share-manifest",
         str(share_manifest),
         "--source-manifest",
@@ -1027,6 +1028,68 @@ def test_cli_json_failure_does_not_echo_unsafe_expected_share_id(
     assert private_marker not in result.stdout
     assert "C:/private" not in result.stderr
     assert private_marker not in result.stderr
+
+
+def test_cli_admission_status_json_reports_ready_without_full_replay_plan(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        admission_status_json=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["summary_version"] == IMPORT_ADMISSION_STATUS_VERSION
+    assert payload["source"] == "magma_share_manifest_import_report"
+    assert payload["status"] == "ready_for_peer_review_handoff"
+    assert payload["severity"] == "none"
+    assert payload["ok"] is True
+    assert payload["blocker_class"] == "none"
+    assert payload["blockers"] == []
+    assert payload["share_id"] == "magma:share:import:001"
+    assert payload["purpose"] == "cross_instance_replay"
+    assert payload["entry_count"] == 1
+    assert payload["context_verified"] is True
+    assert payload["context_drift_detected"] is False
+    assert payload["replay_metadata_only"] is True
+    assert payload["no_authority_import"] is True
+    assert payload["transport_enabled"] is False
+    assert payload["runtime_export_enabled"] is False
+    assert payload["runtime_authority_granted"] is False
+    assert payload["runtime_authority_changed"] is False
+    assert payload["payload_files_imported"] == 0
+    assert payload["payload_digest_imported"] is False
+    assert payload["raw_material_imported"] is False
+    assert payload["replacement_map_imported"] is False
+    assert payload["local_paths_recorded"] is False
+    assert "replay_plan" not in payload
+    assert "admission_contract" not in payload
+    serialized = json.dumps(payload, sort_keys=True)
+    assert str(tmp_path) not in serialized
+    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+
+
+def test_cli_admission_status_json_failure_reports_rejected_status(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        expected_share_id="magma:share:import:wrong",
+        admission_status_json=True,
+    )
+
+    _assert_failed_admission_status(
+        result,
+        blocker_class="expected_share_id_mismatch",
+        tmp_path=tmp_path,
+    )
 
 
 def test_cli_json_import_is_no_authority_and_redacts_payload_markers(

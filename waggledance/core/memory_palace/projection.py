@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 
 MEMORY_PALACE_PROJECTION_SCHEMA_VERSION = "memory_palace_projection.v1"
+MEMORY_PALACE_NAVIGATION_INDEX_SCHEMA_VERSION = "memory_palace_navigation_index.v0"
 
 PALACE_NODE_KINDS = ("wing", "hall", "room", "closet", "drawer")
 PLACEMENT_SOURCES = (
@@ -277,6 +278,67 @@ def build_memory_palace_projection(
                 normalized_shortcuts, key=lambda item: item.shortcut_id
             )
         ],
+    }
+
+
+def build_memory_palace_navigation_index(
+    nodes: Sequence[PalaceNode | Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return deterministic path and child indexes for palace visualization.
+
+    The navigation index is derived from the same validated hierarchy as the
+    projection document. It is a read-side view only: it does not read storage,
+    mutate memory, dispatch solvers, append bridge events, or grant gate or
+    promotion authority.
+    """
+
+    normalized_nodes = validate_palace_hierarchy(nodes)
+    by_id = {node.node_id: node for node in normalized_nodes}
+    root_node_ids: list[str] = []
+    children_by_node: dict[str, list[str]] = {
+        node.node_id: [] for node in normalized_nodes
+    }
+    for node in normalized_nodes:
+        if node.parent_id is None:
+            root_node_ids.append(node.node_id)
+            continue
+        children_by_node[node.parent_id].append(node.node_id)
+    for child_ids in children_by_node.values():
+        child_ids.sort()
+
+    entries: list[dict[str, Any]] = []
+    paths_by_node: dict[str, list[str]] = {}
+    for node in normalized_nodes:
+        path_node_ids = _lineage_node_ids(by_id, node.node_id)
+        path_labels = tuple(by_id[node_id].label for node_id in path_node_ids)
+        depth = len(path_node_ids) - 1
+        paths_by_node[node.node_id] = list(path_node_ids)
+        entries.append({
+            "node_id": node.node_id,
+            "kind": node.kind,
+            "label": node.label,
+            "parent_id": node.parent_id,
+            "depth": depth,
+            "path_node_ids": list(path_node_ids),
+            "path_labels": list(path_labels),
+            "child_node_ids": list(children_by_node[node.node_id]),
+        })
+
+    return {
+        "schema_version": MEMORY_PALACE_NAVIGATION_INDEX_SCHEMA_VERSION,
+        "source_of_truth": "projection_only",
+        "runtime_authority": False,
+        "storage_write_authority": False,
+        "bridge_write_authority": False,
+        "gate_skip_authority": False,
+        "promotion_authority": False,
+        "solver_call_authority": False,
+        "node_count": len(normalized_nodes),
+        "root_node_ids": sorted(root_node_ids),
+        "max_depth": max((entry["depth"] for entry in entries), default=0),
+        "nodes": entries,
+        "paths_by_node": paths_by_node,
+        "children_by_node": children_by_node,
     }
 
 
@@ -957,6 +1019,31 @@ def _hierarchy_distance_hops(
                 visited.add(neighbor)
                 frontier.append((neighbor, distance + 1))
     return None
+
+
+def _lineage_node_ids(
+    by_id: Mapping[str, PalaceNode],
+    node_id: str,
+) -> tuple[str, ...]:
+    if node_id not in by_id:
+        raise MemoryPalaceProjectionError(f"unknown palace node: {node_id}")
+    lineage: list[str] = []
+    seen: set[str] = set()
+    current: str | None = node_id
+    while current is not None:
+        if current in seen:
+            raise MemoryPalaceProjectionError(
+                f"cycle detected in palace hierarchy at: {current}"
+            )
+        node = by_id.get(current)
+        if node is None:
+            raise MemoryPalaceProjectionError(
+                f"palace node references unknown parent: {current}"
+            )
+        seen.add(current)
+        lineage.append(current)
+        current = node.parent_id
+    return tuple(reversed(lineage))
 
 
 def _parent_first_order(by_id: Mapping[str, PalaceNode]) -> tuple[PalaceNode, ...]:

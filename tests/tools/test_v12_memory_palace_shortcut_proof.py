@@ -41,6 +41,24 @@ def test_build_memory_palace_shortcut_proof_reports_projection_only() -> None:
         "placement_count": 1,
         "shortcut_hint_count": 6,
     }
+    navigation = report["navigation_index"]
+    assert navigation["schema_version"] == "memory_palace_navigation_index.v0"
+    assert navigation["source_of_truth"] == "projection_only"
+    assert navigation["node_count"] == 6
+    assert navigation["root_node_ids"] == [
+        "wing.learning",
+        "wing.research",
+        "wing.system",
+    ]
+    assert navigation["max_depth"] == 1
+    assert navigation["source_path_node_ids"] == [
+        "wing.learning",
+        "room.learning.cell_imaging",
+    ]
+    assert navigation["target_path_node_ids"] == [
+        "wing.research",
+        "room.research.pathology",
+    ]
     ranked = report["ranked_shortcuts"]
     assert ranked["candidate_count"] == 2
     top = ranked["top_candidate"]
@@ -51,9 +69,19 @@ def test_build_memory_palace_shortcut_proof_reports_projection_only() -> None:
     bypass = report["bypass_analysis"]
     assert bypass["source_node_id"] == "room.learning.cell_imaging"
     assert bypass["target_node_id"] == "room.research.pathology"
+    assert bypass["source_path_node_ids"] == [
+        "wing.learning",
+        "room.learning.cell_imaging",
+    ]
+    assert bypass["target_path_node_ids"] == [
+        "wing.research",
+        "room.research.pathology",
+    ]
     assert bypass["hierarchy_hops"] == 3
     assert bypass["projected_shortcut_hops"] == 1
     assert bypass["intermediate_hops_skipped"] == 2
+    assert bypass["navigation_index_used"] is True
+    assert bypass["navigation_index_runtime_load_required"] is False
     assert bypass["intermediate_node_traversal_required"] is False
     assert bypass["intermediate_nodes_not_loaded"] is True
     assert bypass["shortcut_ranked_without_runtime_dispatch"] is True
@@ -68,6 +96,7 @@ def test_authority_boundary_stays_false_for_runtime_effects() -> None:
 
     assert boundary["read_side_projection_only"] is True
     assert boundary["projection_authority_flags_false"] is True
+    assert boundary["navigation_authority_flags_false"] is True
     assert boundary["candidate_no_runtime_mutation"] is True
     assert boundary["candidate_authority_flags_false"] is True
     for key in (
@@ -97,8 +126,18 @@ def test_render_markdown_carries_shortcut_and_scope_caveats() -> None:
     assert "ok: `true`" in markdown
     assert "target_node_id: `room.research.pathology`" in markdown
     assert "rank_score: `0.68`" in markdown
+    assert "Navigation Index" in markdown
+    assert (
+        "source_path: `wing.learning / room.learning.cell_imaging`"
+        in markdown
+    )
+    assert (
+        "target_path: `wing.research / room.research.pathology`"
+        in markdown
+    )
     assert "Bypass Analysis" in markdown
     assert "intermediate_hops_skipped: `2`" in markdown
+    assert "navigation_index_used: `true`" in markdown
     assert "shortcut_ranked_without_runtime_dispatch: `true`" in markdown
     assert "without traversing every hierarchy hop at runtime" in markdown
     assert "This is not router dispatch" in markdown
@@ -115,7 +154,16 @@ def test_cli_json_reports_memory_palace_shortcut_proof() -> None:
     assert payload["ranked_shortcuts"]["top_candidate"]["target_node_id"] == (
         "room.research.pathology"
     )
+    assert payload["navigation_index"]["source_path_node_ids"] == [
+        "wing.learning",
+        "room.learning.cell_imaging",
+    ]
+    assert payload["navigation_index"]["target_path_node_ids"] == [
+        "wing.research",
+        "room.research.pathology",
+    ]
     assert payload["bypass_analysis"]["intermediate_hops_skipped"] == 2
+    assert payload["bypass_analysis"]["navigation_index_used"] is True
     assert (
         payload["bypass_analysis"]["shortcut_ranked_without_runtime_dispatch"]
         is True

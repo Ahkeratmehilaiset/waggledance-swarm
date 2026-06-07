@@ -6,12 +6,14 @@ FAISS, and Chroma remain the sources of truth for memory content and history.
 """
 
 from waggledance.core.memory_palace.projection import (
+    MEMORY_PALACE_NAVIGATION_INDEX_SCHEMA_VERSION,
     MEMORY_PALACE_PROJECTION_SCHEMA_VERSION,
     MemoryPalaceProjectionError,
     MemoryPlacement,
     PalaceShortcutHint,
     PalaceShortcutCandidate,
     PalaceNode,
+    build_memory_palace_navigation_index,
     build_memory_palace_projection,
     derive_candidate_placements,
     derive_shortcut_hints,
@@ -20,12 +22,14 @@ from waggledance.core.memory_palace.projection import (
 )
 
 __all__ = [
+    "MEMORY_PALACE_NAVIGATION_INDEX_SCHEMA_VERSION",
     "MEMORY_PALACE_PROJECTION_SCHEMA_VERSION",
     "MemoryPalaceProjectionError",
     "MemoryPlacement",
     "PalaceShortcutHint",
     "PalaceShortcutCandidate",
     "PalaceNode",
+    "build_memory_palace_navigation_index",
     "build_memory_palace_projection",
     "derive_candidate_placements",
     "derive_shortcut_hints",

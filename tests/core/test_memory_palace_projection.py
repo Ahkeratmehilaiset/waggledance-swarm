@@ -5,11 +5,13 @@ import jsonschema
 import pytest
 
 from waggledance.core.memory_palace import (
+    MEMORY_PALACE_NAVIGATION_INDEX_SCHEMA_VERSION,
     MEMORY_PALACE_PROJECTION_SCHEMA_VERSION,
     MemoryPalaceProjectionError,
     MemoryPlacement,
     PalaceShortcutHint,
     PalaceNode,
+    build_memory_palace_navigation_index,
     build_memory_palace_projection,
     derive_candidate_placements,
     derive_shortcut_hints,
@@ -146,6 +148,87 @@ def test_derives_cross_wing_shortcut_hints_from_shared_selectors() -> None:
     assert hint["gate_skip_authority"] is False
     assert hint["promotion_authority"] is False
     assert hint["solver_call_authority"] is False
+
+
+def test_builds_navigation_index_from_validated_hierarchy() -> None:
+    nodes = [
+        PalaceNode(
+            node_id="room.research.pathology",
+            kind="room",
+            label="Pathology expertise",
+            parent_id="hall.research.methods",
+        ),
+        PalaceNode(node_id="wing.system", kind="wing", label="System"),
+        PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        PalaceNode(
+            node_id="hall.research.methods",
+            kind="hall",
+            label="Research methods",
+            parent_id="wing.research",
+        ),
+    ]
+
+    index = build_memory_palace_navigation_index(nodes)
+
+    assert index["schema_version"] == MEMORY_PALACE_NAVIGATION_INDEX_SCHEMA_VERSION
+    assert index["source_of_truth"] == "projection_only"
+    for field in (
+        "runtime_authority",
+        "storage_write_authority",
+        "bridge_write_authority",
+        "gate_skip_authority",
+        "promotion_authority",
+        "solver_call_authority",
+    ):
+        assert index[field] is False
+    assert index["node_count"] == 4
+    assert index["root_node_ids"] == ["wing.research", "wing.system"]
+    assert index["max_depth"] == 2
+    assert index["paths_by_node"]["room.research.pathology"] == [
+        "wing.research",
+        "hall.research.methods",
+        "room.research.pathology",
+    ]
+    assert index["children_by_node"]["wing.research"] == [
+        "hall.research.methods"
+    ]
+    assert index["children_by_node"]["wing.system"] == []
+    pathology = next(
+        node for node in index["nodes"]
+        if node["node_id"] == "room.research.pathology"
+    )
+    assert pathology == {
+        "node_id": "room.research.pathology",
+        "kind": "room",
+        "label": "Pathology expertise",
+        "parent_id": "hall.research.methods",
+        "depth": 2,
+        "path_node_ids": [
+            "wing.research",
+            "hall.research.methods",
+            "room.research.pathology",
+        ],
+        "path_labels": [
+            "Research",
+            "Research methods",
+            "Pathology expertise",
+        ],
+        "child_node_ids": [],
+    }
+
+
+def test_navigation_index_reuses_authority_free_node_validation() -> None:
+    with pytest.raises(MemoryPalaceProjectionError, match="authority flag"):
+        build_memory_palace_navigation_index(
+            [
+                PalaceNode(
+                    node_id="wing.ops",
+                    kind="wing",
+                    label="Ops",
+                    metadata={"runtime_authority": False},
+                )
+            ]
+        )
 
 
 def test_ranks_read_side_shortcut_candidates_for_memory() -> None:

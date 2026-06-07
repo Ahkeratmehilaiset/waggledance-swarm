@@ -469,6 +469,19 @@ def format_proof(report: dict[str, Any]) -> str:
             f"     hierarchy hops                 : "
             f"{palace['top_candidate_hierarchy_hops']}"
         )
+        bypass = palace["bypass_analysis"]
+        lines.append(
+            f"     projected shortcut hops        : "
+            f"{bypass['projected_shortcut_hops']}"
+        )
+        lines.append(
+            f"     bypass hops skipped            : "
+            f"{bypass['intermediate_hops_skipped']}"
+        )
+        lines.append(
+            f"     intermediate nodes not loaded  : "
+            f"{bypass['intermediate_nodes_not_loaded']}"
+        )
         lines.append(
             f"     authority flags false          : {palace['authority_flags_false']}"
         )
@@ -880,6 +893,7 @@ def _read_memory_palace_shortcut_summary() -> dict[str, Any]:
             "top_candidate_target": "unavailable",
             "top_candidate_rank_score": 0.0,
             "top_candidate_hierarchy_hops": 0,
+            "bypass_analysis": _memory_palace_bypass_analysis({}, False),
             "authority_flags_false": False,
             "evidence_scope": "unavailable",
         }
@@ -925,11 +939,42 @@ def _read_memory_palace_shortcut_summary() -> dict[str, Any]:
         "top_candidate_rank_score": top.get("rank_score", 0.0),
         "top_candidate_hierarchy_hops": top.get("hierarchy_hops", 0),
         "top_candidate_matched_selector_keys": top.get("matched_selector_keys", []),
+        "bypass_analysis": _memory_palace_bypass_analysis(
+            top,
+            authority_flags_false,
+        ),
         "authority_flags_false": authority_flags_false,
         "evidence_scope": (
             "projection-only local fixture; read-side shortcut hinting only; "
             "not router/solver dispatch, not storage mutation, not promotion authority"
         ),
+    }
+
+
+def _memory_palace_bypass_analysis(
+    top_candidate: dict[str, Any],
+    authority_flags_false: bool,
+) -> dict[str, Any]:
+    hierarchy_hops = int(top_candidate.get("hierarchy_hops") or 0)
+    projected_shortcut_hops = 1 if top_candidate else 0
+    intermediate_hops_skipped = max(0, hierarchy_hops - projected_shortcut_hops)
+    return {
+        "source_node_id": top_candidate.get("source_node_id", "none"),
+        "target_node_id": top_candidate.get("target_node_id", "none"),
+        "hierarchy_hops": hierarchy_hops,
+        "projected_shortcut_hops": projected_shortcut_hops,
+        "intermediate_hops_skipped": intermediate_hops_skipped,
+        "intermediate_node_traversal_required": False,
+        "intermediate_nodes_not_loaded": bool(top_candidate)
+        and authority_flags_false,
+        "shortcut_ranked_without_runtime_dispatch": bool(top_candidate)
+        and authority_flags_false,
+        "runtime_route_changed": False,
+        "solver_call_performed": False,
+        "storage_write_performed": False,
+        "promotion_performed": False,
+        "network_access_performed": False,
+        "analysis_scope": "projection_only_read_side_hint",
     }
 
 

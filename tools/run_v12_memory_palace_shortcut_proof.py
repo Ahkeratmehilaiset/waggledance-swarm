@@ -105,6 +105,7 @@ def build_memory_palace_shortcut_proof(
     )
     authority_boundary = _authority_boundary(projection, ranked_candidates)
     top_candidate = ranked_candidates[0] if ranked_candidates else {}
+    bypass_analysis = _bypass_analysis(top_candidate, authority_boundary)
     shortcut_proven = bool(ranked_candidates) and _authority_boundary_ok(
         authority_boundary,
     )
@@ -128,6 +129,7 @@ def build_memory_palace_shortcut_proof(
             "top_candidate": top_candidate,
             "candidates": list(ranked_candidates),
         },
+        "bypass_analysis": bypass_analysis,
         "shortcut_proven": shortcut_proven,
         "authority_boundary": authority_boundary,
         "no_overclaim_guardrails": {
@@ -185,6 +187,33 @@ def render_markdown(report: dict[str, Any]) -> str:
         "- matched_selector_keys: `"
         + ", ".join(top.get("matched_selector_keys", []))
         + "`",
+        "",
+        "## Bypass Analysis",
+        "",
+        (
+            "- projected_shortcut_hops: `"
+            + str(report["bypass_analysis"]["projected_shortcut_hops"])
+            + "`"
+        ),
+        (
+            "- intermediate_hops_skipped: `"
+            + str(report["bypass_analysis"]["intermediate_hops_skipped"])
+            + "`"
+        ),
+        (
+            "- intermediate_nodes_not_loaded: `"
+            + str(report["bypass_analysis"]["intermediate_nodes_not_loaded"]).lower()
+            + "`"
+        ),
+        (
+            "- shortcut_ranked_without_runtime_dispatch: `"
+            + str(
+                report["bypass_analysis"][
+                    "shortcut_ranked_without_runtime_dispatch"
+                ]
+            ).lower()
+            + "`"
+        ),
         "",
         "## Boundary",
         "",
@@ -251,6 +280,33 @@ def _fixture_nodes() -> list[PalaceNode]:
             },
         ),
     ]
+
+
+def _bypass_analysis(
+    top_candidate: dict[str, Any],
+    authority_boundary: dict[str, bool],
+) -> dict[str, Any]:
+    hierarchy_hops = int(top_candidate.get("hierarchy_hops") or 0)
+    projected_shortcut_hops = 1 if top_candidate else 0
+    intermediate_hops_skipped = max(0, hierarchy_hops - projected_shortcut_hops)
+    authority_ok = _authority_boundary_ok(authority_boundary)
+    return {
+        "source_node_id": top_candidate.get("source_node_id", "none"),
+        "target_node_id": top_candidate.get("target_node_id", "none"),
+        "hierarchy_hops": hierarchy_hops,
+        "projected_shortcut_hops": projected_shortcut_hops,
+        "intermediate_hops_skipped": intermediate_hops_skipped,
+        "intermediate_node_traversal_required": False,
+        "intermediate_nodes_not_loaded": bool(top_candidate) and authority_ok,
+        "shortcut_ranked_without_runtime_dispatch": bool(top_candidate)
+        and authority_ok,
+        "runtime_route_changed": False,
+        "solver_call_performed": False,
+        "storage_write_performed": False,
+        "promotion_performed": False,
+        "network_access_performed": False,
+        "analysis_scope": "projection_only_read_side_hint",
+    }
 
 
 def _authority_boundary(

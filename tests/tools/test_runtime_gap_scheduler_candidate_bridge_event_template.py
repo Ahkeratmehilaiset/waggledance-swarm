@@ -20,7 +20,7 @@ from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
 SCRIPT = ROOT / "tools" / "build_runtime_gap_scheduler_candidate_bridge_event_template.py"
 FIXED_NOW = datetime(2026, 6, 6, 19, 0, tzinfo=timezone.utc)
 DIGEST = "sha256:" + ("a" * 64)
-SPEC_DIGEST = "sha256:" + ("b" * 64)
+SPEC_DIGEST = "b" * 64
 CANDIDATE_DIGEST = "sha256:" + ("c" * 64)
 
 

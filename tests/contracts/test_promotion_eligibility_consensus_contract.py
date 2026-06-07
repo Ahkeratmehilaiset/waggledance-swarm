@@ -28,6 +28,7 @@ def _event(
     agent: str,
     status: str,
     *,
+    event_type: str = "decision",
     task_id: str = TASK,
     head: str = HEAD,
     ts: str = "2026-06-07T02:15:00Z",
@@ -37,7 +38,7 @@ def _event(
     return {
         "ts_utc": ts,
         "agent": agent,
-        "type": "decision",
+        "type": event_type,
         "status": status,
         "task_id": task_id,
         "message": message if message is not None else f"{status} exact head {head}",
@@ -113,6 +114,70 @@ def test_descriptive_build_consensus_without_head_binding_fails_closed() -> None
         "claude-rco-1"
     ]
     assert consensus["identities"]["build_lead"]["approved"] is False
+    assert consensus["identities"]["build_tools"]["approved"] is False
+    assert consensus["identities"]["rco"]["approved"] is True
+
+
+def test_rco_pass_on_noncanonical_task_fails_closed() -> None:
+    report = _evaluate(
+        [
+            _event(
+                "codex-lead-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:15:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:16:00Z",
+            ),
+            _event(
+                "claude-rco-1",
+                "rco_pass",
+                task_id="codex-tools-1/main-after-pr941-942-20260607",
+                ts="2026-06-07T02:17:00Z",
+            ),
+        ]
+    )
+
+    assert report["eligible"] is False
+    assert "missing exact-head RCO_PASS from recognized non-author RCO" in (
+        report["reasons"]
+    )
+    assert report["gate_results"]["rco_pass"]["ok"] is False
+
+
+def test_tools_validation_events_do_not_count_as_build_consensus() -> None:
+    report = _evaluate(
+        [
+            _event(
+                "codex-lead-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:15:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "pass_ci_green",
+                event_type="test",
+                ts="2026-06-07T02:16:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "done",
+                event_type="done",
+                ts="2026-06-07T02:16:30Z",
+            ),
+            _event("claude-rco-1", "rco_pass", ts="2026-06-07T02:17:00Z"),
+        ]
+    )
+
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
+    assert report["gate_results"]["rco_pass"]["ok"] is True
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]
+    assert consensus["identities"]["build_lead"]["approved"] is True
     assert consensus["identities"]["build_tools"]["approved"] is False
     assert consensus["identities"]["rco"]["approved"] is True
 

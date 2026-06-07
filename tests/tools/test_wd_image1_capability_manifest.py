@@ -1418,7 +1418,26 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert preview["fast_track_priority"] is False
     assert preview["scheduler_candidates"][0]["queue_priority"] == "normal"
     assert preview["scheduler_candidates"][0]["gate_skip_allowed"] is False
-    assert "template-only bridge-event renderer" in capability["next_smallest_pr"]
+    template = capability["proof"]["scheduler_candidate_bridge_event_template"]
+    assert template["ok"] is True
+    assert template["template_only"] is True
+    assert template["direct_bridge_write_performed"] is False
+    assert template["scheduler_enqueue_allowed"] is False
+    assert template["scheduler_tick_allowed"] is False
+    assert template["bridge_event_written"] is False
+    assert template["fast_track_priority"] is False
+    assert template["gate_skip_allowed"] is False
+    event_payload = template["bridge_event_template"]["payload"]
+    assert event_payload["artifact_payloads_included"] is False
+    assert event_payload["authority_boundary"]["runtime_authority_granted"] is False
+    assert event_payload["authority_boundary"]["scheduler_enqueue_allowed"] is False
+    assert event_payload["authority_boundary"]["scheduler_tick_allowed"] is False
+    assert event_payload["authority_boundary"]["gate_skip_allowed"] is False
+    assert (
+        event_payload["scheduler_candidate_preview"]["scheduler_candidate_count"]
+        == 1
+    )
+    assert "local index entry" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert "local fallback alert state" in capability["safe_statement"]
     assert "optional sanitized Alertmanager alert feed" in (
@@ -1426,6 +1445,7 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     )
     assert "operator alert thresholds" in capability["safe_statement"]
     assert "scheduler-candidate preview artifact" in capability["safe_statement"]
+    assert "template-only bridge-event renderer" in capability["safe_statement"]
     assert report["summary"]["proofs_ok"] is True
 
 

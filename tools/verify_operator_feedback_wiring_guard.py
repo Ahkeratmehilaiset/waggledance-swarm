@@ -167,7 +167,7 @@ def verify_operator_feedback_wiring_guard(
     global_cap = (
         int(global_fast_track_per_hour_max)
         if global_fast_track_per_hour_max is not None
-        else per_operator_cap
+        else _load_global_fast_track_cap()
     )
     issues: list[GuardIssue] = []
     envelopes = _read_bridge_envelopes(path, tail=tail, issues=issues)
@@ -582,6 +582,19 @@ def _load_per_operator_fast_track_cap() -> int:
     except Exception:  # noqa: BLE001 - verifier has a conservative fallback
         pass
     return 10
+
+
+def _load_global_fast_track_cap() -> int:
+    try:
+        raw = json.loads(DEFAULT_CONTRACT_PATH.read_text(encoding="utf-8"))
+        defaults = raw.get("policy_defaults")
+        if isinstance(defaults, Mapping):
+            value = defaults.get("fast_track_global_per_hour_max")
+            if isinstance(value, int) and value > 0:
+                return value
+    except Exception:  # noqa: BLE001 - verifier has a conservative fallback
+        pass
+    return 30
 
 
 def _parse_utc(value: str) -> datetime | None:

@@ -249,6 +249,46 @@ def test_guard_rejects_global_fast_track_cap(tmp_path: Path) -> None:
     assert any(issue.code == "global_fast_track_cap_exceeded" for issue in report.issues)
 
 
+def test_guard_uses_contract_default_for_global_fast_track_cap(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events: list[dict] = []
+    for index in range(11):
+        operator_uuid = f"33333333-3333-4333-8333-{index:012d}"
+        operator_id = f"bridge:operator:{operator_uuid}"
+        feedback_id = f"fb-global-default-{index:03d}"
+        events.append(_event(
+            payload=_feedback(
+                feedback_id=feedback_id,
+                operator_id=operator_id,
+                submitted_at_utc=f"2026-06-06T01:{index:02d}:00Z",
+            ),
+            agent_uuid=operator_uuid,
+            ts_utc=f"2026-06-06T01:{index:02d}:00Z",
+        ))
+        events.append(_event(
+            payload=_action(
+                feedback_id=feedback_id,
+                operator_id=operator_id,
+                scheduled_for_utc=f"2026-06-06T01:{index + 1:02d}:00Z",
+            ),
+            agent_uuid=operator_uuid,
+            ts_utc=f"2026-06-06T01:{index + 1:02d}:00Z",
+        ))
+    _write_events(events_path, events)
+
+    report = verify_operator_feedback_wiring_guard(events_path)
+
+    assert report.ok is True
+    assert report.global_fast_track_per_hour_max == 30
+    assert report.feedback_action_events == 11
+    assert not any(
+        issue.code == "global_fast_track_cap_exceeded"
+        for issue in report.issues
+    )
+
+
 def test_guard_rejects_fast_track_gate_skip_flags(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     _write_events(events_path, [

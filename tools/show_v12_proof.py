@@ -77,6 +77,9 @@ A4_AUTOGROWTH_SOAK_FIXTURE_PROOF = (
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
 RIVAL_LOCAL_CHECK_MATRIX = ROOT / "tools" / "run_v12_rival_local_check_matrix.py"
 RIVAL_LOCAL_CHECKS_DIR = ROOT / "docs" / "benchmarks" / "rival_local_checks"
+MEMORY_PALACE_PROMOTION_CANDIDATES = (
+    ROOT / "tools" / "run_v12_memory_palace_shortcut_promotion_candidates.py"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -151,6 +154,9 @@ def collect_proof(
         A4_AUTOGROWTH_SOAK_FIXTURE_PROOF
     )
     memory_palace_shortcuts = _read_memory_palace_shortcut_summary()
+    memory_palace_promotion_candidates = (
+        _read_memory_palace_promotion_candidate_summary()
+    )
     governance_args = ["--json"]
     if governance_events is not None:
         governance_args.extend(["--events", str(governance_events)])
@@ -183,6 +189,7 @@ def collect_proof(
         and a4_autogrowth_report.get("ok") is True
         and a4_autogrowth_soak_report.get("ok") is True
         and memory_palace_shortcuts.get("ok") is True
+        and memory_palace_promotion_candidates.get("ok") is True
         and high_gap == 0
     )
 
@@ -232,6 +239,7 @@ def collect_proof(
             a4_autogrowth_soak_report
         ),
         "memory_palace_shortcuts": memory_palace_shortcuts,
+        "memory_palace_promotion_candidates": memory_palace_promotion_candidates,
         "governance_throughput": _summarize_governance_throughput(governance),
         "competitor_pilot": pilot,
         "substrate_velocity": velocity,
@@ -488,6 +496,56 @@ def format_proof(report: dict[str, Any]) -> str:
     else:
         lines.append("MEMORY PALACE SHORTCUTS          : projection unavailable")
 
+    palace_candidates = report["memory_palace_promotion_candidates"]
+    lines.append("")
+    if palace_candidates["available"]:
+        lines.append(
+            "MEMORY PALACE PROMOTION CANDIDATES  "
+            "(tools/run_v12_memory_palace_shortcut_promotion_candidates.py)"
+        )
+        marker = "OK " if palace_candidates["ok"] else "** "
+        lines.append(
+            f"  {marker}promotion-candidate report: {palace_candidates['ok']}"
+        )
+        lines.append(
+            f"     evidence scope                 : {palace_candidates['evidence_scope']}"
+        )
+        lines.append(
+            f"     source of truth                : {palace_candidates['source_of_truth']}"
+        )
+        lines.append(
+            f"     source candidates              : {palace_candidates['source_candidate_count']}"
+        )
+        lines.append(
+            "     observable candidates          : "
+            f"{palace_candidates['promotion_observable_count']}"
+        )
+        lines.append(
+            f"     blocked candidates             : {palace_candidates['blocked_count']}"
+        )
+        lines.append(
+            f"     top candidate                  : {palace_candidates['top_candidate_target']}"
+        )
+        lines.append(
+            "     min rank / hops skipped        : "
+            f"{palace_candidates['min_rank_score']} / "
+            f"{palace_candidates['min_intermediate_hops_skipped']}"
+        )
+        lines.append(
+            "     promotion action allowed       : "
+            f"{palace_candidates['promotion_action_allowed']}"
+        )
+        lines.append(
+            "     authority boundary ok          : "
+            f"{palace_candidates['authority_boundary_ok']}"
+        )
+        lines.append(
+            "     operator gate for runtime      : "
+            f"{palace_candidates['operator_gate_required_for_runtime_promotion']}"
+        )
+    else:
+        lines.append("MEMORY PALACE PROMOTION CANDIDATES : report unavailable")
+
     gov = report["governance_throughput"]
     lines.append("")
     if gov["available"]:
@@ -567,6 +625,10 @@ def format_proof(report: dict[str, Any]) -> str:
         "--out-dir <new-output-dir> --json"
     )
     lines.append("  python -m pytest tests/core/test_memory_palace_projection.py -q")
+    lines.append(
+        "  python "
+        "tools/run_v12_memory_palace_shortcut_promotion_candidates.py --json"
+    )
     lines.append("  python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>")
     lines.append(
         "  python tools/run_v12_rival_local_check_matrix.py "
@@ -975,6 +1037,72 @@ def _memory_palace_bypass_analysis(
         "promotion_performed": False,
         "network_access_performed": False,
         "analysis_scope": "projection_only_read_side_hint",
+    }
+
+
+def _read_memory_palace_promotion_candidate_summary() -> dict[str, Any]:
+    report = _run_tool_json(["--json"], MEMORY_PALACE_PROMOTION_CANDIDATES)
+    if report.get("ok") is None:
+        return {
+            "available": False,
+            "ok": False,
+            "source_of_truth": "unavailable",
+            "memory_id": "unavailable",
+            "source_candidate_count": 0,
+            "promotion_observable_count": 0,
+            "blocked_count": 0,
+            "top_candidate_target": "unavailable",
+            "min_rank_score": 0.0,
+            "min_intermediate_hops_skipped": 0,
+            "promotion_action_allowed": False,
+            "authority_boundary_ok": False,
+            "operator_gate_required_for_runtime_promotion": False,
+            "evidence_scope": "unavailable",
+        }
+
+    summary = report.get("candidate_summary") or {}
+    thresholds = report.get("thresholds") or {}
+    boundary = report.get("authority_boundary") or {}
+    guardrails = report.get("no_overclaim_guardrails") or {}
+    boundary_ok = (
+        boundary.get("source_proof_ok") is True
+        and boundary.get("source_authority_boundary_ok") is True
+        and boundary.get("read_side_report_only") is True
+        and boundary.get("all_candidates_authority_flags_false") is True
+        and boundary.get("runtime_route_changed") is False
+        and boundary.get("storage_write_performed") is False
+        and boundary.get("bridge_append_performed") is False
+        and boundary.get("solver_call_performed") is False
+        and boundary.get("scheduler_enqueue_performed") is False
+        and boundary.get("promotion_performed") is False
+        and boundary.get("promotion_action_allowed") is False
+        and boundary.get("gate_skip_performed") is False
+        and boundary.get("network_access_performed") is False
+    )
+    return {
+        "available": True,
+        "ok": report.get("ok") is True and boundary_ok,
+        "source_of_truth": report.get("source_of_truth", "unknown"),
+        "memory_id": report.get("memory_id", "unknown"),
+        "source_candidate_count": int(summary.get("source_candidate_count") or 0),
+        "promotion_observable_count": int(
+            summary.get("promotion_observable_count") or 0
+        ),
+        "blocked_count": int(summary.get("blocked_count") or 0),
+        "top_candidate_target": summary.get("top_candidate_target", "none"),
+        "min_rank_score": float(thresholds.get("min_rank_score") or 0.0),
+        "min_intermediate_hops_skipped": int(
+            thresholds.get("min_intermediate_hops_skipped") or 0
+        ),
+        "promotion_action_allowed": boundary.get("promotion_action_allowed") is True,
+        "authority_boundary_ok": boundary_ok,
+        "operator_gate_required_for_runtime_promotion": (
+            guardrails.get("operator_gate_required_for_runtime_promotion") is True
+        ),
+        "evidence_scope": (
+            "read-only promotion-candidate report; not route promotion, "
+            "not scheduler/solver dispatch, not bridge append, not gate skip"
+        ),
     }
 
 

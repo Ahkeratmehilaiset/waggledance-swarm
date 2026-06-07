@@ -45,6 +45,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "A4 AUTOGROWTH LIFECYCLE RECEIPTS",
         "A4 AUTOGROWTH SOAK FIXTURE RECEIPTS",
         "MEMORY PALACE SHORTCUTS",
+        "MEMORY PALACE PROMOTION CANDIDATES",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -67,6 +68,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert "a4_autogrowth_lifecycle" in payload
     assert "a4_autogrowth_soak_fixture" in payload
     assert "memory_palace_shortcuts" in payload
+    assert "memory_palace_promotion_candidates" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -328,6 +330,41 @@ def test_memory_palace_shortcut_text_keeps_no_authority_boundary() -> None:
     assert "intermediate nodes not loaded  : True" in result.stdout
     assert "authority flags false          : True" in result.stdout
     assert "not router/solver dispatch" in result.stdout
+
+
+def test_memory_palace_promotion_candidates_section_reports_action_free_rows() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    candidates = payload["memory_palace_promotion_candidates"]
+
+    assert candidates["available"] is True, candidates
+    assert candidates["ok"] is True, candidates
+    assert candidates["source_of_truth"] == "projection_only"
+    assert candidates["memory_id"] == "memory.learning.cell_imaging.1"
+    assert candidates["source_candidate_count"] == 2
+    assert candidates["promotion_observable_count"] == 2
+    assert candidates["blocked_count"] == 0
+    assert candidates["top_candidate_target"] == "room.research.pathology"
+    assert candidates["min_rank_score"] == 0.6
+    assert candidates["min_intermediate_hops_skipped"] == 2
+    assert candidates["promotion_action_allowed"] is False
+    assert candidates["authority_boundary_ok"] is True
+    assert candidates["operator_gate_required_for_runtime_promotion"] is True
+    assert "read-only promotion-candidate report" in candidates["evidence_scope"]
+    assert "not route promotion" in candidates["evidence_scope"]
+
+
+def test_memory_palace_promotion_candidates_text_keeps_action_boundary() -> None:
+    result = _run()
+
+    assert result.returncode in {0, 1}, result.stderr
+    assert "MEMORY PALACE PROMOTION CANDIDATES" in result.stdout
+    assert "promotion-candidate report" in result.stdout
+    assert "observable candidates          : 2" in result.stdout
+    assert "top candidate                  : room.research.pathology" in result.stdout
+    assert "promotion action allowed       : False" in result.stdout
+    assert "authority boundary ok          : True" in result.stdout
+    assert "operator gate for runtime      : True" in result.stdout
 
 
 def test_governance_throughput_section_reports_status_counts() -> None:

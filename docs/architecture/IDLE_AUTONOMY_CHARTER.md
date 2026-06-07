@@ -66,6 +66,7 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md` (consensus-approval contract — self-modification banned)
 * `tools/idle_consensus_auto_merge.py` (the merge gate itself — self-modification banned)
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
+* `tools/check_rco_pass_present.py` (RCO-pass verifier — self-modification banned)
 * `waggledance/core/idle_consensus_charter.py` (charter allowlist/denylist evaluator — self-modification banned)
 * `.env`
 * `.env.*`
@@ -178,7 +179,7 @@ For every autonomous merge:
 
 This charter document is on the file denylist. Any PR that modifies `docs/architecture/IDLE_AUTONOMY_CHARTER.md` itself must be operator-merged. Agents cannot weaken their own gates.
 
-The same ban applies to denylist edits inside `tools/idle_consensus_to_pr.py`, to the consensus-verification logic inside `tools/idle_consensus_auto_merge.py` and `tools/check_bridge_changes_requested.py`, to `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, and to operator-gate constants throughout the substrate. A bridge consensus can never self-approve a change to the gate that evaluates it — such PRs always operator-merge.
+The same ban applies to denylist edits inside `tools/idle_consensus_to_pr.py`, to the consensus-verification logic inside `tools/idle_consensus_auto_merge.py`, `tools/check_bridge_changes_requested.py`, and `tools/check_rco_pass_present.py`, to `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, and to operator-gate constants throughout the substrate. A bridge consensus can never self-approve a change to the gate that evaluates it — such PRs always operator-merge.
 
 ## Charter scope
 

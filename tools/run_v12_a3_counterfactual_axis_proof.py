@@ -15,13 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.idle_consensus_artifact import (  # noqa: E402
+    build_idle_consensus_candidate_diff_replay_admission,
+    build_idle_consensus_replay_seed,
+)
 from tools.run_pdam_counterfactual_demo import build_variant_matrix_report  # noqa: E402
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
-from waggledance.core.idle_consensus_charter import (  # noqa: E402
-    evaluate_diff_content,
-    evaluate_paths,
-    load_charter,
-)
 from waggledance.core.autonomy_growth.counterfactual_replay import (  # noqa: E402
     A3_LABEL_MEASURED_LOCAL_PARTIAL,
     DEFAULT_A3_MIN_SAMPLES,
@@ -425,59 +424,50 @@ def _runtime_smoke_oracle(inputs: Mapping[str, Any], artifact: Mapping[str, Any]
 
 
 def _build_stored_consensus_replay() -> dict[str, Any]:
-    charter = load_charter()
     changed_paths = list(STORED_CONSENSUS_CANDIDATE_CHANGED_PATHS)
     candidate_diff_text = STORED_CONSENSUS_CANDIDATE_DIFF_TEXT
     artifact = _stored_consensus_artifact()
-    path_gate = evaluate_paths(charter, changed_paths)
-    diff_gate = evaluate_diff_content(charter, candidate_diff_text)
-    candidate_diff_allowed = bool(path_gate.allowed and diff_gate.allowed)
-    decision = (
-        "candidate_diff_charter_passed"
-        if candidate_diff_allowed
-        else "operator_review_required"
+    replay_seed = build_idle_consensus_replay_seed(artifact)
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=replay_seed,
+        changed_paths=changed_paths,
+        candidate_diff_text=candidate_diff_text,
+        counterfactual_eval_receipt=_stored_consensus_counterfactual_eval_receipt(),
     )
-    candidate_diff_digest = sha256_digest({
-        "changed_paths": changed_paths,
-        "diff_text": candidate_diff_text,
-    })
 
     return {
         "replay_version": STORED_CONSENSUS_REPLAY_VERSION,
+        "admission_report_version": admission["report_version"],
         "available": True,
-        "decision": decision,
-        "dry_run": True,
-        "external_effect": False,
-        "writes_applied": False,
-        "would_create_pr": False,
-        "would_merge": False,
-        "eligible_for_draft_pr_gate": False,
+        "decision": admission["decision"],
+        "dry_run": admission["dry_run"],
+        "external_effect": admission["external_effect"],
+        "writes_applied": admission["writes_applied"],
+        "would_create_task": admission["would_create_task"],
+        "would_create_branch": admission["would_create_branch"],
+        "would_create_pr": admission["would_create_pr"],
+        "would_merge": admission["would_merge"],
+        "eligible_for_draft_pr_gate": admission["eligible_for_draft_pr_gate"],
         "draft_pr_gate_blockers": [
+            *admission["draft_pr_gate_blockers"],
             "live_rate_gate_not_evaluated",
-            "operator_review_gate_still_required",
         ],
-        "candidate_diff_charter_allowed": candidate_diff_allowed,
+        "candidate_diff_charter_allowed": admission["candidate_diff_charter_allowed"],
         "stored_consensus": {
             "artifact_version": artifact["artifact_version"],
             "artifact_id": artifact["artifact_id"],
-            "digest": sha256_digest(artifact),
-            "status": artifact["consensus"]["status"],
+            "digest": replay_seed["consensus_artifact"]["digest"],
+            "status": artifact["convergence"]["status"],
+            "replay_seed_digest": admission["replay_seed"]["digest"],
+            "transcript_digest": admission["replay_seed"]["transcript_digest"],
+            "convergence_digest": admission["replay_seed"]["convergence_digest"],
         },
-        "candidate_diff": {
-            "changed_paths": changed_paths,
-            "digest": candidate_diff_digest,
-            "line_count": len(candidate_diff_text.splitlines()),
-        },
-        "path_gate": _gate_decision_to_dict(path_gate),
-        "diff_gate": _gate_decision_to_dict(diff_gate),
-        "next_required_gates": [
-            "forensic_artifact_receipt",
-            "draft_pr_creation",
-            "ci_green",
-            "mergeable_clean",
-            "daily_rate_limit",
-            "exact_head_merge",
-        ],
+        "replay_seed": admission["replay_seed"],
+        "candidate_diff": admission["candidate_diff"],
+        "counterfactual_eval": admission["counterfactual_eval"],
+        "path_gate": admission["path_gate"],
+        "diff_gate": admission["diff_gate"],
+        "next_required_gates": _stored_consensus_next_required_gates(admission),
     }
 
 
@@ -487,24 +477,63 @@ def _stored_consensus_artifact() -> dict[str, Any]:
         "artifact_id": STORED_CONSENSUS_ARTIFACT_ID,
         "created_at_utc": "2026-05-20T19:50:00Z",
         "source": "deterministic_a3_replay_fixture",
-        "consensus": {
-            "protocol_version": "idle-protocol.v1",
+        "operator_gate_required": True,
+        "auto_execute": False,
+        "convergence": {
             "status": "soft_convergence",
-            "consensus_target_proposal_id": "a3-counterfactual-delta-replay",
+            "target_proposal_id": "a3-counterfactual-delta-replay",
             "support_count": 3,
             "objection_count": 0,
         },
-        "operator_review": {
-            "required": True,
-            "auto_execute": False,
-            "reason": "stored consensus can only prepare a candidate diff for review",
-        },
+        "transcript": [
+            {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_consensus_reached",
+                "proposal_id": "a3-counterfactual-delta-replay",
+                "round_number": 5,
+                "operator_gate_required": True,
+                "auto_execute": False,
+            }
+        ],
         "target": {
             "axis_id": "A3",
             "axis_name": "counterfactual_evaluation_delta",
-            "candidate_changed_paths": list(STORED_CONSENSUS_CANDIDATE_CHANGED_PATHS),
         },
     }
+
+
+def _stored_consensus_counterfactual_eval_receipt() -> dict[str, Any]:
+    return {
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
+        "sample_count": DEFAULT_A3_MIN_SAMPLES,
+        "divergence_count": 3,
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest": sha256_digest(
+            {
+                "axis_id": "A3",
+                "fixture": "stored_consensus_replay",
+                "sample_count": DEFAULT_A3_MIN_SAMPLES,
+            }
+        ),
+    }
+
+
+def _stored_consensus_next_required_gates(admission: Mapping[str, Any]) -> list[str]:
+    gates = ["forensic_artifact_receipt"]
+    for gate in admission["next_required_gates"]:
+        if gate not in gates:
+            gates.append(gate)
+    if "daily_rate_limit" not in gates:
+        try:
+            exact_head_index = gates.index("exact_head_merge")
+        except ValueError:
+            exact_head_index = len(gates)
+        gates.insert(exact_head_index, "daily_rate_limit")
+    return gates
 
 
 def _with_receipt_binding_state(
@@ -524,16 +553,6 @@ def _with_receipt_binding_state(
             if gate != "forensic_artifact_receipt"
         ]
     return replay
-
-
-def _gate_decision_to_dict(gate: Any) -> dict[str, Any]:
-    return {
-        "allowed": bool(gate.allowed),
-        "reason": gate.reason,
-        "blocked_paths": list(gate.blocked_paths),
-        "unmatched_paths": list(gate.unmatched_paths),
-        "code_pattern_hits": list(gate.code_pattern_hits),
-    }
 
 
 def _bind_a3_evaluations_v1(demo: dict[str, Any]) -> dict[str, Any]:
@@ -673,12 +692,21 @@ def _emit_a3_v1_receipt_bundle(
 def _receipt_replay_binding(stored_consensus_replay: dict[str, Any]) -> dict[str, Any]:
     return {
         "replay_version": stored_consensus_replay["replay_version"],
+        "admission_report_version": stored_consensus_replay[
+            "admission_report_version"
+        ],
         "stored_consensus_digest": stored_consensus_replay["stored_consensus"][
             "digest"
+        ],
+        "replay_seed_digest": stored_consensus_replay["stored_consensus"][
+            "replay_seed_digest"
         ],
         "candidate_diff_digest": stored_consensus_replay["candidate_diff"]["digest"],
         "candidate_diff_charter_allowed": bool(
             stored_consensus_replay["candidate_diff_charter_allowed"]
+        ),
+        "counterfactual_eval_satisfies_replay_gate": bool(
+            stored_consensus_replay["counterfactual_eval"]["satisfies_replay_gate"]
         ),
         "replay_decision": stored_consensus_replay["decision"],
     }

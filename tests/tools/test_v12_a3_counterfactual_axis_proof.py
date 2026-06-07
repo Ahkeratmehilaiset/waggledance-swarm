@@ -65,17 +65,45 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert replay["receipt_chain_id"] is None
     assert replay["satisfied_gates"] == []
     assert "forensic_artifact_receipt" in replay["next_required_gates"]
+    assert replay["admission_report_version"] == (
+        "idle_consensus_candidate_diff_replay_admission.v0"
+    )
+    assert replay["replay_seed"]["seed_version"] == "idle_consensus_replay_seed.v0"
+    assert replay["replay_seed"]["digest"].startswith("sha256:")
     assert replay["stored_consensus"]["artifact_version"] == (
         "idle_consensus_operator_review.v1"
     )
     assert replay["stored_consensus"]["status"] == "soft_convergence"
+    assert replay["stored_consensus"]["replay_seed_digest"] == replay["replay_seed"][
+        "digest"
+    ]
+    assert replay["stored_consensus"]["transcript_digest"] == replay["replay_seed"][
+        "transcript_digest"
+    ]
+    assert replay["stored_consensus"]["convergence_digest"] == replay["replay_seed"][
+        "convergence_digest"
+    ]
     assert replay["candidate_diff"]["changed_paths"] == [
         "docs/architecture/consensus_artifacts/a3_counterfactual_delta_replay.md"
+    ]
+    assert replay["candidate_diff"]["diff_text_included"] is False
+    assert "diff_text" not in replay["candidate_diff"]
+    assert replay["counterfactual_eval"]["provided"] is True
+    assert replay["counterfactual_eval"]["satisfies_replay_gate"] is True
+    assert replay["counterfactual_eval"]["receipt_payload_included"] is False
+    assert replay["counterfactual_eval"]["observability"]["status"] == (
+        "measured_local_partial"
+    )
+    assert replay["draft_pr_gate_blockers"] == [
+        "operator_review_gate_required",
+        "live_rate_gate_not_evaluated",
     ]
     assert replay["path_gate"]["allowed"] is True
     assert replay["diff_gate"]["allowed"] is True
     assert replay["eligible_for_draft_pr_gate"] is False
     assert replay["external_effect"] is False
+    assert replay["would_create_task"] is False
+    assert replay["would_create_branch"] is False
     assert replay["would_create_pr"] is False
     assert replay["would_merge"] is False
     assert report["factual"]["evaluation_version"] == "magma.evaluation_result.v1"
@@ -345,8 +373,13 @@ def _receipt_replay_binding(report: dict) -> dict:
     replay = report["stored_consensus_replay"]
     return {
         "replay_version": replay["replay_version"],
+        "admission_report_version": replay["admission_report_version"],
         "stored_consensus_digest": replay["stored_consensus"]["digest"],
+        "replay_seed_digest": replay["stored_consensus"]["replay_seed_digest"],
         "candidate_diff_digest": replay["candidate_diff"]["digest"],
         "candidate_diff_charter_allowed": replay["candidate_diff_charter_allowed"],
+        "counterfactual_eval_satisfies_replay_gate": replay["counterfactual_eval"][
+            "satisfies_replay_gate"
+        ],
         "replay_decision": replay["decision"],
     }

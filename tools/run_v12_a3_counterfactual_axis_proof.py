@@ -322,14 +322,20 @@ def _receipt_summary(receipt_bundle: dict[str, Any] | None) -> dict[str, Any]:
             "verifier_ok": False,
         }
     verifier = receipt_bundle["verifier_report"]
+    out_dir = Path(str(receipt_bundle["out_dir"]))
+    manifest = Path(str(receipt_bundle["manifest"]))
     return {
         "available": True,
-        "out_dir": receipt_bundle["out_dir"],
-        "manifest": receipt_bundle["manifest"],
+        "out_dir": ".",
+        "manifest": _relative_artifact_path(manifest, out_dir),
         "receipt_count": receipt_bundle["receipt_count"],
         "verifier_ok": bool(verifier["ok"]),
         "verifier_error_count": len(verifier["errors"]),
     }
+
+
+def _relative_artifact_path(path: Path, root: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def _build_runtime_condition_replay_smoke() -> dict[str, Any]:

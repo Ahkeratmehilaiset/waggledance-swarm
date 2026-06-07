@@ -8,9 +8,11 @@ from waggledance.core.memory_palace import (
     MEMORY_PALACE_PROJECTION_SCHEMA_VERSION,
     MemoryPalaceProjectionError,
     MemoryPlacement,
+    PalaceShortcutHint,
     PalaceNode,
     build_memory_palace_projection,
     derive_candidate_placements,
+    derive_shortcut_hints,
     validate_palace_hierarchy,
 )
 
@@ -53,6 +55,7 @@ def test_projection_builds_authority_free_document() -> None:
     assert projection["nodes"][0]["node_id"] == "wing.energy"
     assert projection["nodes"][1]["node_id"] == "room.energy.solar"
     assert projection["placements"][0]["palace_node_id"] == "room.energy.solar"
+    assert projection["shortcuts"] == []
 
 
 def test_derives_candidates_from_existing_metadata_selectors() -> None:
@@ -92,6 +95,56 @@ def test_derives_candidates_from_existing_metadata_selectors() -> None:
         "cell_id",
         "tags",
     )
+
+
+def test_derives_cross_wing_shortcut_hints_from_shared_selectors() -> None:
+    nodes = [
+        PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+        PalaceNode(
+            node_id="room.learning.imaging",
+            kind="room",
+            label="Imaging cases",
+            parent_id="wing.learning",
+            selectors={
+                "tags": ["segmentation", "cell_imaging"],
+                "vector_kind": ["claim"],
+            },
+        ),
+        PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        PalaceNode(
+            node_id="room.research.pathology",
+            kind="room",
+            label="Pathology expertise",
+            parent_id="wing.research",
+            selectors={
+                "tags": ["segmentation", "pathology"],
+                "vector_kind": ["claim"],
+            },
+        ),
+    ]
+
+    shortcuts = derive_shortcut_hints(nodes, min_hierarchy_hops=3)
+    projection = build_memory_palace_projection(nodes, shortcuts=shortcuts)
+
+    selected = [
+        shortcut
+        for shortcut in projection["shortcuts"]
+        if shortcut["source_node_id"] == "room.learning.imaging"
+        and shortcut["target_node_id"] == "room.research.pathology"
+    ]
+    assert len(selected) == 1
+    hint = selected[0]
+    assert hint["matched_selector_keys"] == ["tags", "vector_kind"]
+    assert hint["matched_values"] == {
+        "tags": ["segmentation"],
+        "vector_kind": ["claim"],
+    }
+    assert hint["hierarchy_hops"] == 3
+    assert hint["no_runtime_mutation"] is True
+    assert hint["runtime_authority"] is False
+    assert hint["gate_skip_authority"] is False
+    assert hint["promotion_authority"] is False
+    assert hint["solver_call_authority"] is False
 
 
 def test_hierarchy_rejects_unknown_parent_and_cycles() -> None:
@@ -152,6 +205,22 @@ def test_projection_rejects_authority_flags_and_unknown_placements() -> None:
             ],
         )
 
+    with pytest.raises(MemoryPalaceProjectionError, match="unknown target_node_id"):
+        build_memory_palace_projection(
+            [PalaceNode(node_id="wing.ops", kind="wing", label="Ops")],
+            shortcuts=[
+                PalaceShortcutHint(
+                    shortcut_id="shortcut.deadbeef",
+                    source_node_id="wing.ops",
+                    target_node_id="room.missing",
+                    matched_selector_keys=["tags"],
+                    matched_values={"tags": ["ops"]},
+                    confidence=0.7,
+                    hierarchy_hops=2,
+                )
+            ],
+        )
+
 
 def test_projection_rejects_authority_flag_keys_at_any_depth() -> None:
     for metadata in (
@@ -176,6 +245,7 @@ def test_projection_rejects_authority_flag_keys_at_any_depth() -> None:
     for metadata in (
         {"gate_skip_authority": "true"},
         {"promotion_authority": 0},
+        {"solver_call_authority": False},
         {"nested": {"storage_write_authority": False}},
         {"items": [{"runtime_authority": 1}]},
     ):
@@ -192,6 +262,45 @@ def test_projection_rejects_authority_flag_keys_at_any_depth() -> None:
                     )
                 ],
             )
+
+    with pytest.raises(MemoryPalaceProjectionError, match="gate_skip_authority"):
+        build_memory_palace_projection(
+            [
+                PalaceNode(node_id="wing.ops", kind="wing", label="Ops"),
+                PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+            ],
+            shortcuts=[
+                PalaceShortcutHint(
+                    shortcut_id="shortcut.unsafe",
+                    source_node_id="wing.ops",
+                    target_node_id="wing.research",
+                    matched_selector_keys=["tags"],
+                    matched_values={"tags": ["ops"]},
+                    confidence=0.7,
+                    hierarchy_hops=1,
+                    gate_skip_authority=True,
+                )
+            ],
+        )
+
+    with pytest.raises(MemoryPalaceProjectionError, match="unlisted selector key"):
+        build_memory_palace_projection(
+            [
+                PalaceNode(node_id="wing.ops", kind="wing", label="Ops"),
+                PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+            ],
+            shortcuts=[
+                PalaceShortcutHint(
+                    shortcut_id="shortcut.mismatch",
+                    source_node_id="wing.ops",
+                    target_node_id="wing.research",
+                    matched_selector_keys=["tags"],
+                    matched_values={"tags": ["ops"], "vector_kind": ["claim"]},
+                    confidence=0.7,
+                    hierarchy_hops=1,
+                )
+            ],
+        )
 
 
 def test_schema_contract_declares_projection_only_authority_flags() -> None:
@@ -236,6 +345,17 @@ def test_projection_document_validates_against_schema() -> None:
                 placement_source="vector_kind",
             )
         ],
+        shortcuts=[
+            PalaceShortcutHint(
+                shortcut_id="shortcut.learning.to.ops",
+                source_node_id="wing.learning",
+                target_node_id="room.learning.cases",
+                matched_selector_keys=["vector_kind"],
+                matched_values={"vector_kind": ["claim"]},
+                confidence=0.6,
+                hierarchy_hops=1,
+            )
+        ],
     )
 
     jsonschema.Draft7Validator(schema).validate(projection)
@@ -247,13 +367,27 @@ def test_schema_rejects_authority_flag_keys_at_any_metadata_depth() -> None:
     validator = jsonschema.Draft7Validator(schema)
 
     projection = build_memory_palace_projection(
-        [PalaceNode(node_id="wing.ops", kind="wing", label="Ops")],
+        [
+            PalaceNode(node_id="wing.ops", kind="wing", label="Ops"),
+            PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        ],
         [
             MemoryPlacement(
                 memory_id="memory-1",
                 palace_node_id="wing.ops",
                 confidence=0.6,
                 placement_source="manual",
+            )
+        ],
+        shortcuts=[
+            PalaceShortcutHint(
+                shortcut_id="shortcut.ops.to.research",
+                source_node_id="wing.ops",
+                target_node_id="wing.research",
+                matched_selector_keys=["tags"],
+                matched_values={"tags": ["ops"]},
+                confidence=0.6,
+                hierarchy_hops=1,
             )
         ],
     )
@@ -271,6 +405,7 @@ def test_schema_rejects_authority_flag_keys_at_any_metadata_depth() -> None:
     for metadata in (
         {"gate_skip_authority": "true"},
         {"nested": {"promotion_authority": 1}},
+        {"nested": {"solver_call_authority": 0}},
     ):
         document = dict(projection)
         document["placements"] = [
@@ -278,3 +413,13 @@ def test_schema_rejects_authority_flag_keys_at_any_metadata_depth() -> None:
         ]
         with pytest.raises(jsonschema.ValidationError):
             validator.validate(document)
+
+    shortcut_document = dict(projection)
+    shortcut_document["shortcuts"] = [
+        dict(
+            projection["shortcuts"][0],
+            gate_skip_authority=True,
+        )
+    ]
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(shortcut_document)

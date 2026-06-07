@@ -37,6 +37,10 @@
     "placements": {
       "type": "array",
       "items": {"$ref": "#/definitions/memory_placement"}
+    },
+    "shortcuts": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/palace_shortcut_hint"}
     }
   },
   "definitions": {
@@ -137,6 +141,88 @@
         "metadata": {"$ref": "#/definitions/authority_free_metadata"}
       }
     },
+    "palace_shortcut_hint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shortcut_id",
+        "source_node_id",
+        "target_node_id",
+        "matched_selector_keys",
+        "matched_values",
+        "confidence",
+        "hierarchy_hops",
+        "rationale",
+        "no_runtime_mutation",
+        "runtime_authority",
+        "storage_write_authority",
+        "bridge_write_authority",
+        "gate_skip_authority",
+        "promotion_authority",
+        "solver_call_authority"
+      ],
+      "properties": {
+        "shortcut_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+        },
+        "source_node_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+        },
+        "target_node_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+        },
+        "matched_selector_keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "tags",
+              "cell_id",
+              "capsule_context",
+              "source_type",
+              "vector_kind",
+              "anchor_status",
+              "tier"
+            ]
+          }
+        },
+        "matched_values": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tags": {"$ref": "#/definitions/non_empty_string_array"},
+            "cell_id": {"$ref": "#/definitions/non_empty_string_array"},
+            "capsule_context": {"$ref": "#/definitions/non_empty_string_array"},
+            "source_type": {"$ref": "#/definitions/non_empty_string_array"},
+            "vector_kind": {"$ref": "#/definitions/non_empty_string_array"},
+            "anchor_status": {"$ref": "#/definitions/non_empty_string_array"},
+            "tier": {"$ref": "#/definitions/non_empty_string_array"}
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "hierarchy_hops": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rationale": {"type": "string"},
+        "no_runtime_mutation": {"type": "boolean", "const": true},
+        "runtime_authority": {"type": "boolean", "const": false},
+        "storage_write_authority": {"type": "boolean", "const": false},
+        "bridge_write_authority": {"type": "boolean", "const": false},
+        "gate_skip_authority": {"type": "boolean", "const": false},
+        "promotion_authority": {"type": "boolean", "const": false},
+        "solver_call_authority": {"type": "boolean", "const": false},
+        "metadata": {"$ref": "#/definitions/authority_free_metadata"}
+      }
+    },
     "authority_free_metadata": {
       "type": "object",
       "properties": {
@@ -144,7 +230,8 @@
         "storage_write_authority": {"not": {}},
         "bridge_write_authority": {"not": {}},
         "gate_skip_authority": {"not": {}},
-        "promotion_authority": {"not": {}}
+        "promotion_authority": {"not": {}},
+        "solver_call_authority": {"not": {}}
       },
       "additionalProperties": {"$ref": "#/definitions/metadata_value"}
     },

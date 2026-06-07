@@ -9,6 +9,8 @@ promotion authority.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 import re
 from typing import Any, Mapping, Sequence
@@ -42,6 +44,7 @@ AUTHORITY_FLAGS = (
     "bridge_write_authority",
     "gate_skip_authority",
     "promotion_authority",
+    "solver_call_authority",
 )
 
 _NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
@@ -118,15 +121,69 @@ class MemoryPlacement:
         return result
 
 
+@dataclass(frozen=True)
+class PalaceShortcutHint:
+    shortcut_id: str
+    source_node_id: str
+    target_node_id: str
+    matched_selector_keys: Sequence[str]
+    matched_values: Mapping[str, Sequence[str]]
+    confidence: float
+    hierarchy_hops: int
+    rationale: str = ""
+    no_runtime_mutation: bool = True
+    runtime_authority: bool = False
+    storage_write_authority: bool = False
+    bridge_write_authority: bool = False
+    gate_skip_authority: bool = False
+    promotion_authority: bool = False
+    solver_call_authority: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        _validate_shortcut_hint(self)
+        result: dict[str, Any] = {
+            "shortcut_id": self.shortcut_id,
+            "source_node_id": self.source_node_id,
+            "target_node_id": self.target_node_id,
+            "matched_selector_keys": list(
+                _normalize_selector_keys(self.matched_selector_keys)
+            ),
+            "matched_values": {
+                key: list(values)
+                for key, values in _normalize_selector_map(
+                    self.matched_values
+                ).items()
+            },
+            "confidence": float(self.confidence),
+            "hierarchy_hops": int(self.hierarchy_hops),
+            "rationale": self.rationale,
+            "no_runtime_mutation": self.no_runtime_mutation,
+            "runtime_authority": self.runtime_authority,
+            "storage_write_authority": self.storage_write_authority,
+            "bridge_write_authority": self.bridge_write_authority,
+            "gate_skip_authority": self.gate_skip_authority,
+            "promotion_authority": self.promotion_authority,
+            "solver_call_authority": self.solver_call_authority,
+        }
+        if self.metadata:
+            result["metadata"] = _json_safe_mapping(self.metadata)
+        return result
+
+
 def build_memory_palace_projection(
     nodes: Sequence[PalaceNode | Mapping[str, Any]],
     placements: Sequence[MemoryPlacement | Mapping[str, Any]] = (),
+    shortcuts: Sequence[PalaceShortcutHint | Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Return a deterministic, projection-only Memory Palace document."""
 
     normalized_nodes = validate_palace_hierarchy(nodes)
     normalized_placements = [
         _coerce_placement(placement) for placement in placements
+    ]
+    normalized_shortcuts = [
+        _coerce_shortcut_hint(shortcut) for shortcut in shortcuts
     ]
     known_node_ids = {node.node_id for node in normalized_nodes}
     for placement in normalized_placements:
@@ -135,6 +192,22 @@ def build_memory_palace_projection(
             raise MemoryPalaceProjectionError(
                 f"placement references unknown palace node: {placement.palace_node_id}"
             )
+    seen_shortcuts: set[str] = set()
+    for shortcut in normalized_shortcuts:
+        _validate_shortcut_hint(shortcut)
+        if shortcut.shortcut_id in seen_shortcuts:
+            raise MemoryPalaceProjectionError(
+                f"duplicate shortcut_id: {shortcut.shortcut_id}"
+            )
+        seen_shortcuts.add(shortcut.shortcut_id)
+        for label, node_id in (
+            ("source_node_id", shortcut.source_node_id),
+            ("target_node_id", shortcut.target_node_id),
+        ):
+            if node_id not in known_node_ids:
+                raise MemoryPalaceProjectionError(
+                    f"shortcut references unknown {label}: {node_id}"
+                )
 
     return {
         "schema_version": MEMORY_PALACE_PROJECTION_SCHEMA_VERSION,
@@ -146,6 +219,12 @@ def build_memory_palace_projection(
         "promotion_authority": False,
         "nodes": [node.to_dict() for node in normalized_nodes],
         "placements": [placement.to_dict() for placement in normalized_placements],
+        "shortcuts": [
+            shortcut.to_dict()
+            for shortcut in sorted(
+                normalized_shortcuts, key=lambda item: item.shortcut_id
+            )
+        ],
     }
 
 
@@ -228,6 +307,84 @@ def derive_candidate_placements(
     return tuple(placements)
 
 
+def derive_shortcut_hints(
+    nodes: Sequence[PalaceNode | Mapping[str, Any]],
+    *,
+    min_shared_selector_keys: int = 1,
+    min_hierarchy_hops: int = 2,
+    max_hints_per_source: int = 3,
+) -> tuple[PalaceShortcutHint, ...]:
+    """Derive deterministic cross-hierarchy hints from shared selectors.
+
+    The hints are visualization/retrieval affordances only. They never mutate
+    the hierarchy, call solvers, enqueue work, or skip gates.
+    """
+
+    if min_shared_selector_keys < 1:
+        raise MemoryPalaceProjectionError(
+            "min_shared_selector_keys must be at least 1"
+        )
+    if min_hierarchy_hops < 1:
+        raise MemoryPalaceProjectionError("min_hierarchy_hops must be at least 1")
+    if max_hints_per_source < 1:
+        raise MemoryPalaceProjectionError("max_hints_per_source must be at least 1")
+
+    normalized_nodes = validate_palace_hierarchy(nodes)
+    by_id = {node.node_id: node for node in normalized_nodes}
+    hints: list[PalaceShortcutHint] = []
+    for source in normalized_nodes:
+        source_selectors = _normalize_selector_map(source.selectors)
+        if not source_selectors:
+            continue
+        source_hints: list[PalaceShortcutHint] = []
+        for target in normalized_nodes:
+            if target.node_id == source.node_id:
+                continue
+            target_selectors = _normalize_selector_map(target.selectors)
+            if not target_selectors:
+                continue
+            hierarchy_hops = _hierarchy_distance_hops(
+                by_id, source.node_id, target.node_id
+            )
+            if hierarchy_hops is None or hierarchy_hops < min_hierarchy_hops:
+                continue
+            matched_values = _shared_selector_values(
+                source_selectors,
+                target_selectors,
+            )
+            matched_keys = tuple(sorted(matched_values))
+            if len(matched_keys) < min_shared_selector_keys:
+                continue
+            source_hints.append(
+                PalaceShortcutHint(
+                    shortcut_id=_shortcut_id(source.node_id, target.node_id),
+                    source_node_id=source.node_id,
+                    target_node_id=target.node_id,
+                    matched_selector_keys=matched_keys,
+                    matched_values=matched_values,
+                    confidence=_shortcut_confidence(matched_keys, hierarchy_hops),
+                    hierarchy_hops=hierarchy_hops,
+                    rationale=(
+                        "Shared Memory Palace selectors suggest a read-side "
+                        "shortcut to related distant expertise."
+                    ),
+                    metadata={"projection_only": True},
+                )
+            )
+        hints.extend(
+            sorted(
+                source_hints,
+                key=lambda item: (
+                    -float(item.confidence),
+                    int(item.hierarchy_hops),
+                    item.target_node_id,
+                    item.shortcut_id,
+                ),
+            )[:max_hints_per_source]
+        )
+    return tuple(sorted(hints, key=lambda item: item.shortcut_id))
+
+
 def _coerce_node(value: PalaceNode | Mapping[str, Any]) -> PalaceNode:
     if isinstance(value, PalaceNode):
         return value
@@ -270,6 +427,65 @@ def _coerce_placement(value: MemoryPlacement | Mapping[str, Any]) -> MemoryPlace
         ),
         dedup_anchor=(
             str(value["dedup_anchor"]) if value.get("dedup_anchor") is not None else None
+        ),
+        metadata=metadata,
+    )
+
+
+def _coerce_shortcut_hint(
+    value: PalaceShortcutHint | Mapping[str, Any],
+) -> PalaceShortcutHint:
+    if isinstance(value, PalaceShortcutHint):
+        return value
+    if not isinstance(value, Mapping):
+        raise MemoryPalaceProjectionError("palace shortcut hint must be an object")
+    metadata = _optional_mapping(value, "metadata")
+    return PalaceShortcutHint(
+        shortcut_id=str(value.get("shortcut_id") or ""),
+        source_node_id=str(value.get("source_node_id") or ""),
+        target_node_id=str(value.get("target_node_id") or ""),
+        matched_selector_keys=_optional_sequence(value, "matched_selector_keys"),
+        matched_values=_optional_mapping(value, "matched_values"),
+        confidence=_coerce_confidence(value.get("confidence")),
+        hierarchy_hops=_coerce_positive_int(
+            value.get("hierarchy_hops"),
+            "hierarchy_hops",
+        ),
+        rationale=str(value.get("rationale") or ""),
+        no_runtime_mutation=_coerce_bool(
+            value.get("no_runtime_mutation"),
+            "no_runtime_mutation",
+            default=True,
+        ),
+        runtime_authority=_coerce_bool(
+            value.get("runtime_authority"),
+            "runtime_authority",
+            default=False,
+        ),
+        storage_write_authority=_coerce_bool(
+            value.get("storage_write_authority"),
+            "storage_write_authority",
+            default=False,
+        ),
+        bridge_write_authority=_coerce_bool(
+            value.get("bridge_write_authority"),
+            "bridge_write_authority",
+            default=False,
+        ),
+        gate_skip_authority=_coerce_bool(
+            value.get("gate_skip_authority"),
+            "gate_skip_authority",
+            default=False,
+        ),
+        promotion_authority=_coerce_bool(
+            value.get("promotion_authority"),
+            "promotion_authority",
+            default=False,
+        ),
+        solver_call_authority=_coerce_bool(
+            value.get("solver_call_authority"),
+            "solver_call_authority",
+            default=False,
         ),
         metadata=metadata,
     )
@@ -327,6 +543,51 @@ def _validate_placement(placement: MemoryPlacement) -> None:
     _assert_no_authority_flags(placement.metadata, label="memory placement")
 
 
+def _validate_shortcut_hint(shortcut: PalaceShortcutHint) -> None:
+    if not _NODE_ID_RE.fullmatch(shortcut.shortcut_id):
+        raise MemoryPalaceProjectionError(
+            f"invalid shortcut_id: {shortcut.shortcut_id}"
+        )
+    for label, node_id in (
+        ("source_node_id", shortcut.source_node_id),
+        ("target_node_id", shortcut.target_node_id),
+    ):
+        if not _NODE_ID_RE.fullmatch(node_id):
+            raise MemoryPalaceProjectionError(f"invalid shortcut {label}: {node_id}")
+    if shortcut.source_node_id == shortcut.target_node_id:
+        raise MemoryPalaceProjectionError(
+            "shortcut source_node_id and target_node_id must differ"
+        )
+    matched_keys = _normalize_selector_keys(shortcut.matched_selector_keys)
+    matched_values = _normalize_selector_map(shortcut.matched_values)
+    missing = sorted(set(matched_keys) - set(matched_values))
+    if missing:
+        raise MemoryPalaceProjectionError(
+            f"shortcut matched_values missing selector key: {missing[0]}"
+        )
+    extra = sorted(set(matched_values) - set(matched_keys))
+    if extra:
+        raise MemoryPalaceProjectionError(
+            f"shortcut matched_values contains unlisted selector key: {extra[0]}"
+        )
+    if not (
+        isinstance(shortcut.confidence, (int, float))
+        and math.isfinite(float(shortcut.confidence))
+        and 0.0 <= float(shortcut.confidence) <= 1.0
+    ):
+        raise MemoryPalaceProjectionError("shortcut confidence must be 0..1")
+    if not isinstance(shortcut.hierarchy_hops, int) or shortcut.hierarchy_hops < 1:
+        raise MemoryPalaceProjectionError("shortcut hierarchy_hops must be >= 1")
+    if not shortcut.no_runtime_mutation:
+        raise MemoryPalaceProjectionError("shortcut no_runtime_mutation must be true")
+    for field_name in AUTHORITY_FLAGS:
+        if bool(getattr(shortcut, field_name)):
+            raise MemoryPalaceProjectionError(
+                f"shortcut {field_name} must be false"
+            )
+    _assert_no_authority_flags(shortcut.metadata, label="palace shortcut")
+
+
 def _normalize_selector_map(
     selectors: Mapping[str, Sequence[str]],
 ) -> dict[str, tuple[str, ...]]:
@@ -344,6 +605,20 @@ def _normalize_selector_map(
             )
         normalized[key_text] = values
     return dict(sorted(normalized.items()))
+
+
+def _normalize_selector_keys(values: Sequence[str]) -> tuple[str, ...]:
+    keys = _normalize_string_tuple("matched_selector_keys", values)
+    for key in keys:
+        if key not in SELECTOR_KEYS:
+            raise MemoryPalaceProjectionError(
+                f"unsupported shortcut selector key: {key}"
+            )
+    if not keys:
+        raise MemoryPalaceProjectionError(
+            "matched_selector_keys must contain at least one value"
+        )
+    return keys
 
 
 def _normalize_string_tuple(label: str, values: Sequence[str]) -> tuple[str, ...]:
@@ -409,6 +684,44 @@ def _assert_acyclic(by_id: Mapping[str, PalaceNode]) -> None:
         visit(candidate)
 
 
+def _hierarchy_distance_hops(
+    by_id: Mapping[str, PalaceNode],
+    source_node_id: str,
+    target_node_id: str,
+) -> int | None:
+    if source_node_id == target_node_id:
+        return 0
+    visited = {source_node_id}
+    frontier = [(source_node_id, 0)]
+    index = 0
+    while index < len(frontier):
+        node_id, distance = frontier[index]
+        index += 1
+        node = by_id.get(node_id)
+        if node is None:
+            continue
+        neighbors = [
+            candidate.node_id
+            for candidate in by_id.values()
+            if candidate.parent_id == node_id
+        ]
+        if node.parent_id is not None:
+            neighbors.append(node.parent_id)
+        else:
+            neighbors.extend(
+                candidate.node_id
+                for candidate in by_id.values()
+                if candidate.parent_id is None and candidate.node_id != node_id
+            )
+        for neighbor in sorted(neighbors):
+            if neighbor == target_node_id:
+                return distance + 1
+            if neighbor not in visited:
+                visited.add(neighbor)
+                frontier.append((neighbor, distance + 1))
+    return None
+
+
 def _parent_first_order(by_id: Mapping[str, PalaceNode]) -> tuple[PalaceNode, ...]:
     children: dict[str | None, list[PalaceNode]] = {}
     for node in by_id.values():
@@ -424,6 +737,40 @@ def _parent_first_order(by_id: Mapping[str, PalaceNode]) -> tuple[PalaceNode, ..
     for root in sorted(children.get(None, ()), key=lambda item: item.node_id):
         append_subtree(root)
     return tuple(ordered)
+
+
+def _shared_selector_values(
+    source_selectors: Mapping[str, Sequence[str]],
+    target_selectors: Mapping[str, Sequence[str]],
+) -> dict[str, tuple[str, ...]]:
+    result: dict[str, tuple[str, ...]] = {}
+    for key in sorted(set(source_selectors) & set(target_selectors)):
+        shared = tuple(
+            sorted(set(source_selectors[key]) & set(target_selectors[key]))
+        )
+        if shared:
+            result[key] = shared
+    return result
+
+
+def _shortcut_confidence(matched_keys: Sequence[str], hierarchy_hops: int) -> float:
+    score = 0.55 + (0.1 * len(matched_keys))
+    if "cell_id" in matched_keys:
+        score += 0.05
+    if "tags" in matched_keys:
+        score += 0.05
+    if hierarchy_hops >= 3:
+        score += 0.05
+    return min(1.0, score)
+
+
+def _shortcut_id(source_node_id: str, target_node_id: str) -> str:
+    payload = json.dumps(
+        {"source": source_node_id, "target": target_node_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "shortcut." + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _assert_no_authority_flags(
@@ -477,6 +824,24 @@ def _coerce_confidence(value: Any) -> float:
         raise MemoryPalaceProjectionError(
             "placement confidence must be numeric"
         ) from exc
+
+
+def _coerce_positive_int(value: Any, label: str) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise MemoryPalaceProjectionError(f"{label} must be an integer") from exc
+    if result < 1:
+        raise MemoryPalaceProjectionError(f"{label} must be >= 1")
+    return result
+
+
+def _coerce_bool(value: Any, label: str, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise MemoryPalaceProjectionError(f"{label} must be boolean")
+    return value
 
 
 def _json_safe_mapping(metadata: Mapping[str, Any]) -> dict[str, Any]:

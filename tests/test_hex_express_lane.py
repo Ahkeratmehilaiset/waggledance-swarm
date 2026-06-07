@@ -45,6 +45,19 @@ def _edge(**overrides):
     return ExpressLaneEdge(**data)
 
 
+def _adjacency():
+    return {
+        "learning": ["general", "seasonal", "system"],
+        "general": ["learning", "math", "safety", "seasonal"],
+        "seasonal": ["general", "learning", "thermal"],
+        "system": ["learning", "math", "safety"],
+        "math": ["energy", "general", "system"],
+        "safety": ["energy", "general", "system", "thermal"],
+        "thermal": ["energy", "safety", "seasonal"],
+        "energy": ["math", "safety", "thermal"],
+    }
+
+
 def test_selects_distant_specialist_when_constraints_pass() -> None:
     plan = plan_express_lane(
         _request(),
@@ -64,6 +77,41 @@ def test_selects_distant_specialist_when_constraints_pass() -> None:
     assert plan["solver_call_authority"] is False
     assert plan["clinical_decision_authority"] is False
     assert plan["receipt_required"] is True
+
+
+def test_topology_distance_guard_rejects_ring1_and_selects_ring2() -> None:
+    plan = plan_express_lane(
+        _request(),
+        [
+            _edge(edge_id="edge.ring1", target_cell_id="system"),
+            _edge(edge_id="edge.ring2", target_cell_id="math"),
+        ],
+        known_cell_ids=ALL_CELLS,
+        known_adjacency=_adjacency(),
+    )
+
+    assert plan["selected"] is True
+    assert plan["route"]["edge_id"] == "edge.ring2"
+    reasons = {item["edge_id"]: item["reason"] for item in plan["rejected_edges"]}
+    assert reasons["edge.ring1"] == "target_not_distant"
+
+
+def test_topology_distance_guard_rejects_unreachable_target() -> None:
+    plan = plan_express_lane(
+        _request(),
+        [_edge(target_cell_id="math")],
+        known_cell_ids=ALL_CELLS,
+        known_adjacency={"learning": ["general"], "general": ["learning"]},
+    )
+
+    assert plan["selected"] is False
+    assert plan["rejected_edges"] == [
+        {
+            "edge_id": "edge.learning.to.system.segmentation",
+            "target_cell_id": "math",
+            "reason": "target_unreachable",
+        }
+    ]
 
 
 def test_rejects_unsafe_or_stale_edges_without_selecting() -> None:
@@ -155,6 +203,22 @@ def test_schema_validates_plan_output() -> None:
     )
     jsonschema.Draft7Validator.check_schema(schema)
     plan = plan_express_lane(_request(), [_edge()], known_cell_ids=ALL_CELLS)
+
+    jsonschema.Draft7Validator(schema).validate(plan)
+
+
+def test_schema_validates_distance_guard_rejection_reasons() -> None:
+    schema = json.loads(
+        (ROOT / "schemas" / "hex_express_lane.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plan = plan_express_lane(
+        _request(),
+        [_edge()],
+        known_cell_ids=ALL_CELLS,
+        known_adjacency={"learning": ["general"], "general": ["learning"]},
+    )
 
     jsonschema.Draft7Validator(schema).validate(plan)
 

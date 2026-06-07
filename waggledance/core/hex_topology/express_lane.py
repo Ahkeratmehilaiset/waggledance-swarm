@@ -97,12 +97,25 @@ def plan_express_lane(
     edges: Sequence[ExpressLaneEdge | Mapping[str, Any]],
     *,
     known_cell_ids: Sequence[str] | None = None,
+    known_adjacency: Mapping[str, Sequence[str]] | None = None,
+    min_topology_hops: int = 2,
 ) -> dict[str, Any]:
     """Select a deterministic long-range edge or explain why none is usable."""
 
     req = _coerce_request(request)
     _validate_request(req)
     known = _normalize_known_cells(known_cell_ids)
+    adjacency, adjacency_cells = _normalize_known_adjacency(known_adjacency)
+    if min_topology_hops < 1:
+        raise HexExpressLaneError("min_topology_hops must be at least 1")
+    if known is None and adjacency is not None:
+        known = adjacency_cells
+    elif known is not None and adjacency is not None:
+        unknown = sorted(adjacency_cells - known)
+        if unknown:
+            raise HexExpressLaneError(
+                f"known_adjacency contains unknown cell_id: {unknown[0]}"
+            )
     if known is not None and req.source_cell_id not in known:
         raise HexExpressLaneError(f"unknown source_cell_id: {req.source_cell_id}")
 
@@ -122,7 +135,12 @@ def plan_express_lane(
             ):
                 if cell_id not in known:
                     raise HexExpressLaneError(f"unknown {field_name}: {cell_id}")
-        reason = _edge_rejection_reason(req, edge)
+        reason = _edge_rejection_reason(
+            req,
+            edge,
+            known_adjacency=adjacency,
+            min_topology_hops=min_topology_hops,
+        )
         if reason:
             rejected.append(
                 {
@@ -178,11 +196,27 @@ def _route_for(req: ExpressLaneRequest, edge: ExpressLaneEdge) -> dict[str, Any]
     }
 
 
-def _edge_rejection_reason(req: ExpressLaneRequest, edge: ExpressLaneEdge) -> str:
+def _edge_rejection_reason(
+    req: ExpressLaneRequest,
+    edge: ExpressLaneEdge,
+    *,
+    known_adjacency: Mapping[str, set[str]] | None = None,
+    min_topology_hops: int = 2,
+) -> str:
     if edge.source_cell_id != req.source_cell_id:
         return "source_cell_mismatch"
     if edge.target_cell_id == req.source_cell_id:
         return "target_is_source_cell"
+    if known_adjacency is not None:
+        distance = _topology_distance_hops(
+            known_adjacency,
+            edge.source_cell_id,
+            edge.target_cell_id,
+        )
+        if distance is None:
+            return "target_unreachable"
+        if distance < min_topology_hops:
+            return "target_not_distant"
     if not edge.receipt_required:
         return "receipt_not_required"
     if not edge.no_runtime_mutation:
@@ -418,6 +452,67 @@ def _normalize_known_cells(values: Sequence[str] | None) -> set[str] | None:
         _validate_cell_id(value, "known_cell_id")
         result.add(value)
     return result
+
+
+def _normalize_known_adjacency(
+    values: Mapping[str, Sequence[str]] | None,
+) -> tuple[dict[str, set[str]] | None, set[str]]:
+    if values is None:
+        return None, set()
+    if not isinstance(values, Mapping):
+        raise HexExpressLaneError("known_adjacency must be an object")
+    normalized: dict[str, set[str]] = {}
+    all_cells: set[str] = set()
+    for raw_cell, raw_neighbors in values.items():
+        if not isinstance(raw_cell, str):
+            raise HexExpressLaneError("known_adjacency cell ids must be strings")
+        _validate_cell_id(raw_cell, "known_adjacency cell_id")
+        if (
+            isinstance(raw_neighbors, (str, bytes))
+            or not isinstance(raw_neighbors, Sequence)
+        ):
+            raise HexExpressLaneError(
+                "known_adjacency neighbors must be lists of strings"
+            )
+        cell = raw_cell
+        neighbors: set[str] = set()
+        for raw_neighbor in raw_neighbors:
+            if not isinstance(raw_neighbor, str):
+                raise HexExpressLaneError(
+                    "known_adjacency neighbors must contain only strings"
+                )
+            _validate_cell_id(raw_neighbor, "known_adjacency neighbor_cell_id")
+            if raw_neighbor == cell:
+                raise HexExpressLaneError(
+                    "known_adjacency cannot contain self-neighbor edges"
+                )
+            neighbors.add(raw_neighbor)
+            all_cells.add(raw_neighbor)
+        normalized[cell] = neighbors
+        all_cells.add(cell)
+    return normalized, all_cells
+
+
+def _topology_distance_hops(
+    adjacency: Mapping[str, set[str]],
+    source_cell_id: str,
+    target_cell_id: str,
+) -> int | None:
+    if source_cell_id == target_cell_id:
+        return 0
+    visited = {source_cell_id}
+    frontier = [(source_cell_id, 0)]
+    index = 0
+    while index < len(frontier):
+        cell, distance = frontier[index]
+        index += 1
+        for neighbor in sorted(adjacency.get(cell, set())):
+            if neighbor == target_cell_id:
+                return distance + 1
+            if neighbor not in visited:
+                visited.add(neighbor)
+                frontier.append((neighbor, distance + 1))
+    return None
 
 
 def _compute_plan_id(plan: Mapping[str, Any]) -> str:

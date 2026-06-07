@@ -1070,7 +1070,9 @@ def test_cli_admission_status_json_reports_ready_without_full_replay_plan(
     assert "admission_contract" not in payload
     serialized = json.dumps(payload, sort_keys=True)
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert "private runtime query" not in serialized
+    assert "context secret" not in serialized
+    assert ("DO" + "_NOT" + "_LEAK") not in serialized
 
 
 def test_cli_admission_status_json_failure_reports_rejected_status(

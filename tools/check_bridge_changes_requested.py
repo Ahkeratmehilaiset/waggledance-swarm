@@ -264,9 +264,18 @@ def _status_tokens(status: str) -> set[str]:
     }
 
 
+def _is_no_changes_requested_status(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    return normalized == "no_changes_requested" or normalized.startswith(
+        "no_changes_requested_"
+    )
+
+
 def _is_blocking_status(status: str) -> bool:
     if status in BLOCKING_STATUSES:
         return True
+    if _is_no_changes_requested_status(status):
+        return False
     tokens = _status_tokens(status)
     if {"changes", "requested"}.issubset(tokens):
         return True

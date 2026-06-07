@@ -1197,6 +1197,11 @@ def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
 def _is_consensus_block(status: str) -> bool:
     if status in CONSENSUS_BLOCKING_STATUSES:
         return True
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if normalized == "no_changes_requested" or normalized.startswith(
+        "no_changes_requested_"
+    ):
+        return False
     tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
     if {"changes", "requested"}.issubset(tokens):
         return True

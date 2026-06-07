@@ -230,6 +230,29 @@ def test_changes_requested_clear_status_still_blocks() -> None:
     assert result["latest_blocking_event"]["status"] == "changes_requested_clear_preflight"
 
 
+def test_no_changes_requested_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-07T17:38:40Z",
+            "codex-tools-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-07T17:39:47Z",
+            "codex-tools-1",
+            "test",
+            "no_changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
 def test_veto_statuses_with_negation_words_still_block() -> None:
     for status in [
         "changes_requested_do_not_merge",

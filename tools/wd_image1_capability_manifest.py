@@ -45,6 +45,9 @@ from tools.build_runtime_gap_scheduler_candidate_artifact import (  # noqa: E402
     build_runtime_gap_scheduler_candidate_artifact,
     validate_runtime_gap_scheduler_candidate_artifact,
 )
+from tools.build_runtime_gap_scheduler_candidate_bridge_event_template import (  # noqa: E402
+    build_runtime_gap_scheduler_candidate_bridge_event_template,
+)
 from tools.run_runtime_gap_detector_report import (  # noqa: E402
     build_runtime_gap_detector_report,
 )
@@ -7000,6 +7003,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/build_runtime_gap_scheduler_candidate_artifact.py",
                 "Path-free scheduler-candidate preview artifact renderer for validated runtime gap reports; no enqueue, scheduler tick, bridge write, or fast-track gate skip.",
             ),
+            (
+                "tools/build_runtime_gap_scheduler_candidate_bridge_event_template.py",
+                "Template-only bridge-event renderer for runtime gap scheduler-candidate previews; no append, scheduler enqueue, scheduler tick, fast-track priority, or gate skip.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -7207,6 +7214,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_scheduler_candidate_artifact = (
         build_runtime_gap_scheduler_candidate_artifact(low_risk_gap_report)
     )
+    low_risk_scheduler_candidate_bridge_event_template = (
+        build_runtime_gap_scheduler_candidate_bridge_event_template(
+            artifact=low_risk_scheduler_candidate_artifact,
+            agent_id="codex-lead-1",
+            task_id="wd-image1-runtime-gap-candidate-template",
+            to="operator,claude-rco-1,codex-tools-1",
+            role="lead-impl",
+        )
+    )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
@@ -7214,6 +7230,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_autonomy_proof["runtime_gap_report"] = low_risk_gap_report
     low_risk_autonomy_proof["scheduler_candidate_artifact_preview"] = (
         low_risk_scheduler_candidate_artifact
+    )
+    low_risk_autonomy_proof["scheduler_candidate_bridge_event_template"] = (
+        low_risk_scheduler_candidate_bridge_event_template
     )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
@@ -7225,6 +7244,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             low_risk_scheduler_candidate_artifact
         )
         == []
+        and low_risk_scheduler_candidate_bridge_event_template.get("ok") is True
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
@@ -7472,7 +7492,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "state, an optional sanitized Alertmanager alert feed, "
                 "fixed-label feed provider-health metrics, operator alert "
                 "thresholds, a read-only runtime gap detector report, and a "
-                "path-free scheduler-candidate preview artifact; "
+                "path-free scheduler-candidate preview artifact plus a "
+                "template-only bridge-event renderer for that preview; "
                 "unrestricted runtime authority is not claimed."
             ),
             status=_status_for(autogrowth_evidence),
@@ -7502,11 +7523,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "The runtime gap scheduler-candidate artifact is preview-only; "
                 "it does not enqueue growth intents, run the scheduler, append "
                 "bridge events, or grant fast-track gate skips.",
+                "The runtime gap scheduler-candidate bridge-event renderer is "
+                "template-only; it does not append the event, transport the "
+                "artifact payload, enqueue the scheduler, or grant authority.",
             ),
             next_smallest_pr=(
-                "Add a template-only bridge-event renderer for the runtime gap "
-                "scheduler-candidate preview without appending it or granting "
-                "scheduler authority."
+                "Add a local index entry for the runtime gap scheduler-candidate "
+                "bridge-event template without appending it, transporting the "
+                "artifact payload, or granting scheduler authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

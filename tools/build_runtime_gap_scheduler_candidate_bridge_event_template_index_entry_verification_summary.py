@@ -77,6 +77,9 @@ _VERIFICATION_FALSE_FIELDS = (
     "artifact_payloads_included",
     "local_paths_recorded",
 )
+_NESTED_AUTHORITY_FALSE_FIELDS = frozenset(
+    (*AUTHORITY_FALSE_FIELDS, *_VERIFICATION_FALSE_FIELDS)
+)
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {
         "payload",
@@ -553,7 +556,11 @@ def _input_key_boundary_blockers(
         blockers.append(f"verification_report_forbidden_path_key:{key}")
     if key in _FORBIDDEN_AUTHORITY_CONTAINER_KEYS:
         blockers.append(f"verification_report_forbidden_authority_container:{key}")
-    if parent_path and key in AUTHORITY_FALSE_FIELDS and value is not False:
+    if (
+        parent_path
+        and key in _NESTED_AUTHORITY_FALSE_FIELDS
+        and value is not False
+    ):
         blockers.append(
             f"verification_report_nested_authority_field_not_false:{key}"
         )

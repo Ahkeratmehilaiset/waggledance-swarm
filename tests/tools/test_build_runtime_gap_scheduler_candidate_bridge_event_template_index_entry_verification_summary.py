@@ -197,6 +197,35 @@ def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_reject
     assert summary["runtime_authority_granted"] is False
 
 
+def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_rejects_nested_summary_authority_fields() -> None:
+    verification_report = _verification_report()
+    verification_report["nested"] = {
+        "automatic_release_decision": True,
+        "network_access_performed": True,
+    }
+
+    summary = build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry_verification_summary(
+        verification_report=verification_report,
+        reviewer_agent_id="codex-lead-1",
+        handoff_ref="runtime-gap-summary-review",
+        now_utc=FIXED_NOW,
+    )
+
+    assert summary["ok"] is False
+    assert (
+        "verification_report_nested_authority_field_not_false:"
+        "automatic_release_decision"
+        in summary["blockers"]
+    )
+    assert (
+        "verification_report_nested_authority_field_not_false:"
+        "network_access_performed"
+        in summary["blockers"]
+    )
+    assert summary["automatic_release_decision"] is False
+    assert summary["network_access_performed"] is False
+
+
 def test_runtime_gap_scheduler_candidate_index_entry_verification_summary_rejects_nested_authority_container() -> None:
     verification_report = _verification_report()
     verification_report["nested"] = {

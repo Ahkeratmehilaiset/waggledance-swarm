@@ -478,6 +478,7 @@ def _wd_signals(
             a4.get("solver_growth_proven")
             and hex_probe["authority_status"]
             == HEX_CELL_COMPETITION_AUTHORITY_STATUS
+            and not hex_probe["runtime_authority_granted"]
             and not hex_probe["runtime_traffic_mutation_applied"]
             and not hex_probe["candidate_state_mutation_applied"]
         ),

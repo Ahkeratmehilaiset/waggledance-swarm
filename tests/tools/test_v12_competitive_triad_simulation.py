@@ -262,22 +262,25 @@ def test_render_markdown_carries_scope_and_next_100h() -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "expected_blocker"),
+    ("field", "value", "expected_blocker", "expect_solver_growth_blocked"),
     [
         (
             "receipt_bound_activation_verified",
             False,
             "hex_promotion_lifecycle_not_receipt_bound",
+            False,
         ),
         (
             "runtime_authority_granted",
             True,
             "hex_promotion_lifecycle_runtime_authority_granted",
+            True,
         ),
         (
             "promotion_acceptance_status",
             "runtime_authority_granted",
             "hex_promotion_lifecycle_acceptance_status_drift",
+            False,
         ),
     ],
 )
@@ -286,6 +289,7 @@ def test_hex_promotion_lifecycle_drift_is_blocked(
     field: str,
     value: object,
     expected_blocker: str,
+    expect_solver_growth_blocked: bool,
 ) -> None:
     probe = triad._build_hex_competition_probe()
     probe[field] = value
@@ -300,6 +304,17 @@ def test_hex_promotion_lifecycle_drift_is_blocked(
 
     assert report["ok"] is False
     assert expected_blocker in report["blockers"]
+    solver_growth = {
+        row["scenario_id"]: row
+        for row in report["scenarios"]
+    }["solver_growth_hex_competition"]
+    if expect_solver_growth_blocked:
+        assert report["wd_signals"]["a4_solver_growth_hex_non_authority"] is False
+        assert solver_growth["wd_status"] == "blocked"
+        assert (
+            "solver_growth_hex_competition"
+            not in report["wd_local_evidence_only_scenarios"]
+        )
 
 
 def test_cli_json_reports_real_triad_simulation() -> None:

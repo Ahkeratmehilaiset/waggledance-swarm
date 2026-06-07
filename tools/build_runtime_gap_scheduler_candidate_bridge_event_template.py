@@ -460,9 +460,11 @@ def _candidate_contract_errors(index: int, candidate: Mapping[str, Any]) -> list
         errors.append(f"scheduler_candidates[{index}] ready with blockers")
     if not is_low_risk_family(str(candidate.get("family_kind", ""))):
         errors.append(f"scheduler_candidates[{index}].family_kind not low-risk")
-    for field in ("source_report_digest", "candidate_digest", "spec_seed_digest"):
+    for field in ("source_report_digest", "candidate_digest"):
         if not _is_sha256_ref(candidate.get(field)):
             errors.append(f"scheduler_candidates[{index}].{field} invalid")
+    if not _is_digest_hex(candidate.get("spec_seed_digest")):
+        errors.append(f"scheduler_candidates[{index}].spec_seed_digest invalid")
     if not _is_safe_candidate_id(candidate.get("candidate_id")):
         errors.append(f"scheduler_candidates[{index}].candidate_id invalid")
     for field in ("signal_count", "priority_weight"):

@@ -204,6 +204,26 @@ def _measured_counterfactual_receipt() -> dict:
     }
 
 
+def _raw_counterfactual_delta_with_authority_drift() -> dict:
+    core = {
+        "schema_version": "magma.counterfactual_delta.v0",
+        "candidate_hash": "sha256:" + "a" * 64,
+        "incumbent_hash": "sha256:" + "b" * 64,
+        "sample_count": 20,
+        "candidate_sample_set_digest": "sha256:" + "c" * 64,
+        "incumbent_sample_set_digest": "sha256:" + "c" * 64,
+        "oracle_kind": "formula_recompute",
+        "deterministic": True,
+        "divergence_count": 3,
+        "no_delta": False,
+        "controls_present": True,
+        "runtime_authority_granted": True,
+        "external_writes_applied": True,
+        "payload_fields_exported": True,
+    }
+    return {**core, "canonical_digest": sha256_digest(core)}
+
+
 def test_soft_consensus_writes_operator_review_artifact(tmp_path: Path) -> None:
     report = _write_artifact(tmp_path, _soft_events())
 
@@ -550,6 +570,40 @@ def test_candidate_diff_replay_admission_blocks_authority_drift_receipt(
     assert summary["runtime_authority_granted"] is True
     assert summary["external_writes_applied"] is True
     assert summary["satisfies_replay_gate"] is False
+    assert summary["observability"]["controls_present"] is True
+    assert summary["observability"]["runtime_authority_granted"] is True
+    assert summary["observability"]["external_writes_applied"] is True
+    assert summary["observability"]["payload_fields_exported"] is True
+    assert admission["draft_pr_gate_blockers"] == [
+        "counterfactual_eval_receipt_insufficient",
+        "operator_review_gate_required",
+    ]
+    assert admission["next_required_gates"][0] == "counterfactual_eval_receipt"
+    assert admission["eligible_for_draft_pr_gate"] is False
+
+
+def test_candidate_diff_replay_admission_blocks_raw_delta_authority_drift(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        candidate_diff_text=(
+            "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+            "b/docs/architecture/consensus_artifacts/replay.md\n"
+        ),
+        counterfactual_eval_receipt=_raw_counterfactual_delta_with_authority_drift(),
+    )
+    summary = admission["counterfactual_eval"]
+
+    assert summary["provided"] is True
+    assert summary["runtime_authority_granted"] is True
+    assert summary["external_writes_applied"] is True
+    assert summary["satisfies_replay_gate"] is False
+    assert summary["observability"]["status"] == "runtime_measured"
     assert summary["observability"]["controls_present"] is True
     assert summary["observability"]["runtime_authority_granted"] is True
     assert summary["observability"]["external_writes_applied"] is True

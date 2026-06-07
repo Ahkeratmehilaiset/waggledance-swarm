@@ -238,6 +238,12 @@ def summarize_counterfactual_observability(
             deterministic=snapshot.get("deterministic") is True,
             no_delta=snapshot.get("no_delta") is True,
             delta_digest_present=bool(snapshot.get("canonical_digest")),
+            controls_present=snapshot.get("controls_present") is True,
+            runtime_authority_granted=(
+                snapshot.get("runtime_authority_granted") is True
+            ),
+            external_writes_applied=snapshot.get("external_writes_applied") is True,
+            payload_fields_exported=snapshot.get("payload_fields_exported") is True,
         )
 
     compute_status = str(snapshot.get("status") or "unknown")

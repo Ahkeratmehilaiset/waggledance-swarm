@@ -228,7 +228,7 @@ def build_pr_status_snapshot(
 
 
 def _gh_pr_view_command(*, pr_number: int, repo: str) -> list[str]:
-    command = ["gh", "pr", "view", str(pr_number), "--json", GH_JSON_FIELDS]
+    command = ["gh", "pr", "view", str(pr_number), "--json", f"{GH_JSON_FIELDS},state"]
     if repo:
         command.extend(["--repo", repo])
     return command
@@ -281,6 +281,7 @@ def _normalize_snapshot(
         "head_ref": str(raw.get("headRefName", "")),
         "base_sha": base_sha,
         "mergeable": str(raw.get("mergeable", "")),
+        "state": str(raw.get("state", "")),
         "is_draft": bool(raw.get("isDraft", False)),
         "url": str(raw.get("url", "")),
         "review_decision": str(raw.get("reviewDecision", "")),

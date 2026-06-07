@@ -26,6 +26,7 @@ def _gh_payload(**overrides) -> dict:
         "headRefName": "codex/idle-consensus-auto-merge-v1-20260518",
         "baseRefOid": BASE,
         "mergeable": "MERGEABLE",
+        "state": "OPEN",
         "isDraft": False,
         "url": "https://github.example/pr/479",
         "reviewDecision": "APPROVED",
@@ -68,6 +69,7 @@ def _runner(
 
 def test_snapshot_uses_structured_gh_json_fields() -> None:
     calls, runner = _runner()
+    expected_json_fields = f"{GH_JSON_FIELDS},state"
 
     snapshot = build_pr_status_snapshot(
         pr_number=479,
@@ -84,7 +86,7 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
             "view",
             "479",
             "--json",
-            GH_JSON_FIELDS,
+            expected_json_fields,
             "--repo",
             "Ahkeratmehilaiset/waggledance-swarm",
         ],
@@ -103,7 +105,7 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
             "view",
             "479",
             "--json",
-            GH_JSON_FIELDS,
+            expected_json_fields,
             "--repo",
             "Ahkeratmehilaiset/waggledance-swarm",
         ],
@@ -111,6 +113,7 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
     assert snapshot["pr_number"] == 479
     assert snapshot["head_sha"] == HEAD
     assert snapshot["base_sha"] == BASE
+    assert snapshot["state"] == "OPEN"
     assert snapshot["operator_approved"] is True
     assert snapshot["receipt_verified"] is True
     assert snapshot["checks"] == [

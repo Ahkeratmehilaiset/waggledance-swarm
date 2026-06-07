@@ -17,7 +17,9 @@ This tool fills that gap. It refuses if a peer has emitted a
 ``decision`` event with a blocking status (``changes_requested``,
 ``rco_block``, ``blocked``) for the given task_id AFTER the most recent
 RCO pass / acknowledgement event from the SAME peer (so a fresh approval
-overrides an older block).
+overrides an older block). Build-consensus pass events also clear an older
+block from the same peer; this keeps the peer-veto gate aligned with the
+promotion-consensus vocabulary.
 
 Designed to be called BEFORE ``gh pr merge --squash --match-head-commit`` and
 ANDed with ``tools/check_rco_pass_present.py``. Absence of a peer block is not
@@ -57,6 +59,7 @@ APPROVAL_STATUSES = frozenset(
         "rco_pass",
         "rco_pass_pending_ci",
         "rco_pass_operator_merge_required",
+        "build_consensus_pass",
         "approved",
         "approved_ci_green",
         "acknowledged",

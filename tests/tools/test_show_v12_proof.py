@@ -44,6 +44,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "A4 SOLVER LIFECYCLE RECEIPTS",
         "A4 AUTOGROWTH LIFECYCLE RECEIPTS",
         "A4 AUTOGROWTH SOAK FIXTURE RECEIPTS",
+        "MEMORY PALACE SHORTCUTS",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -65,6 +66,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert "a4_solver_lifecycle" in payload
     assert "a4_autogrowth_lifecycle" in payload
     assert "a4_autogrowth_soak_fixture" in payload
+    assert "memory_palace_shortcuts" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -277,6 +279,43 @@ def test_text_output_separates_synthetic_a4_axis_from_lifecycle_path() -> None:
     assert "not long-running production auto-promotion authority" in result.stdout
     assert "A4 AUTOGROWTH SOAK FIXTURE RECEIPTS" in result.stdout
     assert "not release soak evidence" in result.stdout
+
+
+def test_memory_palace_shortcut_section_reports_read_side_projection() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    palace = payload["memory_palace_shortcuts"]
+
+    assert palace["available"] is True, palace
+    assert palace["ok"] is True, palace
+    assert palace["schema_version"] == "memory_palace_projection.v1"
+    assert palace["source_of_truth"] == "projection_only"
+    assert palace["node_count"] == 6
+    assert palace["placement_count"] == 1
+    assert palace["shortcut_hint_count"] >= 2
+    assert palace["ranked_candidate_count"] >= 2
+    assert palace["memory_id"] == "memory.learning.imaging.1"
+    assert palace["top_candidate_target"] in {
+        "room.research.pathology",
+        "room.system.statistics",
+    }
+    assert palace["top_candidate_rank_score"] > 0
+    assert palace["top_candidate_hierarchy_hops"] == 3
+    assert "tags" in palace["top_candidate_matched_selector_keys"]
+    assert palace["authority_flags_false"] is True
+    assert "projection-only local fixture" in palace["evidence_scope"]
+    assert "not router/solver dispatch" in palace["evidence_scope"]
+
+
+def test_memory_palace_shortcut_text_keeps_no_authority_boundary() -> None:
+    result = _run()
+
+    assert result.returncode in {0, 1}, result.stderr
+    assert "MEMORY PALACE SHORTCUTS" in result.stdout
+    assert "read-side shortcut ranking" in result.stdout
+    assert "source of truth                : projection_only" in result.stdout
+    assert "authority flags false          : True" in result.stdout
+    assert "not router/solver dispatch" in result.stdout
 
 
 def test_governance_throughput_section_reports_status_counts() -> None:

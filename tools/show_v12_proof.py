@@ -49,6 +49,14 @@ RECEIPT_OK_STATUSES = frozenset({"receipt_bound", "receipt_capable_opt_in"})
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from waggledance.core.memory_palace import (  # noqa: E402
+    MemoryPlacement,
+    PalaceNode,
+    build_memory_palace_projection,
+    derive_shortcut_hints,
+    rank_shortcut_candidates_for_memory,
+)
+
 
 PILOT_MD_PATH = ROOT / "docs" / "benchmarks" / "2026_05_20_competitor_axis_pilot.md"
 PILOT_JSON_PATH = ROOT / "docs" / "benchmarks" / "2026_05_20_competitor_axis_pilot.json"
@@ -142,6 +150,7 @@ def collect_proof(
     a4_autogrowth_soak_report = _run_proof_tool_with_receipt(
         A4_AUTOGROWTH_SOAK_FIXTURE_PROOF
     )
+    memory_palace_shortcuts = _read_memory_palace_shortcut_summary()
     governance_args = ["--json"]
     if governance_events is not None:
         governance_args.extend(["--events", str(governance_events)])
@@ -173,6 +182,7 @@ def collect_proof(
         and a4_lifecycle_report.get("ok") is True
         and a4_autogrowth_report.get("ok") is True
         and a4_autogrowth_soak_report.get("ok") is True
+        and memory_palace_shortcuts.get("ok") is True
         and high_gap == 0
     )
 
@@ -221,6 +231,7 @@ def collect_proof(
         "a4_autogrowth_soak_fixture": _summarize_a4_autogrowth_soak_fixture(
             a4_autogrowth_soak_report
         ),
+        "memory_palace_shortcuts": memory_palace_shortcuts,
         "governance_throughput": _summarize_governance_throughput(governance),
         "competitor_pilot": pilot,
         "substrate_velocity": velocity,
@@ -433,6 +444,37 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("A4 AUTOGROWTH SOAK FIXTURE       : tool unavailable")
 
+    palace = report["memory_palace_shortcuts"]
+    lines.append("")
+    if palace["available"]:
+        lines.append(
+            "MEMORY PALACE SHORTCUTS  "
+            "(waggledance/core/memory_palace/projection.py)"
+        )
+        marker = "OK " if palace["ok"] else "** "
+        lines.append(
+            f"  {marker}read-side shortcut ranking    : {palace['ok']}"
+        )
+        lines.append(f"     evidence scope                 : {palace['evidence_scope']}")
+        lines.append(f"     source of truth                : {palace['source_of_truth']}")
+        lines.append(
+            "     nodes / placements / hints     : "
+            f"{palace['node_count']} / {palace['placement_count']} / "
+            f"{palace['shortcut_hint_count']}"
+        )
+        lines.append(f"     source memory                  : {palace['memory_id']}")
+        lines.append(f"     top target                     : {palace['top_candidate_target']}")
+        lines.append(f"     rank score                     : {palace['top_candidate_rank_score']}")
+        lines.append(
+            f"     hierarchy hops                 : "
+            f"{palace['top_candidate_hierarchy_hops']}"
+        )
+        lines.append(
+            f"     authority flags false          : {palace['authority_flags_false']}"
+        )
+    else:
+        lines.append("MEMORY PALACE SHORTCUTS          : projection unavailable")
+
     gov = report["governance_throughput"]
     lines.append("")
     if gov["available"]:
@@ -511,6 +553,7 @@ def format_proof(report: dict[str, Any]) -> str:
         "  python tools/run_autogrowth_receipt_soak_harness.py "
         "--out-dir <new-output-dir> --json"
     )
+    lines.append("  python -m pytest tests/core/test_memory_palace_projection.py -q")
     lines.append("  python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>")
     lines.append(
         "  python tools/run_v12_rival_local_check_matrix.py "
@@ -760,6 +803,133 @@ def _summarize_governance_throughput(
         "task_count_in_window": int(report.get("task_count_in_window") or 0),
         "window_label": report.get("window_label") or "unknown",
         "status_counts": status_counts,
+    }
+
+
+def _read_memory_palace_shortcut_summary() -> dict[str, Any]:
+    memory_id = "memory.learning.imaging.1"
+    try:
+        nodes = [
+            PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+            PalaceNode(
+                node_id="room.learning.imaging",
+                kind="room",
+                label="Imaging cases",
+                parent_id="wing.learning",
+                selectors={
+                    "tags": ["segmentation", "cell_imaging"],
+                    "vector_kind": ["claim"],
+                    "capsule_context": ["research"],
+                },
+            ),
+            PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+            PalaceNode(
+                node_id="room.research.pathology",
+                kind="room",
+                label="Pathology expertise",
+                parent_id="wing.research",
+                selectors={
+                    "tags": ["segmentation", "pathology"],
+                    "vector_kind": ["claim"],
+                },
+            ),
+            PalaceNode(node_id="wing.system", kind="wing", label="System"),
+            PalaceNode(
+                node_id="room.system.statistics",
+                kind="room",
+                label="Statistics expertise",
+                parent_id="wing.system",
+                selectors={
+                    "tags": ["segmentation"],
+                    "vector_kind": ["claim"],
+                },
+            ),
+        ]
+        shortcuts = derive_shortcut_hints(
+            nodes,
+            min_shared_selector_keys=1,
+            min_hierarchy_hops=3,
+            max_hints_per_source=3,
+        )
+        projection = build_memory_palace_projection(
+            nodes,
+            placements=[
+                MemoryPlacement(
+                    memory_id=memory_id,
+                    palace_node_id="room.learning.imaging",
+                    confidence=0.8,
+                    placement_source="manual",
+                    vector_node_id="vector.memory.learning.imaging.1",
+                    dedup_anchor="sha256:memory_learning_imaging_1",
+                )
+            ],
+            shortcuts=shortcuts,
+        )
+        candidates = rank_shortcut_candidates_for_memory(projection, memory_id)
+    except Exception as exc:  # pragma: no cover - exercised by CLI failure mode.
+        return {
+            "available": False,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "source_of_truth": "unavailable",
+            "node_count": 0,
+            "placement_count": 0,
+            "shortcut_hint_count": 0,
+            "ranked_candidate_count": 0,
+            "memory_id": memory_id,
+            "top_candidate_target": "unavailable",
+            "top_candidate_rank_score": 0.0,
+            "top_candidate_hierarchy_hops": 0,
+            "authority_flags_false": False,
+            "evidence_scope": "unavailable",
+        }
+
+    top = candidates[0] if candidates else {}
+    projection_authority_fields = (
+        "runtime_authority",
+        "storage_write_authority",
+        "bridge_write_authority",
+        "gate_skip_authority",
+        "promotion_authority",
+    )
+    candidate_authority_fields = (
+        "runtime_authority",
+        "storage_write_authority",
+        "bridge_write_authority",
+        "gate_skip_authority",
+        "promotion_authority",
+        "solver_call_authority",
+    )
+    authority_flags_false = (
+        all(projection.get(field) is False for field in projection_authority_fields)
+        and all(
+            candidate.get("no_runtime_mutation") is True
+            and all(
+                candidate.get(field) is False
+                for field in candidate_authority_fields
+            )
+            for candidate in candidates
+        )
+    )
+    return {
+        "available": True,
+        "ok": bool(candidates) and authority_flags_false,
+        "schema_version": projection["schema_version"],
+        "source_of_truth": projection["source_of_truth"],
+        "node_count": len(projection["nodes"]),
+        "placement_count": len(projection["placements"]),
+        "shortcut_hint_count": len(projection["shortcuts"]),
+        "ranked_candidate_count": len(candidates),
+        "memory_id": memory_id,
+        "top_candidate_target": top.get("target_node_id", "none"),
+        "top_candidate_rank_score": top.get("rank_score", 0.0),
+        "top_candidate_hierarchy_hops": top.get("hierarchy_hops", 0),
+        "top_candidate_matched_selector_keys": top.get("matched_selector_keys", []),
+        "authority_flags_false": authority_flags_false,
+        "evidence_scope": (
+            "projection-only local fixture; read-side shortcut hinting only; "
+            "not router/solver dispatch, not storage mutation, not promotion authority"
+        ),
     }
 
 

@@ -88,3 +88,41 @@ def test_off_allowlist_change_stays_operator_gated_even_with_full_consensus(
         reason.startswith("path gate failed: paths not on allowlist")
         for reason in report["reasons"]
     )
+
+
+def test_gate_skip_claim_stays_operator_gated_even_on_allowlist_with_consensus(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            diff_text=(
+                "diff --git a/tests/tools/test_operator_gate_regression.py "
+                "b/tests/tools/test_operator_gate_regression.py\n"
+                "--- a/tests/tools/test_operator_gate_regression.py\n"
+                "+++ b/tests/tools/test_operator_gate_regression.py\n"
+                "@@ -1,2 +1,4 @@\n"
+                "+ gate_skip = True\n"
+                "+ fast_track_grants_runtime_authority = true\n"
+            ),
+        ),
+        expected_head=HEAD,
+        consensus_proposal_id=TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _full_bridge_consensus()),
+        require_bridge_consensus=True,
+    )
+
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["rco_pass_gate"]["ok"] is True
+    assert report["path_gate"]["allowed"] is True
+    assert report["diff_gate"]["allowed"] is False
+    assert report["ok"] is False
+    assert report["would_merge"] is False
+    assert report["external_effect"] is False
+    assert report["operator_review_required"] is True
+    assert report["decision"] == "operator_review_required"
+    assert any(
+        "gate_skip=True" in hit or "fast_track_grants_runtime_authority=True" in hit
+        for hit in report["diff_gate"]["code_pattern_hits"]
+    )
+    assert "diff gate failed: code pattern denylist hit" in report["reasons"]

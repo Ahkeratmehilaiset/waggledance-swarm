@@ -93,7 +93,10 @@ CONSENSUS_BLOCKING_STATUSES = frozenset(
         "block_requested",
     }
 )
-CONSENSUS_BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
+CONSENSUS_BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
+CONSENSUS_BLOCKING_WORD_TOKENS = frozenset(
+    {"block", "blocked", "blocks", "blocking"}
+)
 
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
@@ -1194,13 +1197,19 @@ def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
 def _is_consensus_block(status: str) -> bool:
     if status in CONSENSUS_BLOCKING_STATUSES:
         return True
-    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
-    has_blocking_shape = {"changes", "requested"}.issubset(tokens) or any(
-        token.startswith("block") for token in tokens
-    )
-    if not has_blocking_shape:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if normalized == "no_changes_requested" or normalized.startswith(
+        "no_changes_requested_"
+    ):
         return False
-    return not tokens.intersection(CONSENSUS_BLOCKING_NEGATION_TOKENS)
+    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+    if {"changes", "requested"}.issubset(tokens):
+        return True
+    if not tokens.intersection(CONSENSUS_BLOCKING_WORD_TOKENS):
+        return False
+    if "preflight" in tokens and tokens.intersection(CONSENSUS_BLOCKING_CLEAR_TOKENS):
+        return False
+    return True
 
 
 def _bridge_peer_gate(

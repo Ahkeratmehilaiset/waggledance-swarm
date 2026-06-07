@@ -94,6 +94,32 @@ def test_build_consensus_pass_clears_same_peer_block() -> None:
     assert result["latest_approval_event"]["status"] == "build_consensus_pass"
 
 
+def test_clear_preflight_status_with_block_context_does_not_override_approval() -> None:
+    events = [
+        _event(
+            "2026-06-07T17:38:40Z",
+            "codex-tools-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-07T17:39:47Z",
+            "codex-tools-1",
+            "test",
+            "peer_block_preflight_clear_after_tools_build_consensus",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-lead-1",
+        pr_number=965,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
 def test_build_consensus_pass_typo_does_not_clear_same_peer_block() -> None:
     events = [
         _event("2026-06-07T03:30:00Z", "codex-tools-1", "finding", "changes_requested"),
@@ -186,6 +212,68 @@ def test_prefixed_changes_requested_status_blocks() -> None:
     )
     assert result["clear_to_merge"] is False
     assert result["latest_blocking_event"]["status"] == "rco_changes_requested_pr530"
+
+
+def test_changes_requested_clear_status_still_blocks() -> None:
+    events = [
+        _event(
+            "2026-06-07T17:39:47Z",
+            "codex-tools-1",
+            "test",
+            "changes_requested_clear_preflight",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested_clear_preflight"
+
+
+def test_no_changes_requested_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-07T17:38:40Z",
+            "codex-tools-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-07T17:39:47Z",
+            "codex-tools-1",
+            "test",
+            "no_changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
+def test_veto_statuses_with_negation_words_still_block() -> None:
+    for status in [
+        "changes_requested_do_not_merge",
+        "blocked_no_fix_yet",
+        "block_without_fix",
+        "rco_block_cleared",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-07T17:39:47Z",
+                    "codex-tools-1",
+                    "test",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
 
 
 def test_append_order_not_timestamp_string_order_decides_latest_signal() -> None:

@@ -34,6 +34,7 @@ PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 SENSITIVE_MARKERS = ("secret", "token", "credential", "password", ".env")
 KIND_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_.:-]{1,64}$")
+BRIDGE_EVENT_CAPABILITY = "bridge_event"
 
 
 class AgentIdentityError(ValueError):
@@ -259,6 +260,8 @@ def validate_profile(profile: Mapping[str, Any]) -> list[str]:
         for capability in capabilities:
             if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
                 errors.append(f"invalid capability: {capability!r}")
+        if BRIDGE_EVENT_CAPABILITY in capabilities and not agent_uuid:
+            errors.append("agent_uuid required for bridge_event capability")
     if profile.get("write_scope_policy") != "claim_required":
         errors.append("write_scope_policy must be claim_required")
     if profile.get("operator_approved") is not False:

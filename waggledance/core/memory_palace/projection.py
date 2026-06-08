@@ -621,6 +621,79 @@ def rank_shortcut_candidates_for_memory(
     )
 
 
+def rank_shortcut_candidates_for_metadata(
+    *,
+    memory_id: str,
+    metadata: Mapping[str, Any],
+    nodes: Sequence[PalaceNode | Mapping[str, Any]],
+    source_node_id: str | None = None,
+    vector_node_id: str | None = None,
+    dedup_anchor: str | None = None,
+    max_candidates: int = 3,
+    min_rank_score: float = 0.0,
+    min_shared_selector_keys: int = 1,
+    min_hierarchy_hops: int = 2,
+    max_hints_per_source: int = 3,
+) -> tuple[dict[str, Any], ...]:
+    """Rank shortcut targets directly from memory/query metadata.
+
+    This is a product-facing read-side adapter over the projection primitives:
+    metadata derives candidate placements, the validated hierarchy derives
+    shortcut hints, and the resulting projection is ranked by the existing
+    memory shortcut reader. It does not mutate storage, append bridge events,
+    dispatch solvers, enqueue schedulers, change routes, skip gates, or grant
+    promotion/runtime authority.
+    """
+
+    if not isinstance(metadata, Mapping):
+        raise MemoryPalaceProjectionError("metadata must be an object")
+    normalized_nodes = validate_palace_hierarchy(nodes)
+    known_node_ids = {node.node_id for node in normalized_nodes}
+    if source_node_id is not None:
+        if not _NODE_ID_RE.fullmatch(source_node_id):
+            raise MemoryPalaceProjectionError(
+                "source_node_id must be a valid palace node_id"
+            )
+        if source_node_id not in known_node_ids:
+            raise MemoryPalaceProjectionError(
+                f"source_node_id references unknown palace node: {source_node_id}"
+            )
+    placements = derive_candidate_placements(
+        memory_id=memory_id,
+        metadata=metadata,
+        nodes=normalized_nodes,
+        vector_node_id=vector_node_id,
+        dedup_anchor=dedup_anchor,
+    )
+    if source_node_id is not None:
+        placements = tuple(
+            placement
+            for placement in placements
+            if placement.palace_node_id == source_node_id
+        )
+    if not placements:
+        return ()
+    shortcuts = derive_shortcut_hints(
+        normalized_nodes,
+        min_shared_selector_keys=min_shared_selector_keys,
+        min_hierarchy_hops=min_hierarchy_hops,
+        max_hints_per_source=max_hints_per_source,
+    )
+    if not shortcuts:
+        return ()
+    projection = build_memory_palace_projection(
+        normalized_nodes,
+        placements=placements,
+        shortcuts=shortcuts,
+    )
+    return rank_shortcut_candidates_for_memory(
+        projection,
+        memory_id,
+        max_candidates=max_candidates,
+        min_rank_score=min_rank_score,
+    )
+
+
 def _coerce_node(value: PalaceNode | Mapping[str, Any]) -> PalaceNode:
     if isinstance(value, PalaceNode):
         return value

@@ -17,6 +17,7 @@ from waggledance.core.memory_palace.projection import (
     build_memory_palace_projection,
     derive_candidate_placements,
     derive_shortcut_hints,
+    rank_shortcut_candidates_for_metadata,
     rank_shortcut_candidates_for_memory,
     validate_palace_hierarchy,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "build_memory_palace_projection",
     "derive_candidate_placements",
     "derive_shortcut_hints",
+    "rank_shortcut_candidates_for_metadata",
     "rank_shortcut_candidates_for_memory",
     "validate_palace_hierarchy",
 ]

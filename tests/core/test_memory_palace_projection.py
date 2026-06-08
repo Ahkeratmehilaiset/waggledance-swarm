@@ -15,6 +15,7 @@ from waggledance.core.memory_palace import (
     build_memory_palace_projection,
     derive_candidate_placements,
     derive_shortcut_hints,
+    rank_shortcut_candidates_for_metadata,
     rank_shortcut_candidates_for_memory,
     validate_palace_hierarchy,
 )
@@ -494,6 +495,175 @@ def test_shortcut_candidate_ranking_validates_mutated_projection_refs() -> None:
         rank_shortcut_candidates_for_memory(
             duplicate_shortcut,
             "memory-imaging-1",
+        )
+
+
+def test_metadata_shortcut_ranking_builds_product_substrate_candidates() -> None:
+    nodes = [
+        PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+        PalaceNode(
+            node_id="room.learning.imaging",
+            kind="room",
+            label="Imaging cases",
+            parent_id="wing.learning",
+            selectors={
+                "tags": ["segmentation", "cell_imaging"],
+                "vector_kind": ["claim"],
+                "capsule_context": ["research"],
+            },
+        ),
+        PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        PalaceNode(
+            node_id="room.research.pathology",
+            kind="room",
+            label="Pathology expertise",
+            parent_id="wing.research",
+            selectors={
+                "tags": ["segmentation", "pathology"],
+                "vector_kind": ["claim"],
+                "capsule_context": ["research"],
+            },
+        ),
+        PalaceNode(node_id="wing.system", kind="wing", label="System"),
+        PalaceNode(
+            node_id="room.system.statistics",
+            kind="room",
+            label="Statistics expertise",
+            parent_id="wing.system",
+            selectors={"tags": ["segmentation"]},
+        ),
+    ]
+
+    candidates = rank_shortcut_candidates_for_metadata(
+        memory_id="memory-imaging-liveish-1",
+        source_node_id="room.learning.imaging",
+        vector_node_id="vector-imaging-liveish-1",
+        dedup_anchor="sha256:imaging-liveish-1",
+        metadata={
+            "tags": ["segmentation", "cell_imaging"],
+            "vector_kind": "claim",
+            "capsule_context": "research",
+        },
+        nodes=nodes,
+        min_hierarchy_hops=3,
+    )
+
+    assert [candidate["target_node_id"] for candidate in candidates] == [
+        "room.research.pathology",
+        "room.system.statistics",
+    ]
+    assert candidates[0]["memory_id"] == "memory-imaging-liveish-1"
+    assert candidates[0]["source_node_id"] == "room.learning.imaging"
+    assert candidates[0]["rank_score"] > candidates[1]["rank_score"]
+    assert candidates[0]["placement_confidence"] == pytest.approx(0.8)
+    assert candidates[0]["shortcut_confidence"] > candidates[1]["shortcut_confidence"]
+    assert candidates[0]["matched_selector_keys"] == [
+        "capsule_context",
+        "tags",
+        "vector_kind",
+    ]
+    assert candidates[0]["no_runtime_mutation"] is True
+    assert candidates[0]["runtime_authority"] is False
+    assert candidates[0]["storage_write_authority"] is False
+    assert candidates[0]["bridge_write_authority"] is False
+    assert candidates[0]["gate_skip_authority"] is False
+    assert candidates[0]["promotion_authority"] is False
+    assert candidates[0]["solver_call_authority"] is False
+
+
+def test_metadata_shortcut_ranking_returns_empty_without_matching_placement() -> None:
+    nodes = [
+        PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+        PalaceNode(
+            node_id="room.learning.imaging",
+            kind="room",
+            label="Imaging cases",
+            parent_id="wing.learning",
+            selectors={"tags": ["cell_imaging"]},
+        ),
+        PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        PalaceNode(
+            node_id="room.research.pathology",
+            kind="room",
+            label="Pathology expertise",
+            parent_id="wing.research",
+            selectors={"tags": ["pathology"]},
+        ),
+    ]
+
+    assert (
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-no-match",
+            metadata={"tags": ["thermodynamics"]},
+            nodes=nodes,
+        )
+        == ()
+    )
+
+
+def test_metadata_shortcut_ranking_fails_closed_on_unsafe_inputs() -> None:
+    nodes = [
+        PalaceNode(node_id="wing.learning", kind="wing", label="Learning"),
+        PalaceNode(
+            node_id="room.learning.imaging",
+            kind="room",
+            label="Imaging cases",
+            parent_id="wing.learning",
+            selectors={"tags": ["cell_imaging"]},
+        ),
+        PalaceNode(node_id="wing.research", kind="wing", label="Research"),
+        PalaceNode(
+            node_id="room.research.pathology",
+            kind="room",
+            label="Pathology expertise",
+            parent_id="wing.research",
+            selectors={"tags": ["cell_imaging"]},
+        ),
+    ]
+
+    with pytest.raises(MemoryPalaceProjectionError, match="metadata"):
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-unsafe",
+            metadata=["cell_imaging"],
+            nodes=nodes,
+        )
+
+    with pytest.raises(MemoryPalaceProjectionError, match="max_candidates"):
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-unsafe",
+            source_node_id="room.learning.imaging",
+            metadata={"tags": ["cell_imaging"]},
+            nodes=nodes,
+            max_candidates=0,
+        )
+
+    with pytest.raises(MemoryPalaceProjectionError, match="unknown palace node"):
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-unsafe",
+            source_node_id="room.unknown.injected",
+            metadata={"tags": ["cell_imaging"]},
+            nodes=nodes,
+        )
+
+    with pytest.raises(MemoryPalaceProjectionError, match="authority flag"):
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-unsafe",
+            metadata={"tags": ["cell_imaging"]},
+            nodes=[
+                PalaceNode(
+                    node_id="wing.learning",
+                    kind="wing",
+                    label="Learning",
+                    metadata={"runtime_authority": False},
+                ),
+                PalaceNode(
+                    node_id="room.learning.imaging",
+                    kind="room",
+                    label="Imaging cases",
+                    parent_id="wing.learning",
+                    selectors={"tags": ["cell_imaging"]},
+                ),
+            ],
         )
 
 

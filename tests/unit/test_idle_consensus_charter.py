@@ -329,6 +329,21 @@ def test_evaluate_diff_content_blocks_lowercase_colon_second_gate_value() -> Non
     assert decision.allowed is False
 
 
+def test_evaluate_diff_content_allows_removed_second_gate_marker_cleanup() -> None:
+    charter = load_charter()
+    old_marker = "operator_gate_required" + "=True"
+    new_marker = "operator_authorization_required" + "=True"
+    diff = f"""diff --git a/tools/runtime_design.py b/tools/runtime_design.py
+--- a/tools/runtime_design.py
++++ b/tools/runtime_design.py
+@@ -1,3 +1,3 @@
+-{old_marker}
++{new_marker}
+ """
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is True
+
+
 def test_evaluate_diff_content_blocks_gate_skip_and_fast_track_authority_claims() -> None:
     charter = load_charter()
     for diff in (
@@ -380,6 +395,19 @@ def test_evaluate_diff_content_blocks_removed_verify_manifest_call() -> None:
     decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is False
     assert any("verify_manifest" in hit for hit in decision.code_pattern_hits)
+
+
+def test_evaluate_diff_content_still_blocks_removed_receipt_guard_call() -> None:
+    charter = load_charter()
+    diff = """diff --git a/tools/example.py b/tools/example.py
+--- a/tools/example.py
++++ b/tools/example.py
+@@ -1,2 +1,1 @@
+-result = write_receipt_bundle(bundle)
+ """
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert any("write_receipt_bundle" in hit for hit in decision.code_pattern_hits)
 
 
 def test_evaluate_diff_content_blocks_receipt_guard_sensitive_path() -> None:

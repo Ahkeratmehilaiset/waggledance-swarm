@@ -25,6 +25,8 @@ REQUIRES_TASK_ID_CASES = [
 ]
 MAIN_SHA = "a" * 40
 PR_HEAD_SHA = "b" * 40
+PROFILE_UUID = "11111111-2222-3333-4444-555555555555"
+OTHER_UUID = "22222222-3333-4444-5555-666666666666"
 
 
 def _powershell() -> str:
@@ -53,6 +55,14 @@ def _run_bridge_script(
     *args: str,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for name in (
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_RUN_ID",
+        "AGENT_BRIDGE_SESSION_ID",
+    ):
+        env.pop(name, None)
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
     return subprocess.run(
         [
@@ -82,6 +92,21 @@ def _grok_freshness_payload(**overrides: object) -> str:
     }
     freshness.update(overrides)
     return json.dumps({"freshness": freshness}, sort_keys=True)
+
+
+def _write_agent_profile(
+    runtime_root: Path,
+    *,
+    agent: str = "codex",
+    agent_uuid: str = PROFILE_UUID,
+) -> None:
+    agents_dir = runtime_root / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{agent}.json").write_text(
+        json.dumps({"agent_id": agent, "agent_uuid": agent_uuid}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize(("event_type", "status"), REQUIRES_TASK_ID_CASES)
@@ -593,6 +618,83 @@ def test_invalid_agent_uuid_fails_before_runtime_write(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "agent_uuid must be a UUID" in completed.stderr
     assert not runtime_root.exists()
+
+
+def test_profile_bound_agent_uuid_required_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    _write_agent_profile(runtime_root)
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "missing profile-bound uuid",
+    )
+
+    assert completed.returncode != 0
+    assert "agent_uuid required by bridge agent profile" in completed.stderr
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+def test_profile_bound_agent_uuid_mismatch_fails_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    _write_agent_profile(runtime_root)
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "wrong profile-bound uuid",
+        "-AgentUuid",
+        OTHER_UUID,
+    )
+
+    assert completed.returncode != 0
+    assert "agent_uuid does not match bridge agent profile" in completed.stderr
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+def test_profile_bound_agent_uuid_match_writes_and_validates(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    _write_agent_profile(runtime_root)
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "matching profile-bound uuid",
+        "-AgentUuid",
+        PROFILE_UUID,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(
+        encoding="utf-8"
+    ).splitlines()[0]
+    event = json.loads(line)
+    assert event["agent_uuid"] == PROFILE_UUID
+    validate_event_line(line, agent_uuid_by_id={"codex": PROFILE_UUID})
 
 
 @pytest.mark.parametrize(

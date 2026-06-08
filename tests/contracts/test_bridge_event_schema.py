@@ -87,6 +87,35 @@ def test_role_uuid_session_and_capabilities_are_valid_optional_metadata() -> Non
     assert model.capabilities == ["bridge_event", "work_queue", "magma.receipt:v1"]
 
 
+def test_profile_bound_agent_uuid_rejects_mismatch() -> None:
+    line = json.dumps(
+        _good_event(
+            agent="codex",
+            agent_uuid="22222222-3333-4444-5555-666666666666",
+        )
+    )
+
+    with pytest.raises(Exception, match="agent_uuid does not match"):
+        validate_event_line(
+            line,
+            agent_uuid_by_id={
+                "codex": "11111111-2222-3333-4444-555555555555",
+            },
+        )
+
+
+def test_profile_bound_agent_uuid_rejects_missing_uuid() -> None:
+    line = json.dumps(_good_event(agent="codex"))
+
+    with pytest.raises(Exception, match="agent_uuid required"):
+        validate_event_line(
+            line,
+            agent_uuid_by_id={
+                "codex": "11111111-2222-3333-4444-555555555555",
+            },
+        )
+
+
 def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
     model = validate_event(_good_event(type="ownership_proposal", status="open"))
 

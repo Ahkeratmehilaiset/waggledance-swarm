@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     register = sub.add_parser("register")
     register.add_argument("--agent", required=True)
     register.add_argument("--kind", required=True)
+    register.add_argument("--agent-uuid", default="")
     register.add_argument("--display-name", default="")
     register.add_argument("--capability", action="append", default=[])
     register.add_argument("--force", action="store_true")
@@ -90,6 +91,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         profile = register_profile(
             agent_id=args.agent,
             kind=args.kind,
+            agent_uuid=args.agent_uuid,
             display_name=args.display_name,
             capabilities=args.capability,
             bridge_root=bridge_root,
@@ -138,6 +140,7 @@ def register_profile(
     *,
     agent_id: str,
     kind: str,
+    agent_uuid: str = "",
     display_name: str = "",
     capabilities: Sequence[str] = (),
     bridge_root: Path | None = None,
@@ -148,11 +151,13 @@ def register_profile(
     bridge = bridge_root or DEFAULT_BRIDGE_ROOT
     _validate_agent_id(agent_id)
     _validate_kind(kind)
+    _validate_agent_uuid(agent_uuid)
     normalized_capabilities = _normalize_capabilities(capabilities)
     _assert_no_private_markers(
         {
             "agent_id": agent_id,
             "kind": kind,
+            "agent_uuid": agent_uuid,
             "display_name": display_name,
             "capabilities": normalized_capabilities,
         }
@@ -178,6 +183,8 @@ def register_profile(
         "created_at_utc": created_at,
         "updated_at_utc": _iso(now_utc or datetime.now(timezone.utc)),
     }
+    if agent_uuid:
+        profile["agent_uuid"] = agent_uuid
     errors = validate_profile(profile)
     if errors:
         raise _error("invalid_profile", "; ".join(errors), 2)
@@ -237,6 +244,9 @@ def validate_profile(profile: Mapping[str, Any]) -> list[str]:
     kind = str(profile.get("kind", ""))
     if not KIND_RE.fullmatch(kind):
         errors.append(f"kind must match {KIND_RE.pattern}")
+    agent_uuid = str(profile.get("agent_uuid", ""))
+    if agent_uuid and not _is_agent_uuid(agent_uuid):
+        errors.append("agent_uuid must be a UUID")
     display_name = str(profile.get("display_name", ""))
     if not display_name.strip():
         errors.append("display_name required")
@@ -318,6 +328,21 @@ def _validate_agent_id(agent_id: str) -> None:
 def _validate_kind(kind: str) -> None:
     if not KIND_RE.fullmatch(kind):
         raise _error("invalid_kind", f"kind must match {KIND_RE.pattern}", 2)
+
+
+def _validate_agent_uuid(agent_uuid: str) -> None:
+    if agent_uuid and not _is_agent_uuid(agent_uuid):
+        raise _error("invalid_agent_uuid", "agent_uuid must be a UUID", 2)
+
+
+def _is_agent_uuid(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            value,
+        )
+    )
 
 
 def _error(decision: str, message: str, exit_code: int) -> AgentIdentityError:

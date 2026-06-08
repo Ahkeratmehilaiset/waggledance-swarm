@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Sequence
 
@@ -13,6 +14,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import (
+    AGENT_ID_PATTERN,
+    AGENT_UUID_PATTERN,
     BridgeEventValidationResult,
     validate_event_file,
 )
@@ -56,6 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable known-invalid historical event waivers.",
     )
     parser.add_argument(
+        "--agent-profiles",
+        type=Path,
+        default=None,
+        help=(
+            "Optional .agent-bridge/agents directory. When supplied, events "
+            "from profiled agents must carry the profile's agent_uuid."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON summary.",
@@ -84,18 +96,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"bridge event schema FAILED: invalid waiver file: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        agent_uuid_by_id = _load_agent_profile_uuids(args.agent_profiles)
+    except ValueError as exc:
+        print(f"bridge event schema FAILED: invalid agent profiles: {exc}", file=sys.stderr)
+        return 2
+
     result = validate_event_file(
         args.events,
         tail=args.tail,
         max_errors=args.max_errors,
         waived_line_sha256=waiver_hashes,
         waived_line_errors=waiver_errors,
+        agent_uuid_by_id=agent_uuid_by_id,
     )
     _print_result(
         result,
         json_output=args.json,
         waivers_path=None if args.no_waivers else args.waivers,
         waivers_loaded=len(waiver_hashes),
+        agent_profiles_path=args.agent_profiles,
+        agent_profiles_loaded=len(agent_uuid_by_id),
     )
     return 0 if result.ok else 1
 
@@ -140,6 +161,38 @@ def _is_sha256_digest(value: str) -> bool:
     return all(char in "0123456789abcdef" for char in value.removeprefix("sha256:"))
 
 
+def _load_agent_profile_uuids(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    if not path.exists():
+        return {}
+    if not path.is_dir():
+        raise ValueError(f"{path}: expected directory")
+    profiles: dict[str, str] = {}
+    for profile_path in sorted(path.glob("*.json")):
+        try:
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{profile_path}: invalid JSON: {exc.msg}") from exc
+        if not isinstance(profile, dict):
+            raise ValueError(f"{profile_path}: profile must be a JSON object")
+        agent_id = profile.get("agent_id")
+        if not isinstance(agent_id, str) or not re.fullmatch(AGENT_ID_PATTERN, agent_id):
+            raise ValueError(f"{profile_path}: agent_id must match bridge agent id")
+        if profile_path.stem != agent_id:
+            raise ValueError(f"{profile_path}: filename must match agent_id")
+        agent_uuid = profile.get("agent_uuid", "")
+        if not agent_uuid:
+            continue
+        if not isinstance(agent_uuid, str) or not re.fullmatch(
+            AGENT_UUID_PATTERN,
+            agent_uuid,
+        ):
+            raise ValueError(f"{profile_path}: agent_uuid must be a UUID")
+        profiles[agent_id] = agent_uuid
+    return profiles
+
+
 def _print_result(
     result: BridgeEventValidationResult,
     *,
@@ -147,6 +200,8 @@ def _print_result(
     missing_path: Path | None = None,
     waivers_path: Path | None = None,
     waivers_loaded: int = 0,
+    agent_profiles_path: Path | None = None,
+    agent_profiles_loaded: int = 0,
 ) -> None:
     payload = result.to_dict()
     if missing_path is not None:
@@ -154,6 +209,9 @@ def _print_result(
     if waivers_path is not None:
         payload["waivers_path"] = str(waivers_path)
         payload["waivers_loaded"] = waivers_loaded
+    if agent_profiles_path is not None:
+        payload["agent_profiles_path"] = str(agent_profiles_path)
+        payload["agent_profiles_loaded"] = agent_profiles_loaded
     if json_output:
         print(json.dumps(payload, sort_keys=True))
         return

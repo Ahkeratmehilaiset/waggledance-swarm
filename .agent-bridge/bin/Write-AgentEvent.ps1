@@ -270,6 +270,38 @@ function Assert-GrokFreshnessPayload {
 
 Assert-GrokFreshnessPayload -Payload $payload
 
+function Assert-AgentUuidMatchesProfile {
+    param([Parameter(Mandatory)] [string] $BridgeRoot)
+    $agentsDir = Join-Path $BridgeRoot 'agents'
+    $profilePath = Join-Path $agentsDir ($Agent + '.json')
+    if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+        return
+    }
+    try {
+        $profile = Get-Content -Raw -Path $profilePath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "bridge agent profile unreadable for agent: $Agent"
+    }
+    $profileAgent = Get-BridgeObjectField -Object $profile -Name 'agent_id'
+    if ($profileAgent -and ([string]$profileAgent -cne $Agent)) {
+        throw "bridge agent profile agent_id mismatch for agent: $Agent"
+    }
+    $expectedUuid = Get-BridgeObjectField -Object $profile -Name 'agent_uuid'
+    if (-not $expectedUuid) {
+        return
+    }
+    $expectedUuidText = [string]$expectedUuid
+    if ($expectedUuidText -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        throw "bridge agent profile agent_uuid must be a UUID for agent: $Agent"
+    }
+    if (-not $AgentUuid) {
+        throw "agent_uuid required by bridge agent profile for agent: $Agent"
+    }
+    if ([string]$AgentUuid -cne $expectedUuidText) {
+        throw "agent_uuid does not match bridge agent profile for agent: $Agent"
+    }
+}
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
@@ -277,6 +309,7 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
 } else {
     Split-Path -Parent $PSScriptRoot
 }
+Assert-AgentUuidMatchesProfile -BridgeRoot $bridgeRoot
 if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
 }

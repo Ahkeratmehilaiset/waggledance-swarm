@@ -151,8 +151,8 @@ def build_memory_palace_read_path_preview(
     authority_violations = _authority_violations(projection)
     if authority_violations:
         blockers.extend(
-            f"authority_effect_flag_not_false:{path}"
-            for path in authority_violations[:10]
+            f"authority_effect_flag_not_false:{field_name}"
+            for field_name in sorted(set(authority_violations))[:10]
         )
 
     nodes = _sequence(projection.get("nodes"))
@@ -449,7 +449,7 @@ def _load_json(path: Path) -> Any:
     try:
         return json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except DuplicateKeyError as exc:
-        raise ValueError(f"projection_json_duplicate_key:{_safe_code(str(exc))}") from exc
+        raise ValueError("projection_json_duplicate_key") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"projection_json_decode_failed:{exc.__class__.__name__}") from exc
 
@@ -570,13 +570,12 @@ def _authority_violations(value: Any, path: str = "$") -> list[str]:
     violations: list[str] = []
     if isinstance(value, Mapping):
         for key, child in value.items():
-            child_path = f"{path}.{key}"
             if str(key) in _AUTHORITY_FIELDS and child is not False:
-                violations.append(child_path)
-            violations.extend(_authority_violations(child, child_path))
+                violations.append(str(key))
+            violations.extend(_authority_violations(child, path))
     elif isinstance(value, list):
-        for index, child in enumerate(value):
-            violations.extend(_authority_violations(child, f"{path}[{index}]"))
+        for child in value:
+            violations.extend(_authority_violations(child, path))
     return violations
 
 

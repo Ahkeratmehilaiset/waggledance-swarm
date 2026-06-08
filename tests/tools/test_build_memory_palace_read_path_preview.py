@@ -134,7 +134,7 @@ def test_preview_fails_closed_on_missing_or_unsafe_input_without_echo() -> None:
     unsafe_projection["runtime_authority"] = True
     preview = build_memory_palace_read_path_preview(unsafe_projection, MEMORY_ID)
     assert preview["ok"] is False
-    assert "authority_effect_flag_not_false:$.runtime_authority" in preview[
+    assert "authority_effect_flag_not_false:runtime_authority" in preview[
         "blockers"
     ]
     assert preview["memory_id"] == ""
@@ -152,6 +152,19 @@ def test_preview_fails_closed_on_missing_or_unsafe_input_without_echo() -> None:
     serialized = json.dumps(preview, sort_keys=True)
     assert "workspace" not in serialized
     assert "source.txt" not in serialized
+
+    raw_key_projection = _projection()
+    raw_key_projection["nodes"][0]["metadata"] = {
+        "/workspace/waggledance/private/raw.json": {"runtime_authority": True}
+    }
+    preview = build_memory_palace_read_path_preview(raw_key_projection, MEMORY_ID)
+    assert preview["ok"] is False
+    assert "authority_effect_flag_not_false:runtime_authority" in preview[
+        "blockers"
+    ]
+    serialized = json.dumps(preview, sort_keys=True)
+    assert "workspace" not in serialized
+    assert "raw.json" not in serialized
 
 
 def test_preview_fails_closed_on_missing_memory_and_bad_candidate_options() -> None:
@@ -247,7 +260,8 @@ def test_cli_fails_closed_on_invalid_json_and_duplicate_keys(tmp_path: Path) -> 
 
     duplicate_path = tmp_path / "duplicate.json"
     duplicate_path.write_text(
-        '{"schema_version":"a","schema_version":"b"}',
+        '{"/workspace/waggledance/private/palace.json":"a",'
+        '"/workspace/waggledance/private/palace.json":"b"}',
         encoding="utf-8",
     )
 
@@ -262,10 +276,11 @@ def test_cli_fails_closed_on_invalid_json_and_duplicate_keys(tmp_path: Path) -> 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
-    assert any(
-        blocker.startswith("projection_json_duplicate_key:")
-        for blocker in payload["blockers"]
-    )
+    assert payload["blockers"] == ["projection_json_duplicate_key"]
+    assert "workspace" not in result.stdout
+    assert "palace.json" not in result.stdout
+    assert "workspace" not in result.stderr
+    assert "palace.json" not in result.stderr
 
 
 def _projection() -> dict[str, object]:

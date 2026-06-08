@@ -280,7 +280,7 @@ def test_dispatch_through_real_router(cp, mined_result):
 
 
 def test_at_least_three_dispatch_cases_per_family_hit(cp, mined_result):
-    """Verify all 18 dispatch cases from the proof harness hit."""
+    """Verify all dispatch cases from the proof harness hit."""
     register_mined_solver_specs(
         candidates=mined_result.candidates, control_plane=cp,
     )
@@ -425,6 +425,9 @@ def test_per_family_dispatch_counts(proof_doc):
     assert set(pfc.keys()) == set(ALLOWED_FAMILIES)
     for fam, n in pfc.items():
         assert n >= 3, f"family {fam}: only {n} cases"
+    assert pfc["bounded_interpolation"] == 4
+    assert pfc["interval_bucket_classifier"] == 4
+    assert pfc["linear_arithmetic"] == 4
 
 
 # ---------------------------------------------------------------------------

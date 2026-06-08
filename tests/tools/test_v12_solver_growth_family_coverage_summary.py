@@ -49,11 +49,12 @@ def test_builds_solver_growth_family_coverage_summary() -> None:
     assert summary["blockers"] == []
     assert summary["source"]["axis_id"] == "A4"
     assert summary["coverage"]["families_covered"] == 6
-    assert summary["coverage"]["dispatch_success_count"] == 18
+    assert summary["coverage"]["dispatch_success_count"] == 21
     assert summary["coverage"]["weakest_family_count"] == 3
     assert summary["portfolio_pressure"]["registered_solver_count"] == 6
     assert summary["portfolio_pressure"]["rejected_registration_count"] == 8
     assert summary["portfolio_pressure"]["candidate_total"] == 14
+    assert summary["growth_targets"][0]["family"] == "lookup_table"
     assert summary["growth_targets"][0]["reason"] == "tie_for_lowest_dispatch_coverage"
     assert summary["authority_boundary"]["read_only_summary"] is True
     assert summary["authority_boundary"]["runtime_authority"] is False
@@ -135,6 +136,7 @@ def test_cli_json_reports_family_coverage() -> None:
     )
     assert payload["ok"] is True
     assert payload["coverage"]["families_covered"] == 6
+    assert payload["coverage"]["dispatch_success_count"] == 21
     assert payload["authority_boundary"]["runtime_authority"] is False
 
 

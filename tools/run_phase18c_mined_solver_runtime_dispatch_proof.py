@@ -197,6 +197,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "example_value": 17},
       "inputs": {"x": 22}, "expected_output": "[20,30)",
       "label": "22_in_third"},
+    {"family_kind": "interval_bucket_classifier",
+      "features": {"buckets": "[0,10),[10,20),[20,30)",
+                    "example_value": 17},
+      "inputs": {"x": 29}, "expected_output": "[20,30)",
+      "label": "29_upper_bucket_heldout"},
 
     # linear_arithmetic
     {"family_kind": "linear_arithmetic",
@@ -214,6 +219,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "example_inputs": {"a": 14, "b": 9}},
       "inputs": {"a": 5.0, "b": 7.0}, "expected_output": 12.0,
       "label": "5_plus_7"},
+    {"family_kind": "linear_arithmetic",
+      "features": {"operator": "add",
+                    "example_inputs": {"a": 14, "b": 9}},
+      "inputs": {"a": -4.0, "b": 11.0}, "expected_output": 7.0,
+      "label": "neg4_plus_11_heldout"},
 
     # bounded_interpolation
     {"family_kind": "bounded_interpolation",
@@ -231,6 +241,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "example_x": 3},
       "inputs": {"x": 10}, "expected_output": 100.0,
       "label": "x_10"},
+    {"family_kind": "bounded_interpolation",
+      "features": {"endpoints": "(0,0)->(10,100)",
+                    "example_x": 3},
+      "inputs": {"x": 7}, "expected_output": 70.0,
+      "label": "x_7_heldout"},
 )
 
 

@@ -159,6 +159,7 @@ FORBIDDEN_INPUT_KEYS = frozenset(
     {
         "matched_values",
         "payload",
+        "payloads",
         "raw_payload",
         "memory_payload",
         "path",
@@ -166,6 +167,8 @@ FORBIDDEN_INPUT_KEYS = frozenset(
         "local_path",
         "local_paths",
         "source_refs",
+        "endpoint",
+        "endpoints",
         "url",
         "uri",
         "href",
@@ -182,6 +185,8 @@ FORBIDDEN_INPUT_KEY_SUFFIXES = (
     "_uris",
     "_href",
     "_hrefs",
+    "_endpoint",
+    "_endpoints",
 )
 FORBIDDEN_INPUT_KEY_PREFIXES = (
     "raw_payload",

@@ -369,6 +369,20 @@ def test_operator_overview_bridge_event_template_rejects_nested_payload_path_url
                 "safe-looking-but-forbidden",
             ),
         ),
+        (
+            "aggregate_payloads",
+            lambda overview: overview["aggregate"].__setitem__(
+                "payloads",
+                [{"value": "do not echo"}],
+            ),
+        ),
+        (
+            "aggregate_endpoint",
+            lambda overview: overview["aggregate"].__setitem__(
+                "endpoint",
+                "safe-looking-but-forbidden",
+            ),
+        ),
     )
 
     for _name, mutate in cases:

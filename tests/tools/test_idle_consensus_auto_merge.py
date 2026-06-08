@@ -599,6 +599,54 @@ def test_bridge_consensus_allows_clear_preflight_status_with_block_context(
     assert report["bridge_consensus"]["ok"] is True
 
 
+def test_bridge_consensus_rejects_build_pass_with_noncanonical_task_id(
+    tmp_path: Path,
+) -> None:
+    canonical_task = "codex-lead-1/v12-solver-growth-coverage-summary-20260608"
+    wrong_task = "codex-lead-1-v12-solver-growth-coverage-summary-20260608"
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            task_id=wrong_task,
+            ts="2026-06-08T02:18:40Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            task_id=canonical_task,
+            ts="2026-06-08T02:22:11Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(task_id=canonical_task),
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=canonical_task,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id=canonical_task,
+        require_bridge_consensus=True,
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_consensus"]["ok"] is False
+    assert (
+        report["bridge_consensus"]["identities"]["build_lead"]["task_id_mismatch"]
+        == wrong_task
+    )
+    assert any(
+        f"non-canonical task_id {wrong_task!r}; expected {canonical_task!r}"
+        in reason
+        for reason in report["bridge_consensus"]["reasons"]
+    )
+
+
 def test_bridge_consensus_allows_no_changes_requested_status(
     tmp_path: Path,
 ) -> None:

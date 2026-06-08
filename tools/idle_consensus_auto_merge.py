@@ -906,6 +906,7 @@ def verify_bridge_consensus(
 
     latest_build_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
     latest_build_block: dict[str, int] = {}
+    latest_build_task_mismatch: dict[str, str] = {}
     latest_rco_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
     latest_rco_block: dict[str, int] = {}
     watched_agents = set(build_expected) | set(recognized_rco_agents)
@@ -953,10 +954,8 @@ def verify_bridge_consensus(
             if agent != author_agent and status in RCO_PASS_STATUSES:
                 latest_rco_approval[agent] = (index, event)
         elif status in BUILD_CONSENSUS_STATUSES:
-            if not scoped and not _build_consensus_head_scope_match(
-                event,
-                head_sha=head_sha,
-            ):
+            if not _build_consensus_task_scope_match(event, task_id=task_id):
+                latest_build_task_mismatch[agent] = str(event.get("task_id", ""))
                 continue
             latest_build_approval[agent] = (index, event)
 
@@ -976,12 +975,20 @@ def verify_bridge_consensus(
             "approved": approved,
             "approval_index": approval[0] if approval is not None else None,
             "block_index": block_index,
+            "task_id_mismatch": latest_build_task_mismatch.get(agent),
         }
         if not approved:
             if approval is None:
-                reasons.append(
-                    f"{role} ({agent}): no head-bound approval at {head_sha}"
-                )
+                mismatch = latest_build_task_mismatch.get(agent)
+                if mismatch is not None:
+                    reasons.append(
+                        f"{role} ({agent}): head-bound approval used "
+                        f"non-canonical task_id {mismatch!r}; expected {task_id!r}"
+                    )
+                else:
+                    reasons.append(
+                        f"{role} ({agent}): no head-bound approval at {head_sha}"
+                    )
             else:
                 reasons.append(
                     f"{role} ({agent}): a later block invalidates the approval"
@@ -1138,23 +1145,16 @@ def _consensus_scope_match(
     return pattern.search(str(event.get("task_id", ""))) is not None
 
 
-def _build_consensus_head_scope_match(
-    event: Mapping[str, Any], *, head_sha: str
+def _build_consensus_task_scope_match(
+    event: Mapping[str, Any], *, task_id: str
 ) -> bool:
-    """Allow build approvals to scope by exact structured head binding.
+    """Require build approvals to use the canonical bridge task id.
 
-    This is intentionally narrower than _event_binds_head: message text can
-    prove head freshness after scope is established, but it must not by itself
-    attach a build approval to an otherwise unrelated PR.
+    Head binding proves freshness, not ownership. A build-consensus vote with
+    a dash/slash typo in the top-level bridge ``task_id`` must fail closed
+    instead of being attached to the target PR by head SHA alone.
     """
-    payload = event.get("payload")
-    if not isinstance(payload, Mapping):
-        return False
-    for key in ("head", "head_sha", "expected_head", "head_oid", "head_commit"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip().lower() == head_sha:
-            return True
-    return False
+    return str(event.get("task_id", "")) == task_id
 
 
 def _consensus_block_scope_match(
@@ -1172,7 +1172,7 @@ def _consensus_block_scope_match(
     )
     if scoped:
         return True
-    return _build_consensus_head_scope_match(event, head_sha=head_sha)
+    return _event_binds_head(event, head_sha)
 
 
 def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:

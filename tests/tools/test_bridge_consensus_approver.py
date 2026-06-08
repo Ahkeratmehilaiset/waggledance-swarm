@@ -121,7 +121,7 @@ def test_backup_rco_can_satisfy_rco_slot() -> None:
     assert result["rco_pass_ref"]["agent"] == RCO2
 
 
-def test_descriptive_build_task_id_counts_when_payload_head_matches() -> None:
+def test_descriptive_build_task_id_does_not_count_when_payload_head_matches() -> None:
     events = [
         {
             **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
@@ -138,9 +138,18 @@ def test_descriptive_build_task_id_counts_when_payload_head_matches() -> None:
 
     result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
 
-    assert result["ok"] is True
-    assert result["identities"]["build_lead"]["approved"] is True
-    assert result["identities"]["build_tools"]["approved"] is True
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approved"] is False
+    assert result["identities"]["build_tools"]["approved"] is False
+    assert (
+        result["identities"]["build_lead"]["task_id_mismatch"]
+        == "lead-descriptive-refresh"
+    )
+    assert (
+        result["identities"]["build_tools"]["task_id_mismatch"]
+        == "tools-descriptive-refresh"
+    )
+    assert any("non-canonical task_id" in reason for reason in result["reasons"])
 
 
 def test_descriptive_build_task_id_with_stale_payload_head_does_not_count() -> None:
@@ -164,7 +173,7 @@ def test_descriptive_build_task_id_with_stale_payload_head_does_not_count() -> N
     assert result["identities"]["build_lead"]["approval_index"] is None
 
 
-def test_duplicate_descriptive_build_identity_still_counts_once() -> None:
+def test_duplicate_descriptive_build_identity_still_fails_closed() -> None:
     events = [
         {
             **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
@@ -182,7 +191,11 @@ def test_duplicate_descriptive_build_identity_still_counts_once() -> None:
     result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
 
     assert result["ok"] is False
-    assert result["identities"]["build_lead"]["approved"] is True
+    assert result["identities"]["build_lead"]["approved"] is False
+    assert (
+        result["identities"]["build_lead"]["task_id_mismatch"]
+        == "lead-second-descriptive-refresh"
+    )
     assert result["identities"]["build_tools"]["approved"] is False
 
 
@@ -240,7 +253,7 @@ def test_descriptive_build_block_with_payload_head_invalidates_approval() -> Non
     assert result["identities"]["build_lead"]["block_index"] == 3
 
 
-def test_descriptive_build_block_with_stale_payload_head_does_not_attach() -> None:
+def test_descriptive_build_block_with_stale_payload_head_still_fails_closed() -> None:
     events = [
         {
             **_approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
@@ -263,9 +276,13 @@ def test_descriptive_build_block_with_stale_payload_head_does_not_attach() -> No
 
     result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
 
-    assert result["ok"] is True
-    assert result["identities"]["build_lead"]["approved"] is True
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["approved"] is False
     assert result["identities"]["build_lead"]["block_index"] is None
+    assert (
+        result["identities"]["build_lead"]["task_id_mismatch"]
+        == "lead-descriptive-refresh"
+    )
 
 
 def test_descriptive_rco_block_with_payload_head_invalidates_approval() -> None:

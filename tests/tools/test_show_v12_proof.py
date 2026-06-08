@@ -182,8 +182,8 @@ def test_a4_solver_growth_axis_section_reports_measured_synthetic() -> None:
     assert a4["claim_label"] == "MEASURED_LOCAL_SYNTHETIC"
     assert a4["registration"]["registered_solver_count"] == 6
     assert a4["registration"]["rejected_registration_count"] == 8
-    assert a4["dispatch"]["dispatch_success_count"] == 24
-    assert a4["dispatch"]["dispatch_case_count"] == 24
+    assert a4["dispatch"]["dispatch_success_count"] == 27
+    assert a4["dispatch"]["dispatch_case_count"] == 27
     assert a4["dispatch"]["dispatch_failure_count"] == 0
     assert a4["dispatch"]["families_covered"] == 6
     # show_v12_proof now runs the A4 proof tool with --out-dir, so the

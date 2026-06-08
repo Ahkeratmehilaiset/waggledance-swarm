@@ -365,6 +365,20 @@ explicit local summary and bridge-event template artifacts while keeping
 `runtime_controls_added=false`; it does not append bridge events or make a
 release decision.
 
+`tools/build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry_verification_summary.py`
+can render the local runtime-gap scheduler-candidate bridge-template index-entry
+verifier report into path-free reviewer context. It carries digest, size,
+schema, source-contract, rebuilt-index-entry, bridge-event-schema, blocker, and
+warning status while keeping `scheduler_enqueue_allowed=false`,
+`scheduler_tick_allowed=false`, `scheduler_tick_executed=false`,
+`queue_writes_applied=false`, `control_plane_writes_applied=false`,
+`bridge_event_written=false`, `fast_track_priority=false`,
+`gate_skip_allowed=false`, `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `approval_granted=false`,
+`release_decision_made=false`, and `runtime_authority_granted=false`. It does
+not append bridge events, transport artifacts, fetch endpoints, enqueue
+scheduler work, run a scheduler tick, or grant runtime authority.
+
 `GET /api/ops` also includes `route_stage_latency`, a read-only list of
 PromQL panel and alert templates for route-stage p95/p99 latency. It reports
 `source="prometheus_query_templates"`, metric names, `panels`, and

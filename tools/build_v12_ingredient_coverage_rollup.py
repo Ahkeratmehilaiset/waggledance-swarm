@@ -67,7 +67,7 @@ MEMORY_FALSE_FIELDS = (
 MEMORY_TRUE_FIELDS = (
     "design_only",
     "manual_review_required",
-    "operator_gate_required_for_runtime_promotion",
+    "operator_authorization_required_for_runtime_promotion",
 )
 
 INGREDIENT_SPECS = (

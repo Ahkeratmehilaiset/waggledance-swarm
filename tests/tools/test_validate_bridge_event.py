@@ -9,6 +9,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+AGENT_UUID = "11111111-2222-3333-4444-555555555555"
+OTHER_UUID = "22222222-3333-4444-5555-666666666666"
+
 
 def _good_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
@@ -39,6 +42,23 @@ def _write_jsonl(path: Path, events: list[dict[str, object] | str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_agent_profile(
+    profiles_dir: Path,
+    *,
+    agent_id: str = "codex",
+    agent_uuid: str = AGENT_UUID,
+) -> None:
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / f"{agent_id}.json").write_text(
+        json.dumps(
+            {"agent_id": agent_id, "agent_uuid": agent_uuid},
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_cli_returns_zero_and_json_summary_for_valid_file(
     tmp_path: Path,
     capsys,
@@ -55,6 +75,63 @@ def test_cli_returns_zero_and_json_summary_for_valid_file(
     assert payload["ok"] is True
     assert payload["valid"] == 1
     assert payload["invalid"] == 0
+
+
+def test_cli_agent_profiles_reject_uuid_mismatch(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    profiles_dir = tmp_path / "agents"
+    _write_agent_profile(profiles_dir)
+    _write_jsonl(
+        events_path,
+        [_good_event(agent="codex", agent_uuid=OTHER_UUID)],
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--agent-profiles",
+        str(profiles_dir),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["agent_profiles_loaded"] == 1
+    assert "agent_uuid does not match" in payload["issues"][0]["error"]
+
+
+def test_cli_agent_profiles_accept_matching_uuid(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    profiles_dir = tmp_path / "agents"
+    _write_agent_profile(profiles_dir)
+    _write_jsonl(
+        events_path,
+        [_good_event(agent="codex", agent_uuid=AGENT_UUID)],
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--agent-profiles",
+        str(profiles_dir),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["agent_profiles_loaded"] == 1
 
 
 def test_cli_returns_one_for_invalid_file_and_reports_issue(

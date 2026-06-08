@@ -308,7 +308,12 @@ def _is_at_or_after_utc(value: str, epoch: str) -> bool:
     return parsed >= parsed_epoch
 
 
-def validate_event_line(line: str, *, line_no: int = 1) -> BridgeEvent:
+def validate_event_line(
+    line: str,
+    *,
+    line_no: int = 1,
+    agent_uuid_by_id: Mapping[str, str] | None = None,
+) -> BridgeEvent:
     """Validate one JSONL line from ``events.jsonl``."""
     try:
         decoded = json.loads(line)
@@ -317,9 +322,15 @@ def validate_event_line(line: str, *, line_no: int = 1) -> BridgeEvent:
     if not isinstance(decoded, Mapping):
         raise ValueError(f"line {line_no}: event must be a JSON object")
     try:
-        return validate_event(decoded)
+        model = validate_event(decoded)
     except ValidationError as exc:
         raise ValueError(f"line {line_no}: {_format_validation_error(exc)}") from exc
+    _validate_agent_uuid_binding(
+        model,
+        agent_uuid_by_id=agent_uuid_by_id,
+        line_no=line_no,
+    )
+    return model
 
 
 def validate_event_file(
@@ -329,6 +340,7 @@ def validate_event_file(
     max_errors: int = 20,
     waived_line_sha256: Mapping[int, str] | None = None,
     waived_line_errors: Mapping[int, str] | None = None,
+    agent_uuid_by_id: Mapping[str, str] | None = None,
 ) -> BridgeEventValidationResult:
     """Validate a bridge JSONL file and return a non-throwing summary."""
     path = Path(events_path)
@@ -345,7 +357,11 @@ def validate_event_file(
             continue
         checked += 1
         try:
-            validate_event_line(line, line_no=line_no)
+            validate_event_line(
+                line,
+                line_no=line_no,
+                agent_uuid_by_id=agent_uuid_by_id,
+            )
         except ValueError as exc:
             issue = BridgeEventValidationIssue(
                 line_no=line_no,
@@ -397,6 +413,25 @@ def _format_validation_error(error: ValidationError) -> str:
 
 def _line_sha256(line: str) -> str:
     return "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest()
+
+
+def _validate_agent_uuid_binding(
+    event: BridgeEvent,
+    *,
+    agent_uuid_by_id: Mapping[str, str] | None,
+    line_no: int,
+) -> None:
+    if not agent_uuid_by_id:
+        return
+    expected_uuid = agent_uuid_by_id.get(event.agent)
+    if not expected_uuid:
+        return
+    if not event.agent_uuid:
+        raise ValueError(f"line {line_no}: agent_uuid required by bridge agent profile")
+    if event.agent_uuid != expected_uuid:
+        raise ValueError(
+            f"line {line_no}: agent_uuid does not match bridge agent profile"
+        )
 
 
 __all__ = [

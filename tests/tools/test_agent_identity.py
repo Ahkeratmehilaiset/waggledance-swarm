@@ -17,6 +17,7 @@ from tools.agent_identity import (
 
 
 NOW = datetime(2026, 5, 18, 11, 0, tzinfo=timezone.utc)
+AGENT_UUID = "11111111-2222-3333-4444-555555555555"
 
 
 def test_register_profile_writes_local_agent_identity(tmp_path: Path) -> None:
@@ -35,9 +36,27 @@ def test_register_profile_writes_local_agent_identity(tmp_path: Path) -> None:
     assert persisted == profile
     assert profile["schema_version"] == "agent_profile.v1"
     assert profile["capabilities"] == ["idle_protocol", "work_queue"]
+    assert "agent_uuid" not in profile
     assert profile["operator_approved"] is False
     assert profile["write_scope_policy"] == "claim_required"
     assert validate_profile(profile) == []
+
+
+def test_register_profile_can_bind_agent_uuid(tmp_path: Path) -> None:
+    profile = register_profile(
+        agent_id="codex",
+        kind="codex",
+        agent_uuid=AGENT_UUID,
+        display_name="Codex",
+        bridge_root=tmp_path,
+        now_utc=NOW,
+    )
+
+    assert profile["agent_uuid"] == AGENT_UUID
+    assert validate_profile(profile) == []
+    assert read_profile(agent_id="codex", bridge_root=tmp_path)["agent_uuid"] == (
+        AGENT_UUID
+    )
 
 
 def test_register_refuses_invalid_agent_id(tmp_path: Path) -> None:
@@ -50,6 +69,20 @@ def test_register_refuses_invalid_agent_id(tmp_path: Path) -> None:
             now_utc=NOW,
         )
     assert excinfo.value.report["decision"] == "invalid_agent_id"
+    assert not (tmp_path / "agents").exists()
+
+
+def test_register_refuses_invalid_agent_uuid(tmp_path: Path) -> None:
+    with pytest.raises(AgentIdentityError) as excinfo:
+        register_profile(
+            agent_id="codex",
+            kind="codex",
+            agent_uuid="not-a-uuid",
+            display_name="Codex",
+            bridge_root=tmp_path,
+            now_utc=NOW,
+        )
+    assert excinfo.value.report["decision"] == "invalid_agent_uuid"
     assert not (tmp_path / "agents").exists()
 
 
@@ -217,6 +250,8 @@ def test_cli_register_and_show_json(tmp_path: Path, capsys: pytest.CaptureFixtur
             "codex",
             "--display-name",
             "Codex",
+            "--agent-uuid",
+            AGENT_UUID,
             "--capability",
             "work_queue",
         ]
@@ -224,6 +259,7 @@ def test_cli_register_and_show_json(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert exit_code == 0
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "registered"
+    assert report["profile"]["agent_uuid"] == AGENT_UUID
 
     exit_code = agent_identity.main(
         ["--bridge-root", str(tmp_path), "--json", "show", "--agent", "codex"]

@@ -50,8 +50,8 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["a3_receipt_chain_verified"] is True
     assert result["a4_solver_growth_proven"] is True
     assert result["a4_receipt_chain_verified"] is True
-    assert result["a4_dispatch_success_count"] == 24
-    assert result["a4_dispatch_case_count"] == 24
+    assert result["a4_dispatch_success_count"] == 27
+    assert result["a4_dispatch_case_count"] == 27
     assert result["a4_registered_solver_count"] == 6
     assert result["rival_local_check_pass_count"] == 0
     assert result["rival_local_check_required_count"] == 4
@@ -124,7 +124,7 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert "A3 counterfactual delta proven: `true`" in summary
     assert "A3 receipt chain verified: `true`" in summary
     assert "A4 solver growth proven: `true`" in summary
-    assert "A4 dispatch success: `24/24`" in summary
+    assert "A4 dispatch success: `27/27`" in summary
     assert "A4 receipt chain verified: `true`" in summary
     assert "rival local checks passed: `0/4`" in summary
     assert "competitor consensus grade: `false`" in summary
@@ -201,7 +201,7 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["a3_receipt_chain_verified"] is True
     assert payload["a4_solver_growth_proven"] is True
     assert payload["a4_receipt_chain_verified"] is True
-    assert payload["a4_dispatch_success_count"] == 24
+    assert payload["a4_dispatch_success_count"] == 27
     assert payload["rival_local_check_pass_count"] == 0
     assert payload["competitor_consensus_grade"] is False
     assert payload["rival_evidence_template_count"] == 4

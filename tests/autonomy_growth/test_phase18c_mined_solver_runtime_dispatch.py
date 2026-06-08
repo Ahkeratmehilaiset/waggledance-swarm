@@ -423,10 +423,17 @@ def test_claim_labels_required_set(proof_doc):
 def test_per_family_dispatch_counts(proof_doc):
     pfc = proof_doc["per_family_dispatch_counts"]
     assert set(pfc.keys()) == set(ALLOWED_FAMILIES)
-    assert proof_doc["dispatch_case_count"] == 24
-    assert proof_doc["dispatch_success_count"] == 24
-    for fam, n in pfc.items():
-        assert n == 4, f"family {fam}: expected 4 cases, got {n}"
+    assert proof_doc["dispatch_case_count"] == 27
+    assert proof_doc["dispatch_success_count"] == 27
+    expected_counts = {
+        "bounded_interpolation": 5,
+        "interval_bucket_classifier": 5,
+        "linear_arithmetic": 5,
+        "lookup_table": 4,
+        "scalar_unit_conversion": 4,
+        "threshold_rule": 4,
+    }
+    assert pfc == expected_counts
 
 
 # ---------------------------------------------------------------------------

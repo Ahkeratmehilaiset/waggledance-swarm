@@ -62,6 +62,26 @@ def test_builds_operator_overview_from_existing_read_only_helpers() -> None:
         "room.system.statistics",
     ]
     assert aggregate["max_intermediate_hops_skipped"] == 2
+    assert aggregate["shortcut_jump_summary"] == {
+        "candidate_count": 2,
+        "shortcut_jump_candidate_count": 2,
+        "total_hierarchy_hops": 6,
+        "total_projected_shortcut_hops": 2,
+        "total_intermediate_hops_skipped": 4,
+        "max_intermediate_hops_skipped": 2,
+        "average_intermediate_hops_skipped": 2.0,
+        "hop_reduction_ratio": 0.666667,
+        "authority_boundary": {
+            "runtime_route_changed": False,
+            "storage_write_performed": False,
+            "bridge_append_performed": False,
+            "solver_call_performed": False,
+            "scheduler_enqueue_performed": False,
+            "promotion_performed": False,
+            "gate_skip_performed": False,
+            "network_access_performed": False,
+        },
+    }
 
     row = overview["read_path_overview"][0]
     assert row["memory_id"] == MEMORY_ID
@@ -119,6 +139,8 @@ def test_render_markdown_shows_operator_surface_without_payload_values() -> None
     assert "ok: `true`" in markdown
     assert "room.learning.cell_imaging" in markdown
     assert "room.research.pathology" in markdown
+    assert "total_intermediate_hops_skipped: `4`" in markdown
+    assert "hop_reduction_ratio" not in markdown
     assert "bridge_append_performed: `false`" in markdown
     assert "not a runtime route" in markdown
     assert "segmentation" not in markdown
@@ -140,6 +162,12 @@ def test_cli_json_and_markdown_outputs(tmp_path: Path) -> None:
     payload = json.loads(json_result.stdout)
     assert payload["ok"] is True
     assert payload["aggregate"]["total_candidate_count"] == 2
+    assert payload["aggregate"]["shortcut_jump_summary"][
+        "total_intermediate_hops_skipped"
+    ] == 4
+    assert payload["aggregate"]["shortcut_jump_summary"][
+        "authority_boundary"
+    ]["gate_skip_performed"] is False
     assert payload["read_path_overview"][0]["top_target_node_id"] == (
         "room.research.pathology"
     )

@@ -52,6 +52,11 @@ def test_verifies_valid_promotion_candidate_report() -> None:
     assert verification["candidate_action_boundary_check"] == "match"
     assert verification["promotion_action_allowed"] is False
     assert verification["promotion_performed"] is False
+    assert verification["approval_granted"] is False
+    assert verification["release_decision_made"] is False
+    assert verification["direct_bridge_write_performed"] is False
+    assert verification["artifact_payloads_included"] is False
+    assert verification["local_paths_recorded"] is False
     assert verification["runtime_authority_granted"] is False
     assert verification["blockers"] == []
 

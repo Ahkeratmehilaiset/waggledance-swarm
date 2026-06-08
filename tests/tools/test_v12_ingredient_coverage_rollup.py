@@ -44,7 +44,7 @@ def test_rollup_reports_current_v12_ingredients_without_authority() -> None:
         "solver_growth_family",
         "counterfactual_eval",
         "adversarial_corpus",
-        "memory_palace_shortcut_candidates",
+        "memory_palace_shortcut_runtime_design",
     }
     authority = report["authority_boundary"]
     assert authority["runtime_authority"] is False
@@ -74,14 +74,14 @@ def test_rollup_fails_closed_on_authority_boundary_regression() -> None:
     assert row["authority_false_fields_ok"] is False
 
 
-def test_rollup_fails_closed_on_memory_verification_regression() -> None:
+def test_rollup_fails_closed_on_memory_design_verification_regression() -> None:
     sources = _valid_injected_sources()
-    sources["memory_palace_shortcut_candidates_verification"] = copy.deepcopy(
-        sources["memory_palace_shortcut_candidates_verification"]
+    sources["memory_palace_shortcut_runtime_design_verification"] = copy.deepcopy(
+        sources["memory_palace_shortcut_runtime_design_verification"]
     )
-    sources["memory_palace_shortcut_candidates_verification"]["ok"] = False
-    sources["memory_palace_shortcut_candidates_verification"]["blockers"] = [
-        "candidate_action_boundary_mismatch",
+    sources["memory_palace_shortcut_runtime_design_verification"]["ok"] = False
+    sources["memory_palace_shortcut_runtime_design_verification"]["blockers"] = [
+        "design_row_action_boundary_mismatch",
     ]
 
     report = build_v12_ingredient_coverage_rollup(
@@ -91,11 +91,12 @@ def test_rollup_fails_closed_on_memory_verification_regression() -> None:
 
     assert report["ok"] is False
     assert (
-        "ingredient_blocked:memory_palace_shortcut_candidates:verification_not_ok"
+        "ingredient_blocked:memory_palace_shortcut_runtime_design:"
+        "verification_not_ok"
         in report["blockers"]
     )
     assert (
-        "ingredient_blocked:memory_palace_shortcut_candidates:"
+        "ingredient_blocked:memory_palace_shortcut_runtime_design:"
         "verification_blockers_present"
     ) in report["blockers"]
 
@@ -155,7 +156,7 @@ def _valid_injected_sources() -> dict[str, dict[str, object]]:
         "ok": True,
         "verification_version": MEMORY_PALACE_VERIFICATION_VERSION,
         "blockers": [],
-        "read_side_report_only": True,
+        "design_only": True,
         "manual_review_required": True,
         "operator_gate_required_for_runtime_promotion": True,
         "runtime_route_changed": False,
@@ -167,6 +168,9 @@ def _valid_injected_sources() -> dict[str, dict[str, object]]:
         "promotion_action_allowed": False,
         "gate_skip_performed": False,
         "network_access_performed": False,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
     }
     return {
         "solver_growth_family": {
@@ -192,13 +196,13 @@ def _valid_injected_sources() -> dict[str, dict[str, object]]:
                 {"kind": "defect_type", "name": "path_escape", "count": 2}
             ],
         },
-        "memory_palace_shortcut_candidates": {
+        "memory_palace_shortcut_runtime_design": {
             "report_version": (
-                "wd.v12.memory_palace_shortcut_promotion_candidates.v0"
+                "wd.v12.memory_palace_shortcut_runtime_promotion_design.v0"
             ),
             "ok": True,
             "blockers": [],
             "authority_boundary": {},
         },
-        "memory_palace_shortcut_candidates_verification": memory_verification,
+        "memory_palace_shortcut_runtime_design_verification": memory_verification,
     }

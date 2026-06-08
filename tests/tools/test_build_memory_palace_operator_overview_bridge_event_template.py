@@ -346,6 +346,58 @@ def test_operator_overview_bridge_event_template_rejects_path_markers_path_free(
     assert FORBIDDEN_PATH_PREFIX not in encoded
 
 
+def test_operator_overview_bridge_event_template_rejects_nested_payload_path_url_keys() -> None:
+    cases: tuple[tuple[str, Callable[[dict], None]], ...] = (
+        (
+            "aggregate_raw_payload",
+            lambda overview: overview["aggregate"].__setitem__(
+                "raw_payload",
+                {"value": "do not echo"},
+            ),
+        ),
+        (
+            "aggregate_source_path",
+            lambda overview: overview["aggregate"].__setitem__(
+                "source_path",
+                "safe-looking-but-forbidden",
+            ),
+        ),
+        (
+            "hierarchy_url",
+            lambda overview: overview["hierarchy"].__setitem__(
+                "url",
+                "safe-looking-but-forbidden",
+            ),
+        ),
+    )
+
+    for _name, mutate in cases:
+        overview = _valid_overview()
+        mutate(overview)
+
+        report = build_memory_palace_operator_overview_bridge_event_template(
+            overview=overview,
+            agent_id="codex-lead-1",
+            task_id=(
+                "codex-lead-1/"
+                "memory-palace-operator-overview-bridge-template-20260609"
+            ),
+            to="operator,codex-lead-1",
+        )
+        encoded = json.dumps(report, sort_keys=True)
+
+        assert report["ok"] is False
+        assert report["blockers"] == [
+            "memory_palace_operator_overview_bridge_event_template_failed:"
+            "operator_overview_not_path_free"
+        ]
+        assert "do not echo" not in encoded
+        assert "safe-looking-but-forbidden" not in encoded
+        assert report["direct_bridge_write_performed"] is False
+        assert report["artifact_payloads_included"] is False
+        assert report["local_paths_recorded"] is False
+
+
 def test_operator_overview_bridge_event_template_rejects_duplicate_json_keys_path_free(
     tmp_path: Path,
 ) -> None:

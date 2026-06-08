@@ -159,11 +159,33 @@ FORBIDDEN_INPUT_KEYS = frozenset(
     {
         "matched_values",
         "payload",
+        "raw_payload",
         "memory_payload",
+        "path",
+        "paths",
         "local_path",
         "local_paths",
         "source_refs",
+        "url",
+        "uri",
+        "href",
     }
+)
+FORBIDDEN_INPUT_KEY_SUFFIXES = (
+    "_payload",
+    "_payloads",
+    "_path",
+    "_paths",
+    "_url",
+    "_urls",
+    "_uri",
+    "_uris",
+    "_href",
+    "_hrefs",
+)
+FORBIDDEN_INPUT_KEY_PREFIXES = (
+    "raw_payload",
+    "payload_",
 )
 SHORTCUT_NUMERIC_FIELDS = (
     "candidate_count",
@@ -672,12 +694,23 @@ def _contains_non_finite(value: Any) -> bool:
 def _contains_forbidden_input_key(value: Any) -> bool:
     if isinstance(value, Mapping):
         return any(
-            key in FORBIDDEN_INPUT_KEYS or _contains_forbidden_input_key(item)
+            _is_forbidden_input_key(key) or _contains_forbidden_input_key(item)
             for key, item in value.items()
         )
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return any(_contains_forbidden_input_key(item) for item in value)
     return False
+
+
+def _is_forbidden_input_key(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    normalized = key.strip().lower().replace("-", "_")
+    if normalized in FORBIDDEN_INPUT_KEYS:
+        return True
+    if normalized.startswith(FORBIDDEN_INPUT_KEY_PREFIXES):
+        return True
+    return normalized.endswith(FORBIDDEN_INPUT_KEY_SUFFIXES)
 
 
 def _contains_path_marker(value: Any) -> bool:

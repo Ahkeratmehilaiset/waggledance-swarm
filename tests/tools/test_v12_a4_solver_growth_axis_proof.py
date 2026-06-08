@@ -47,8 +47,8 @@ def test_build_a4_solver_growth_axis_proof_writes_receipt_bundle(
     assert report["fixture"]["allowlisted_candidate_count"] == 6
     assert report["registration"]["registered_solver_count"] == 6
     assert report["registration"]["rejected_registration_count"] == 8
-    assert report["dispatch"]["dispatch_success_count"] == 21
-    assert report["dispatch"]["dispatch_case_count"] == 21
+    assert report["dispatch"]["dispatch_success_count"] == 24
+    assert report["dispatch"]["dispatch_case_count"] == 24
     assert report["dispatch"]["dispatch_failure_count"] == 0
     assert report["dispatch"]["families_covered"] == 6
     assert report["receipt_chain_verified"] is True
@@ -70,7 +70,7 @@ def test_render_markdown_carries_scope_caveat(tmp_path: Path) -> None:
 
     assert "V12 A4 Solver-Growth Axis Proof" in markdown
     assert "solver_growth_proven: `true`" in markdown
-    assert "dispatch successes | 21/21" in markdown
+    assert "dispatch successes | 24/24" in markdown
     assert "not a rival benchmark" in markdown
     assert "does not change production runtime authority" in markdown
     assert "does not claim learned policy authority" in markdown
@@ -91,7 +91,7 @@ def test_cli_json_reports_a4_axis(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["solver_growth_proven"] is True
     assert payload["receipt_chain_verified"] is True
-    assert payload["dispatch"]["dispatch_success_count"] == 21
+    assert payload["dispatch"]["dispatch_success_count"] == 24
     assert payload["registration"]["registered_solver_count"] == 6
 
 

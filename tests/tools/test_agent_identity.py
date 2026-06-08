@@ -59,6 +59,44 @@ def test_register_profile_can_bind_agent_uuid(tmp_path: Path) -> None:
     )
 
 
+def test_register_requires_agent_uuid_for_bridge_event_capability(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AgentIdentityError) as excinfo:
+        register_profile(
+            agent_id="codex",
+            kind="codex",
+            display_name="Codex",
+            capabilities=["bridge_event"],
+            bridge_root=tmp_path,
+            now_utc=NOW,
+        )
+
+    assert excinfo.value.report["decision"] == "invalid_profile"
+    assert "agent_uuid required for bridge_event capability" in (
+        excinfo.value.report["errors"][0]
+    )
+    assert not (tmp_path / "agents" / "codex.json").exists()
+
+
+def test_register_accepts_bridge_event_capability_with_agent_uuid(
+    tmp_path: Path,
+) -> None:
+    profile = register_profile(
+        agent_id="codex",
+        kind="codex",
+        agent_uuid=AGENT_UUID,
+        display_name="Codex",
+        capabilities=["bridge_event"],
+        bridge_root=tmp_path,
+        now_utc=NOW,
+    )
+
+    assert profile["agent_uuid"] == AGENT_UUID
+    assert profile["capabilities"] == ["bridge_event"]
+    assert validate_profile(profile) == []
+
+
 def test_register_refuses_invalid_agent_id(tmp_path: Path) -> None:
     with pytest.raises(AgentIdentityError) as excinfo:
         register_profile(
@@ -131,7 +169,7 @@ def test_force_update_preserves_created_at(tmp_path: Path) -> None:
         agent_id="codex",
         kind="codex",
         display_name="Codex Prime",
-        capabilities=["bridge_event"],
+        capabilities=["work_queue"],
         bridge_root=tmp_path,
         force=True,
         now_utc=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
@@ -235,6 +273,24 @@ def test_validate_detects_policy_and_operator_approval_drift() -> None:
     assert "operator_approved must default to false in v1" in errors
     assert "write_scope_policy must be claim_required" in errors
     assert "status must be active" in errors
+
+
+def test_validate_requires_agent_uuid_for_bridge_event_capability() -> None:
+    profile = {
+        "schema_version": "agent_profile.v1",
+        "agent_id": "codex",
+        "kind": "codex",
+        "display_name": "Codex",
+        "capabilities": ["bridge_event"],
+        "status": "active",
+        "operator_approved": False,
+        "write_scope_policy": "claim_required",
+        "created_at_utc": "2026-05-18T11:00:00Z",
+        "updated_at_utc": "2026-05-18T11:00:00Z",
+    }
+
+    errors = validate_profile(profile)
+    assert "agent_uuid required for bridge_event capability" in errors
 
 
 def test_cli_register_and_show_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

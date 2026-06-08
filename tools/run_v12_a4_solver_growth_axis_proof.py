@@ -278,7 +278,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         "This is one local synthetic solver-growth row. It proves the existing",
         "Phase 18C path can mine low-risk candidates, register six allowlisted",
         "runtime-dispatchable solvers in a temporary ControlPlaneDB, and hit all",
-        "18 capability dispatch cases. It is not a rival benchmark, does not change production runtime authority, and does not claim learned policy authority.",
+        f"{dispatch['dispatch_case_count']} capability dispatch cases. It is not "
+        "a rival benchmark, does not change production runtime authority, and",
+        "does not claim learned policy authority.",
         "",
     ]
     return "\n".join(lines)

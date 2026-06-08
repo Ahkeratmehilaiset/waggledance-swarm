@@ -104,7 +104,7 @@ Expected current shape:
 * 30 runtime signals -> 14 candidates.
 * 6 allowlisted candidates registered.
 * 8 non-allowlisted candidates rejected.
-* 18/18 dispatch cases pass across the six low-risk families.
+* 21/21 dispatch cases pass across the six low-risk families.
 * Provider jobs delta = 0.
 * Builder jobs delta = 0.
 

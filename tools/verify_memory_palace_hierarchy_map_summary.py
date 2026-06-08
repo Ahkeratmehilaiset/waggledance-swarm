@@ -489,7 +489,10 @@ def _contains_path_marker(value: Any) -> bool:
     if isinstance(value, str):
         return bool(_PATH_MARKER_RE.search(value))
     if isinstance(value, Mapping):
-        return any(_contains_path_marker(child) for child in value.values())
+        return any(
+            _contains_path_marker(str(key)) or _contains_path_marker(child)
+            for key, child in value.items()
+        )
     if isinstance(value, list):
         return any(_contains_path_marker(child) for child in value)
     return False

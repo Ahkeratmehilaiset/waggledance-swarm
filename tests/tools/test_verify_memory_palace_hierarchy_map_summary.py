@@ -158,6 +158,8 @@ def test_rejects_non_finite_payload_and_path_keys_without_echoing_values() -> No
 def test_rejects_dynamic_path_like_values_without_echoing_them() -> None:
     summary = _valid_summary()
     unsafe_value = r"C:\operator\private\palace.json"
+    unsafe_key = "/workspace/waggledance-swarm/private/summary.json"
+    summary[unsafe_key] = {"benign": True}
     summary["kind_counts"][unsafe_value] = "bad"
     summary["roots"][0]["node_id"] = unsafe_value
     summary["roots"][1]["node_id"] = unsafe_value
@@ -170,7 +172,9 @@ def test_rejects_dynamic_path_like_values_without_echoing_them() -> None:
     assert "root_1_duplicate_node_id" in verification["blockers"]
     assert "forbidden_path_marker_present" in verification["blockers"]
     assert "operator" not in encoded
+    assert "workspace" not in encoded
     assert "palace.json" not in encoded
+    assert "summary.json" not in encoded
 
 
 def test_rejects_coverage_counts_that_cannot_explain_listed_nodes() -> None:

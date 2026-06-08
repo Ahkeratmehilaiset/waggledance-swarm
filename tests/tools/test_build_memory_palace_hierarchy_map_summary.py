@@ -146,6 +146,38 @@ def test_summary_fails_closed_on_malformed_or_unsafe_projection() -> None:
     assert report["authority_boundary"]["runtime_authority_granted"] is False
 
 
+def test_summary_fails_closed_on_unknown_projection_references() -> None:
+    unknown_placement = _projection()
+    unknown_placement["placements"][0]["palace_node_id"] = "room.missing"
+    report = build_memory_palace_hierarchy_map_summary(unknown_placement)
+    assert report["ok"] is False
+    assert any(
+        "projection_validation_failed:placement_references_unknown_palace_node"
+        in blocker
+        for blocker in report["blockers"]
+    )
+
+    unknown_source = _projection()
+    unknown_source["shortcuts"][0]["source_node_id"] = "room.missing"
+    report = build_memory_palace_hierarchy_map_summary(unknown_source)
+    assert report["ok"] is False
+    assert any(
+        "projection_validation_failed:shortcut_references_unknown_source_node_id"
+        in blocker
+        for blocker in report["blockers"]
+    )
+
+    unknown_target = _projection()
+    unknown_target["shortcuts"][0]["target_node_id"] = "room.missing"
+    report = build_memory_palace_hierarchy_map_summary(unknown_target)
+    assert report["ok"] is False
+    assert any(
+        "projection_validation_failed:shortcut_references_unknown_target_node_id"
+        in blocker
+        for blocker in report["blockers"]
+    )
+
+
 def test_cli_fails_closed_on_invalid_json(tmp_path: Path) -> None:
     projection_path = tmp_path / "bad.json"
     projection_path.write_text("{not json", encoding="utf-8")

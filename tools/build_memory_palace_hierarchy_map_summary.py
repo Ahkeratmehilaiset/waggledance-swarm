@@ -26,6 +26,7 @@ from waggledance.core.memory_palace import (  # noqa: E402
     MEMORY_PALACE_PROJECTION_SCHEMA_VERSION,
     MemoryPalaceProjectionError,
     build_memory_palace_navigation_index,
+    build_memory_palace_projection,
 )
 
 
@@ -142,15 +143,25 @@ def build_memory_palace_hierarchy_map_summary(
         shortcuts = ()
 
     navigation_index: Mapping[str, Any] | None = None
+    validated_projection: Mapping[str, Any] | None = None
     if not blockers:
         try:
-            navigation_index = build_memory_palace_navigation_index(nodes)
+            validated_projection = build_memory_palace_projection(
+                nodes,
+                placements=placements,
+                shortcuts=shortcuts,
+            )
+            navigation_index = build_memory_palace_navigation_index(
+                validated_projection["nodes"]
+            )
         except MemoryPalaceProjectionError as exc:
-            blockers.append(f"navigation_index_failed:{_safe_code(str(exc))}")
+            blockers.append(f"projection_validation_failed:{_safe_code(str(exc))}")
 
-    if blockers or navigation_index is None:
+    if blockers or navigation_index is None or validated_projection is None:
         return _failure_summary(*blockers)
 
+    placements = _sequence(validated_projection.get("placements")) or ()
+    shortcuts = _sequence(validated_projection.get("shortcuts")) or ()
     entries = _navigation_entries(navigation_index)
     children_by_node = _mapping(navigation_index.get("children_by_node"))
     placements_by_node = _counter(

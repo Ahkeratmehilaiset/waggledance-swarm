@@ -646,6 +646,7 @@ def rank_shortcut_candidates_for_metadata(
 
     if not isinstance(metadata, Mapping):
         raise MemoryPalaceProjectionError("metadata must be an object")
+    _assert_no_authority_flags(metadata, label="memory metadata")
     normalized_nodes = validate_palace_hierarchy(nodes)
     known_node_ids = {node.node_id for node in normalized_nodes}
     if source_node_id is not None:

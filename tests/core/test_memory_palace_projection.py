@@ -635,6 +635,23 @@ def test_metadata_shortcut_ranking_fails_closed_on_unsafe_inputs() -> None:
             nodes=nodes,
         )
 
+    with pytest.raises(MemoryPalaceProjectionError, match="authority flag"):
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-unsafe",
+            metadata={"tags": ["cell_imaging"], "runtime_authority": False},
+            nodes=nodes,
+        )
+
+    with pytest.raises(MemoryPalaceProjectionError, match="authority flag"):
+        rank_shortcut_candidates_for_metadata(
+            memory_id="memory-unsafe",
+            metadata={
+                "tags": ["cell_imaging"],
+                "nested": {"gate_skip_authority": True},
+            },
+            nodes=nodes,
+        )
+
     with pytest.raises(MemoryPalaceProjectionError, match="max_candidates"):
         rank_shortcut_candidates_for_metadata(
             memory_id="memory-unsafe",

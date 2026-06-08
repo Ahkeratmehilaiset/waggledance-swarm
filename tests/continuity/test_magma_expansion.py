@@ -353,6 +353,9 @@ class TestReplayExpansion:
 
         assert candidates == [
             {
+                "candidate_index": 0,
+                "candidate_depth": 1,
+                "target_route_depth": 1,
                 "step_order": 1,
                 "capability_id": "solve.symbolic",
                 "event_type": "capability.executed",
@@ -365,6 +368,57 @@ class TestReplayExpansion:
             }
         ]
         assert "payload" not in candidates[0]
+
+    def test_counterfactual_candidates_report_remaining_route_depth(self):
+        from waggledance.core.magma.replay_engine import ReplayAdapter
+
+        adapter = ReplayAdapter()
+        for goal_id in ("peer_1", "peer_2", "peer_3"):
+            adapter.record_mission_event(
+                goal_id,
+                "capability.executed",
+                step_order=1,
+                capability_id="solve.parse",
+            )
+            adapter.record_mission_event(
+                goal_id,
+                "capability.executed",
+                step_order=2,
+                capability_id="solve.math",
+            )
+            adapter.record_mission_event(
+                goal_id,
+                "capability.executed",
+                step_order=3,
+                capability_id="solve.render",
+            )
+
+        adapter.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.parse",
+        )
+        adapter.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=2,
+            capability_id="solve.symbolic",
+        )
+        adapter.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=3,
+            capability_id="solve.render",
+        )
+
+        candidates = adapter.get_counterfactual_candidates("target")
+
+        assert len(candidates) == 1
+        assert candidates[0]["candidate_index"] == 1
+        assert candidates[0]["candidate_depth"] == 2
+        assert candidates[0]["target_route_depth"] == 3
+        assert candidates[0]["baseline_capability_id"] == "solve.math"
 
     def test_counterfactual_candidates_skip_majority_route_and_ties(self):
         from waggledance.core.magma.replay_engine import ReplayAdapter

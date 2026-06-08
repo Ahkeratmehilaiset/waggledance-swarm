@@ -199,8 +199,10 @@ class ReplayAdapter:
         """Identify decision points where an alternative route could have been taken.
 
         Returns entries where capability_id differs from the most common
-        capability used in similar missions — candidates for LLM counterfactual
-        analysis during night learning.
+        capability used in similar missions — candidates for counterfactual
+        analysis during night learning. Candidate depth is metadata only: it
+        describes how many capability-bearing target steps remain from the
+        divergence point and does not execute or enqueue a replay.
         """
         with self._lock:
             mission = self._missions.get(goal_id)
@@ -245,7 +247,8 @@ class ReplayAdapter:
                 baselines[(step_order, event_type)][capability_id] += 1
 
         candidates: List[Dict[str, Any]] = []
-        for entry in target_entries:
+        target_route_depth = len(target_entries)
+        for candidate_index, entry in enumerate(target_entries):
             counts = baselines.get((entry["step_order"], entry["event_type"]))
             if not counts:
                 continue
@@ -258,6 +261,9 @@ class ReplayAdapter:
             peer_sample_count = sum(counts.values())
             candidates.append(
                 {
+                    "candidate_index": candidate_index,
+                    "candidate_depth": target_route_depth - candidate_index,
+                    "target_route_depth": target_route_depth,
                     "step_order": entry["step_order"],
                     "capability_id": entry["capability_id"],
                     "event_type": entry["event_type"],

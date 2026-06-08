@@ -144,6 +144,42 @@ class TestReplayAdapter:
         stats = ra.stats()
         assert stats["total_missions"] >= 1
 
+    def test_counterfactual_candidate_depth_metadata(self):
+        ra = ReplayAdapter()
+        for goal_id in ("peer-a", "peer-b"):
+            ra.record_mission_event(
+                goal_id,
+                "capability.executed",
+                step_order=1,
+                capability_id="solve.parse",
+            )
+            ra.record_mission_event(
+                goal_id,
+                "capability.executed",
+                step_order=2,
+                capability_id="solve.math",
+            )
+
+        ra.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=1,
+            capability_id="solve.parse",
+        )
+        ra.record_mission_event(
+            "target",
+            "capability.executed",
+            step_order=2,
+            capability_id="solve.symbolic",
+        )
+
+        candidates = ra.get_counterfactual_candidates("target")
+
+        assert len(candidates) == 1
+        assert candidates[0]["candidate_index"] == 1
+        assert candidates[0]["candidate_depth"] == 1
+        assert candidates[0]["target_route_depth"] == 2
+
 
 class TestTrustAdapter:
     def test_record_and_score(self):

@@ -49,6 +49,7 @@ AUTHORITY_FLAGS = (
 )
 
 _NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
+_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,191}$")
 _REFERENCE_RE = re.compile(r"^[A-Za-z0-9_.:/#@+-]{1,256}$")
 
 _ALLOWED_CHILD_KINDS = {
@@ -388,8 +389,7 @@ def derive_candidate_placements(
     overlap with the memory metadata. Empty selectors never match implicitly.
     """
 
-    if not _non_empty_string(memory_id):
-        raise MemoryPalaceProjectionError("memory_id must be a non-empty string")
+    _validate_memory_id(memory_id, "memory_id")
     normalized_nodes = validate_palace_hierarchy(nodes)
     metadata_values = {
         key: set(_metadata_values(metadata.get(key))) for key in SELECTOR_KEYS
@@ -523,8 +523,7 @@ def rank_shortcut_candidates_for_memory(
             raise MemoryPalaceProjectionError(
                 f"projection {field_name} must be false"
             )
-    if not _non_empty_string(memory_id):
-        raise MemoryPalaceProjectionError("memory_id must be a non-empty string")
+    _validate_memory_id(memory_id, "memory_id")
     if (
         not isinstance(max_candidates, int)
         or isinstance(max_candidates, bool)
@@ -825,8 +824,7 @@ def _validate_node(node: PalaceNode) -> None:
 
 
 def _validate_placement(placement: MemoryPlacement) -> None:
-    if not _non_empty_string(placement.memory_id):
-        raise MemoryPalaceProjectionError("placement memory_id must be non-empty")
+    _validate_memory_id(placement.memory_id, "placement memory_id")
     if not _NODE_ID_RE.fullmatch(placement.palace_node_id):
         raise MemoryPalaceProjectionError(
             f"invalid placement palace_node_id: {placement.palace_node_id}"
@@ -898,10 +896,7 @@ def _validate_shortcut_hint(shortcut: PalaceShortcutHint) -> None:
 
 
 def _validate_shortcut_candidate(candidate: PalaceShortcutCandidate) -> None:
-    if not _non_empty_string(candidate.memory_id):
-        raise MemoryPalaceProjectionError(
-            "shortcut candidate memory_id must be non-empty"
-        )
+    _validate_memory_id(candidate.memory_id, "shortcut candidate memory_id")
     for label, node_id in (
         ("source_node_id", candidate.source_node_id),
         ("target_node_id", candidate.target_node_id),
@@ -1190,6 +1185,13 @@ def _assert_no_authority_flags(
             _assert_no_authority_flags(
                 child, label=label, path=f"{path}[{index}]"
             )
+
+
+def _validate_memory_id(value: Any, label: str) -> None:
+    if not isinstance(value, str) or not _MEMORY_ID_RE.fullmatch(value):
+        raise MemoryPalaceProjectionError(
+            f"{label} must be a safe bounded identifier"
+        )
 
 
 def _non_empty_string(value: Any) -> bool:

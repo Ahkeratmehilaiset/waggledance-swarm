@@ -146,6 +146,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "rule": "1 km = 0.621371 miles"},
       "inputs": {"x": 100.0}, "expected_output": 62.1371,
       "label": "100_km_to_miles"},
+    {"family_kind": "scalar_unit_conversion",
+      "features": {"input_unit": "km", "output_unit": "miles",
+                    "rule": "1 km = 0.621371 miles"},
+      "inputs": {"x": 42.0}, "expected_output": 26.097582,
+      "label": "42_km_to_miles_heldout"},
 
     # lookup_table
     {"family_kind": "lookup_table",
@@ -163,6 +168,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "example_key": "tin"},
       "inputs": {"key": "iron"}, "expected_output": "Fe",
       "label": "iron"},
+    {"family_kind": "lookup_table",
+      "features": {"table_name": "chemical_symbols",
+                    "example_key": "tin"},
+      "inputs": {"key": "sodium"}, "expected_output": "Na",
+      "label": "sodium_heldout"},
 
     # threshold_rule
     {"family_kind": "threshold_rule",
@@ -180,6 +190,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "rule": "above_or_below"},
       "inputs": {"x": 30}, "expected_output": "below",
       "label": "30_eq_threshold"},
+    {"family_kind": "threshold_rule",
+      "features": {"threshold": 30, "example_value": 37,
+                    "rule": "above_or_below"},
+      "inputs": {"x": 31}, "expected_output": "above",
+      "label": "31_above_30_heldout"},
 
     # interval_bucket_classifier
     {"family_kind": "interval_bucket_classifier",

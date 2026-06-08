@@ -151,6 +151,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "rule": "1 km = 0.621371 miles"},
       "inputs": {"x": 42.0}, "expected_output": 26.097582,
       "label": "42_km_to_miles_heldout"},
+    {"family_kind": "scalar_unit_conversion",
+      "features": {"input_unit": "km", "output_unit": "miles",
+                    "rule": "1 km = 0.621371 miles"},
+      "inputs": {"x": 1.5}, "expected_output": 0.9320565,
+      "label": "1_5_km_to_miles_wave4"},
 
     # lookup_table
     {"family_kind": "lookup_table",
@@ -173,6 +178,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "example_key": "tin"},
       "inputs": {"key": "sodium"}, "expected_output": "Na",
       "label": "sodium_heldout"},
+    {"family_kind": "lookup_table",
+      "features": {"table_name": "chemical_symbols",
+                    "example_key": "tin"},
+      "inputs": {"key": "carbon"}, "expected_output": "unknown",
+      "label": "carbon_default_wave4"},
 
     # threshold_rule
     {"family_kind": "threshold_rule",
@@ -195,6 +205,11 @@ DISPATCH_CASES: tuple[dict[str, Any], ...] = (
                     "rule": "above_or_below"},
       "inputs": {"x": 31}, "expected_output": "above",
       "label": "31_above_30_heldout"},
+    {"family_kind": "threshold_rule",
+      "features": {"threshold": 30, "example_value": 37,
+                    "rule": "above_or_below"},
+      "inputs": {"x": -5}, "expected_output": "below",
+      "label": "neg5_below_30_wave4"},
 
     # interval_bucket_classifier
     {"family_kind": "interval_bucket_classifier",

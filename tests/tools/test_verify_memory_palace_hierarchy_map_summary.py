@@ -118,7 +118,9 @@ def test_rejects_count_root_and_coverage_drift() -> None:
 def test_rejects_authority_boundary_side_effects_path_free() -> None:
     summary = _valid_summary()
     summary["authority_boundary"]["bridge_append_performed"] = True
-    summary["operator_interpretation"] = r"C:\operator\private\palace.json"
+    summary["operator_interpretation"] = (
+        "/workspace/waggledance-swarm/private/summary.json"
+    )
 
     verification = verify_memory_palace_hierarchy_map_summary(summary)
     encoded = json.dumps(verification, sort_keys=True)
@@ -131,8 +133,8 @@ def test_rejects_authority_boundary_side_effects_path_free() -> None:
         in verification["blockers"]
     )
     assert "forbidden_path_marker_present" in verification["blockers"]
-    assert r"C:\operator\private\palace.json" not in encoded
-    assert "palace.json" not in encoded
+    assert "workspace" not in encoded
+    assert "summary.json" not in encoded
 
 
 def test_rejects_non_finite_payload_and_path_keys_without_echoing_values() -> None:
@@ -169,6 +171,25 @@ def test_rejects_dynamic_path_like_values_without_echoing_them() -> None:
     assert "forbidden_path_marker_present" in verification["blockers"]
     assert "operator" not in encoded
     assert "palace.json" not in encoded
+
+
+def test_rejects_coverage_counts_that_cannot_explain_listed_nodes() -> None:
+    summary = _valid_summary()
+    summary["coverage"]["placement_count"] = 0
+    summary["coverage"]["shortcut_hint_count"] = 0
+
+    verification = verify_memory_palace_hierarchy_map_summary(summary)
+
+    assert verification["ok"] is False
+    assert verification["coverage_check"] == "mismatch"
+    assert (
+        "coverage_placement_count_less_than_placement_nodes"
+        in verification["blockers"]
+    )
+    assert (
+        "coverage_shortcut_hint_count_too_low_for_shortcut_nodes"
+        in verification["blockers"]
+    )
 
 
 def test_cli_json_verifies_summary_path_free(tmp_path: Path) -> None:

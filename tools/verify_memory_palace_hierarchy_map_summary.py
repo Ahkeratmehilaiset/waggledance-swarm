@@ -65,7 +65,7 @@ _FORBIDDEN_PATH_KEYS = frozenset(
     }
 )
 _PATH_MARKER_RE = re.compile(
-    r"([A-Za-z]:[\\/]|\\\\|/home/|/tmp/|/var/tmp/|file://)",
+    r"([A-Za-z]:[\\/]|\\\\|file://|(?<![:/])/(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]*)",
     re.IGNORECASE,
 )
 
@@ -353,6 +353,22 @@ def _collect_coverage_blockers(
         if not _sorted_unique_string_list(values):
             blockers.append(f"coverage_{field}_invalid")
             ok = False
+    placement_nodes = coverage.get("node_ids_with_placements")
+    if (
+        _nonnegative_int(coverage.get("placement_count"))
+        and _sorted_unique_string_list(placement_nodes)
+        and coverage["placement_count"] < len(placement_nodes)
+    ):
+        blockers.append("coverage_placement_count_less_than_placement_nodes")
+        ok = False
+    shortcut_nodes = coverage.get("node_ids_with_shortcuts")
+    if (
+        _nonnegative_int(coverage.get("shortcut_hint_count"))
+        and _sorted_unique_string_list(shortcut_nodes)
+        and coverage["shortcut_hint_count"] * 2 < len(shortcut_nodes)
+    ):
+        blockers.append("coverage_shortcut_hint_count_too_low_for_shortcut_nodes")
+        ok = False
     return "match" if ok else "mismatch"
 
 

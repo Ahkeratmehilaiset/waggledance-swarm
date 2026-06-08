@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from waggledance.core.memory_palace import (  # noqa: E402
     MemoryPlacement,
     PalaceNode,
+    build_memory_palace_navigation_index,
     build_memory_palace_projection,
     derive_shortcut_hints,
     rank_shortcut_candidates_for_memory,
@@ -78,6 +79,7 @@ def build_memory_palace_shortcut_proof(
         "Z",
     )
     nodes = _fixture_nodes()
+    navigation_index = build_memory_palace_navigation_index(nodes)
     shortcuts = derive_shortcut_hints(
         nodes,
         min_shared_selector_keys=1,
@@ -103,9 +105,18 @@ def build_memory_palace_shortcut_proof(
         MEMORY_ID,
         max_candidates=3,
     )
-    authority_boundary = _authority_boundary(projection, ranked_candidates)
     top_candidate = ranked_candidates[0] if ranked_candidates else {}
-    bypass_analysis = _bypass_analysis(top_candidate, authority_boundary)
+    navigation_summary = _navigation_summary(navigation_index, top_candidate)
+    authority_boundary = _authority_boundary(
+        projection,
+        ranked_candidates,
+        navigation_index,
+    )
+    bypass_analysis = _bypass_analysis(
+        top_candidate,
+        authority_boundary,
+        navigation_summary,
+    )
     shortcut_proven = bool(ranked_candidates) and _authority_boundary_ok(
         authority_boundary,
     )
@@ -124,6 +135,7 @@ def build_memory_palace_shortcut_proof(
             "placement_count": len(projection["placements"]),
             "shortcut_hint_count": len(projection["shortcuts"]),
         },
+        "navigation_index": navigation_summary,
         "ranked_shortcuts": {
             "candidate_count": len(ranked_candidates),
             "top_candidate": top_candidate,
@@ -158,6 +170,7 @@ def build_memory_palace_shortcut_proof(
 
 def render_markdown(report: dict[str, Any]) -> str:
     projection = report["projection"]
+    navigation = report["navigation_index"]
     ranked = report["ranked_shortcuts"]
     top = ranked["top_candidate"]
     lines = [
@@ -179,6 +192,16 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{projection['shortcut_hint_count']} | {ranked['candidate_count']} |"
         ),
         "",
+        "## Navigation Index",
+        "",
+        f"- max_depth: `{navigation['max_depth']}`",
+        "- source_path: `"
+        + " / ".join(navigation.get("source_path_node_ids", []))
+        + "`",
+        "- target_path: `"
+        + " / ".join(navigation.get("target_path_node_ids", []))
+        + "`",
+        "",
         "## Top Shortcut Candidate",
         "",
         f"- target_node_id: `{top.get('target_node_id', 'none')}`",
@@ -198,6 +221,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         (
             "- intermediate_hops_skipped: `"
             + str(report["bypass_analysis"]["intermediate_hops_skipped"])
+            + "`"
+        ),
+        (
+            "- navigation_index_used: `"
+            + str(report["bypass_analysis"]["navigation_index_used"]).lower()
             + "`"
         ),
         (
@@ -285,6 +313,7 @@ def _fixture_nodes() -> list[PalaceNode]:
 def _bypass_analysis(
     top_candidate: dict[str, Any],
     authority_boundary: dict[str, bool],
+    navigation_summary: dict[str, Any],
 ) -> dict[str, Any]:
     hierarchy_hops = int(top_candidate.get("hierarchy_hops") or 0)
     projected_shortcut_hops = 1 if top_candidate else 0
@@ -293,9 +322,16 @@ def _bypass_analysis(
     return {
         "source_node_id": top_candidate.get("source_node_id", "none"),
         "target_node_id": top_candidate.get("target_node_id", "none"),
+        "source_path_node_ids": navigation_summary["source_path_node_ids"],
+        "target_path_node_ids": navigation_summary["target_path_node_ids"],
         "hierarchy_hops": hierarchy_hops,
         "projected_shortcut_hops": projected_shortcut_hops,
         "intermediate_hops_skipped": intermediate_hops_skipped,
+        "navigation_index_used": bool(
+            navigation_summary["source_path_node_ids"]
+            and navigation_summary["target_path_node_ids"]
+        ),
+        "navigation_index_runtime_load_required": False,
         "intermediate_node_traversal_required": False,
         "intermediate_nodes_not_loaded": bool(top_candidate) and authority_ok,
         "shortcut_ranked_without_runtime_dispatch": bool(top_candidate)
@@ -309,9 +345,30 @@ def _bypass_analysis(
     }
 
 
+def _navigation_summary(
+    navigation_index: dict[str, Any],
+    top_candidate: dict[str, Any],
+) -> dict[str, Any]:
+    paths_by_node = navigation_index.get("paths_by_node") or {}
+    source_node_id = str(top_candidate.get("source_node_id") or "")
+    target_node_id = str(top_candidate.get("target_node_id") or "")
+    source_path = paths_by_node.get(source_node_id, [])
+    target_path = paths_by_node.get(target_node_id, [])
+    return {
+        "schema_version": navigation_index["schema_version"],
+        "source_of_truth": navigation_index["source_of_truth"],
+        "node_count": navigation_index["node_count"],
+        "root_node_ids": list(navigation_index["root_node_ids"]),
+        "max_depth": navigation_index["max_depth"],
+        "source_path_node_ids": list(source_path),
+        "target_path_node_ids": list(target_path),
+    }
+
+
 def _authority_boundary(
     projection: dict[str, Any],
     candidates: Sequence[dict[str, Any]],
+    navigation_index: dict[str, Any],
 ) -> dict[str, bool]:
     projection_false_fields = (
         "runtime_authority",
@@ -328,11 +385,26 @@ def _authority_boundary(
         "promotion_authority",
         "solver_call_authority",
     )
+    navigation_false_fields = (
+        "runtime_authority",
+        "storage_write_authority",
+        "bridge_write_authority",
+        "gate_skip_authority",
+        "promotion_authority",
+        "solver_call_authority",
+    )
     return {
         "read_side_projection_only": projection.get("source_of_truth")
         == "projection_only",
         "projection_authority_flags_false": all(
             projection.get(field) is False for field in projection_false_fields
+        ),
+        "navigation_authority_flags_false": (
+            navigation_index.get("source_of_truth") == "projection_only"
+            and all(
+                navigation_index.get(field) is False
+                for field in navigation_false_fields
+            )
         ),
         "candidate_no_runtime_mutation": all(
             candidate.get("no_runtime_mutation") is True
@@ -357,6 +429,7 @@ def _authority_boundary_ok(boundary: dict[str, bool]) -> bool:
     required_true = (
         "read_side_projection_only",
         "projection_authority_flags_false",
+        "navigation_authority_flags_false",
         "candidate_no_runtime_mutation",
         "candidate_authority_flags_false",
     )

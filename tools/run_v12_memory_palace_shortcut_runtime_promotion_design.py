@@ -139,13 +139,19 @@ def build_memory_palace_shortcut_runtime_promotion_design(
         min_intermediate_hops_skipped=min_intermediate_hops_skipped,
     )
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    candidate_report = source_report or build_memory_palace_shortcut_promotion_candidate_report(
-        now_utc=generated_at,
-        min_rank_score=min_rank_score,
-        min_intermediate_hops_skipped=min_intermediate_hops_skipped,
+    candidate_report = (
+        build_memory_palace_shortcut_promotion_candidate_report(
+            now_utc=generated_at,
+            min_rank_score=min_rank_score,
+            min_intermediate_hops_skipped=min_intermediate_hops_skipped,
+        )
+        if source_report is None
+        else source_report
     )
-    verification = source_verification or verify_memory_palace_shortcut_promotion_candidate_report(
-        candidate_report
+    verification = (
+        verify_memory_palace_shortcut_promotion_candidate_report(candidate_report)
+        if source_verification is None
+        else source_verification
     )
     source_verified = _source_verified(candidate_report, verification)
     candidate_rows = list(candidate_report.get("promotion_candidates") or [])

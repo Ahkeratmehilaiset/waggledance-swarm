@@ -124,6 +124,34 @@ def test_bad_source_report_blocks_without_echoing_design_rows() -> None:
     assert "palace.json" not in encoded
 
 
+def test_explicit_empty_source_report_fails_closed() -> None:
+    report = build_memory_palace_shortcut_runtime_promotion_design(
+        now_utc=_fixed_now(),
+        source_report={},
+    )
+
+    assert report["ok"] is False
+    assert report["source_verification_ok"] is False
+    assert report["source_report_version"] == ""
+    assert report["runtime_promotion_designs"] == []
+    assert "source_candidate_report_not_ok" in report["blockers"]
+    assert "source_candidate_report_not_verified" in report["blockers"]
+
+
+def test_explicit_empty_source_verification_fails_closed() -> None:
+    report = build_memory_palace_shortcut_runtime_promotion_design(
+        now_utc=_fixed_now(),
+        source_verification={},
+    )
+
+    assert report["ok"] is False
+    assert report["source_verification_ok"] is False
+    assert report["source_verification_version"] == ""
+    assert report["runtime_promotion_designs"] == []
+    assert "source_candidate_verification_not_ok" in report["blockers"]
+    assert "source_candidate_report_not_verified" in report["blockers"]
+
+
 def test_strict_threshold_blocks_design_without_granting_action() -> None:
     report = build_memory_palace_shortcut_runtime_promotion_design(
         now_utc=_fixed_now(),

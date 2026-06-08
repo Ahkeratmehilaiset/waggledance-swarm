@@ -162,7 +162,7 @@ Latest local claim audit (scratch run on 2026-05-10; measured numbers repeated h
 | 50k FIFO fallback / miss | 0 / 0 |
 | 50k warm lookup p99 | 0.2198 ms |
 | 50k cold lookup p99 after cache attach | 354.8117 ms |
-| Mined solver dispatch | 21/21 cases PASS |
+| Mined solver dispatch | 18/18 cases PASS |
 | Branch-isolation single-hot p99 degradation | 2.806x |
 | Branch-isolation adversarial p99 degradation | 12.217x |
 | Group-call pipeline targeted tests | 90 passed |

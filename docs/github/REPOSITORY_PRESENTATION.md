@@ -84,7 +84,7 @@ evidence:
 * 50,000 synthetic solver descriptors: 2,000/2,000 capability hits,
   zero FIFO fallback, zero miss, warm p99 0.2198 ms.
 * Mined solver dispatch: 30 runtime signals -> 14 candidates -> 6
-  allowlisted registered solvers; 21/21 dispatch cases passed across
+  allowlisted registered solvers; 18/18 dispatch cases passed across
   the six low-risk families.
 * 2D branch isolation is measured, not solved: single-hot cross-branch
   load caused 2.806x p99 degradation; adversarial cold-flood load caused

@@ -14,6 +14,7 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -63,6 +64,25 @@ _AUTHORITY_FIELDS = frozenset(
         "direct_bridge_write_performed",
     }
 )
+_FORBIDDEN_KEY_TOKENS = frozenset(
+    {
+        "content",
+        "filename",
+        "filepath",
+        "localpath",
+        "path",
+        "payload",
+        "raw",
+    }
+)
+_PATH_MARKER_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|\\\\|file://|"
+    r"(?<![:/])/(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]*)"
+)
+
+
+class DuplicateKeyError(ValueError):
+    """Raised when a JSON object repeats a key."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,6 +133,8 @@ def build_memory_palace_hierarchy_map_summary(
     blockers: list[str] = []
     if _contains_non_finite(projection):
         blockers.append("projection_contains_non_finite")
+    if _contains_forbidden_key_or_path_marker(projection):
+        blockers.append("projection_contains_forbidden_payload_or_path_marker")
     if projection.get("schema_version") != MEMORY_PALACE_PROJECTION_SCHEMA_VERSION:
         blockers.append("projection_schema_version_mismatch")
     if projection.get("source_of_truth") != "projection_only":
@@ -307,11 +329,25 @@ def render_markdown(report: Mapping[str, Any]) -> str:
 
 def _load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
     except OSError as exc:
         raise ValueError(f"projection_json_read_failed:{exc.__class__.__name__}") from exc
+    except DuplicateKeyError as exc:
+        raise ValueError("projection_json_duplicate_key") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"projection_json_decode_failed:{exc.__class__.__name__}") from exc
+
+
+def _reject_duplicate_keys(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateKeyError(key)
+        result[key] = value
+    return result
 
 
 def _failure_summary(*blockers: str) -> dict[str, Any]:
@@ -412,7 +448,7 @@ def _authority_violations(value: Any, path: str = "$") -> list[str]:
         for key, child in value.items():
             child_path = f"{path}.{key}"
             if str(key) in _AUTHORITY_FIELDS and child is not False:
-                violations.append(child_path)
+                violations.append(str(key))
             violations.extend(_authority_violations(child, child_path))
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -428,6 +464,36 @@ def _contains_non_finite(value: Any) -> bool:
     if isinstance(value, list):
         return any(_contains_non_finite(child) for child in value)
     return False
+
+
+def _contains_forbidden_key_or_path_marker(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if _forbidden_key(str(key)) or _contains_path_marker(str(key)):
+                return True
+            if _contains_forbidden_key_or_path_marker(child):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_forbidden_key_or_path_marker(child) for child in value)
+    if isinstance(value, str):
+        return _contains_path_marker(value)
+    return False
+
+
+def _contains_path_marker(value: str) -> bool:
+    return bool(_PATH_MARKER_RE.search(value))
+
+
+def _forbidden_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+    collapsed = normalized.replace("_", "")
+    return (
+        normalized in _FORBIDDEN_KEY_TOKENS
+        or collapsed in _FORBIDDEN_KEY_TOKENS
+        or any(token in _FORBIDDEN_KEY_TOKENS for token in tokens)
+    )
 
 
 def _counter(values: Any) -> Counter[str]:

@@ -146,6 +146,41 @@ def test_summary_fails_closed_on_malformed_or_unsafe_projection() -> None:
     assert report["authority_boundary"]["runtime_authority_granted"] is False
 
 
+def test_summary_rejects_payload_and_path_markers_without_echo() -> None:
+    path_projection = _projection()
+    path_projection["nodes"][0]["metadata"] = {
+        "payload": "C:\\secret\\case.txt"
+    }
+
+    report = build_memory_palace_hierarchy_map_summary(path_projection)
+
+    assert report["ok"] is False
+    assert "projection_contains_forbidden_payload_or_path_marker" in report[
+        "blockers"
+    ]
+    encoded = json.dumps(report, sort_keys=True)
+    assert "secret" not in encoded
+    assert "case.txt" not in encoded
+
+    raw_key_projection = _projection()
+    raw_key_projection["nodes"][0]["metadata"] = {
+        "/workspace/waggledance/private/raw.json": {"runtime_authority": True}
+    }
+
+    report = build_memory_palace_hierarchy_map_summary(raw_key_projection)
+
+    assert report["ok"] is False
+    assert "projection_contains_forbidden_payload_or_path_marker" in report[
+        "blockers"
+    ]
+    assert "authority_effect_flag_not_false:runtime_authority" in report[
+        "blockers"
+    ]
+    encoded = json.dumps(report, sort_keys=True)
+    assert "workspace" not in encoded
+    assert "raw.json" not in encoded
+
+
 def test_summary_fails_closed_on_unknown_projection_references() -> None:
     unknown_placement = _projection()
     unknown_placement["placements"][0]["palace_node_id"] = "room.missing"
@@ -188,6 +223,32 @@ def test_cli_fails_closed_on_invalid_json(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert "projection_json_decode_failed:JSONDecodeError" in payload["blockers"]
+
+
+def test_cli_rejects_duplicate_json_keys_without_echoing_payload_path(
+    tmp_path: Path,
+) -> None:
+    projection_path = tmp_path / "source_txt.json"
+    projection_path.write_text(
+        (
+            '{"schema_version":"memory_palace_projection.v1",'
+            '"schema_version":"memory_palace_projection.v1",'
+            '"payload":"C:\\\\secret\\\\case.txt"}'
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run("--projection-json", str(projection_path), "--json")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["blockers"] == ["projection_json_duplicate_key"]
+    assert "secret" not in result.stdout
+    assert "case.txt" not in result.stdout
+    assert "source_txt" not in result.stdout
+    assert "secret" not in result.stderr
+    assert "case.txt" not in result.stderr
 
 
 def _projection() -> dict[str, object]:

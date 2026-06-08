@@ -414,6 +414,9 @@ def _pattern_markers(bullet: str) -> tuple[str, ...]:
         "_sequence_errors",
         "verify_manifest",
         "write_receipt_bundle",
+        "gate_skip=True",
+        "skip_gate=True",
+        "fast_track_grants_runtime_authority=True",
         "PRIVATE_MARKER",
         "_DO_NOT_LEAK",
     ):

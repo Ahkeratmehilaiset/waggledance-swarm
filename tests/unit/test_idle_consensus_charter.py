@@ -66,6 +66,9 @@ LEGACY_CODE_PATTERN_MARKERS = {
     "_sequence_errors",
     "verify_manifest",
     "write_receipt_bundle",
+    "gate_skip=True",
+    "skip_gate=True",
+    "fast_track_grants_runtime_authority=True",
     _PRIVACY_CANARY_MARKER,
     _SECOND_PRIVACY_CANARY_MARKER,
 }
@@ -324,6 +327,18 @@ def test_evaluate_diff_content_blocks_lowercase_colon_second_gate_value() -> Non
     diff = "+ operator_gate_required: true\n"
     decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is False
+
+
+def test_evaluate_diff_content_blocks_gate_skip_and_fast_track_authority_claims() -> None:
+    charter = load_charter()
+    for diff in (
+        "+ gate_skip = True\n",
+        "+ skip_gate: true\n",
+        "+ fast_track_grants_runtime_authority = true\n",
+    ):
+        decision = evaluate_diff_content(charter, diff)
+        assert decision.allowed is False
+        assert decision.code_pattern_hits
 
 
 def test_evaluate_diff_content_blocks_second_sequence_marker() -> None:

@@ -88,6 +88,7 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 Even within allowlisted file paths, an autonomous merge **must refuse** if the diff content matches any of these patterns:
 
 * Changes to `auto_execute=False` or `operator_gate_required=True` constants in any schema or solver
+* Changes that claim gate-skip or fast-track authority: `gate_skip=True`, `skip_gate=True`, or `fast_track_grants_runtime_authority=True`
 * Changes to `DEFAULT_MAX_INSTANCES_PER_DAY` constant in `tools/idle_protocol_activate.py`
 * Changes to `_safe_label`, `_sequence_errors`, or instance-chain logic in `tools/idle_protocol_activate.py`
 * Changes to `verify_manifest` ok-check or canonical digest logic in `tools/verify_magma_receipt.py` or `waggledance/core/magma/`

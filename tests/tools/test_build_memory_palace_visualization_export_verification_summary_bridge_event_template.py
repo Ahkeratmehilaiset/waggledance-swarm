@@ -309,6 +309,44 @@ def test_visualization_summary_bridge_event_template_blocks_unsafe_summary_contr
         assert report["artifact_payloads_included"] is False
 
 
+def test_visualization_summary_bridge_event_template_rejects_unexpected_summary_fields_without_echoing() -> None:
+    cases = (
+        ("metadata", {"value": "do not echo"}),
+        ("source_refs", [{"value": "do not echo"}]),
+        ("approval_granted", True),
+        ("payload_included", True),
+        ("source_export_ok", False),
+    )
+
+    for key, value in cases:
+        summary = _valid_summary()
+        summary[key] = value
+
+        report = build_memory_palace_visualization_export_verification_summary_bridge_event_template(
+            summary=summary,
+            agent_id="codex-tools-1",
+            task_id=(
+                "codex-tools-1/"
+                "memory-palace-visualization-verification-summary-template-20260608"
+            ),
+            to="operator,codex-lead-1",
+        )
+        encoded = json.dumps(report, sort_keys=True)
+
+        assert report["ok"] is False, key
+        assert report["blockers"] == [
+            "memory_palace_visualization_export_verification_summary_"
+            "bridge_event_template_failed:"
+            "verification_summary_unexpected_field_present"
+        ]
+        assert "do not echo" not in encoded
+        assert "summary.json" not in encoded
+        assert FORBIDDEN_PATH_PREFIX not in encoded
+        assert report["direct_bridge_write_performed"] is False
+        assert report["approval_granted"] is False
+        assert report["artifact_payloads_included"] is False
+
+
 def test_visualization_summary_bridge_event_template_rejects_path_markers_path_free() -> None:
     summary = _valid_summary()
     summary["warnings"] = [FORBIDDEN_REPORT_PATH]

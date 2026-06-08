@@ -129,6 +129,25 @@ EXTRA_TEMPLATE_FALSE_FIELDS = (
     "external_fetch_performed",
     "external_writes_applied",
 )
+_ALLOWED_SUMMARY_FIELDS = frozenset(
+    {
+        "summary_version",
+        "ok",
+        "source_verification_version",
+        "source_verification_ok",
+        "checks",
+        "counts",
+        "required_true_flags",
+        "authority_boundary",
+        "blocker_count",
+        "warning_count",
+        "blockers",
+        "warnings",
+        "operator_interpretation",
+        *REQUIRED_TRUE_FIELDS,
+        *AUTHORITY_FALSE_FIELDS,
+    }
+)
 
 
 class SafeInputError(ValueError):
@@ -357,6 +376,8 @@ def build_memory_palace_visualization_export_verification_summary_bridge_event_t
 
 def _verification_summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
     blockers: list[str] = []
+    if set(summary) - _ALLOWED_SUMMARY_FIELDS:
+        blockers.append("verification_summary_unexpected_field_present")
     if summary.get("summary_version") != SOURCE_SUMMARY_VERSION:
         blockers.append("verification_summary_version_mismatch")
     if summary.get("ok") is not True:

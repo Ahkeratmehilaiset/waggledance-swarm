@@ -55,6 +55,84 @@ def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path)
     assert report["open_incoming_count"] == 1
 
 
+def test_merge_blocking_incoming_request_interrupts_own_claim(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim = claim_task(
+        agent="codex-tools-1",
+        task_id="owned-tools-task",
+        summary="already started",
+        mode="write",
+        write_scope=["tools/x.py"],
+        bridge_root=bridge,
+    )
+    events = [
+        {
+            "ts_utc": "2026-06-08T06:06:43Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "codex-lead-1/v12-solver-growth-heldout-dispatch-wave2-20260608",
+            "status": "rco_request_tools_build_consensus_985",
+            "message": (
+                "TOOLS: #985 is RCO_PASS'd + CI 6/6 + CLEAN; needs your "
+                "cross-review build_consensus_pass with payload.head."
+            ),
+            "payload": {
+                "head": "6af2dcf1e1cea2fbc43349ff9419488f2355adbf",
+            },
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[claim],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == (
+        "codex-lead-1/v12-solver-growth-heldout-dispatch-wave2-20260608"
+    )
+    assert report["safe_mode"] == "read-only"
+    assert report["incoming"]["agent"] == "claude-rco-1"
+    assert report["claim_snapshot"]["own"][0]["task_id"] == "owned-tools-task"
+    assert report["open_incoming_count"] == 1
+
+
+def test_free_text_build_consensus_request_does_not_interrupt_own_claim(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim = claim_task(
+        agent="codex",
+        task_id="owned-task",
+        summary="already started",
+        mode="write",
+        write_scope=["tools/x.py"],
+        bridge_root=bridge,
+    )
+    events = [
+        {
+            "ts_utc": "2026-06-08T06:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "ordinary-api-coordination",
+            "status": "request",
+            "message": "Please help build consensus on the API naming.",
+        }
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[claim])
+
+    assert report["action"] == "continue_claim"
+    assert report["task_id"] == "owned-task"
+    assert report["safe_mode"] == "write"
+    assert report["open_incoming_count"] == 1
+
+
 def test_recommends_answering_latest_unanswered_incoming_request() -> None:
     events = [
         {

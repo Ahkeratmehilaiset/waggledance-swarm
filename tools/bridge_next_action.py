@@ -340,7 +340,29 @@ def recommend_next_action(
         now_utc=effective_now,
         idle_warn_minutes=production_idle_warn_minutes,
     )
+    merge_blocking_request = _latest_merge_blocking_request(open_requests)
 
+    if own_claims and merge_blocking_request is not None:
+        request = merge_blocking_request
+        requester = _event_agent(request)
+        kind = f"{_event_type(request)}/{_event_status(request)}".strip("/")
+        summary = f"answer merge-blocking incoming {kind} from {requester}"
+        return _report(
+            agent=agent,
+            action="answer_incoming",
+            task_id=_task_id(request),
+            safe_mode="read-only",
+            summary=summary,
+            events=events,
+            claims=active_claims,
+            stale_claims=stale_claims,
+            open_requests=open_requests,
+            stale_open_requests=reported_stale_open_requests,
+            archived_stale_open_requests=archived_stale_open_requests,
+            foreign_write_claims=foreign_write_claims,
+            production_liveness=production_liveness,
+            request=request,
+        )
     if own_claims:
         claim = own_claims[0]
         return _report(
@@ -556,6 +578,52 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
     )
+
+
+def _latest_merge_blocking_request(
+    requests: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    for request in reversed(requests):
+        if _is_merge_blocking_request(request):
+            return request
+    return None
+
+
+def _is_merge_blocking_request(event: Mapping[str, Any]) -> bool:
+    tokens = _merge_blocking_signal_tokens(event)
+    if {"build", "consensus"}.issubset(tokens) and tokens.intersection(
+        {"request", "requested", "required", "needed", "missing"}
+    ):
+        return True
+    if {"rco", "pass"}.issubset(tokens) and tokens.intersection(
+        {"request", "requested", "required", "needed", "missing"}
+    ):
+        return True
+    if "merge" in tokens and tokens.intersection(
+        {"ready", "eligible", "blocking", "blocker", "required", "needed"}
+    ):
+        return True
+    return False
+
+
+def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
+    fields: list[str] = [
+        _event_type(event),
+        _event_status(event),
+    ]
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        for key, value in payload.items():
+            if str(key) in {
+                "current_blocker",
+                "decision",
+                "required_action",
+                "request",
+                "status",
+            } and isinstance(value, (str, int, float, bool)):
+                fields.append(str(value))
+    text = " ".join(fields)
+    return {token for token in re.split(r"[^a-z0-9]+", text.lower()) if token}
 
 
 def _is_answer_like(event: Mapping[str, Any]) -> bool:

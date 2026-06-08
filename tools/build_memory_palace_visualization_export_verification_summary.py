@@ -150,6 +150,8 @@ def build_memory_palace_visualization_export_verification_summary(
         blockers.append("verification_version_mismatch")
     if verification.get("ok") is not True:
         blockers.append("source_verification_not_ok")
+    if verification.get("source_export_ok") is not True:
+        blockers.append("source_export_not_ok")
 
     checks = _safe_checks(verification, blockers)
     counts = _safe_counts(verification, blockers)

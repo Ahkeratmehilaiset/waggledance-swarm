@@ -95,6 +95,22 @@ def test_summary_rejects_source_failure_and_redacts_unsafe_blockers() -> None:
     assert "verification.json" not in encoded
 
 
+def test_summary_rejects_source_export_not_ok() -> None:
+    verification = _valid_verification()
+    verification["source_export_ok"] = False
+
+    summary = build_memory_palace_visualization_export_verification_summary(
+        verification,
+    )
+    encoded = json.dumps(summary, sort_keys=True)
+
+    assert summary["ok"] is False
+    assert "source_export_not_ok" in summary["blockers"]
+    assert '"source_export_ok"' not in encoded
+    assert summary["runtime_authority_granted"] is False
+    assert summary["gate_skip_performed"] is False
+
+
 def test_summary_rejects_unexpected_source_payload_fields_without_echoing() -> None:
     for key in ("metadata", "source_refs", "selectors", "matched_values"):
         verification = _valid_verification()

@@ -143,6 +143,7 @@ def evaluate_diff_content(
         return GateDecision(allowed=True, reason="empty diff content")
 
     hits: list[str] = []
+    ordinary_diff_text = _diff_without_removed_body_lines(diff_text)
     for pattern in charter.code_pattern_denylist:
         markers = _pattern_markers(pattern)
         if _is_privacy_canary_pattern(markers):
@@ -159,7 +160,7 @@ def evaluate_diff_content(
             if _receipt_guard_hits(receipt_markers, diff_text):
                 hits.append(pattern)
             continue
-        if any(_marker_matches_diff(marker, diff_text) for marker in markers):
+        if any(_marker_matches_diff(marker, ordinary_diff_text) for marker in markers):
             hits.append(pattern)
     if hits:
         return GateDecision(
@@ -168,6 +169,21 @@ def evaluate_diff_content(
             reason="code pattern denylist hit",
         )
     return GateDecision(allowed=True, reason="no code pattern denylist hit")
+
+
+def _diff_without_removed_body_lines(diff_text: str) -> str:
+    """Return diff text with deletion body lines removed.
+
+    Ordinary code-pattern denylist markers are meant to catch additions and
+    surviving context, not block cleanup diffs whose only occurrence is being
+    deleted. Special receipt/privacy guards intentionally inspect the full diff.
+    """
+    lines = [
+        line
+        for line in diff_text.splitlines()
+        if not (line.startswith("-") and not line.startswith("--- "))
+    ]
+    return "\n".join(lines)
 
 
 def _split_sections(text: str) -> dict[str, str]:

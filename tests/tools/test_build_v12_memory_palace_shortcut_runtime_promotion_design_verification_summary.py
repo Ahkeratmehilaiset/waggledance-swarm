@@ -97,6 +97,22 @@ def test_summary_fails_closed_on_missing_version() -> None:
     assert summary["runtime_authority_granted"] is False
 
 
+def test_summary_fails_closed_on_non_mapping_inputs() -> None:
+    for unsafe in (None, [], ["x"], "not-json-object"):
+        summary = build_memory_palace_shortcut_runtime_promotion_design_verification_summary(
+            unsafe,
+        )
+
+        assert summary["ok"] is False
+        assert summary["blockers"] == [
+            "memory_palace_shortcut_runtime_promotion_design_verification_"
+            "summary_failed:"
+            "memory_palace_shortcut_runtime_promotion_design_verification_"
+            "not_object",
+        ]
+        assert summary["runtime_authority_granted"] is False
+
+
 def test_render_markdown_reports_summary_without_release_decision() -> None:
     summary = build_memory_palace_shortcut_runtime_promotion_design_verification_summary(
         _valid_verification(),

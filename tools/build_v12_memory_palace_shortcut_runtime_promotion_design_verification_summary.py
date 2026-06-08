@@ -116,12 +116,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def build_memory_palace_shortcut_runtime_promotion_design_verification_summary(
-    verification: Mapping[str, Any],
+    verification: Any,
 ) -> dict[str, Any]:
     """Return a path-free, authority-free summary for a verification report."""
 
     if not isinstance(verification, Mapping):
-        raise VerificationSummaryError(f"{VERIFICATION_ARTIFACT_ID}_not_object")
+        return _failure_summary(f"{VERIFICATION_ARTIFACT_ID}_not_object")
 
     blockers: list[str] = []
     if _contains_non_finite(verification):

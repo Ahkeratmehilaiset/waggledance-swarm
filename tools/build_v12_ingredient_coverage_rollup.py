@@ -26,13 +26,13 @@ from tools.build_v12_solver_growth_family_coverage_summary import (  # noqa: E40
     REPORT_VERSION as SOLVER_GROWTH_REPORT_VERSION,
     build_solver_growth_family_coverage_summary,
 )
-from tools.run_v12_memory_palace_shortcut_promotion_candidates import (  # noqa: E402
-    REPORT_VERSION as MEMORY_PALACE_CANDIDATE_REPORT_VERSION,
-    build_memory_palace_shortcut_promotion_candidate_report,
+from tools.run_v12_memory_palace_shortcut_runtime_promotion_design import (  # noqa: E402
+    REPORT_VERSION as MEMORY_PALACE_RUNTIME_DESIGN_REPORT_VERSION,
+    build_memory_palace_shortcut_runtime_promotion_design,
 )
-from tools.verify_v12_memory_palace_shortcut_promotion_candidates import (  # noqa: E402
+from tools.verify_v12_memory_palace_shortcut_runtime_promotion_design import (  # noqa: E402
     VERIFICATION_VERSION as MEMORY_PALACE_VERIFICATION_VERSION,
-    verify_memory_palace_shortcut_promotion_candidate_report,
+    verify_memory_palace_shortcut_runtime_promotion_design,
 )
 
 
@@ -60,9 +60,12 @@ MEMORY_FALSE_FIELDS = (
     "promotion_action_allowed",
     "gate_skip_performed",
     "network_access_performed",
+    "approval_granted",
+    "release_decision_made",
+    "automatic_release_decision",
 )
 MEMORY_TRUE_FIELDS = (
-    "read_side_report_only",
+    "design_only",
     "manual_review_required",
     "operator_gate_required_for_runtime_promotion",
 )
@@ -90,12 +93,12 @@ INGREDIENT_SPECS = (
         "true_fields": COMMON_TRUE_FIELDS,
     },
     {
-        "id": "memory_palace_shortcut_candidates",
-        "label": "Memory Palace Shortcut Candidates",
-        "expected_report_version": MEMORY_PALACE_CANDIDATE_REPORT_VERSION,
+        "id": "memory_palace_shortcut_runtime_design",
+        "label": "Memory Palace Shortcut Runtime-Promotion Design",
+        "expected_report_version": MEMORY_PALACE_RUNTIME_DESIGN_REPORT_VERSION,
         "false_fields": MEMORY_FALSE_FIELDS,
         "true_fields": MEMORY_TRUE_FIELDS,
-        "verification_id": "memory_palace_shortcut_candidates_verification",
+        "verification_id": "memory_palace_shortcut_runtime_design_verification",
         "expected_verification_version": MEMORY_PALACE_VERIFICATION_VERSION,
     },
 )
@@ -259,15 +262,15 @@ def _source_reports(
         lambda: build_adversarial_corpus_maturity_summary(now_utc=now_utc),
     )
     memory_report = provided_or_build(
-        "memory_palace_shortcut_candidates",
-        lambda: build_memory_palace_shortcut_promotion_candidate_report(
+        "memory_palace_shortcut_runtime_design",
+        lambda: build_memory_palace_shortcut_runtime_promotion_design(
             now_utc=now_utc
         ),
     )
-    result["memory_palace_shortcut_candidates"] = memory_report
-    result["memory_palace_shortcut_candidates_verification"] = provided_or_build(
-        "memory_palace_shortcut_candidates_verification",
-        lambda: verify_memory_palace_shortcut_promotion_candidate_report(
+    result["memory_palace_shortcut_runtime_design"] = memory_report
+    result["memory_palace_shortcut_runtime_design_verification"] = provided_or_build(
+        "memory_palace_shortcut_runtime_design_verification",
+        lambda: verify_memory_palace_shortcut_runtime_promotion_design(
             memory_report
         ),
     )
@@ -390,8 +393,8 @@ def _ingredient_next_slice(
             target = targets[0]
             return f"expand_adversarial_corpus:{target['kind']}:{target['name']}"
         return "maintain_adversarial_corpus_maturity_floor"
-    if ingredient_id == "memory_palace_shortcut_candidates":
-        return "operator_gated_runtime_promotion_design_only"
+    if ingredient_id == "memory_palace_shortcut_runtime_design":
+        return "operator_authorized_shadow_replay_design_fixture_only"
     return "no_next_slice"
 
 

@@ -153,7 +153,7 @@ def test_rco2_can_satisfy_recognized_rco_slot() -> None:
     )
 
 
-def test_descriptive_build_consensus_payload_head_counts_for_promotion() -> None:
+def test_descriptive_build_consensus_payload_head_fails_promotion() -> None:
     events = [
         _event(
             "codex-lead-1",
@@ -174,8 +174,9 @@ def test_descriptive_build_consensus_payload_head_counts_for_promotion() -> None
 
     report = _evaluate(events=events)
 
-    assert report["eligible"] is True
-    assert report["gate_results"]["bridge_consensus"]["ok"] is True
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
+    assert report["gate_results"]["bridge_consensus"]["ok"] is False
 
 
 def test_descriptive_build_consensus_stale_payload_head_fails_promotion() -> None:

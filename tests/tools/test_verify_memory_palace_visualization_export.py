@@ -158,6 +158,20 @@ def test_rejects_non_finite_payload_keys_and_dynamic_paths_without_echoing_value
     assert "edge.json" not in encoded
 
 
+def test_rejects_extra_source_payload_contract_keys_without_echoing_values() -> None:
+    for key in ("metadata", "source_refs", "selectors", "matched_values"):
+        export = _valid_export()
+        export["nodes"][0][key] = {"secret": "do not echo"}
+
+        verification = verify_memory_palace_visualization_export(export)
+        encoded = json.dumps(verification, sort_keys=True)
+
+        assert verification["ok"] is False, key
+        assert "forbidden_payload_key_present" in verification["blockers"]
+        assert key not in encoded
+        assert "do not echo" not in encoded
+
+
 def test_rejects_unknown_edge_target_and_shortcut_count_drift() -> None:
     export = _valid_export()
     shortcut_edge = [

@@ -70,9 +70,13 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset(
         "filename",
         "filepath",
         "localpath",
+        "matched_values",
+        "metadata",
         "path",
         "payload",
         "raw",
+        "selectors",
+        "source_refs",
         "raw_payload",
         "source_path",
         "artifact_path",
@@ -84,9 +88,12 @@ _FORBIDDEN_KEY_TOKENS = frozenset(
         "filename",
         "filepath",
         "localpath",
+        "matched",
+        "metadata",
         "path",
         "payload",
         "raw",
+        "selectors",
     }
 )
 _ALLOWED_INERT_KEY_NAMES = frozenset(_FALSE_BOUNDARY_FIELDS) | frozenset(

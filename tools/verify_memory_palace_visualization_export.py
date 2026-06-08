@@ -78,6 +78,22 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset(
         "artifact_path",
     }
 )
+_FORBIDDEN_KEY_TOKENS = frozenset(
+    {
+        "content",
+        "filename",
+        "filepath",
+        "localpath",
+        "path",
+        "payload",
+        "raw",
+    }
+)
+_ALLOWED_INERT_KEY_NAMES = frozenset(_FALSE_BOUNDARY_FIELDS) | frozenset(
+    {
+        "path_node_ids",
+    }
+)
 _PATH_MARKER_RE = re.compile(
     r"(?:[A-Za-z]:[\\/]|\\\\|file://|"
     r"(?<![:/])/(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]*)"
@@ -651,9 +667,14 @@ def _contains_forbidden_payload_key(value: Any) -> bool:
         for key, child in value.items():
             normalized = str(key).lower().replace("-", "_")
             collapsed = normalized.replace("_", "")
+            tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
             if (
-                normalized in _FORBIDDEN_PAYLOAD_KEYS
-                or collapsed in _FORBIDDEN_PAYLOAD_KEYS
+                normalized not in _ALLOWED_INERT_KEY_NAMES
+                and (
+                    normalized in _FORBIDDEN_PAYLOAD_KEYS
+                    or collapsed in _FORBIDDEN_PAYLOAD_KEYS
+                    or bool(set(tokens) & _FORBIDDEN_KEY_TOKENS)
+                )
             ):
                 return True
             if _contains_forbidden_payload_key(child):

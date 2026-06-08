@@ -138,6 +138,7 @@ def test_rejects_authority_boundary_side_effects_path_free() -> None:
 def test_rejects_non_finite_payload_keys_and_dynamic_paths_without_echoing_values() -> None:
     export = _valid_export()
     export["nodes"][0]["placement_count"] = float("nan")
+    export["nodes"][0]["payload_data"] = "secret node content"
     export["raw_payload"] = {"secret": "do not echo"}
     export["source_path"] = r"C:\operator\private\visualization.json"
     export["edges"][0]["edge_id"] = r"C:\operator\private\edge.json"
@@ -150,6 +151,7 @@ def test_rejects_non_finite_payload_keys_and_dynamic_paths_without_echoing_value
     assert "forbidden_payload_key_present" in verification["blockers"]
     assert "forbidden_path_marker_present" in verification["blockers"]
     assert "edge_0_edge_id_path_marker" in verification["blockers"]
+    assert "secret node content" not in encoded
     assert "do not echo" not in encoded
     assert "operator" not in encoded
     assert "visualization.json" not in encoded

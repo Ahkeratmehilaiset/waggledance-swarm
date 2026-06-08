@@ -125,10 +125,35 @@ def test_duplicate_key_fails_closed_without_echoing_path(tmp_path: Path) -> None
     result = _run("--projection-json", str(projection_path), "--json")
 
     assert result.returncode == 1
-    assert "projection_json_duplicate_key:schema_version" in result.stdout
+    assert "projection_json_duplicate_key" in result.stdout
+    assert "schema_version:" not in result.stdout
     assert "source_txt" not in result.stdout
     assert "secret" not in result.stdout
     assert "C:\\" not in result.stdout
+
+
+def test_path_like_duplicate_key_fails_closed_without_echoing_key(
+    tmp_path: Path,
+) -> None:
+    projection_path = tmp_path / "projection.json"
+    projection_path.write_text(
+        (
+            '{"schema_version":"memory_palace_projection.v1",'
+            '"/workspace/wd/private/source.txt":"first",'
+            '"/workspace/wd/private/source.txt":"second"}'
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run("--projection-json", str(projection_path), "--json")
+
+    assert result.returncode == 1
+    assert "projection_json_duplicate_key" in result.stdout
+    assert "workspace" not in result.stdout
+    assert "private" not in result.stdout
+    assert "source.txt" not in result.stdout
+    assert "workspace" not in result.stderr
+    assert "source.txt" not in result.stderr
 
 
 def test_payload_or_path_markers_fail_closed_without_leakage() -> None:

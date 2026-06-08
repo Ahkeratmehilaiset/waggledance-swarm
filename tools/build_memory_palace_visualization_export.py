@@ -307,7 +307,7 @@ def _load_json(path: Path) -> Any:
     except OSError as exc:
         raise ValueError(f"projection_json_read_failed:{exc.__class__.__name__}") from exc
     except DuplicateKeyError as exc:
-        raise ValueError(f"projection_json_duplicate_key:{_safe_code(str(exc))}") from exc
+        raise ValueError("projection_json_duplicate_key") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"projection_json_decode_failed:{exc.__class__.__name__}") from exc
 

@@ -174,6 +174,7 @@ def build_memory_palace_operator_overview(
 def render_markdown(report: Mapping[str, Any]) -> str:
     hierarchy = _mapping(report.get("hierarchy"))
     aggregate = _mapping(report.get("aggregate"))
+    shortcut_jump_summary = _mapping(aggregate.get("shortcut_jump_summary"))
     lines = [
         "# Memory Palace Operator Overview",
         "",
@@ -227,6 +228,35 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "",
             f"- memory_count: `{aggregate.get('memory_count', 0)}`",
             f"- total_candidate_count: `{aggregate.get('total_candidate_count', 0)}`",
+            (
+                "- shortcut_jump_candidate_count: `"
+                + str(shortcut_jump_summary.get("shortcut_jump_candidate_count", 0))
+                + "`"
+            ),
+            (
+                "- total_hierarchy_hops: `"
+                + str(shortcut_jump_summary.get("total_hierarchy_hops", 0))
+                + "`"
+            ),
+            (
+                "- total_projected_shortcut_hops: `"
+                + str(shortcut_jump_summary.get("total_projected_shortcut_hops", 0))
+                + "`"
+            ),
+            (
+                "- total_intermediate_hops_skipped: `"
+                + str(shortcut_jump_summary.get("total_intermediate_hops_skipped", 0))
+                + "`"
+            ),
+            (
+                "- average_intermediate_hops_skipped: `"
+                + str(
+                    shortcut_jump_summary.get(
+                        "average_intermediate_hops_skipped", 0.0
+                    )
+                )
+                + "`"
+            ),
             (
                 "- unique_source_node_ids: `"
                 + ", ".join(_string_sequence(aggregate.get("unique_source_node_ids")))
@@ -368,11 +398,15 @@ def _aggregate(
     read_paths: Sequence[Mapping[str, Any]],
     hierarchy: Mapping[str, Any],
 ) -> dict[str, Any]:
+    targets = [
+        _mapping(target)
+        for row in read_paths
+        for target in _sequence(row.get("ranked_targets")) or ()
+    ]
     target_ids = sorted(
         {
             _string_field(target, "target_node_id")
-            for row in read_paths
-            for target in _sequence(row.get("ranked_targets")) or ()
+            for target in targets
             if _string_field(target, "target_node_id")
         }
     )
@@ -403,6 +437,58 @@ def _aggregate(
             ),
             default=0,
         ),
+        "shortcut_jump_summary": _shortcut_jump_summary(targets),
+    }
+
+
+def _shortcut_jump_summary(targets: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    total_hierarchy_hops = sum(
+        _intish(target.get("hierarchy_hops")) for target in targets
+    )
+    total_projected_shortcut_hops = sum(
+        _intish(target.get("projected_shortcut_hops")) for target in targets
+    )
+    total_intermediate_hops_skipped = sum(
+        _intish(target.get("intermediate_hops_skipped")) for target in targets
+    )
+    shortcut_jump_candidate_count = sum(
+        1
+        for target in targets
+        if _intish(target.get("projected_shortcut_hops")) > 0
+    )
+    candidate_count = len(targets)
+    average_intermediate_hops_skipped = (
+        round(total_intermediate_hops_skipped / candidate_count, 6)
+        if candidate_count
+        else 0.0
+    )
+    hop_reduction_ratio = (
+        round(total_intermediate_hops_skipped / total_hierarchy_hops, 6)
+        if total_hierarchy_hops
+        else 0.0
+    )
+    return {
+        "candidate_count": candidate_count,
+        "shortcut_jump_candidate_count": shortcut_jump_candidate_count,
+        "total_hierarchy_hops": total_hierarchy_hops,
+        "total_projected_shortcut_hops": total_projected_shortcut_hops,
+        "total_intermediate_hops_skipped": total_intermediate_hops_skipped,
+        "max_intermediate_hops_skipped": max(
+            (_intish(target.get("intermediate_hops_skipped")) for target in targets),
+            default=0,
+        ),
+        "average_intermediate_hops_skipped": average_intermediate_hops_skipped,
+        "hop_reduction_ratio": hop_reduction_ratio,
+        "authority_boundary": {
+            "runtime_route_changed": False,
+            "storage_write_performed": False,
+            "bridge_append_performed": False,
+            "solver_call_performed": False,
+            "scheduler_enqueue_performed": False,
+            "promotion_performed": False,
+            "gate_skip_performed": False,
+            "network_access_performed": False,
+        },
     }
 
 
@@ -535,6 +621,7 @@ def _failure_overview(*blockers: str) -> dict[str, Any]:
             "unique_target_node_ids": [],
             "max_hierarchy_hops": 0,
             "max_intermediate_hops_skipped": 0,
+            "shortcut_jump_summary": _shortcut_jump_summary(()),
         },
         "authority_boundary": {
             "read_side_projection_only": False,

@@ -151,14 +151,14 @@ def _valid_injected_sources() -> dict[str, dict[str, object]]:
     }
     solver_boundary = dict(common_boundary)
     solver_boundary.pop("external_writes_applied")
-    solver_boundary["operator_gate_required_for_runtime_promotion"] = True
+    solver_boundary["operator_authorization_required_for_runtime_promotion"] = True
     memory_verification = {
         "ok": True,
         "verification_version": MEMORY_PALACE_VERIFICATION_VERSION,
         "blockers": [],
         "design_only": True,
         "manual_review_required": True,
-        "operator_gate_required_for_runtime_promotion": True,
+        "operator_authorization_required_for_runtime_promotion": True,
         "runtime_route_changed": False,
         "storage_write_performed": False,
         "bridge_append_performed": False,

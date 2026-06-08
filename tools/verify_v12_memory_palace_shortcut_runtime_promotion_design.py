@@ -35,7 +35,7 @@ _BOUNDARY_TRUE_FIELDS = (
     "source_candidate_verification_ok",
     "design_only",
     "manual_review_required",
-    "operator_gate_required_for_runtime_promotion",
+    "operator_authorization_required_for_runtime_promotion",
     "all_design_rows_action_free",
 )
 _BOUNDARY_FALSE_FIELDS = (
@@ -55,7 +55,7 @@ _BOUNDARY_FALSE_FIELDS = (
 _GUARDRAIL_TRUE_FIELDS = (
     "design_only",
     "manual_review_required",
-    "operator_gate_required_for_runtime_promotion",
+    "operator_authorization_required_for_runtime_promotion",
     "not_router_dispatch",
     "not_solver_call",
     "not_storage_write",
@@ -68,7 +68,7 @@ _GUARDRAIL_TRUE_FIELDS = (
     "deterministic_local_fixture",
 )
 _DESIGN_TRUE_FIELDS = (
-    "operator_gate_required",
+    "operator_authorization_required",
     "manual_review_required",
 )
 
@@ -160,7 +160,7 @@ def verify_memory_palace_shortcut_runtime_promotion_design(
         "design_only": True,
         "read_side_report_only": True,
         "manual_review_required": True,
-        "operator_gate_required_for_runtime_promotion": True,
+        "operator_authorization_required_for_runtime_promotion": True,
         "promotion_action_allowed": False,
         "promotion_performed": False,
         "runtime_route_changed": False,
@@ -264,7 +264,7 @@ def _collect_design_row_blockers(
             blockers.append(f"runtime_design_{index}_not_object")
             continue
         if design.get("design_status") != (
-            "operator_gate_required_before_runtime_promotion"
+            "operator_authorization_required_before_runtime_promotion"
         ):
             blockers.append(f"runtime_design_{index}_status_mismatch")
         controls = design.get("required_operator_controls")
@@ -336,7 +336,7 @@ def _failure_report(code: str) -> dict[str, Any]:
         "design_only": True,
         "read_side_report_only": True,
         "manual_review_required": True,
-        "operator_gate_required_for_runtime_promotion": True,
+        "operator_authorization_required_for_runtime_promotion": True,
         "promotion_action_allowed": False,
         "promotion_performed": False,
         "runtime_route_changed": False,

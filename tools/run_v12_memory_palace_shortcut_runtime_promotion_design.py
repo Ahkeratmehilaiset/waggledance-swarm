@@ -214,7 +214,7 @@ def build_memory_palace_shortcut_runtime_promotion_design(
         "no_overclaim_guardrails": {
             "design_only": True,
             "manual_review_required": True,
-            "operator_gate_required_for_runtime_promotion": True,
+            "operator_authorization_required_for_runtime_promotion": True,
             "not_router_dispatch": True,
             "not_solver_call": True,
             "not_storage_write": True,
@@ -288,7 +288,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                     f"`{design['target_node_id']}`",
                     f"`{design['rank_score']}`",
                     f"`{design['intermediate_hops_skipped']}`",
-                    f"`{str(design['operator_gate_required']).lower()}`",
+                    f"`{str(design['operator_authorization_required']).lower()}`",
                     f"`{str(design['promotion_action_allowed']).lower()}`",
                 )
             )
@@ -337,10 +337,10 @@ def _design_row(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "projected_shortcut_hops": 1 if hierarchy_hops else 0,
         "intermediate_hops_skipped": max(0, hierarchy_hops - 1),
         "matched_selector_keys": list(candidate.get("matched_selector_keys") or []),
-        "design_status": "operator_gate_required_before_runtime_promotion",
+        "design_status": "operator_authorization_required_before_runtime_promotion",
         "required_operator_controls": list(_REQUIRED_OPERATOR_CONTROLS),
         "required_preflight_checks": list(_REQUIRED_PREFLIGHT_CHECKS),
-        "operator_gate_required": True,
+        "operator_authorization_required": True,
         "manual_review_required": True,
         "runtime_route_changed": False,
         "storage_write_performed": False,
@@ -391,7 +391,7 @@ def _authority_boundary(
         "source_candidate_verification_ok": source_verified,
         "design_only": True,
         "manual_review_required": True,
-        "operator_gate_required_for_runtime_promotion": True,
+        "operator_authorization_required_for_runtime_promotion": True,
         "all_design_rows_action_free": all(
             _design_row_boundary_ok(design) for design in designs
         ),
@@ -416,7 +416,7 @@ def _authority_boundary_ok(boundary: Mapping[str, Any]) -> bool:
         "source_candidate_verification_ok",
         "design_only",
         "manual_review_required",
-        "operator_gate_required_for_runtime_promotion",
+        "operator_authorization_required_for_runtime_promotion",
         "all_design_rows_action_free",
     )
     return all(boundary.get(field) is True for field in required_true) and all(
@@ -448,7 +448,7 @@ def _candidate_designable(candidate: Mapping[str, Any]) -> bool:
 
 def _design_row_boundary_ok(design: Mapping[str, Any]) -> bool:
     return (
-        design.get("operator_gate_required") is True
+        design.get("operator_authorization_required") is True
         and design.get("manual_review_required") is True
         and all(design.get(field) is False for field in _DESIGN_FALSE_FIELDS)
     )

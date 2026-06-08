@@ -57,12 +57,12 @@ def test_build_design_report_requires_operator_gate_without_action() -> None:
         "room.system.statistics",
     ]
     for design in designs:
-        assert design["operator_gate_required"] is True
+        assert design["operator_authorization_required"] is True
         assert design["manual_review_required"] is True
         assert "operator_authorization" in design["required_operator_controls"]
         assert "no_gate_skip" in design["required_preflight_checks"]
         assert design["design_status"] == (
-            "operator_gate_required_before_runtime_promotion"
+            "operator_authorization_required_before_runtime_promotion"
         )
         assert design["promotion_action_allowed"] is False
         assert design["runtime_route_changed"] is False
@@ -81,7 +81,7 @@ def test_authority_boundary_remains_design_only() -> None:
         "source_candidate_verification_ok",
         "design_only",
         "manual_review_required",
-        "operator_gate_required_for_runtime_promotion",
+        "operator_authorization_required_for_runtime_promotion",
         "all_design_rows_action_free",
     ):
         assert boundary[key] is True

@@ -49,7 +49,10 @@ def test_verifies_valid_runtime_promotion_design() -> None:
     assert verification["authority_boundary_check"] == "match"
     assert verification["guardrail_check"] == "match"
     assert verification["design_row_action_boundary_check"] == "match"
-    assert verification["operator_gate_required_for_runtime_promotion"] is True
+    assert (
+        verification["operator_authorization_required_for_runtime_promotion"]
+        is True
+    )
     assert verification["promotion_action_allowed"] is False
     assert verification["promotion_performed"] is False
     assert verification["approval_granted"] is False
@@ -102,7 +105,7 @@ def test_rejects_design_row_side_effects_without_echoing_values() -> None:
 def test_rejects_missing_operator_gate_guardrail() -> None:
     report = _valid_report()
     report["no_overclaim_guardrails"][
-        "operator_gate_required_for_runtime_promotion"
+        "operator_authorization_required_for_runtime_promotion"
     ] = False
 
     verification = verify_memory_palace_shortcut_runtime_promotion_design(
@@ -112,7 +115,7 @@ def test_rejects_missing_operator_gate_guardrail() -> None:
     assert verification["ok"] is False
     assert verification["guardrail_check"] == "mismatch"
     assert (
-        "guardrail_operator_gate_required_for_runtime_promotion_not_true"
+        "guardrail_operator_authorization_required_for_runtime_promotion_not_true"
         in verification["blockers"]
     )
 

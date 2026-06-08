@@ -258,7 +258,11 @@ def _growth_targets(
 ) -> list[dict[str, Any]]:
     if not family_rows:
         return []
-    weakest = min(_as_int(row.get("dispatch_count")) for row in family_rows)
+    counts = [_as_int(row.get("dispatch_count")) for row in family_rows]
+    has_deficit = any(_as_int(row.get("deficit_to_min")) > 0 for row in family_rows)
+    if not has_deficit and len(set(counts)) <= 1:
+        return []
+    weakest = min(counts)
     targets = [
         {
             "family": str(row["family"]),
@@ -286,7 +290,7 @@ def _recommended_next_slice(
     if blockers:
         return "fix_source_a4_proof_or_guardrail_blockers_before_growth_planning"
     if not growth_targets:
-        return "no_family_target_available"
+        return "solver_growth_family_coverage_balanced_no_lowest_family"
     families = ", ".join(str(target["family"]) for target in growth_targets)
     return (
         "expand_solver_growth_held_out_cases_for_lowest_coverage_families:"

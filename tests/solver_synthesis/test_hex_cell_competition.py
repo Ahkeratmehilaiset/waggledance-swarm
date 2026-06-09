@@ -23,6 +23,7 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (
     HEX_CELL_ACTIVATION_PREFLIGHT_TRANSITION,
     HEX_CELL_COMPETITION_AUTHORITY_STATUS,
     HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+    HEX_CELL_COMPETITION_MARGIN_SCHEMA_VERSION,
     HEX_CELL_COMPETITION_RANKING_RULE,
     HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
     HEX_CELL_OPERATOR_GATE_AUTHORIZATION_NEXT_GATE,
@@ -38,6 +39,7 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (
     build_hex_cell_competition_result,
     build_hex_cell_operator_gate_authorization,
     build_hex_cell_promotion_acceptance,
+    summarize_competition_margin,
 )
 from waggledance.core.solver_synthesis.solver_candidate_store import (
     SolverCandidate,
@@ -859,3 +861,84 @@ def test_rejects_non_finite_score():
             capability_id="frost-risk-detection",
             scores={"cand-a": 0.8, "cand-b": float("nan")},
         )
+
+
+# ── summarize_competition_margin (read-side governance view) ───────────────
+
+
+def _competition(scores: dict, capability_id: str = "frost-risk-detection"):
+    candidates = [
+        _candidate(
+            candidate_id=cid,
+            solver_name=f"solver_{cid}",
+            capability_id=capability_id,
+        )
+        for cid in scores
+    ]
+    return build_hex_cell_competition_result(
+        candidates=candidates,
+        capability_id=capability_id,
+        scores=scores,
+    )
+
+
+def test_margin_summary_reports_clear_win_not_tiebreak():
+    result = _competition({"cand-a": 0.9, "cand-b": 0.5})
+    summary = summarize_competition_margin(result)
+    assert summary["schema_version"] == HEX_CELL_COMPETITION_MARGIN_SCHEMA_VERSION
+    assert summary["competition_id"] == result.competition_id
+    assert summary["ranking_rule"] == HEX_CELL_COMPETITION_RANKING_RULE
+    assert summary["winner_id"] == "cand-a"
+    assert summary["runner_up_id"] == "cand-b"
+    assert summary["winner_margin"] > 0.0
+    assert summary["decided_by_tiebreak"] is False
+    assert summary["uncontested"] is False
+    assert summary["authority_granted"] is False
+    assert summary["candidate_count"] == 2
+
+
+def test_margin_summary_flags_tiebreak_when_top_two_tie_on_score():
+    # cand-a and cand-b tie on score; the winner is the lexicographically
+    # smaller id (a coin-flip on id, not merit) — the summary must flag it.
+    result = _competition({"cand-b": 0.7, "cand-a": 0.7})
+    assert result.winner_id == "cand-a"  # deterministic id tie-break
+    summary = summarize_competition_margin(result)
+    assert summary["winner_id"] == "cand-a"
+    assert summary["runner_up_id"] == "cand-b"
+    assert summary["winner_margin"] == 0.0
+    assert summary["decided_by_tiebreak"] is True
+    assert summary["uncontested"] is False
+
+
+def test_margin_summary_uses_runner_up_not_third_place():
+    result = _competition({"cand-a": 3.0, "cand-b": 2.0, "cand-c": 0.0})
+    summary = summarize_competition_margin(result)
+    assert summary["winner_id"] == "cand-a"
+    assert summary["runner_up_id"] == "cand-b"  # second place, not cand-c
+    assert summary["runner_up_score"] == 2.0
+    assert summary["winner_margin"] == 1.0  # 3.0 - 2.0, not 3.0 - 0.0
+    assert summary["candidate_count"] == 3
+    assert summary["decided_by_tiebreak"] is False
+
+
+def test_margin_summary_is_rederivable_from_digest_bound_fields():
+    # The view is a pure function of winner_id + candidate_scores, both of which
+    # the competition binds into evidence_digest — a consumer can recompute it.
+    result = _competition({"cand-a": 3.0, "cand-b": 2.0})
+    summary = summarize_competition_margin(result)
+    ranked = sorted(
+        result.candidate_scores, key=lambda row: (-row.score, row.candidate_id)
+    )
+    expected_margin = ranked[0].score - ranked[1].score
+    assert summary["winner_margin"] == expected_margin
+    assert summary["winner_id"] == ranked[0].candidate_id
+    # never grants authority and never mutates the competition contract
+    assert result.authority_status == HEX_CELL_COMPETITION_AUTHORITY_STATUS
+    assert result.operator_gate_required_for_authority is True
+
+
+def test_margin_summary_rejects_winner_absent_from_scores():
+    result = _competition({"cand-a": 0.9, "cand-b": 0.5})
+    forged = replace(result, winner_id="ghost-candidate")
+    with pytest.raises(ValueError, match="winner_id not present"):
+        summarize_competition_margin(forged)

@@ -307,6 +307,73 @@ def test_deliver_batch_preserves_order():
     assert all(d.delivered for d in deliveries)
 
 
+def test_deliver_one_sets_stable_blocked_category():
+    t = _topo()
+    delivered = rm.deliver_one(
+        t, cmc.make_message(from_cell_id="a", to_cell_id="b",
+                            kind="ring_request"), seq=0)
+    assert delivered.delivered is True
+    assert delivered.blocked_category is None
+
+    not_neighbor = rm.deliver_one(
+        t, cmc.make_message(from_cell_id="a", to_cell_id="a1",
+                            kind="ring_request"), seq=1)
+    assert not_neighbor.blocked_category == rm.RING_BLOCK_NOT_NEIGHBOR
+
+    not_parent = rm.deliver_one(
+        t, cmc.make_message(from_cell_id="a1", to_cell_id="b",
+                            kind="child_to_parent"), seq=2)
+    assert not_parent.blocked_category == rm.RING_BLOCK_NOT_PARENT
+
+    not_child = rm.deliver_one(
+        t, cmc.make_message(from_cell_id="a", to_cell_id="b",
+                            kind="parent_to_child"), seq=3)
+    assert not_child.blocked_category == rm.RING_BLOCK_NOT_CHILD
+
+    schema_bad = rm.deliver_one(
+        t, cmc.make_message(from_cell_id="zzz", to_cell_id="b",
+                            kind="ring_request"), seq=4)
+    assert schema_bad.delivered is False
+    assert schema_bad.blocked_category == rm.RING_BLOCK_SCHEMA_INVALID
+    # category is carried into the serialized form too
+    assert schema_bad.to_dict()["blocked_category"] == rm.RING_BLOCK_SCHEMA_INVALID
+
+
+def test_summarize_ring_delivery_batch_aggregates_health():
+    t = _topo()
+    msgs = [
+        cmc.make_message(from_cell_id="a", to_cell_id="b",
+                         kind="ring_request"),            # delivered
+        cmc.make_message(from_cell_id="a", to_cell_id="a1",
+                         kind="ring_request"),            # blocked not_neighbor
+        cmc.make_message(from_cell_id="a1", to_cell_id="b",
+                         kind="child_to_parent"),         # blocked not_parent
+    ]
+    summary = rm.summarize_ring_delivery_batch(rm.deliver_batch(t, msgs))
+    assert summary["schema_version"] == rm.RING_DELIVERY_OBSERVABILITY_SCHEMA
+    assert summary["total"] == 3
+    assert summary["delivered_count"] == 1
+    assert summary["blocked_count"] == 2
+    assert summary["delivery_success_ratio"] == 1 / 3
+    assert summary["by_message_kind"]["ring_request"] == {
+        "delivered": 1, "blocked": 1}
+    assert summary["by_message_kind"]["child_to_parent"] == {
+        "delivered": 0, "blocked": 1}
+    assert summary["blocked_by_category"] == {
+        rm.RING_BLOCK_NOT_NEIGHBOR: 1, rm.RING_BLOCK_NOT_PARENT: 1}
+    assert summary["transport_applied"] is False
+
+
+def test_summarize_ring_delivery_batch_empty():
+    summary = rm.summarize_ring_delivery_batch([])
+    assert summary["total"] == 0
+    assert summary["delivered_count"] == 0
+    assert summary["blocked_count"] == 0
+    assert summary["delivery_success_ratio"] == 0.0
+    assert summary["by_message_kind"] == {}
+    assert summary["blocked_by_category"] == {}
+
+
 # ═══════════════════ subdivision_operator ═════════════════════════
 
 def test_plan_id_deterministic():

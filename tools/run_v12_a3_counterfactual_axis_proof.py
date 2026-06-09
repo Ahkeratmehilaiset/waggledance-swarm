@@ -390,6 +390,12 @@ def _build_runtime_condition_replay_smoke() -> dict[str, Any]:
         "claim_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
         "runtime_conditions_met": runtime_conditions_met,
         "divergence_count": summary["divergence_count"],
+        # Oracle-agreement direction of the divergences (from the delta; the
+        # privacy-safe summary omits them). Privacy-safe counts only — no rows.
+        # This smoke's recompute oracle agrees with both arms, so all neutral.
+        "improvement_count": int(delta.get("improvement_count") or 0),
+        "regression_count": int(delta.get("regression_count") or 0),
+        "neutral_divergence_count": int(delta.get("neutral_divergence_count") or 0),
         "same_sample_set": summary["same_sample_set"],
         "deterministic": summary["deterministic"],
         "no_delta": summary["no_delta"],

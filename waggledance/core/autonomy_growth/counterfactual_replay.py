@@ -29,6 +29,18 @@ from .solver_executor import ExecutorError, execute_artifact
 
 COUNTERFACTUAL_DELTA_SCHEMA = "magma.counterfactual_delta.v0"
 
+# Per-divergence oracle-agreement classification. A divergence is an
+# *improvement* when the candidate agrees with the external oracle where the
+# incumbent does not, a *regression* in the mirror case, and *neutral*
+# otherwise (neither agrees, both agree, or the oracle was inconclusive for
+# either arm). These are observability labels only — the auto-promotion
+# decision must never depend on them (see module docstring); they are
+# re-derivable from the per-arm ``oracle_agree`` fields the delta already
+# carries, so an auditor can recompute every count from the receipt.
+DIVERGENCE_IMPROVEMENT = "improvement"
+DIVERGENCE_REGRESSION = "regression"
+DIVERGENCE_NEUTRAL = "neutral"
+
 # A3 truth labels — re-derived from delta fields by derive_a3_label, never set
 # by hand (RCO truth-boundary: auditor recomputes the label from the receipt).
 A3_LABEL_RUNTIME_MEASURED = "RUNTIME_MEASURED"
@@ -99,6 +111,28 @@ def _run_arm(
     return {"results": results}
 
 
+def _classify_divergence_oracle(
+    candidate_agree: Any,
+    incumbent_agree: Any,
+) -> str:
+    """Label one divergence by which arm agreed with the external oracle.
+
+    ``improvement``: candidate agrees, incumbent does not (promoting fixes it).
+    ``regression``:  incumbent agrees, candidate does not (promoting breaks it).
+    ``neutral``:     both agree, neither agrees, or either agreement is unknown
+                     (oracle raised / inconclusive). Treats only an explicit
+                     ``True`` as agreement, so a missing/``None`` value never
+                     counts as a silent pass.
+    """
+    cand_ok = candidate_agree is True
+    inc_ok = incumbent_agree is True
+    if cand_ok and not inc_ok:
+        return DIVERGENCE_IMPROVEMENT
+    if inc_ok and not cand_ok:
+        return DIVERGENCE_REGRESSION
+    return DIVERGENCE_NEUTRAL
+
+
 def _arm_digest(arm: Mapping[str, Any]) -> str:
     return sha256_digest(
         {
@@ -124,7 +158,11 @@ def compute_counterfactual_delta(
     ill-formed inputs or compile failure. The returned delta carries per-arm
     results (not just an aggregate), identical sample_set_digest for both arms
     (proof both ran the same inputs), a determinism flag (candidate arm re-run
-    twice), and a canonical_digest over all of it.
+    twice), and a canonical_digest over all of it. Each divergence is tagged
+    with both arms' oracle agreement and an ``oracle_classification``
+    (improvement/regression/neutral), aggregated into improvement_count /
+    regression_count / neutral_divergence_count (these always sum to
+    divergence_count). The breakdown is observability only — never a gate.
     """
     if not isinstance(shadow_samples, Sequence) or isinstance(shadow_samples, (str, bytes)):
         raise CounterfactualReplayError("shadow_samples must be a non-string sequence")
@@ -150,14 +188,29 @@ def compute_counterfactual_delta(
     deterministic = _arm_digest(cand_arm) == _arm_digest(_run_arm(cand.artifact, samples, oracle))
 
     divergences: list[dict[str, Any]] = []
+    improvement_count = 0
+    regression_count = 0
+    neutral_divergence_count = 0
     for index, (rc, ri) in enumerate(zip(cand_arm["results"], inc_arm["results"])):
         if rc["output"] != ri["output"] or rc["error"] != ri["error"]:
+            classification = _classify_divergence_oracle(
+                rc["oracle_agree"], ri["oracle_agree"]
+            )
+            if classification == DIVERGENCE_IMPROVEMENT:
+                improvement_count += 1
+            elif classification == DIVERGENCE_REGRESSION:
+                regression_count += 1
+            else:
+                neutral_divergence_count += 1
             divergences.append(
                 {
                     "index": index,
                     "inputs": rc["inputs"],
                     "candidate_output": rc["output"],
                     "incumbent_output": ri["output"],
+                    "candidate_oracle_agree": rc["oracle_agree"],
+                    "incumbent_oracle_agree": ri["oracle_agree"],
+                    "oracle_classification": classification,
                 }
             )
 
@@ -171,6 +224,12 @@ def compute_counterfactual_delta(
         "oracle_kind": oracle_kind,
         "deterministic": deterministic,
         "divergence_count": len(divergences),
+        # Oracle-agreement breakdown of the divergences (observability only,
+        # never a promotion gate). The three counts always sum to
+        # divergence_count and are re-derivable from per_arm oracle_agree.
+        "improvement_count": improvement_count,
+        "regression_count": regression_count,
+        "neutral_divergence_count": neutral_divergence_count,
         # Explicit no-delta (RCO: never silently report a spurious zero delta):
         # true when the two solvers are the same artifact or behave identically.
         "no_delta": cand.artifact_id == inc.artifact_id or not divergences,

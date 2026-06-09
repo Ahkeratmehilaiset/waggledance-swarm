@@ -11,7 +11,11 @@ from waggledance.core.autonomy_growth.counterfactual_replay import (
     A3_LABEL_RUNTIME_MEASURED,
     COUNTERFACTUAL_DELTA_SCHEMA,
     COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
+    DIVERGENCE_IMPROVEMENT,
+    DIVERGENCE_NEUTRAL,
+    DIVERGENCE_REGRESSION,
     CounterfactualReplayError,
+    _classify_divergence_oracle,
     compute_counterfactual_delta,
     derive_a3_label,
     summarize_counterfactual_observability,
@@ -51,6 +55,123 @@ def test_happy_path_divergence_and_runtime_measured_label():
     assert delta["deterministic"] is True
     assert delta["candidate_sample_set_digest"] == delta["incumbent_sample_set_digest"]
     assert derive_a3_label(delta) == A3_LABEL_RUNTIME_MEASURED
+
+
+def _external_oracle(target_offset):
+    """A fixed external reference truth (``x + target_offset``), independent of
+    which arm's artifact is passed — so exactly one arm can match it."""
+
+    def oracle(inputs, artifact):  # noqa: ARG001 - external truth ignores artifact
+        return float(inputs["x"]) * 1.0 + float(target_offset)
+
+    return oracle
+
+
+def test_divergences_classified_improvement_when_candidate_matches_oracle():
+    # candidate output == external truth, incumbent output != truth.
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_external_oracle(100.0),
+    )
+    assert delta["divergence_count"] == 24
+    assert delta["improvement_count"] == 24
+    assert delta["regression_count"] == 0
+    assert delta["neutral_divergence_count"] == 0
+    assert all(
+        d["oracle_classification"] == DIVERGENCE_IMPROVEMENT
+        and d["candidate_oracle_agree"] is True
+        and d["incumbent_oracle_agree"] is False
+        for d in delta["divergences"]
+    )
+
+
+def test_divergences_classified_regression_when_incumbent_matches_oracle():
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_external_oracle(0.0),
+    )
+    assert delta["regression_count"] == 24
+    assert delta["improvement_count"] == 0
+    assert delta["neutral_divergence_count"] == 0
+    assert all(
+        d["oracle_classification"] == DIVERGENCE_REGRESSION
+        for d in delta["divergences"]
+    )
+
+
+def test_divergences_classified_neutral_when_neither_matches_oracle():
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_external_oracle(-999.0),
+    )
+    assert delta["neutral_divergence_count"] == 24
+    assert delta["improvement_count"] == 0
+    assert delta["regression_count"] == 0
+
+
+def test_classification_counts_sum_to_divergence_count_when_mixed():
+    # External truth equals the candidate on even x and the incumbent on odd x:
+    # even-x divergences are improvements, odd-x are regressions.
+    def mixed_oracle(inputs, artifact):  # noqa: ARG001
+        x = float(inputs["x"])
+        return x + 100.0 if int(x) % 2 == 0 else x
+
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=mixed_oracle,
+    )
+    assert delta["improvement_count"] == 12
+    assert delta["regression_count"] == 12
+    assert delta["neutral_divergence_count"] == 0
+    assert (
+        delta["improvement_count"]
+        + delta["regression_count"]
+        + delta["neutral_divergence_count"]
+    ) == delta["divergence_count"]
+
+
+def test_no_delta_has_zero_classification_counts():
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("same", 100.0),
+        incumbent=_spec("same", 100.0), oracle=_external_oracle(100.0),
+    )
+    assert delta["no_delta"] is True
+    assert delta["divergence_count"] == 0
+    assert delta["improvement_count"] == 0
+    assert delta["regression_count"] == 0
+    assert delta["neutral_divergence_count"] == 0
+
+
+def test_classification_is_rederivable_under_canonical_digest():
+    from waggledance.core.magma.canonical import sha256_digest
+
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_external_oracle(100.0),
+    )
+    # the breakdown is inside the digested core — an auditor recomputes it.
+    core = {k: v for k, v in delta.items() if k != "canonical_digest"}
+    assert delta["canonical_digest"] == sha256_digest(core)
+    recomputed = sum(
+        1
+        for d in delta["divergences"]
+        if _classify_divergence_oracle(
+            d["candidate_oracle_agree"], d["incumbent_oracle_agree"]
+        )
+        == DIVERGENCE_IMPROVEMENT
+    )
+    assert recomputed == delta["improvement_count"] == 24
+
+
+def test_classify_divergence_oracle_treats_none_as_non_agreement():
+    # Only an explicit True counts as agreement; None/missing never passes.
+    assert _classify_divergence_oracle(True, False) == DIVERGENCE_IMPROVEMENT
+    assert _classify_divergence_oracle(False, True) == DIVERGENCE_REGRESSION
+    assert _classify_divergence_oracle(True, True) == DIVERGENCE_NEUTRAL
+    assert _classify_divergence_oracle(False, False) == DIVERGENCE_NEUTRAL
+    assert _classify_divergence_oracle(None, True) == DIVERGENCE_REGRESSION
+    assert _classify_divergence_oracle(True, None) == DIVERGENCE_IMPROVEMENT
+    assert _classify_divergence_oracle(None, None) == DIVERGENCE_NEUTRAL
 
 
 def test_same_solver_is_explicit_no_delta():

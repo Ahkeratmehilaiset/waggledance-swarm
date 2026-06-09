@@ -24,6 +24,9 @@ HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION = (
 HEX_CELL_COMPETITION_AUTHORITY_STATUS = "non_authority_contract"
 HEX_CELL_COMPETITION_RANKING_RULE = "score_desc_candidate_id_asc"
 HEX_CELL_COMPETITION_DIGEST_ALGORITHM = "magma-jcs-subset-v1"
+HEX_CELL_COMPETITION_MARGIN_SCHEMA_VERSION = (
+    "hex_cell_competition_winner_margin.v0"
+)
 HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION = (
     "hex_cell_promotion_acceptance.v0"
 )
@@ -445,6 +448,71 @@ def build_hex_cell_competition_result(
         candidate_state_mutation_applied=False,
         operator_gate_required_for_authority=True,
     )
+
+
+def summarize_competition_margin(
+    competition: HexCellCompetitionResult,
+) -> dict:
+    """Read-only governance view of how decisively the winner won.
+
+    Derived purely from the winner_id + candidate_scores the competition
+    already binds into its ``evidence_digest`` — so an operator at the (always
+    required) authority gate, or an auditor, can see WHETHER the winner won by a
+    real score margin over the runner-up or was settled by the deterministic
+    ``candidate_id`` tie-break (a coin-flip on id, not merit). ``winner_margin``
+    is ``winner_score - runner_up_score`` using the same ranking key as the
+    competition; ``decided_by_tiebreak`` is true exactly when that margin is
+    ``0.0`` (top two tied on score). A single-candidate result is
+    ``uncontested`` with a ``None`` margin.
+
+    Observability only — it selects no winner, mutates nothing, and grants no
+    authority. It is re-derivable: the inputs are the digest-bound public
+    fields, so a consumer never has to trust this view, only recompute it.
+    """
+    scores = tuple(competition.candidate_scores)
+    by_id = {row.candidate_id: row for row in scores}
+    winner = by_id.get(competition.winner_id)
+    if winner is None:
+        raise ValueError(
+            "winner_id not present in candidate_scores; cannot summarize margin"
+        )
+    # Runner-up = best-scoring candidate that is not the recorded winner, ranked
+    # by the competition's own key (score desc, then candidate_id asc).
+    ranked = sorted(scores, key=lambda row: (-row.score, row.candidate_id))
+    runner_up = next(
+        (row for row in ranked if row.candidate_id != competition.winner_id),
+        None,
+    )
+    if runner_up is None:
+        return {
+            "schema_version": HEX_CELL_COMPETITION_MARGIN_SCHEMA_VERSION,
+            "competition_id": competition.competition_id,
+            "ranking_rule": competition.ranking_rule,
+            "candidate_count": len(scores),
+            "winner_id": winner.candidate_id,
+            "winner_score": winner.score,
+            "runner_up_id": None,
+            "runner_up_score": None,
+            "winner_margin": None,
+            "decided_by_tiebreak": False,
+            "uncontested": True,
+            "authority_granted": False,
+        }
+    margin = winner.score - runner_up.score
+    return {
+        "schema_version": HEX_CELL_COMPETITION_MARGIN_SCHEMA_VERSION,
+        "competition_id": competition.competition_id,
+        "ranking_rule": competition.ranking_rule,
+        "candidate_count": len(scores),
+        "winner_id": winner.candidate_id,
+        "winner_score": winner.score,
+        "runner_up_id": runner_up.candidate_id,
+        "runner_up_score": runner_up.score,
+        "winner_margin": margin,
+        "decided_by_tiebreak": margin == 0.0,
+        "uncontested": False,
+        "authority_granted": False,
+    }
 
 
 def build_hex_cell_promotion_acceptance(

@@ -64,6 +64,12 @@ def test_build_competitive_triad_simulation_keeps_guardrails() -> None:
     )
     assert report["hex_cell_probe"]["operator_gate_cleared"] is True
     assert report["hex_cell_probe"]["receipt_bound_activation_verified"] is True
+    # Winner-margin governance view: the probe's fixture (b=0.91 > c=0.86) is a
+    # clear win, not a tie-break — surfaced for the operator at the gate.
+    assert report["hex_cell_probe"]["winner_id"] == "triad-cand-b"
+    assert report["hex_cell_probe"]["runner_up_id"] == "triad-cand-c"
+    assert report["hex_cell_probe"]["winner_margin"] > 0.0
+    assert report["hex_cell_probe"]["decided_by_tiebreak"] is False
     assert report["hex_cell_probe"]["runtime_authority_granted"] is False
     assert report["hex_cell_probe"]["runtime_traffic_mutation_applied"] is False
     assert report["hex_cell_probe"]["candidate_state_mutation_applied"] is False

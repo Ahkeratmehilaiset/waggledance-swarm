@@ -328,6 +328,13 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append(
             f"     actual gate                    : {delta['actual_gate'][0]} -> {delta['actual_gate'][1]}"
         )
+        direction = a3["runtime_smoke_direction"]
+        lines.append(
+            "     smoke divergence direction     : "
+            f"+{direction['improvement_count']} improve / "
+            f"-{direction['regression_count']} regress / "
+            f"{direction['neutral_divergence_count']} neutral"
+        )
         lines.append(
             f"     receipt chain in this command  : {a3['receipt_chain_verified']}"
         )
@@ -643,6 +650,26 @@ def format_proof(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _a3_runtime_smoke_direction(report: dict[str, Any]) -> dict[str, int]:
+    """Privacy-safe oracle-agreement direction counts from the A3 runtime smoke.
+
+    Read-only: surfaces improvement/regression/neutral divergence counts the
+    runtime-condition replay smoke now carries (no rows, no axis-claim change).
+    """
+    smoke = report.get("runtime_condition_replay_smoke")
+    smoke = smoke if isinstance(smoke, dict) else {}
+
+    def _count(key: str) -> int:
+        value = smoke.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    return {
+        "improvement_count": _count("improvement_count"),
+        "regression_count": _count("regression_count"),
+        "neutral_divergence_count": _count("neutral_divergence_count"),
+    }
+
+
 def _summarize_a3_counterfactual_axis(report: dict[str, Any]) -> dict[str, Any]:
     if report.get("ok") is None:
         return {
@@ -658,6 +685,11 @@ def _summarize_a3_counterfactual_axis(report: dict[str, Any]) -> dict[str, Any]:
             "variant_count": 0,
             "variants_with_kind_delta": 0,
             "variants_with_gate_delta": 0,
+            "runtime_smoke_direction": {
+                "improvement_count": 0,
+                "regression_count": 0,
+                "neutral_divergence_count": 0,
+            },
         }
     return {
         "available": report.get("ok") is not None,
@@ -672,6 +704,7 @@ def _summarize_a3_counterfactual_axis(report: dict[str, Any]) -> dict[str, Any]:
             "verdict": ["unknown", "unknown"],
         },
         "receipt_chain_verified": bool(report.get("receipt_chain_verified")),
+        "runtime_smoke_direction": _a3_runtime_smoke_direction(report),
     }
 
 

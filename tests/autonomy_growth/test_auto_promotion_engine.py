@@ -270,6 +270,18 @@ def test_auto_promotion_records_sanitized_counterfactual_summary(
     assert outcome.counterfactual["delta_digest"]
     assert "per_arm" not in outcome.counterfactual
     assert "divergences" not in outcome.counterfactual
+    # Oracle-agreement direction counts flow into the receipt summary and sum
+    # to divergence_count. This oracle recomputes from each arm's own artifact,
+    # so both arms agree -> every divergence is neutral.
+    assert outcome.counterfactual["improvement_count"] == 0
+    assert outcome.counterfactual["regression_count"] == 0
+    assert outcome.counterfactual["neutral_divergence_count"] == 20
+    assert (
+        outcome.counterfactual["improvement_count"]
+        + outcome.counterfactual["regression_count"]
+        + outcome.counterfactual["neutral_divergence_count"]
+        == outcome.counterfactual["divergence_count"]
+    )
 
     solver = cp.get_solver("counterfactual_solver")
     assert solver is not None
@@ -292,9 +304,74 @@ def test_auto_promotion_records_sanitized_counterfactual_summary(
     assert "promotion:counterfactual_label:RUNTIME_MEASURED" in (
         bundle["promotion_decision_artifact"]["reason_codes"]
     )
+    assert "promotion:counterfactual_direction:net_neutral" in (
+        bundle["promotion_decision_artifact"]["reason_codes"]
+    )
     serialized = json.dumps(bundle, sort_keys=True)
     assert "per_arm" not in serialized
     assert "divergences" not in serialized
+
+
+def test_counterfactual_direction_codes_and_summary_keys() -> None:
+    # Direct unit test of the wiring: a computed summary carrying more
+    # improvements than regressions emits net_improvement; the allowlist
+    # preserves the three direction counts into the sanitized summary.
+    from waggledance.core.autonomy_growth.auto_promotion_engine import (
+        _counterfactual_summary,
+        _promotion_reason_codes,
+    )
+
+    computed = {
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": A3_LABEL_RUNTIME_MEASURED,
+        "divergence_count": 9,
+        "improvement_count": 6,
+        "regression_count": 2,
+        "neutral_divergence_count": 1,
+        "no_delta": False,
+        # a raw field that must be stripped by the allowlist
+        "per_arm": {"candidate": "secret"},
+    }
+    sanitized = _counterfactual_summary(computed)
+    assert sanitized["improvement_count"] == 6
+    assert sanitized["regression_count"] == 2
+    assert sanitized["neutral_divergence_count"] == 1
+    assert "per_arm" not in sanitized  # allowlist strips raw fields
+
+    codes = _promotion_reason_codes(
+        decision="auto_promoted",
+        family_kind="scalar_unit_conversion",
+        approved=True,
+        validation=None,
+        shadow=None,
+        counterfactual=computed,
+        invariant_failed=None,
+    )
+    assert "promotion:counterfactual_direction:net_improvement" in codes
+
+    # mirror case: more regressions -> net_regression
+    regressive = {**computed, "improvement_count": 1, "regression_count": 5}
+    assert "promotion:counterfactual_direction:net_regression" in (
+        _promotion_reason_codes(
+            decision="auto_promoted", family_kind="scalar_unit_conversion",
+            approved=True, validation=None, shadow=None,
+            counterfactual=regressive, invariant_failed=None,
+        )
+    )
+
+    # no_delta -> no direction code emitted
+    no_delta = {**computed, "no_delta": True, "divergence_count": 0,
+                "improvement_count": 0, "regression_count": 0,
+                "neutral_divergence_count": 0}
+    assert not any(
+        c.startswith("promotion:counterfactual_direction:")
+        for c in _promotion_reason_codes(
+            decision="auto_promoted", family_kind="scalar_unit_conversion",
+            approved=True, validation=None, shadow=None,
+            counterfactual=no_delta, invariant_failed=None,
+        )
+    )
 
 
 def test_counterfactual_failure_does_not_block_promotion(

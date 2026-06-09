@@ -825,6 +825,12 @@ def _counterfactual_summary_for_request(
         ),
         "deterministic": delta.get("deterministic") is True,
         "divergence_count": delta.get("divergence_count"),
+        # Oracle-agreement direction of the divergences (observability only;
+        # the promotion decision never depends on it). Lets the receipt show
+        # whether promoting would FIX (improvement) or BREAK (regression) cases.
+        "improvement_count": delta.get("improvement_count"),
+        "regression_count": delta.get("regression_count"),
+        "neutral_divergence_count": delta.get("neutral_divergence_count"),
         "no_delta": delta.get("no_delta") is True,
         "oracle_kind": delta.get("oracle_kind"),
         "a3_label": derive_a3_label(delta),
@@ -848,6 +854,9 @@ def _counterfactual_summary(counterfactual: Any) -> dict[str, Any] | None:
         "same_sample_set",
         "deterministic",
         "divergence_count",
+        "improvement_count",
+        "regression_count",
+        "neutral_divergence_count",
         "no_delta",
         "oracle_kind",
     }
@@ -901,6 +910,27 @@ def _promotion_reason_codes(
                 if cf.get("no_delta") is True
                 else "promotion:counterfactual:delta"
             )
+            # Net oracle-agreement direction of the divergences (observability
+            # only; never gates the decision). int-guarded so a missing count
+            # never emits a misleading direction.
+            imp = cf.get("improvement_count")
+            reg = cf.get("regression_count")
+            if (
+                cf.get("no_delta") is not True
+                and isinstance(imp, int)
+                and not isinstance(imp, bool)
+                and isinstance(reg, int)
+                and not isinstance(reg, bool)
+            ):
+                if imp > reg:
+                    direction = "net_improvement"
+                elif reg > imp:
+                    direction = "net_regression"
+                else:
+                    direction = "net_neutral"
+                codes.append(
+                    f"promotion:counterfactual_direction:{direction}"
+                )
     if invariant_failed:
         codes.append(f"promotion:invariant:{_safe_ref(invariant_failed)}")
     return codes

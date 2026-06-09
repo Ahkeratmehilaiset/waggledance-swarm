@@ -143,19 +143,36 @@ def run_adversarial_corpus_evaluation(
 def build_per_case_coverage_report(
     cases: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Return non-sensitive coverage counts derived only from per-case results."""
+    """Return non-sensitive coverage counts derived only from per-case results.
+
+    Coverage is reported two ways: by occurrence (every listed case) and by
+    DISTINCT ``case_id``. The two diverge only when the corpus repeats a
+    ``case_id`` — so the distinct-vs-occurrence gap makes corpus
+    duplicate-padding visible (a critical-defect floor "met" by re-listing one
+    caught case is not real coverage). This is observability only: it surfaces
+    the risk for an operator/RCO; it does NOT change the gate verdict.
+    """
 
     defect_counts: Counter[str] = Counter()
     caught_counts: Counter[str] = Counter()
+    case_id_occurrences: Counter[str] = Counter()
+    distinct_caught_case_ids_by_defect: dict[str, set[str]] = {}
     for case in cases:
         if not isinstance(case, Mapping):
             continue
+        case_id = case.get("case_id")
+        if isinstance(case_id, str) and case_id.strip():
+            case_id_occurrences[case_id] += 1
         defect_class = case.get("defect_class")
         if not isinstance(defect_class, str):
             continue
         defect_counts[defect_class] += 1
         if case.get("ok") is True:
             caught_counts[defect_class] += 1
+            if isinstance(case_id, str) and case_id.strip():
+                distinct_caught_case_ids_by_defect.setdefault(
+                    defect_class, set()
+                ).add(case_id)
 
     required_caught_counts = {
         defect_type: caught_counts.get(defect_type, 0)
@@ -170,10 +187,33 @@ def build_per_case_coverage_report(
         for defect_type, count in critical_caught_counts.items()
         if count < MIN_CRITICAL_DEFECT_CASES
     }
+    # Distinct-case view (duplicate-robust): count unique caught case_ids.
+    critical_distinct_caught_counts = {
+        defect_type: len(distinct_caught_case_ids_by_defect.get(defect_type, set()))
+        for defect_type in sorted(CRITICAL_DEFECT_TYPES)
+    }
+    critical_below_distinct_floor = {
+        defect_type: count
+        for defect_type, count in critical_distinct_caught_counts.items()
+        if count < MIN_CRITICAL_DEFECT_CASES
+    }
+    duplicate_case_ids = sorted(
+        case_id for case_id, n in case_id_occurrences.items() if n > 1
+    )
     return {
         "defect_type_case_counts": dict(sorted(defect_counts.items())),
         "required_defect_type_caught_counts": required_caught_counts,
         "critical_defect_type_caught_counts": critical_caught_counts,
         "critical_defect_types_below_floor": critical_below_floor,
         "min_critical_defect_cases": MIN_CRITICAL_DEFECT_CASES,
+        # Distinct-case coverage (exposes corpus duplicate-padding; observability
+        # only, the gate verdict is unchanged).
+        "distinct_case_count": len(case_id_occurrences),
+        "duplicate_case_ids": duplicate_case_ids,
+        "critical_defect_type_distinct_caught_counts": (
+            critical_distinct_caught_counts
+        ),
+        "critical_defect_types_below_distinct_floor": (
+            critical_below_distinct_floor
+        ),
     }

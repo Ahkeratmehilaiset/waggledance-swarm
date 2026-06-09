@@ -40,6 +40,7 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (  # noqa: E4
     build_hex_cell_competition_result,
     build_hex_cell_operator_gate_authorization,
     build_hex_cell_promotion_acceptance,
+    summarize_competition_margin,
 )
 from waggledance.core.solver_synthesis.solver_candidate_store import (  # noqa: E402
     SolverCandidate,
@@ -359,6 +360,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"- authority_status: `{report['hex_cell_probe']['authority_status']}`",
         f"- winner_id: `{report['hex_cell_probe']['winner_id']}`",
+        f"- runner_up_id: `{report['hex_cell_probe']['runner_up_id']}`",
+        f"- winner_margin: `{report['hex_cell_probe']['winner_margin']}`",
+        f"- decided_by_tiebreak: `{str(report['hex_cell_probe']['decided_by_tiebreak']).lower()}`",
         f"- candidate_count: `{report['hex_cell_probe']['candidate_count']}`",
         f"- promotion_lifecycle: `{' -> '.join(report['hex_cell_probe']['promotion_lifecycle'])}`",
         f"- promotion_acceptance_status: `{report['hex_cell_probe']['promotion_acceptance_status']}`",
@@ -633,11 +637,18 @@ def _build_hex_competition_probe() -> dict[str, Any]:
         ),
     )
 
+    margin = summarize_competition_margin(result)
     return {
         "candidate_count": len(candidates),
         "competition_id": result.competition_id,
         "winner_id": result.winner_id,
         "loser_ids": list(result.loser_ids),
+        # Winner-margin governance view (observability only; no authority): shows
+        # whether the winner won by a real score margin or a candidate_id
+        # tie-break, so the probe doesn't hide a coin-flip behind the gate.
+        "runner_up_id": margin["runner_up_id"],
+        "winner_margin": margin["winner_margin"],
+        "decided_by_tiebreak": margin["decided_by_tiebreak"],
         "promotion_lifecycle": [
             "competition_non_authority",
             "promotion_acceptance_operator_gate_required",

@@ -167,6 +167,12 @@ def test_a3_counterfactual_axis_section_reports_measured_partial() -> None:
     assert a3["variants_with_gate_delta"] == 2
     assert a3["delta"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
     assert a3["delta"]["actual_gate"] == ["review", "allow"]
+    # Oracle-agreement direction surfaced from the A3 runtime smoke (its
+    # recompute oracle agrees with both arms -> all 24 divergences neutral).
+    direction = a3["runtime_smoke_direction"]
+    assert direction["improvement_count"] == 0
+    assert direction["regression_count"] == 0
+    assert direction["neutral_divergence_count"] == 24
     # show_v12_proof now runs the A3 proof tool with --out-dir, so the
     # receipt bundle is built and verified end-to-end.
     assert a3["receipt_chain_verified"] is True

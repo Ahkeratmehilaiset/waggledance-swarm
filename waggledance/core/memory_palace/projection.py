@@ -438,8 +438,14 @@ def derive_shortcut_hints(
         raise MemoryPalaceProjectionError(
             "min_shared_selector_keys must be at least 1"
         )
-    if min_hierarchy_hops < 1:
-        raise MemoryPalaceProjectionError("min_hierarchy_hops must be at least 1")
+    # Hard-floor at 2: shortcuts must span at least two hierarchy hops. A 1-hop
+    # "shortcut" to an adjacent node is not a cross-hierarchy affordance and
+    # violates the distance-guard invariant (#952/#958). The default is already
+    # 2; flooring the *validation* stops a caller requesting adjacent 1-hop hints.
+    if min_hierarchy_hops < 2:
+        raise MemoryPalaceProjectionError(
+            "min_hierarchy_hops must be at least 2 (distance-guard invariant)"
+        )
     if max_hints_per_source < 1:
         raise MemoryPalaceProjectionError("max_hints_per_source must be at least 1")
 

@@ -151,6 +151,27 @@ def test_derives_cross_wing_shortcut_hints_from_shared_selectors() -> None:
     assert hint["solver_call_authority"] is False
 
 
+def test_shortcut_hints_hard_floor_min_hierarchy_hops_at_two() -> None:
+    # Distance-guard invariant (#952/#958): a 1-hop "shortcut" to an adjacent
+    # node is not a cross-hierarchy affordance; the floor must reject < 2 even
+    # though the default is already 2 (RCO round-3 rec (a)).
+    nodes = [
+        PalaceNode(node_id="wing.a", kind="wing", label="A"),
+        PalaceNode(
+            node_id="room.a.x",
+            kind="room",
+            label="X",
+            parent_id="wing.a",
+            selectors={"tags": ["t"]},
+        ),
+    ]
+    with pytest.raises(MemoryPalaceProjectionError, match="at least 2"):
+        derive_shortcut_hints(nodes, min_hierarchy_hops=1)
+    # >= 2 (explicit and default) is accepted — no raise.
+    derive_shortcut_hints(nodes, min_hierarchy_hops=2)
+    derive_shortcut_hints(nodes)
+
+
 def test_builds_navigation_index_from_validated_hierarchy() -> None:
     nodes = [
         PalaceNode(

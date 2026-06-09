@@ -144,6 +144,16 @@ def _arm_digest(arm: Mapping[str, Any]) -> str:
     )
 
 
+def _arm_oracle_agreements(arm: Mapping[str, Any]) -> int:
+    """Count samples in one arm where the output agreed with the oracle.
+
+    Only an explicit ``oracle_agree is True`` counts — a ``None`` (oracle
+    raised) or ``False`` does not, so the absolute agreement rate never
+    silently inflates.
+    """
+    return sum(1 for r in arm["results"] if r.get("oracle_agree") is True)
+
+
 def compute_counterfactual_delta(
     *,
     shadow_samples: Sequence[Mapping[str, Any]],
@@ -162,7 +172,10 @@ def compute_counterfactual_delta(
     with both arms' oracle agreement and an ``oracle_classification``
     (improvement/regression/neutral), aggregated into improvement_count /
     regression_count / neutral_divergence_count (these always sum to
-    divergence_count). The breakdown is observability only — never a gate.
+    divergence_count). It also reports each arm's ABSOLUTE oracle-agreement
+    rate over all samples (candidate_oracle_agreement_rate /
+    incumbent_oracle_agreement_rate) and the candidate's
+    oracle_agreement_advantage. All of it is observability only — never a gate.
     """
     if not isinstance(shadow_samples, Sequence) or isinstance(shadow_samples, (str, bytes)):
         raise CounterfactualReplayError("shadow_samples must be a non-string sequence")
@@ -214,11 +227,21 @@ def compute_counterfactual_delta(
                 }
             )
 
+    sample_count = len(samples)
+    candidate_oracle_agreements = _arm_oracle_agreements(cand_arm)
+    incumbent_oracle_agreements = _arm_oracle_agreements(inc_arm)
+    candidate_oracle_agreement_rate = (
+        candidate_oracle_agreements / sample_count if sample_count else 0.0
+    )
+    incumbent_oracle_agreement_rate = (
+        incumbent_oracle_agreements / sample_count if sample_count else 0.0
+    )
+
     core = {
         "schema_version": COUNTERFACTUAL_DELTA_SCHEMA,
         "candidate_hash": cand.artifact_id,
         "incumbent_hash": inc.artifact_id,
-        "sample_count": len(samples),
+        "sample_count": sample_count,
         "candidate_sample_set_digest": sample_set_digest,
         "incumbent_sample_set_digest": sample_set_digest,
         "oracle_kind": oracle_kind,
@@ -230,6 +253,18 @@ def compute_counterfactual_delta(
         "improvement_count": improvement_count,
         "regression_count": regression_count,
         "neutral_divergence_count": neutral_divergence_count,
+        # ABSOLUTE oracle-agreement of each arm over ALL samples (not just the
+        # divergences): the candidate's and incumbent's standalone correctness
+        # against the external oracle, plus the candidate's advantage. This is
+        # the "is the candidate better in absolute terms" signal (re-derivable
+        # from per_arm oracle_agree; observability only, never a gate).
+        "candidate_oracle_agreements": candidate_oracle_agreements,
+        "incumbent_oracle_agreements": incumbent_oracle_agreements,
+        "candidate_oracle_agreement_rate": candidate_oracle_agreement_rate,
+        "incumbent_oracle_agreement_rate": incumbent_oracle_agreement_rate,
+        "oracle_agreement_advantage": (
+            candidate_oracle_agreement_rate - incumbent_oracle_agreement_rate
+        ),
         # Explicit no-delta (RCO: never silently report a spurious zero delta):
         # true when the two solvers are the same artifact or behave identically.
         "no_delta": cand.artifact_id == inc.artifact_id or not divergences,

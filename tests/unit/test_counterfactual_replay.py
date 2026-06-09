@@ -174,6 +174,57 @@ def test_classify_divergence_oracle_treats_none_as_non_agreement():
     assert _classify_divergence_oracle(None, None) == DIVERGENCE_NEUTRAL
 
 
+def test_oracle_agreement_rates_report_absolute_arm_quality():
+    # External truth == candidate's output: candidate agrees on ALL samples,
+    # incumbent on none. Absolute rates capture standalone correctness, not
+    # just relative divergences.
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_external_oracle(100.0),
+    )
+    assert delta["candidate_oracle_agreements"] == 24
+    assert delta["incumbent_oracle_agreements"] == 0
+    assert delta["candidate_oracle_agreement_rate"] == 1.0
+    assert delta["incumbent_oracle_agreement_rate"] == 0.0
+    assert delta["oracle_agreement_advantage"] == 1.0
+
+
+def test_oracle_agreement_advantage_is_negative_when_incumbent_better():
+    from waggledance.core.magma.canonical import sha256_digest
+
+    # External truth == incumbent's output: mirror case, advantage negative.
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_external_oracle(0.0),
+    )
+    assert delta["incumbent_oracle_agreement_rate"] == 1.0
+    assert delta["candidate_oracle_agreement_rate"] == 0.0
+    assert delta["oracle_agreement_advantage"] == -1.0
+    # re-derivable from per_arm and bound by canonical_digest
+    core = {k: v for k, v in delta.items() if k != "canonical_digest"}
+    assert delta["canonical_digest"] == sha256_digest(core)
+    cand_agree = sum(
+        1 for r in delta["per_arm"]["candidate"]["results"]
+        if r["oracle_agree"] is True
+    )
+    assert cand_agree == delta["candidate_oracle_agreements"]
+
+
+def test_oracle_agreement_rate_excludes_none_when_oracle_raises():
+    def _raising_oracle(inputs, artifact):  # noqa: ARG001
+        raise RuntimeError("oracle unavailable")
+
+    delta = compute_counterfactual_delta(
+        shadow_samples=_samples(), candidate=_spec("cand", 100.0),
+        incumbent=_spec("inc", 0.0), oracle=_raising_oracle,
+    )
+    # oracle_agree is None for every sample -> never counted as agreement
+    assert delta["candidate_oracle_agreements"] == 0
+    assert delta["incumbent_oracle_agreements"] == 0
+    assert delta["candidate_oracle_agreement_rate"] == 0.0
+    assert delta["oracle_agreement_advantage"] == 0.0
+
+
 def test_same_solver_is_explicit_no_delta():
     delta = compute_counterfactual_delta(
         shadow_samples=_samples(), candidate=_spec("same_solver", 273.15),

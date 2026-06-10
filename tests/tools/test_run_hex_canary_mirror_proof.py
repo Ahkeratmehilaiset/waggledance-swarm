@@ -14,11 +14,14 @@ from pathlib import Path
 import pytest
 
 from tools.run_hex_canary_mirror_proof import (
+    BUILTIN_CORPORA,
     CLAIM_GATES,
     DEMO_DECISIONS,
+    REPRESENTATIVE_DECISIONS,
     build_canary_mirror_proof,
     main,
 )
+from waggledance.core.hex_topology.canary_mirror import CANARY_CLASSIFICATIONS
 from waggledance.core.magma.canonical import sha256_digest
 
 NOW_TEXT = "2026-06-10T12:00:00Z"
@@ -64,6 +67,75 @@ def test_demo_covers_all_four_classifications_and_is_deterministic(capsys):
     assert all(count == 1 for count in report["by_classification"].values())
     assert report["agreement_rate"] == 0.5
     assert first["input_source"] == "demo"
+
+
+def test_demo_flag_equals_corpus_demo(capsys):
+    assert main(["--demo", "--now", NOW_TEXT, "--json"]) == 0
+    demo_flag = json.loads(capsys.readouterr().out)
+    assert main(["--corpus", "demo", "--now", NOW_TEXT, "--json"]) == 0
+    corpus_demo = json.loads(capsys.readouterr().out)
+    assert demo_flag == corpus_demo
+
+
+# --- representative corpus -----------------------------------------------------
+
+
+def test_representative_corpus_is_richer_and_deterministic(capsys):
+    assert main(["--corpus", "representative", "--now", NOW_TEXT, "--json"]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert main(["--corpus", "representative", "--now", NOW_TEXT, "--json"]) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert first == second
+
+    report = first["mirror_report"]
+    assert first["ok"] is True
+    assert first["input_source"] == "representative"
+    assert report["sample_count"] == len(REPRESENTATIVE_DECISIONS) == 20
+    # Locked empirical spread: exercises all four classifications.
+    assert report["by_classification"] == {
+        "match_production_cell": 8,
+        "divergent_production_cell": 4,
+        "match_intent_cell": 5,
+        "divergent_keyword_override": 3,
+    }
+    assert set(report["by_classification"]) == set(CANARY_CLASSIFICATIONS)
+    assert all(count > 0 for count in report["by_classification"].values())
+    assert report["agreement_count"] == 13
+    assert report["agreement_rate"] == 0.65
+    # Both real routing methods exercised (intent + keyword), plus default.
+    assert report["by_mesh_method"]["intent"] > 0
+    assert report["by_mesh_method"]["keyword"] > 0
+    assert len([c for c in report["by_mesh_cell"].values() if c > 0]) >= 3
+
+
+def test_representative_corpus_spans_three_intents():
+    intents = {d["intent"] for d in REPRESENTATIVE_DECISIONS}
+    assert intents == {"math", "chat", "code"}
+
+
+def test_representative_records_pass_closed_contract():
+    allowed = {
+        "query",
+        "intent",
+        "production_capability_id",
+        "quality_path",
+        "production_cell_id",
+    }
+    required = {"query", "intent", "production_capability_id", "quality_path"}
+    for record in REPRESENTATIVE_DECISIONS:
+        keys = set(record)
+        assert required <= keys
+        assert keys <= allowed
+
+
+def test_builtin_corpora_registry_maps_both():
+    assert BUILTIN_CORPORA["demo"] == DEMO_DECISIONS
+    assert BUILTIN_CORPORA["representative"] == REPRESENTATIVE_DECISIONS
+
+
+def test_corpus_and_demo_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        main(["--demo", "--corpus", "representative", "--now", NOW_TEXT])
 
 
 # --- artifact contract ---------------------------------------------------------

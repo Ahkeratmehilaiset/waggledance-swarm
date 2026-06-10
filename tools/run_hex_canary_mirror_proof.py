@@ -97,6 +97,59 @@ DEMO_DECISIONS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _decision(
+    query: str,
+    intent: str,
+    capability: str,
+    *,
+    quality_path: str = "silver",
+    production_cell_id: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "query": query,
+        "intent": intent,
+        "production_capability_id": capability,
+        "quality_path": quality_path,
+    }
+    if production_cell_id is not None:
+        record["production_cell_id"] = production_cell_id
+    return record
+
+
+# Deterministic representative corpus: 20 decisions across 3 intents
+# (math / chat / code), exercising all four classifications, both mesh
+# routing methods, and a realistic agreement mix (not the thin one-per-
+# classification demo). Surfaced as the next coverage target by
+# tools/build_hex_canary_coverage_summary.py.
+REPRESENTATIVE_DECISIONS: tuple[dict[str, Any], ...] = (
+    _decision("calculate the integral", "math", "cap.math.calc", production_cell_id="math"),
+    _decision("solve the equation", "math", "cap.math.solve", production_cell_id="math"),
+    _decision("compute the derivative", "math", "cap.math.calc", production_cell_id="general"),
+    _decision("hello there how are you", "chat", "cap.chat.general"),
+    _decision("what is your name", "chat", "cap.chat.general"),
+    _decision("kova pakkanen ja matala lämpötila heating tarvitaan", "chat", "cap.chat.general"),
+    _decision("the heating system is cold and frost", "chat", "cap.chat.general"),
+    _decision("write a python function", "code", "cap.code.gen", production_cell_id="code"),
+    _decision("refactor this class", "code", "cap.code.gen", production_cell_id="general"),
+    _decision("debug the error", "code", "cap.code.gen"),
+    _decision("translate this text", "chat", "cap.chat.general", production_cell_id="general"),
+    _decision("summarize the article", "chat", "cap.chat.general", production_cell_id="general"),
+    _decision("add two numbers", "math", "cap.math.calc", production_cell_id="math"),
+    _decision("multiply matrices", "math", "cap.math.calc", production_cell_id="math"),
+    _decision("explain the concept", "chat", "cap.chat.general"),
+    _decision("generate test cases", "code", "cap.code.gen", production_cell_id="code"),
+    _decision("lämpötila pakkanen heating cold", "math", "cap.math.calc", production_cell_id="math"),
+    _decision("a simple greeting hello", "chat", "cap.chat.general"),
+    _decision("compile the module", "code", "cap.code.gen", production_cell_id="code"),
+    _decision("frost heating pakkanen lämpötila kylmä", "chat", "cap.chat.general"),
+)
+
+BUILTIN_CORPORA: dict[str, tuple[dict[str, Any], ...]] = {
+    "demo": DEMO_DECISIONS,
+    "representative": REPRESENTATIVE_DECISIONS,
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -116,6 +169,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--demo",
         action="store_true",
         help="Use the built-in deterministic demo corpus instead of a file.",
+    )
+    source.add_argument(
+        "--corpus",
+        choices=sorted(BUILTIN_CORPORA),
+        default=None,
+        help=(
+            "Use a named built-in corpus: 'demo' (4 cases, one per "
+            "classification) or 'representative' (20 cases across 3 intents, "
+            "both routing methods). --demo is equivalent to --corpus demo."
+        ),
     )
     parser.add_argument(
         "--now",
@@ -161,9 +224,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         now = datetime.now(timezone.utc)
 
-    if args.demo:
-        decisions = [dict(d) for d in DEMO_DECISIONS]
-        source_label = "demo"
+    if args.demo or args.corpus is not None:
+        corpus_name = "demo" if args.demo else args.corpus
+        decisions = [dict(d) for d in BUILTIN_CORPORA[corpus_name]]
+        source_label = corpus_name
     else:
         if not args.input.exists():
             print(f"input file not found: {args.input}", file=sys.stderr)

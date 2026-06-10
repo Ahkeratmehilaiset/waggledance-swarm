@@ -41,9 +41,9 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert report["evaluation_result_version"] == "magma.evaluation_result.v1"
     assert report["writes_applied"] is False
     assert report["counterfactual_delta_proven"] is True
-    assert report["variant_count"] == 3
-    assert report["variants_with_kind_delta"] == 3
-    assert report["variants_with_gate_delta"] == 2
+    assert report["variant_count"] == 4
+    assert report["variants_with_kind_delta"] == 4
+    assert report["variants_with_gate_delta"] == 3
     assert report["delta"] == {
         "actual_gate": ["review", "allow"],
         "kind": ["KEEP_WIP", "CLOSE_OK"],
@@ -53,6 +53,7 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
         "limited_to_idle",
         "duplicate_to_clean_close",
         "review_to_clean_close",
+        "clean_close_to_blocked",
     ]
     assert set(report["delta_fields"]) == {"actual_gate", "kind", "verdict"}
     assert report["receipt_chain_verified"] is False
@@ -181,7 +182,7 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
         not in report["stored_consensus_replay"]["next_required_gates"]
     )
     assert report["receipt_bundle"]["available"] is True
-    assert report["receipt_bundle"]["receipt_count"] == 6
+    assert report["receipt_bundle"]["receipt_count"] == 8
     assert report["receipt_bundle"]["out_dir"] == "."
     assert report["receipt_bundle"]["manifest"] == "manifest.json"
     assert report["receipt_chain_id"] == "magma:v12_a3_counterfactual_axis:v1"
@@ -196,13 +197,13 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
             encoding="utf-8"
         )
     )
-    sixth_receipt = json.loads(
-        (out_dir / "receipt-006-review_to_clean_close-counterfactual.json").read_text(
+    eighth_receipt = json.loads(
+        (out_dir / "receipt-008-clean_close_to_blocked-counterfactual.json").read_text(
             encoding="utf-8"
         )
     )
     assert second_receipt["prev_receipt_hash"] == sha256_digest(first_receipt)
-    assert sixth_receipt["event_id"].endswith("review_to_clean_close:counterfactual")
+    assert eighth_receipt["event_id"].endswith("clean_close_to_blocked:counterfactual")
     first_evaluation = json.loads(
         (out_dir / "evaluation-001-limited_to_idle-factual.json").read_text(
             encoding="utf-8"
@@ -249,8 +250,9 @@ def test_a3_markdown_preserves_no_rival_benchmark_guardrail(tmp_path: Path) -> N
     assert "V12 A3 Counterfactual Axis Proof" in markdown
     assert "counterfactual_delta_proven: `true`" in markdown
     assert "evaluation_result_version: `magma.evaluation_result.v1`" in markdown
-    assert "variant_count: `3`" in markdown
+    assert "variant_count: `4`" in markdown
     assert "`review_to_clean_close`" in markdown
+    assert "`clean_close_to_blocked`" in markdown
     assert "receipt_chain_verified: `true`" in markdown
     assert "stored_consensus_replay_verified: `true`" in markdown
     assert "stored_consensus_replay_receipt_bound: `true`" in markdown
@@ -277,11 +279,11 @@ def test_a3_cli_json_with_receipts_is_deterministic(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["generated_at_utc"] == "2026-05-20T19:50:00Z"
     assert payload["counterfactual_delta_proven"] is True
-    assert payload["variant_count"] == 3
+    assert payload["variant_count"] == 4
     assert payload["receipt_chain_verified"] is True
     assert payload["receipt_bound_stored_consensus_replay"] is True
     assert payload["stored_consensus_replay"]["candidate_diff_charter_allowed"] is True
-    assert payload["receipt_bundle"]["receipt_count"] == 6
+    assert payload["receipt_bundle"]["receipt_count"] == 8
     assert payload["receipt_bundle"]["out_dir"] == "."
     assert payload["receipt_bundle"]["manifest"] == "manifest.json"
     assert payload["evaluation_result_version"] == "magma.evaluation_result.v1"

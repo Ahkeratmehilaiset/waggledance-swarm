@@ -42,9 +42,9 @@ def test_summary_reports_counterfactual_eval_coverage_without_authority() -> Non
     assert report["source"]["axis_id"] == "A3"
     assert report["source"]["writes_applied"] is False
     coverage = report["coverage"]
-    assert coverage["variant_count"] == 3
-    assert coverage["variants_with_kind_delta"] == 3
-    assert coverage["variants_with_gate_delta"] == 2
+    assert coverage["variant_count"] == 4
+    assert coverage["variants_with_kind_delta"] == 4
+    assert coverage["variants_with_gate_delta"] == 3
     assert coverage["runtime_smoke"]["sample_count"] == 24
     assert coverage["runtime_smoke"]["same_sample_set"] is True
     assert coverage["runtime_smoke"]["deterministic"] is True
@@ -107,7 +107,7 @@ def test_markdown_carries_next_targets_and_authority_boundary() -> None:
     markdown = render_markdown(report)
 
     assert "# V12 Counterfactual-Eval Coverage Summary" in markdown
-    assert "variants: `3/3`" in markdown
+    assert "variants: `4/3`" in markdown
     assert "runtime samples: `24/20`" in markdown
     assert "runtime authority: `false`" in markdown
     assert "promotion authority: `false`" in markdown

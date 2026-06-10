@@ -219,7 +219,7 @@ def build_a3_counterfactual_axis_proof(
             "does_not_claim_external_effect_execution": True,
             "does_not_apply_writes": True,
             "measures_one_local_domain_fixture": True,
-            "measures_three_deterministic_variants": True,
+            "measures_deterministic_variant_matrix": True,
             "runtime_smoke_is_not_axis_claim_upgrade": True,
         },
     }
@@ -265,7 +265,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             for variant in report["variants"]
         ],
         "",
-        "This is a three-variant local measured counterfactual row. It is not a rival benchmark,",
+        f"This is a {report['variant_count']}-variant local measured counterfactual matrix. It is not a rival benchmark,",
         "does not execute an external effect, and does not claim broad semantic",
         "counterfactual coverage beyond this fixture. The runtime-condition smoke only",
         "proves the sample-floor, same-sample-set, deterministic, and privacy guards",
@@ -609,7 +609,7 @@ def _upgrade_scenario_to_v1(scenario: dict[str, Any]) -> None:
         uncertainty_sources=[
             {
                 "kind": "limited_evidence",
-                "detail": "A3 proof is a deterministic local three-variant fixture, not a statistical benchmark.",
+                "detail": "A3 proof is a deterministic local variant-matrix fixture, not a statistical benchmark.",
             }
         ],
         confidence_basis={

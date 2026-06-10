@@ -134,7 +134,8 @@ def build_a3_counterfactual_axis_proof(
     factual = demo["factual"]
     counterfactual = demo["counterfactual"]
     delta = demo["delta"]
-    runtime_smoke = _build_runtime_condition_replay_smoke()
+    runtime_smoke_families = _build_runtime_condition_replay_smoke_families()
+    runtime_smoke = runtime_smoke_families[0]
     delta_fields = [
         field
         for field, values in sorted(delta.items())
@@ -176,7 +177,7 @@ def build_a3_counterfactual_axis_proof(
         "ok": bool(
             counterfactual_delta_proven
             and stored_consensus_replay["candidate_diff_charter_allowed"]
-            and runtime_smoke["ok"]
+            and all(family["ok"] for family in runtime_smoke_families)
         ),
         "axis_id": "A3",
         "axis_name": "counterfactual_evaluation_delta",
@@ -206,6 +207,8 @@ def build_a3_counterfactual_axis_proof(
         ),
         "stored_consensus_replay": stored_consensus_replay,
         "runtime_condition_replay_smoke": runtime_smoke,
+        "runtime_condition_replay_smoke_families": runtime_smoke_families,
+        "runtime_condition_sample_family_count": len(runtime_smoke_families),
         "evidence_sources": [
             "tools/run_pdam_counterfactual_demo.py",
             "waggledance/core/autonomy_growth/counterfactual_replay.py",
@@ -338,17 +341,56 @@ def _relative_artifact_path(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
 
-def _build_runtime_condition_replay_smoke() -> dict[str, Any]:
+def _build_runtime_condition_replay_smoke_families() -> list[dict[str, Any]]:
+    """Build every deterministic runtime-condition smoke family, in order.
+
+    Family 1 (primary, unchanged semantics): per-arm formula-recompute
+    oracle agrees with BOTH arms, so every divergence is neutral.
+    Family 2: ground-truth oracle matches the CANDIDATE arm only, so the
+    divergences carry a non-neutral (improvement) direction — this
+    exercises the oracle-agreement direction counters the neutral family
+    cannot.
+    """
+    return [
+        _build_runtime_condition_replay_smoke(
+            sample_family="scalar_unit_conversion_24_same_sample_set",
+            candidate=_runtime_smoke_spec("candidate_kelvin", 273.15),
+            incumbent=_runtime_smoke_spec("incumbent_identity", 0.0),
+            oracle=_runtime_smoke_oracle,
+            oracle_kind="deterministic_formula_recompute",
+        ),
+        _build_runtime_condition_replay_smoke(
+            sample_family="scalar_linear_scaling_24_candidate_oracle_match",
+            candidate=_runtime_smoke_scaling_spec(
+                "candidate_fahrenheit", factor=1.8, offset=32.0
+            ),
+            incumbent=_runtime_smoke_scaling_spec(
+                "incumbent_identity_scaling", factor=1.0, offset=0.0
+            ),
+            oracle=_runtime_smoke_ground_truth_oracle,
+            oracle_kind="deterministic_ground_truth",
+        ),
+    ]
+
+
+def _build_runtime_condition_replay_smoke(
+    *,
+    sample_family: str,
+    candidate: SolverSpec,
+    incumbent: SolverSpec,
+    oracle: Any,
+    oracle_kind: str,
+) -> dict[str, Any]:
     samples = [
         {"x": float(index), "note": RUNTIME_SMOKE_PRIVACY_CANARY}
         for index in range(DEFAULT_A3_MIN_SAMPLES + 4)
     ]
     delta = compute_counterfactual_delta(
         shadow_samples=samples,
-        candidate=_runtime_smoke_spec("candidate_kelvin", 273.15),
-        incumbent=_runtime_smoke_spec("incumbent_identity", 0.0),
-        oracle=_runtime_smoke_oracle,
-        oracle_kind="deterministic_formula_recompute",
+        candidate=candidate,
+        incumbent=incumbent,
+        oracle=oracle,
+        oracle_kind=oracle_kind,
     )
     summary = summarize_counterfactual_observability(delta)
     rendered_summary = repr(summary)
@@ -358,7 +400,7 @@ def _build_runtime_condition_replay_smoke() -> dict[str, Any]:
         for field in ("per_arm", "divergences", "candidate_hash", "incumbent_hash")
     )
     emitted_text_fields = (
-        "scalar_unit_conversion_24_same_sample_set",
+        sample_family,
         "runtime_condition_smoke_only_not_axis_claim_upgrade",
     )
     emitted_text_passes_leak_policy = all(
@@ -382,7 +424,7 @@ def _build_runtime_condition_replay_smoke() -> dict[str, Any]:
     return {
         "schema_version": RUNTIME_CONDITION_SMOKE_VERSION,
         "ok": bool(ok),
-        "sample_family": "scalar_unit_conversion_24_same_sample_set",
+        "sample_family": sample_family,
         "min_samples": DEFAULT_A3_MIN_SAMPLES,
         "sample_count": summary["sample_count"],
         "compute_status": summary["compute_status"],
@@ -429,10 +471,34 @@ def _runtime_smoke_spec(name: str, offset: float) -> SolverSpec:
     )
 
 
+def _runtime_smoke_scaling_spec(
+    name: str, *, factor: float, offset: float
+) -> SolverSpec:
+    return SolverSpec(
+        schema_version=1,
+        spec_id=f"a3_runtime_smoke_{name}",
+        family_kind="scalar_unit_conversion",
+        solver_name=name,
+        cell_id="general",
+        spec={"from_unit": "C", "to_unit": "F", "factor": factor, "offset": offset},
+        source="v12_a3_runtime_smoke",
+        source_kind="hand_authored_fixture",
+    )
+
+
 def _runtime_smoke_oracle(inputs: Mapping[str, Any], artifact: Mapping[str, Any]) -> float:
     return float(inputs["x"]) * float(artifact["factor"]) + float(
         artifact.get("offset", 0.0)
     )
+
+
+def _runtime_smoke_ground_truth_oracle(
+    inputs: Mapping[str, Any], artifact: Mapping[str, Any]
+) -> float:
+    # Ground truth for C -> F regardless of the arm's own artifact: the
+    # candidate (factor 1.8, offset 32) matches it, the identity incumbent
+    # does not, so every divergence carries the improvement direction.
+    return float(inputs["x"]) * 1.8 + 32.0
 
 
 def _build_stored_consensus_replay() -> dict[str, Any]:

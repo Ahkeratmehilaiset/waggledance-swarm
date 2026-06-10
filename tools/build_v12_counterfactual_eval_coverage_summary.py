@@ -104,15 +104,23 @@ def build_counterfactual_eval_coverage_summary(
     )
 
     runtime_smoke = _mapping(source.get("runtime_condition_replay_smoke"))
+    runtime_smoke_families = _runtime_smoke_families(source, runtime_smoke)
     blockers = _source_blockers(source)
     coverage = _coverage(
         source,
         runtime_smoke=runtime_smoke,
+        runtime_smoke_families=runtime_smoke_families,
         min_variants=min_variants,
         min_runtime_samples=min_runtime_samples,
     )
     blockers.extend(_coverage_blockers(coverage))
     blockers.extend(_runtime_smoke_blockers(runtime_smoke))
+    for family in runtime_smoke_families:
+        if family.get("ok") is not True:
+            blockers.append(
+                "runtime_smoke_family_not_ok:"
+                f"{str(family.get('sample_family', '')) or 'unnamed'}"
+            )
 
     return {
         "report_version": REPORT_VERSION,
@@ -141,6 +149,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"runtime samples: `{runtime.get('sample_count', 0)}/"
         f"{runtime.get('min_samples', 0)}`",
         f"runtime status: `{runtime.get('observability_status', '')}`",
+        f"runtime sample families: `{coverage.get('runtime_sample_family_count', 0)}`",
         "",
         "## Next Eval Targets",
     ]
@@ -186,10 +195,24 @@ def _source_blockers(source: Mapping[str, Any]) -> list[str]:
     return blockers
 
 
+def _runtime_smoke_families(
+    source: Mapping[str, Any],
+    runtime_smoke: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """Family list from the source; older single-family reports fall back
+    to wrapping the primary smoke (count 1 keeps the expansion target open)."""
+    raw = source.get("runtime_condition_replay_smoke_families")
+    families = [item for item in (raw or []) if isinstance(item, Mapping)]
+    if families:
+        return families
+    return [runtime_smoke] if runtime_smoke else []
+
+
 def _coverage(
     source: Mapping[str, Any],
     *,
     runtime_smoke: Mapping[str, Any],
+    runtime_smoke_families: list[Mapping[str, Any]],
     min_variants: int,
     min_runtime_samples: int,
 ) -> dict[str, Any]:
@@ -209,6 +232,21 @@ def _coverage(
         "receipt_bound_stored_consensus_replay": (
             source.get("receipt_bound_stored_consensus_replay") is True
         ),
+        "runtime_sample_family_count": len(runtime_smoke_families),
+        "runtime_sample_families": [
+            {
+                "sample_family": str(family.get("sample_family", "")),
+                "ok": family.get("ok") is True,
+                "sample_count": _as_int(family.get("sample_count")),
+                "divergence_count": _as_int(family.get("divergence_count")),
+                "improvement_count": _as_int(family.get("improvement_count")),
+                "regression_count": _as_int(family.get("regression_count")),
+                "neutral_divergence_count": _as_int(
+                    family.get("neutral_divergence_count")
+                ),
+            }
+            for family in runtime_smoke_families
+        ],
         "runtime_smoke": {
             "min_samples": min_runtime_samples,
             "sample_family": str(runtime_smoke.get("sample_family", "")),
@@ -290,7 +328,6 @@ def _next_eval_targets(
     coverage: Mapping[str, Any],
 ) -> list[str]:
     targets: list[str] = []
-    runtime = _mapping(coverage.get("runtime_smoke"))
     if coverage.get("receipt_chain_verified") is not True:
         targets.append("bind the summary to a verified receipt bundle")
     if _as_int(coverage.get("variants_with_gate_delta")) < _as_int(
@@ -299,8 +336,18 @@ def _next_eval_targets(
         targets.append("add a gate-delta variant so every variant changes actual_gate")
     if _as_int(coverage.get("variant_count")) <= _as_int(coverage.get("min_variants")):
         targets.append("add a fourth deterministic variant outside the current trio")
-    if str(runtime.get("sample_family")) == "scalar_unit_conversion_24_same_sample_set":
+    if _as_int(coverage.get("runtime_sample_family_count")) < 2:
         targets.append("add a second runtime-condition sample family")
+    families = coverage.get("runtime_sample_families") or []
+    if families and not any(
+        _as_int(_mapping(family).get("improvement_count"))
+        + _as_int(_mapping(family).get("regression_count"))
+        > 0
+        for family in families
+    ):
+        targets.append(
+            "add a sample family with a non-neutral oracle-agreement direction"
+        )
     if source.get("receipt_bound_stored_consensus_replay") is not True:
         targets.append("make stored-consensus replay receipt-bound in the default proof")
     return targets

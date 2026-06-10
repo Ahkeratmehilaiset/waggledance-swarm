@@ -19,6 +19,12 @@ What it does:
   future timestamps) instead of silently dropping them.
 * Optionally flags producers whose substantive burn rate in the smallest
   window exceeds --warn-events-per-hour.
+* Optionally projects forward to a provider usage reset: with --reset-at,
+  reports hours until reset and, per producer, the projected number of
+  additional substantive events until reset at the burn rate observed in
+  the --projection-window-hours trailing window. This answers "at the
+  current pace, how much more will be spent before the cap resets" so a
+  producer can be throttled early.
 
 This is ADVISORY TELEMETRY ONLY. It is not a merge gate, grants no
 authority, and must never be wired as an input to an autonomous-merge
@@ -104,6 +110,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--reset-at",
+        default=None,
+        help=(
+            "ISO-8601 UTC instant of the next provider usage reset. When "
+            "given, project per-producer substantive events from now until "
+            "reset at the burn rate of the --projection-window-hours window."
+        ),
+    )
+    parser.add_argument(
+        "--projection-window-hours",
+        type=float,
+        default=24.0,
+        help=(
+            "Trailing window whose burn rate drives the --reset-at "
+            "projection. Must be one of the reported --window-hours values "
+            "(default 24)."
+        ),
+    )
+    parser.add_argument(
         "--warn-events-per-hour",
         type=float,
         default=None,
@@ -149,6 +174,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         now = datetime.now(timezone.utc)
 
+    reset_at = None
+    if args.reset_at is not None:
+        reset_at = parse_ts(args.reset_at)
+        if reset_at is None:
+            print(
+                f"--reset-at is not a valid ISO-8601 instant: {args.reset_at!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if not _is_finite_positive(args.projection_window_hours):
+            print("--projection-window-hours must be finite and > 0", file=sys.stderr)
+            return 2
+        if float(args.projection_window_hours) not in {float(h) for h in window_hours}:
+            print(
+                "--projection-window-hours must be one of the --window-hours "
+                f"values {sorted(set(float(h) for h in window_hours))}",
+                file=sys.stderr,
+            )
+            return 2
+
     events_path: Path = args.events
     if not events_path.exists():
         print(f"bridge events file not found: {events_path}", file=sys.stderr)
@@ -162,6 +207,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         window_hours=window_hours,
         warn_events_per_hour=args.warn_events_per_hour,
         malformed_lines=malformed_lines,
+        reset_at=reset_at,
+        projection_window_hours=float(args.projection_window_hours),
     )
     _emit(result, args.json)
     return 4 if result["warned_producers"] else 0
@@ -175,12 +222,20 @@ def probe_producer_budget(
     window_hours: Sequence[float] = DEFAULT_WINDOW_HOURS,
     warn_events_per_hour: float | None = None,
     malformed_lines: int = 0,
+    reset_at: datetime | None = None,
+    projection_window_hours: float = 24.0,
 ) -> dict[str, Any]:
     """Compute per-producer budget telemetry from parsed bridge events.
 
     Pure and read-only: no I/O, no mutation of `events`.
     """
     windows = sorted(set(float(h) for h in window_hours))
+    projection_window_hours = float(projection_window_hours)
+    if reset_at is not None and projection_window_hours not in windows:
+        raise ValueError(
+            "projection_window_hours must be one of the reported windows "
+            f"{windows}, got {projection_window_hours}"
+        )
     per_producer: dict[str, dict[str, Any]] = {}
     for producer in producers:
         per_producer[producer] = {
@@ -229,8 +284,15 @@ def probe_producer_budget(
                 else:
                     bucket["substantive_events"] += 1
 
+    hours_until_reset: float | None = None
+    if reset_at is not None:
+        hours_until_reset = round(
+            max(0.0, (reset_at - now).total_seconds() / 3600.0), 4
+        )
+
     warned: list[str] = []
     smallest_key = _window_key(windows[0])
+    projection_key = _window_key(projection_window_hours)
     for producer, stats in per_producer.items():
         for bucket in stats["windows"].values():
             bucket["substantive_events_per_hour"] = round(
@@ -240,6 +302,13 @@ def probe_producer_budget(
         if last is not None:
             delta = now - parse_ts(last)
             stats["minutes_since_last_event"] = round(delta.total_seconds() / 60.0, 2)
+        if hours_until_reset is None:
+            stats["projected_substantive_events_to_reset"] = None
+        else:
+            rate = stats["windows"][projection_key]["substantive_events_per_hour"]
+            stats["projected_substantive_events_to_reset"] = round(
+                rate * hours_until_reset, 1
+            )
         if (
             warn_events_per_hour is not None
             and stats["windows"][smallest_key]["substantive_events_per_hour"]
@@ -255,6 +324,11 @@ def probe_producer_budget(
         "producers": list(producers),
         "window_hours": windows,
         "warn_events_per_hour": warn_events_per_hour,
+        "reset_at_utc": _format_ts(reset_at) if reset_at is not None else None,
+        "hours_until_reset": hours_until_reset,
+        "projection_window_hours": (
+            projection_window_hours if reset_at is not None else None
+        ),
         "warned_producers": sorted(warned),
         "malformed_lines": int(malformed_lines),
         "per_producer": per_producer,
@@ -334,11 +408,22 @@ def _emit(result: dict[str, Any], as_json: bool) -> None:
     print(f"producer budget probe @ {result['now_utc']} (advisory, read-only)")
     if result["malformed_lines"]:
         print(f"  malformed lines skipped: {result['malformed_lines']}")
+    if result["reset_at_utc"] is not None:
+        print(
+            f"  reset at {result['reset_at_utc']} "
+            f"(in {result['hours_until_reset']} h; projection basis "
+            f"{_window_key(result['projection_window_hours'])})"
+        )
     for producer in result["producers"]:
         stats = result["per_producer"][producer]
         gap = stats["minutes_since_last_event"]
         gap_text = f"{gap} min ago" if gap is not None else "never seen"
         print(f"  {producer}: last event {gap_text}, total {stats['total_events']}")
+        if stats.get("projected_substantive_events_to_reset") is not None:
+            print(
+                "    projected substantive events to reset: "
+                f"{stats['projected_substantive_events_to_reset']}"
+            )
         for key in (_window_key(h) for h in result["window_hours"]):
             bucket = stats["windows"][key]
             print(

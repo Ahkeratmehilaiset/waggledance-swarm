@@ -166,6 +166,115 @@ def test_no_warn_when_threshold_not_given():
     assert result["warned_producers"] == []
 
 
+# --- reset projection --------------------------------------------------------
+
+
+def test_reset_projection_uses_basis_window_rate():
+    # 6 substantive events in the trailing 24h -> 0.25/h; reset in 48h -> 12.0
+    events = [
+        _event("codex-lead-1", f"2026-06-10T{h:02d}:00:00Z") for h in range(6, 12)
+    ]
+    result = probe_producer_budget(
+        events=events,
+        producers=("codex-lead-1",),
+        now=NOW,
+        window_hours=(24.0,),
+        reset_at=datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc),
+        projection_window_hours=24.0,
+    )
+    assert result["hours_until_reset"] == 48.0
+    assert result["projection_window_hours"] == 24.0
+    lead = result["per_producer"]["codex-lead-1"]
+    assert lead["projected_substantive_events_to_reset"] == 12.0
+
+
+def test_reset_in_past_clamps_to_zero():
+    events = [_event("codex-lead-1", "2026-06-10T11:00:00Z")]
+    result = probe_producer_budget(
+        events=events,
+        producers=("codex-lead-1",),
+        now=NOW,
+        window_hours=(24.0,),
+        reset_at=datetime(2026, 6, 9, 12, 0, 0, tzinfo=timezone.utc),
+        projection_window_hours=24.0,
+    )
+    assert result["hours_until_reset"] == 0.0
+    lead = result["per_producer"]["codex-lead-1"]
+    assert lead["projected_substantive_events_to_reset"] == 0.0
+
+
+def test_no_reset_given_projection_fields_null():
+    result = probe_producer_budget(events=[], producers=("codex-lead-1",), now=NOW)
+    assert result["reset_at_utc"] is None
+    assert result["hours_until_reset"] is None
+    assert result["projection_window_hours"] is None
+    lead = result["per_producer"]["codex-lead-1"]
+    assert lead["projected_substantive_events_to_reset"] is None
+
+
+def test_projection_basis_must_be_reported_window():
+    import pytest
+
+    with pytest.raises(ValueError):
+        probe_producer_budget(
+            events=[],
+            producers=("codex-lead-1",),
+            now=NOW,
+            window_hours=(24.0,),
+            reset_at=NOW,
+            projection_window_hours=12.0,
+        )
+
+
+def test_main_reset_projection_cli(tmp_path, capsys):
+    path = _write_events(
+        tmp_path,
+        [_event("codex-lead-1", f"2026-06-10T{h:02d}:00:00Z") for h in range(6, 12)],
+    )
+    rc = main(
+        [
+            "--events", str(path),
+            "--now", NOW_TEXT,
+            "--window-hours", "24",
+            "--reset-at", "2026-06-12T12:00:00Z",
+            "--projection-window-hours", "24",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hours_until_reset"] == 48.0
+    assert (
+        payload["per_producer"]["codex-lead-1"][
+            "projected_substantive_events_to_reset"
+        ]
+        == 12.0
+    )
+
+
+def test_main_exit_2_bad_reset_args(tmp_path):
+    path = _write_events(tmp_path, [_event("codex-lead-1", "2026-06-10T11:00:00Z")])
+    assert main(["--events", str(path), "--now", NOW_TEXT, "--reset-at", "junk"]) == 2
+    # basis window not among reported windows
+    assert main(
+        [
+            "--events", str(path),
+            "--now", NOW_TEXT,
+            "--window-hours", "24",
+            "--reset-at", "2026-06-12T12:00:00Z",
+            "--projection-window-hours", "12",
+        ]
+    ) == 2
+    assert main(
+        [
+            "--events", str(path),
+            "--now", NOW_TEXT,
+            "--reset-at", "2026-06-12T12:00:00Z",
+            "--projection-window-hours", "nan",
+        ]
+    ) == 2
+
+
 # --- claim gates / advisory framing -----------------------------------------
 
 

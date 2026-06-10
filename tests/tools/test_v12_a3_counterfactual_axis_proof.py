@@ -56,16 +56,24 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
         "clean_close_to_blocked",
     ]
     assert set(report["delta_fields"]) == {"actual_gate", "kind", "verdict"}
-    assert report["receipt_chain_verified"] is False
+    # Default proof is receipt-bound: the bundle is emitted + verified in an
+    # ephemeral temp dir, so the chain summary is verified evidence while the
+    # default run leaves no artifact files behind.
+    assert report["receipt_chain_verified"] is True
+    assert report["receipt_bundle_storage"] == "ephemeral_tempdir"
+    assert report["receipt_bundle"]["available"] is True
+    assert report["receipt_bundle"]["receipt_count"] == 8
+    assert report["receipt_bundle"]["verifier_ok"] is True
     assert report["stored_consensus_replay_verified"] is True
-    assert report["receipt_bound_stored_consensus_replay"] is False
+    assert report["receipt_bound_stored_consensus_replay"] is True
     assert replay["replay_version"] == "wd.v12.a3_stored_consensus_replay.v0"
     assert replay["decision"] == "candidate_diff_charter_passed"
     assert replay["candidate_diff_charter_allowed"] is True
-    assert replay["receipt_bound"] is False
-    assert replay["receipt_chain_id"] is None
-    assert replay["satisfied_gates"] == []
-    assert "forensic_artifact_receipt" in replay["next_required_gates"]
+    assert replay["receipt_bound"] is True
+    assert replay["receipt_chain_id"] == "magma:v12_a3_counterfactual_axis:v1"
+    assert replay["satisfied_gates"] == ["forensic_artifact_receipt"]
+    assert "forensic_artifact_receipt" not in replay["next_required_gates"]
+    assert "operator_review_gate" in replay["next_required_gates"]
     assert replay["admission_report_version"] == (
         "idle_consensus_candidate_diff_replay_admission.v0"
     )
@@ -209,6 +217,7 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
     assert report["receipt_bundle"]["receipt_count"] == 8
     assert report["receipt_bundle"]["out_dir"] == "."
     assert report["receipt_bundle"]["manifest"] == "manifest.json"
+    assert report["receipt_bundle_storage"] == "persistent_out_dir"
     assert report["receipt_chain_id"] == "magma:v12_a3_counterfactual_axis:v1"
     assert (out_dir / "manifest.json").exists()
     first_receipt = json.loads(

@@ -52,9 +52,17 @@ def test_summary_reports_counterfactual_eval_coverage_without_authority() -> Non
     assert coverage["runtime_smoke"]["external_writes_applied"] is False
     assert coverage["runtime_smoke"]["payload_fields_exported"] is False
     assert coverage["runtime_smoke"]["raw_fields_exported"] is False
-    assert "bind the summary to a verified receipt bundle" in report[
-        "next_eval_targets"
-    ]
+    # Cleared by the default-proof ephemeral receipt binding.
+    assert coverage["receipt_chain_verified"] is True
+    assert coverage["receipt_bound_stored_consensus_replay"] is True
+    assert (
+        "bind the summary to a verified receipt bundle"
+        not in report["next_eval_targets"]
+    )
+    assert (
+        "make stored-consensus replay receipt-bound in the default proof"
+        not in report["next_eval_targets"]
+    )
     assert (
         "add a gate-delta variant so every variant changes actual_gate"
         in report["next_eval_targets"]
@@ -175,8 +183,9 @@ def test_markdown_carries_next_targets_and_authority_boundary() -> None:
     assert "runtime authority: `false`" in markdown
     assert "promotion authority: `false`" in markdown
     assert "bridge write authority: `false`" in markdown
-    assert "make stored-consensus replay receipt-bound in the default proof" in markdown
+    assert "add a gate-delta variant so every variant changes actual_gate" in markdown
     assert "add a second runtime-condition sample family" not in markdown
+    assert "make stored-consensus replay receipt-bound in the default proof" not in markdown
 
 
 def test_cli_json_smoke() -> None:

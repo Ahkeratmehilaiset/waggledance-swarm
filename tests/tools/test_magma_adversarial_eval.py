@@ -147,10 +147,16 @@ def test_gate_rederives_critical_floor_from_real_per_case_results(
     tmp_path: Path,
 ) -> None:
     solver_hash = "solver-artifact-hash"
-    for defect_class, mismatch_count in (
-        ("path_escape", 1),
-        ("governance_bypass", 2),
-    ):
+    corpus_cases = json.loads(CORPUS.read_text(encoding="utf-8"))["cases"]
+    for defect_class in ("path_escape", "governance_bypass"):
+        # Forward-proof: forge all-but-one of the family so exactly 1 case
+        # stays caught (< floor of 2) no matter how many cases future
+        # expansions add to the family.
+        family_count = sum(
+            1 for case in corpus_cases if case["defect_type"] == defect_class
+        )
+        mismatch_count = family_count - 1
+        assert mismatch_count >= 1, defect_class
         expectations_path, target_case_ids = _write_expectations_with_gate_mismatches(
             tmp_path,
             defect_class=defect_class,

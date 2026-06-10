@@ -223,16 +223,27 @@ def test_validator_rejects_full_corpus_below_critical_defect_floor(
 ) -> None:
     corpus = _load_corpus()
     expectations = _load_expectations()
-    removed_case_id = "case:adv:path_escape:002"
+    # Forward-proof mutation guard: drop the path_escape family to a single
+    # case (below the floor of 2) regardless of how many cases future
+    # expansions add, keeping one survivor so only the floor rule trips.
+    family_ids = [
+        case["case_id"]
+        for case in corpus["cases"]
+        if case["defect_type"] == "path_escape"
+    ]
+    removed_case_ids = set(family_ids[1:])
+    assert removed_case_ids, "fixture must contain >1 path_escape case"
     broken_corpus = copy.deepcopy(corpus)
     broken_corpus["cases"] = [
-        case for case in broken_corpus["cases"] if case["case_id"] != removed_case_id
+        case
+        for case in broken_corpus["cases"]
+        if case["case_id"] not in removed_case_ids
     ]
     broken_expectations = copy.deepcopy(expectations)
     broken_expectations["expectations"] = [
         expectation
         for expectation in broken_expectations["expectations"]
-        if expectation["case_id"] != removed_case_id
+        if expectation["case_id"] not in removed_case_ids
     ]
     corpus_path = tmp_path / "below_critical_floor.json"
     expectations_path = tmp_path / "below_critical_floor_expectations.json"

@@ -20,6 +20,7 @@ import asyncio
 import inspect
 import logging
 import time
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.actions.action_bus import SafeActionBus
@@ -120,6 +121,7 @@ class AutonomyRuntime:
         resource_kernel=None,
         enable_magma: bool = True,
         enable_persistence: bool = True,
+        enable_hex_canary_mirror: bool = False,
         runtime_receipt_sink: Optional[Callable[[dict[str, Any]], Any]] = None,
     ):
         self.profile = profile
@@ -172,6 +174,13 @@ class AutonomyRuntime:
 
         # Executor binding
         self._query_count = 0
+        # Hex-mesh canary mirror (opt-in, read-only; storyboard slice 2):
+        # bounded buffer of mesh-vs-production route comparisons. OFF by
+        # default -> zero behaviour change unless explicitly enabled.
+        # Strict identity check: only literal True enables (never coercion).
+        self._canary_mirror_enabled = enable_hex_canary_mirror is True
+        self._canary_comparisons: deque = deque(maxlen=256)
+        self._canary_mirror_failures = 0
         self._graph_health_logged = False
         self._executor_count = 0
         try:
@@ -354,6 +363,64 @@ class AutonomyRuntime:
         except Exception as exc:
             log.debug("Persist %s failed: %s", label, exc)
             return None
+
+    def _canary_mirror_safe(self, query: str, intent: str, route_result) -> None:
+        """Mirror one production routing decision through the hex mesh.
+
+        Read-only shadow comparison (storyboard slice 2): records what the
+        mesh WOULD have decided next to what production routing DID decide.
+        The production decision is never altered, and a mirror failure must
+        never break the query path (fail-open isolation, counted).
+        """
+        try:
+            from waggledance.core.hex_topology.canary_mirror import (
+                build_canary_route_comparison,
+            )
+
+            selected = route_result.selection.selected
+            if (
+                route_result.autonomy_consult is not None
+                and route_result.autonomy_served
+            ):
+                consult = route_result.autonomy_consult
+                capability_id = (
+                    f"autonomy_consult:{consult.solver_name or 'served'}"
+                )
+                quality_path = "autonomy_consult"
+            elif selected:
+                capability_id = selected[0].capability_id
+                quality_path = str(route_result.quality_path)
+            else:
+                capability_id = "none"
+                quality_path = "bronze"
+            self._canary_comparisons.append(
+                build_canary_route_comparison(
+                    query=query,
+                    intent=intent,
+                    production_capability_id=capability_id,
+                    quality_path=quality_path,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the hot path
+            self._canary_mirror_failures += 1
+            log.debug("hex canary mirror failed; ignored: %r", exc)
+
+    def hex_canary_mirror_snapshot(self) -> dict[str, Any]:
+        """Read-only digest-bound aggregate of the canary mirror buffer.
+
+        Grants no authority and changes no routing; the report is
+        re-derivable from the recorded comparisons (fail-closed aggregation
+        in ``summarize_canary_mirror``).
+        """
+        from waggledance.core.hex_topology.canary_mirror import (
+            summarize_canary_mirror,
+        )
+
+        return {
+            "enabled": self._canary_mirror_enabled,
+            "mirror_failure_count": self._canary_mirror_failures,
+            "report": summarize_canary_mirror(list(self._canary_comparisons)),
+        }
 
     def _record_query_runtime_receipt(
         self,
@@ -581,6 +648,12 @@ class AutonomyRuntime:
                              "solver_call_trace": solver_call_trace},
                     capability_id=primary_cap_id,
                 ))
+
+        # Hex-mesh canary mirror (opt-in, read-only; storyboard slice 2):
+        # placed BEFORE the consult/no-capability early returns so every
+        # routed query is mirrored. Fail-open — never affects the path.
+        if self._canary_mirror_enabled:
+            self._canary_mirror_safe(query, intent, route_result)
 
         # 3b. Phase 15 — if the autonomy consult lane served the query,
         # surface it as the response. Built-in solver precedence is

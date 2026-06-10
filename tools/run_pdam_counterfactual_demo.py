@@ -245,6 +245,39 @@ def build_variant_matrix_report(
             ],
             mutation_reason="mutation:subtool_state:DOWNTIME_to_IDLE",
         ),
+        # Fourth variant, outside the original trio: the mutation runs in
+        # the REVERSED direction (healthy -> blocked). The factual world
+        # closes cleanly; the counterfactual asks "would the clean close
+        # still have happened if DepB had been down" - kind delta
+        # CLOSE_OK -> KEEP_WIP and gate delta allow -> review.
+        _build_variant(
+            variant_id="clean_close_to_blocked",
+            selected_entry_id=5401,
+            factual_state=ToolState("SPUT_02_DEPB", "IDLE"),
+            counterfactual_state=ToolState(
+                "SPUT_02_DEPB", "DOWNTIME", comment="DepB still locked"
+            ),
+            entries=[
+                LogbookEntry(
+                    entry_id=5401,
+                    local_id=5401,
+                    log_code="em-repair-wp1",
+                    device="SPUT_02",
+                    status="WIP",
+                    created_at=BASE,
+                    issue="DepB chamber fault",
+                )
+            ],
+            comments=[
+                MesComment(
+                    "SPUT_02_DEPB",
+                    BASE + timedelta(hours=1),
+                    "HSS",
+                    "DepB repair evidence selected for the incident window.",
+                )
+            ],
+            mutation_reason="mutation:subtool_state:IDLE_to_DOWNTIME",
+        ),
     ]
     primary = variants[0]
     report = {

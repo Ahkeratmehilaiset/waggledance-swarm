@@ -195,16 +195,17 @@ def test_fixed_now_reproduces_receipt_bytes(tmp_path: Path) -> None:
     assert sha256_digest(first_receipt) == sha256_digest(second_receipt)
 
 
-def test_variant_matrix_emits_three_counterfactual_rows_without_writes() -> None:
+def test_variant_matrix_emits_four_counterfactual_rows_without_writes() -> None:
     report = build_variant_matrix_report()
 
     assert report["demo_version"] == "pdam.counterfactual_evaluation_matrix.v0"
     assert report["writes_applied"] is False
-    assert report["variant_count"] == 3
+    assert report["variant_count"] == 4
     assert [variant["variant_id"] for variant in report["variants"]] == [
         "limited_to_idle",
         "duplicate_to_clean_close",
         "review_to_clean_close",
+        "clean_close_to_blocked",
     ]
     deltas = {variant["variant_id"]: variant["delta"] for variant in report["variants"]}
     assert deltas["limited_to_idle"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
@@ -219,24 +220,31 @@ def test_variant_matrix_emits_three_counterfactual_rows_without_writes() -> None
     duplicate = report["variants"][1]["counterfactual"]["evaluation_result"]
     assert "gate_stable:allow" in duplicate["reason_codes"]
     assert "gate_drift:allow_to_allow" not in duplicate["reason_codes"]
+    # Fourth variant: mutation in the REVERSED direction (healthy -> blocked),
+    # the only variant whose counterfactual gate is stricter than factual.
+    assert deltas["clean_close_to_blocked"]["kind"] == ["CLOSE_OK", "KEEP_WIP"]
+    assert deltas["clean_close_to_blocked"]["actual_gate"] == ["allow", "review"]
+    reversed_cf = report["variants"][3]["counterfactual"]["evaluation_result"]
+    assert "mutation:subtool_state:IDLE_to_DOWNTIME" in reversed_cf["reason_codes"]
+    assert "gate_drift:allow_to_review" in reversed_cf["reason_codes"]
 
 
-def test_variant_matrix_receipt_bundle_verifies_all_six_scenarios(tmp_path: Path) -> None:
+def test_variant_matrix_receipt_bundle_verifies_all_eight_scenarios(tmp_path: Path) -> None:
     out_dir = tmp_path / "pdam-matrix-receipts"
 
     report = build_variant_matrix_report(out_dir=out_dir, now_utc=FIXED_NOW)
 
-    assert report["receipt_bundle"]["receipt_count"] == 6
+    assert report["receipt_bundle"]["receipt_count"] == 8
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
     assert verify_manifest(out_dir / "manifest.json")["ok"] is True
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["entries"]) == 6
+    assert len(manifest["entries"]) == 8
     last_receipt = json.loads(
-        (out_dir / "receipt-006-review_to_clean_close-counterfactual.json").read_text(
+        (out_dir / "receipt-008-clean_close_to_blocked-counterfactual.json").read_text(
             encoding="utf-8"
         )
     )
-    assert last_receipt["event_id"].endswith("review_to_clean_close:counterfactual")
+    assert last_receipt["event_id"].endswith("clean_close_to_blocked:counterfactual")
 
 
 def test_receipt_bundle_refuses_non_empty_output_directory(tmp_path: Path) -> None:

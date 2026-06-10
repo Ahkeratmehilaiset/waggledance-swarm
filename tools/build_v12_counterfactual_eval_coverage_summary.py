@@ -26,7 +26,7 @@ REQUIRED_GUARDRAILS = (
     "does_not_claim_external_effect_execution",
     "does_not_apply_writes",
     "measures_one_local_domain_fixture",
-    "measures_three_deterministic_variants",
+    "measures_deterministic_variant_matrix",
     "runtime_smoke_is_not_axis_claim_upgrade",
 )
 

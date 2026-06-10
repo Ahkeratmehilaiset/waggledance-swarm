@@ -157,6 +157,30 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert "per_arm" not in runtime_smoke
     assert "divergences" not in runtime_smoke
     assert "candidate_hash" not in runtime_smoke
+    # Second runtime-condition sample family: same deterministic 24-sample
+    # set, but a ground-truth oracle that matches the candidate arm only,
+    # so the divergences carry a non-neutral (improvement) direction.
+    families = report["runtime_condition_replay_smoke_families"]
+    assert report["runtime_condition_sample_family_count"] == 2
+    assert families[0] == runtime_smoke  # back-compat: primary unchanged
+    second = families[1]
+    assert second["sample_family"] == (
+        "scalar_linear_scaling_24_candidate_oracle_match"
+    )
+    assert second["ok"] is True
+    assert second["sample_count"] == 24
+    assert second["divergence_count"] == 24
+    assert second["improvement_count"] == 24
+    assert second["regression_count"] == 0
+    assert second["neutral_divergence_count"] == 0
+    assert second["same_sample_set"] is True
+    assert second["deterministic"] is True
+    assert second["privacy_canary_absent"] is True
+    assert second["raw_fields_exported"] is False
+    assert second["runtime_authority_granted"] is False
+    assert second["external_writes_applied"] is False
+    assert "per_arm" not in second
+    assert "divergences" not in second
     assert "incumbent_hash" not in runtime_smoke
 
 

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Mapping, Sequence
 
 
@@ -123,14 +124,28 @@ def build_a3_counterfactual_axis_proof(
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     demo = _bind_a3_evaluations_v1(build_variant_matrix_report())
     stored_consensus_replay = _build_stored_consensus_replay()
+    receipt_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if receipt_out_dir is not None:
-        receipt_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        receipt_bundle_storage = "persistent_out_dir"
         demo["receipt_bundle"] = _emit_a3_v1_receipt_bundle(
             demo,
             receipt_out_dir,
             receipt_now,
             stored_consensus_replay=stored_consensus_replay,
         )
+    else:
+        # Default proof is receipt-bound too: emit + verify the bundle in an
+        # ephemeral temp directory. The verified chain summary survives in
+        # the report; the artifact files do not outlive the run, so the
+        # default run stays side-effect-free on the repo.
+        receipt_bundle_storage = "ephemeral_tempdir"
+        with tempfile.TemporaryDirectory(prefix="a3_receipts_") as tmp_dir:
+            demo["receipt_bundle"] = _emit_a3_v1_receipt_bundle(
+                demo,
+                Path(tmp_dir) / "bundle",
+                receipt_now,
+                stored_consensus_replay=stored_consensus_replay,
+            )
     factual = demo["factual"]
     counterfactual = demo["counterfactual"]
     delta = demo["delta"]
@@ -199,6 +214,7 @@ def build_a3_counterfactual_axis_proof(
         "variants": variant_summaries,
         "receipt_chain_verified": receipt_chain_verified,
         "receipt_bundle": _receipt_summary(receipt_bundle),
+        "receipt_bundle_storage": receipt_bundle_storage,
         "stored_consensus_replay_verified": bool(
             stored_consensus_replay["candidate_diff_charter_allowed"]
         ),
@@ -244,6 +260,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- variants_with_gate_delta: `{report['variants_with_gate_delta']}`",
         f"- writes_applied: `{str(report['writes_applied']).lower()}`",
         f"- receipt_chain_verified: `{receipt_state}`",
+        f"- receipt_bundle_storage: `{report['receipt_bundle_storage']}`",
         f"- stored_consensus_replay_verified: `{str(report['stored_consensus_replay_verified']).lower()}`",
         f"- stored_consensus_replay_receipt_bound: `{str(report['receipt_bound_stored_consensus_replay']).lower()}`",
         f"- stored_consensus_replay_decision: `{report['stored_consensus_replay']['decision']}`",

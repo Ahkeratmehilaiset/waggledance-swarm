@@ -344,6 +344,39 @@ def test_evaluate_diff_content_allows_removed_second_gate_marker_cleanup() -> No
     assert decision.allowed is True
 
 
+def test_evaluate_diff_content_allows_bom_prefixed_removed_marker_cleanup() -> None:
+    charter = load_charter()
+    old_marker = "operator_gate_required" + "=True"
+    new_marker = "operator_authorization_required" + "=True"
+    diff = f"""diff --git a/tools/runtime_design.py b/tools/runtime_design.py
+--- a/tools/runtime_design.py
++++ b/tools/runtime_design.py
+@@ -1,3 +1,3 @@
+-{old_marker}
++{new_marker}
+ """
+    plain_decision = evaluate_diff_content(charter, diff)
+    bom_decision = evaluate_diff_content(charter, "\ufeff" + diff)
+
+    assert plain_decision.allowed is True
+    assert bom_decision == plain_decision
+
+
+def test_evaluate_diff_content_blocks_bom_prefixed_denylisted_addition() -> None:
+    charter = load_charter()
+    marker = "operator_gate_required" + "=True"
+    diff = f"""\ufeffdiff --git a/tools/runtime_design.py b/tools/runtime_design.py
+--- a/tools/runtime_design.py
++++ b/tools/runtime_design.py
+@@ -0,0 +1 @@
++{marker}
+"""
+
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+    assert decision.code_pattern_hits
+
+
 def test_evaluate_diff_content_blocks_gate_skip_and_fast_track_authority_claims() -> None:
     charter = load_charter()
     for diff in (
@@ -464,6 +497,25 @@ def test_evaluate_diff_content_allows_test_only_privacy_canary_fixture() -> None
 """
     decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is True
+
+
+def test_evaluate_diff_content_allows_bom_prefixed_test_only_privacy_canary_fixture() -> None:
+    charter = load_charter()
+    first_canary, second_canary = _privacy_canary_markers()
+    diff = f"""diff --git a/tests/unit/test_privacy_canary.py b/tests/unit/test_privacy_canary.py
+--- a/tests/unit/test_privacy_canary.py
++++ b/tests/unit/test_privacy_canary.py
+@@ -0,0 +1,4 @@
++{first_canary} = "fixture"
++output = render_payload()
++assert {first_canary} not in output
++assert {second_canary} not in output
+"""
+    plain_decision = evaluate_diff_content(charter, diff)
+    bom_decision = evaluate_diff_content(charter, "\ufeff" + diff)
+
+    assert plain_decision.allowed is True
+    assert bom_decision == plain_decision
 
 
 def test_evaluate_diff_content_blocks_non_test_privacy_canary_leak() -> None:

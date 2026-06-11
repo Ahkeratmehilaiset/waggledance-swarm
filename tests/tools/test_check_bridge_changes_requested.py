@@ -17,6 +17,14 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
 )
 
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
+
 
 def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
     bridge_root = tmp_path / ".agent-bridge"
@@ -30,7 +38,7 @@ def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
 
 
 def _event(ts_utc: str, agent: str, type_: str, status: str, task_id: str = "T") -> dict:
-    return {
+    event = {
         "ts_utc": ts_utc,
         "agent": agent,
         "type": type_,
@@ -45,6 +53,9 @@ def _event(ts_utc: str, agent: str, type_: str, status: str, task_id: str = "T")
         "pid": 0,
         "cwd": "",
     }
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
+    return event
 
 
 def test_clear_when_no_peer_signal_for_task() -> None:
@@ -67,6 +78,30 @@ def test_blocked_when_peer_changes_requested_is_latest() -> None:
     assert result["clear_to_merge"] is False
     assert result["latest_blocking_event"]["agent"] == "codex"
     assert result["latest_blocking_event"]["status"] == "changes_requested"
+
+
+def test_registered_peer_uuid_mismatch_block_is_ignored() -> None:
+    events = [
+        _event(
+            "2026-06-11T16:28:40Z",
+            "claude-rco-2",
+            "decision",
+            "changes_requested",
+        )
+        | {"agent_uuid": AGENT_UUIDS["fable-5"]},
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == "claude-rco-2"
+    assert (
+        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        == "mismatch_uuid"
+    )
 
 
 def test_cleared_when_peer_approves_after_earlier_block() -> None:

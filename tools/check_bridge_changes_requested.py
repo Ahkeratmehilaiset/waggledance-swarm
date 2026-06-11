@@ -42,6 +42,15 @@ import re
 import sys
 from typing import Any, Mapping, Sequence
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    bridge_identity_binding_status,
+    load_bridge_identity_registry,
+)
+
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 BLOCKING_STATUSES = frozenset(
@@ -171,6 +180,7 @@ def check_bridge_clear_to_merge(
     task_id: str,
     merging_agent: str,
     pr_number: int | None = None,
+    identity_registry: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
@@ -179,13 +189,29 @@ def check_bridge_clear_to_merge(
     is in BLOCKING_STATUSES or APPROVAL_STATUSES. If the most recent peer
     decision is blocking, we refuse. Otherwise we permit.
     """
+    registry = (
+        load_bridge_identity_registry()
+        if identity_registry is None
+        else dict(identity_registry)
+    )
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
+    ignored_identity_mismatch_events: list[dict[str, Any]] = []
 
     for index, event in enumerate(events):
         if not _event_matches_scope(event, task_id=task_id, pr_number=pr_number):
             continue
         agent = str(event.get("agent", ""))
         if agent == merging_agent:
+            continue
+        binding_status = bridge_identity_binding_status(
+            event,
+            registry=registry,
+        )
+        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+            summary = _summarize_event(event)
+            if summary is not None:
+                summary["identity_binding_status"] = binding_status
+                ignored_identity_mismatch_events.append(summary)
             continue
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
@@ -228,6 +254,7 @@ def check_bridge_clear_to_merge(
         "latest_approval_event": _summarize_event(
             latest_approval[1] if latest_approval is not None else None
         ),
+        "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
         "decision": "clear" if clear else "blocked",
     }
 
@@ -303,6 +330,7 @@ def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return {
         "ts_utc": str(event.get("ts_utc", "")),
         "agent": str(event.get("agent", "")),
+        "agent_uuid": str(event.get("agent_uuid", "")),
         "type": str(event.get("type", "")),
         "status": str(event.get("status", "")),
     }

@@ -36,6 +36,15 @@ import re
 import sys
 from typing import Any, Mapping, Sequence
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    bridge_identity_binding_status,
+    load_bridge_identity_registry,
+)
+
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 DECISION_TYPES_FOR_PASS = frozenset({"decision", "rco_review"})
@@ -270,6 +279,7 @@ def check_rco_pass_present(
     head: str,
     rco_agent: str | Sequence[str] | None = None,
     author_agent: str = "",
+    identity_registry: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return whether a valid RCO_PASS at exact head exists for the RCO set on task_id.
 
@@ -283,6 +293,11 @@ def check_rco_pass_present(
     author_agent = (author_agent or "").strip()
     eligible_rco_agents = tuple(
         agent for agent in recognized_rco_agents if agent != author_agent
+    )
+    registry = (
+        load_bridge_identity_registry()
+        if identity_registry is None
+        else dict(identity_registry)
     )
 
     base: dict[str, Any] = {
@@ -304,6 +319,7 @@ def check_rco_pass_present(
         "latest_rco_event": None,
         "latest_rco_events": {},
         "blocking_rco_agents": [],
+        "ignored_identity_mismatch_events": [],
         "error": None,
     }
     for key in CLAIM_GATES:
@@ -347,6 +363,7 @@ def check_rco_pass_present(
         task_id=task_id,
         head=head,
         eligible_rco_agents=eligible_rco_agents,
+        identity_registry=registry,
     )
     base["task_id_mismatch_rco_events"] = task_id_mismatch_rco_events
     base["has_task_id_mismatch_rco_pass_at_head"] = bool(
@@ -355,6 +372,8 @@ def check_rco_pass_present(
 
     # Collect all recognized-RCO events scoped to this task_id (exact match per spec)
     rco_events: list[tuple[int, Mapping[str, Any]]] = []
+    ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    restricted_agents = set(recognized_rco_agents)
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
@@ -362,7 +381,19 @@ def check_rco_pass_present(
             continue
         if str(event.get("agent", "")) not in recognized_rco_agents:
             continue
+        binding_status = bridge_identity_binding_status(
+            event,
+            registry=registry,
+            restricted_agents=restricted_agents,
+        )
+        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+            summary = _summarize_event(event)
+            if summary is not None:
+                summary["identity_binding_status"] = binding_status
+                ignored_identity_mismatch_events.append(summary)
+            continue
         rco_events.append((index, event))
+    base["ignored_identity_mismatch_events"] = ignored_identity_mismatch_events
 
     if not rco_events:
         base["decision"] = "no_rco_events_for_task"
@@ -444,8 +475,10 @@ def _find_task_id_mismatch_rco_pass_events(
     task_id: str,
     head: str,
     eligible_rco_agents: Sequence[str],
+    identity_registry: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     mismatches: list[dict[str, Any]] = []
+    restricted_agents = set(eligible_rco_agents)
     for event in events:
         if not isinstance(event, Mapping):
             continue
@@ -453,6 +486,12 @@ def _find_task_id_mismatch_rco_pass_events(
             continue
         agent = str(event.get("agent", ""))
         if agent not in eligible_rco_agents:
+            continue
+        if bridge_identity_binding_status(
+            event,
+            registry=identity_registry,
+            restricted_agents=restricted_agents,
+        ) in {"missing_uuid", "mismatch_uuid"}:
             continue
         if _is_qualifying_rco_pass(event, head, agent):
             summary = _summarize_event(event)
@@ -567,6 +606,7 @@ def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return {
         "ts_utc": str(event.get("ts_utc", "")),
         "agent": str(event.get("agent", "")),
+        "agent_uuid": str(event.get("agent_uuid", "")),
         "type": str(event.get("type", "")),
         "status": str(event.get("status", "")),
         "task_id": str(event.get("task_id", "")),

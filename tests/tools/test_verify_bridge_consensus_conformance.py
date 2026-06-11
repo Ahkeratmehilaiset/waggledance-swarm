@@ -43,6 +43,13 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
 from waggledance.core.leak_policy import CLAIM_GATES  # noqa: E402
 
 CORPUS_PATH = Path(__file__).parent / "verify_bridge_consensus_conformance_corpus.json"
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
 
 # Explicit required case name sets. These make the regression lock strict:
 # deleting ANY listed refuse or allow case will cause the set-equality assert to fail.
@@ -79,6 +86,17 @@ def _load_corpus() -> dict:
             gates[gate] is False
         ), f"claim gate {gate} must be literal false in conformance corpus"
     return data
+
+
+def _events_with_agent_uuids(events: list[dict]) -> list[dict]:
+    enriched: list[dict] = []
+    for event in events:
+        copy = dict(event)
+        agent = str(copy.get("agent", ""))
+        if agent in AGENT_UUIDS and "agent_uuid" not in copy:
+            copy["agent_uuid"] = AGENT_UUIDS[agent]
+        enriched.append(copy)
+    return enriched
 
 
 @pytest.fixture(scope="module")
@@ -120,7 +138,7 @@ def test_all_claim_gates_are_false_in_corpus_artifact(corpus: dict):
 )
 def test_refuse_case_is_refused_by_verify(case: dict):
     """Every refuse_case must produce REFUSE verdict (ok=false, correct decision) from the real verifier."""
-    events = case["events"]
+    events = _events_with_agent_uuids(case["events"])
     task_id = case["task_id"]
     head_sha = case["head"]
     author_agent = case.get("author_agent", "codex-lead-1")
@@ -141,7 +159,7 @@ def test_refuse_case_is_refused_by_verify(case: dict):
 @pytest.mark.parametrize("case", _load_corpus()["allow_cases"], ids=lambda c: c["name"])
 def test_allow_case_is_allowed_by_verify(case: dict):
     """Every allow_case must produce ALLOW verdict (ok=true, decision=bridge_consensus_verified)."""
-    events = case["events"]
+    events = _events_with_agent_uuids(case["events"])
     task_id = case["task_id"]
     head_sha = case["head"]
     author_agent = case.get("author_agent", "codex-lead-1")

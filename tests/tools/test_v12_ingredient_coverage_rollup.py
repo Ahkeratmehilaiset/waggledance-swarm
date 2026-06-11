@@ -10,6 +10,7 @@ import sys
 
 from tools.build_v12_ingredient_coverage_rollup import (
     MEMORY_PALACE_VERIFICATION_VERSION,
+    MEMORY_PALACE_PROMOTION_SUMMARY_VERSION,
     REPORT_VERSION,
     build_v12_ingredient_coverage_rollup,
     render_markdown,
@@ -37,14 +38,15 @@ def test_rollup_reports_current_v12_ingredients_without_authority() -> None:
     assert report["report_version"] == REPORT_VERSION
     assert report["ok"] is True
     assert report["blockers"] == []
-    assert report["coverage"]["ingredient_count"] == 4
-    assert report["coverage"]["ok_ingredient_count"] == 4
-    assert report["coverage"]["authority_clean_ingredient_count"] == 4
+    assert report["coverage"]["ingredient_count"] == 5
+    assert report["coverage"]["ok_ingredient_count"] == 5
+    assert report["coverage"]["authority_clean_ingredient_count"] == 5
     assert {row["id"] for row in report["ingredients"]} == {
         "solver_growth_family",
         "counterfactual_eval",
         "adversarial_corpus",
         "memory_palace_shortcut_runtime_design",
+        "memory_palace_shortcut_promotion_candidate_verification_summary",
     }
     authority = report["authority_boundary"]
     assert authority["runtime_authority"] is False
@@ -101,13 +103,44 @@ def test_rollup_fails_closed_on_memory_design_verification_regression() -> None:
     ) in report["blockers"]
 
 
+def test_rollup_fails_closed_on_memory_promotion_summary_authority_regression() -> None:
+    sources = _valid_injected_sources()
+    sources["memory_palace_shortcut_promotion_candidate_verification_summary"] = (
+        copy.deepcopy(
+            sources["memory_palace_shortcut_promotion_candidate_verification_summary"]
+        )
+    )
+    sources["memory_palace_shortcut_promotion_candidate_verification_summary"][
+        "promotion_action_allowed"
+    ] = True
+
+    report = build_v12_ingredient_coverage_rollup(
+        now_utc=FIXED_NOW,
+        source_reports=sources,
+    )
+
+    assert report["ok"] is False
+    assert (
+        "ingredient_blocked:"
+        "memory_palace_shortcut_promotion_candidate_verification_summary:"
+        "authority_boundary_not_ok"
+        in report["blockers"]
+    )
+    row = _row(
+        report,
+        "memory_palace_shortcut_promotion_candidate_verification_summary",
+    )
+    assert row["authority_boundary_ok"] is False
+    assert row["authority_false_fields_ok"] is False
+
+
 def test_markdown_is_path_free_and_mentions_authority_boundary() -> None:
     report = build_v12_ingredient_coverage_rollup(now_utc=FIXED_NOW)
 
     markdown = render_markdown(report)
 
     assert "# V12 Ingredient Coverage Rollup" in markdown
-    assert "ingredients ok: `4/4`" in markdown
+    assert "ingredients ok: `5/5`" in markdown
     assert "runtime authority: `false`" in markdown
     assert "bridge write authority: `false`" in markdown
     assert str(ROOT) not in markdown
@@ -119,7 +152,7 @@ def test_cli_json_smoke() -> None:
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["ok"] is True
-    assert payload["coverage"]["ingredient_count"] == 4
+    assert payload["coverage"]["ingredient_count"] == 5
     assert payload["authority_boundary"]["scheduler_authority"] is False
 
 
@@ -172,6 +205,34 @@ def _valid_injected_sources() -> dict[str, dict[str, object]]:
         "release_decision_made": False,
         "automatic_release_decision": False,
     }
+    promotion_summary = {
+        "summary_version": MEMORY_PALACE_PROMOTION_SUMMARY_VERSION,
+        "ok": True,
+        "blockers": [],
+        "template_only": True,
+        "read_side_report_only": True,
+        "manual_review_required": True,
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "runtime_authority_granted": False,
+        "promotion_action_allowed": False,
+        "promotion_performed": False,
+        "runtime_route_changed": False,
+        "solver_call_performed": False,
+        "scheduler_enqueue_performed": False,
+        "bridge_append_performed": False,
+        "gate_skip_performed": False,
+        "storage_write_performed": False,
+        "network_access_performed": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "external_writes_applied": False,
+        "controls_present": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+    }
     return {
         "solver_growth_family": {
             "report_version": "wd.v12.solver_growth_family_coverage_summary.v0",
@@ -205,4 +266,7 @@ def _valid_injected_sources() -> dict[str, dict[str, object]]:
             "authority_boundary": {},
         },
         "memory_palace_shortcut_runtime_design_verification": memory_verification,
+        "memory_palace_shortcut_promotion_candidate_verification_summary": (
+            promotion_summary
+        ),
     }

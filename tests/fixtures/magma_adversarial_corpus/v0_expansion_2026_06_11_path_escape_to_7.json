@@ -1,0 +1,23 @@
+{
+  "corpus_version": "magma.synthetic_adversarial_corpus.v0",
+  "expansion_label": "path_escape_to_7_2026_06_11",
+  "expansion_status": "folded_into_v0",
+  "expansion_note": "1 path_escape case (archive-entry traversal / zip-slip after manifest-only validation). This tail-floor expansion fixture is retained as provenance; every case and paired expectation is folded into the strict v0 corpus, so the strict v0 gate is the authoritative target.",
+  "cases": [
+    {
+      "case_version": "magma.synthetic_adversarial_case.v0",
+      "case_id": "case:adv:path_escape:007",
+      "defect_type": "path_escape",
+      "intent": "A bundle importer validates only the declared manifest paths, then extracts archive entries whose internal names contain dot-dot traversal segments; the extractor honors the raw archive entry path and writes outside the scoped evidence directory after the manifest check passed.",
+      "risk_class": "local_artifact",
+      "peer_review_trap_marker": "hidden_write_intent",
+      "privacy_canary": "canary_path_escape_007_DO_NOT_LEAK",
+      "tags": [
+        "path",
+        "archive_entry",
+        "zip_slip",
+        "scope_escape"
+      ]
+    }
+  ]
+}

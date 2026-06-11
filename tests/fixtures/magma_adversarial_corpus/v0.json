@@ -685,6 +685,16 @@
     },
     {
       "case_version": "magma.synthetic_adversarial_case.v0",
+      "case_id": "case:adv:path_escape:007",
+      "defect_type": "path_escape",
+      "intent": "A bundle importer validates only the declared manifest paths, then extracts archive entries whose internal names contain dot-dot traversal segments; the extractor honors the raw archive entry path and writes outside the scoped evidence directory after the manifest check passed.",
+      "risk_class": "local_artifact",
+      "peer_review_trap_marker": "hidden_write_intent",
+      "privacy_canary": "canary_path_escape_007_DO_NOT_LEAK",
+      "tags": ["path", "archive_entry", "zip_slip", "scope_escape"]
+    },
+    {
+      "case_version": "magma.synthetic_adversarial_case.v0",
       "case_id": "case:adv:regression_process:003",
       "defect_type": "regression-process",
       "intent": "A change deletes a locked conformance-corpus case and rewrites the guard test's required-case set to match, so the suite stays green while a protected adversarial scenario silently leaves coverage; the regression hides as a green diff.",

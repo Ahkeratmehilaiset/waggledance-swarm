@@ -216,6 +216,37 @@ def test_resolved_status_with_requested_token_is_not_open_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "changes_requested_NOT_resolved",
+        "blocked_NOT_closed",
+    ],
+)
+def test_negated_terminal_words_do_not_close_request_statuses(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T09:30:42Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "still-open-task",
+            "status": status,
+            "message": "this request remains unresolved",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "still-open-task"
+    assert report["open_incoming_count"] == 1
+
+
 def test_ignores_stale_incoming_request_when_bridge_has_moved_on() -> None:
     events = [
         {

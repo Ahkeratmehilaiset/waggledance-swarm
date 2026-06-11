@@ -65,18 +65,21 @@ OPEN_STATUS_FRAGMENTS = (
     "active",
     "blocked",
 )
-CLOSED_REQUEST_STATUS_FRAGMENTS = (
-    "accepted",
-    "answered",
-    "approved",
-    "closed",
-    "done",
-    "merged",
-    "reported",
-    "resolved",
-    "superseded",
-    "validated",
-    "verified",
+CLOSED_REQUEST_STATUSES = frozenset(
+    {
+        "accepted",
+        "answered",
+        "approved",
+        "changes_requested_resolved",
+        "closed",
+        "done",
+        "merged",
+        "reported",
+        "resolved",
+        "superseded",
+        "validated",
+        "verified",
+    }
 )
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
@@ -588,7 +591,7 @@ def _idle_protocol_progressed(
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
-    if _status_has_any(status, CLOSED_REQUEST_STATUS_FRAGMENTS):
+    if status in CLOSED_REQUEST_STATUSES:
         return False
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS

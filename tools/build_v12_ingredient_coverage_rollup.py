@@ -22,13 +22,23 @@ from tools.build_v12_counterfactual_eval_coverage_summary import (  # noqa: E402
     REPORT_VERSION as COUNTERFACTUAL_EVAL_REPORT_VERSION,
     build_counterfactual_eval_coverage_summary,
 )
+from tools.build_v12_memory_palace_shortcut_promotion_candidate_verification_summary import (  # noqa: E402
+    SUMMARY_VERSION as MEMORY_PALACE_PROMOTION_SUMMARY_VERSION,
+    build_memory_palace_shortcut_promotion_candidate_verification_summary,
+)
 from tools.build_v12_solver_growth_family_coverage_summary import (  # noqa: E402
     REPORT_VERSION as SOLVER_GROWTH_REPORT_VERSION,
     build_solver_growth_family_coverage_summary,
 )
+from tools.run_v12_memory_palace_shortcut_promotion_candidates import (  # noqa: E402
+    build_memory_palace_shortcut_promotion_candidate_report,
+)
 from tools.run_v12_memory_palace_shortcut_runtime_promotion_design import (  # noqa: E402
     REPORT_VERSION as MEMORY_PALACE_RUNTIME_DESIGN_REPORT_VERSION,
     build_memory_palace_shortcut_runtime_promotion_design,
+)
+from tools.verify_v12_memory_palace_shortcut_promotion_candidates import (  # noqa: E402
+    verify_memory_palace_shortcut_promotion_candidate_report,
 )
 from tools.verify_v12_memory_palace_shortcut_runtime_promotion_design import (  # noqa: E402
     VERIFICATION_VERSION as MEMORY_PALACE_VERIFICATION_VERSION,
@@ -69,6 +79,33 @@ MEMORY_TRUE_FIELDS = (
     "manual_review_required",
     "operator_gate_required_for_runtime_promotion",
 )
+MEMORY_PROMOTION_SUMMARY_FALSE_FIELDS = (
+    "approval_granted",
+    "release_decision_made",
+    "automatic_release_decision",
+    "runtime_authority_granted",
+    "promotion_action_allowed",
+    "promotion_performed",
+    "runtime_route_changed",
+    "solver_call_performed",
+    "scheduler_enqueue_performed",
+    "bridge_append_performed",
+    "gate_skip_performed",
+    "storage_write_performed",
+    "network_access_performed",
+    "direct_bridge_write_performed",
+    "transport_added",
+    "external_fetch_performed",
+    "external_writes_applied",
+    "controls_present",
+    "artifact_payloads_included",
+    "local_paths_recorded",
+)
+MEMORY_PROMOTION_SUMMARY_TRUE_FIELDS = (
+    "template_only",
+    "read_side_report_only",
+    "manual_review_required",
+)
 
 INGREDIENT_SPECS = (
     {
@@ -100,6 +137,15 @@ INGREDIENT_SPECS = (
         "true_fields": MEMORY_TRUE_FIELDS,
         "verification_id": "memory_palace_shortcut_runtime_design_verification",
         "expected_verification_version": MEMORY_PALACE_VERIFICATION_VERSION,
+    },
+    {
+        "id": "memory_palace_shortcut_promotion_candidate_verification_summary",
+        "label": "Memory Palace Shortcut Promotion Verification Summary",
+        "expected_report_version": MEMORY_PALACE_PROMOTION_SUMMARY_VERSION,
+        "version_field": "summary_version",
+        "authority_field": "__self__",
+        "false_fields": MEMORY_PROMOTION_SUMMARY_FALSE_FIELDS,
+        "true_fields": MEMORY_PROMOTION_SUMMARY_TRUE_FIELDS,
     },
 )
 
@@ -274,7 +320,50 @@ def _source_reports(
             memory_report
         ),
     )
+    result["memory_palace_shortcut_promotion_candidate_verification_summary"] = (
+        provided_or_build(
+            "memory_palace_shortcut_promotion_candidate_verification_summary",
+            lambda: _build_memory_palace_shortcut_promotion_summary(
+                now_utc=now_utc,
+                provided_or_build=provided_or_build,
+                result=result,
+            ),
+        )
+    )
     return result
+
+
+def _build_memory_palace_shortcut_promotion_summary(
+    *,
+    now_utc: datetime,
+    provided_or_build: Callable[
+        [str, Callable[[], Mapping[str, Any]]],
+        Mapping[str, Any],
+    ],
+    result: dict[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    promotion_report = provided_or_build(
+        "memory_palace_shortcut_promotion_candidates",
+        lambda: build_memory_palace_shortcut_promotion_candidate_report(
+            now_utc=now_utc
+        ),
+    )
+    result["memory_palace_shortcut_promotion_candidates"] = promotion_report
+    promotion_verification = provided_or_build(
+        "memory_palace_shortcut_promotion_candidate_verification",
+        lambda: verify_memory_palace_shortcut_promotion_candidate_report(
+            promotion_report
+        ),
+    )
+    result["memory_palace_shortcut_promotion_candidate_verification"] = (
+        promotion_verification
+    )
+    return build_memory_palace_shortcut_promotion_candidate_verification_summary(
+        verification_report=promotion_verification,
+        reviewer_agent_id="codex-lead-1",
+        handoff_ref="v12-ingredient-coverage-rollup",
+        now_utc=now_utc,
+    )
 
 
 def _ingredient_row(
@@ -285,7 +374,8 @@ def _ingredient_row(
     report = _mapping(reports.get(ingredient_id))
     blockers: list[str] = []
     expected_version = str(spec["expected_report_version"])
-    source_version = str(report.get("report_version", ""))
+    version_field = str(spec.get("version_field", "report_version"))
+    source_version = str(report.get(version_field, ""))
     if source_version != expected_version:
         blockers.append("source_report_version_mismatch")
     if report.get("ok") is not True:
@@ -294,7 +384,12 @@ def _ingredient_row(
     if source_blockers:
         blockers.append("source_blockers_present")
 
-    authority_source = _mapping(report.get("authority_boundary"))
+    authority_field = str(spec.get("authority_field", "authority_boundary"))
+    authority_source = (
+        report
+        if authority_field == "__self__"
+        else _mapping(report.get(authority_field))
+    )
     verification: Mapping[str, Any] | None = None
     if "verification_id" in spec:
         verification = _mapping(reports.get(str(spec["verification_id"])))
@@ -395,6 +490,11 @@ def _ingredient_next_slice(
         return "maintain_adversarial_corpus_maturity_floor"
     if ingredient_id == "memory_palace_shortcut_runtime_design":
         return "operator_authorized_shadow_replay_design_fixture_only"
+    if (
+        ingredient_id
+        == "memory_palace_shortcut_promotion_candidate_verification_summary"
+    ):
+        return "review_memory_palace_shortcut_promotion_summary_before_runtime_promotion"
     return "no_next_slice"
 
 

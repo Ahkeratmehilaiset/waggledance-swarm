@@ -10,11 +10,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS = ROOT / "schemas" / "v3_13_0"
 CORPUS_DIR = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus"
-EXPANSION = CORPUS_DIR / "v0_expansion_2026_06_11_payload_leak_to_6.json"
+EXPANSION = CORPUS_DIR / "v0_expansion_2026_06_11_payload_leak_to_7.json"
 EXPANSION_EXPECTATIONS = (
-    CORPUS_DIR / "v0_expansion_2026_06_11_payload_leak_to_6_expectations.json"
+    CORPUS_DIR / "v0_expansion_2026_06_11_payload_leak_to_7_expectations.json"
 )
-LABEL = "payload_leak_to_6_2026_06_11"
+LABEL = "payload_leak_to_7_2026_06_11"
 
 
 def _read_json(path: Path) -> dict:
@@ -69,9 +69,9 @@ def test_expansion_is_exactly_one_payload_leak_case():
     cases = _read_json(EXPANSION)["cases"]
     assert len(cases) == 1
     case = cases[0]
-    assert case["case_id"] == "case:adv:payload_leak:006"
+    assert case["case_id"] == "case:adv:payload_leak:007"
     assert case["defect_type"] == "payload_leak"
-    assert {"trace_bundle", "reviewer_evidence", "raw_transcript"} <= set(
+    assert {"incident_export", "evaluator_replay", "secondary_artifact"} <= set(
         case["tags"]
     )
 
@@ -96,10 +96,10 @@ def test_folded_cases_byte_identical_to_strict_v0():
         assert v0_exps[exp["case_id"]] == exp, exp["case_id"]
 
 
-def test_strict_v0_payload_leak_coverage_raised_to_six():
+def test_strict_v0_payload_leak_coverage_raised_to_seven():
     cases = _read_json(CORPUS_DIR / "v0.json")["cases"]
     count = sum(1 for c in cases if c["defect_type"] == "payload_leak")
-    assert count >= 6
+    assert count == 7
 
 
 def test_every_expansion_case_has_paired_refuse_expectation():
@@ -124,7 +124,7 @@ def test_canaries_unique_and_follow_naming():
     ]
     assert len(family_canaries) == len(set(family_canaries))
     case = _read_json(EXPANSION)["cases"][0]
-    assert case["privacy_canary"] == "canary_payload_006_DO_NOT_LEAK"
+    assert case["privacy_canary"] == "canary_payload_007_DO_NOT_LEAK"
 
 
 def test_held_out_split_unchanged_and_valid():
@@ -133,7 +133,7 @@ def test_held_out_split_unchanged_and_valid():
     assert len(held_out) == 6
     case_ids = {c["case_id"] for c in corpus["cases"]}
     assert set(held_out) <= case_ids
-    assert "case:adv:payload_leak:006" not in held_out
+    assert "case:adv:payload_leak:007" not in held_out
 
 
 def test_strict_validator_passes_on_expanded_corpus():

@@ -8,6 +8,11 @@ from tools.check_promotion_eligible import evaluate_promotion_eligibility
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 TASK = "codex-lead-1/promotion-consensus-contract-20260607"
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+}
 
 
 def _status() -> dict:
@@ -43,6 +48,7 @@ def _event(
         "task_id": task_id,
         "message": message if message is not None else f"{status} exact head {head}",
         "payload": {"head": head, "pr": 944} if payload is None else payload,
+        "agent_uuid": AGENT_UUIDS.get(agent),
     }
 
 

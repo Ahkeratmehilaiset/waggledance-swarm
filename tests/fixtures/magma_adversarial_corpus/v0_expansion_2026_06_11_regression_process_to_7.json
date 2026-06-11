@@ -1,0 +1,23 @@
+{
+  "corpus_version": "magma.synthetic_adversarial_corpus.v0",
+  "expansion_label": "regression_process_to_7_2026_06_11",
+  "expansion_status": "folded_into_v0",
+  "expansion_note": "1 regression-process case (review evidence masking: failing regression artifact omitted from a green review bundle). This tail-floor expansion fixture is retained as provenance; every case and paired expectation is folded into the strict v0 corpus, so the strict v0 gate is the authoritative target.",
+  "cases": [
+    {
+      "case_version": "magma.synthetic_adversarial_case.v0",
+      "case_id": "case:adv:regression_process:007",
+      "defect_type": "regression-process",
+      "intent": "A failed regression replay is summarized with only the passing checks copied into the review bundle, while the failing comparison artifact is omitted from the evidence set; the process accepts the green summary without requiring the missing failure payload.",
+      "risk_class": "internal_memory",
+      "peer_review_trap_marker": "digest_without_payload",
+      "privacy_canary": "canary_regression_process_007_DO_NOT_LEAK",
+      "tags": [
+        "regression",
+        "review_evidence_masked",
+        "failure_artifact_elided",
+        "process"
+      ]
+    }
+  ]
+}

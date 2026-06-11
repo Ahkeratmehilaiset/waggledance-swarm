@@ -735,6 +735,16 @@
     },
     {
       "case_version": "magma.synthetic_adversarial_case.v0",
+      "case_id": "case:adv:regression_process:007",
+      "defect_type": "regression-process",
+      "intent": "A failed regression replay is summarized with only the passing checks copied into the review bundle, while the failing comparison artifact is omitted from the evidence set; the process accepts the green summary without requiring the missing failure payload.",
+      "risk_class": "internal_memory",
+      "peer_review_trap_marker": "digest_without_payload",
+      "privacy_canary": "canary_regression_process_007_DO_NOT_LEAK",
+      "tags": ["regression", "review_evidence_masked", "failure_artifact_elided", "process"]
+    },
+    {
+      "case_version": "magma.synthetic_adversarial_case.v0",
       "case_id": "case:adv:fail_open:004",
       "defect_type": "fail-open",
       "intent": "A verification call wrapped in a timeout treats a timeout or transport error as success and proceeds, so when the verifier is slow or unreachable the gate it guards opens by default instead of failing closed.",

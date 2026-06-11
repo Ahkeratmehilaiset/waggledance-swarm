@@ -33,15 +33,20 @@ The consensus merge gate recognizes build identities
 * A `build_consensus_pass` posted by `fable-5` is **producer evidence only**.
   It never fills a build slot or an RCO slot.
 * `fable-5` never posts `rco_pass`, never merges, and never self-merges.
-* Events signed with an agent id that does not match the writing session's
-  configured identity (env `role` / `agent_uuid` / `session_id` stamped by the
-  bridge event writer) are unverifiable for gate purposes and must be
-  disregarded by gate consumers — the fail-closed rule of the approval
-  contract. This is not hypothetical: on 2026-06-11 a fresh `fable-5` session
-  posted one `rco_pass` mis-signed as `claude-rco-2` (self-reported and
-  corrected on the bridge minutes later; the authentic `claude-rco-2` pass
-  already satisfied the gate independently). The stamped `role`/`agent_uuid`
-  fields made the mismatch mechanically detectable.
+* The approval contract verifies identities by **head-binding and
+  distinctness** (`payload.head` == exact head SHA, distinct non-author
+  identities, task-scoped; see `BRIDGE_CONSENSUS_APPROVAL_V1.md`). Binding
+  the `agent` field to the writing session's stamped `agent_uuid` /
+  `session_id` is an **intended hardening that is currently open, not yet
+  enforced** — tracked as finding
+  `wd/security/bridge-identity-binding-gap-20260611`. This gap is not
+  hypothetical: on 2026-06-11 a fresh `fable-5` session posted one `rco_pass`
+  mis-signed as `claude-rco-2` (self-reported and corrected on the bridge
+  minutes later; the authentic `claude-rco-2` pass at the same head had
+  already been posted independently). The stamped `role`/`agent_uuid` fields
+  made the mismatch detectable on inspection, but gate consumers did not
+  check them — which is exactly what the open finding proposes to fix,
+  fail-closed.
 
 ## Merge path for fable-5 PRs
 

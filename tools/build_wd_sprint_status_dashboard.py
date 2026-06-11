@@ -42,6 +42,10 @@ TERMINAL_STATUSES = {
 }
 REDACTION_SENTINELS = ("PRIVATE" + "_MARKER", "_DO" + "_NOT" + "_LEAK")
 SHA40_RE = re.compile(r"\b[0-9a-fA-F]{40}\b")
+# Background keepalive event types: they prove the process is running, not
+# that the agent is making progress, so liveness must not key on them.
+SUBSTANTIVE_EXCLUDED_TYPES = frozenset({"heartbeat", "liveness"})
+DEFAULT_STALLED_AFTER_MINUTES = 12.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,6 +77,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=24.0,
         help="Open claims older than this are counted as stale candidates.",
     )
+    parser.add_argument(
+        "--stalled-after-minutes",
+        type=float,
+        default=DEFAULT_STALLED_AFTER_MINUTES,
+        help=(
+            "An agent whose newest non-keepalive event is older than this is "
+            "reported as stalled (heartbeats do not count as progress)."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -85,6 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected_agents=tuple(args.expected_agents or DEFAULT_EXPECTED_AGENTS),
         expected_base_sha=args.expected_base_sha,
         max_active_claim_age_hours=args.max_active_claim_age_hours,
+        stalled_after_minutes=args.stalled_after_minutes,
         now_utc=_parse_utc(args.now) if args.now else None,
     )
     if args.json:
@@ -102,6 +116,7 @@ def build_wd_sprint_status_dashboard(
     expected_agents: Sequence[str] = DEFAULT_EXPECTED_AGENTS,
     expected_base_sha: str | None = None,
     max_active_claim_age_hours: float = 24.0,
+    stalled_after_minutes: float = DEFAULT_STALLED_AFTER_MINUTES,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -129,7 +144,12 @@ def build_wd_sprint_status_dashboard(
         now_utc=generated_at,
         max_active_claim_age_hours=max_active_claim_age_hours,
     )
-    agents = _agent_activity_summary(loaded_events, expected_agents=expected_agents)
+    agents = _agent_activity_summary(
+        loaded_events,
+        expected_agents=expected_agents,
+        now_utc=generated_at,
+        stalled_after_minutes=stalled_after_minutes,
+    )
     stale_base = _stale_base_summary(
         loaded_events,
         expected_base_sha=expected_base_sha,
@@ -209,6 +229,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"- agents seen: `{agents.get('seen_count', 0)}`",
         f"- expected agents missing activity: `{len(agents.get('missing_expected_agents', []))}`",
+        (
+            f"- expected agents stalled (no non-keepalive event in "
+            f"{agents.get('stalled_after_minutes', DEFAULT_STALLED_AFTER_MINUTES)}min): "
+            f"`{len(agents.get('stalled_expected_agents', []))}`"
+        ),
         "",
         "## Freshness",
         "",
@@ -340,25 +365,61 @@ def _agent_activity_summary(
     events: Sequence[Mapping[str, Any]],
     *,
     expected_agents: Sequence[str],
+    now_utc: datetime,
+    stalled_after_minutes: float = DEFAULT_STALLED_AFTER_MINUTES,
 ) -> dict[str, Any]:
-    latest: dict[str, dict[str, str]] = {}
+    latest: dict[str, dict[str, Any]] = {}
     for event in events:
         agent = _string(event.get("agent"))
         if not agent:
             continue
-        latest[agent] = {
-            "last_ts_utc": _string(event.get("ts_utc")),
-            "last_type": _string(event.get("type")),
-            "last_status": _string(event.get("status")),
-        }
+        entry = latest.setdefault(
+            agent,
+            {
+                "last_ts_utc": "",
+                "last_type": "",
+                "last_status": "",
+                "last_substantive_ts_utc": "",
+                "last_substantive_type": "",
+                "last_substantive_status": "",
+            },
+        )
+        entry["last_ts_utc"] = _string(event.get("ts_utc"))
+        entry["last_type"] = _string(event.get("type"))
+        entry["last_status"] = _string(event.get("status"))
+        if _string(event.get("type")) not in SUBSTANTIVE_EXCLUDED_TYPES:
+            entry["last_substantive_ts_utc"] = _string(event.get("ts_utc"))
+            entry["last_substantive_type"] = _string(event.get("type"))
+            entry["last_substantive_status"] = _string(event.get("status"))
+    for entry in latest.values():
+        gap = _gap_minutes(entry["last_substantive_ts_utc"], now_utc=now_utc)
+        entry["substantive_gap_minutes"] = gap
+        entry["stalled"] = gap is None or gap > stalled_after_minutes
     expected = tuple(dict.fromkeys(expected_agents))
     return {
         "seen_agents": sorted(latest),
         "seen_count": len(latest),
         "expected_agents": list(expected),
         "missing_expected_agents": [agent for agent in expected if agent not in latest],
+        "stalled_after_minutes": stalled_after_minutes,
+        "stalled_expected_agents": [
+            agent
+            for agent in expected
+            if agent in latest and latest[agent]["stalled"] is True
+        ],
         "latest_by_agent": {agent: latest[agent] for agent in sorted(latest)},
     }
+
+
+def _gap_minutes(ts_utc: str, *, now_utc: datetime) -> float | None:
+    """Minutes from ``ts_utc`` to ``now_utc`` (clamped at 0); None when unknown."""
+    if not ts_utc:
+        return None
+    try:
+        ts = _parse_utc(ts_utc)
+    except ValueError:
+        return None
+    return round(max(0.0, (now_utc - ts).total_seconds() / 60.0), 1)
 
 
 def _stale_base_summary(

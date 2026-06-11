@@ -237,6 +237,102 @@ def test_redaction_sentinel_guard_does_not_embed_exact_tokens() -> None:
     assert report["blockers"] == ["events_input_refused:redaction_sentinel_present"]
 
 
+def test_heartbeats_do_not_mask_substantive_stall() -> None:
+    report = build_wd_sprint_status_dashboard(
+        events=[
+            _event(
+                agent="codex-lead-1",
+                event_type="decision",
+                task_id=SPRINT_TASK,
+                status="consensus_pass",
+                ts="2026-06-11T15:50:00Z",
+            ),
+            _event(
+                agent="codex-lead-1",
+                event_type="heartbeat",
+                task_id="",
+                status="active",
+                ts="2026-06-11T16:29:00Z",
+            ),
+            _event(
+                agent="claude-rco-1",
+                event_type="decision",
+                task_id=SPRINT_TASK,
+                status="rco_pass",
+                ts="2026-06-11T16:25:00Z",
+            ),
+        ],
+        sprint_task_id=SPRINT_TASK,
+        expected_agents=("codex-lead-1", "claude-rco-1"),
+        now_utc=FIXED_NOW,
+    )
+
+    agents = report["agent_activity"]
+    lead = agents["latest_by_agent"]["codex-lead-1"]
+    # The fresh heartbeat is the latest event of any type...
+    assert lead["last_type"] == "heartbeat"
+    # ...but liveness keys on the newest non-keepalive event.
+    assert lead["last_substantive_type"] == "decision"
+    assert lead["last_substantive_ts_utc"] == "2026-06-11T15:50:00Z"
+    assert lead["substantive_gap_minutes"] == 40.0
+    assert lead["stalled"] is True
+
+    rco = agents["latest_by_agent"]["claude-rco-1"]
+    assert rco["substantive_gap_minutes"] == 5.0
+    assert rco["stalled"] is False
+
+    assert agents["stalled_after_minutes"] == 12.0
+    assert agents["stalled_expected_agents"] == ["codex-lead-1"]
+
+
+def test_heartbeat_only_agent_counts_as_stalled() -> None:
+    report = build_wd_sprint_status_dashboard(
+        events=[
+            _event(
+                agent="codex-lead-1",
+                event_type="heartbeat",
+                task_id="",
+                status="active",
+                ts="2026-06-11T16:29:00Z",
+            ),
+        ],
+        sprint_task_id=SPRINT_TASK,
+        expected_agents=("codex-lead-1",),
+        now_utc=FIXED_NOW,
+    )
+
+    lead = report["agent_activity"]["latest_by_agent"]["codex-lead-1"]
+    assert lead["last_substantive_ts_utc"] == ""
+    assert lead["substantive_gap_minutes"] is None
+    assert lead["stalled"] is True
+    assert report["agent_activity"]["stalled_expected_agents"] == ["codex-lead-1"]
+    # Heartbeat-only presence still counts as "seen", not "missing".
+    assert report["agent_activity"]["missing_expected_agents"] == []
+
+
+def test_stalled_threshold_is_configurable() -> None:
+    report = build_wd_sprint_status_dashboard(
+        events=[
+            _event(
+                agent="claude-rco-1",
+                event_type="decision",
+                task_id=SPRINT_TASK,
+                status="rco_pass",
+                ts="2026-06-11T16:25:00Z",
+            ),
+        ],
+        sprint_task_id=SPRINT_TASK,
+        expected_agents=("claude-rco-1",),
+        stalled_after_minutes=4.0,
+        now_utc=FIXED_NOW,
+    )
+
+    rco = report["agent_activity"]["latest_by_agent"]["claude-rco-1"]
+    assert rco["substantive_gap_minutes"] == 5.0
+    assert rco["stalled"] is True
+    assert report["agent_activity"]["stalled_expected_agents"] == ["claude-rco-1"]
+
+
 def test_markdown_renders_path_free_dashboard_sections() -> None:
     report = build_wd_sprint_status_dashboard(
         events=[
@@ -256,6 +352,7 @@ def test_markdown_renders_path_free_dashboard_sections() -> None:
     assert "# WD 50-PR Sprint Status Dashboard" in markdown
     assert "## Consensus" in markdown
     assert "## Queue" in markdown
+    assert "expected agents stalled (no non-keepalive event in 12.0min): `0`" in markdown
     assert "bridge append allowed: `false`" in markdown
     assert "scheduler enqueue allowed: `false`" in markdown
     assert "C:\\Python" not in markdown

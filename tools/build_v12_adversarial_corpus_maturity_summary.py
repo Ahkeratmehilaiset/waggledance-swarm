@@ -75,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="Minimum peer-review trap markers expected.",
     )
+    parser.add_argument(
+        "--min-defect-family-floor",
+        type=int,
+        default=7,
+        help="Minimum cases expected for every required defect family.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -87,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_cases=args.min_cases,
             min_privacy_canaries=args.min_privacy_canaries,
             min_peer_review_traps=args.min_peer_review_traps,
+            min_defect_family_floor=args.min_defect_family_floor,
         )
     except ValueError as exc:
         print(f"adversarial corpus maturity summary FAILED: {exc}", file=sys.stderr)
@@ -105,6 +112,7 @@ def build_adversarial_corpus_maturity_summary(
     min_cases: int = 50,
     min_privacy_canaries: int = 20,
     min_peer_review_traps: int = 20,
+    min_defect_family_floor: int = 7,
     corpus_report: Mapping[str, Any] | None = None,
     expansion_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -114,6 +122,8 @@ def build_adversarial_corpus_maturity_summary(
         raise ValueError("--min-privacy-canaries must be >= 0")
     if min_peer_review_traps < 0:
         raise ValueError("--min-peer-review-traps must be >= 0")
+    if min_defect_family_floor < 1:
+        raise ValueError("--min-defect-family-floor must be >= 1")
 
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     generated_at_utc = generated_at.isoformat(timespec="seconds").replace(
@@ -144,6 +154,7 @@ def build_adversarial_corpus_maturity_summary(
             min_cases=min_cases,
             min_privacy_canaries=min_privacy_canaries,
             min_peer_review_traps=min_peer_review_traps,
+            min_defect_family_floor=min_defect_family_floor,
         )
     )
     blockers.extend(_expansion_blockers(expansion, expansion_summary))
@@ -152,6 +163,10 @@ def build_adversarial_corpus_maturity_summary(
     risk_counts = _int_mapping(coverage.get("risk_class_counts"))
     gate_counts = _int_mapping(coverage.get("expected_gate_counts"))
     verdict_counts = _int_mapping(coverage.get("expected_verdict_counts"))
+    uniform_family_floor = _uniform_family_floor_summary(
+        defect_counts,
+        min_defect_family_floor=min_defect_family_floor,
+    )
 
     return {
         "report_version": REPORT_VERSION,
@@ -181,6 +196,7 @@ def build_adversarial_corpus_maturity_summary(
                 coverage.get("critical_defect_type_counts")
             ),
         },
+        "uniform_family_floor": uniform_family_floor,
         "coverage": {
             "defect_type_counts": defect_counts,
             "risk_class_counts": risk_counts,
@@ -200,6 +216,7 @@ def build_adversarial_corpus_maturity_summary(
 
 def render_markdown(report: Mapping[str, Any]) -> str:
     maturity = _mapping(report.get("maturity"))
+    uniform_family_floor = _mapping(report.get("uniform_family_floor"))
     authority = _mapping(report.get("authority_boundary"))
     expansion = _mapping(report.get("historical_expansion"))
     lines = [
@@ -219,6 +236,13 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{maturity.get('min_peer_review_traps', 0)}`"
         ),
         f"held-out cases: `{maturity.get('held_out_case_count', 0)}`",
+        (
+            "defect family floor: "
+            f"`{uniform_family_floor.get('families_at_or_above_floor', 0)}/"
+            f"{uniform_family_floor.get('family_count', 0)} >= "
+            f"{uniform_family_floor.get('min_defect_family_floor', 0)} "
+            f"(weakest {uniform_family_floor.get('weakest_count', 0)})`"
+        ),
         (
             "historical expansion folded into v0: "
             f"`{_bool_text(expansion.get('fold_in_verified'))}`"
@@ -277,6 +301,7 @@ def _maturity_blockers(
     min_cases: int,
     min_privacy_canaries: int,
     min_peer_review_traps: int,
+    min_defect_family_floor: int,
 ) -> list[str]:
     blockers: list[str] = []
     if _as_int(source.get("case_count")) < min_cases:
@@ -292,6 +317,9 @@ def _maturity_blockers(
     missing_defects = sorted(REQUIRED_DEFECT_TYPES - set(defect_counts))
     if missing_defects:
         blockers.append("required_defect_type_missing")
+    for defect_type in sorted(REQUIRED_DEFECT_TYPES):
+        if defect_counts.get(defect_type, 0) < min_defect_family_floor:
+            blockers.append(f"defect_family_floor_below_minimum:{defect_type}")
     critical_counts = _int_mapping(coverage.get("critical_defect_type_counts"))
     for defect_type in sorted(CRITICAL_DEFECT_TYPES):
         if critical_counts.get(defect_type, 0) < MIN_CRITICAL_DEFECT_CASES:
@@ -317,6 +345,31 @@ def _maturity_blockers(
         if sorted(required - set(counts)):
             blockers.append(f"{name}_coverage_missing")
     return blockers
+
+
+def _uniform_family_floor_summary(
+    defect_counts: Mapping[str, int],
+    *,
+    min_defect_family_floor: int,
+) -> dict[str, Any]:
+    required_counts = {
+        defect_type: int(defect_counts.get(defect_type, 0))
+        for defect_type in sorted(REQUIRED_DEFECT_TYPES)
+    }
+    below_floor = {
+        defect_type: count
+        for defect_type, count in required_counts.items()
+        if count < min_defect_family_floor
+    }
+    weakest_count = min(required_counts.values()) if required_counts else 0
+    return {
+        "min_defect_family_floor": min_defect_family_floor,
+        "met": not below_floor,
+        "family_count": len(required_counts),
+        "families_at_or_above_floor": len(required_counts) - len(below_floor),
+        "weakest_count": weakest_count,
+        "below_floor": below_floor,
+    }
 
 
 def _expansion_blockers(

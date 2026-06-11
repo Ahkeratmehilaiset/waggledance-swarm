@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-06-11T20:06:36+0300
-**Commit**: `edc1077b` on `fable-5/current-state-refresh-20260611`
+**Generated**: 2026-06-11T23:35:18+0300
+**Commit**: `0fdb4530` on `fable-5/generate-state-port-status-20260611`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -9,10 +9,10 @@
 
 ## Summary
 
-- **Hexagonal runtime** (`waggledance/`): 301 core modules, 99,352 lines
+- **Hexagonal runtime** (`waggledance/`): 302 core modules, 99,450 lines
 - **Legacy core** (`core/`): 86 modules, 28,043 lines
-- **Tests**: 754 files, 11282 test functions
-- **Licensing**: 660 BUSL-protected files, 276 Apache files
+- **Tests**: 756 files, 11307 test functions
+- **Licensing**: 664 BUSL-protected files, 276 Apache files
 
 ## Security Invariants
 
@@ -80,6 +80,7 @@
 | `waggledance/core/autonomy_growth/validation_runner.py` | 118 | ValidationOutcome | Complete |
 | `waggledance/core/bridge_event_hmac.py` | 224 | BridgeEventHmacError | Complete |
 | `waggledance/core/bridge_event_schema.py` | 454 | BridgeEvent, BridgeEventValidationIssue, BridgeEventValidationResult | Complete |
+| `waggledance/core/bridge_identity_registry.py` | 98 |  | Complete |
 | `waggledance/core/bridge_llm/ab_harness.py` | 171 | ABResult, ABHarness | Complete |
 | `waggledance/core/bridge_llm/budget.py` | 159 | BudgetExhausted, BudgetState, BudgetConfig +1 | Complete |
 | `waggledance/core/bridge_llm/client.py` | 279 | BridgeLLMClient | Complete |
@@ -113,7 +114,7 @@
 | `waggledance/core/domain/autonomy.py` | 545 | GoalType, GoalStatus, ActionStatus +13 | Complete |
 | `waggledance/core/domain/events.py` | 55 | EventType, DomainEvent | Complete |
 | `waggledance/core/domain/hex_mesh.py` | 213 | HexCoord, HexCellDefinition, HexCellHealth +4 | Complete |
-| `waggledance/core/domain/memory_record.py` | 18 | MemoryRecord | Stub |
+| `waggledance/core/domain/memory_record.py` | 18 | MemoryRecord | Complete |
 | `waggledance/core/domain/task.py` | 26 | TaskRequest, TaskRoute | Complete |
 | `waggledance/core/domain/trust_score.py` | 25 | TrustSignals, AgentTrust | Complete |
 | `waggledance/core/dreaming/collapse.py` | 412 | CollapsedProposal, CollapseReport | Complete |
@@ -220,14 +221,14 @@
 | `waggledance/core/policy/policy_engine.py` | 317 | PolicyDecision, PolicyEngine | Complete |
 | `waggledance/core/policy/risk_scoring.py` | 129 | RiskScorer | Complete |
 | `waggledance/core/policy/safety_cases.py` | 214 | SafetyEvidence, SafetyCase, SafetyCaseBuilder | Complete |
-| `waggledance/core/ports/config_port.py` | 13 | ConfigPort | Stub |
-| `waggledance/core/ports/event_bus_port.py` | 17 | EventBusPort | Stub |
-| `waggledance/core/ports/hot_cache_port.py` | 15 | HotCachePort | Stub |
-| `waggledance/core/ports/llm_port.py` | 19 | LLMPort | Stub |
-| `waggledance/core/ports/memory_repository_port.py` | 26 | MemoryRepositoryPort | Complete |
-| `waggledance/core/ports/sensor_port.py` | 11 | SensorPort | Stub |
-| `waggledance/core/ports/trust_store_port.py` | 34 | TrustStorePort | Complete |
-| `waggledance/core/ports/vector_store_port.py` | 25 | VectorStorePort | Complete |
+| `waggledance/core/ports/config_port.py` | 13 | ConfigPort | Interface (Protocol) |
+| `waggledance/core/ports/event_bus_port.py` | 17 | EventBusPort | Interface (Protocol) |
+| `waggledance/core/ports/hot_cache_port.py` | 15 | HotCachePort | Interface (Protocol) |
+| `waggledance/core/ports/llm_port.py` | 19 | LLMPort | Interface (Protocol) |
+| `waggledance/core/ports/memory_repository_port.py` | 26 | MemoryRepositoryPort | Interface (Protocol) |
+| `waggledance/core/ports/sensor_port.py` | 11 | SensorPort | Interface (Protocol) |
+| `waggledance/core/ports/trust_store_port.py` | 34 | TrustStorePort | Interface (Protocol) |
+| `waggledance/core/ports/vector_store_port.py` | 25 | VectorStorePort | Interface (Protocol) |
 | `waggledance/core/priority_lock.py` | 23 | PriorityLock | Complete |
 | `waggledance/core/projections/autobiographical_index.py` | 152 | EpisodeEntry, AutobiographicalSummary | Projection (read-only) |
 | `waggledance/core/projections/introspection_view.py` | 127 | IntrospectionSnapshot | Projection (read-only) |
@@ -253,7 +254,7 @@
 | `waggledance/core/providers/claude_code_builder.py` | 240 | ClaudeCodeBuilderUnavailable, _LaunchSpec, ClaudeCodeBuilder | Complete |
 | `waggledance/core/providers/mentor_forge.py` | 130 | MentorAdvisoryPayload, MentorForge | Complete |
 | `waggledance/core/providers/provider_contracts.py` | 260 | ProviderContractError, ProviderRequest, ProviderResponse | Complete |
-| `waggledance/core/providers/provider_plane.py` | 277 | ProviderPlaneError, ProviderAdapter, ProviderDispatchResult +3 | Complete |
+| `waggledance/core/providers/provider_plane.py` | 277 | ProviderPlaneError, ProviderAdapter, ProviderDispatchResult +3 | Interface (Protocol) |
 | `waggledance/core/providers/provider_registry.py` | 186 | ProviderConfig, ProviderPlaneRegistry | Complete |
 | `waggledance/core/providers/repair_forge.py` | 84 | RepairForge | Complete |
 | `waggledance/core/reasoning/anomaly_engine.py` | 216 | AnomalyResult, AnomalyEngine | Complete |
@@ -296,7 +297,7 @@
 | `waggledance/core/v3_13_0/anti_pattern_catalog.py` | 618 | InvariantViolation, CredentialPatternHit | Complete |
 | `waggledance/core/v3_13_0/auto_fix_loop.py` | 520 | RepairOutcome, RepairIntent, RepairResult +5 | Complete |
 | `waggledance/core/v3_13_0/behavior_capture.py` | 448 | SensitiveClass, ToolInvocation, CapturedBehaviorRecord +3 | Complete |
-| `waggledance/core/v3_13_0/credential_vault.py` | 656 | CredentialRef, CredentialMaterial, VaultMetadata +8 | Complete |
+| `waggledance/core/v3_13_0/credential_vault.py` | 656 | CredentialRef, CredentialMaterial, VaultMetadata +8 | Interface (Protocol) |
 | `waggledance/core/v3_13_0/defaults.py` | 291 |  | Complete |
 | `waggledance/core/v3_13_0/divergence_analyzer.py` | 865 | ComparisonResult, DivergenceCategory, DiffClass +6 | Complete |
 | `waggledance/core/v3_13_0/doc_ingest.py` | 347 | DocIngestError, DocIngestProposal | Complete |
@@ -325,7 +326,7 @@
 | `waggledance/core/work_queue.py` | 581 | WorkQueueError, Claim, ReleaseRecord +1 | Complete |
 | `waggledance/core/world/baseline_store.py` | 168 | Baseline, BaselineStore | Complete |
 | `waggledance/core/world/entity_registry.py` | 103 | Entity, EntityRegistry | Complete |
-| `waggledance/core/world/epistemic_uncertainty.py` | 362 | BaselineProvider, EntityProvider, GoalProvider +2 | Complete |
+| `waggledance/core/world/epistemic_uncertainty.py` | 362 | BaselineProvider, EntityProvider, GoalProvider +2 | Interface (Protocol) |
 | `waggledance/core/world/graph_builder.py` | 192 | GraphBuilder | Complete |
 | `waggledance/core/world/world_model.py` | 317 | WorldModel | Complete |
 | `waggledance/core/world_model/calibration_drift_detector.py` | 73 | DriftAlert | Complete |
@@ -357,7 +358,7 @@
 | `core/chat_router.py` | 112 | ChatResult, ChatRouter | Complete |
 | `core/chat_routing_engine.py` | 537 | ChatRoutingEngine | Complete |
 | `core/chat_telemetry.py` | 96 | ChatTelemetry | Complete |
-| `core/chromadb_adapter.py` | 187 | StoreAdapter, ChromaDBAdapter | Complete |
+| `core/chromadb_adapter.py` | 187 | StoreAdapter, ChromaDBAdapter | Interface (Protocol) |
 | `core/circuit_breaker.py` | 90 | CircuitBreaker | Complete |
 | `core/code_reviewer.py` | 223 | CodeSelfReview | Complete |
 | `core/cognitive_graph.py` | 303 | CognitiveGraph | Complete |
@@ -433,12 +434,12 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout edc1077b
+git checkout 0fdb4530
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l
 
 # Run tests:
 pip install -r requirements.txt
-pytest tests/ --collect-only -q | tail -1              # expect 11282+
+pytest tests/ --collect-only -q | tail -1              # expect 11307+
 ```

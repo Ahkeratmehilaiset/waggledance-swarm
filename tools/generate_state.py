@@ -57,9 +57,24 @@ def scan_modules(base_dir: Path, prefix: str = ""):
         lines = sum(1 for _ in py.open(errors="ignore"))
         content = py.read_text(errors="ignore")
         classes = re.findall(r"^class (\w+)", content, re.MULTILINE)
-        # Detect stubs
-        is_stub = lines < 20 or ("NotImplementedError" in content and lines < 50)
-        status = "Stub" if is_stub else "Complete"
+        # Small-by-design files are not stubs: hexagonal ports are
+        # typing.Protocol interfaces, and tiny dataclass domain models are
+        # complete as written.
+        is_protocol = bool(
+            re.search(r"^class \w+\([^)]*Protocol[^)]*\):", content, re.MULTILINE)
+        )
+        is_dataclass_model = (
+            "@dataclass" in content and "NotImplementedError" not in content
+        )
+        is_stub = (
+            lines < 20 or ("NotImplementedError" in content and lines < 50)
+        ) and not (is_protocol or is_dataclass_model)
+        if is_protocol:
+            status = "Interface (Protocol)"
+        elif is_stub:
+            status = "Stub"
+        else:
+            status = "Complete"
         # Detect projections
         if "projection" in str(rel).lower() or "projector" in str(rel).lower():
             status = "Projection (read-only)"

@@ -74,3 +74,54 @@ def test_tracked_python_files_none_when_git_unavailable(
 
     monkeypatch.setattr(generate_state.subprocess, "check_output", _raise)
     assert generate_state._tracked_python_files() is None
+
+
+def _module_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str) -> str:
+    base = tmp_path / "pkg"
+    base.mkdir(exist_ok=True)
+    (base / "mod.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(generate_state, "ROOT", tmp_path)
+    modules = generate_state.scan_modules(base)
+    assert len(modules) == 1
+    return modules[0]["status"]
+
+
+def test_scan_modules_protocol_port_is_interface_not_stub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (
+        '"""Port."""\n'
+        "from typing import Protocol\n\n\n"
+        "class SensorPort(Protocol):\n"
+        "    def read(self) -> float: ...\n"
+    )
+    assert _module_status(tmp_path, monkeypatch, source) == "Interface (Protocol)"
+
+
+def test_scan_modules_small_dataclass_model_is_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (
+        '"""Domain model."""\n'
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass\n"
+        "class Record:\n"
+        "    id: str\n"
+        "    content: str\n"
+    )
+    assert _module_status(tmp_path, monkeypatch, source) == "Complete"
+
+
+def test_scan_modules_tiny_plain_file_is_still_stub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _module_status(tmp_path, monkeypatch, "X = 1\n") == "Stub"
+
+
+def test_scan_modules_not_implemented_is_still_stub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = '"""WIP."""\n\n\nclass Thing:\n' + (
+        "    def f(self):\n        raise NotImplementedError\n" * 4
+    )
+    assert _module_status(tmp_path, monkeypatch, source) == "Stub"

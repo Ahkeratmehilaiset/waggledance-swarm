@@ -558,6 +558,28 @@ def evaluate_agent_next_task(
                     "active_continuous_operational_scout_task_ids": sorted(
                         active_continuous_operational_scout_task_ids
                     ),
+                    "continuous_operational_scout_state": (
+                        _continuous_operational_scout_state(
+                            candidate=continuous_candidate,
+                            completed_substrate_task_ids=completed_task_ids,
+                            completed_dream_mode_task_ids=(
+                                completed_dream_mode_task_ids
+                            ),
+                            active_dream_mode_task_ids=active_dream_mode_task_ids,
+                            completed_operational_scout_task_ids=(
+                                completed_operational_scout_task_ids
+                            ),
+                            active_operational_scout_task_ids=(
+                                active_operational_scout_task_ids
+                            ),
+                            completed_continuous_task_ids=(
+                                completed_continuous_operational_scout_task_ids
+                            ),
+                            active_continuous_task_ids=(
+                                active_continuous_operational_scout_task_ids
+                            ),
+                        )
+                    ),
                     "candidate": continuous_candidate,
                     "notes": [
                         (
@@ -958,6 +980,61 @@ def _pick_continuous_operational_scout(
             },
         }
     return None
+
+
+def _continuous_operational_scout_state(
+    *,
+    candidate: Mapping[str, Any],
+    completed_substrate_task_ids: set[str],
+    completed_dream_mode_task_ids: set[str],
+    active_dream_mode_task_ids: set[str],
+    completed_operational_scout_task_ids: set[str],
+    active_operational_scout_task_ids: set[str],
+    completed_continuous_task_ids: set[str],
+    active_continuous_task_ids: set[str],
+) -> dict[str, Any]:
+    """Explain why the picker is in the repeating read-only scout lane."""
+    rotation = candidate.get("rotation")
+    rotation_map = rotation if isinstance(rotation, Mapping) else {}
+    sequence = int(rotation_map.get("sequence") or 0)
+    pool_size = len(OPERATIONAL_SCOUT_CANDIDATES)
+    return {
+        "daily_pools_exhausted": True,
+        "continuous_lane": "operational_scout",
+        "authority": "read_only_recommendation_only",
+        "continuous_sequence": sequence,
+        "continuous_cycle": sequence // pool_size,
+        "continuous_pool_index": int(rotation_map.get("index") or 0),
+        "completed_continuous_count": len(completed_continuous_task_ids),
+        "active_continuous_count": len(active_continuous_task_ids),
+        "daily_pool_counts": {
+            "substrate_smoke": {
+                "completed": len(completed_substrate_task_ids),
+                "active": 0,
+                "pool_size": len(SUBSTRATE_SMOKE_CANDIDATES),
+            },
+            "dream_mode": {
+                "completed": len(completed_dream_mode_task_ids),
+                "active": len(active_dream_mode_task_ids),
+                "pool_size": len(DREAM_MODE_CANDIDATES),
+            },
+            "operational_scout": {
+                "completed": len(completed_operational_scout_task_ids),
+                "active": len(active_operational_scout_task_ids),
+                "pool_size": len(OPERATIONAL_SCOUT_CANDIDATES),
+            },
+            "continuous_operational_scout": {
+                "completed": len(completed_continuous_task_ids),
+                "active": len(active_continuous_task_ids),
+                "pool_size": len(OPERATIONAL_SCOUT_CANDIDATES),
+            },
+        },
+        "message": (
+            "all daily candidate pools are exhausted; the next recommendation "
+            "is repeating read-only operational scout work unless the caller "
+            "creates a separate scoped write claim"
+        ),
+    }
 
 
 def _daily_smoke_task_prefix(agent: str, now_utc: datetime) -> str:

@@ -68,6 +68,9 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
 * `tools/check_rco_pass_present.py` (RCO-pass verifier — self-modification banned)
 * `waggledance/core/idle_consensus_charter.py` (charter allowlist/denylist evaluator — self-modification banned)
+* `waggledance/core/magma/demo_policy.py` (adversarial-corpus reference policy anchor — self-consistent-tamper guarded)
+* `waggledance/core/magma/adversarial_corpus_eval.py` (adversarial-corpus evaluator/re-derivation anchor — self-consistent-tamper guarded)
+* `tools/validate_synthetic_adversarial_corpus.py` (adversarial-corpus structural validator anchor — self-consistent-tamper guarded)
 * `.env`
 * `.env.*`
 * `**/.env`

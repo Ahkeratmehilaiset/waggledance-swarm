@@ -58,6 +58,11 @@ LEGACY_FILE_DENYLIST_ENTRIES = {
     "README.md",
     "pyproject.toml",
 }
+CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES = {
+    "waggledance/core/magma/demo_policy.py",
+    "waggledance/core/magma/adversarial_corpus_eval.py",
+    "tools/validate_synthetic_adversarial_corpus.py",
+}
 LEGACY_CODE_PATTERN_MARKERS = {
     "auto_execute=False",
     "operator_gate_required=True",
@@ -131,6 +136,11 @@ def test_charter_preserves_existing_file_denylist_entries() -> None:
     assert LEGACY_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
 
 
+def test_charter_denylist_contains_corpus_policy_anchors() -> None:
+    charter = load_charter()
+    assert CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
 def test_charter_preserves_existing_code_pattern_markers() -> None:
     charter = load_charter()
     code_patterns = "\n".join(charter.code_pattern_denylist)
@@ -201,6 +211,15 @@ def test_evaluate_paths_keeps_runtime_http_paths_operator_gated() -> None:
         "waggledance/adapters/http/client.py",
         "bootstrap/container.py",
     )
+
+
+def test_evaluate_paths_blocks_corpus_policy_anchors_despite_broad_allowlist() -> None:
+    charter = load_charter()
+    for path in sorted(CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False
+        assert decision.blocked_paths == (path,)
+        assert decision.reason == "denylist hit"
 
 
 def test_evaluate_paths_blocks_traversal_to_denylisted_path() -> None:

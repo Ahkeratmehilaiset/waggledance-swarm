@@ -37,6 +37,13 @@ from tools.check_rco_pass_present import (  # noqa: E402
 )
 
 CORPUS_PATH = Path(__file__).parent / "check_rco_pass_present_conformance_corpus.json"
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
 
 
 def _load_corpus() -> dict:
@@ -67,6 +74,17 @@ def _seed_events(tmp_path: Path, events: list[dict]) -> Path:
         for ev in events:
             fh.write(json.dumps(ev, sort_keys=True) + "\n")
     return events_path
+
+
+def _events_with_agent_uuids(events: list[dict]) -> list[dict]:
+    enriched: list[dict] = []
+    for event in events:
+        copy = dict(event)
+        agent = str(copy.get("agent", ""))
+        if agent in AGENT_UUIDS and "agent_uuid" not in copy:
+            copy["agent_uuid"] = AGENT_UUIDS[agent]
+        enriched.append(copy)
+    return enriched
 
 
 def _case_rco_agents(case: dict) -> list[str]:
@@ -115,7 +133,7 @@ def test_all_claim_gates_are_false_in_corpus_artifact(corpus: dict):
 )
 def test_refuse_case_is_refused_by_gate(case: dict, tmp_path: Path):
     """Every refuse_case must produce REFUSE verdict (ok=false, nonzero exit, correct decision)."""
-    events = case["events"]
+    events = _events_with_agent_uuids(case["events"])
     task_id = case["task_id"]
     head = case["head"]
     rco_agents = _case_rco_agents(case)
@@ -181,7 +199,7 @@ def test_refuse_case_is_refused_by_gate(case: dict, tmp_path: Path):
 @pytest.mark.parametrize("case", _load_corpus()["allow_cases"], ids=lambda c: c["name"])
 def test_allow_case_is_allowed_by_gate(case: dict, tmp_path: Path):
     """Every allow_case must produce ALLOW verdict (ok=true, exit=0, decision=rco_pass_present)."""
-    events = case["events"]
+    events = _events_with_agent_uuids(case["events"])
     task_id = case["task_id"]
     head = case["head"]
     rco_agents = _case_rco_agents(case)

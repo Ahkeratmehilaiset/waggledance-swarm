@@ -32,6 +32,20 @@ NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
 BASE = "c" * 40
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
+
+
+def _with_agent_uuid(event: dict) -> dict:
+    agent = str(event.get("agent", ""))
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
+    return event
 
 
 def _rco_request(task: str, *, frm: str = "codex", to: str = "claude", ts: str) -> dict:
@@ -47,7 +61,7 @@ def _rco_request(task: str, *, frm: str = "codex", to: str = "claude", ts: str) 
 
 
 def _rco_pass(task: str, *, pr: int, head: str, ts: str, frm: str = "claude") -> dict:
-    return {
+    return _with_agent_uuid({
         "ts_utc": ts,
         "agent": frm,
         "to": "codex,operator",
@@ -56,18 +70,18 @@ def _rco_pass(task: str, *, pr: int, head: str, ts: str, frm: str = "claude") ->
         "status": "rco_pass",
         "message": "PASS",
         "payload": {"pr": pr, "head": head},
-    }
+    })
 
 
 def _claim(agent: str, task: str, *, ts: str = "2026-05-22T12:59:00Z") -> dict:
-    return {
+    return _with_agent_uuid({
         "ts_utc": ts,
         "agent": agent,
         "type": "claim",
         "task_id": task,
         "status": "active",
         "message": "claimed",
-    }
+    })
 
 
 def _rco_gate_pass(task: str, *, pr: int, head: str, ts: str) -> dict:
@@ -83,7 +97,7 @@ def _build_consensus(
     agent: str,
     ts: str,
 ) -> dict:
-    return {
+    return _with_agent_uuid({
         "ts_utc": ts,
         "agent": agent,
         "to": "claude-rco-1,operator",
@@ -92,7 +106,7 @@ def _build_consensus(
         "status": "build_consensus_pass",
         "message": f"build consensus at exact head {head}",
         "payload": {},
-    }
+    })
 
 
 def _three_identity_consensus(task: str, *, pr: int, head: str) -> list[dict]:
@@ -443,6 +457,7 @@ def test_not_ready_when_peer_block_mentions_same_pr_under_different_task_id():
         {
             "ts_utc": "2026-05-27T07:31:39Z",
             "agent": "codex-lead-1",
+            "agent_uuid": AGENT_UUIDS["codex-lead-1"],
             "type": "finding",
             "task_id": "pr701-bridge-stale-ack-close-readonly-review-2026-05-27",
             "status": "confirmed_bug_blocks_merge",

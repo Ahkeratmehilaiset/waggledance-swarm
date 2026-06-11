@@ -15,6 +15,13 @@ HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
 MERGE_SHA = "abcdef1234567890abcdef1234567890abcdef12"
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
 
 
 def _status(**overrides) -> dict:
@@ -55,7 +62,7 @@ def _bridge_event(
     task_id: str = "idle-consensus-001",
     ts: str = "2026-05-18T01:00:00Z",
 ) -> dict:
-    return {
+    event = {
         "ts_utc": ts,
         "agent": agent,
         "type": type_,
@@ -64,6 +71,9 @@ def _bridge_event(
         "message": "",
         "payload": {},
     }
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
+    return event
 
 
 def _claim(agent: str, task_id: str, *, ts: str = "2026-05-18T00:59:00Z") -> dict:

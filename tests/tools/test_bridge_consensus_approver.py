@@ -27,6 +27,13 @@ RCO = "claude-rco-1"
 RCO2 = "claude-rco-2"
 AUTHOR = "codex-lead-1"
 ROOT = Path(__file__).resolve().parents[2]
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
 
 
 def verify_bridge_consensus(*args, **kwargs):
@@ -63,6 +70,8 @@ def _approval(
         "message": f"approving at head {head}" if in_message else "",
         "payload": {} if in_message else {"head": head},
     }
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
     return event
 
 
@@ -73,7 +82,7 @@ def _block(
     task_id: str = TASK,
     payload: dict | None = None,
 ) -> dict:
-    return {
+    event = {
         "ts_utc": ts,
         "agent": agent,
         "type": "finding",
@@ -82,6 +91,9 @@ def _block(
         "message": "blocking",
         "payload": {} if payload is None else payload,
     }
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
+    return event
 
 
 def _full_consensus() -> list[dict]:
@@ -119,6 +131,31 @@ def test_backup_rco_can_satisfy_rco_slot() -> None:
     assert result["ok"] is True
     assert result["identities"]["rco"]["approved"] is True
     assert result["rco_pass_ref"]["agent"] == RCO2
+
+
+def test_backup_rco_uuid_mismatch_does_not_satisfy_rco_slot() -> None:
+    forged_rco = _approval(
+        RCO2,
+        "rco_pass",
+        ts="2026-05-29T13:02:00Z",
+        in_message=True,
+    )
+    forged_rco["agent_uuid"] = AGENT_UUIDS["fable-5"]
+    events = [
+        _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+        _approval(TOOLS, "build_consensus", ts="2026-05-29T13:01:00Z"),
+        forged_rco,
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    assert result["identities"]["rco"]["approved"] is False
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == RCO2
+    assert (
+        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        == "mismatch_uuid"
+    )
 
 
 def test_descriptive_build_task_id_does_not_count_when_payload_head_matches() -> None:
@@ -413,6 +450,7 @@ def test_type_agnostic_block_invalidates_approval() -> None:
         {
             "ts_utc": "2026-05-29T13:03:00Z",
             "agent": RCO,
+            "agent_uuid": AGENT_UUIDS[RCO],
             "type": "blocked",
             "status": "blocked",
             "task_id": TASK,

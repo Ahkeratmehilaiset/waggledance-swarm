@@ -302,6 +302,37 @@ function Assert-AgentUuidMatchesProfile {
     }
 }
 
+function Assert-AgentUuidMatchesIdentityRegistry {
+    param([Parameter(Mandatory)] [string] $RepoRoot)
+    $registryPath = Join-Path (Join-Path $RepoRoot 'configs') 'bridge_identity_registry.json'
+    if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+        return
+    }
+    try {
+        $registry = Get-Content -Raw -Path $registryPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "bridge identity registry unreadable"
+    }
+    $identities = Get-BridgeObjectField -Object $registry -Name 'identities'
+    if (-not (Test-BridgeObject -Value $identities)) {
+        throw "bridge identity registry identities must be an object"
+    }
+    $expectedUuid = Get-BridgeObjectField -Object $identities -Name $Agent
+    if (-not $expectedUuid) {
+        return
+    }
+    $expectedUuidText = [string]$expectedUuid
+    if ($expectedUuidText -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        throw "bridge identity registry agent_uuid must be a UUID for agent: $Agent"
+    }
+    if (-not $AgentUuid) {
+        throw "agent_uuid required by bridge identity registry for agent: $Agent"
+    }
+    if ([string]$AgentUuid -cne $expectedUuidText) {
+        throw "agent_uuid does not match bridge identity registry for agent: $Agent"
+    }
+}
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
@@ -309,6 +340,8 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
 } else {
     Split-Path -Parent $PSScriptRoot
 }
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+Assert-AgentUuidMatchesIdentityRegistry -RepoRoot $repoRoot
 Assert-AgentUuidMatchesProfile -BridgeRoot $bridgeRoot
 if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)

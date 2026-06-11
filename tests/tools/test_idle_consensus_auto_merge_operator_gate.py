@@ -9,6 +9,11 @@ TASK = "codex-tools-1/operator-gate-regression-20260606"
 LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
+AGENT_UUIDS = {
+    LEAD: "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    TOOLS: "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    RCO: "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+}
 
 
 def _approval(agent: str, status: str, *, ts: str) -> dict:
@@ -20,6 +25,7 @@ def _approval(agent: str, status: str, *, ts: str) -> dict:
         "task_id": TASK,
         "message": f"{status} at exact head {HEAD}",
         "payload": {"head": HEAD},
+        "agent_uuid": AGENT_UUIDS.get(agent),
     }
 
 

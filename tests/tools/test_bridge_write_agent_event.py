@@ -27,6 +27,8 @@ MAIN_SHA = "a" * 40
 PR_HEAD_SHA = "b" * 40
 PROFILE_UUID = "11111111-2222-3333-4444-555555555555"
 OTHER_UUID = "22222222-3333-4444-5555-666666666666"
+CODEX_TOOLS_UUID = "7a8af68d-20bc-4598-9953-23c5dd98b102"
+FABLE_UUID = "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80"
 
 
 def _powershell() -> str:
@@ -695,6 +697,79 @@ def test_profile_bound_agent_uuid_match_writes_and_validates(
     event = json.loads(line)
     assert event["agent_uuid"] == PROFILE_UUID
     validate_event_line(line, agent_uuid_by_id={"codex": PROFILE_UUID})
+
+
+def test_registry_bound_agent_uuid_required_without_runtime_profile(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-tools-1",
+        "-Type",
+        "message",
+        "-Message",
+        "missing registry-bound uuid",
+    )
+
+    assert completed.returncode != 0
+    assert "agent_uuid required by bridge identity registry" in completed.stderr
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+def test_registry_bound_agent_uuid_mismatch_fails_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-tools-1",
+        "-Type",
+        "message",
+        "-Message",
+        "wrong registry-bound uuid",
+        "-AgentUuid",
+        FABLE_UUID,
+    )
+
+    assert completed.returncode != 0
+    assert "agent_uuid does not match bridge identity registry" in completed.stderr
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+def test_registry_bound_agent_uuid_match_writes_without_runtime_profile(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-tools-1",
+        "-Type",
+        "message",
+        "-Message",
+        "matching registry-bound uuid",
+        "-AgentUuid",
+        CODEX_TOOLS_UUID,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(
+        encoding="utf-8"
+    ).splitlines()[0]
+    event = json.loads(line)
+    assert event["agent_uuid"] == CODEX_TOOLS_UUID
 
 
 @pytest.mark.parametrize(

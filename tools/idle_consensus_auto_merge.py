@@ -42,6 +42,10 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     evaluate_paths,
     load_charter,
 )
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    bridge_identity_binding_status,
+    load_bridge_identity_registry,
+)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 BRIDGE_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
@@ -822,6 +826,7 @@ def verify_bridge_consensus(
     tools_agent: str = BRIDGE_CONSENSUS_TOOLS,
     rco_agent: str | Sequence[str] | None = BRIDGE_CONSENSUS_RCO_AGENTS,
     author_agent: str = "",
+    identity_registry: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Fail-closed three-identity bridge-consensus verification (T0b).
 
@@ -848,6 +853,11 @@ def verify_bridge_consensus(
     eligible_rco_agents = tuple(
         agent for agent in recognized_rco_agents if agent != author_agent
     )
+    registry = (
+        load_bridge_identity_registry()
+        if identity_registry is None
+        else dict(identity_registry)
+    )
     base: dict[str, Any] = {
         "ok": False,
         "decision": "bridge_consensus_incomplete",
@@ -859,6 +869,7 @@ def verify_bridge_consensus(
         "eligible_rco_agents": list(eligible_rco_agents),
         "author_agent": author_agent,
         "blocking_rco_agents": [],
+        "ignored_identity_mismatch_events": [],
     }
     build_expected = (lead_agent, tools_agent)
     if len({a for a in build_expected if a and a.strip()}) != 2:
@@ -910,11 +921,30 @@ def verify_bridge_consensus(
     latest_rco_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
     latest_rco_block: dict[str, int] = {}
     watched_agents = set(build_expected) | set(recognized_rco_agents)
+    ignored_identity_mismatch_events: list[dict[str, Any]] = []
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
         agent = str(event.get("agent", ""))
         if agent not in watched_agents:
+            continue
+        binding_status = bridge_identity_binding_status(
+            event,
+            registry=registry,
+            restricted_agents=watched_agents,
+        )
+        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+            ignored_identity_mismatch_events.append(
+                {
+                    "ts_utc": str(event.get("ts_utc", "")),
+                    "agent": agent,
+                    "agent_uuid": str(event.get("agent_uuid", "")),
+                    "type": str(event.get("type", "")),
+                    "status": str(event.get("status", "")),
+                    "task_id": str(event.get("task_id", "")),
+                    "identity_binding_status": binding_status,
+                }
+            )
             continue
         status = str(event.get("status", "")).lower()
         scoped = _consensus_scope_match(
@@ -1055,6 +1085,7 @@ def verify_bridge_consensus(
         rco_event = rco_approval[1]
         rco_pass_ref = {
             "agent": satisfying_rco_agent,
+            "agent_uuid": str(rco_event.get("agent_uuid", "")),
             "ts_utc": str(rco_event.get("ts_utc", "")),
             "status": str(rco_event.get("status", "")),
             "task_id": str(rco_event.get("task_id", "")),
@@ -1074,6 +1105,7 @@ def verify_bridge_consensus(
         "eligible_rco_agents": list(eligible_rco_agents),
         "author_agent": author_agent,
         "blocking_rco_agents": sorted(blocking_rco_agents),
+        "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
     }
 
 

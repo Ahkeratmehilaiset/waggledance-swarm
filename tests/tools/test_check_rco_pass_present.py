@@ -24,6 +24,14 @@ from tools.check_rco_pass_present import (  # noqa: E402
     DEFAULT_EVENTS_PATH,
 )
 
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
+
 
 def _seed_events(tmp_path: Path, events: list[dict]) -> Path:
     """Write a minimal events.jsonl under a temp .agent-bridge for CLI tests."""
@@ -63,6 +71,8 @@ def _rco_event(
         "pid": 0,
         "cwd": "",
     }
+    if agent in AGENT_UUIDS:
+        ev["agent_uuid"] = AGENT_UUIDS[agent]
     return ev
 
 
@@ -224,6 +234,56 @@ def test_backup_rco_pass_satisfies_default_rco_set() -> None:
     assert result["eligible_rco_agents"] == ["claude-rco-1", "claude-rco-2"]
 
 
+def test_registered_rco_uuid_mismatch_does_not_count() -> None:
+    events = [
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"forged backup RCO_PASS at exact head {HEAD}",
+        )
+        | {"agent_uuid": AGENT_UUIDS["fable-5"]},
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["has_qualifying_rco_pass_at_head"] is False
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == "claude-rco-2"
+    assert (
+        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        == "mismatch_uuid"
+    )
+
+
+def test_registered_rco_missing_uuid_veto_does_not_override_genuine_pass() -> None:
+    forged_veto = _rco_event(
+        ts="2026-06-03T10:01:00Z",
+        status="changes_requested",
+        type_="finding",
+        message="unsigned veto",
+    )
+    forged_veto.pop("agent_uuid")
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+        ),
+        forged_veto,
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["has_qualifying_rco_pass_at_head"] is True
+    assert (
+        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        == "missing_uuid"
+    )
+
+
 def test_author_rco_self_pass_is_excluded_fail_closed() -> None:
     events = [
         _rco_event(
@@ -301,6 +361,7 @@ def test_type_blocked_counts_as_veto_after_pass() -> None:
         {
             "ts_utc": "2026-06-03T10:05:00Z",
             "agent": "claude-rco-1",
+            "agent_uuid": AGENT_UUIDS["claude-rco-1"],
             "type": "blocked",
             "status": "blocked",
             "task_id": TASK,
@@ -379,12 +440,13 @@ def test_other_task_exact_head_pass_is_reported_without_counting() -> None:
     assert result["has_qualifying_rco_pass_at_head"] is False
     assert result["has_task_id_mismatch_rco_pass_at_head"] is True
     assert result["task_id_mismatch_rco_events"] == [
-        {
-            "ts_utc": "2026-06-07T18:10:00Z",
-            "agent": "claude-rco-2",
-            "type": "decision",
-            "status": "rco_pass",
-            "task_id": slash_task,
+            {
+                "ts_utc": "2026-06-07T18:10:00Z",
+                "agent": "claude-rco-2",
+                "agent_uuid": AGENT_UUIDS["claude-rco-2"],
+                "type": "decision",
+                "status": "rco_pass",
+                "task_id": slash_task,
         }
     ]
 

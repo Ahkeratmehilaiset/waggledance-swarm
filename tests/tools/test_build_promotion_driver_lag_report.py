@@ -18,6 +18,13 @@ SCRIPT = (
     / "tools"
     / "build_promotion_driver_lag_report.py"
 )
+AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+}
 
 
 def _status(**overrides: object) -> dict:
@@ -47,7 +54,7 @@ def _event(
     head: str = HEAD,
     pr: int = 934,
 ) -> dict:
-    return {
+    event = {
         "ts_utc": "2026-06-06T22:30:00Z",
         "agent": agent,
         "type": "decision",
@@ -56,6 +63,9 @@ def _event(
         "message": f"{status} exact head {head}",
         "payload": {"head": head, "pr": pr},
     }
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
+    return event
 
 
 def _full_events() -> list[dict]:

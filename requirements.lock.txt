@@ -13,7 +13,7 @@ aiosqlite==0.22.1
 altair==5.5.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
-anthropic==0.84.0
+anthropic==0.107.1
 anyio==4.9.0
 astunparse==1.6.3
 async-timeout==5.0.1

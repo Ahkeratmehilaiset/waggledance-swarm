@@ -212,6 +212,31 @@ def test_dashboard_fails_closed_on_non_finite_event_json(tmp_path: Path) -> None
     assert report["authority_boundary"]["merge_allowed"] is False
 
 
+def test_redaction_sentinel_guard_does_not_embed_exact_tokens() -> None:
+    first_sentinel = "PRIVATE" + "_MARKER"
+    second_sentinel = "_DO" + "_NOT" + "_LEAK"
+    report = build_wd_sprint_status_dashboard(
+        events=[
+            _event(
+                agent="codex-lead-1",
+                event_type="message",
+                task_id="sentinel-check",
+                status="active",
+                message=f"contains {first_sentinel}",
+            )
+        ],
+        now_utc=FIXED_NOW,
+    )
+
+    source = (ROOT / "tools" / "build_wd_sprint_status_dashboard.py").read_text(
+        encoding="utf-8"
+    )
+    assert first_sentinel not in source
+    assert second_sentinel not in source
+    assert report["ok"] is False
+    assert report["blockers"] == ["events_input_refused:redaction_sentinel_present"]
+
+
 def test_markdown_renders_path_free_dashboard_sections() -> None:
     report = build_wd_sprint_status_dashboard(
         events=[

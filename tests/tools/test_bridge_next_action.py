@@ -173,6 +173,80 @@ def test_recommends_answering_latest_unanswered_incoming_request() -> None:
     assert report["stale_incoming_count"] == 0
 
 
+def test_request_changes_status_remains_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:00:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "decision",
+            "task_id": "review-task",
+            "status": "request_changes",
+            "message": "please fix this",
+        }
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "review-task"
+    assert report["open_incoming_count"] == 1
+
+
+def test_resolved_status_with_requested_token_is_not_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T09:30:42Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1,operator",
+            "type": "message",
+            "task_id": "duplicate-pr-deconflict",
+            "status": "changes_requested_resolved",
+            "message": "duplicate PR flow has been resolved",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "changes_requested_NOT_resolved",
+        "blocked_NOT_closed",
+    ],
+)
+def test_negated_terminal_words_do_not_close_request_statuses(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T09:30:42Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "still-open-task",
+            "status": status,
+            "message": "this request remains unresolved",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "still-open-task"
+    assert report["open_incoming_count"] == 1
+
+
 def test_ignores_stale_incoming_request_when_bridge_has_moved_on() -> None:
     events = [
         {

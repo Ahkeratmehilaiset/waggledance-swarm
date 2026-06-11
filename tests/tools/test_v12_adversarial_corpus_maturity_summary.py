@@ -73,6 +73,15 @@ def test_summary_reports_mature_adversarial_corpus_without_authority() -> None:
     assert maturity["held_out_case_count"] == 6
     assert maturity["privacy_canary_count"] == 94
     assert maturity["peer_review_trap_count"] == 106
+    uniform = report["uniform_family_floor"]
+    assert uniform == {
+        "min_defect_family_floor": 7,
+        "met": True,
+        "family_count": 15,
+        "families_at_or_above_floor": 15,
+        "weakest_count": 7,
+        "below_floor": {},
+    }
     assert report["historical_expansion"]["fold_in_verified"] is True
     assert report["historical_expansion"]["case_count"] == 8
     assert report["maturation_targets"]
@@ -121,6 +130,28 @@ def test_summary_fails_closed_when_critical_floor_regresses() -> None:
     assert "critical_defect_floor_missing:path_escape" in report["blockers"]
 
 
+def test_summary_fails_closed_when_uniform_family_floor_regresses() -> None:
+    source = _source()
+    source = copy.deepcopy(source)
+    source["coverage"]["defect_type_counts"]["charter_violation"] = 6
+
+    report = build_adversarial_corpus_maturity_summary(
+        now_utc=FIXED_NOW,
+        corpus_report=source,
+    )
+
+    assert report["ok"] is False
+    assert "defect_family_floor_below_minimum:charter_violation" in report["blockers"]
+    assert report["uniform_family_floor"] == {
+        "min_defect_family_floor": 7,
+        "met": False,
+        "family_count": 15,
+        "families_at_or_above_floor": 14,
+        "weakest_count": 6,
+        "below_floor": {"charter_violation": 6},
+    }
+
+
 def test_summary_fails_closed_when_expansion_fold_in_breaks() -> None:
     expansion = _source()
     expansion = copy.deepcopy(expansion)
@@ -151,6 +182,7 @@ def test_markdown_carries_maturation_targets_and_authority_boundary() -> None:
 
     assert "# V12 Adversarial Corpus Maturity Summary" in markdown
     assert "cases: `108/50`" in markdown
+    assert "defect family floor: `15/15 >= 7 (weakest 7)`" in markdown
     assert "historical expansion folded into v0: `true`" in markdown
     assert "corpus mutation: `false`" in markdown
     assert "runtime authority: `false`" in markdown
@@ -164,4 +196,6 @@ def test_cli_json_smoke() -> None:
     payload = json.loads(completed.stdout)
     assert payload["ok"] is True
     assert payload["maturity"]["case_count"] == 108
+    assert payload["uniform_family_floor"]["met"] is True
+    assert payload["uniform_family_floor"]["weakest_count"] == 7
     assert payload["authority_boundary"]["promotion_authority"] is False

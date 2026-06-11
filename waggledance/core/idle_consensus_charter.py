@@ -139,6 +139,7 @@ def evaluate_diff_content(
     The patterns are matched as literal substrings within the diff body, with a
     small whitespace-tolerant path for exact ``identifier=value`` markers.
     """
+    diff_text = _normalize_diff_text(diff_text)
     if not diff_text:
         return GateDecision(allowed=True, reason="empty diff content")
 
@@ -169,6 +170,11 @@ def evaluate_diff_content(
             reason="code pattern denylist hit",
         )
     return GateDecision(allowed=True, reason="no code pattern denylist hit")
+
+
+def _normalize_diff_text(diff_text: str) -> str:
+    """Normalize host-specific diff wrappers before policy scanning."""
+    return diff_text.lstrip("\ufeff")
 
 
 def _diff_without_removed_body_lines(diff_text: str) -> str:

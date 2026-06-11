@@ -52,15 +52,21 @@ def _axis_labels(text: str) -> dict[str, str]:
     return labels
 
 
-def test_freshness_note_marks_20260606_staleness_without_label_upgrade() -> None:
+def test_freshness_note_marks_20260611_staleness_without_label_upgrade() -> None:
     text = _read_matrix()
 
     assert "**Evidence snapshot date:** 2026-05-06" in text
-    assert "2026-06-06 read-only audit" in text
-    assert "following the 2026-05-27 read-only audit" in text
-    assert "`freshness_audit_date=2026-06-06`" in text
-    assert "31-33 days old" in text
-    assert "staleness marker only, not a rerun" in text
+    assert "2026-06-11 read-only audit" in text
+    assert "2026-06-06 bridge audit" in text
+    assert "following the 2026-06-06 and 2026-05-27 read-only audits" in text
+    assert "`freshness_audit_date=2026-06-11`" in text
+    assert "`prior_freshness_audit_date=2026-06-06`" in text
+    assert "36-38 days old" in text
+    assert "staleness markers only, not reruns" in text
+    assert "non-upgrading refresh inputs" in text
+    assert "tools/build_v12_ingredient_coverage_rollup.py" in text
+    assert "tools/run_v12_memory_palace_shortcut_proof.py" in text
+    assert "tools/run_v12_competitive_triad_simulation.py" in text
     assert "label upgrade" in text
     assert "row invalidation" in text
 

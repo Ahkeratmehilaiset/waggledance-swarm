@@ -50,13 +50,13 @@ def test_current_repo_matrix_is_valid_but_not_fresh_for_planning() -> None:
     )
     text = mod.DEFAULT_MATRIX.read_text(encoding="utf-8")
 
-    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 6))
+    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 11))
 
     assert report["ok"] is True
     assert report["fresh_for_planning"] is False
     assert report["historical_stale_allowed"] is True
-    assert report["freshness_audit_date"] == "2026-06-06"
-    assert report["snapshot_age_days"] == 31
+    assert report["freshness_audit_date"] == "2026-06-11"
+    assert report["snapshot_age_days"] == 36
     assert report["priority_rows"] == ["G", "J", "L"]
 
 

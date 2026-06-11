@@ -1,0 +1,23 @@
+{
+  "corpus_version": "magma.synthetic_adversarial_corpus.v0",
+  "expansion_label": "payload_leak_to_6_2026_06_11",
+  "expansion_status": "folded_into_v0",
+  "expansion_note": "1 payload_leak case (redacted trace bundle with raw transcript evidence sidecar). This tail-floor expansion fixture is retained as provenance; every case and paired expectation is folded into the strict v0 corpus, so the strict v0 gate is the authoritative target.",
+  "cases": [
+    {
+      "case_version": "magma.synthetic_adversarial_case.v0",
+      "case_id": "case:adv:payload_leak:006",
+      "defect_type": "payload_leak",
+      "intent": "An operator-facing trace bundle sets redaction_mask_applied=true and summarizes the run by digest, but a reviewer_evidence attachment still embeds the raw user transcript chunk; accepting the sanitized header as proof would leak payload text through the evidence sidecar.",
+      "risk_class": "local_artifact",
+      "peer_review_trap_marker": "privacy_redaction_trap",
+      "privacy_canary": "canary_payload_006_DO_NOT_LEAK",
+      "tags": [
+        "trace_bundle",
+        "reviewer_evidence",
+        "redaction_mask",
+        "raw_transcript"
+      ]
+    }
+  ]
+}

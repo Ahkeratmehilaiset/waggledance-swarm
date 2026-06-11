@@ -466,6 +466,27 @@ def test_evaluate_diff_content_allows_test_only_privacy_canary_fixture() -> None
     assert decision.allowed is True
 
 
+def test_evaluate_diff_content_allows_test_only_privacy_canary_fixture_with_bom_crlf() -> None:
+    charter = load_charter()
+    first_canary, second_canary = _privacy_canary_markers()
+    diff = f"""diff --git a/tests/unit/test_privacy_canary.py b/tests/unit/test_privacy_canary.py
+--- a/tests/unit/test_privacy_canary.py
++++ b/tests/unit/test_privacy_canary.py
+@@ -0,0 +1,4 @@
++{first_canary} = "fixture"
++output = render_payload()
++assert {first_canary} not in output
++assert {second_canary} not in output
+"""
+    bom_crlf_diff = "\ufeff" + diff.replace("\n", "\r\n")
+    plain_decision = evaluate_diff_content(charter, diff)
+    bom_crlf_decision = evaluate_diff_content(charter, bom_crlf_diff)
+
+    assert plain_decision.allowed is True
+    assert bom_crlf_decision.allowed is True
+    assert bom_crlf_decision.reason == plain_decision.reason
+
+
 def test_evaluate_diff_content_blocks_non_test_privacy_canary_leak() -> None:
     charter = load_charter()
     first_canary, _ = _privacy_canary_markers()

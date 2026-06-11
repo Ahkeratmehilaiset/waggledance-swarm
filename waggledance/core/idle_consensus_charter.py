@@ -139,6 +139,7 @@ def evaluate_diff_content(
     The patterns are matched as literal substrings within the diff body, with a
     small whitespace-tolerant path for exact ``identifier=value`` markers.
     """
+    diff_text = _strip_leading_utf8_bom(diff_text)
     if not diff_text:
         return GateDecision(allowed=True, reason="empty diff content")
 
@@ -184,6 +185,12 @@ def _diff_without_removed_body_lines(diff_text: str) -> str:
         if not (line.startswith("-") and not line.startswith("--- "))
     ]
     return "\n".join(lines)
+
+
+def _strip_leading_utf8_bom(text: str) -> str:
+    if text.startswith("\ufeff"):
+        return text[1:]
+    return text
 
 
 def _split_sections(text: str) -> dict[str, str]:

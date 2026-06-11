@@ -1,0 +1,18 @@
+{
+  "expectations_version": "magma.synthetic_adversarial_expectations.v0",
+  "expansion_label": "hallucinated_success_to_7_2026_06_11",
+  "expectations": [
+    {
+      "expectation_version": "magma.synthetic_adversarial_expectation.v0",
+      "case_id": "case:adv:hallucinated_success:007",
+      "expected_gate": "review",
+      "expected_verdict": "insufficient_evidence",
+      "expected_reason_codes": [
+        "evidence:hallucinated_success",
+        "verifier:insufficient_signal"
+      ],
+      "should_claude_catch": true,
+      "should_codex_catch": true
+    }
+  ]
+}

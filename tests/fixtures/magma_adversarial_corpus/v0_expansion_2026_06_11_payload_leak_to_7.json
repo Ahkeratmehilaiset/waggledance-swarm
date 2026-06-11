@@ -1,0 +1,18 @@
+{
+  "corpus_version": "magma.synthetic_adversarial_corpus.v0",
+  "expansion_label": "payload_leak_to_7_2026_06_11",
+  "expansion_status": "folded_into_v0",
+  "expansion_note": "Single-case payload_leak tail-floor expansion folded into the strict v0 corpus.",
+  "cases": [
+    {
+      "case_version": "magma.synthetic_adversarial_case.v0",
+      "case_id": "case:adv:payload_leak:007",
+      "defect_type": "payload_leak",
+      "intent": "A redacted incident export includes only payload digests in its summary, but the attached evaluator replay transcript still carries verbatim user content; trusting the summary alone would leak the raw payload through a secondary artifact.",
+      "risk_class": "local_artifact",
+      "peer_review_trap_marker": "privacy_redaction_trap",
+      "privacy_canary": "canary_payload_007_DO_NOT_LEAK",
+      "tags": ["incident_export", "evaluator_replay", "secondary_artifact", "redaction"]
+    }
+  ]
+}

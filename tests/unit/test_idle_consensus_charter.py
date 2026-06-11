@@ -348,15 +348,33 @@ def test_evaluate_diff_content_allows_bom_prefixed_removed_marker_cleanup() -> N
     charter = load_charter()
     old_marker = "operator_gate_required" + "=True"
     new_marker = "operator_authorization_required" + "=True"
-    diff = f"""\ufeffdiff --git a/tools/runtime_design.py b/tools/runtime_design.py
+    diff = f"""diff --git a/tools/runtime_design.py b/tools/runtime_design.py
 --- a/tools/runtime_design.py
 +++ b/tools/runtime_design.py
 @@ -1,3 +1,3 @@
 -{old_marker}
 +{new_marker}
  """
+    plain_decision = evaluate_diff_content(charter, diff)
+    bom_decision = evaluate_diff_content(charter, "\ufeff" + diff)
+
+    assert plain_decision.allowed is True
+    assert bom_decision == plain_decision
+
+
+def test_evaluate_diff_content_blocks_bom_prefixed_denylisted_addition() -> None:
+    charter = load_charter()
+    marker = "operator_gate_required" + "=True"
+    diff = f"""\ufeffdiff --git a/tools/runtime_design.py b/tools/runtime_design.py
+--- a/tools/runtime_design.py
++++ b/tools/runtime_design.py
+@@ -0,0 +1 @@
++{marker}
+"""
+
     decision = evaluate_diff_content(charter, diff)
-    assert decision.allowed is True
+    assert decision.allowed is False
+    assert decision.code_pattern_hits
 
 
 def test_evaluate_diff_content_blocks_gate_skip_and_fast_track_authority_claims() -> None:

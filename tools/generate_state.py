@@ -97,11 +97,30 @@ def scan_security():
     return checks
 
 
+def _tracked_python_files():
+    """List tracked *.py files via git, or None when git is unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["git", "ls-files", "-z", "--", "*.py"],
+            cwd=ROOT, text=True)
+    except Exception:
+        return None
+    return [ROOT / name for name in out.split("\0") if name]
+
+
 def scan_licenses():
-    """Count BUSL vs Apache files."""
+    """Count BUSL vs Apache files.
+
+    Counts tracked files only, so the numbers do not vary with untracked
+    trees in the working copy (a local ``.venv`` inflated the 2026-05-11
+    refresh). Falls back to a filesystem walk when git is unavailable.
+    """
+    files = _tracked_python_files()
+    if files is None:
+        files = ROOT.rglob("*.py")
     busl = 0
     apache = 0
-    for py in ROOT.rglob("*.py"):
+    for py in files:
         try:
             head = py.read_text(errors="ignore")[:500]
         except Exception:

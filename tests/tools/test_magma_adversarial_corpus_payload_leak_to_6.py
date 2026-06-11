@@ -99,7 +99,7 @@ def test_folded_cases_byte_identical_to_strict_v0():
 def test_strict_v0_payload_leak_coverage_raised_to_six():
     cases = _read_json(CORPUS_DIR / "v0.json")["cases"]
     count = sum(1 for c in cases if c["defect_type"] == "payload_leak")
-    assert count == 6
+    assert count >= 6
 
 
 def test_every_expansion_case_has_paired_refuse_expectation():

@@ -25,6 +25,18 @@ def _selector_matches(selector: str, text: str, terms: set[str] | None = None) -
     return selector in (terms if terms is not None else set(_WORD_RE.findall(text)))
 
 
+def _normalized_selector_matches(selector: str, text: str, terms: set[str]) -> bool:
+    """`_selector_matches` for selectors already lower().strip()-normalized
+    by _build_selector_index — the select_origin_cell hot path, which must
+    not re-normalize per query (that per-selector cost was the dominant
+    select_origin_cell cost on a 7-cell config)."""
+    if not text:
+        return False
+    if len(selector) >= 6:
+        return selector in text
+    return selector in terms
+
+
 class HexTopologyRegistry:
     """Registry that loads hex cell topology and maps cells to agents."""
 
@@ -140,12 +152,23 @@ class HexTopologyRegistry:
         query (`sel in query_lower`), so we still need string values,
         not a token-inverted index — but the per-call `.lower()` per
         selector per cell was the dominant cost on a 7-cell config."""
+        # Stored fully normalized (lower().strip(), empties dropped) so the
+        # hot path can match without re-normalizing; empty selectors never
+        # match in _selector_matches, so dropping them preserves scoring.
         self._lower_domain_selectors = {
-            cell_id: tuple(s.lower() for s in cell.domain_selectors)
+            cell_id: tuple(
+                norm
+                for s in cell.domain_selectors
+                if (norm := s.lower().strip())
+            )
             for cell_id, cell in self._cells.items()
         }
         self._lower_tag_selectors = {
-            cell_id: tuple(s.lower() for s in cell.tag_selectors)
+            cell_id: tuple(
+                norm
+                for s in cell.tag_selectors
+                if (norm := s.lower().strip())
+            )
             for cell_id, cell in self._cells.items()
         }
 
@@ -268,15 +291,15 @@ class HexTopologyRegistry:
 
             for sel in domain_index.get(cell_id, ()):
                 if (
-                    _selector_matches(sel, query_lower, query_terms)
-                    or _selector_matches(sel, intent_lower, intent_terms)
+                    _normalized_selector_matches(sel, query_lower, query_terms)
+                    or _normalized_selector_matches(sel, intent_lower, intent_terms)
                 ):
                     selector_score += 2.0
 
             for sel in tag_index.get(cell_id, ()):
                 if (
-                    _selector_matches(sel, query_lower, query_terms)
-                    or _selector_matches(sel, intent_lower, intent_terms)
+                    _normalized_selector_matches(sel, query_lower, query_terms)
+                    or _normalized_selector_matches(sel, intent_lower, intent_terms)
                 ):
                     selector_score += 1.5
 

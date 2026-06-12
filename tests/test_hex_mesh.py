@@ -339,12 +339,12 @@ class TestNeighborIdCache:
             lowered_domain = reg._lower_domain_selectors.get(cell_id)
             assert lowered_domain is not None, f"missing domain index for {cell_id}"
             assert lowered_domain == tuple(
-                s.lower() for s in cell.domain_selectors
+                norm for s in cell.domain_selectors if (norm := s.lower().strip())
             ), f"{cell_id} domain index drift"
             lowered_tag = reg._lower_tag_selectors.get(cell_id)
             assert lowered_tag is not None, f"missing tag index for {cell_id}"
             assert lowered_tag == tuple(
-                s.lower() for s in cell.tag_selectors
+                norm for s in cell.tag_selectors if (norm := s.lower().strip())
             ), f"{cell_id} tag index drift"
 
     def test_select_origin_cell_unchanged_routing_decisions(self):
@@ -407,12 +407,46 @@ class TestNeighborIdCache:
         finally:
             reg._cells["bee_ops"].enabled = True
 
+    def test_select_origin_cell_does_not_renormalize_selectors_per_query(self):
+        """Deterministic regression guard for the pre-lowercase index:
+        the select_origin_cell hot path must not call .lower()/.strip()
+        on indexed selectors per query. The prior wall-clock guard
+        (<100ms) sat ABOVE the documented pre-optimization cost
+        (65.19ms/2k), so it could never catch the regression it
+        described, while flaking on a loaded machine."""
+        calls = {"lower": 0, "strip": 0}
+
+        class _SpySelector(str):
+            def lower(self):
+                calls["lower"] += 1
+                return str.lower(self)
+
+            def strip(self, *args):
+                calls["strip"] += 1
+                return str.strip(self, *args)
+
+        reg = self._registry()
+        reg._lower_domain_selectors = {
+            cid: tuple(_SpySelector(s) for s in sels)
+            for cid, sels in reg._lower_domain_selectors.items()
+        }
+        reg._lower_tag_selectors = {
+            cid: tuple(_SpySelector(s) for s in sels)
+            for cid, sels in reg._lower_tag_selectors.items()
+        }
+        for _ in range(50):
+            reg.select_origin_cell("bee hive swarm weather safety", "route")
+        assert calls["lower"] == 0 and calls["strip"] == 0, (
+            f"select_origin_cell re-normalized indexed selectors per query "
+            f"(lower={calls['lower']}, strip={calls['strip']}) — the "
+            f"pre-lowercase selector index is being bypassed"
+        )
+
     def test_select_origin_cell_repeated_queries_are_cheap(self):
-        """Regression guard: 2k repeated select_origin_cell calls
-        must stay under the 10ms operator threshold per call (i.e.,
-        20s aggregate at the hard cap, but realistically << 1s).
-        Codex scout BEFORE measured 65.19 ms / 2k = ~33 µs per call;
-        the pre-lowercase optimization should bring this down."""
+        """Catastrophic-only wall-clock smoke: 2k repeated calls must
+        stay under the 10ms-per-call operator threshold with a wide
+        margin (the precise no-renormalization property is asserted
+        deterministically above, immune to machine load)."""
         import time
         reg = self._registry()
         queries = [
@@ -427,12 +461,9 @@ class TestNeighborIdCache:
         for i in range(2000):
             reg.select_origin_cell(queries[i % len(queries)])
         elapsed_ms = (time.perf_counter() - start) * 1000
-        # 100ms is generous; both BEFORE and AFTER on this machine
-        # are well under that. This catches catastrophic regressions
-        # (e.g. accidentally re-introducing per-query .lower()).
-        assert elapsed_ms < 100.0, (
+        assert elapsed_ms < 2000.0, (
             f"2000 select_origin_cell took {elapsed_ms:.2f}ms — "
-            f"expected sub-100ms after Cand 3 selector index"
+            f"catastrophic regression (>1ms per call)"
         )
 
     def test_get_neighbor_cells_repeated_lookups_are_cheap(self):

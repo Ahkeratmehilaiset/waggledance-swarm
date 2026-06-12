@@ -955,6 +955,7 @@ def verify_bridge_consensus(
     latest_build_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
     latest_build_block: dict[str, int] = {}
     latest_build_task_mismatch: dict[str, str] = {}
+    latest_build_shape_mismatch: dict[str, dict[str, Any]] = {}
     latest_rco_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
     latest_rco_block: dict[str, int] = {}
     watched_agents = set(build_expected) | set(recognized_rco_agents)
@@ -986,6 +987,7 @@ def verify_bridge_consensus(
             continue
         identity_valid_events.append((index, event))
         status = str(event.get("status", "")).lower()
+        event_type = str(event.get("type", "")).lower()
         scoped = _consensus_scope_match(
             event,
             task_id=task_id,
@@ -1011,10 +1013,30 @@ def verify_bridge_consensus(
             else:
                 latest_build_block[agent] = index
             continue
-        # Approvals remain type-restricted to decision/rco_review/finding.
-        if str(event.get("type", "")).lower() not in DECISION_EVENT_TYPES:
-            continue
         binds_head = _event_binds_head(event, head_sha)
+        if agent not in recognized_rco_agents and binds_head:
+            status_looks_build_consensus = (
+                status in BUILD_CONSENSUS_STATUSES
+                or ("build_consensus" in status and "pass" in status)
+            )
+            if status_looks_build_consensus:
+                type_ok = event_type in DECISION_EVENT_TYPES
+                status_ok = status in BUILD_CONSENSUS_STATUSES
+                task_id_ok = _build_consensus_task_scope_match(
+                    event, task_id=task_id
+                )
+                if not type_ok or not status_ok:
+                    latest_build_shape_mismatch[agent] = {
+                        "type": event_type,
+                        "status": status,
+                        "task_id": str(event.get("task_id", "")),
+                        "type_ok": type_ok,
+                        "status_ok": status_ok,
+                        "task_id_ok": task_id_ok,
+                    }
+        # Approvals remain type-restricted to decision/rco_review/finding.
+        if event_type not in DECISION_EVENT_TYPES:
+            continue
         if not binds_head:
             continue
         if agent in recognized_rco_agents:
@@ -1048,11 +1070,35 @@ def verify_bridge_consensus(
             "approval_index": approval[0] if approval is not None else None,
             "block_index": block_index,
             "task_id_mismatch": latest_build_task_mismatch.get(agent),
+            "shape_mismatch": latest_build_shape_mismatch.get(agent),
         }
         if not approved:
             if approval is None:
                 mismatch = latest_build_task_mismatch.get(agent)
-                if mismatch is not None:
+                shape_mismatch = latest_build_shape_mismatch.get(agent)
+                if shape_mismatch is not None:
+                    details: list[str] = []
+                    if not shape_mismatch.get("type_ok", False):
+                        details.append(
+                            f"type {shape_mismatch.get('type')!r} is not one of "
+                            f"{sorted(DECISION_EVENT_TYPES)!r}"
+                        )
+                    if not shape_mismatch.get("status_ok", False):
+                        details.append(
+                            f"status {shape_mismatch.get('status')!r} is not a "
+                            "recognized build-consensus status"
+                        )
+                    if not shape_mismatch.get("task_id_ok", False):
+                        details.append(
+                            f"task_id {shape_mismatch.get('task_id')!r} is not "
+                            f"canonical {task_id!r}"
+                        )
+                    build_identity_reasons[role] = (
+                        f"{role} ({agent}): head-bound build-consensus-shaped "
+                        "event has invalid shape: "
+                        + "; ".join(details)
+                    )
+                elif mismatch is not None:
                     build_identity_reasons[role] = (
                         f"{role} ({agent}): head-bound approval used "
                         f"non-canonical task_id {mismatch!r}; expected {task_id!r}"

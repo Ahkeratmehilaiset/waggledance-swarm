@@ -158,6 +158,40 @@ def test_backup_rco_uuid_mismatch_does_not_satisfy_rco_slot() -> None:
     )
 
 
+def test_build_consensus_shaped_event_reports_invalid_shape() -> None:
+    malformed_tools_event = {
+        **_approval(TOOLS, "answered_build_consensus_pass", ts="2026-05-29T13:01:00Z"),
+        "type": "message",
+        "task_id": "codex-lead-t0b-consensus-approver-20260529",
+    }
+    events = [
+        _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
+        malformed_tools_event,
+        _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+    assert result["ok"] is False
+    tools_identity = result["identities"]["build_tools"]
+    assert tools_identity["approved"] is False
+    assert tools_identity["shape_mismatch"] == {
+        "type": "message",
+        "status": "answered_build_consensus_pass",
+        "task_id": "codex-lead-t0b-consensus-approver-20260529",
+        "type_ok": False,
+        "status_ok": False,
+        "task_id_ok": False,
+    }
+    reason = "\n".join(result["reasons"])
+    assert "build_tools (codex-tools-1)" in reason
+    assert "head-bound build-consensus-shaped event has invalid shape" in reason
+    assert "type 'message' is not one of" in reason
+    assert "status 'answered_build_consensus_pass' is not a recognized" in reason
+    assert "task_id 'codex-lead-t0b-consensus-approver-20260529'" in reason
+    assert f"canonical {TASK!r}" in reason
+
+
 def test_descriptive_build_task_id_does_not_count_when_payload_head_matches() -> None:
     events = [
         {

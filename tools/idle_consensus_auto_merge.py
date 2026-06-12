@@ -12,7 +12,7 @@ are the authority for this narrow idle-consensus path.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -101,6 +101,11 @@ CONSENSUS_BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 CONSENSUS_BLOCKING_WORD_TOKENS = frozenset(
     {"block", "blocked", "blocks", "blocking"}
 )
+LEAD_STALL_FAILOVER_THRESHOLD_SECONDS = 90 * 60
+LEAD_STALL_NON_SUBSTANTIVE_TYPES = frozenset({"heartbeat", "liveness"})
+LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
+    {"alive", "heartbeat", "heartbeat_ok", "idle_heartbeat", "liveness"}
+)
 
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
@@ -170,6 +175,15 @@ def build_parser() -> argparse.ArgumentParser:
             "merge. See docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md."
         ),
     )
+    parser.add_argument(
+        "--allow-lead-stall-failover",
+        action="store_true",
+        help=(
+            "Default-off emergency path: allow a charter-clean, non-tools-authored "
+            "PR to satisfy the lead build slot from durable lead-idle evidence "
+            "when tools build-consensus and non-author RCO_PASS are present."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -192,6 +206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bridge_task_id=args.bridge_task_id,
             apply=args.apply,
             require_bridge_consensus=args.require_bridge_consensus,
+            allow_lead_stall_failover=args.allow_lead_stall_failover,
             artifact_writer=_cli_artifact_writer(args),
         )
     except (json.JSONDecodeError, OSError) as exc:
@@ -236,6 +251,10 @@ def evaluate_auto_merge_gate(
     bridge_task_id: str = "",
     apply: bool = False,
     require_bridge_consensus: bool = False,
+    allow_lead_stall_failover: bool = False,
+    lead_stall_failover_threshold_seconds: int = (
+        LEAD_STALL_FAILOVER_THRESHOLD_SECONDS
+    ),
     runner: Runner | None = None,
     merge_verifier: MergeVerifier | None = None,
     artifact_writer: ArtifactWriter | None = None,
@@ -367,6 +386,13 @@ def evaluate_auto_merge_gate(
         head_sha=head_sha,
         pr_number=pr_number,
         author_agent=author_agent,
+        charter_path=charter_path,
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+        allow_lead_stall_failover=allow_lead_stall_failover,
+        lead_stall_failover_threshold_seconds=(
+            lead_stall_failover_threshold_seconds
+        ),
     )
     if require_bridge_consensus:
         if events_path is None:
@@ -827,6 +853,13 @@ def verify_bridge_consensus(
     rco_agent: str | Sequence[str] | None = BRIDGE_CONSENSUS_RCO_AGENTS,
     author_agent: str = "",
     identity_registry: Mapping[str, str] | None = None,
+    allow_lead_stall_failover: bool = False,
+    lead_stall_failover_threshold_seconds: int = (
+        LEAD_STALL_FAILOVER_THRESHOLD_SECONDS
+    ),
+    lead_stall_failover_changed_paths: Sequence[str] = (),
+    lead_stall_failover_diff_text: str = "",
+    lead_stall_failover_charter_path: Path = DEFAULT_CHARTER_PATH,
 ) -> dict[str, Any]:
     """Fail-closed three-identity bridge-consensus verification (T0b).
 
@@ -870,6 +903,10 @@ def verify_bridge_consensus(
         "author_agent": author_agent,
         "blocking_rco_agents": [],
         "ignored_identity_mismatch_events": [],
+        "lead_stall_failover": _lead_stall_failover_disabled_report(
+            head_sha=head_sha,
+            threshold_seconds=lead_stall_failover_threshold_seconds,
+        ),
     }
     build_expected = (lead_agent, tools_agent)
     if len({a for a in build_expected if a and a.strip()}) != 2:
@@ -922,6 +959,7 @@ def verify_bridge_consensus(
     latest_rco_block: dict[str, int] = {}
     watched_agents = set(build_expected) | set(recognized_rco_agents)
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    identity_valid_events: list[tuple[int, Mapping[str, Any]]] = []
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
@@ -946,6 +984,7 @@ def verify_bridge_consensus(
                 }
             )
             continue
+        identity_valid_events.append((index, event))
         status = str(event.get("status", "")).lower()
         scoped = _consensus_scope_match(
             event,
@@ -991,6 +1030,7 @@ def verify_bridge_consensus(
 
     reasons: list[str] = []
     identities: dict[str, Any] = {}
+    build_identity_reasons: dict[str, str] = {}
     for agent, role in (
         (lead_agent, "build_lead"),
         (tools_agent, "build_tools"),
@@ -1003,6 +1043,8 @@ def verify_bridge_consensus(
         identities[role] = {
             "agent": agent,
             "approved": approved,
+            "direct_approval": approved,
+            "failover_engaged": False,
             "approval_index": approval[0] if approval is not None else None,
             "block_index": block_index,
             "task_id_mismatch": latest_build_task_mismatch.get(agent),
@@ -1011,16 +1053,16 @@ def verify_bridge_consensus(
             if approval is None:
                 mismatch = latest_build_task_mismatch.get(agent)
                 if mismatch is not None:
-                    reasons.append(
+                    build_identity_reasons[role] = (
                         f"{role} ({agent}): head-bound approval used "
                         f"non-canonical task_id {mismatch!r}; expected {task_id!r}"
                     )
                 else:
-                    reasons.append(
+                    build_identity_reasons[role] = (
                         f"{role} ({agent}): no head-bound approval at {head_sha}"
                     )
             else:
-                reasons.append(
+                build_identity_reasons[role] = (
                     f"{role} ({agent}): a later block invalidates the approval"
                 )
 
@@ -1091,6 +1133,48 @@ def verify_bridge_consensus(
             "task_id": str(rco_event.get("task_id", "")),
         }
 
+    lead_stall_failover = _evaluate_lead_stall_failover(
+        enabled=allow_lead_stall_failover,
+        events=identity_valid_events,
+        lead_agent=lead_agent,
+        tools_agent=tools_agent,
+        author_agent=author_agent,
+        task_id=task_id,
+        head_sha=head_sha,
+        threshold_seconds=lead_stall_failover_threshold_seconds,
+        lead_approval=latest_build_approval.get(lead_agent),
+        lead_block_index=latest_build_block.get(lead_agent),
+        tools_approval=latest_build_approval.get(tools_agent),
+        rco_approval=rco_approval,
+        blocking_rco_agents=blocking_rco_agents,
+        changed_paths=lead_stall_failover_changed_paths,
+        diff_text=lead_stall_failover_diff_text,
+        charter_path=lead_stall_failover_charter_path,
+    )
+    if lead_stall_failover["engaged"]:
+        identities["build_lead"]["approved"] = True
+        identities["build_lead"]["failover_engaged"] = True
+        identities["build_lead"]["failover_reason"] = (
+            "durable lead-stall failover engaged"
+        )
+
+    for role in ("build_lead", "build_tools"):
+        if role == "build_lead" and lead_stall_failover["engaged"]:
+            continue
+        reason = build_identity_reasons.get(role)
+        if reason:
+            reasons.append(reason)
+
+    if (
+        allow_lead_stall_failover
+        and not lead_stall_failover["engaged"]
+        and not identities["build_lead"]["direct_approval"]
+    ):
+        reasons.extend(
+            f"lead-stall failover refused: {reason}"
+            for reason in lead_stall_failover["reasons"]
+        )
+
     ok = not reasons
     return {
         "ok": ok,
@@ -1106,7 +1190,214 @@ def verify_bridge_consensus(
         "author_agent": author_agent,
         "blocking_rco_agents": sorted(blocking_rco_agents),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
+        "lead_stall_failover": lead_stall_failover,
     }
+
+
+def _lead_stall_failover_disabled_report(
+    *, head_sha: str, threshold_seconds: int
+) -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "engaged": False,
+        "eligible": False,
+        "decision": "not_enabled",
+        "reasons": ["lead-stall failover is disabled"],
+        "head_sha": head_sha,
+        "threshold_seconds": threshold_seconds,
+        "clock_source": "durable_bridge_event_log_latest_ts",
+        "observed_at": None,
+        "lead_last_substantive_ts": None,
+        "lead_last_substantive_index": None,
+        "lead_idle_seconds": None,
+        "charter_clean": False,
+        "path_gate": None,
+        "diff_gate": None,
+        "tools_non_author": False,
+        "tools_build_consensus_at_head": False,
+        "rco_pass_at_head": False,
+        "lead_direct_approval_present": False,
+        "lead_block_present": False,
+        "blocking_rco_agents": [],
+    }
+
+
+def _evaluate_lead_stall_failover(
+    *,
+    enabled: bool,
+    events: Sequence[tuple[int, Mapping[str, Any]]],
+    lead_agent: str,
+    tools_agent: str,
+    author_agent: str,
+    task_id: str,
+    head_sha: str,
+    threshold_seconds: int,
+    lead_approval: tuple[int, Mapping[str, Any]] | None,
+    lead_block_index: int | None,
+    tools_approval: tuple[int, Mapping[str, Any]] | None,
+    rco_approval: tuple[int, Mapping[str, Any]] | None,
+    blocking_rco_agents: Sequence[str],
+    changed_paths: Sequence[str],
+    diff_text: str,
+    charter_path: Path,
+) -> dict[str, Any]:
+    report = _lead_stall_failover_disabled_report(
+        head_sha=head_sha,
+        threshold_seconds=threshold_seconds,
+    )
+    if not enabled:
+        return report
+
+    report.update(
+        {
+            "enabled": True,
+            "decision": "refused",
+            "reasons": [],
+            "tools_non_author": bool(
+                author_agent and author_agent != tools_agent
+            ),
+            "tools_build_consensus_at_head": tools_approval is not None,
+            "rco_pass_at_head": (
+                rco_approval is not None and not blocking_rco_agents
+            ),
+            "lead_direct_approval_present": lead_approval is not None,
+            "lead_block_present": lead_block_index is not None,
+            "blocking_rco_agents": sorted(str(a) for a in blocking_rco_agents),
+            "task_id": task_id,
+        }
+    )
+    reasons: list[str] = []
+    if threshold_seconds <= 0:
+        reasons.append("threshold_seconds must be positive")
+
+    try:
+        charter = load_charter(charter_path)
+        path_gate = evaluate_paths(charter, changed_paths)
+        diff_gate = evaluate_diff_content(charter, diff_text)
+    except (OSError, ValueError) as exc:
+        path_gate = None
+        diff_gate = None
+        reasons.append(f"charter evaluation failed: {exc.__class__.__name__}")
+    else:
+        report["path_gate"] = _gate_to_dict(path_gate)
+        report["diff_gate"] = _gate_to_dict(diff_gate)
+        report["charter_clean"] = bool(path_gate.allowed and diff_gate.allowed)
+        if not path_gate.allowed:
+            reasons.append(f"charter path gate failed: {path_gate.reason}")
+        if not diff_gate.allowed:
+            reasons.append(f"charter diff gate failed: {diff_gate.reason}")
+
+    observed = _lead_stall_observed_at(events)
+    if observed is None:
+        reasons.append("no parsable durable event timestamp for idle proof")
+    else:
+        report["observed_at"] = observed.isoformat().replace("+00:00", "Z")
+
+    lead_last = _last_substantive_lead_event(events, lead_agent=lead_agent)
+    if lead_last is None:
+        reasons.append("no substantive lead event found in durable bridge log")
+    else:
+        lead_index, lead_event, lead_ts = lead_last
+        report["lead_last_substantive_index"] = lead_index
+        report["lead_last_substantive_ts"] = (
+            lead_ts.isoformat().replace("+00:00", "Z")
+        )
+        if observed is not None:
+            idle_seconds = int((observed - lead_ts).total_seconds())
+            report["lead_idle_seconds"] = idle_seconds
+            if idle_seconds < threshold_seconds:
+                reasons.append(
+                    "lead idle duration below threshold: "
+                    f"{idle_seconds}/{threshold_seconds}s"
+                )
+
+    if observed is not None:
+        now_utc = datetime.now(timezone.utc)
+        if observed > now_utc + timedelta(minutes=5):
+            reasons.append("durable event observation timestamp is in the future")
+
+    if lead_approval is not None:
+        reasons.append("lead direct approval already satisfies the build slot")
+    if lead_block_index is not None:
+        reasons.append("lead block/change request at this scope hard-blocks failover")
+    if author_agent == tools_agent:
+        reasons.append("tools-authored PRs cannot use tools-only lead failover")
+    elif not author_agent:
+        reasons.append("author_agent is required for lead-stall failover")
+    if tools_approval is None:
+        reasons.append("tools build_consensus at exact head is required")
+    if rco_approval is None:
+        reasons.append("recognized non-author RCO_PASS at exact head is required")
+    if blocking_rco_agents:
+        reasons.append(
+            "recognized RCO veto blocks failover: "
+            + ", ".join(sorted(str(a) for a in blocking_rco_agents))
+        )
+
+    report["reasons"] = reasons
+    report["eligible"] = not reasons
+    report["engaged"] = not reasons
+    report["decision"] = "engaged" if report["engaged"] else "refused"
+    return report
+
+
+def _lead_stall_observed_at(
+    events: Sequence[tuple[int, Mapping[str, Any]]],
+) -> datetime | None:
+    timestamps = [
+        parsed
+        for _index, event in events
+        for parsed in [_parse_bridge_ts(event.get("ts_utc"))]
+        if parsed is not None
+    ]
+    if not timestamps:
+        return None
+    return max(timestamps)
+
+
+def _last_substantive_lead_event(
+    events: Sequence[tuple[int, Mapping[str, Any]]], *, lead_agent: str
+) -> tuple[int, Mapping[str, Any], datetime] | None:
+    latest: tuple[int, Mapping[str, Any], datetime] | None = None
+    for index, event in events:
+        if str(event.get("agent", "")) != lead_agent:
+            continue
+        if not _is_substantive_lead_event(event):
+            continue
+        parsed = _parse_bridge_ts(event.get("ts_utc"))
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest[2] or (
+            parsed == latest[2] and index > latest[0]
+        ):
+            latest = (index, event, parsed)
+    return latest
+
+
+def _is_substantive_lead_event(event: Mapping[str, Any]) -> bool:
+    event_type = str(event.get("type", "")).lower()
+    status = str(event.get("status", "")).lower()
+    if event_type in LEAD_STALL_NON_SUBSTANTIVE_TYPES:
+        return False
+    normalized_status = re.sub(r"[^a-z0-9]+", "_", status).strip("_")
+    if normalized_status in LEAD_STALL_NON_SUBSTANTIVE_STATUSES:
+        return False
+    return True
+
+
+def _parse_bridge_ts(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _evaluate_bridge_consensus(
@@ -1118,6 +1409,11 @@ def _evaluate_bridge_consensus(
     head_sha: str,
     pr_number: int | None,
     author_agent: str,
+    charter_path: Path,
+    changed_paths: Sequence[str],
+    diff_text: str,
+    allow_lead_stall_failover: bool,
+    lead_stall_failover_threshold_seconds: int,
 ) -> dict[str, Any]:
     """Wrap verify_bridge_consensus with a not-required passthrough.
 
@@ -1139,6 +1435,10 @@ def _evaluate_bridge_consensus(
             "eligible_rco_agents": [],
             "author_agent": author_agent,
             "blocking_rco_agents": [],
+            "lead_stall_failover": _lead_stall_failover_disabled_report(
+                head_sha=head_sha,
+                threshold_seconds=lead_stall_failover_threshold_seconds,
+            ),
         }
     result = verify_bridge_consensus(
         events=events,
@@ -1146,6 +1446,13 @@ def _evaluate_bridge_consensus(
         head_sha=head_sha,
         pr_number=pr_number,
         author_agent=author_agent,
+        allow_lead_stall_failover=allow_lead_stall_failover,
+        lead_stall_failover_threshold_seconds=(
+            lead_stall_failover_threshold_seconds
+        ),
+        lead_stall_failover_changed_paths=changed_paths,
+        lead_stall_failover_diff_text=diff_text,
+        lead_stall_failover_charter_path=charter_path,
     )
     result["required"] = True
     if events_path is None:

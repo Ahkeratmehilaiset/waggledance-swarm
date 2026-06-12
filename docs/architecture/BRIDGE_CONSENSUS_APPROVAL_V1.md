@@ -170,9 +170,10 @@ A verified identity is bound to its **session uuid**, not just its claimed
 canonical `agent_uuid`; registry re-keying is operator-owned security
 configuration and lands only via an operator-reviewed PR.
 
-* Gate consumers (`tools/check_rco_pass_present.py` and
-  `verify_bridge_consensus` in `tools/idle_consensus_auto_merge.py`) reject any
-  gate-relevant event whose stamped `agent_uuid` is **missing**
+* Gate consumers (`tools/check_rco_pass_present.py`,
+  `tools/check_bridge_changes_requested.py`, and `verify_bridge_consensus` in
+  `tools/idle_consensus_auto_merge.py`) reject any gate-relevant event whose
+  stamped `agent_uuid` is **missing**
   (`missing_uuid`) or does not match the registered binding for the claimed
   agent (`mismatch_uuid`), fail-closed. Rejected events are surfaced in the
   report (`ignored_identity_mismatch_events`) so audits can see attempted or

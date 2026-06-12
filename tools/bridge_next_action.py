@@ -68,17 +68,26 @@ OPEN_STATUS_FRAGMENTS = (
 CLOSED_REQUEST_STATUSES = frozenset(
     {
         "accepted",
+        *KNOWN_ACK_STATUSES,
         "answered",
         "approved",
+        "changes_requested_retracted",
         "changes_requested_resolved",
+        "changes_requested_withdrawn",
         "closed",
         "done",
+        "finding_retracted",
+        "finding_withdrawn",
         "merged",
         "reported",
         "resolved",
+        "retracted",
+        "rco_finding_retracted",
+        "rco_finding_withdrawn",
         "superseded",
         "validated",
         "verified",
+        "withdrawn",
     }
 )
 ANSWER_STATUS_FRAGMENTS = (
@@ -591,7 +600,7 @@ def _idle_protocol_progressed(
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
-    if status in CLOSED_REQUEST_STATUSES:
+    if _is_closed_request_status(status):
         return False
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
@@ -648,14 +657,23 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
     if _event_type(event) == "done":
         return True
     status = _event_status(event)
-    return _event_type(event) in ANSWER_TYPES and _status_has_any(
-        status, ANSWER_STATUS_FRAGMENTS
+    return _event_type(event) in ANSWER_TYPES and (
+        status in CLOSED_REQUEST_STATUSES
+        or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
     )
 
 
+def _is_closed_request_status(status: str) -> bool:
+    return status in CLOSED_REQUEST_STATUSES
+
+
 def _status_has_any(status: str, candidates: Sequence[str]) -> bool:
-    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+    tokens = _status_tokens(status)
     return any(candidate in tokens for candidate in candidates)
+
+
+def _status_tokens(status: str) -> set[str]:
+    return {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
 
 
 def _addressed_to(event: Mapping[str, Any], agent: str) -> bool:

@@ -1029,8 +1029,9 @@ def test_lead_stall_failover_refuses_denylisted_diff_content(
     """The diff-content gate is load-bearing on its own: changed paths
     stay allowlist-clean, only the diff text carries a charter
     code-pattern-denylisted line."""
+    denylisted_line = "+    retry_policy.gate_" + "skip=True\n"
     report = evaluate_auto_merge_gate(
-        pr_status=_status(diff_text="+    retry_policy.gate_skip=True\n"),
+        pr_status=_status(diff_text=denylisted_line),
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",

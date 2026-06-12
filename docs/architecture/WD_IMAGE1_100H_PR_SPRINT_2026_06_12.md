@@ -29,19 +29,30 @@ Ring Messaging & Hierarchy -> Emergent Intelligence -> Infinite Scalability ->
 Industrial-Grade Efficiency`.
 
 No PR in this sprint may flip a literal storyboard claim to safe unless it
-ships production evidence, rollback evidence, and post-cutover verification.
+ships production evidence, rollback evidence, post-cutover verification,
+explicit manifest-diff evidence, and `RCO_PASS` for the claim transition.
 
 ## Guardrails
 
 - Keep PRs small, disjoint, and reviewable.
-- Default to proof, verifier, metrics, and path-free summary work before
-  runtime authority.
+- Default to proof, verifier, metrics, and path-free summary work without
+  granting runtime authority. Runtime authority requires a separate
+  operator-approved PR with `RCO_PASS`, fail-closed tests, rollback evidence,
+  and post-cutover verification.
 - Keep `RCO_PASS` mandatory for merges.
-- Keep Grok as advisory only; if Grok is disabled, record a fresh-head
-  `grok_response` bridge event and proceed by lead decision.
+- Keep Grok as advisory only. If Grok is disabled, record a fresh-head bridge
+  event explicitly marked advisory-skipped or Grok-unavailable; do not label it
+  as approval, gate pass, or RCO evidence.
 - Do not grant autonomous runtime writes through documentation-only or
   template-only PRs.
 - Do not convert fast-track, consensus, or queue priority into gate bypass.
+- Every slice must declare allowed write paths and exact verification commands
+  before implementation. Tools-owned slices default to `tools/`,
+  `tests/tools/`, and CI workflow wiring only; they must not modify runtime
+  authority, bridge append, scheduler activation, network transport, or
+  production claim text unless explicitly assigned.
+- Done requires `gh pr view <PR> --json headRefOid`, `git rev-parse HEAD`, and
+  CI/check URLs proving the same head SHA was tested.
 
 ## Agent Responsibilities
 
@@ -59,7 +70,7 @@ ships production evidence, rollback evidence, and post-cutover verification.
 | PR | Hours | Owner | Target | Deliverable |
 |---:|---:|---|---|---|
 | 01 | 0-4 | Lead | Sprint contract | This 100-hour Image1 plan and bridge distribution. |
-| 02 | 4-8 | Tools | Baseline counters | CI-backed `wd_image1_capability_manifest` and progress counter smoke receipt. |
+| 02 | 4-8 | Tools | Baseline counters | CI-backed baseline for `tools/wd_image1_capability_manifest.py` and `tools/build_wd_vision_progress_counters.py`. |
 | 03 | 8-12 | RCO1 | Authority boundary | Review checklist for all Image1 claim-safe transitions. |
 | 04 | 12-16 | Lead | Low-risk autonomy | Runtime-gap scheduler candidate summary renderer, no append or authority. |
 | 05 | 16-20 | Tools | Low-risk autonomy | Negative tests for scheduler candidate malformed schema, digest, and path cases. |
@@ -87,15 +98,26 @@ ships production evidence, rollback evidence, and post-cutover verification.
 ## Definition of Done
 
 - Panel 1 advances only when query-entry evidence shows authoritative first-hop
-  mesh behavior or clearly remains candidate/disabled.
+  mesh behavior; otherwise it remains candidate/disabled with no literal
+  claim-safe promotion.
 - Panel 2 advances when deterministic solver and MAGMA receipt coverage is
   measured, exported, and fail-closed.
 - Panel 3 advances when low-risk autonomy evidence is durable, rate-limited,
   operator-visible, and unable to bypass gates.
-- Panel 4 advances when subdivision, ring messaging, parent-child hierarchy,
-  incremental gap replay, and Axis B have replayable verifiers before cutover.
+- Panel 4 advances only as verifier evidence until a separate
+  operator-approved cutover PR has rollback evidence, post-cutover verification,
+  and `RCO_PASS`; replayable verifiers alone do not authorize live mutation.
 - Panels 5-6 advance only through bounded scale/efficiency evidence; "infinite"
   and "unlimited" remain unsafe claims.
 
 The first executable slice after this plan is PR 02 unless an RCO veto changes
 the order.
+
+## PR02 Exact Scope
+
+PR02 must add or maintain focused coverage in
+`tests/tools/test_wd_image1_capability_manifest.py` and
+`tests/tools/test_wd_vision_progress_counters.py`, then publish a path-free
+smoke receipt containing the exact head SHA, commands, exit codes, schema
+versions, and no-write guardrails. It may touch `tools/`, `tests/tools/`, and
+CI wiring only unless lead assigns a narrower or explicitly expanded scope.

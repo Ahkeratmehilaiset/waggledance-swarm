@@ -9,6 +9,7 @@ fail closed (never default-allow).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -90,6 +91,34 @@ def _block(
         "task_id": task_id,
         "message": "blocking",
         "payload": {} if payload is None else payload,
+    }
+    if agent in AGENT_UUIDS:
+        event["agent_uuid"] = AGENT_UUIDS[agent]
+    return event
+
+
+def _lead_substantive_event(ts: str) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": LEAD,
+        "agent_uuid": AGENT_UUIDS[LEAD],
+        "type": "message",
+        "status": "done",
+        "task_id": "codex-lead/prior-production-slice",
+        "message": "prior substantive production bridge event",
+        "payload": {},
+    }
+
+
+def _claim(agent: str, *, task_id: str = TASK, ts: str = "2026-06-11T11:59:00Z") -> dict:
+    event = {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": "claim",
+        "status": "active",
+        "task_id": task_id,
+        "message": "",
+        "payload": {},
     }
     if agent in AGENT_UUIDS:
         event["agent_uuid"] = AGENT_UUIDS[agent]
@@ -504,6 +533,169 @@ def test_invalid_head_fails_closed() -> None:
     assert result["decision"] == "invalid_consensus_head"
 
 
+def test_lead_stall_failover_allows_tools_rco_when_lead_is_durably_idle() -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T10:00:00Z"),
+        _claim("fable-5"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent="fable-5",
+        lead_stall_failover=True,
+        lead_stall_charter_clean=True,
+        lead_stall_threshold_minutes=90.0,
+        now_utc=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is True
+    assert result["decision"] == "bridge_consensus_verified_lead_stall_failover"
+    assert result["reasons"] == []
+    assert result["identities"]["build_lead"]["approved"] is False
+    assert result["identities"]["build_lead"]["waived_by_lead_stall_failover"] is True
+    assert result["lead_stall_failover"]["engaged"] is True
+    assert result["lead_stall_failover"]["source"] == "durable_bridge_events"
+    assert result["lead_stall_failover"]["lead_idle_minutes"] == 120.0
+
+
+def test_lead_stall_failover_is_default_off() -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T10:00:00Z"),
+        _claim("fable-5"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent="fable-5",
+        now_utc=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["lead_stall_failover"]["enabled"] is False
+    assert result["lead_stall_failover"]["reason"] == "disabled"
+    assert any("build_lead" in reason for reason in result["reasons"])
+
+
+def test_lead_stall_failover_rejects_tools_authored_pr() -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T10:00:00Z"),
+        _claim("fable-5"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent=TOOLS,
+        lead_stall_failover=True,
+        lead_stall_charter_clean=True,
+        now_utc=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["lead_stall_failover"]["engaged"] is False
+    assert result["lead_stall_failover"]["reason"] == "tools_is_author"
+
+
+def test_lead_stall_failover_rejects_recent_lead_activity() -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T11:40:00Z"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent="fable-5",
+        lead_stall_failover=True,
+        lead_stall_charter_clean=True,
+        lead_stall_threshold_minutes=90.0,
+        now_utc=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["lead_stall_failover"]["lead_idle_minutes"] == 20.0
+    assert result["lead_stall_failover"]["reason"] == "lead_not_idle"
+
+
+def test_lead_stall_failover_rejects_exact_head_lead_veto() -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T10:00:00Z"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+        _block(LEAD, ts="2026-06-11T12:02:00Z", payload={"head": HEAD}),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent="fable-5",
+        lead_stall_failover=True,
+        lead_stall_charter_clean=True,
+        now_utc=datetime(2026, 6, 11, 12, 30, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["block_index"] == 3
+    assert result["lead_stall_failover"]["reason"] == "lead_block_present"
+
+
+def test_lead_stall_failover_requires_durable_lead_idle_evidence() -> None:
+    events = [
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent="fable-5",
+        lead_stall_failover=True,
+        lead_stall_charter_clean=True,
+        now_utc=datetime(2026, 6, 11, 12, 30, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["lead_stall_failover"]["reason"] == "lead_substantive_event_missing"
+
+
+def test_lead_stall_failover_ignores_unverified_lead_idle_evidence() -> None:
+    forged_lead_event = _lead_substantive_event("2026-06-11T10:00:00Z")
+    forged_lead_event["agent_uuid"] = AGENT_UUIDS[TOOLS]
+    events = [
+        forged_lead_event,
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent="fable-5",
+        lead_stall_failover=True,
+        lead_stall_charter_clean=True,
+        now_utc=datetime(2026, 6, 11, 12, 30, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["lead_stall_failover"]["reason"] == "lead_substantive_event_missing"
+
+
 # --- end-to-end through evaluate_auto_merge_gate --------------------------
 
 
@@ -570,6 +762,66 @@ def test_gate_allows_when_consensus_complete(tmp_path: Path) -> None:
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["bridge_consensus"]["ok"] is True
     assert report["bridge_consensus"]["rco_pass_ref"]["agent"] == RCO
+
+
+def test_gate_allows_lead_stall_failover_for_charter_clean_non_tools_author(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T10:00:00Z"),
+        _claim("fable-5"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(author_agent="fable-5"),
+        expected_head=HEAD,
+        consensus_proposal_id=TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        require_bridge_consensus=True,
+        lead_stall_failover=True,
+        lead_stall_threshold_minutes=90.0,
+        now_utc=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["ok"] is True
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["bridge_consensus"]["lead_stall_failover"]["engaged"] is True
+
+
+def test_gate_rejects_lead_stall_failover_for_gate_code(tmp_path: Path) -> None:
+    events = [
+        _lead_substantive_event("2026-06-11T10:00:00Z"),
+        _claim("fable-5"),
+        _approval(TOOLS, "build_consensus_pass", ts="2026-06-11T12:00:00Z"),
+        _approval(RCO, "rco_pass", ts="2026-06-11T12:01:00Z", in_message=True),
+    ]
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            author_agent="fable-5",
+            changed_paths=["tools/idle_consensus_auto_merge.py"],
+        ),
+        expected_head=HEAD,
+        consensus_proposal_id=TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        require_bridge_consensus=True,
+        lead_stall_failover=True,
+        lead_stall_threshold_minutes=90.0,
+        now_utc=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "operator_review_required"
+    assert report["path_gate"]["allowed"] is False
+    assert report["bridge_consensus"]["lead_stall_failover"]["engaged"] is False
+    assert report["bridge_consensus"]["lead_stall_failover"]["reason"] == (
+        "charter_not_clean"
+    )
 
 
 def test_gate_unchanged_when_consensus_not_required(tmp_path: Path) -> None:

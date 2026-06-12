@@ -82,12 +82,18 @@ def _claim(agent: str, task_id: str, *, ts: str = "2026-05-18T00:59:00Z") -> dic
     )
 
 
-def _rco_pass(task_id: str = "idle-consensus-001", *, pr: int = 477) -> dict:
+def _rco_pass(
+    task_id: str = "idle-consensus-001",
+    *,
+    pr: int = 477,
+    ts: str = "2026-05-18T01:00:00Z",
+) -> dict:
     return _bridge_event(
         agent="claude-rco-1",
         type_="decision",
         status="rco_pass",
         task_id=task_id,
+        ts=ts,
     ) | {"message": f"RCO_PASS exact head {HEAD}", "payload": {"pr": pr, "head": HEAD}}
 
 
@@ -696,6 +702,284 @@ def test_bridge_consensus_allows_no_changes_requested_status(
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["bridge_peer_gate"]["clear_to_merge"] is True
     assert report["bridge_consensus"]["ok"] is True
+
+
+def _lead_stall_failover_events(*, task_id: str = "idle-consensus-001") -> list[dict]:
+    return [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="message",
+            status="vision_response",
+            task_id=task_id,
+            ts="2026-05-18T00:00:00Z",
+        ),
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="heartbeat",
+            status="alive",
+            task_id=task_id,
+            ts="2026-05-18T02:30:00Z",
+        ),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            task_id=task_id,
+            ts="2026-05-18T03:00:00Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(task_id=task_id, ts="2026-05-18T03:01:00Z"),
+    ]
+
+
+def test_lead_stall_failover_is_default_off(tmp_path: Path) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_consensus"]["ok"] is False
+    assert report["bridge_consensus"]["lead_stall_failover"]["enabled"] is False
+    assert any(
+        "build_lead (codex-lead-1): no head-bound approval" in reason
+        for reason in report["bridge_consensus"]["reasons"]
+    )
+
+
+def test_lead_stall_failover_engages_from_durable_idle_proof(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["bridge_consensus"]["identities"]["build_lead"]["approved"] is True
+    assert (
+        report["bridge_consensus"]["identities"]["build_lead"]["direct_approval"]
+        is False
+    )
+    assert (
+        report["bridge_consensus"]["identities"]["build_lead"]["failover_engaged"]
+        is True
+    )
+    assert failover["engaged"] is True
+    assert failover["clock_source"] == "durable_bridge_event_log_latest_ts"
+    assert failover["lead_last_substantive_ts"] == "2026-05-18T00:00:00Z"
+    assert failover["lead_idle_seconds"] >= 90 * 60
+    assert failover["charter_clean"] is True
+    assert failover["path_gate"]["allowed"] is True
+    assert failover["diff_gate"]["allowed"] is True
+
+
+def test_lead_stall_failover_refuses_tools_authored_pr(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(author_agent="codex-tools-1"),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert "tools-authored PRs cannot use tools-only lead failover" in (
+        failover["reasons"]
+    )
+    assert any(
+        "lead-stall failover refused: tools-authored PRs cannot use tools-only"
+        in reason
+        for reason in report["bridge_consensus"]["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_gate_self_modification(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(changed_paths=["tools/idle_consensus_auto_merge.py"]),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["charter_clean"] is False
+    assert failover["path_gate"]["reason"] == "denylist hit"
+    assert "charter path gate failed: denylist hit" in failover["reasons"]
+
+
+def test_lead_stall_failover_refuses_lead_veto(
+    tmp_path: Path,
+) -> None:
+    events = _lead_stall_failover_events()
+    events.append(
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="finding",
+            status="changes_requested",
+            ts="2026-05-18T00:30:00Z",
+        )
+        | {"message": f"lead veto exact head {HEAD}", "payload": {"head": HEAD}}
+    )
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["lead_block_present"] is True
+    assert "lead block/change request at this scope hard-blocks failover" in (
+        failover["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_recent_substantive_lead_event(
+    tmp_path: Path,
+) -> None:
+    events = _lead_stall_failover_events()
+    events[0]["ts_utc"] = "2026-05-18T02:50:00Z"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["lead_idle_seconds"] < 90 * 60
+    assert any(
+        reason.startswith("lead idle duration below threshold:")
+        for reason in failover["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_missing_lead_uuid_idle_evidence(
+    tmp_path: Path,
+) -> None:
+    events = _lead_stall_failover_events()
+    events[0].pop("agent_uuid")
+    events[1].pop("agent_uuid")
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert "no substantive lead event found in durable bridge log" in (
+        failover["reasons"]
+    )
+    assert any(
+        event["agent"] == "codex-lead-1"
+        and event["identity_binding_status"] == "missing_uuid"
+        for event in report["bridge_consensus"]["ignored_identity_mismatch_events"]
+    )
+
+
+def test_lead_stall_failover_refuses_stale_tools_head(
+    tmp_path: Path,
+) -> None:
+    events = _lead_stall_failover_events()
+    events[2]["payload"] = {"head": OTHER_BASE}
+    events[2]["message"] = f"tools pass stale head {OTHER_BASE}"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["tools_build_consensus_at_head"] is False
+    assert "tools build_consensus at exact head is required" in failover["reasons"]
+
+
+def test_lead_stall_failover_refuses_rco_veto(tmp_path: Path) -> None:
+    events = _lead_stall_failover_events()
+    events.append(
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="finding",
+            status="changes_requested",
+            ts="2026-05-18T03:02:00Z",
+        )
+        | {"message": f"RCO veto exact head {HEAD}", "payload": {"head": HEAD}}
+    )
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["rco_pass_at_head"] is False
+    assert failover["blocking_rco_agents"] == ["claude-rco-1"]
+    assert (
+        "recognized RCO veto blocks failover: claude-rco-1"
+        in failover["reasons"]
+    )
 
 
 @pytest.mark.parametrize(

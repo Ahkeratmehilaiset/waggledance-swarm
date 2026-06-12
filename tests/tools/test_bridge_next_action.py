@@ -586,6 +586,64 @@ def test_ack_message_statuses_close_incoming_request(status: str) -> None:
     assert report["stale_incoming_count"] == 0
 
 
+def test_requester_retraction_closes_incoming_finding_for_target() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T05:11:00Z",
+            "agent": "claude-rco-2",
+            "to": "fable-5,codex-lead-1",
+            "type": "finding",
+            "task_id": "fable-5/failover-refuse-path-tests-20260612",
+            "status": "changes_requested",
+            "message": "blocking finding",
+        },
+        {
+            "ts_utc": "2026-06-12T05:13:00Z",
+            "agent": "claude-rco-2",
+            "to": "fable-5,codex-lead-1",
+            "type": "decision",
+            "task_id": "fable-5/failover-refuse-path-tests-20260612",
+            "status": "rco_finding_withdrawn",
+            "message": "withdrawing the prior finding",
+        },
+    ]
+
+    report = recommend_next_action(agent="fable-5", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
+def test_unrelated_retraction_does_not_close_incoming_finding() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T05:11:00Z",
+            "agent": "claude-rco-2",
+            "to": "fable-5,codex-lead-1",
+            "type": "finding",
+            "task_id": "fable-5/failover-refuse-path-tests-20260612",
+            "status": "changes_requested",
+            "message": "blocking finding",
+        },
+        {
+            "ts_utc": "2026-06-12T05:13:00Z",
+            "agent": "codex-tools-1",
+            "to": "fable-5,codex-lead-1",
+            "type": "decision",
+            "task_id": "fable-5/failover-refuse-path-tests-20260612",
+            "status": "rco_finding_withdrawn",
+            "message": "third-party note; not the requester or target",
+        },
+    ]
+
+    report = recommend_next_action(agent="fable-5", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "fable-5/failover-refuse-path-tests-20260612"
+    assert report["open_incoming_count"] == 1
+
+
 def test_requester_done_close_closes_incoming_request_for_target() -> None:
     events = [
         {

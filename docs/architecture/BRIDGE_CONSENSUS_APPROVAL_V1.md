@@ -76,7 +76,9 @@ missing, duplicated, forged, or stale signal fails closed to
    exactly one recognized RCO = three distinct verified identities. An RCO
    identity counts for the RCO slot only, never a build slot. Duplicate, missing,
    unverifiable, self-approving, or author-as-own-reviewer signal sets fail
-   closed.
+   closed. **"Verified" includes agent-uuid binding (2026-06-11):** the claimed
+   `agent` label must carry the registered `agent_uuid` — see "Enforcement of
+   agent-uuid identity binding" below.
 6. **Head-exact binding** — all three approvals bind to the exact head SHA. Any
    re-push that **changes content** invalidates all prior approvals; re-consensus
    is required (mirrors `gh pr merge --match-head-commit` and the PR #777
@@ -158,6 +160,39 @@ reviews):
 This removes the silent-stall class where valid concurrence under a descriptive
 `task_id` (e.g. `prNNN-refresh-current-main`) was invisible to the gate, while
 keeping head-exact binding and the distinct-identity requirement intact.
+
+## Enforcement of agent-uuid identity binding (2026-06-11 amendment)
+
+A verified identity is bound to its **session uuid**, not just its claimed
+`agent` label. The operator-owned registry
+`configs/bridge_identity_registry.json` (loaded via
+`waggledance/core/bridge_identity_registry.py`) maps each gate identity to its
+canonical `agent_uuid`; registry re-keying is operator-owned security
+configuration and lands only via an operator-reviewed PR.
+
+* Gate consumers (`tools/check_rco_pass_present.py` and
+  `verify_bridge_consensus` in `tools/idle_consensus_auto_merge.py`) reject any
+  gate-relevant event whose stamped `agent_uuid` is **missing**
+  (`missing_uuid`) or does not match the registered binding for the claimed
+  agent (`mismatch_uuid`), fail-closed. Rejected events are surfaced in the
+  report (`ignored_identity_mismatch_events`) so audits can see attempted or
+  accidental mis-signing instead of it disappearing silently.
+* The lead-stall failover applies the same binding to its idle evidence: lead
+  idle proof derives only from uuid-verified durable events; missing or
+  mismatched lead uuid evidence refuses the failover (see the lead-stall
+  amendment and its tests).
+* Motivation: on 2026-06-11 a producer session mis-signed an `rco_pass` as
+  `claude-rco-2`, and label-keyed matching counted it as the satisfying RCO
+  reference (finding `wd/security/bridge-identity-binding-gap-20260611`). The
+  registry binding makes that event class mechanically rejected.
+* Fail-closed tests (live in `tests/tools/`): correct label + wrong uuid is
+  not counted; missing uuid is not counted; uuid-verified events from the
+  genuine identity still count; the failover refuses on missing lead uuid
+  idle evidence.
+
+Clause 5's "unverifiable ... signal sets fail closed" includes uuid-unbound
+signals under this amendment: an event that cannot be uuid-verified never
+fills a consensus slot.
 
 ## Out of scope (stays operator-gated)
 

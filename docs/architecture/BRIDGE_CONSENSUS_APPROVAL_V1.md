@@ -100,6 +100,42 @@ missing, duplicated, forged, or stale signal fails closed to
    must be able to **re-derive** the verdict from those fields; trusting a bare
    `ok` flag is forbidden (fail-open-recurs).
 
+## Optional lead-stall failover (2026-06-12 amendment)
+
+The lead-stall failover is a **default-off**, operator-enabled availability
+amendment for the narrow case where the lead identity is durably idle and the
+swarm would otherwise wedge. It does not create new autonomy authority; it only
+waives the missing `codex-lead-1` build-consensus slot when every guard below is
+true.
+
+Failover may engage only when:
+
+* the PR is charter-clean: path allowlist passes and diff denylist passes;
+* `codex-tools-1` is not the PR author, so tools cannot self-satisfy the only
+  build slot;
+* `codex-tools-1` has posted an exact-head build-consensus approval on the
+  canonical task;
+* a recognized non-author RCO has posted an exact-head `RCO_PASS`, and no
+  recognized RCO veto is active;
+* no exact-head or canonical-scope `codex-lead-1` block/veto exists;
+* lead idle is re-derived from the durable bridge event log, ignoring heartbeat
+  and liveness-only events, and the latest verified substantive lead event is
+  older than the configured threshold.
+
+Autonomous/CLI callers must use the runtime system clock for the idle proof.
+Caller-supplied timestamps such as `--now` are acceptable for deterministic
+unit tests and artifact timestamps, but they must not inflate production
+`lead_idle_minutes`.
+
+Failover must not engage for gate-code, denylisted paths, off-allowlist paths,
+tools-authored PRs, missing durable idle evidence, stale-head approvals,
+missing tools build-consensus, missing RCO pass, RCO veto, or lead veto. The
+verdict records `lead_stall_failover` evidence in the bridge-consensus report:
+enabled/engaged, threshold, charter-clean state, latest substantive lead event
+index and timestamp, computed idle minutes, and the fail-closed reason. This is
+receipt evidence; consumers must be able to re-derive the result from the bridge
+log and PR snapshot.
+
 ## Enforcement of backup-RCO co-authority (2026-06-05 amendment)
 
 The recognized-RCO-set semantics above require these enforcement changes

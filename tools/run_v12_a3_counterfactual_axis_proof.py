@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_consensus_artifact import (  # noqa: E402
+    COUNTERFACTUAL_EVAL_BINDING_VERSION,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_replay_seed,
 )
@@ -523,11 +524,21 @@ def _build_stored_consensus_replay() -> dict[str, Any]:
     candidate_diff_text = STORED_CONSENSUS_CANDIDATE_DIFF_TEXT
     artifact = _stored_consensus_artifact()
     replay_seed = build_idle_consensus_replay_seed(artifact)
+    replay_seed_digest = sha256_digest(replay_seed)
+    candidate_diff_digest = sha256_digest(
+        {
+            "changed_paths": changed_paths,
+            "diff_text": candidate_diff_text,
+        }
+    )
     admission = build_idle_consensus_candidate_diff_replay_admission(
         replay_seed=replay_seed,
         changed_paths=changed_paths,
         candidate_diff_text=candidate_diff_text,
-        counterfactual_eval_receipt=_stored_consensus_counterfactual_eval_receipt(),
+        counterfactual_eval_receipt=_stored_consensus_counterfactual_eval_receipt(
+            replay_seed_digest=replay_seed_digest,
+            candidate_diff_digest=candidate_diff_digest,
+        ),
     )
 
     return {
@@ -597,7 +608,11 @@ def _stored_consensus_artifact() -> dict[str, Any]:
     }
 
 
-def _stored_consensus_counterfactual_eval_receipt() -> dict[str, Any]:
+def _stored_consensus_counterfactual_eval_receipt(
+    *,
+    replay_seed_digest: str,
+    candidate_diff_digest: str,
+) -> dict[str, Any]:
     return {
         "schema_version": "magma.counterfactual_promotion_summary.v0",
         "status": "computed",
@@ -614,6 +629,11 @@ def _stored_consensus_counterfactual_eval_receipt() -> dict[str, Any]:
                 "sample_count": DEFAULT_A3_MIN_SAMPLES,
             }
         ),
+        "replay_binding": {
+            "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+            "replay_seed_digest": replay_seed_digest,
+            "candidate_diff_digest": candidate_diff_digest,
+        },
     }
 
 
@@ -802,6 +822,9 @@ def _receipt_replay_binding(stored_consensus_replay: dict[str, Any]) -> dict[str
         ),
         "counterfactual_eval_satisfies_replay_gate": bool(
             stored_consensus_replay["counterfactual_eval"]["satisfies_replay_gate"]
+        ),
+        "counterfactual_eval_binding_matches": bool(
+            stored_consensus_replay["counterfactual_eval"]["binding"]["matches"]
         ),
         "replay_decision": stored_consensus_replay["decision"],
     }

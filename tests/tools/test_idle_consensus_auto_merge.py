@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -834,6 +835,69 @@ def test_lead_stall_failover_refuses_gate_self_modification(
     assert failover["charter_clean"] is False
     assert failover["path_gate"]["reason"] == "denylist hit"
     assert "charter path gate failed: denylist hit" in failover["reasons"]
+
+
+def test_lead_stall_failover_refuses_future_durable_observation(
+    tmp_path: Path,
+) -> None:
+    events = _lead_stall_failover_events()
+    future_ts = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    events[-1]["ts_utc"] = future_ts.replace("+00:00", "Z")
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert "durable event observation timestamp is in the future" in (
+        failover["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_charter_diff_gate(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            changed_paths=["tools/idle_daily_summary.py"],
+            diff_text=(
+                "diff --git a/tools/idle_daily_summary.py "
+                "b/tools/idle_daily_summary.py\n"
+                "--- a/tools/idle_daily_summary.py\n"
+                "+++ b/tools/idle_daily_summary.py\n"
+                "@@\n"
+                "+gate_skip=True\n"
+            ),
+        ),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["charter_clean"] is False
+    assert failover["path_gate"]["allowed"] is True
+    assert failover["diff_gate"]["reason"] == "code pattern denylist hit"
+    assert "charter diff gate failed: code pattern denylist hit" in (
+        failover["reasons"]
+    )
 
 
 def test_lead_stall_failover_refuses_lead_veto(

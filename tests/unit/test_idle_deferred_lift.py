@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from tools import agent_next_task, idle_loop_once
-from waggledance.core.idle_deferred_lift import deferred_lift_state
+from waggledance.core.idle_protocol_deferred_lift import deferred_lift_state
 
 
 def test_deferred_lift_state_shape_and_authority_are_read_only() -> None:

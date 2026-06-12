@@ -43,7 +43,9 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
-from waggledance.core.idle_deferred_lift import deferred_lift_state  # noqa: E402
+from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
+    deferred_lift_state,
+)
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,

@@ -39,7 +39,9 @@ from tools.idle_check import (  # noqa: E402
     DEFAULT_EVENTS_PATH,
     evaluate_idle_state,
 )
-from waggledance.core.idle_deferred_lift import deferred_lift_state  # noqa: E402
+from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
+    deferred_lift_state,
+)
 from waggledance.core.idle_protocol_session import (  # noqa: E402
     summarize_idle_session,
 )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -979,6 +980,122 @@ def test_lead_stall_failover_refuses_rco_veto(tmp_path: Path) -> None:
     assert (
         "recognized RCO veto blocks failover: claude-rco-1"
         in failover["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_future_observation_timestamp(
+    tmp_path: Path,
+) -> None:
+    """Anti-tamper clock clamp: a forged future timestamp in the durable
+    log could otherwise manufacture lead idle time, so an observation
+    newer than system clock + 5 minutes refuses the failover."""
+    future = datetime.now(timezone.utc) + timedelta(minutes=10)
+
+    def _ts(minutes_before: int) -> str:
+        stamp = future - timedelta(minutes=minutes_before)
+        return stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    events = _lead_stall_failover_events()
+    # Preserve the fixture's relative spacing (lead idle >= 90min) while
+    # shifting the newest observation ~10min past the real clock.
+    events[0]["ts_utc"] = _ts(200)
+    events[1]["ts_utc"] = _ts(30)
+    events[2]["ts_utc"] = _ts(1)
+    events[3]["ts_utc"] = _ts(0)
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["lead_idle_seconds"] >= 90 * 60
+    assert (
+        "durable event observation timestamp is in the future"
+        in failover["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_denylisted_diff_content(
+    tmp_path: Path,
+) -> None:
+    """The diff-content gate is load-bearing on its own: changed paths
+    stay allowlist-clean, only the diff text carries a charter
+    code-pattern-denylisted line."""
+    denylisted_line = "+    retry_policy.gate_" + "skip=True\n"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(diff_text=denylisted_line),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert report["decision"] == "operator_review_required"
+    assert failover["engaged"] is False
+    assert failover["charter_clean"] is False
+    assert failover["path_gate"]["allowed"] is True
+    assert failover["diff_gate"]["allowed"] is False
+    assert any(
+        reason.startswith("charter diff gate failed:")
+        for reason in failover["reasons"]
+    )
+
+
+def test_lead_stall_failover_refuses_when_lead_directly_approved(
+    tmp_path: Path,
+) -> None:
+    """When the lead build slot is already directly satisfied, the
+    failover must refuse instead of double-engaging (the slot is filled
+    by the direct approval; the report must say so)."""
+    events = _lead_stall_failover_events()
+    events.append(
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-05-18T03:02:00Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}}
+    )
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    failover = report["bridge_consensus"]["lead_stall_failover"]
+    assert failover["engaged"] is False
+    assert (
+        "lead direct approval already satisfies the build slot"
+        in failover["reasons"]
+    )
+    # The gate still passes -- via the direct approval, not the failover.
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["bridge_consensus"]["identities"]["build_lead"]["approved"] is True
+    assert (
+        report["bridge_consensus"]["identities"]["build_lead"]["direct_approval"]
+        is True
+    )
+    assert (
+        report["bridge_consensus"]["identities"]["build_lead"]["failover_engaged"]
+        is False
     )
 
 

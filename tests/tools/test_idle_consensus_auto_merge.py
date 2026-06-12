@@ -1099,6 +1099,171 @@ def test_lead_stall_failover_refuses_when_lead_directly_approved(
     )
 
 
+def _failover_report(
+    tmp_path: Path,
+    *,
+    status_overrides: dict | None = None,
+    events_mutator=None,
+) -> dict:
+    """Run the gate on the positive-engage failover scenario, optionally
+    flipping exactly one precondition via status overrides or an events
+    mutation, and return the lead_stall_failover sub-report."""
+    events = _lead_stall_failover_events()
+    if events_mutator is not None:
+        events_mutator(events)
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(**(status_overrides or {})),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+        allow_lead_stall_failover=True,
+    )
+    return report["bridge_consensus"]["lead_stall_failover"]
+
+
+def test_failover_mutation_guard_baseline_engages(tmp_path: Path) -> None:
+    """Anchor for the single-flip matrix below: the unmodified scenario
+    must engage, so each flip case isolates exactly one guard."""
+    failover = _failover_report(tmp_path)
+    assert failover["engaged"] is True
+    assert failover["decision"] == "engaged"
+    assert failover["reasons"] == []
+
+
+def _flip_drop_tools_pass(events: list[dict]) -> None:
+    del events[2]
+
+
+def _flip_drop_rco_pass(events: list[dict]) -> None:
+    del events[3]
+
+
+def _flip_add_rco_veto(events: list[dict]) -> None:
+    events.append(
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="finding",
+            status="changes_requested",
+            ts="2026-05-18T03:02:00Z",
+        )
+        | {"message": f"RCO veto exact head {HEAD}", "payload": {"head": HEAD}}
+    )
+
+
+def _flip_add_lead_block(events: list[dict]) -> None:
+    events.append(
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="finding",
+            status="changes_requested",
+            ts="2026-05-18T00:30:00Z",
+        )
+        | {"message": f"lead veto exact head {HEAD}", "payload": {"head": HEAD}}
+    )
+
+
+def _flip_lead_recently_active(events: list[dict]) -> None:
+    events[0]["ts_utc"] = "2026-05-18T02:50:00Z"
+
+
+def _flip_future_observation(events: list[dict]) -> None:
+    future = datetime.now(timezone.utc) + timedelta(minutes=10)
+
+    def _ts(minutes_before: int) -> str:
+        stamp = future - timedelta(minutes=minutes_before)
+        return stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    events[0]["ts_utc"] = _ts(200)
+    events[1]["ts_utc"] = _ts(30)
+    events[2]["ts_utc"] = _ts(1)
+    events[3]["ts_utc"] = _ts(0)
+
+
+@pytest.mark.parametrize(
+    ("status_overrides", "events_mutator", "expected_reason"),
+    [
+        pytest.param(
+            {"changed_paths": ["tools/idle_consensus_auto_merge.py"]},
+            None,
+            "charter path gate failed",
+            id="flip-path-gate",
+        ),
+        pytest.param(
+            # Assembled at runtime so this file's own diff stays clean.
+            {"diff_text": "+    retry_policy.gate_" + "skip=True\n"},
+            None,
+            "charter diff gate failed",
+            id="flip-diff-gate",
+        ),
+        pytest.param(
+            {"author_agent": "codex-tools-1"},
+            None,
+            "tools-authored PRs cannot use tools-only lead failover",
+            id="flip-tools-author",
+        ),
+        pytest.param(
+            None,
+            _flip_drop_tools_pass,
+            "tools build_consensus at exact head is required",
+            id="flip-tools-consensus-missing",
+        ),
+        pytest.param(
+            None,
+            _flip_drop_rco_pass,
+            "recognized non-author RCO_PASS at exact head is required",
+            id="flip-rco-pass-missing",
+        ),
+        pytest.param(
+            None,
+            _flip_add_rco_veto,
+            "recognized RCO veto blocks failover",
+            id="flip-rco-veto",
+        ),
+        pytest.param(
+            None,
+            _flip_add_lead_block,
+            "lead block/change request at this scope hard-blocks failover",
+            id="flip-lead-block",
+        ),
+        pytest.param(
+            None,
+            _flip_lead_recently_active,
+            "lead idle duration below threshold",
+            id="flip-lead-idle-below-threshold",
+        ),
+        pytest.param(
+            None,
+            _flip_future_observation,
+            "durable event observation timestamp is in the future",
+            id="flip-future-observation",
+        ),
+    ],
+)
+def test_failover_mutation_guard_single_flip_refuses(
+    tmp_path: Path,
+    status_overrides: dict | None,
+    events_mutator,
+    expected_reason: str,
+) -> None:
+    """Mutation-completeness: flipping exactly one engage precondition
+    must refuse with the matching reason, so removing any single guard
+    from _evaluate_lead_stall_failover makes at least one case fail."""
+    failover = _failover_report(
+        tmp_path,
+        status_overrides=status_overrides,
+        events_mutator=events_mutator,
+    )
+    assert failover["engaged"] is False
+    assert failover["decision"] == "refused"
+    assert any(
+        expected_reason in reason for reason in failover["reasons"]
+    ), f"expected {expected_reason!r} in {failover['reasons']!r}"
+
+
 @pytest.mark.parametrize(
     "status",
     [

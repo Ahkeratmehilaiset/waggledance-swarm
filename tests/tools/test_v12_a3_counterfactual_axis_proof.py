@@ -100,6 +100,18 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert replay["counterfactual_eval"]["provided"] is True
     assert replay["counterfactual_eval"]["satisfies_replay_gate"] is True
     assert replay["counterfactual_eval"]["receipt_payload_included"] is False
+    assert replay["counterfactual_eval"]["binding"] == {
+        "schema_version": "idle_consensus_counterfactual_eval_binding.v0",
+        "provided": True,
+        "expected_replay_seed_digest": replay["stored_consensus"][
+            "replay_seed_digest"
+        ],
+        "expected_candidate_diff_digest": replay["candidate_diff"]["digest"],
+        "replay_seed_digest_matches": True,
+        "candidate_diff_digest_matches": True,
+        "matches": True,
+        "receipt_payload_included": False,
+    }
     assert replay["counterfactual_eval"]["observability"]["status"] == (
         "measured_local_partial"
     )
@@ -426,5 +438,8 @@ def _receipt_replay_binding(report: dict) -> dict:
         "counterfactual_eval_satisfies_replay_gate": replay["counterfactual_eval"][
             "satisfies_replay_gate"
         ],
+        "counterfactual_eval_binding_matches": replay["counterfactual_eval"][
+            "binding"
+        ]["matches"],
         "replay_decision": replay["decision"],
     }

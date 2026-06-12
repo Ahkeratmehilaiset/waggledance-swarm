@@ -50,6 +50,9 @@ CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION = (
 COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION = (
     "idle_consensus_counterfactual_eval_admission_summary.v0"
 )
+COUNTERFACTUAL_EVAL_BINDING_VERSION = (
+    "idle_consensus_counterfactual_eval_binding.v0"
+)
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -463,7 +466,9 @@ def build_idle_consensus_candidate_diff_replay_admission(
         }
     )
     counterfactual_eval = _counterfactual_eval_admission_summary(
-        counterfactual_eval_receipt
+        counterfactual_eval_receipt,
+        replay_seed_digest=replay_seed_digest,
+        candidate_diff_digest=candidate_diff_digest,
     )
     return {
         "report_version": CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
@@ -508,18 +513,28 @@ def build_idle_consensus_candidate_diff_replay_admission(
 
 def _counterfactual_eval_admission_summary(
     receipt: Mapping[str, Any] | None,
+    *,
+    replay_seed_digest: str,
+    candidate_diff_digest: str,
 ) -> dict[str, Any]:
     if receipt is None:
         observability = summarize_counterfactual_observability(None)
+        binding = _counterfactual_receipt_binding_summary(
+            None,
+            replay_seed_digest=replay_seed_digest,
+            candidate_diff_digest=candidate_diff_digest,
+        )
         return {
             "summary_version": COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
             "provided": False,
             "source_digest": None,
             "receipt_payload_included": False,
+            "observability_satisfies_replay_gate": False,
             "satisfies_replay_gate": False,
             "dry_run_only": True,
             "runtime_authority_granted": False,
             "external_writes_applied": False,
+            "binding": binding,
             "observability": observability,
         }
     if not isinstance(receipt, Mapping):
@@ -545,14 +560,23 @@ def _counterfactual_eval_admission_summary(
     _refuse_private_text(receipt_text, "counterfactual eval receipt")
 
     observability = summarize_counterfactual_observability(receipt)
-    satisfies_replay_gate = _counterfactual_observability_satisfies_replay_gate(
+    observability_satisfies_replay_gate = _counterfactual_observability_satisfies_replay_gate(
         observability
+    )
+    binding = _counterfactual_receipt_binding_summary(
+        receipt,
+        replay_seed_digest=replay_seed_digest,
+        candidate_diff_digest=candidate_diff_digest,
+    )
+    satisfies_replay_gate = (
+        observability_satisfies_replay_gate and binding["matches"]
     )
     return {
         "summary_version": COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
         "provided": True,
         "source_digest": sha256_digest(receipt),
         "receipt_payload_included": False,
+        "observability_satisfies_replay_gate": observability_satisfies_replay_gate,
         "satisfies_replay_gate": satisfies_replay_gate,
         "dry_run_only": True,
         "runtime_authority_granted": (
@@ -561,7 +585,38 @@ def _counterfactual_eval_admission_summary(
         "external_writes_applied": (
             observability.get("external_writes_applied") is True
         ),
+        "binding": binding,
         "observability": observability,
+    }
+
+
+def _counterfactual_receipt_binding_summary(
+    receipt: Mapping[str, Any] | None,
+    *,
+    replay_seed_digest: str,
+    candidate_diff_digest: str,
+) -> dict[str, Any]:
+    binding = (
+        receipt.get("replay_binding")
+        if isinstance(receipt, Mapping)
+        else None
+    )
+    provided = isinstance(binding, Mapping)
+    replay_seed_matches = (
+        provided and binding.get("replay_seed_digest") == replay_seed_digest
+    )
+    candidate_diff_matches = (
+        provided and binding.get("candidate_diff_digest") == candidate_diff_digest
+    )
+    return {
+        "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+        "provided": provided,
+        "expected_replay_seed_digest": replay_seed_digest,
+        "expected_candidate_diff_digest": candidate_diff_digest,
+        "replay_seed_digest_matches": replay_seed_matches,
+        "candidate_diff_digest_matches": candidate_diff_matches,
+        "matches": bool(replay_seed_matches and candidate_diff_matches),
+        "receipt_payload_included": False,
     }
 
 
@@ -587,8 +642,12 @@ def _candidate_diff_replay_blockers(
     blockers: list[str] = []
     if counterfactual_eval.get("provided") is not True:
         blockers.append("counterfactual_eval_receipt_missing")
-    elif counterfactual_eval.get("satisfies_replay_gate") is not True:
+    elif counterfactual_eval.get("observability_satisfies_replay_gate") is not True:
         blockers.append("counterfactual_eval_receipt_insufficient")
+    elif counterfactual_eval.get("binding", {}).get("provided") is not True:
+        blockers.append("counterfactual_eval_receipt_unbound")
+    elif counterfactual_eval.get("binding", {}).get("matches") is not True:
+        blockers.append("counterfactual_eval_receipt_binding_mismatch")
     blockers.append("operator_review_gate_required")
     return blockers
 
@@ -597,8 +656,12 @@ def _candidate_diff_replay_next_required_gates(
     counterfactual_eval: Mapping[str, Any],
 ) -> list[str]:
     gates: list[str] = []
-    if counterfactual_eval.get("satisfies_replay_gate") is not True:
+    if counterfactual_eval.get("provided") is not True:
         gates.append("counterfactual_eval_receipt")
+    elif counterfactual_eval.get("observability_satisfies_replay_gate") is not True:
+        gates.append("counterfactual_eval_receipt")
+    elif counterfactual_eval.get("binding", {}).get("matches") is not True:
+        gates.append("counterfactual_eval_receipt_binding")
     gates.extend(
         [
             "operator_review_gate",

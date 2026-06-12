@@ -13,6 +13,7 @@ from tools.idle_consensus_artifact import (
     ArtifactError,
     CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
     COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
+    COUNTERFACTUAL_EVAL_BINDING_VERSION,
     REPLAY_SEED_REQUIRED_FALSE_KEYS,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_replay_seed,
@@ -204,6 +205,35 @@ def _measured_counterfactual_receipt() -> dict:
     }
 
 
+def _candidate_diff_digest(changed_paths: list[str], diff_text: str) -> str:
+    return sha256_digest(
+        {
+            "changed_paths": changed_paths,
+            "diff_text": diff_text,
+        }
+    )
+
+
+def _bind_counterfactual_receipt(
+    receipt: dict,
+    *,
+    replay_seed: dict,
+    changed_paths: list[str],
+    diff_text: str,
+) -> dict:
+    return {
+        **receipt,
+        "replay_binding": {
+            "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+            "replay_seed_digest": sha256_digest(replay_seed),
+            "candidate_diff_digest": _candidate_diff_digest(
+                changed_paths,
+                diff_text,
+            ),
+        },
+    }
+
+
 def _raw_counterfactual_delta_with_authority_drift() -> dict:
     core = {
         "schema_version": "magma.counterfactual_delta.v0",
@@ -355,6 +385,7 @@ def test_candidate_diff_replay_admission_reports_charter_gates_without_writes(
     report = _write_artifact(tmp_path, _soft_events())
     artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
     seed = artifact["replay_seed"]
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
     diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
 new file mode 100644
 --- /dev/null
@@ -367,7 +398,7 @@ new file mode 100644
 
     admission = build_idle_consensus_candidate_diff_replay_admission(
         replay_seed=seed,
-        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        changed_paths=changed_paths,
         candidate_diff_text=diff_text,
     )
     serialized = json.dumps(admission, sort_keys=True)
@@ -391,13 +422,8 @@ new file mode 100644
         "convergence_digest": seed["convergence_digest"],
     }
     assert admission["candidate_diff"] == {
-        "changed_paths": ["docs/architecture/consensus_artifacts/replay.md"],
-        "digest": sha256_digest(
-            {
-                "changed_paths": ["docs/architecture/consensus_artifacts/replay.md"],
-                "diff_text": diff_text,
-            }
-        ),
+        "changed_paths": changed_paths,
+        "digest": _candidate_diff_digest(changed_paths, diff_text),
         "line_count": len(diff_text.splitlines()),
         "diff_text_included": False,
     }
@@ -408,10 +434,24 @@ new file mode 100644
         "provided": False,
         "source_digest": None,
         "receipt_payload_included": False,
+        "observability_satisfies_replay_gate": False,
         "satisfies_replay_gate": False,
         "dry_run_only": True,
         "runtime_authority_granted": False,
         "external_writes_applied": False,
+        "binding": {
+            "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+            "provided": False,
+            "expected_replay_seed_digest": sha256_digest(seed),
+            "expected_candidate_diff_digest": _candidate_diff_digest(
+                changed_paths,
+                diff_text,
+            ),
+            "replay_seed_digest_matches": False,
+            "candidate_diff_digest_matches": False,
+            "matches": False,
+            "receipt_payload_included": False,
+        },
         "observability": {
             "schema_version": "magma.counterfactual_observability_status.v0",
             "source_available": False,
@@ -452,7 +492,7 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
 ) -> None:
     report = _write_artifact(tmp_path, _soft_events())
     artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
-    receipt = _measured_counterfactual_receipt()
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
     diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
 --- a/docs/architecture/consensus_artifacts/replay.md
 +++ b/docs/architecture/consensus_artifacts/replay.md
@@ -460,10 +500,16 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
  # Replay
 +Measured counterfactual evidence is summarized without raw payload.
 """
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
 
     admission = build_idle_consensus_candidate_diff_replay_admission(
         replay_seed=artifact["replay_seed"],
-        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        changed_paths=changed_paths,
         candidate_diff_text=diff_text,
         counterfactual_eval_receipt=receipt,
     )
@@ -474,10 +520,24 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
     assert summary["provided"] is True
     assert summary["source_digest"] == sha256_digest(receipt)
     assert summary["receipt_payload_included"] is False
+    assert summary["observability_satisfies_replay_gate"] is True
     assert summary["satisfies_replay_gate"] is True
     assert summary["dry_run_only"] is True
     assert summary["runtime_authority_granted"] is False
     assert summary["external_writes_applied"] is False
+    assert summary["binding"] == {
+        "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+        "provided": True,
+        "expected_replay_seed_digest": sha256_digest(artifact["replay_seed"]),
+        "expected_candidate_diff_digest": _candidate_diff_digest(
+            changed_paths,
+            diff_text,
+        ),
+        "replay_seed_digest_matches": True,
+        "candidate_diff_digest_matches": True,
+        "matches": True,
+        "receipt_payload_included": False,
+    }
     assert summary["observability"] == {
         "schema_version": "magma.counterfactual_observability_status.v0",
         "source_available": True,
@@ -508,6 +568,37 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
     assert "raw-delta-digest-not-exported" not in serialized
     assert "per_arm" not in serialized
     assert "divergences" not in serialized
+
+
+def test_candidate_diff_replay_admission_blocks_unbound_counterfactual_receipt(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=["docs/architecture/consensus_artifacts/replay.md"],
+        candidate_diff_text=(
+            "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+            "b/docs/architecture/consensus_artifacts/replay.md\n"
+        ),
+        counterfactual_eval_receipt=_measured_counterfactual_receipt(),
+    )
+
+    summary = admission["counterfactual_eval"]
+    assert summary["provided"] is True
+    assert summary["observability_satisfies_replay_gate"] is True
+    assert summary["binding"]["provided"] is False
+    assert summary["binding"]["matches"] is False
+    assert summary["satisfies_replay_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "counterfactual_eval_receipt_unbound",
+        "operator_review_gate_required",
+    ]
+    assert admission["next_required_gates"][0] == (
+        "counterfactual_eval_receipt_binding"
+    )
 
 
 def test_candidate_diff_replay_admission_blocks_insufficient_counterfactual_receipt(
@@ -732,7 +823,13 @@ def test_cli_candidate_diff_replay_admission_accepts_counterfactual_receipt(
 """
     diff_path = tmp_path / "candidate.patch"
     diff_path.write_text(diff_text, encoding="utf-8")
-    receipt = _measured_counterfactual_receipt()
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
     receipt_path = tmp_path / "counterfactual-receipt.json"
     receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
 
@@ -746,7 +843,7 @@ def test_cli_candidate_diff_replay_admission_accepts_counterfactual_receipt(
             "--candidate-diff",
             str(diff_path),
             "--changed-path",
-            "docs/architecture/consensus_artifacts/replay.md",
+            changed_paths[0],
             "--counterfactual-eval-receipt",
             str(receipt_path),
             "--json",

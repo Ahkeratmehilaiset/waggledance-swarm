@@ -71,7 +71,9 @@ CLOSED_REQUEST_STATUSES = frozenset(
         *KNOWN_ACK_STATUSES,
         "answered",
         "approved",
+        "changes_requested_retracted",
         "changes_requested_resolved",
+        "changes_requested_withdrawn",
         "closed",
         "done",
         "finding_retracted",
@@ -88,8 +90,6 @@ CLOSED_REQUEST_STATUSES = frozenset(
         "withdrawn",
     }
 )
-RETRACTION_STATUS_FRAGMENTS = frozenset({"retracted", "withdrawn"})
-NEGATED_STATUS_TOKENS = frozenset({"not"})
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
@@ -658,20 +658,13 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
         return True
     status = _event_status(event)
     return _event_type(event) in ANSWER_TYPES and (
-        _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
-        or _has_retraction_status_fragment(status)
+        status in CLOSED_REQUEST_STATUSES
+        or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
     )
 
 
 def _is_closed_request_status(status: str) -> bool:
-    return status in CLOSED_REQUEST_STATUSES or _has_retraction_status_fragment(status)
-
-
-def _has_retraction_status_fragment(status: str) -> bool:
-    tokens = _status_tokens(status)
-    if tokens.intersection(NEGATED_STATUS_TOKENS):
-        return False
-    return bool(tokens.intersection(RETRACTION_STATUS_FRAGMENTS))
+    return status in CLOSED_REQUEST_STATUSES
 
 
 def _status_has_any(status: str, candidates: Sequence[str]) -> bool:

@@ -48,6 +48,8 @@ def test_exact_closed_request_statuses_are_not_open_incoming(status: str) -> Non
         "review_requested",
         "rco_requested",
         "operator_feedback_requested",
+        "changes_requested_pending_withdrawn_payload",
+        "review_requested_retracted_by_operator",
     ],
 )
 def test_request_statuses_remain_open_incoming(status: str) -> None:
@@ -66,6 +68,7 @@ def test_request_statuses_remain_open_incoming(status: str) -> None:
     "status",
     [
         "changes_requested_withdrawn",
+        "changes_requested_retracted",
         "finding_retracted",
         "rco_finding_withdrawn",
         "rco_finding_retracted",

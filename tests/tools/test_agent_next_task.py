@@ -855,6 +855,34 @@ def test_completed_daily_pools_fall_back_to_continuous_operational_scout(
         OPERATIONAL_SCOUT_CANDIDATES
     )
     assert report["completed_continuous_operational_scout_task_ids"] == []
+    exhaustion = report["continuous_operational_scout_state"]
+    assert exhaustion["daily_pools_exhausted"] is True
+    assert exhaustion["authority"] == "read_only_recommendation_only"
+    assert exhaustion["continuous_sequence"] == 0
+    assert exhaustion["continuous_cycle"] == 0
+    assert exhaustion["completed_continuous_count"] == 0
+    assert exhaustion["active_continuous_count"] == 0
+    counts = exhaustion["daily_pool_counts"]
+    assert counts["substrate_smoke"] == {
+        "completed": len(SUBSTRATE_SMOKE_CANDIDATES),
+        "active": 0,
+        "pool_size": len(SUBSTRATE_SMOKE_CANDIDATES),
+    }
+    assert counts["dream_mode"] == {
+        "completed": len(DREAM_MODE_CANDIDATES),
+        "active": 0,
+        "pool_size": len(DREAM_MODE_CANDIDATES),
+    }
+    assert counts["operational_scout"] == {
+        "completed": len(OPERATIONAL_SCOUT_CANDIDATES),
+        "active": 0,
+        "pool_size": len(OPERATIONAL_SCOUT_CANDIDATES),
+    }
+    assert counts["continuous_operational_scout"] == {
+        "completed": 0,
+        "active": 0,
+        "pool_size": len(OPERATIONAL_SCOUT_CANDIDATES),
+    }
 
 
 def test_completed_continuous_operational_scout_advances_sequence(
@@ -943,6 +971,16 @@ def test_completed_continuous_operational_scout_advances_sequence(
     assert candidate["task_id_suggestion"] != first_task_id
     assert candidate["rotation"]["sequence"] == 1
     assert report["completed_continuous_operational_scout_task_ids"] == [first_task_id]
+    exhaustion = report["continuous_operational_scout_state"]
+    assert exhaustion["daily_pools_exhausted"] is True
+    assert exhaustion["continuous_sequence"] == 1
+    assert exhaustion["continuous_cycle"] == 0
+    assert exhaustion["completed_continuous_count"] == 1
+    assert exhaustion["daily_pool_counts"]["continuous_operational_scout"] == {
+        "completed": 1,
+        "active": 0,
+        "pool_size": len(OPERATIONAL_SCOUT_CANDIDATES),
+    }
 
 
 # ---------------------------------------------------------------------------

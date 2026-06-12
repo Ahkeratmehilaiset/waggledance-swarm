@@ -50,9 +50,6 @@ CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION = (
 COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION = (
     "idle_consensus_counterfactual_eval_admission_summary.v0"
 )
-COUNTERFACTUAL_EVAL_BINDING_VERSION = (
-    "idle_consensus_counterfactual_eval_binding.v0"
-)
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -84,6 +81,9 @@ IMPLEMENTATION_HINTS = (
 )
 COUNTERFACTUAL_EVAL_READY_STATES = frozenset(
     {"measured_local_partial", "runtime_measured"}
+)
+COUNTERFACTUAL_EVAL_BINDING_VERSION = (
+    "idle_consensus_counterfactual_eval_binding.v0"
 )
 
 

@@ -8,6 +8,11 @@
     long-running turns/tests do not accidentally let active write claims
     expire under the stale-lease sweeper.
 
+    Heartbeats are claim keepalives, not proof that the agent's model loop is
+    reading the bridge. If the agent has no active claim, the helper skips the
+    heartbeat and exits after a bounded number of idle iterations. This prevents
+    orphaned helper processes from making a stopped agent look alive forever.
+
     Toggle: respects $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED. The loop exits
     immediately if set to '0'.
 #>
@@ -20,6 +25,7 @@ param(
     [int] $IntervalSeconds = 60,
     [int] $IntervalMs = 0,
     [int] $MaxIterations = 0,
+    [int] $MaxIdleWithoutClaimIterations = 5,
     [string] $RuntimeRoot = '',
     [string] $Role = '',
     [string] $AgentUuid = '',
@@ -51,11 +57,53 @@ if (-not (Test-Path -LiteralPath $sendLiveness -PathType Leaf)) {
     throw "Send-Liveness.ps1 not found at $sendLiveness"
 }
 
+function Get-AgentActiveClaimCount {
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] [string] $AgentName
+    )
+
+    $claimsDir = Join-Path $Root 'work_queue\claims'
+    if (-not (Test-Path -LiteralPath $claimsDir -PathType Container)) {
+        return 0
+    }
+
+    $count = 0
+    foreach ($file in @(Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        try {
+            $claim = Get-Content -Raw -LiteralPath $file.FullName -Encoding UTF8 |
+                ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            continue
+        }
+        if ($claim.PSObject.Properties['agent'] -and [string]$claim.agent -eq $AgentName) {
+            $count++
+        }
+    }
+    return $count
+}
+
 $sleepMs = if ($IntervalMs -gt 0) { $IntervalMs } else { [Math]::Max(1, $IntervalSeconds) * 1000 }
 $iteration = 0
+$idleWithoutClaimIterations = 0
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
     Start-Sleep -Milliseconds $sleepMs
+    $activeClaimCount = Get-AgentActiveClaimCount -Root $bridgeRoot -AgentName $Agent
+    if ($activeClaimCount -le 0) {
+        $idleWithoutClaimIterations++
+        if ($MaxIdleWithoutClaimIterations -gt 0 -and
+            $idleWithoutClaimIterations -ge $MaxIdleWithoutClaimIterations) {
+            Write-Output (
+                "Start-BridgeHeartbeat: exiting after {0} idle iteration(s) with no active claim for {1}." -f
+                $idleWithoutClaimIterations, $Agent
+            )
+            break
+        }
+        continue
+    }
+
+    $idleWithoutClaimIterations = 0
     try {
         & $sendLiveness `
             -Agent $Agent `

@@ -25,6 +25,13 @@ function Read-Claim {
     return (Get-Content -Raw -Path $path -Encoding UTF8 | ConvertFrom-Json)
 }
 
+function Read-EventCount {
+    param([string] $RuntimeRoot)
+    $path = Join-Path (Join-Path $RuntimeRoot 'shared') 'events.jsonl'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return 0 }
+    return @((Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction SilentlyContinue)).Count
+}
+
 try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $tempRoot
     $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED = '1'
@@ -45,14 +52,34 @@ try {
     $afterTs = [DateTime]::Parse([string]$after.last_heartbeat_utc).ToUniversalTime()
     $passed = ($afterTs -gt $beforeTs)
 
-    if ($passed) {
-        Write-Host "  [PASS] heartbeat bumped claim lease" -ForegroundColor Green
+    if (-not $passed) {
+        Write-Host "  [FAIL] heartbeat did not bump claim lease" -ForegroundColor Red
         Write-Host "        before=$($beforeTs.ToString('o')) after=$($afterTs.ToString('o'))"
+        exit 1
+    }
+
+    Write-Host "  [PASS] heartbeat bumped claim lease" -ForegroundColor Green
+    Write-Host "        before=$($beforeTs.ToString('o')) after=$($afterTs.ToString('o'))"
+
+    $claimsDir = Join-Path $tempRoot 'work_queue\claims'
+    Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction Stop
+    $eventCountBeforeNoClaim = Read-EventCount -RuntimeRoot $tempRoot
+    $noClaimOutput = & $heartbeat -Agent codex -RuntimeRoot $tempRoot `
+        -IntervalMs 50 -MaxIterations 2 -MaxIdleWithoutClaimIterations 1
+    $eventCountAfterNoClaim = Read-EventCount -RuntimeRoot $tempRoot
+    $noClaimPassed = (
+        $eventCountAfterNoClaim -eq $eventCountBeforeNoClaim -and
+        ([string]$noClaimOutput) -match 'no active claim'
+    )
+    if ($noClaimPassed) {
+        Write-Host "  [PASS] no-claim heartbeat skipped and exited bounded idle" -ForegroundColor Green
+        Write-Host "        events_before=$eventCountBeforeNoClaim events_after=$eventCountAfterNoClaim"
         exit 0
     }
 
-    Write-Host "  [FAIL] heartbeat did not bump claim lease" -ForegroundColor Red
-    Write-Host "        before=$($beforeTs.ToString('o')) after=$($afterTs.ToString('o'))"
+    Write-Host "  [FAIL] no-claim heartbeat wrote an event or did not exit bounded idle" -ForegroundColor Red
+    Write-Host "        events_before=$eventCountBeforeNoClaim events_after=$eventCountAfterNoClaim output=$noClaimOutput"
     exit 1
 } finally {
     if ($null -ne $savedRoot) {

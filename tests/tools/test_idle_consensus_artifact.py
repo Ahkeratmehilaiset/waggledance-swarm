@@ -1241,3 +1241,152 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     assert report["decision"] == "operator_review_required"
     assert Path(report["json_path"]).exists()
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+
+
+# --- Adversarial negative cases for the #1094 receipt binding ----------
+# The replay gate must fail closed on PARTIAL or MALFORMED bindings, not
+# just the fully-wrong and fully-absent cases covered above, and it must
+# be the AND of observability and binding (neither alone suffices).
+
+_REPLAY_DOC_PATHS = ["docs/architecture/consensus_artifacts/replay.md"]
+_REPLAY_DOC_DIFF = (
+    "diff --git a/docs/architecture/consensus_artifacts/replay.md "
+    "b/docs/architecture/consensus_artifacts/replay.md\n"
+)
+
+
+def _binding_admission_summary(
+    tmp_path: Path,
+    *,
+    base_receipt: dict | None = None,
+    binding_mutator=None,
+) -> dict:
+    """Build an admission whose receipt carries a CORRECT binding, then
+    optionally corrupt exactly one aspect of it via binding_mutator."""
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    receipt = _bind_counterfactual_receipt(
+        base_receipt if base_receipt is not None
+        else _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=_REPLAY_DOC_PATHS,
+        diff_text=_REPLAY_DOC_DIFF,
+    )
+    if binding_mutator is not None:
+        binding_mutator(receipt["replay_binding"])
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=_REPLAY_DOC_PATHS,
+        candidate_diff_text=_REPLAY_DOC_DIFF,
+        counterfactual_eval_receipt=receipt,
+    )
+    return admission["counterfactual_eval"]
+
+
+def test_receipt_binding_partial_match_wrong_candidate_digest_fails(
+    tmp_path: Path,
+) -> None:
+    def _tamper(binding: dict) -> None:
+        binding["candidate_diff_digest"] = "sha256:" + "f" * 64
+
+    summary = _binding_admission_summary(tmp_path, binding_mutator=_tamper)
+    binding = summary["binding"]
+    assert binding["provided"] is True
+    assert binding["replay_seed_digest_matches"] is True
+    assert binding["candidate_diff_digest_matches"] is False
+    assert binding["matches"] is False
+    # Observability alone is satisfied -- the AND must still fail.
+    assert summary["observability_satisfies_replay_gate"] is True
+    assert summary["satisfies_replay_gate"] is False
+
+
+def test_receipt_binding_partial_match_wrong_seed_digest_fails(
+    tmp_path: Path,
+) -> None:
+    def _tamper(binding: dict) -> None:
+        binding["replay_seed_digest"] = "sha256:" + "f" * 64
+
+    summary = _binding_admission_summary(tmp_path, binding_mutator=_tamper)
+    binding = summary["binding"]
+    assert binding["provided"] is True
+    assert binding["replay_seed_digest_matches"] is False
+    assert binding["candidate_diff_digest_matches"] is True
+    assert binding["matches"] is False
+    assert summary["observability_satisfies_replay_gate"] is True
+    assert summary["satisfies_replay_gate"] is False
+
+
+@pytest.mark.parametrize(
+    "bad_binding",
+    [
+        ["sha256:listed"],
+        "sha256:stringly",
+        None,
+        7,
+    ],
+    ids=["list", "string", "null", "int"],
+)
+def test_receipt_binding_non_mapping_fails_closed_without_crash(
+    tmp_path: Path,
+    bad_binding,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    receipt = {
+        **_measured_counterfactual_receipt(),
+        "replay_binding": bad_binding,
+    }
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=_REPLAY_DOC_PATHS,
+        candidate_diff_text=_REPLAY_DOC_DIFF,
+        counterfactual_eval_receipt=receipt,
+    )
+    summary = admission["counterfactual_eval"]
+    binding = summary["binding"]
+    assert binding["provided"] is False
+    assert binding["matches"] is False
+    assert summary["satisfies_replay_gate"] is False
+
+
+def test_receipt_binding_ignores_extra_keys_but_tamper_still_fails(
+    tmp_path: Path,
+) -> None:
+    def _add_extras(binding: dict) -> None:
+        binding["unexpected"] = "extra"
+        binding["another"] = {"nested": True}
+
+    clean_dir = tmp_path / "clean"
+    clean_dir.mkdir()
+    summary = _binding_admission_summary(clean_dir, binding_mutator=_add_extras)
+    assert summary["binding"]["matches"] is True
+    assert summary["satisfies_replay_gate"] is True
+
+    def _add_extras_and_tamper(binding: dict) -> None:
+        _add_extras(binding)
+        binding["candidate_diff_digest"] = "sha256:" + "f" * 64
+
+    tampered_dir = tmp_path / "tampered"
+    tampered_dir.mkdir()
+    tampered = _binding_admission_summary(
+        tampered_dir, binding_mutator=_add_extras_and_tamper
+    )
+    assert tampered["binding"]["matches"] is False
+    assert tampered["satisfies_replay_gate"] is False
+
+
+def test_replay_gate_requires_observability_even_with_matching_binding(
+    tmp_path: Path,
+) -> None:
+    insufficient = {
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": "INSUFFICIENT",
+        "same_sample_set": True,
+        "deterministic": True,
+        "delta_digest": "sha256:present-but-insufficient",
+    }
+    summary = _binding_admission_summary(tmp_path, base_receipt=insufficient)
+    assert summary["binding"]["matches"] is True
+    assert summary["observability_satisfies_replay_gate"] is False
+    assert summary["satisfies_replay_gate"] is False

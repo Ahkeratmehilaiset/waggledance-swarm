@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -558,6 +559,21 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     )
     assert "pytest" in candidate["recommended_command"]
     _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_recommended_command_uses_current_python_executable(tmp_path: Path) -> None:
+    bridge, events_path, claims_dir = _empty_bridge(tmp_path)
+
+    report = evaluate_agent_next_task(
+        agent="claude",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    command = report["candidate"]["recommended_command"]
+    assert "C:\\Python\\project2-master" not in command
+    assert sys.executable in command
 
 
 def test_agent_next_task_applies_default_bridge_liveness_suppression_config(

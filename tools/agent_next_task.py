@@ -227,8 +227,7 @@ OPERATIONAL_SCOUT_CANDIDATES: tuple[dict[str, str], ...] = (
         "target": ".agent-bridge/shared/events.jsonl",
         "rationale": "inspect stale incoming bridge requests and report whether any safe closeout follow-up is warranted",
         "recommended_command_template": (
-            "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe "
-            "tools\\bridge_next_action.py --agent {agent} --json"
+            "{python} tools\\bridge_next_action.py --agent {agent} --json"
         ),
     },
     {
@@ -236,13 +235,21 @@ OPERATIONAL_SCOUT_CANDIDATES: tuple[dict[str, str], ...] = (
         "target": "tests/tools/test_agent_next_task.py tests/tools/test_bridge_next_action.py tests/tools/test_idle_loop_once.py",
         "rationale": "verify core bridge and idle selectors after mainline churn before the next claim",
         "recommended_command": (
-            "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe -m pytest "
+            "{python} -m pytest "
             "tests\\tools\\test_agent_next_task.py "
             "tests\\tools\\test_bridge_next_action.py "
             "tests\\tools\\test_idle_loop_once.py -q"
         ),
     },
 )
+
+
+def _python_command() -> str:
+    """Return the Python executable token for copy-pasteable recommendations."""
+    executable = sys.executable or "python"
+    if any(character.isspace() for character in executable):
+        return '"' + executable.replace('"', '\\"') + '"'
+    return executable
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -839,7 +846,7 @@ def _pick_production_liveness_reactivation(
                 "change through a separate write claim."
             ),
             "recommended_command": (
-                "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe "
+                f"{_python_command()} "
                 "tools\\report_unanswered_bridge_requests.py "
                 f"--events {events_path} "
                 f"--agent {peer_agent} "
@@ -890,7 +897,7 @@ def _pick_rco_reemit_watch(
             "response; route any source change through a separate write claim."
         ),
         "recommended_command": (
-            "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe "
+            f"{_python_command()} "
             "tools\\check_rco_pass_present.py "
             f"--task-id {task_id} "
             f"--head {head} "
@@ -1258,8 +1265,7 @@ def _pick_substrate_smoke(
         "mode": "read-only",
         "write_scope": [],
         "recommended_command": (
-            "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe "
-            f"-m pytest {target} -q"
+            f"{_python_command()} -m pytest {target} -q"
         ),
         "rotation": {
             "agent": agent,
@@ -1400,7 +1406,10 @@ def _pick_operational_scout(
             "queue/health state; route any source change through a separate "
             "write claim."
         ),
-        "recommended_command": command_template.format(agent=agent),
+        "recommended_command": command_template.format(
+            agent=agent,
+            python=_python_command(),
+        ),
         "rotation": {
             "agent": agent,
             "day_of_year": day_of_year,
@@ -1457,7 +1466,10 @@ def _pick_continuous_operational_scout(
                 "queue/health evidence; route any source change through a "
                 "separate write claim."
             ),
-            "recommended_command": command_template.format(agent=agent),
+            "recommended_command": command_template.format(
+                agent=agent,
+                python=_python_command(),
+            ),
             "rotation": {
                 "agent": agent,
                 "day_of_year": day_of_year,

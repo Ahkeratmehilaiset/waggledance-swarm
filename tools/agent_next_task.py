@@ -53,6 +53,7 @@ from waggledance.core.work_queue import (  # noqa: E402
     DEFAULT_BRIDGE_ROOT,
     WorkQueueError,
     list_claims,
+    resolve_bridge_root,
 )
 
 DEFER_ACTIONS = {
@@ -1612,14 +1613,14 @@ def _is_same_day_continuous_operational_scout_task_id(
 
 def _bridge_root_for_args(events_path: Path | None, bridge_root: Path | None) -> Path:
     if bridge_root is not None:
-        return bridge_root
+        return resolve_bridge_root(bridge_root)
     if (
         events_path is not None
         and events_path.name == "events.jsonl"
         and events_path.parent.name == "shared"
     ):
         return events_path.parent.parent
-    return DEFAULT_BRIDGE_ROOT
+    return resolve_bridge_root(None)
 
 
 def _events_path_for_args(events_path: Path | None, bridge_root: Path) -> Path:

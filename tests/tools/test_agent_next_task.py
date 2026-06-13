@@ -1560,6 +1560,56 @@ def test_cli_infers_bridge_root_from_events_path_for_claims(
     assert parsed["bridge_recommendation"]["task_id"] == "claude-real-bridge-root-claim"
 
 
+def test_cli_defaults_to_runtime_bridge_root_env(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    _events_file(
+        runtime_bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:59:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "runtime-baseline",
+                "status": "active",
+                "message": "runtime bridge heartbeat",
+            }
+        ],
+    )
+    claim_task(
+        agent="claude",
+        task_id="claude-runtime-bridge-root-claim",
+        summary="canonical claim under runtime bridge root",
+        mode="write",
+        write_scope=["tools/runtime.py"],
+        bridge_root=runtime_bridge,
+    )
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main(
+        [
+            "--agent",
+            "claude",
+            "--now",
+            "2026-05-20T12:00:00Z",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    parsed = json.loads(capsys.readouterr().out.strip())
+    assert parsed["decision"] == "defer_to_bridge_next_action"
+    assert parsed["bridge_recommendation"]["action"] == "continue_claim"
+    assert parsed["bridge_recommendation"]["task_id"] == (
+        "claude-runtime-bridge-root-claim"
+    )
+
+
 def test_cli_bridge_root_without_events_uses_bridge_root_events(
     tmp_path: Path,
     capsys: pytest.CaptureFixture,

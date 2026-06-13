@@ -10,6 +10,8 @@ import subprocess
 import sys
 from contextlib import redirect_stdout
 
+import pytest
+
 
 NOW = "2026-05-17T12:00:00Z"
 
@@ -473,6 +475,52 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
     assert payload["decision"] == "idle"
+
+
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = importlib.import_module("tools.idle_check")
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_claims = runtime_bridge / "work_queue" / "claims"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_claims.mkdir(parents=True)
+    _write_events(runtime_events, _base_idle_events())
+
+    shadow_root = tmp_path / "shadow"
+    shadow_bridge = shadow_root / ".agent-bridge"
+    shadow_events = shadow_bridge / "shared" / "events.jsonl"
+    shadow_claims = shadow_bridge / "work_queue" / "claims"
+    shadow_events.parent.mkdir(parents=True)
+    shadow_claims.mkdir(parents=True)
+    _write_events(
+        shadow_events,
+        _base_idle_events()
+        + [
+            _event(
+                ts_utc="2026-05-17T11:55:00Z",
+                type="done",
+                status="merged_postmerge_green",
+                message="Cwd-local shadow bridge would keep idle_check active.",
+            )
+        ],
+    )
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        rc = mod.main(["--now", NOW, "--json"])
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["decision"] == "idle"
+    assert payload["events_path"] == str(runtime_events)
+    assert payload["claims_dir"] == str(runtime_claims)
 
 
 def test_empty_bridge_returns_unknown_error(tmp_path: Path) -> None:

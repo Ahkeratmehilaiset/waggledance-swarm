@@ -458,6 +458,33 @@ def test_no_block_reemit_required_status_does_not_block() -> None:
     assert result["latest_approval_event"]["status"] == "rco_pass"
 
 
+def test_no_block_text_does_not_downgrade_real_blocking_status() -> None:
+    for status in [
+        "changes_requested_no_block",
+        "no_blocker_but_changes_requested",
+        "no_block_changes_requested",
+        "rco_blocked_no_block",
+        "no_block_but_blocked",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-13T16:13:22Z",
+                    "claude-rco-1",
+                    "finding",
+                    status,
+                    task_id="codex-tools-1/bridge-peer-gate-no-block-status-20260613",
+                )
+            ],
+            task_id="codex-tools-1/bridge-peer-gate-no-block-status-20260613",
+            merging_agent="codex-tools-1",
+            pr_number=1138,
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
+
+
 def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:
     events = [
         _event(

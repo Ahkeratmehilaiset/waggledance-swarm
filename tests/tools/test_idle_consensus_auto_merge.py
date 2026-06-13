@@ -10,6 +10,7 @@ import pytest
 from tools.idle_consensus_auto_merge import (
     AutoMergeGateError,
     evaluate_auto_merge_gate,
+    main,
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -1721,3 +1722,42 @@ def test_private_marker_refused() -> None:
             receipt_bundle_path="docs/receipts/manifest.json",
         )
     assert excinfo.value.report["decision"] == "privacy_marker_refused"
+
+
+def test_cli_defaults_events_to_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_events.write_text(json.dumps(_rco_pass(), sort_keys=True), encoding="utf-8")
+    pr_status = tmp_path / "pr_status.json"
+    pr_status.write_text(json.dumps(_status(), sort_keys=True), encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    exit_code = main(
+        [
+            "--pr-status-file",
+            str(pr_status),
+            "--expected-head",
+            HEAD,
+            "--expected-base-sha",
+            BASE,
+            "--consensus-proposal-id",
+            "idle-consensus-001",
+            "--receipt-bundle-path",
+            "docs/receipts/manifest.json",
+            "--bridge-task-id",
+            "idle-consensus-001",
+            "--utc-date",
+            "2026-05-18",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["rco_pass_gate"]["ok"] is True

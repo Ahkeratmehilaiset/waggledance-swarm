@@ -391,6 +391,120 @@ def test_deduplicates_stale_incoming_task_ids_but_preserves_event_count() -> Non
     assert report["stale_incoming_event_count"] == 2
 
 
+def test_target_stale_sweep_finding_suppresses_reported_stale_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T17:34:52Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260611",
+            "status": "open",
+            "message": "historical wake request",
+        },
+        {
+            "ts_utc": "2026-06-13T05:24:41Z",
+            "agent": "codex-tools-1",
+            "to": "operator",
+            "type": "finding",
+            "task_id": "operational-scout-bridge-stale-incoming-sweep-2026-06-13",
+            "status": "stale_incoming_sweep_complete",
+            "message": "classified the stale backlog as historical noise",
+            "payload": {
+                "stale_task_ids": ["bridge-follow-nudge-20260611"],
+            },
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 13, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+    assert "stale_incoming_task_ids" not in report
+
+
+def test_stale_sweep_finding_before_request_does_not_suppress_new_stale_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T17:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "operator",
+            "type": "finding",
+            "task_id": "operational-scout-bridge-stale-incoming-sweep-20260611",
+            "status": "stale_incoming_sweep_complete",
+            "message": "prior stale sweep",
+            "payload": {
+                "stale_task_ids": ["bridge-follow-nudge-20260611"],
+            },
+        },
+        {
+            "ts_utc": "2026-06-11T17:34:52Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260611",
+            "status": "open",
+            "message": "new wake request after the prior sweep",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 13, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == ["bridge-follow-nudge-20260611"]
+
+
+def test_other_agent_stale_sweep_finding_does_not_suppress_target_stale_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T17:34:52Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260611",
+            "status": "open",
+            "message": "historical wake request",
+        },
+        {
+            "ts_utc": "2026-06-13T05:24:41Z",
+            "agent": "codex-lead-1",
+            "to": "operator",
+            "type": "finding",
+            "task_id": "operational-scout-bridge-stale-incoming-sweep-20260613",
+            "status": "stale_incoming_sweep_complete",
+            "message": "a different agent cannot close tools stale backlog",
+            "payload": {
+                "stale_task_ids": ["bridge-follow-nudge-20260611"],
+            },
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 13, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == ["bridge-follow-nudge-20260611"]
+
+
 def test_archives_very_old_stale_incoming_without_changing_next_action() -> None:
     events = [
         {

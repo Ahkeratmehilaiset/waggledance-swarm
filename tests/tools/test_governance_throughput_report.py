@@ -688,3 +688,74 @@ def test_cli_main_emits_json(
     names = {m["name"] for m in parsed["metrics"]}
     assert "proposal_to_rco_latency" in names
     assert "shadow_to_live_latency_per_risk_class" in names
+
+
+def test_cli_default_events_uses_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        "\n".join(
+            json.dumps(e, sort_keys=True)
+            for e in _pr_thread(
+                task_id="task-runtime",
+                pr_number=1201,
+                start=NOW - timedelta(hours=1),
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    exit_code = main(
+        [
+            "--now", "2026-05-20T12:00:00Z",
+            "--window-days", "7",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["event_count_in_window"] == 2
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events_path = bridge_root / "shared" / "events.jsonl"
+    explicit_events_path = tmp_path / "explicit-events.jsonl"
+    runtime_events_path.parent.mkdir(parents=True)
+    runtime_events_path.write_text("", encoding="utf-8")
+    explicit_events_path.write_text(
+        "\n".join(
+            json.dumps(e, sort_keys=True)
+            for e in _pr_thread(
+                task_id="task-explicit",
+                pr_number=1202,
+                start=NOW - timedelta(hours=1),
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    exit_code = main(
+        [
+            "--events", str(explicit_events_path),
+            "--now", "2026-05-20T12:00:00Z",
+            "--window-days", "7",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["event_count_in_window"] == 2

@@ -82,6 +82,7 @@ def _next_action(
     *,
     agent: str = "fable-5",
     now: str = "2026-06-13T03:00:00Z",
+    suppressed_agents: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if not NEXT_ACTION.is_file():
         pytest.skip(f"next-action script not found at {NEXT_ACTION}")
@@ -92,6 +93,21 @@ def _next_action(
         "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
         encoding="utf-8",
     )
+    if suppressed_agents:
+        suppression_path = bridge_root / "shared" / "production_liveness_suppression.json"
+        suppression_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "suppressed_agents": {
+                        agent_id: {"reason": reason}
+                        for agent_id, reason in suppressed_agents.items()
+                    },
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
     completed = subprocess.run(  # noqa: S603
@@ -183,3 +199,23 @@ def test_next_action_keeps_recent_wake_request_actionable(tmp_path: Path) -> Non
     assert report["task_id"] == "bridge-follow-nudge-20260613"
     assert report["open_incoming_count"] == 1
     assert report["stale_incoming_count"] == 0
+
+
+def test_next_action_reports_suppressed_agent_instead_of_follow_nudge(
+    tmp_path: Path,
+) -> None:
+    event = _event("wake_request", "open")
+    event["agent"] = "operator"
+    event["task_id"] = "bridge-follow-nudge-20260613"
+    event["ts_utc"] = "2026-06-13T02:30:00Z"
+
+    report = _next_action(
+        tmp_path,
+        [event],
+        suppressed_agents={"fable-5": "operator reported lane unavailable"},
+    )
+
+    assert report["action"] == "agent_suppressed_unavailable"
+    assert report["task_id"] == "agent-suppressed-unavailable"
+    assert report["open_incoming_count"] == 1
+    assert report["suppression_reason"] == "operator reported lane unavailable"

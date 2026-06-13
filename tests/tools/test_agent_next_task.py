@@ -325,6 +325,58 @@ def test_agent_next_task_applies_default_bridge_liveness_suppression_config(
     assert liveness["suppressed_stalled_agents"][0]["agent"] == "grok-scout-1"
 
 
+def test_agent_next_task_defers_suppressed_agent_follow_nudge(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:55:00Z",
+                "agent": "operator",
+                "to": "fable-5",
+                "type": "wake_request",
+                "task_id": "bridge-follow-nudge-20260520",
+                "status": "open",
+                "severity": "medium",
+                "message": (
+                    "jatka: read the bridge and answer open requests. "
+                    "classification=rco_wake_requested openIncoming=7"
+                ),
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    suppression_config = bridge / "shared" / "production_liveness_suppression.json"
+    suppression_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "suppressed_agents": {
+                    "fable-5": {"reason": "operator reported lane unavailable"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_agent_next_task(
+        agent="fable-5",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["bridge_recommendation"]["action"] == "agent_suppressed_unavailable"
+    assert report["bridge_recommendation"]["task_id"] == "agent-suppressed-unavailable"
+    assert (
+        report["bridge_recommendation"]["suppression_reason"]
+        == "operator reported lane unavailable"
+    )
+
+
 def test_deferred_lift_state_returns_copy() -> None:
     state = deferred_lift_state()
     _assert_deferred_lift_state(state)

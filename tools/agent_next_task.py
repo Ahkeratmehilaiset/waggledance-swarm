@@ -55,7 +55,11 @@ from waggledance.core.work_queue import (  # noqa: E402
     list_claims,
 )
 
-DEFER_ACTIONS = {"continue_claim", "answer_incoming"}
+DEFER_ACTIONS = {
+    "continue_claim",
+    "answer_incoming",
+    "agent_suppressed_unavailable",
+}
 PICK_ACTIONS = {"claim_unblocked_work", "parallel_read_only"}
 SUCCESSFUL_COMPLETION_TYPES = {"done", "release", "test"}
 SUCCESSFUL_COMPLETION_STATUSES = {

@@ -506,14 +506,16 @@ def recommend_next_action(
             max_age_hours=stale_report_max_age_hours,
         )
     )
+    suppressed_agents = _production_liveness_suppression_map(
+        production_liveness_suppressed_agents
+    )
     production_liveness = _production_liveness_report(
         events=events,
         now_utc=effective_now,
         idle_warn_minutes=production_idle_warn_minutes,
-        suppressed_agents=_production_liveness_suppression_map(
-            production_liveness_suppressed_agents
-        ),
+        suppressed_agents=suppressed_agents,
     )
+    suppression_reason = suppressed_agents.get(agent)
     merge_blocking_request = _latest_merge_blocking_request(open_requests)
 
     if own_claims and merge_blocking_request is not None:
@@ -556,6 +558,26 @@ def recommend_next_action(
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
         )
+    if suppression_reason is not None:
+        report = _report(
+            agent=agent,
+            action="agent_suppressed_unavailable",
+            task_id="agent-suppressed-unavailable",
+            safe_mode="read-only",
+            summary=f"agent {agent} is suppressed unavailable: {suppression_reason}",
+            events=events,
+            claims=active_claims,
+            stale_claims=stale_claims,
+            open_requests=open_requests,
+            open_request_event_count=len(open_request_events),
+            stale_open_requests=reported_stale_open_requests,
+            archived_stale_open_requests=archived_stale_open_requests,
+            foreign_write_claims=foreign_write_claims,
+            production_liveness=production_liveness,
+        )
+        report["suppression_reason"] = suppression_reason
+        _assert_no_private_markers(report)
+        return report
     if open_requests:
         request = open_requests[-1]
         requester = _event_agent(request)

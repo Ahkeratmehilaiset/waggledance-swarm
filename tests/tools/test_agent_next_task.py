@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import sys
 
 import pytest
+import tools.agent_next_task as agent_next_task
 
 from tools.agent_next_task import (
     DREAM_MODE_CANDIDATES,
@@ -561,8 +561,13 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
-def test_recommended_command_uses_current_python_executable(tmp_path: Path) -> None:
+def test_recommended_command_uses_current_python_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bridge, events_path, claims_dir = _empty_bridge(tmp_path)
+    runtime_python = str(tmp_path / "runtime" / ".venv" / "Scripts" / "python.exe")
+    monkeypatch.setattr(agent_next_task.sys, "executable", runtime_python)
 
     report = evaluate_agent_next_task(
         agent="claude",
@@ -573,7 +578,7 @@ def test_recommended_command_uses_current_python_executable(tmp_path: Path) -> N
 
     command = report["candidate"]["recommended_command"]
     assert "C:\\Python\\project2-master" not in command
-    assert sys.executable in command
+    assert runtime_python in command
 
 
 def test_agent_next_task_applies_default_bridge_liveness_suppression_config(

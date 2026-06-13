@@ -46,7 +46,12 @@ function Test-BridgeAckEvent {
 function Test-BridgeInfrastructureEvent {
     param([Parameter(Mandatory)] [object] $Event)
 
-    return @('heartbeat','liveness','wake_request') -contains [string]$Event.type
+    # Pure background noise only. `wake_request` is NOT infrastructure: it is a
+    # directed, actionable nudge (operator/peer "read the bridge / review this"),
+    # so it must reach the request-like classifier instead of being dropped here.
+    # It is kept out of the answer/closure path separately (see Test-BridgeAnswerEvent),
+    # matching the Python REQUEST_TYPES parity merged in #1101.
+    return @('heartbeat','liveness') -contains [string]$Event.type
 }
 
 function Test-BridgeMessageAnswerStatus {
@@ -113,7 +118,7 @@ function Test-BridgeRequestLikeEvent {
     }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
 
-    $requestTypes = @('message','handoff','blocked','finding','decision','done')
+    $requestTypes = @('message','handoff','blocked','finding','decision','done','wake_request')
     $requestStatuses = @(
         'request','ready','blocked','open','proposal',
         'fix-pushed','fix-branch-pushed','pushed',
@@ -152,6 +157,8 @@ function Test-BridgeAnswerEvent {
         return $true
     }
 
-    if (@('status','intent') -contains $type) { return $false }
+    # `wake_request` is request-like, never a closure/answer: a nudge must not
+    # mark another agent's open request as answered.
+    if (@('status','intent','wake_request') -contains $type) { return $false }
     return $true
 }

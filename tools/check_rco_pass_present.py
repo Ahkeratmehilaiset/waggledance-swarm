@@ -228,6 +228,13 @@ def _emit(result: dict[str, Any], as_json: bool) -> None:
                     f"status={mismatch.get('status')} type={mismatch.get('type')}",
                     file=sys.stderr,
                 )
+            guidance = result.get("rco_reemit_guidance") or {}
+            if guidance:
+                print(
+                    "  re-emit RCO_PASS on accepted task_id: "
+                    f"{guidance.get('preferred_task_id')}",
+                    file=sys.stderr,
+                )
 
 
 def _make_result(
@@ -262,6 +269,7 @@ def _make_result(
         "task_id_mismatch_rco_events": [],
         "task_id_aliases": [],
         "accepted_task_id_alias_rco_events": [],
+        "rco_reemit_guidance": None,
         "latest_rco_is_veto": latest_rco_is_veto,
         "rco_pass_event": (
             _summarize_event(rco_pass_event) if rco_pass_event is not None else None
@@ -325,6 +333,9 @@ def check_rco_pass_present(
         "latest_rco_events": {},
         "blocking_rco_agents": [],
         "ignored_identity_mismatch_events": [],
+        "task_id_aliases": [],
+        "accepted_task_id_alias_rco_events": [],
+        "rco_reemit_guidance": None,
         "error": None,
     }
     for key in CLAIM_GATES:
@@ -379,6 +390,14 @@ def check_rco_pass_present(
     base["has_task_id_mismatch_rco_pass_at_head"] = bool(
         task_id_mismatch_rco_events
     )
+    if task_id_mismatch_rco_events:
+        base["rco_reemit_guidance"] = _rco_reemit_guidance(
+            task_id=task_id,
+            task_id_aliases=task_id_aliases,
+            head=head,
+            eligible_rco_agents=eligible_rco_agents,
+            mismatches=task_id_mismatch_rco_events,
+        )
 
     # Collect all recognized-RCO events scoped to this task_id or its
     # deterministic author-agent namespace alias.
@@ -520,6 +539,32 @@ def _find_task_id_mismatch_rco_pass_events(
             if summary is not None:
                 mismatches.append(summary)
     return mismatches
+
+
+def _rco_reemit_guidance(
+    *,
+    task_id: str,
+    task_id_aliases: Sequence[str],
+    head: str,
+    eligible_rco_agents: Sequence[str],
+    mismatches: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    rejected_task_ids = sorted(
+        {str(event.get("task_id", "")) for event in mismatches if event.get("task_id")}
+    )
+    accepted_task_ids = [task_id, *task_id_aliases]
+    return {
+        "required": True,
+        "reason": "task_id_mismatch_rco_pass_at_head",
+        "preferred_task_id": task_id,
+        "accepted_task_ids": accepted_task_ids,
+        "rejected_task_ids": rejected_task_ids,
+        "head": head,
+        "target_rco_agents": list(eligible_rco_agents),
+        # Legacy dispatchers recognize rco_requested; stricter status text can
+        # be layered on the message without hiding the work from older readers.
+        "legacy_request_status": "rco_requested",
+    }
 
 
 def _author_task_id_aliases(task_id: str, author_agent: str) -> tuple[str, ...]:

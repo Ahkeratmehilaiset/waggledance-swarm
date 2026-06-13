@@ -439,6 +439,7 @@ def test_author_task_slash_alias_pass_counts_without_mismatch() -> None:
     assert result["decision"] == "rco_pass_present"
     assert result["has_qualifying_rco_pass_at_head"] is True
     assert result["has_task_id_mismatch_rco_pass_at_head"] is False
+    assert result["rco_reemit_guidance"] is None
     assert result["task_id_aliases"] == [slash_task]
     assert result["rco_pass_event"]["task_id"] == slash_task
     assert result["accepted_task_id_alias_rco_events"] == [
@@ -503,6 +504,19 @@ def test_unrelated_task_exact_head_pass_is_reported_without_counting() -> None:
     assert result["decision"] == "no_rco_events_for_task"
     assert result["has_qualifying_rco_pass_at_head"] is False
     assert result["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert result["rco_reemit_guidance"] == {
+        "required": True,
+        "reason": "task_id_mismatch_rco_pass_at_head",
+        "preferred_task_id": target_task,
+        "accepted_task_ids": [
+            target_task,
+            "codex-lead-1/promotion-canonical-consensus-regressions-20260607",
+        ],
+        "rejected_task_ids": [other_task],
+        "head": HEAD,
+        "target_rco_agents": ["claude-rco-1", "claude-rco-2"],
+        "legacy_request_status": "rco_requested",
+    }
     assert result["task_id_mismatch_rco_events"] == [
         {
             "ts_utc": "2026-06-07T18:10:00Z",
@@ -702,6 +716,7 @@ def test_cli_json_accepts_author_task_slash_alias_pass(
     assert payload["decision"] == "rco_pass_present"
     assert payload["has_qualifying_rco_pass_at_head"] is True
     assert payload["has_task_id_mismatch_rco_pass_at_head"] is False
+    assert payload["rco_reemit_guidance"] is None
     assert payload["task_id_aliases"] == [slash_task]
     assert payload["rco_pass_event"]["task_id"] == slash_task
     assert payload["accepted_task_id_alias_rco_events"][0]["agent"] == "claude-rco-2"
@@ -745,6 +760,67 @@ def test_cli_refuse_reports_other_task_mismatch_to_stderr(tmp_path: Path) -> Non
     assert res.returncode != 0
     assert "task-id mismatch pass candidate" in res.stderr
     assert unrelated_task in res.stderr
+    assert (
+        "re-emit RCO_PASS on accepted task_id: "
+        "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    ) in res.stderr
+
+
+def test_cli_json_reports_rco_reemit_guidance_for_task_mismatch(
+    tmp_path: Path,
+) -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    unrelated_task = "codex-tools-1/promotion-canonical-consensus-regressions-20260607"
+    events_path = _seed_events(
+        tmp_path,
+        [
+            _rco_event(
+                agent="claude-rco-2",
+                status="rco_pass",
+                type_="decision",
+                message=f"RCO_PASS present at exact head {HEAD}",
+                task_id=unrelated_task,
+            ),
+        ],
+    )
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            target_task,
+            "--head",
+            HEAD,
+            "--events",
+            str(events_path),
+            "--author-agent",
+            AUTHOR,
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert res.returncode != 0
+    payload = json.loads(res.stdout)
+    assert payload["ok"] is False
+    assert payload["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert payload["rco_reemit_guidance"] == {
+        "required": True,
+        "reason": "task_id_mismatch_rco_pass_at_head",
+        "preferred_task_id": target_task,
+        "accepted_task_ids": [
+            target_task,
+            "codex-lead-1/promotion-canonical-consensus-regressions-20260607",
+        ],
+        "rejected_task_ids": [unrelated_task],
+        "head": HEAD,
+        "target_rco_agents": ["claude-rco-1", "claude-rco-2"],
+        "legacy_request_status": "rco_requested",
+    }
 
 
 def test_cli_refuse_on_changes_requested_after_pass(tmp_path: Path) -> None:

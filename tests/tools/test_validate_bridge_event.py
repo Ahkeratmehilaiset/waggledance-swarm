@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 AGENT_UUID = "11111111-2222-3333-4444-555555555555"
 OTHER_UUID = "22222222-3333-4444-5555-666666666666"
 
@@ -86,6 +88,36 @@ def test_cli_returns_zero_and_json_summary_for_valid_file(
     _write_jsonl(events_path, [_good_event()])
 
     rc = mod.main(["--events", str(events_path), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["valid"] == 1
+    assert payload["invalid"] == 0
+
+
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    _write_jsonl(runtime_events, [_good_event()])
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    _write_jsonl(shadow_events, [_good_event(type="wake_request", to="")])
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    rc = mod.main(["--json", "--no-waivers"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)

@@ -19,9 +19,9 @@ from waggledance.core.bridge_event_schema import (
     BridgeEventValidationResult,
     validate_event_file,
 )
+from waggledance.core.work_queue import resolve_bridge_root
 
 
-DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
 IDENTITY_AUDIT_VERSION = "bridge-identity-registry-audit.v1"
 GATE_RELEVANT_STATUSES = frozenset({
@@ -40,8 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--events",
         type=Path,
-        default=DEFAULT_EVENTS_PATH,
-        help="Path to bridge events.jsonl.",
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl).",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
     )
     parser.add_argument(
         "--tail",
@@ -103,7 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.events.exists():
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
+    if not events_path.exists():
         result = BridgeEventValidationResult(
             schema_version="agent-bridge-event.v1",
             checked=0,
@@ -111,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             invalid=1,
             issues=(),
         )
-        _print_result(result, json_output=args.json, missing_path=args.events)
+        _print_result(result, json_output=args.json, missing_path=events_path)
         return 1
 
     try:
@@ -140,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     result = validate_event_file(
-        args.events,
+        events_path,
         tail=args.tail,
         max_errors=args.max_errors,
         waived_line_sha256=waiver_hashes,
@@ -150,7 +161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     identity_registry_audit = None
     if args.identity_registry is not None:
         identity_registry_audit = _audit_identity_registry_uuids(
-            args.events,
+            events_path,
             identity_registry_uuids,
             tail=args.tail,
             max_examples=args.max_errors,

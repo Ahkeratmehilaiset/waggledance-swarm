@@ -32,7 +32,21 @@ GAP_SIGNAL_SCHEMA_VERSION = "operator_feedback_gap_signal.v1"
 PROBE_INTENT_SCHEMA_VERSION = "operator_feedback_adversarial_probe_intent.v1"
 SCHEDULER_PREFLIGHT_SCHEMA_VERSION = "operator_feedback_scheduler_preflight.v1"
 SCHEDULER_CANDIDATE_SCHEMA_VERSION = "operator_feedback_scheduler_candidate.v1"
+SCHEDULER_ENQUEUE_PREVIEW_SCHEMA_VERSION = (
+    "operator_feedback_scheduler_enqueue_preview.v1"
+)
 RATE_LIMIT_SOURCE_DURABLE_BRIDGE_LOG = "durable_bridge_log"
+
+_SCHEDULER_FALSE_AUTHORITY_FLAGS = (
+    "scheduler_enqueue_allowed",
+    "scheduler_tick_allowed",
+    "bridge_event_written",
+    "runtime_authority_granted",
+    "gate_skip_allowed",
+    "promotion_gate_skip_allowed",
+    "adversarial_gate_skip_allowed",
+    "canary_gate_skip_allowed",
+)
 
 
 class OperatorFeedbackValidationError(ValueError):
@@ -149,6 +163,81 @@ class OperatorFeedbackSchedulerPreflight:
             "scheduler_tick_allowed": self.scheduler_tick_allowed,
             "gate_skip_allowed": self.gate_skip_allowed,
             "bridge_event_written": self.bridge_event_written,
+        }
+
+
+@dataclass(frozen=True)
+class OperatorFeedbackSchedulerEnqueuePreview:
+    """Read-only scheduler enqueue preview derived from a validated preflight.
+
+    The preview is intentionally not a queue mutation. It preserves the exact
+    durable identity/rate-limit evidence and computes the queue priority a later
+    enqueue adapter may use, while keeping all runtime authority flags false.
+    """
+
+    schema_version: str
+    preview_kind: str
+    feedback_id: str
+    action_id: str
+    feedback_kind: str
+    query_class_hash: str
+    route_context_hash: str | None
+    verified_operator_id: str
+    source_bridge_event_digest: str
+    scheduler_candidate_digest: str
+    rate_limit_source: str
+    operator_fast_track_count: int
+    global_fast_track_count: int
+    global_fast_track_per_hour_max: int
+    queue_priority: str
+    priority_weight: int
+    fast_track_priority: bool
+    rate_limited: bool
+    scheduler_enqueue_allowed: bool
+    scheduler_tick_allowed: bool
+    queue_write_applied: bool
+    growth_intent_created: bool
+    bridge_event_written: bool
+    runtime_authority_granted: bool
+    gate_skip_allowed: bool
+    promotion_gate_skip_allowed: bool
+    adversarial_gate_skip_allowed: bool
+    canary_gate_skip_allowed: bool
+    next_required_integration: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "preview_kind": self.preview_kind,
+            "feedback_id": self.feedback_id,
+            "action_id": self.action_id,
+            "feedback_kind": self.feedback_kind,
+            "query_class_hash": self.query_class_hash,
+            "route_context_hash": self.route_context_hash,
+            "verified_operator_id": self.verified_operator_id,
+            "source_bridge_event_digest": self.source_bridge_event_digest,
+            "scheduler_candidate_digest": self.scheduler_candidate_digest,
+            "rate_limit_source": self.rate_limit_source,
+            "operator_fast_track_count": self.operator_fast_track_count,
+            "global_fast_track_count": self.global_fast_track_count,
+            "global_fast_track_per_hour_max": (
+                self.global_fast_track_per_hour_max
+            ),
+            "queue_priority": self.queue_priority,
+            "priority_weight": self.priority_weight,
+            "fast_track_priority": self.fast_track_priority,
+            "rate_limited": self.rate_limited,
+            "scheduler_enqueue_allowed": self.scheduler_enqueue_allowed,
+            "scheduler_tick_allowed": self.scheduler_tick_allowed,
+            "queue_write_applied": self.queue_write_applied,
+            "growth_intent_created": self.growth_intent_created,
+            "bridge_event_written": self.bridge_event_written,
+            "runtime_authority_granted": self.runtime_authority_granted,
+            "gate_skip_allowed": self.gate_skip_allowed,
+            "promotion_gate_skip_allowed": self.promotion_gate_skip_allowed,
+            "adversarial_gate_skip_allowed": self.adversarial_gate_skip_allowed,
+            "canary_gate_skip_allowed": self.canary_gate_skip_allowed,
+            "next_required_integration": self.next_required_integration,
         }
 
 
@@ -508,6 +597,137 @@ def build_operator_feedback_scheduler_preflight_from_bridge_log(
         durable_bridge_events=bridge_events,
         policy=policy,
     )
+
+
+def build_operator_feedback_scheduler_enqueue_preview(
+    preflight: OperatorFeedbackSchedulerPreflight,
+) -> OperatorFeedbackSchedulerEnqueuePreview:
+    """Build a no-write scheduler enqueue preview from durable preflight state."""
+
+    candidate = _validated_scheduler_enqueue_preview_candidate(preflight)
+    return OperatorFeedbackSchedulerEnqueuePreview(
+        schema_version=SCHEDULER_ENQUEUE_PREVIEW_SCHEMA_VERSION,
+        preview_kind="operator_feedback_scheduler_enqueue_preview",
+        feedback_id=preflight.action_plan.feedback_id,
+        action_id=preflight.action_plan.action_id,
+        feedback_kind=preflight.action_plan.feedback_kind,
+        query_class_hash=preflight.action_plan.query_class_hash,
+        route_context_hash=preflight.action_plan.route_context_hash,
+        verified_operator_id=preflight.verified_operator_id,
+        source_bridge_event_digest=preflight.source_bridge_event_digest,
+        scheduler_candidate_digest=sha256_digest(candidate),
+        rate_limit_source=preflight.rate_limit_source,
+        operator_fast_track_count=preflight.operator_fast_track_count,
+        global_fast_track_count=preflight.global_fast_track_count,
+        global_fast_track_per_hour_max=preflight.global_fast_track_per_hour_max,
+        queue_priority=str(candidate["queue_priority"]),
+        priority_weight=int(candidate["priority_weight"]),
+        fast_track_priority=bool(candidate["fast_track_priority"]),
+        rate_limited=bool(candidate["rate_limited"]),
+        scheduler_enqueue_allowed=False,
+        scheduler_tick_allowed=False,
+        queue_write_applied=False,
+        growth_intent_created=False,
+        bridge_event_written=False,
+        runtime_authority_granted=False,
+        gate_skip_allowed=False,
+        promotion_gate_skip_allowed=False,
+        adversarial_gate_skip_allowed=False,
+        canary_gate_skip_allowed=False,
+        next_required_integration="scheduler_enqueue_adapter_separate_pr",
+    )
+
+
+def _validated_scheduler_enqueue_preview_candidate(
+    preflight: OperatorFeedbackSchedulerPreflight,
+) -> Mapping[str, Any]:
+    if preflight.schema_version != SCHEDULER_PREFLIGHT_SCHEMA_VERSION:
+        raise OperatorFeedbackValidationError(
+            "scheduler preflight schema_version is unsupported"
+        )
+    if preflight.rate_limit_source != RATE_LIMIT_SOURCE_DURABLE_BRIDGE_LOG:
+        raise OperatorFeedbackValidationError(
+            "scheduler enqueue preview requires durable_bridge_log rate limits"
+        )
+    for flag_name in (
+        "scheduler_enqueue_allowed",
+        "scheduler_tick_allowed",
+        "gate_skip_allowed",
+        "bridge_event_written",
+    ):
+        if getattr(preflight, flag_name) is not False:
+            raise OperatorFeedbackValidationError(
+                f"scheduler preflight {flag_name} must be false"
+            )
+
+    candidate = _require_mapping(
+        "scheduler_candidate_artifact",
+        preflight.scheduler_candidate_artifact,
+    )
+    expected = {
+        "schema_version": SCHEDULER_CANDIDATE_SCHEMA_VERSION,
+        "action_id": preflight.action_plan.action_id,
+        "feedback_id": preflight.action_plan.feedback_id,
+        "feedback_kind": preflight.action_plan.feedback_kind,
+        "query_class_hash": preflight.action_plan.query_class_hash,
+        "route_context_hash": preflight.action_plan.route_context_hash,
+        "verified_operator_id": preflight.verified_operator_id,
+        "source_bridge_event_digest": preflight.source_bridge_event_digest,
+    }
+    for field_name, expected_value in expected.items():
+        if candidate.get(field_name) != expected_value:
+            raise OperatorFeedbackValidationError(
+                f"scheduler candidate {field_name} mismatch"
+            )
+    for flag_name in _SCHEDULER_FALSE_AUTHORITY_FLAGS:
+        if candidate.get(flag_name) is not False:
+            raise OperatorFeedbackValidationError(
+                f"scheduler candidate {flag_name} must be false"
+            )
+
+    queue_priority = candidate.get("queue_priority")
+    priority_weight = candidate.get("priority_weight")
+    fast_track_priority = candidate.get("fast_track_priority")
+    rate_limited = candidate.get("rate_limited")
+    if queue_priority not in {"fast_track", "normal"}:
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate queue_priority is unsupported"
+        )
+    if priority_weight not in {0, 100}:
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate priority_weight is unsupported"
+        )
+    if not isinstance(fast_track_priority, bool):
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate fast_track_priority must be boolean"
+        )
+    if not isinstance(rate_limited, bool):
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate rate_limited must be boolean"
+        )
+
+    expected_fast_track = (
+        preflight.action_plan.priority == "high"
+        and preflight.action_plan.rate_limited is False
+        and preflight.action_plan.gap_signal is not None
+    )
+    if fast_track_priority is not expected_fast_track:
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate fast_track_priority mismatch"
+        )
+    if queue_priority != ("fast_track" if expected_fast_track else "normal"):
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate queue_priority mismatch"
+        )
+    if priority_weight != (100 if expected_fast_track else 0):
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate priority_weight mismatch"
+        )
+    if rate_limited is not preflight.action_plan.rate_limited:
+        raise OperatorFeedbackValidationError(
+            "scheduler candidate rate_limited mismatch"
+        )
+    return candidate
 
 
 def _gap_signal_for(
@@ -878,13 +1098,16 @@ __all__ = [
     "OPS_FEEDBACK_EVENT_TYPE",
     "OperatorFeedbackActionPlan",
     "OperatorFeedbackPolicy",
+    "OperatorFeedbackSchedulerEnqueuePreview",
     "OperatorFeedbackSchedulerPreflight",
     "OperatorFeedbackValidationError",
     "PROBE_INTENT_SCHEMA_VERSION",
     "RATE_LIMIT_SOURCE_DURABLE_BRIDGE_LOG",
     "SCHEDULER_CANDIDATE_SCHEMA_VERSION",
+    "SCHEDULER_ENQUEUE_PREVIEW_SCHEMA_VERSION",
     "SCHEDULER_PREFLIGHT_SCHEMA_VERSION",
     "amplify_operator_feedback",
+    "build_operator_feedback_scheduler_enqueue_preview",
     "build_operator_feedback_scheduler_preflight",
     "build_operator_feedback_scheduler_preflight_from_bridge_log",
     "load_operator_feedback_policy",

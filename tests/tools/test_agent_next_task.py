@@ -279,6 +279,13 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
     assert candidate["write_scope"] == []
     assert "report_unanswered_bridge_requests.py" in candidate["recommended_command"]
     assert "--agent codex-tools-1" in candidate["recommended_command"]
+    assert candidate["diagnostic_commands"][0] == candidate["recommended_command"]
+    assert any(
+        "check_bridge_wake_delivery.py" in command
+        and "--agent codex-tools-1" in command
+        and "--min-repeats 1" in command
+        for command in candidate["diagnostic_commands"]
+    )
     assert report["bridge_recommendation"]["production_liveness"][
         "stalled_agent_count"
     ] == 1

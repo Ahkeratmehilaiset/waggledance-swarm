@@ -43,6 +43,28 @@ If a Claude Code process is found running one of those model ids, it is a
 launcher/session fault, not a bridge nudge failure. Restart that session with a
 valid fallback model; do not retry bridge nudges as the primary fix.
 
+## Local model-pin diagnosis
+
+The read-only diagnostic entry point is:
+
+```powershell
+python tools\agent_cli_model_probe.py --live --json
+```
+
+The probe inspects local `Win32_Process` command lines in memory, redacts command
+paths from the report, and never restarts sessions, kills processes, appends
+bridge events, enqueues scheduler work, or grants runtime/merge authority.
+
+Interpretation:
+
+* exit `4` / `decision=restart_required_invalid_model` means an unavailable
+  Fable/Mythos model id is pinned; restart the affected Claude Code session with
+  a valid fallback model before retrying bridge nudges.
+* exit `0` / `decision=no_invalid_model_processes_observed` means the model pin
+  was not the observed blocker; continue bridge liveness diagnosis.
+* exit `2` / `decision=input_refused` means the process snapshot could not be
+  collected or parsed.
+
 ## Not a gate identity
 
 The consensus merge gate recognizes build identities

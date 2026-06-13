@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 
+import tools.agent_cli_model_probe as probe_module
 from tools.agent_cli_model_probe import (
     CLAIM_GATES,
+    collect_live_process_snapshot,
     main,
     probe_claude_code_models,
     read_process_snapshot,
@@ -117,6 +121,50 @@ def test_read_process_snapshot_rejects_non_finite_json(tmp_path: Path) -> None:
     path.write_text('[{"CommandLine": NaN}]', encoding="utf-8")
 
     assert main(["--processes-json", str(path), "--json"]) == 2
+
+
+def test_collect_live_process_snapshot_runs_redaction_probe_source(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps([_process(GOOD_COMMAND)]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    processes = collect_live_process_snapshot(runner=runner)
+
+    assert processes == [_process(GOOD_COMMAND)]
+    command, kwargs = calls[0]
+    assert command[:3] == ["powershell", "-NoProfile", "-NonInteractive"]
+    assert "Get-CimInstance Win32_Process" in command[-1]
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["timeout"] == 10
+    assert kwargs["check"] is False
+
+
+def test_cli_live_returns_warn_code_for_invalid_model(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        probe_module,
+        "collect_live_process_snapshot",
+        lambda: [_process(BAD_COMMAND)],
+    )
+
+    rc = main(["--live", "--json"])
+
+    assert rc == 4
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "restart_required_invalid_model"
+    assert payload["invalid_model_process_count"] == 1
+    encoded = json.dumps(payload, sort_keys=True)
+    assert "C:\\Users" not in encoded
+    assert "CommandLine" not in encoded
 
 
 def test_cli_returns_warn_code_for_invalid_model(tmp_path: Path, capsys) -> None:

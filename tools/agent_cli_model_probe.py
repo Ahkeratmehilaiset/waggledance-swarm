@@ -17,8 +17,9 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 DEFAULT_UNAVAILABLE_MODELS: tuple[str, ...] = (
@@ -53,12 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
             "nudge delivery can matter."
         ),
     )
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         "--processes-json",
-        required=True,
         help=(
             "JSON process snapshot path, or '-' for stdin. Accepts either a "
             "list of process objects or an object with a 'processes' list."
+        ),
+    )
+    source.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "Collect a read-only local Win32_Process snapshot in memory before "
+            "running the same redacted model-pin probe."
         ),
     )
     parser.add_argument(
@@ -83,7 +92,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     unavailable = tuple(args.unavailable_model or DEFAULT_UNAVAILABLE_MODELS)
     try:
-        processes = read_process_snapshot(args.processes_json)
+        if args.live:
+            processes = collect_live_process_snapshot()
+        else:
+            processes = read_process_snapshot(args.processes_json)
         report = probe_claude_code_models(
             processes=processes,
             unavailable_models=unavailable,
@@ -100,6 +112,44 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def read_process_snapshot(source: str) -> list[Mapping[str, Any]]:
     text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    return _decode_process_snapshot_text(text)
+
+
+def collect_live_process_snapshot(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    timeout_seconds: int = 10,
+) -> list[Mapping[str, Any]]:
+    if sys.platform != "win32":
+        raise ValueError("live_process_snapshot_requires_windows")
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | "
+        "ConvertTo-Json -Compress -Depth 4"
+    )
+    try:
+        result = runner(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("live_process_snapshot_unavailable") from exc
+    if result.returncode != 0:
+        raise ValueError("live_process_snapshot_command_failed")
+    return _decode_process_snapshot_text(result.stdout)
+
+
+def _decode_process_snapshot_text(text: str) -> list[Mapping[str, Any]]:
     try:
         payload = json.loads(text, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:

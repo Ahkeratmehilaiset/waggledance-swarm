@@ -45,6 +45,7 @@ from waggledance.core.bridge_event_hmac import (  # noqa: E402
     verify_event_signature,
 )
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 AUDIT_SCHEMA = "wd.bridge_event_signature_audit.v0"
 RECOGNIZED_AGENTS = (
@@ -138,7 +139,21 @@ def build_signature_audit(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--events", type=Path, default=None)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge runtime root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local."
+        ),
+    )
     parser.add_argument("--key-dir", type=Path, default=None)
     parser.add_argument(
         "--agent",
@@ -201,11 +216,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(hmac_obj, sort_keys=True))
         return 0
 
-    if args.events is None:
-        print("--events is required for an audit run", file=sys.stderr)
-        return 2
+    events_path = (
+        args.events
+        if args.events is not None
+        else resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
+    )
     report = build_signature_audit(
-        events_path=args.events,
+        events_path=events_path,
         key_dir=args.key_dir,
         agents=args.agents or list(RECOGNIZED_AGENTS),
         since=args.since,

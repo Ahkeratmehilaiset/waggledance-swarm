@@ -9,6 +9,9 @@ RCO must not be the PR author.
 
 Fail-closed rules (per spec):
 1. Scan only events authored by the recognized --rco-agent set on the given --task-id.
+   A deterministic author-agent namespace alias is accepted to avoid stalls
+   when agents write `author-agent/rest` while the queue supplied
+   `author-agent-rest`, or the reverse. No other task-id mismatch counts.
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
    AND message contains the exact --head (40-char SHA) string.
 3. If the MOST RECENT event from any recognized RCO on task_id is a veto
@@ -257,6 +260,8 @@ def _make_result(
         "has_qualifying_rco_pass_at_head": bool(has_qualifying_rco_pass_at_head),
         "has_task_id_mismatch_rco_pass_at_head": False,
         "task_id_mismatch_rco_events": [],
+        "task_id_aliases": [],
+        "accepted_task_id_alias_rco_events": [],
         "latest_rco_is_veto": latest_rco_is_veto,
         "rco_pass_event": (
             _summarize_event(rco_pass_event) if rco_pass_event is not None else None
@@ -358,9 +363,14 @@ def check_rco_pass_present(
         base["latest_rco_is_veto"] = False
         return base
 
+    task_id_aliases = _author_task_id_aliases(task_id, author_agent)
+    task_id_scope = frozenset((task_id, *task_id_aliases))
+    base["task_id_aliases"] = list(task_id_aliases)
+
     task_id_mismatch_rco_events = _find_task_id_mismatch_rco_pass_events(
         events=events,
         task_id=task_id,
+        task_id_aliases=task_id_aliases,
         head=head,
         eligible_rco_agents=eligible_rco_agents,
         identity_registry=registry,
@@ -370,14 +380,17 @@ def check_rco_pass_present(
         task_id_mismatch_rco_events
     )
 
-    # Collect all recognized-RCO events scoped to this task_id (exact match per spec)
+    # Collect all recognized-RCO events scoped to this task_id or its
+    # deterministic author-agent namespace alias.
     rco_events: list[tuple[int, Mapping[str, Any]]] = []
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    accepted_task_id_alias_rco_events: list[dict[str, Any]] = []
     restricted_agents = set(recognized_rco_agents)
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
-        if str(event.get("task_id", "")) != task_id:
+        event_task_id = str(event.get("task_id", ""))
+        if event_task_id not in task_id_scope:
             continue
         if str(event.get("agent", "")) not in recognized_rco_agents:
             continue
@@ -392,8 +405,15 @@ def check_rco_pass_present(
                 summary["identity_binding_status"] = binding_status
                 ignored_identity_mismatch_events.append(summary)
             continue
+        if event_task_id != task_id:
+            summary = _summarize_event(event)
+            if summary is not None:
+                accepted_task_id_alias_rco_events.append(summary)
         rco_events.append((index, event))
     base["ignored_identity_mismatch_events"] = ignored_identity_mismatch_events
+    base["accepted_task_id_alias_rco_events"] = (
+        accepted_task_id_alias_rco_events
+    )
 
     if not rco_events:
         base["decision"] = "no_rco_events_for_task"
@@ -473,16 +493,18 @@ def _find_task_id_mismatch_rco_pass_events(
     *,
     events: Sequence[Mapping[str, Any]],
     task_id: str,
+    task_id_aliases: Sequence[str],
     head: str,
     eligible_rco_agents: Sequence[str],
     identity_registry: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     mismatches: list[dict[str, Any]] = []
     restricted_agents = set(eligible_rco_agents)
+    task_id_scope = frozenset((task_id, *task_id_aliases))
     for event in events:
         if not isinstance(event, Mapping):
             continue
-        if str(event.get("task_id", "")) == task_id:
+        if str(event.get("task_id", "")) in task_id_scope:
             continue
         agent = str(event.get("agent", ""))
         if agent not in eligible_rco_agents:
@@ -498,6 +520,29 @@ def _find_task_id_mismatch_rco_pass_events(
             if summary is not None:
                 mismatches.append(summary)
     return mismatches
+
+
+def _author_task_id_aliases(task_id: str, author_agent: str) -> tuple[str, ...]:
+    """Return deterministic author namespace slash/hyphen aliases.
+
+    Bridge producers have historically used both `agent/rest` and
+    `agent-rest` as the first namespace separator. Restrict aliases to the
+    PR author prefix so a same-head RCO_PASS from an unrelated task cannot
+    satisfy the gate.
+    """
+
+    aliases: list[str] = []
+    slash_prefix = f"{author_agent}/"
+    hyphen_prefix = f"{author_agent}-"
+    if task_id.startswith(slash_prefix):
+        rest = task_id[len(slash_prefix):]
+        if rest:
+            aliases.append(f"{author_agent}-{rest}")
+    elif task_id.startswith(hyphen_prefix):
+        rest = task_id[len(hyphen_prefix):]
+        if rest:
+            aliases.append(f"{author_agent}/{rest}")
+    return tuple(aliases)
 
 
 def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:

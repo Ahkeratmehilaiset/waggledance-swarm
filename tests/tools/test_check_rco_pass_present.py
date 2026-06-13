@@ -419,7 +419,7 @@ def test_other_task_events_ignored() -> None:
     assert result["ok"] is False
 
 
-def test_other_task_exact_head_pass_is_reported_without_counting() -> None:
+def test_author_task_slash_alias_pass_counts_without_mismatch() -> None:
     target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
     slash_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
     events = [
@@ -435,18 +435,82 @@ def test_other_task_exact_head_pass_is_reported_without_counting() -> None:
 
     result = check_rco_pass_present(events=events, task_id=target_task, head=HEAD)
 
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["has_qualifying_rco_pass_at_head"] is True
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is False
+    assert result["task_id_aliases"] == [slash_task]
+    assert result["rco_pass_event"]["task_id"] == slash_task
+    assert result["accepted_task_id_alias_rco_events"] == [
+        {
+            "ts_utc": "2026-06-07T18:10:00Z",
+            "agent": "claude-rco-2",
+            "agent_uuid": AGENT_UUIDS["claude-rco-2"],
+            "type": "decision",
+            "status": "rco_pass",
+            "task_id": slash_task,
+        }
+    ]
+
+
+def test_author_task_alias_pass_is_blocked_by_later_canonical_veto() -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    slash_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
+    events = [
+        _rco_event(
+            ts="2026-06-07T18:10:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=slash_task,
+        ),
+        _rco_event(
+            ts="2026-06-07T18:11:00Z",
+            agent="claude-rco-2",
+            status="changes_requested",
+            type_="decision",
+            message="later canonical veto",
+            task_id=target_task,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=target_task, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["has_qualifying_rco_pass_at_head"] is True
+    assert result["blocking_rco_agents"] == ["claude-rco-2"]
+
+
+def test_unrelated_task_exact_head_pass_is_reported_without_counting() -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    other_task = "codex-tools-1/promotion-canonical-consensus-regressions-20260607"
+    events = [
+        _rco_event(
+            ts="2026-06-07T18:10:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=other_task,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=target_task, head=HEAD)
+
     assert result["ok"] is False
     assert result["decision"] == "no_rco_events_for_task"
     assert result["has_qualifying_rco_pass_at_head"] is False
     assert result["has_task_id_mismatch_rco_pass_at_head"] is True
     assert result["task_id_mismatch_rco_events"] == [
-            {
-                "ts_utc": "2026-06-07T18:10:00Z",
-                "agent": "claude-rco-2",
-                "agent_uuid": AGENT_UUIDS["claude-rco-2"],
-                "type": "decision",
-                "status": "rco_pass",
-                "task_id": slash_task,
+        {
+            "ts_utc": "2026-06-07T18:10:00Z",
+            "agent": "claude-rco-2",
+            "agent_uuid": AGENT_UUIDS["claude-rco-2"],
+            "type": "decision",
+            "status": "rco_pass",
+            "task_id": other_task,
         }
     ]
 
@@ -594,7 +658,7 @@ def test_cli_refuse_on_stale_head(tmp_path: Path) -> None:
         assert payload[key] is False
 
 
-def test_cli_json_reports_other_task_exact_head_pass_without_counting(
+def test_cli_json_accepts_author_task_slash_alias_pass(
     tmp_path: Path,
 ) -> None:
     target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
@@ -632,19 +696,20 @@ def test_cli_json_reports_other_task_exact_head_pass_without_counting(
         check=False,
     )
 
-    assert res.returncode != 0
+    assert res.returncode == 0, f"stderr={res.stderr} stdout={res.stdout}"
     payload = json.loads(res.stdout)
-    assert payload["ok"] is False
-    assert payload["decision"] == "no_rco_events_for_task"
-    assert payload["has_qualifying_rco_pass_at_head"] is False
-    assert payload["has_task_id_mismatch_rco_pass_at_head"] is True
-    assert payload["task_id_mismatch_rco_events"][0]["task_id"] == slash_task
-    assert payload["task_id_mismatch_rco_events"][0]["agent"] == "claude-rco-2"
+    assert payload["ok"] is True
+    assert payload["decision"] == "rco_pass_present"
+    assert payload["has_qualifying_rco_pass_at_head"] is True
+    assert payload["has_task_id_mismatch_rco_pass_at_head"] is False
+    assert payload["task_id_aliases"] == [slash_task]
+    assert payload["rco_pass_event"]["task_id"] == slash_task
+    assert payload["accepted_task_id_alias_rco_events"][0]["agent"] == "claude-rco-2"
 
 
 def test_cli_refuse_reports_other_task_mismatch_to_stderr(tmp_path: Path) -> None:
     target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
-    slash_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
+    unrelated_task = "codex-tools-1/promotion-canonical-consensus-regressions-20260607"
     events_path = _seed_events(
         tmp_path,
         [
@@ -653,7 +718,7 @@ def test_cli_refuse_reports_other_task_mismatch_to_stderr(tmp_path: Path) -> Non
                 status="rco_pass",
                 type_="decision",
                 message=f"RCO_PASS present at exact head {HEAD}",
-                task_id=slash_task,
+                task_id=unrelated_task,
             ),
         ],
     )
@@ -679,7 +744,7 @@ def test_cli_refuse_reports_other_task_mismatch_to_stderr(tmp_path: Path) -> Non
 
     assert res.returncode != 0
     assert "task-id mismatch pass candidate" in res.stderr
-    assert slash_task in res.stderr
+    assert unrelated_task in res.stderr
 
 
 def test_cli_refuse_on_changes_requested_after_pass(tmp_path: Path) -> None:

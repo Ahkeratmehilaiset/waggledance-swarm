@@ -22,13 +22,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from tools.idle_consensus_to_pr import (  # noqa: E402
     ELIGIBLE_DECISION,
     ConsensusToPrGateError,
     evaluate_consensus_to_pr_gate,
 )
 from waggledance.core.idle_consensus_charter import DEFAULT_CHARTER_PATH  # noqa: E402
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -52,7 +52,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compose an idle consensus DRAFT PR plan.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--charter", type=Path, default=DEFAULT_CHARTER_PATH)
     parser.add_argument("--changed-path", action="append", default=[])
     parser.add_argument("--diff-file", type=Path, default=None)
@@ -71,6 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_path = args.events
+    if events_path is None:
+        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
     diff_text = ""
     if args.diff_file is not None:
         diff_text = args.diff_file.read_text(encoding="utf-8")
@@ -80,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         report = build_draft_pr_plan(
-            events_path=args.events,
+            events_path=events_path,
             changed_paths=args.changed_path,
             diff_text=diff_text,
             charter_path=args.charter,

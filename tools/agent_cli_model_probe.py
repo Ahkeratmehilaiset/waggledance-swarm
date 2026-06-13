@@ -24,6 +24,8 @@ from typing import Any, Mapping, Sequence
 DEFAULT_UNAVAILABLE_MODELS: tuple[str, ...] = (
     "claude-fable-5",
     "claude-fable-5[1m]",
+    "claude-mythos-5",
+    "claude-mythos-5[1m]",
 )
 DEFAULT_REPLACEMENT_MODEL = "claude-opus-4-8"
 MODEL_ARG_RE = re.compile(
@@ -64,8 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help=(
-            "Known-unavailable model id. Repeatable. Defaults to the current "
-            "Fable aliases known to wedge Claude Code sessions."
+            "Known-unavailable model id. Repeatable. Defaults to Fable 5 and "
+            "Mythos 5 aliases known to wedge Claude Code sessions."
         ),
     )
     parser.add_argument(

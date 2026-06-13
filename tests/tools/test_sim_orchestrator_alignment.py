@@ -11,8 +11,14 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "tools" / "sim_orchestrator.py"
 
 
 def _write_jsonl(path: Path, events: list[dict]) -> None:
@@ -90,6 +96,14 @@ def _sample_events() -> list[dict]:
     ]
 
 
+def _seed_bridge(tmp_path: Path, events: list[dict]) -> tuple[Path, Path]:
+    bridge_root = tmp_path / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    _write_jsonl(events_path, events)
+    return bridge_root, events_path
+
+
 SCHEMA_METRIC_FIELDS = {
     "task_threads_total",
     "threads_with_claim",
@@ -108,6 +122,66 @@ SCHEMA_FORMAL_STATUSES = {
     "claim_required",
     "missing_claim",
 }
+
+
+def test_cli_defaults_to_runtime_bridge_root_env(tmp_path: Path) -> None:
+    bridge_root, events_path = _seed_bridge(tmp_path / "runtime", _sample_events())
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--since-hours",
+            "100000",
+            "--out",
+            "-",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["source"]["events_path"] == str(events_path)
+    assert payload["source"]["event_count"] == len(_sample_events())
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root_env(tmp_path: Path) -> None:
+    bridge_root, _runtime_events = _seed_bridge(tmp_path / "runtime", _sample_events())
+    explicit_events = tmp_path / "explicit.jsonl"
+    _write_jsonl(explicit_events, [_sample_events()[0]])
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--events",
+            str(explicit_events),
+            "--since-hours",
+            "100000",
+            "--out",
+            "-",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["source"]["events_path"] == str(explicit_events)
+    assert payload["source"]["event_count"] == 1
 
 
 def test_sim_orchestrator_emits_flight_plan_metric_vocabulary(tmp_path: Path) -> None:

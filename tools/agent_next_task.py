@@ -82,6 +82,32 @@ ACTIONABLE_PRODUCTION_LIVENESS_REASONS = {
     "heartbeat_only_since_activity",
     "no_activity_since_last_event",
 }
+RCO_RESPONSE_STATUSES = {
+    "rco_pass",
+    "changes_requested",
+    "rco_block",
+    "rco_blocked",
+    "blocked",
+    "block_requested",
+}
+RCO_REEMIT_GATE_TOKENS = (
+    "needs rco reemit",
+    "rco re-emit",
+    "rco-reemit",
+    "rco slug",
+    "rco-slug",
+    "no corrected rco",
+    "no rco events for task",
+    "task-id mismatch",
+    "task id mismatch",
+)
+KNOWN_AUTHOR_AGENTS = (
+    "codex-tools-1",
+    "codex-lead-1",
+    "claude-rco-1",
+    "claude-rco-2",
+    "grok-scout-1",
+)
 # A small, stable, charter-safe pool of always-available read-only
 # verification candidates. Each entry must point at an existing path
 # in the repo, must be a pytest target, and must require no external
@@ -419,6 +445,40 @@ def evaluate_agent_next_task(
                         "is responsible for claiming it before running, and "
                         "the diagnostic grants no scheduler, bridge-write, "
                         "merge, or gate-skip authority"
+                    ),
+                ],
+            })
+        rco_reemit_candidate = _pick_rco_reemit_watch(
+            agent=agent,
+            events=events,
+            bridge_root=Path(bridge_root),
+            now_utc=now_utc,
+        )
+        if rco_reemit_candidate is not None:
+            return _with_deferred_lift_state({
+                "decision": "claim_rco_reemit_watch_scout",
+                "next_action": "claim_and_run",
+                "exit_code": 0,
+                "agent": agent,
+                "underlying_bridge_action": bridge_action,
+                "bridge_recommendation": bridge_recommendation,
+                **_bridge_context(bridge_recommendation),
+                "candidate": rco_reemit_candidate,
+                "notes": [
+                    (
+                        "bridge_next_action left the next-work choice open, "
+                        "but the bridge already contains an unresolved "
+                        "open-PR queue item that only needs an RCO task-id "
+                        "re-emit or explicit RCO response"
+                    ),
+                    (
+                        "the picker advanced to a read-only RCO gate watch "
+                        "before routine smoke/scout rotation so mergeable PRs "
+                        "do not disappear into repeated generic scouts"
+                    ),
+                    (
+                        "the candidate grants no bridge-write, scheduler, "
+                        "RCO review, merge, or gate-skip authority"
                     ),
                 ],
             })
@@ -787,6 +847,345 @@ def _pick_production_liveness_reactivation(
             ),
         }
     return None
+
+
+def _pick_rco_reemit_watch(
+    *,
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    now_utc: datetime,
+) -> dict[str, Any] | None:
+    candidate = _latest_unresolved_rco_reemit_candidate(events=events)
+    if candidate is None:
+        return None
+
+    task_id = str(candidate["task_id"])
+    head = str(candidate["head"])
+    author_agent = str(candidate["author_agent"])
+    pr_number = candidate.get("pr")
+    pr_suffix = f"pr{pr_number}" if pr_number is not None else _slug_tail(task_id)
+    events_path = bridge_root / "shared" / "events.jsonl"
+    return {
+        "kind": "rco_task_id_reemit_watch_scout",
+        "target": ".agent-bridge/shared/events.jsonl",
+        "pr": pr_number,
+        "task_id": task_id,
+        "head": head,
+        "author_agent": author_agent,
+        "observed_from_task_id": candidate.get("observed_from_task_id"),
+        "observed_event_agent": candidate.get("observed_event_agent"),
+        "task_id_suggestion": (
+            "rco-reemit-watch-scout-"
+            f"{now_utc.strftime('%Y-%m-%d')}-{pr_suffix}"
+        ),
+        "mode": "read-only",
+        "write_scope": [],
+        "authority": "read_only_recommendation_only",
+        "acceptance": (
+            "Run the RCO-pass presence checker for the canonical task/head. "
+            "If it still refuses only for missing or mismatched RCO task id, "
+            "emit a concise bridge handoff requesting an exact task-id RCO "
+            "response; route any source change through a separate write claim."
+        ),
+        "recommended_command": (
+            "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe "
+            "tools\\check_rco_pass_present.py "
+            f"--task-id {task_id} "
+            f"--head {head} "
+            f"--author-agent {author_agent} "
+            f"--events {events_path} "
+            "--json"
+        ),
+    }
+
+
+def _latest_unresolved_rco_reemit_candidate(
+    *,
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    known_agents = _known_agents(events)
+    for index, event in enumerate(events):
+        for candidate in _rco_reemit_candidates_from_event(
+            event,
+            known_agents=known_agents,
+        ):
+            if _has_later_rco_response(
+                events=events,
+                candidate=candidate,
+                after_index=index,
+            ):
+                continue
+            candidate["observed_event_index"] = index
+            candidate["observed_event_agent"] = str(event.get("agent") or "")
+            candidate["observed_from_task_id"] = str(event.get("task_id") or "")
+            candidates.append(candidate)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(item["observed_event_index"]))
+
+
+def _rco_reemit_candidates_from_event(
+    event: Mapping[str, Any],
+    *,
+    known_agents: Sequence[str],
+) -> list[dict[str, Any]]:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for mapping, key_hint in _walk_payload_mappings(payload):
+        task_id = str(
+            mapping.get("required_task_id")
+            or mapping.get("canonical_task_id")
+            or ""
+        ).strip()
+        head = str(mapping.get("head") or mapping.get("head_sha") or "").strip()
+        if not task_id or not _is_full_sha(head):
+            continue
+
+        gate_text = _candidate_gate_text(mapping)
+        if not _looks_like_rco_reemit_gate(gate_text):
+            continue
+
+        author_agent = str(mapping.get("author_agent") or "").strip()
+        if not author_agent:
+            author_agent = _infer_author_agent(
+                task_id,
+                known_agents=known_agents,
+            )
+        if not author_agent:
+            continue
+
+        candidates.append({
+            "task_id": task_id,
+            "head": head.lower(),
+            "author_agent": author_agent,
+            "pr": _candidate_pr_number(mapping, key_hint=key_hint),
+            "gate": gate_text,
+        })
+    return candidates
+
+
+def _walk_payload_mappings(
+    value: Any,
+    *,
+    key_hint: str = "",
+) -> list[tuple[Mapping[str, Any], str]]:
+    found: list[tuple[Mapping[str, Any], str]] = []
+    if isinstance(value, Mapping):
+        found.append((value, key_hint))
+        for key, child in value.items():
+            child_key_hint = str(key)
+            found.extend(
+                _walk_payload_mappings(child, key_hint=child_key_hint)
+            )
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_walk_payload_mappings(child, key_hint=key_hint))
+    return found
+
+
+def _candidate_gate_text(mapping: Mapping[str, Any]) -> str:
+    values: list[str] = []
+    for key in (
+        "gate",
+        "rco_gate",
+        "next",
+        "required_response",
+        "status",
+        "message",
+        "blocker",
+        "reason",
+    ):
+        value = mapping.get(key)
+        if value:
+            values.append(str(value))
+    return " ".join(values).lower().replace("_", " ")
+
+
+def _looks_like_rco_reemit_gate(text: str) -> bool:
+    if "rco" not in text:
+        return False
+    normalized = text.replace("_", " ")
+    if "rco pass" in normalized and "required" in normalized:
+        return True
+    return any(token in text for token in RCO_REEMIT_GATE_TOKENS)
+
+
+def _candidate_pr_number(
+    mapping: Mapping[str, Any],
+    *,
+    key_hint: str,
+) -> int | None:
+    pr_value = mapping.get("pr") or mapping.get("pr_number")
+    try:
+        if pr_value is not None:
+            return int(pr_value)
+    except (TypeError, ValueError):
+        pass
+    if key_hint.startswith("pr") and key_hint[2:].isdigit():
+        return int(key_hint[2:])
+    return None
+
+
+def _has_later_rco_response(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+    after_index: int,
+) -> bool:
+    task_id = str(candidate["task_id"])
+    author_agent = str(candidate.get("author_agent") or "")
+    task_scope = {task_id, *_task_id_aliases(task_id, author_agent)}
+    pr_number = candidate.get("pr")
+    head = str(candidate.get("head") or "").lower()
+
+    for event in events[after_index + 1:]:
+        event_task_id = str(event.get("task_id") or "")
+        event_agent = str(event.get("agent") or "")
+        status = str(event.get("status") or "").lower()
+        message = str(event.get("message") or "").lower()
+        if (
+            event_task_id in task_scope
+            and event_agent.startswith("claude-rco-")
+            and (
+                status in RCO_RESPONSE_STATUSES
+                or ("rco" in status and "pass" in status)
+                or ("changes" in status and "requested" in status)
+            )
+            and _event_binds_head(event, head)
+        ):
+            return True
+        if (
+            pr_number is not None
+            and _event_mentions_pr(event, int(pr_number))
+            and _event_closes_pr(
+                event,
+                task_scope=task_scope,
+                pr_number=int(pr_number),
+            )
+        ):
+            return True
+        if head and head in message and event_agent.startswith("claude-rco-"):
+            if status in RCO_RESPONSE_STATUSES:
+                return True
+    return False
+
+
+def _task_id_aliases(task_id: str, author_agent: str) -> tuple[str, ...]:
+    if not author_agent:
+        return ()
+    slash_prefix = f"{author_agent}/"
+    hyphen_prefix = f"{author_agent}-"
+    if task_id.startswith(slash_prefix):
+        return (f"{hyphen_prefix}{task_id[len(slash_prefix):]}",)
+    if task_id.startswith(hyphen_prefix):
+        return (f"{slash_prefix}{task_id[len(hyphen_prefix):]}",)
+    return ()
+
+
+def _known_agents(events: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    agents = {
+        str(event.get("agent") or "")
+        for event in events
+        if isinstance(event, Mapping) and str(event.get("agent") or "")
+    }
+    agents.update(KNOWN_AUTHOR_AGENTS)
+    return tuple(sorted(agents, key=len, reverse=True))
+
+
+def _infer_author_agent(
+    task_id: str,
+    *,
+    known_agents: Sequence[str],
+) -> str:
+    for agent in known_agents:
+        if task_id.startswith(f"{agent}-") or task_id.startswith(f"{agent}/"):
+            return agent
+    return ""
+
+
+def _event_mentions_pr(event: Mapping[str, Any], pr_number: int) -> bool:
+    needle = f"#{pr_number}"
+    if needle in str(event.get("message") or ""):
+        return True
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        try:
+            if int(payload.get("pr")) == pr_number:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def _event_binds_head(event: Mapping[str, Any], head: str) -> bool:
+    if not head:
+        return False
+    if head in str(event.get("message") or "").lower():
+        return True
+    payload = event.get("payload")
+    if _payload_contains_head(payload, head):
+        return True
+    return False
+
+
+def _payload_contains_head(value: Any, head: str) -> bool:
+    if isinstance(value, str):
+        return value.lower() == head
+    if isinstance(value, Mapping):
+        return any(_payload_contains_head(child, head) for child in value.values())
+    if isinstance(value, list):
+        return any(_payload_contains_head(child, head) for child in value)
+    return False
+
+
+def _event_closes_pr(
+    event: Mapping[str, Any],
+    *,
+    task_scope: set[str],
+    pr_number: int,
+) -> bool:
+    event_type = str(event.get("type") or "").lower()
+    event_task_id = str(event.get("task_id") or "")
+    status = str(event.get("status") or "").lower()
+    message = str(event.get("message") or "").lower()
+    pr_token = f"#{pr_number}"
+    if (
+        "merged" in status
+        and event_task_id in task_scope
+    ):
+        return True
+    if (
+        f"merged pr {pr_token}" in message
+        or f"pr {pr_token} merged" in message
+        or f"{pr_token} merged" in message
+    ):
+        return True
+    return (
+        event_task_id in task_scope
+        and event_type in {"done", "release"}
+        and _status_is_successful(status)
+    )
+
+
+def _is_full_sha(value: str) -> bool:
+    if len(value) != 40:
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def _slug_tail(value: str) -> str:
+    normalized = "".join(
+        char if char.isalnum() else "-"
+        for char in value.lower()
+    ).strip("-")
+    if not normalized:
+        return "unknown"
+    return normalized[-48:]
 
 
 def _format_metadata(metadata: Mapping[str, Any]) -> str:

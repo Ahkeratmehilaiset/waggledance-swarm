@@ -693,6 +693,37 @@ def test_comma_separated_recipient_is_incoming_for_target_agent() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_operator_wake_request_is_incoming_for_target_agent() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260612",
+            "status": "open",
+            "severity": "medium",
+            "message": (
+                "jatka: read the bridge and answer open requests. "
+                "classification=rco_wake_requested openIncoming=1"
+            ),
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "bridge-follow-nudge-20260612"
+    assert report["incoming"]["type"] == "wake_request"
+    assert report["incoming"]["status"] == "open"
+    assert report["open_incoming_count"] == 1
+
+
 def test_reported_handoff_closes_round_two_request() -> None:
     events = [
         {

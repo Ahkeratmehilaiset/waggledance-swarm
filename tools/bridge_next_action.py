@@ -40,6 +40,7 @@ REQUEST_TYPES = {
     "message",
     "finding",
     "handoff",
+    "wake_request",
     "peer_review_request",
     "simulation_open",
     "sandbox_drop",

@@ -175,6 +175,41 @@ def test_defers_when_open_incoming_request(tmp_path: Path) -> None:
     assert report["bridge_recommendation"]["action"] == "answer_incoming"
 
 
+def test_defers_when_operator_wake_request_is_open(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:55:00Z",
+                "agent": "operator",
+                "to": "codex-tools-1",
+                "type": "wake_request",
+                "task_id": "bridge-follow-nudge-20260520",
+                "status": "open",
+                "severity": "medium",
+                "message": (
+                    "jatka: read the bridge and answer open requests. "
+                    "classification=rco_wake_requested openIncoming=1"
+                ),
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-tools-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["bridge_recommendation"]["action"] == "answer_incoming"
+    assert report["bridge_recommendation"]["task_id"] == "bridge-follow-nudge-20260520"
+    assert report["bridge_recommendation"]["incoming"]["type"] == "wake_request"
+
+
 def test_ignores_stale_incoming_request_using_agent_now(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(

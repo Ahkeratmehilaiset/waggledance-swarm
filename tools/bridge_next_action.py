@@ -1030,6 +1030,10 @@ def _is_merge_blocking_request(event: Mapping[str, Any]) -> bool:
         {"request", "requested", "required", "needed", "missing"}
     ):
         return True
+    if {"rco", "reemit"}.issubset(tokens) and tokens.intersection(
+        {"request", "requested", "required", "needed", "missing"}
+    ):
+        return True
     if "merge" in tokens and tokens.intersection(
         {"ready", "eligible", "blocking", "blocker", "required", "needed"}
     ):

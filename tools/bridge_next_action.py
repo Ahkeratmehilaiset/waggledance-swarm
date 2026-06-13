@@ -476,6 +476,8 @@ def _open_requests_for_agent(
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
+    closure_index = _build_request_closure_index(events)
+    idle_progress_index = _build_idle_protocol_progress_index(events)
     requests = [
         event
         for event in events
@@ -483,15 +485,54 @@ def _open_requests_for_agent(
     ]
     open_requests: list[Mapping[str, Any]] = []
     for request in requests:
-        answered = any(
-            _closes_request_for_agent(event=event, request=request, agent=agent)
-            for event in events
+        answered = _request_closed_by_index(
+            request=request,
+            agent=agent,
+            closure_index=closure_index,
         )
-        if not answered and _idle_protocol_progressed(request, events):
+        if not answered and _idle_protocol_progressed_by_index(
+            request,
+            idle_progress_index,
+        ):
             answered = True
         if not answered:
             open_requests.append(request)
     return open_requests
+
+
+def _build_request_closure_index(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Return latest answer-like event timestamps by task and closing agent."""
+    closure_index: dict[str, dict[str, str]] = {}
+    for event in events:
+        if not _is_answer_like(event):
+            continue
+        task_id = _task_id(event)
+        if not task_id:
+            continue
+        event_agent = _event_agent(event)
+        event_ts = _event_ts(event)
+        task_closures = closure_index.setdefault(task_id, {})
+        if event_ts > task_closures.get(event_agent, ""):
+            task_closures[event_agent] = event_ts
+    return closure_index
+
+
+def _request_closed_by_index(
+    *,
+    request: Mapping[str, Any],
+    agent: str,
+    closure_index: Mapping[str, Mapping[str, str]],
+) -> bool:
+    task_closures = closure_index.get(_task_id(request), {})
+    if not task_closures:
+        return False
+    request_ts = _event_ts(request)
+    for closing_agent in {agent, _event_agent(request)}:
+        if task_closures.get(closing_agent, "") > request_ts:
+            return True
+    return False
 
 
 def _deduplicate_repeated_wake_requests(
@@ -612,6 +653,37 @@ def _idle_protocol_progressed(
     request: Mapping[str, Any],
     events: Sequence[Mapping[str, Any]],
 ) -> bool:
+    return _idle_protocol_progressed_by_index(
+        request,
+        _build_idle_protocol_progress_index(events),
+    )
+
+
+def _build_idle_protocol_progress_index(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    progress_index: dict[str, str] = {}
+    for event in events:
+        payload = _payload(event)
+        if payload.get("protocol_version") != "idle-protocol.v1":
+            continue
+        event_ts = _event_ts(event)
+        for field in (
+            "responds_to",
+            "consensus_target_proposal_id",
+            "violating_proposal_id",
+            "rejected_event_id",
+        ):
+            proposal_id = str(payload.get(field) or "")
+            if proposal_id and event_ts > progress_index.get(proposal_id, ""):
+                progress_index[proposal_id] = event_ts
+    return progress_index
+
+
+def _idle_protocol_progressed_by_index(
+    request: Mapping[str, Any],
+    progress_index: Mapping[str, str],
+) -> bool:
     payload = _payload(request)
     if payload.get("protocol_version") != "idle-protocol.v1":
         return False
@@ -619,21 +691,7 @@ def _idle_protocol_progressed(
     if not proposal_id:
         return False
     request_ts = _event_ts(request)
-    for event in events:
-        if _event_ts(event) <= request_ts:
-            continue
-        later = _payload(event)
-        if later.get("protocol_version") != "idle-protocol.v1":
-            continue
-        if str(later.get("responds_to") or "") == proposal_id:
-            return True
-        if str(later.get("consensus_target_proposal_id") or "") == proposal_id:
-            return True
-        if str(later.get("violating_proposal_id") or "") == proposal_id:
-            return True
-        if str(later.get("rejected_event_id") or "") == proposal_id:
-            return True
-    return False
+    return progress_index.get(proposal_id, "") > request_ts
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:

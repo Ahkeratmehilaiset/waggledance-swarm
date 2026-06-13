@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import waggledance.core.bridge_identity_registry as identity_registry_module
 from tools.idle_consensus_auto_merge import (
     evaluate_auto_merge_gate,
     verify_bridge_consensus as _verify_bridge_consensus,
@@ -119,6 +120,28 @@ def test_happy_path_three_distinct_head_bound_identities() -> None:
     assert result["identities"]["rco"]["approved"] is True
     assert result["rco_pass_ref"]["agent"] == RCO
     assert result["head_sha"] == HEAD
+
+
+def test_missing_default_identity_registry_refuses_bridge_consensus(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    missing_registry = tmp_path / "missing_bridge_identity_registry.json"
+    monkeypatch.setattr(
+        identity_registry_module,
+        "DEFAULT_BRIDGE_IDENTITY_REGISTRY_PATH",
+        missing_registry,
+    )
+
+    result = verify_bridge_consensus(
+        events=_full_consensus(), task_id=TASK, head_sha=HEAD
+    )
+
+    assert result["ok"] is False
+    assert result["decision"] == "invalid_identity_registry"
+    assert any(
+        "bridge identity registry not found" in reason for reason in result["reasons"]
+    )
 
 
 def test_backup_rco_can_satisfy_rco_slot() -> None:

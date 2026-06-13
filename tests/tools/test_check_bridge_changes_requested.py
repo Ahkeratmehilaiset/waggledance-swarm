@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
 )
+import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
 
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
@@ -65,6 +66,29 @@ def test_clear_when_no_peer_signal_for_task() -> None:
     )
     assert result["clear_to_merge"] is True
     assert result["latest_blocking_event"] is None
+
+
+def test_missing_default_identity_registry_refuses_peer_gate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    missing_registry = tmp_path / "missing_bridge_identity_registry.json"
+    monkeypatch.setattr(
+        identity_registry_module,
+        "DEFAULT_BRIDGE_IDENTITY_REGISTRY_PATH",
+        missing_registry,
+    )
+
+    result = check_bridge_clear_to_merge(
+        events=[_event("2026-06-11T16:28:40Z", "codex", "decision", "rco_pass")],
+        task_id="T",
+        merging_agent="claude",
+    )
+
+    assert result["ok"] is False
+    assert result["clear_to_merge"] is False
+    assert result["decision"] == "invalid_identity_registry"
+    assert "bridge identity registry not found" in result["error"]
 
 
 def test_blocked_when_peer_changes_requested_is_latest() -> None:

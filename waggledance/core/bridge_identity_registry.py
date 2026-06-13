@@ -26,16 +26,21 @@ DEFAULT_BRIDGE_IDENTITY_REGISTRY_PATH = (
 
 def load_bridge_identity_registry(
     path: str | Path | None = None,
+    *,
+    allow_missing: bool = False,
 ) -> dict[str, str]:
     """Load and validate the operator-maintained identity registry.
 
-    A missing registry returns an empty mapping so historical/offline callers
-    can still run. A present but malformed registry fails closed with
-    ``ValueError``.
+    Gate-critical callers fail closed when the registry is missing. Historical
+    or offline callers that intentionally run without a registry must opt in
+    with ``allow_missing=True``. A present but malformed registry also fails
+    closed with ``ValueError``.
     """
     registry_path = Path(path) if path is not None else DEFAULT_BRIDGE_IDENTITY_REGISTRY_PATH
     if not registry_path.exists():
-        return {}
+        if allow_missing:
+            return {}
+        raise ValueError(f"{registry_path}: bridge identity registry not found")
     try:
         payload = json.loads(registry_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:

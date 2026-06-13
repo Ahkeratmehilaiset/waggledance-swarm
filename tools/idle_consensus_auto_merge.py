@@ -886,11 +886,6 @@ def verify_bridge_consensus(
     eligible_rco_agents = tuple(
         agent for agent in recognized_rco_agents if agent != author_agent
     )
-    registry = (
-        load_bridge_identity_registry()
-        if identity_registry is None
-        else dict(identity_registry)
-    )
     base: dict[str, Any] = {
         "ok": False,
         "decision": "bridge_consensus_incomplete",
@@ -950,6 +945,18 @@ def verify_bridge_consensus(
             "reasons": [
                 "head_sha must be a 40-char lowercase sha for consensus binding"
             ],
+        }
+    try:
+        registry = (
+            load_bridge_identity_registry()
+            if identity_registry is None
+            else dict(identity_registry)
+        )
+    except ValueError as exc:
+        return {
+            **base,
+            "decision": "invalid_identity_registry",
+            "reasons": [str(exc)],
         }
 
     latest_build_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}

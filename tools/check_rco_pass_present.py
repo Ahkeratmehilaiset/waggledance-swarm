@@ -307,11 +307,16 @@ def check_rco_pass_present(
     eligible_rco_agents = tuple(
         agent for agent in recognized_rco_agents if agent != author_agent
     )
-    registry = (
-        load_bridge_identity_registry()
-        if identity_registry is None
-        else dict(identity_registry)
-    )
+    registry: dict[str, str] = {}
+    registry_error: str | None = None
+    try:
+        registry = (
+            load_bridge_identity_registry()
+            if identity_registry is None
+            else dict(identity_registry)
+        )
+    except ValueError as exc:
+        registry_error = str(exc)
 
     base: dict[str, Any] = {
         "ok": False,
@@ -372,6 +377,10 @@ def check_rco_pass_present(
         base["decision"] = "no_eligible_rco_agents"
         base["error"] = "all recognized RCO agents are excluded as the PR author"
         base["latest_rco_is_veto"] = False
+        return base
+    if registry_error:
+        base["decision"] = "invalid_identity_registry"
+        base["error"] = registry_error
         return base
 
     task_id_aliases = _author_task_id_aliases(task_id, author_agent)

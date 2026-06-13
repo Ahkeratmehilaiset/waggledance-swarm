@@ -23,8 +23,8 @@ from tools.check_promotion_eligible import (  # noqa: E402
     DEFAULT_RCO_AGENTS,
     evaluate_promotion_eligibility,
 )
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from waggledance.core.idle_consensus_charter import DEFAULT_CHARTER_PATH  # noqa: E402
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 SAFETY_FALSE_FLAGS = (
     "external_effect",
@@ -38,7 +38,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Build a read-only promotion driver lag report.",
     )
     parser.add_argument("--pr-status-file", type=Path, required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--charter", type=Path, default=DEFAULT_CHARTER_PATH)
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--head", required=True)
@@ -68,9 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_path = (
+        args.events
+        or resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
+    )
     try:
         pr_status = _read_json_object(args.pr_status_file, "pr status file")
-        events = _read_jsonl_objects(args.events, "events")
+        events = _read_jsonl_objects(events_path, "events")
         prior_approved_diff_text = None
         if args.prior_approved_diff_file is not None:
             prior_approved_diff_text = args.prior_approved_diff_file.read_text(

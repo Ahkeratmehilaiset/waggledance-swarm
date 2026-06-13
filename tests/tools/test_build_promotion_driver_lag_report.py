@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -209,3 +210,52 @@ def test_cli_outputs_json_report_without_writing(tmp_path: Path) -> None:
     assert report["driver_action_required"] is True
     assert report["required_driver_actions"] == ["undraft", "merge"]
     assert report["read_only"] is True
+
+
+def test_cli_default_events_uses_runtime_bridge_root_env_from_other_cwd(
+    tmp_path: Path,
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(_status(), sort_keys=True), encoding="utf-8")
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in _full_events()),
+        encoding="utf-8",
+    )
+    other_cwd = tmp_path / "other-cwd"
+    other_cwd.mkdir()
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--pr-status-file",
+            str(status_path),
+            "--task-id",
+            TASK,
+            "--head",
+            HEAD,
+            "--pr-number",
+            "934",
+            "--origin-main-sha",
+            BASE,
+            "--author-agent",
+            "codex-lead-1",
+            "--json",
+        ],
+        cwd=str(other_cwd),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["decision"] == "promotion_driver_lag_detected"
+    assert report["driver_action_required"] is True

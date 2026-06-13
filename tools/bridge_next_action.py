@@ -354,6 +354,18 @@ def recommend_next_action(
         now_utc=effective_now,
         max_age_hours=open_request_max_age_hours,
     )
+    stale_suppression_index = _build_stale_incoming_suppression_index(
+        events,
+        agent=agent,
+    )
+    stale_open_requests = [
+        request
+        for request in stale_open_requests
+        if not _stale_request_suppressed_by_index(
+            request,
+            stale_suppression_index=stale_suppression_index,
+        )
+    ]
     open_requests = _deduplicate_repeated_wake_requests(
         open_request_events,
         agent=agent,
@@ -617,6 +629,55 @@ def _split_reported_and_archived_stale_requests(
         else:
             reported.append(request)
     return reported, archived
+
+
+def _build_stale_incoming_suppression_index(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    agent: str,
+) -> dict[str, str]:
+    """Return target-authored stale-sweep finding timestamps by stale task."""
+    suppression_index: dict[str, str] = {}
+    for event in events:
+        if _event_agent(event) != agent:
+            continue
+        if _event_type(event) != "finding":
+            continue
+        if "stale_incoming" not in _event_status(event):
+            continue
+        event_ts = _event_ts(event)
+        for task_id in _stale_finding_task_ids(event):
+            if event_ts > suppression_index.get(task_id, ""):
+                suppression_index[task_id] = event_ts
+    return suppression_index
+
+
+def _stale_finding_task_ids(event: Mapping[str, Any]) -> set[str]:
+    payload = _payload(event)
+    task_ids: set[str] = set(_string_list(payload.get("stale_task_ids")))
+    evidence = payload.get("evidence")
+    if isinstance(evidence, Sequence) and not isinstance(
+        evidence,
+        (str, bytes, bytearray),
+    ):
+        for item in evidence:
+            if not isinstance(item, Mapping):
+                continue
+            task_id = str(item.get("task_id") or "").strip()
+            if task_id:
+                task_ids.add(task_id)
+    return task_ids
+
+
+def _stale_request_suppressed_by_index(
+    request: Mapping[str, Any],
+    *,
+    stale_suppression_index: Mapping[str, str],
+) -> bool:
+    task_id = _task_id(request)
+    if not task_id:
+        return False
+    return stale_suppression_index.get(task_id, "") > _event_ts(request)
 
 
 def _split_active_and_stale_claims(

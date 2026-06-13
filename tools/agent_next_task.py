@@ -1056,6 +1056,7 @@ def _has_later_rco_response(
                 or ("rco" in status and "pass" in status)
                 or ("changes" in status and "requested" in status)
             )
+            and _event_binds_head(event, head)
         ):
             return True
         if (
@@ -1118,6 +1119,27 @@ def _event_mentions_pr(event: Mapping[str, Any], pr_number: int) -> bool:
                 return True
         except (TypeError, ValueError):
             pass
+    return False
+
+
+def _event_binds_head(event: Mapping[str, Any], head: str) -> bool:
+    if not head:
+        return False
+    if head in str(event.get("message") or "").lower():
+        return True
+    payload = event.get("payload")
+    if _payload_contains_head(payload, head):
+        return True
+    return False
+
+
+def _payload_contains_head(value: Any, head: str) -> bool:
+    if isinstance(value, str):
+        return value.lower() == head
+    if isinstance(value, Mapping):
+        return any(_payload_contains_head(child, head) for child in value.values())
+    if isinstance(value, list):
+        return any(_payload_contains_head(child, head) for child in value)
     return False
 
 

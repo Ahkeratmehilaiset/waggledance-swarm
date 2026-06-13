@@ -249,6 +249,11 @@ def test_cli_json_reports_unanswered_request(tmp_path: Path) -> None:
     )
 
     report = json.loads(result.stdout)
+    serialized = json.dumps(report, sort_keys=True)
     assert report["ok"] is True
     assert report["unanswered_count"] == 1
     assert report["requests"][0]["task_id"] == "task-1"
+    assert report["events_path_recorded"] is False
+    assert report["local_paths_recorded"] is False
+    assert str(events_path) not in serialized
+    assert "events.jsonl" not in serialized

@@ -113,7 +113,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_age_hours=args.max_age_hours,
             max_items=args.max_items,
             now_utc=_parse_now(args.now),
-            events_path=args.events,
         )
     except BridgeNextActionError as exc:
         report = {
@@ -150,7 +149,6 @@ def report_unanswered_requests(
     max_age_hours: float | None = DEFAULT_MAX_AGE_HOURS,
     max_items: int = DEFAULT_MAX_ITEMS,
     now_utc: datetime | None = None,
-    events_path: Path | None = None,
 ) -> dict[str, Any]:
     """Return unanswered incoming bridge requests grouped by target agent."""
     if min_age_minutes < 0:
@@ -214,8 +212,9 @@ def report_unanswered_requests(
     return {
         "ok": True,
         "decision": "unanswered_bridge_requests_report",
-        "events_path": str(events_path) if events_path is not None else "",
         "events_checked": len(events),
+        "events_path_recorded": False,
+        "local_paths_recorded": False,
         "min_age_minutes": min_age_minutes,
         "max_age_hours": max_age_hours,
         "max_items": max_items,

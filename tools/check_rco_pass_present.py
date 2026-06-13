@@ -47,6 +47,7 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
     bridge_identity_binding_status,
     load_bridge_identity_registry,
 )
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
@@ -102,8 +103,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--events",
         type=Path,
-        default=DEFAULT_EVENTS_PATH,
-        help="Path to bridge events.jsonl (default: .agent-bridge/shared/events.jsonl)",
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl)",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
     )
     parser.add_argument(
         "--rco-agent",
@@ -144,7 +154,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--author-agent must not be empty", file=sys.stderr)
         return 2
 
-    events_path: Path = args.events
+    events_path = _resolve_events_path(args.events, args.bridge_root)
     if not events_path.exists():
         result = _make_result(
             ok=False,
@@ -235,6 +245,12 @@ def _emit(result: dict[str, Any], as_json: bool) -> None:
                     f"{guidance.get('preferred_task_id')}",
                     file=sys.stderr,
                 )
+
+
+def _resolve_events_path(events_path: Path | None, bridge_root: Path | None) -> Path:
+    if events_path is not None:
+        return events_path
+    return resolve_bridge_root(bridge_root) / "shared" / "events.jsonl"
 
 
 def _make_result(

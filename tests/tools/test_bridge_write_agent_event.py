@@ -474,11 +474,12 @@ def test_grok_response_with_freshness_payload_writes_valid_event(
     validate_event_line(line)
 
 
-def test_rco_pass_rejects_missing_canonical_task_binding(
+def test_rco_pass_accepts_current_style_task_id_only_binding(
     tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-lead-1-rco-pass-task-binding-smoke"
 
     completed = _run_writer(
         root,
@@ -488,18 +489,25 @@ def test_rco_pass_rejects_missing_canonical_task_binding(
         "-Type",
         "decision",
         "-TaskId",
-        "codex-lead-1-rco-pass-task-binding-smoke",
+        task_id,
         "-Status",
         "rco_pass",
         "-Message",
         f"exact-head pass {MAIN_SHA}",
         "-PayloadJson",
-        json.dumps({"head": MAIN_SHA}, sort_keys=True),
+        json.dumps({"head": MAIN_SHA, "operator_gated": True}, sort_keys=True),
+        "-AgentUuid",
+        CLAUDE_RCO1_UUID,
     )
 
-    assert completed.returncode != 0
-    assert "rco_pass canonical task binding required" in completed.stderr
-    assert not runtime_root.exists()
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
+    event = json.loads(line)
+    assert event["task_id"] == task_id
+    assert event["payload"] == {"head": MAIN_SHA, "operator_gated": True}
+    validate_event_line(line, agent_uuid_by_id={"claude-rco-1": CLAUDE_RCO1_UUID})
 
 
 def test_rco_pass_rejects_wrong_task_against_canonical_binding(

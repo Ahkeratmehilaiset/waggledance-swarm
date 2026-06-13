@@ -382,7 +382,10 @@ function Assert-RcoPassTaskBinding {
         Add-RcoTaskBindingCandidate -Bindings $bindings -Value (Get-BridgeObjectField -Object $Payload -Name 'accepted_task_ids')
     }
     if ($bindings.Count -eq 0) {
-        throw "rco_pass canonical task binding required"
+        # Existing RCO writers bind by -TaskId and carry payload {head,
+        # operator_gated}. Keep that path working while enforcing any explicit
+        # canonical binding when a caller supplies one.
+        Add-RcoTaskBindingCandidate -Bindings $bindings -Value $TaskId
     }
 
     $allowedTaskIds = [System.Collections.ArrayList]::new()

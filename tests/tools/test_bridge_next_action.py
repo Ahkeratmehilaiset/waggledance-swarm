@@ -1396,6 +1396,48 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
     assert "production_liveness" not in report
 
 
+def test_suppressed_liveness_lane_is_not_counted_as_actionable_stall() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "fable-5",
+            "type": "status",
+            "task_id": "fable-bootstrap",
+            "status": "active",
+            "message": "producer lane bootstrap",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00Z",
+            "agent": "codex-lead-1",
+            "type": "status",
+            "task_id": "lead-slice",
+            "status": "working",
+            "message": "coding",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+        production_liveness_suppressed_agents={
+            "fable-5": "model access disabled by operator report"
+        },
+    )
+
+    liveness = report["production_liveness"]
+    assert liveness["stalled_agent_count"] == 1
+    assert [item["agent"] for item in liveness["stalled_agents"]] == [
+        "codex-lead-1"
+    ]
+    assert liveness["suppressed_stalled_agent_count"] == 1
+    suppressed = liveness["suppressed_stalled_agents"][0]
+    assert suppressed["agent"] == "fable-5"
+    assert suppressed["suppressed_reason"] == "model access disabled by operator report"
+
+
 def test_idle_protocol_counter_is_closed_by_later_consensus_target() -> None:
     events = [
         {
@@ -1713,6 +1755,60 @@ def test_cli_rejects_non_finite_production_idle_warn_minutes(
         report = json.loads(capsys.readouterr().out)
         assert report["decision"] == "bridge_next_action_error"
         assert report["errors"] == ["production_idle_warn_minutes must be positive"]
+
+
+def test_cli_loads_liveness_suppression_config(tmp_path: Path, capsys) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-06-06T10:00:00Z",
+                "agent": "grok-scout-1",
+                "type": "blocked",
+                "task_id": "grok-budget",
+                "status": "redteam_blocked",
+                "message": "budget unavailable",
+            }
+        ],
+    )
+    suppression_config = tmp_path / "bridge_liveness_suppression.json"
+    suppression_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "suppressed_agents": {
+                    "grok-scout-1": {
+                        "reason": "budget unavailable until reset"
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex-lead-1",
+            "--bridge-root",
+            str(bridge),
+            "--events",
+            str(events_path),
+            "--now",
+            "2026-06-06T10:20:00Z",
+            "--production-liveness-suppression-config",
+            str(suppression_config),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    liveness = report["production_liveness"]
+    assert liveness["stalled_agent_count"] == 0
+    assert liveness["suppressed_stalled_agent_count"] == 1
+    assert liveness["suppressed_stalled_agents"][0]["agent"] == "grok-scout-1"
 
 
 def test_private_marker_in_selected_output_is_refused() -> None:

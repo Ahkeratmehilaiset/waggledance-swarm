@@ -34,6 +34,9 @@ from waggledance.core.work_queue import (  # noqa: E402
 
 
 DEFAULT_EVENTS_PATH = DEFAULT_BRIDGE_ROOT / "shared" / "events.jsonl"
+DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG = (
+    ROOT / "configs" / "bridge_liveness_suppression.json"
+)
 DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS = 12.0
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 REQUEST_TYPES = {
@@ -165,6 +168,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--production-liveness-suppression-config",
+        type=Path,
+        default=DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG,
+        help=(
+            "Optional JSON config listing intentionally unavailable bridge "
+            "agents to separate from actionable production-liveness stalls."
+        ),
+    )
+    parser.add_argument(
         "--now",
         default=None,
         help="Override current UTC time for request-age evaluation.",
@@ -190,6 +202,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "errors": ["now must be an ISO-8601 timestamp"],
                     }
                 )
+        production_liveness_suppressed_agents = (
+            _load_production_liveness_suppression_config(
+                Path(args.production_liveness_suppression_config)
+            )
+        )
         report = recommend_next_action(
             agent=args.agent,
             events=events,
@@ -198,6 +215,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             open_request_max_age_hours=args.open_request_max_age_hours,
             stale_report_max_age_hours=args.stale_report_max_age_hours,
             production_idle_warn_minutes=args.production_idle_warn_minutes,
+            production_liveness_suppressed_agents=(
+                production_liveness_suppressed_agents
+            ),
         )
     except (BridgeNextActionError, WorkQueueError) as exc:
         if isinstance(exc, BridgeNextActionError):
@@ -271,6 +291,70 @@ def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
     return events
 
 
+def _load_production_liveness_suppression_config(path: Path) -> dict[str, str]:
+    """Load optional liveness suppression config for unavailable agent lanes."""
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": [
+                    (
+                        "invalid production liveness suppression config JSON: "
+                        f"{exc.msg}"
+                    )
+                ],
+            }
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": [
+                    "production liveness suppression config must be a JSON object"
+                ],
+            }
+        )
+    agents = raw.get("suppressed_agents", {})
+    if not isinstance(agents, Mapping):
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": ["suppressed_agents must be an object"],
+            }
+        )
+
+    suppressed: dict[str, str] = {}
+    for agent, metadata in agents.items():
+        agent_id = str(agent)
+        if not AGENT_ID_PATTERN.fullmatch(agent_id):
+            raise BridgeNextActionError(
+                {
+                    "ok": False,
+                    "decision": "bridge_next_action_error",
+                    "errors": [
+                        (
+                            "suppressed agent id must match "
+                            f"{AGENT_ID_PATTERN.pattern}: {agent_id!r}"
+                        )
+                    ],
+                }
+            )
+        if isinstance(metadata, Mapping):
+            reason = str(metadata.get("reason") or "")
+        else:
+            reason = str(metadata or "")
+        suppressed[agent_id] = reason
+    _assert_no_private_markers(suppressed)
+    return dict(sorted(suppressed.items()))
+
+
 def recommend_next_action(
     *,
     agent: str,
@@ -284,6 +368,7 @@ def recommend_next_action(
     production_idle_warn_minutes: float | None = (
         DEFAULT_PRODUCTION_IDLE_WARN_MINUTES
     ),
+    production_liveness_suppressed_agents: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return a deterministic next-action recommendation for ``agent``."""
     if not AGENT_ID_PATTERN.fullmatch(agent):
@@ -381,6 +466,7 @@ def recommend_next_action(
         events=events,
         now_utc=effective_now,
         idle_warn_minutes=production_idle_warn_minutes,
+        suppressed_agents=production_liveness_suppressed_agents,
     )
     merge_blocking_request = _latest_merge_blocking_request(open_requests)
 
@@ -939,10 +1025,12 @@ def _production_liveness_report(
     events: Sequence[Mapping[str, Any]],
     now_utc: datetime,
     idle_warn_minutes: float | None,
+    suppressed_agents: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if idle_warn_minutes is None:
         return {}
 
+    suppressed_lookup = dict(suppressed_agents or {})
     states: dict[str, dict[str, Any]] = {}
     for event in events:
         event_ts = _parse_utc(_event_ts(event))
@@ -981,6 +1069,7 @@ def _production_liveness_report(
             state["last_activity_task_id"] = _task_id(event)
 
     stalled: list[dict[str, Any]] = []
+    suppressed_stalled: list[dict[str, Any]] = []
     for event_agent, state in states.items():
         first_event_ts = state["first_event_ts"]
         last_heartbeat_ts = state["last_heartbeat_ts"]
@@ -989,14 +1078,19 @@ def _production_liveness_report(
             observed_minutes = _elapsed_minutes(now_utc, first_event_ts)
             if observed_minutes < idle_warn_minutes:
                 continue
-            stalled.append(
-                {
-                    "agent": event_agent,
-                    "reason": "heartbeat_only_in_selected_events",
-                    "first_observed_ts_utc": _format_utc(first_event_ts),
-                    "last_heartbeat_ts_utc": _format_utc(last_heartbeat_ts),
-                    "observed_minutes": _round_minutes(observed_minutes),
-                }
+            record = {
+                "agent": event_agent,
+                "reason": "heartbeat_only_in_selected_events",
+                "first_observed_ts_utc": _format_utc(first_event_ts),
+                "last_heartbeat_ts_utc": _format_utc(last_heartbeat_ts),
+                "observed_minutes": _round_minutes(observed_minutes),
+            }
+            _append_liveness_record(
+                event_agent=event_agent,
+                record=record,
+                stalled=stalled,
+                suppressed_stalled=suppressed_stalled,
+                suppressed_lookup=suppressed_lookup,
             )
             continue
 
@@ -1011,8 +1105,9 @@ def _production_liveness_report(
             if heartbeat_only
             else "no_activity_since_last_event"
         )
-        stalled.append(
-            {
+        _append_liveness_record(
+            event_agent=event_agent,
+            record={
                 "agent": event_agent,
                 "reason": reason,
                 "last_activity_ts_utc": _format_utc(last_activity_ts),
@@ -1022,23 +1117,48 @@ def _production_liveness_report(
                 "last_heartbeat_ts_utc": _format_utc(last_heartbeat_ts),
                 "idle_minutes": _round_minutes(idle_minutes),
                 "heartbeat_only_since_activity": heartbeat_only,
-            }
+            },
+            stalled=stalled,
+            suppressed_stalled=suppressed_stalled,
+            suppressed_lookup=suppressed_lookup,
         )
 
-    if not stalled:
+    if not stalled and not suppressed_stalled:
         return {}
-    stalled.sort(
-        key=lambda item: (
-            float(item.get("idle_minutes") or item.get("observed_minutes") or 0.0),
-            str(item.get("agent") or ""),
-        ),
-        reverse=True,
-    )
-    return {
+    for records in (stalled, suppressed_stalled):
+        records.sort(
+            key=lambda item: (
+                float(item.get("idle_minutes") or item.get("observed_minutes") or 0.0),
+                str(item.get("agent") or ""),
+            ),
+            reverse=True,
+        )
+    report: dict[str, Any] = {
         "idle_warn_minutes": float(idle_warn_minutes),
         "stalled_agent_count": len(stalled),
         "stalled_agents": stalled,
     }
+    if suppressed_stalled:
+        report["suppressed_stalled_agent_count"] = len(suppressed_stalled)
+        report["suppressed_stalled_agents"] = suppressed_stalled
+    return report
+
+
+def _append_liveness_record(
+    *,
+    event_agent: str,
+    record: dict[str, Any],
+    stalled: list[dict[str, Any]],
+    suppressed_stalled: list[dict[str, Any]],
+    suppressed_lookup: Mapping[str, str],
+) -> None:
+    suppressed_reason = suppressed_lookup.get(event_agent)
+    if suppressed_reason is None:
+        stalled.append(record)
+        return
+    suppressed_record = dict(record)
+    suppressed_record["suppressed_reason"] = suppressed_reason
+    suppressed_stalled.append(suppressed_record)
 
 
 def _elapsed_minutes(later: datetime, earlier: datetime) -> float:
@@ -1247,6 +1367,14 @@ def _print_human(report: Mapping[str, Any]) -> None:
         stalled_count = int(liveness.get("stalled_agent_count", 0) or 0)
         if stalled_count:
             print(f"production_liveness_stalled_agent_count: {stalled_count}")
+        suppressed_count = int(
+            liveness.get("suppressed_stalled_agent_count", 0) or 0
+        )
+        if suppressed_count:
+            print(
+                "production_liveness_suppressed_stalled_agent_count: "
+                f"{suppressed_count}"
+            )
     print(f"summary: {report.get('summary', '')}")
 
 

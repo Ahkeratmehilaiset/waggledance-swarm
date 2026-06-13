@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "suppressed_agents": {
+    "fable-5": {
+      "reason": "operator-reported Fable 5 access disabled; keep lane out of actionable production liveness until model access is restored"
+    },
+    "grok-scout-1": {
+      "reason": "operator-reported Grok budget unavailable until July; advisory lane is suppressed from actionable production liveness"
+    },
+    "mythos": {
+      "reason": "operator-reported Mythos 5 access disabled; keep lane out of actionable production liveness until model access is restored"
+    }
+  }
+}

@@ -40,6 +40,8 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
+    DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG,
+    _load_production_liveness_suppression_config,
     read_events,
     recommend_next_action,
 )
@@ -228,6 +230,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum bridge event lines to read from the end of the JSONL file.",
     )
     parser.add_argument("--now", default=None)
+    parser.add_argument(
+        "--production-liveness-suppression-config",
+        type=Path,
+        default=DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG,
+        help=(
+            "Optional JSON config listing intentionally unavailable bridge "
+            "agents to separate from actionable production-liveness stalls."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -243,6 +254,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         bridge_root=bridge_root,
         tail=args.tail,
         now_utc=now_utc,
+        production_liveness_suppression_config=Path(
+            args.production_liveness_suppression_config
+        ),
     )
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -279,6 +293,9 @@ def evaluate_agent_next_task(
     bridge_root: Path = DEFAULT_BRIDGE_ROOT,
     tail: int = 50000,
     now_utc: datetime,
+    production_liveness_suppression_config: Path | None = (
+        DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG
+    ),
 ) -> dict[str, Any]:
     """Return one deterministic continuous-loop recommendation for ``agent``.
 
@@ -301,6 +318,13 @@ def evaluate_agent_next_task(
     try:
         events = read_events(events_path, tail=tail)
         claims = list_claims(bridge_root=Path(bridge_root))
+        production_liveness_suppressed_agents = (
+            _load_production_liveness_suppression_config(
+                Path(production_liveness_suppression_config)
+            )
+            if production_liveness_suppression_config is not None
+            else {}
+        )
     except (BridgeNextActionError, WorkQueueError, OSError) as exc:
         return _with_deferred_lift_state({
             "decision": "unknown",
@@ -318,6 +342,9 @@ def evaluate_agent_next_task(
             events=events,
             claims=claims,
             now_utc=now_utc,
+            production_liveness_suppressed_agents=(
+                production_liveness_suppressed_agents
+            ),
         )
     except BridgeNextActionError as exc:
         return _with_deferred_lift_state({

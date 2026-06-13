@@ -62,11 +62,17 @@ _BUILDER_MODULE = _load_module(
     REPO / "tools" / "build_agent_flight_plan.py", "_afp_builder"
 )
 
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
+
 # Bridge classifier (regression-class triage) lives under .orchestrator/.
 _CLASSIFIER_MODULE = _load_module(
     REPO / ".orchestrator" / "bridge_classify.py", "_bridge_classify"
 )
 classify = getattr(_CLASSIFIER_MODULE, "classify", None) if _CLASSIFIER_MODULE else None
+
+
+def default_events_path(bridge_root: Path | None = None) -> Path:
+    return resolve_bridge_root(bridge_root) / "shared" / "events.jsonl"
 
 
 def _load_statuses() -> dict[str, str]:
@@ -624,12 +630,11 @@ def get_current_metrics(
     Equivalent to build_report() but operating on the live in-memory
     StreamState rather than a one-shot file read.
 
-    events_path -- the active tailed events path. Falls back to the
-    global default EVENTS_PATH only when not supplied; callers that
-    tail a custom file MUST pass it so the audit envelope's
-    source.events_path matches the actual source (Codex RCO round-2
-    fix #1: prior implementation reported the global default even
-    when stream() was tailing a different path).
+    events_path -- the active tailed events path. Falls back to the runtime
+    bridge root only when not supplied; callers that tail a custom file MUST
+    pass it so the audit envelope's source.events_path matches the actual
+    source (Codex RCO round-2 fix #1: prior implementation reported the
+    global default even when stream() was tailing a different path).
 
     snapshot_count -- override the count embedded in the envelope.
     Defaults to state.snapshot_count. stream() now passes
@@ -642,7 +647,7 @@ def get_current_metrics(
     metrics = compute_aligned_metrics(state.threads, statuses)
     last_event_ts = state.events[-1].ts.isoformat() if state.events else ""
     resolved_path = (
-        str(events_path) if events_path is not None else str(EVENTS_PATH)
+        str(events_path) if events_path is not None else str(default_events_path())
     )
     resolved_count = (
         snapshot_count if snapshot_count is not None
@@ -668,7 +673,7 @@ def get_current_metrics(
 
 def stream(
     *,
-    events_path: Path | str = EVENTS_PATH,
+    events_path: Path | str | None = None,
     emit_interval_s: float = 30.0,
     profile_config_ref: str = "default",
     emit_snapshot: Callable[[dict], str],
@@ -697,7 +702,7 @@ def stream(
     import time as _time
 
     state = initial_state if initial_state is not None else StreamState()
-    path = Path(events_path)
+    path = Path(events_path) if events_path is not None else default_events_path()
     statuses = statuses if statuses is not None else _load_statuses()
     clock = clock_fn or _time.monotonic
     sleep = sleep_fn or _time.sleep
@@ -745,20 +750,35 @@ def stream(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--events", default=str(EVENTS_PATH))
+    ap.add_argument(
+        "--events",
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl)",
+    )
+    ap.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the runtime .agent-bridge directory. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT / AGENT_BRIDGE_ROOT when set, then "
+            "repo-local .agent-bridge."
+        ),
+    )
     ap.add_argument("--since-hours", type=float, default=48.0)
     ap.add_argument("--approach", choices=["B"], default="B")
     ap.add_argument("--out", default="-")
     args = ap.parse_args()
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
-    events = parse_events(Path(args.events), cutoff)
+    events_path = Path(args.events) if args.events else default_events_path(args.bridge_root)
+    events = parse_events(events_path, cutoff)
     threads = build_threads(events)
 
     report = build_report(
         events,
         threads,
-        events_path=args.events,
+        events_path=str(events_path),
         since_hours=args.since_hours,
         cutoff=cutoff,
         approach=args.approach,

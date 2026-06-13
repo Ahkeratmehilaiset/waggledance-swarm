@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import tools.bridge_next_action as bridge_next_action
 from tools.bridge_next_action import (
     BridgeNextActionError,
     main,
@@ -171,6 +172,53 @@ def test_recommends_answering_latest_unanswered_incoming_request() -> None:
     assert report["incoming"]["agent"] == "claude"
     assert report["open_incoming_count"] == 1
     assert report["stale_incoming_count"] == 0
+
+
+def test_open_request_closure_scan_is_indexed(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+    for index in range(200):
+        events.append(
+            {
+                "ts_utc": f"2026-05-18T10:{index // 60:02d}:{index % 60:02d}Z",
+                "agent": "claude",
+                "to": "codex",
+                "type": "message",
+                "task_id": f"request-{index}",
+                "status": "request",
+                "message": "please review",
+            }
+        )
+    for index in range(200):
+        events.append(
+            {
+                "ts_utc": f"2026-05-18T11:{index // 60:02d}:{index % 60:02d}Z",
+                "agent": "codex",
+                "type": "done",
+                "task_id": f"request-{index}",
+                "status": "done",
+                "message": "answered",
+            }
+        )
+
+    answer_like_calls = 0
+    original = bridge_next_action._is_answer_like
+
+    def counting_is_answer_like(event):
+        nonlocal answer_like_calls
+        answer_like_calls += 1
+        return original(event)
+
+    monkeypatch.setattr(
+        bridge_next_action,
+        "_is_answer_like",
+        counting_is_answer_like,
+    )
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert answer_like_calls == len(events)
 
 
 def test_request_changes_status_remains_open_request() -> None:

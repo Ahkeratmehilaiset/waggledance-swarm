@@ -189,6 +189,7 @@ def test_cli_rejects_free_string_operator_id(tmp_path: Path) -> None:
     assert completed.stderr == ""
     assert report["ok"] is False
     assert report["preflight"] is None
+    assert report["events_checked"] == 1
     assert report["blockers"][0]["code"] == "operator_feedback_validation_failed"
     assert "verified bridge identity" in report["blockers"][0]["message"]
 
@@ -213,6 +214,7 @@ def test_cli_rejects_missing_feedback_id_without_path_leak(tmp_path: Path) -> No
     assert completed.stderr == ""
     assert report["ok"] is False
     assert report["preflight"] is None
+    assert report["events_checked"] == 1
     assert "durable bridge log" in report["blockers"][0]["message"]
     assert str(events_path) not in serialized
     assert "events.jsonl" not in serialized
@@ -241,6 +243,7 @@ def test_cli_tail_limits_bridge_log_window(tmp_path: Path) -> None:
     assert completed.returncode == 1
     report = json.loads(completed.stdout)
     assert report["ok"] is False
+    assert report["events_checked"] == 1
     assert "durable bridge log" in report["blockers"][0]["message"]
 
 
@@ -264,4 +267,5 @@ def test_cli_rejects_operator_identity_mismatch(tmp_path: Path) -> None:
     assert completed.returncode == 1
     report = json.loads(completed.stdout)
     assert report["ok"] is False
+    assert report["events_checked"] == 1
     assert "verified bridge identity" in report["blockers"][0]["message"]

@@ -86,8 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_checked = 0
     try:
         durable_events = read_durable_bridge_events(args.events, tail=args.tail)
+        events_checked = len(durable_events)
         report = build_operator_feedback_scheduler_preflight_cli_report(
             feedback_id=args.feedback_id,
             durable_bridge_events=durable_events,
@@ -96,6 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OperatorFeedbackValidationError, ValueError) as exc:
         report = build_failure_report(
             feedback_id=str(args.feedback_id or ""),
+            events_checked=events_checked,
             code=_error_code_for(exc),
             message=_safe_error_message(exc),
         )
@@ -174,10 +177,15 @@ def build_operator_feedback_scheduler_preflight_cli_report(
 def build_failure_report(
     *,
     feedback_id: str,
+    events_checked: int = 0,
     code: str,
     message: str,
 ) -> dict[str, Any]:
-    report = _base_report(feedback_id=feedback_id, events_checked=0, ok=False)
+    report = _base_report(
+        feedback_id=feedback_id,
+        events_checked=events_checked,
+        ok=False,
+    )
     report.update({
         "verified_operator_id": "",
         "rate_limit_source": "durable_bridge_log",

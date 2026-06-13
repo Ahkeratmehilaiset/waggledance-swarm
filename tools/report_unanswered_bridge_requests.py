@@ -35,7 +35,7 @@ from tools.bridge_next_action import (  # noqa: E402
     _task_id,
     read_events,
 )
-from waggledance.core.work_queue import AGENT_ID_PATTERN  # noqa: E402
+from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
 
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
@@ -61,7 +61,21 @@ def build_parser() -> argparse.ArgumentParser:
             "remain unanswered by those target agents."
         ),
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument(
         "--agent",
         action="append",
@@ -106,9 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
     try:
         report = report_unanswered_requests(
-            events=read_events(args.events, tail=args.tail),
+            events=read_events(events_path, tail=args.tail),
             agents=args.agent,
             min_age_minutes=args.min_age_minutes,
             max_age_hours=args.max_age_hours,

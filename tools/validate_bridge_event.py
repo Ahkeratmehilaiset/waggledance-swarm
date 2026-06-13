@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -23,6 +23,14 @@ from waggledance.core.bridge_event_schema import (
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
+IDENTITY_AUDIT_VERSION = "bridge-identity-registry-audit.v1"
+GATE_RELEVANT_STATUSES = frozenset({
+    "autonomous_merge_receipt",
+    "build_consensus_pass",
+    "merged_operator_authorized",
+    "operator_authorized",
+    "rco_pass",
+})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +76,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--identity-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Optional configs/bridge_identity_registry.json path. When supplied, "
+            "emit a registered-agent UUID hygiene audit summary."
+        ),
+    )
+    parser.add_argument(
+        "--identity-registry-mode",
+        choices=["warn", "strict"],
+        default="warn",
+        help=(
+            "Whether identity-registry UUID audit findings are warnings or "
+            "non-zero failures. Defaults to warn."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON summary.",
@@ -102,6 +128,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"bridge event schema FAILED: invalid agent profiles: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        identity_registry_uuids = _load_identity_registry_uuids(
+            args.identity_registry,
+        )
+    except ValueError as exc:
+        print(
+            f"bridge event schema FAILED: invalid identity registry: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
     result = validate_event_file(
         args.events,
         tail=args.tail,
@@ -110,6 +147,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         waived_line_errors=waiver_errors,
         agent_uuid_by_id=agent_uuid_by_id,
     )
+    identity_registry_audit = None
+    if args.identity_registry is not None:
+        identity_registry_audit = _audit_identity_registry_uuids(
+            args.events,
+            identity_registry_uuids,
+            tail=args.tail,
+            max_examples=args.max_errors,
+            mode=args.identity_registry_mode,
+            registry_path=args.identity_registry,
+        )
     _print_result(
         result,
         json_output=args.json,
@@ -117,8 +164,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         waivers_loaded=len(waiver_hashes),
         agent_profiles_path=args.agent_profiles,
         agent_profiles_loaded=len(agent_uuid_by_id),
+        identity_registry_audit=identity_registry_audit,
     )
-    return 0 if result.ok else 1
+    identity_registry_ok = (
+        identity_registry_audit is None
+        or args.identity_registry_mode == "warn"
+        or bool(identity_registry_audit["ok"])
+    )
+    return 0 if result.ok and identity_registry_ok else 1
 
 
 def _load_waivers(path: Path) -> tuple[dict[int, str], dict[int, str]]:
@@ -193,6 +246,171 @@ def _load_agent_profile_uuids(path: Path | None) -> dict[str, str]:
     return profiles
 
 
+def _load_identity_registry_uuids(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    if not path.exists():
+        raise ValueError(f"{path}: missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path}: registry must be a JSON object")
+    identities = payload.get("identities")
+    if not isinstance(identities, dict):
+        raise ValueError(f"{path}: identities must be an object")
+    registry: dict[str, str] = {}
+    for agent_id, agent_uuid in sorted(identities.items()):
+        if not isinstance(agent_id, str) or not re.fullmatch(
+            AGENT_ID_PATTERN,
+            agent_id,
+        ):
+            raise ValueError(f"{path}: identity key must match bridge agent id")
+        if not isinstance(agent_uuid, str) or not re.fullmatch(
+            AGENT_UUID_PATTERN,
+            agent_uuid,
+        ):
+            raise ValueError(f"{path}: {agent_id} value must be a UUID")
+        registry[agent_id] = agent_uuid
+    return registry
+
+
+def _audit_identity_registry_uuids(
+    events_path: Path,
+    registry: Mapping[str, str],
+    *,
+    tail: int | None,
+    max_examples: int,
+    mode: str,
+    registry_path: Path,
+) -> dict[str, Any]:
+    checked = 0
+    registered = 0
+    non_registry = 0
+    missing = 0
+    mismatched = 0
+    gate_missing = 0
+    gate_mismatched = 0
+    skipped_unreadable = 0
+    examples: list[dict[str, Any]] = []
+    lines = _select_event_lines(
+        events_path.read_text(encoding="utf-8").splitlines(),
+        tail=tail,
+    )
+    for line_no, line in lines:
+        if not line.strip():
+            continue
+        checked += 1
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            skipped_unreadable += 1
+            continue
+        if not isinstance(event, dict):
+            skipped_unreadable += 1
+            continue
+        agent = event.get("agent")
+        if not isinstance(agent, str):
+            skipped_unreadable += 1
+            continue
+        expected_uuid = registry.get(agent)
+        if not expected_uuid:
+            non_registry += 1
+            continue
+        registered += 1
+        observed_uuid = event.get("agent_uuid")
+        status = event.get("status")
+        event_type = event.get("type")
+        gate_relevant = (
+            isinstance(status, str)
+            and status in GATE_RELEVANT_STATUSES
+        )
+        if not observed_uuid:
+            missing += 1
+            if gate_relevant:
+                gate_missing += 1
+            _append_identity_example(
+                examples,
+                max_examples=max_examples,
+                line_no=line_no,
+                agent=agent,
+                status=status,
+                event_type=event_type,
+                reason="missing_uuid",
+                gate_relevant=gate_relevant,
+            )
+            continue
+        if observed_uuid != expected_uuid:
+            mismatched += 1
+            if gate_relevant:
+                gate_mismatched += 1
+            _append_identity_example(
+                examples,
+                max_examples=max_examples,
+                line_no=line_no,
+                agent=agent,
+                status=status,
+                event_type=event_type,
+                reason="mismatched_uuid",
+                gate_relevant=gate_relevant,
+            )
+    issue_count = missing + mismatched
+    return {
+        "schema_version": IDENTITY_AUDIT_VERSION,
+        "mode": mode,
+        "registry_path": str(registry_path),
+        "registry_identities_loaded": len(registry),
+        "checked_events": checked,
+        "registered_agent_event_count": registered,
+        "non_registry_agent_event_count": non_registry,
+        "skipped_unreadable_event_count": skipped_unreadable,
+        "missing_uuid_registered_events": missing,
+        "mismatched_uuid_registered_events": mismatched,
+        "gate_relevant_missing_uuid": gate_missing,
+        "gate_relevant_mismatched_uuid": gate_mismatched,
+        "ok": issue_count == 0,
+        "issue_count": issue_count,
+        "examples": examples,
+    }
+
+
+def _select_event_lines(
+    lines: Sequence[str],
+    *,
+    tail: int | None,
+) -> list[tuple[int, str]]:
+    numbered = list(enumerate(lines, start=1))
+    if tail is None:
+        return numbered
+    if tail <= 0:
+        return []
+    return numbered[-tail:]
+
+
+def _append_identity_example(
+    examples: list[dict[str, Any]],
+    *,
+    max_examples: int,
+    line_no: int,
+    agent: str,
+    status: object,
+    event_type: object,
+    reason: str,
+    gate_relevant: bool,
+) -> None:
+    if len(examples) >= max_examples:
+        return
+    examples.append({
+        "line_no": line_no,
+        "agent": agent,
+        "type": event_type if isinstance(event_type, str) else "",
+        "status": status if isinstance(status, str) else "",
+        "reason": reason,
+        "gate_relevant": gate_relevant,
+    })
+
+
 def _print_result(
     result: BridgeEventValidationResult,
     *,
@@ -202,8 +420,10 @@ def _print_result(
     waivers_loaded: int = 0,
     agent_profiles_path: Path | None = None,
     agent_profiles_loaded: int = 0,
+    identity_registry_audit: Mapping[str, Any] | None = None,
 ) -> None:
     payload = result.to_dict()
+    overall_ok = result.ok
     if missing_path is not None:
         payload["missing_path"] = str(missing_path)
     if waivers_path is not None:
@@ -212,11 +432,16 @@ def _print_result(
     if agent_profiles_path is not None:
         payload["agent_profiles_path"] = str(agent_profiles_path)
         payload["agent_profiles_loaded"] = agent_profiles_loaded
+    if identity_registry_audit is not None:
+        payload["identity_registry_audit"] = dict(identity_registry_audit)
+        if identity_registry_audit.get("mode") == "strict":
+            overall_ok = overall_ok and bool(identity_registry_audit.get("ok"))
+            payload["ok"] = overall_ok
     if json_output:
         print(json.dumps(payload, sort_keys=True))
         return
 
-    if result.ok:
+    if overall_ok:
         waived = (
             f", {result.waived_invalid} waived invalid"
             if result.waived_invalid
@@ -225,6 +450,27 @@ def _print_result(
         print(
             f"bridge event schema OK: {result.valid}/{result.checked} valid "
             f"({result.schema_version}{waived})"
+        )
+        if identity_registry_audit is not None:
+            issue_count = int(identity_registry_audit.get("issue_count", 0))
+            mode = str(identity_registry_audit.get("mode", "warn"))
+            if issue_count:
+                print(
+                    "identity registry audit "
+                    f"{mode.upper()}: {issue_count} registered-agent UUID "
+                    "issue(s)"
+                )
+        return
+
+    if (
+        result.ok
+        and identity_registry_audit is not None
+        and identity_registry_audit.get("mode") == "strict"
+    ):
+        print(
+            "bridge event schema FAILED: identity registry audit found "
+            f"{identity_registry_audit.get('issue_count', 0)} UUID issues",
+            file=sys.stderr,
         )
         return
 

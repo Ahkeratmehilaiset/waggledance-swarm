@@ -28,6 +28,7 @@ PR_HEAD_SHA = "b" * 40
 PROFILE_UUID = "11111111-2222-3333-4444-555555555555"
 OTHER_UUID = "22222222-3333-4444-5555-666666666666"
 CODEX_TOOLS_UUID = "7a8af68d-20bc-4598-9953-23c5dd98b102"
+CLAUDE_RCO1_UUID = "2b2f6ff9-06c2-4ec8-b526-f10071ce7103"
 FABLE_UUID = "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80"
 
 
@@ -94,6 +95,15 @@ def _grok_freshness_payload(**overrides: object) -> str:
     }
     freshness.update(overrides)
     return json.dumps({"freshness": freshness}, sort_keys=True)
+
+
+def _rco_pass_payload(**overrides: object) -> str:
+    payload: dict[str, object] = {
+        "head": MAIN_SHA,
+        "canonical_task_id": "codex-lead-1-rco-pass-task-binding-smoke",
+    }
+    payload.update(overrides)
+    return json.dumps(payload, sort_keys=True)
 
 
 def _write_agent_profile(
@@ -462,6 +472,204 @@ def test_grok_response_with_freshness_payload_writes_valid_event(
     event = json.loads(line)
     assert event["payload"]["freshness"]["freshness_ok"] is True
     validate_event_line(line)
+
+
+def test_rco_pass_rejects_missing_canonical_task_binding(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-1",
+        "-Type",
+        "decision",
+        "-TaskId",
+        "codex-lead-1-rco-pass-task-binding-smoke",
+        "-Status",
+        "rco_pass",
+        "-Message",
+        f"exact-head pass {MAIN_SHA}",
+        "-PayloadJson",
+        json.dumps({"head": MAIN_SHA}, sort_keys=True),
+    )
+
+    assert completed.returncode != 0
+    assert "rco_pass canonical task binding required" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_rco_pass_rejects_wrong_task_against_canonical_binding(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-1",
+        "-Type",
+        "decision",
+        "-TaskId",
+        "codex-lead-1/bridge-fresh-incoming-20260613",
+        "-Status",
+        "rco_pass",
+        "-Message",
+        f"exact-head pass {MAIN_SHA}",
+        "-PayloadJson",
+        _rco_pass_payload(
+            canonical_task_id=(
+                "codex-lead-1-bridge-next-action-fresh-incoming-priority-20260613"
+            ),
+        ),
+    )
+
+    assert completed.returncode != 0
+    assert "rco_pass task_id does not match canonical task binding" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_rco_pass_rejects_old_event_template_task_binding(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-1",
+        "-Type",
+        "decision",
+        "-TaskId",
+        "codex-tools-1/operator-feedback-action-bridge-event-template-20260613",
+        "-Status",
+        "rco_pass",
+        "-Message",
+        f"exact-head pass {MAIN_SHA}",
+        "-PayloadJson",
+        _rco_pass_payload(
+            branch="codex-tools-1/operator-feedback-action-bridge-template-20260613",
+        ),
+    )
+
+    assert completed.returncode != 0
+    assert "rco_pass task_id does not match canonical task binding" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_rco_pass_accepts_canonical_hyphen_task_binding(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-lead-1-rco-pass-task-binding-smoke"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-1",
+        "-Type",
+        "decision",
+        "-TaskId",
+        task_id,
+        "-Status",
+        "rco_pass",
+        "-Message",
+        f"exact-head pass {MAIN_SHA}",
+        "-PayloadJson",
+        _rco_pass_payload(canonical_task_id=task_id),
+        "-AgentUuid",
+        CLAUDE_RCO1_UUID,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
+    event = json.loads(line)
+    assert event["task_id"] == task_id
+    validate_event_line(line, agent_uuid_by_id={"claude-rco-1": CLAUDE_RCO1_UUID})
+
+
+def test_rco_pass_accepts_deterministic_slash_branch_alias(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-1",
+        "-Type",
+        "decision",
+        "-TaskId",
+        "codex-tools-1-operator-feedback-action-bridge-template-20260613",
+        "-Status",
+        "rco_pass",
+        "-Message",
+        f"exact-head pass {MAIN_SHA}",
+        "-PayloadJson",
+        _rco_pass_payload(
+            branch="codex-tools-1/operator-feedback-action-bridge-template-20260613",
+        ),
+        "-AgentUuid",
+        CLAUDE_RCO1_UUID,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
+    event = json.loads(line)
+    assert (
+        event["task_id"]
+        == "codex-tools-1-operator-feedback-action-bridge-template-20260613"
+    )
+    validate_event_line(line, agent_uuid_by_id={"claude-rco-1": CLAUDE_RCO1_UUID})
+
+
+def test_non_rco_build_consensus_pass_is_unaffected(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-tools-1",
+        "-Type",
+        "decision",
+        "-TaskId",
+        "codex-tools-1-build-consensus-smoke",
+        "-Status",
+        "build_consensus_pass",
+        "-Message",
+        "tools build consensus",
+        "-PayloadJson",
+        json.dumps({"head": MAIN_SHA}, sort_keys=True),
+        "-AgentUuid",
+        CODEX_TOOLS_UUID,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    )
+    event = json.loads(line)
+    assert event["status"] == "build_consensus_pass"
+    validate_event_line(line, agent_uuid_by_id={"codex-tools-1": CODEX_TOOLS_UUID})
 
 
 def test_invalid_payload_json_fails_before_runtime_write(tmp_path: Path) -> None:

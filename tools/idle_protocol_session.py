@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.idle_check import DEFAULT_EVENTS_PATH
 from waggledance.core.idle_protocol_session import summarize_idle_session
+from waggledance.core.work_queue import resolve_bridge_root
 
 
 BASE_REQUIRED_FIELDS = (
@@ -80,7 +80,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Inspect idle-protocol session state and report the next step.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge event JSONL path. Defaults to "
+            "<runtime bridge root>/shared/events.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Runtime bridge root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT, AGENT_BRIDGE_ROOT, then repo .agent-bridge."
+        ),
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -92,9 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_path = args.events
+    if events_path is None:
+        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
     try:
         report = run_idle_protocol_session(
-            events_path=args.events,
+            events_path=events_path,
         )
     except SessionError as exc:
         if args.json:

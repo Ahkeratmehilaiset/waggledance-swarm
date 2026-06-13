@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from tools.idle_protocol_session import SessionError, run_idle_protocol_session
+from tools.idle_protocol_session import SessionError, main, run_idle_protocol_session
 
 def _proposal() -> dict:
     return {
@@ -158,6 +158,53 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     assert report["summary"]["next_required_event"]["round_number"] == 2
     assert report["manual_payload_scaffold"]["not_a_payload"] is True
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_cli_default_events_uses_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    _write_events(events_path, [_event(_proposal())])
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    exit_code = main(["--dry-run", "--json"])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "next_required"
+    assert report["read_only"] is True
+    assert report["summary"]["next_required_event"]["round_number"] == 2
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events_path = bridge_root / "shared" / "events.jsonl"
+    explicit_events_path = tmp_path / "events.jsonl"
+    runtime_events_path.parent.mkdir(parents=True)
+    runtime_events_path.write_text("{not-json}\n", encoding="utf-8")
+    _write_events(explicit_events_path, [_event(_proposal())])
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    exit_code = main(
+        [
+            "--events",
+            str(explicit_events_path),
+            "--dry-run",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "next_required"
 
 
 def test_cli_rejects_emit_request_flag(tmp_path: Path) -> None:

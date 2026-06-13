@@ -88,6 +88,25 @@ def test_retraction_statuses_are_not_open_incoming(status: str) -> None:
 @pytest.mark.parametrize(
     "status",
     [
+        "stale_review_request_after_rebase_observed",
+        "review_request_observed",
+        "rco_pass_task_id_mismatch_observed",
+    ],
+)
+def test_observed_statuses_are_not_open_incoming(status: str) -> None:
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[_event(status)],
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
         "changes_requested_NOT_resolved",
         "blocked_NOT_closed",
         "request_NOT_answered",

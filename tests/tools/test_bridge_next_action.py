@@ -265,6 +265,30 @@ def test_answered_status_with_request_token_is_not_open_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_observed_status_with_request_token_is_not_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T08:42:24Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1,claude-rco-1",
+            "type": "finding",
+            "task_id": "pr1116-stale-review-finding",
+            "status": "stale_review_request_after_rebase_observed",
+            "message": "observed stale review request after rebase",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T08:43:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_resolved_status_with_requested_token_is_not_open_request() -> None:
     events = [
         {
@@ -286,6 +310,76 @@ def test_resolved_status_with_requested_token_is_not_open_request() -> None:
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
+
+
+def test_empty_task_pr_request_closes_when_target_answers_same_pr() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T07:33:18Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "",
+            "status": "review_requested",
+            "message": "Review PR #1114",
+            "payload": {"pr": 1114},
+        },
+        {
+            "ts_utc": "2026-06-13T07:34:33Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,operator",
+            "type": "decision",
+            "task_id": "codex-lead/bridge-liveness-suppressed-unavailable-lanes",
+            "status": "build_consensus_pass",
+            "message": "Tools build consensus for PR #1114",
+            "payload": {"pr": 1114},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T07:35:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_empty_task_pr_request_is_not_closed_by_different_pr_answer() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T07:33:18Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "",
+            "status": "review_requested",
+            "message": "Review PR #1114",
+            "payload": {"pr": 1114},
+        },
+        {
+            "ts_utc": "2026-06-13T07:34:33Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,operator",
+            "type": "decision",
+            "task_id": "other-review",
+            "status": "build_consensus_pass",
+            "message": "Tools build consensus for PR #1115",
+            "payload": {"pr": 1115},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T07:35:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
 
 
 @pytest.mark.parametrize(

@@ -119,6 +119,7 @@ RESPONSE_ONLY_STATUS_FRAGMENTS = (
     "closed",
     "done",
     "merged",
+    "observed",
     "pass",
     "received",
     "reported",
@@ -135,6 +136,7 @@ HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
 PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json"
 TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
+PR_CLOSURE_KEY_PREFIX = "pr:"
 
 
 class BridgeNextActionError(ValueError):
@@ -650,9 +652,12 @@ def _build_request_closure_index(
         event_ts = _event_ts(event)
         task_id = _task_id(event)
         if task_id:
-            closure_keys = [_task_closure_key(task_id)]
+            closure_keys = {_task_closure_key(task_id)}
         else:
             closure_keys = _empty_task_closure_keys_for_answer(event)
+        pr_closure_key = _pr_closure_key_for_event(event)
+        if pr_closure_key:
+            closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
             task_closures = closure_index.setdefault(closure_key, {})
             if event_ts > task_closures.get(event_agent, ""):
@@ -667,20 +672,27 @@ def _request_closed_by_index(
     closure_index: Mapping[str, Mapping[str, str]],
 ) -> bool:
     task_id = _task_id(request)
-    if task_id:
-        closure_key = _task_closure_key(task_id)
-    else:
-        closure_key = _empty_task_closure_key(
-            requester=_event_agent(request),
-            target=agent.lower(),
-        )
-    task_closures = closure_index.get(closure_key, {})
-    if not task_closures:
-        return False
     request_ts = _event_ts(request)
-    for closing_agent in {agent.lower(), _event_agent(request)}:
-        if task_closures.get(closing_agent, "") > request_ts:
-            return True
+    closure_keys = []
+    if task_id:
+        closure_keys.append(_task_closure_key(task_id))
+    else:
+        closure_keys.append(
+            _empty_task_closure_key(
+                requester=_event_agent(request),
+                target=agent.lower(),
+            )
+        )
+    pr_closure_key = _pr_closure_key_for_event(request)
+    if pr_closure_key:
+        closure_keys.append(pr_closure_key)
+    for closure_key in closure_keys:
+        task_closures = closure_index.get(closure_key, {})
+        if not task_closures:
+            continue
+        for closing_agent in {agent.lower(), _event_agent(request)}:
+            if task_closures.get(closing_agent, "") > request_ts:
+                return True
     return False
 
 
@@ -699,6 +711,23 @@ def _empty_task_closure_keys_for_answer(event: Mapping[str, Any]) -> set[str]:
         keys.add(_empty_task_closure_key(requester=recipient, target=event_agent))
         keys.add(_empty_task_closure_key(requester=event_agent, target=recipient))
     return keys
+
+
+def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    for key in ("pr", "pr_number"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return f"{PR_CLOSURE_KEY_PREFIX}{value}"
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.isdecimal():
+                return f"{PR_CLOSURE_KEY_PREFIX}{int(normalized)}"
+    return None
 
 
 def _deduplicate_repeated_wake_requests(

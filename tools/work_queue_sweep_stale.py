@@ -25,10 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from waggledance.core.work_queue import (
-    DEFAULT_BRIDGE_ROOT,
     ArchivedClaim,
     WorkQueueError,
     archive_stale_claims,
+    resolve_bridge_root,
 )
 
 
@@ -47,7 +47,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--bridge-root",
         type=Path,
         default=None,
-        help="Path to .agent-bridge directory (default: repo-local).",
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
     )
     parser.add_argument(
         "--max-age-seconds",
@@ -86,7 +89,7 @@ def _serialize(record: ArchivedClaim) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    bridge_root = args.bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge_root = resolve_bridge_root(args.bridge_root)
     if not bridge_root.exists():
         sys.stderr.write(f"bridge root not found: {bridge_root}\n")
         return 2

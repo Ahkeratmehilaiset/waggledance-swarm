@@ -10,6 +10,7 @@ from tools.idle_consensus_to_pr import (
     OPERATOR_REVIEW_DECISION,
     ConsensusToPrGateError,
     evaluate_consensus_to_pr_gate,
+    main,
 )
 
 
@@ -223,3 +224,31 @@ def test_invalid_event_json_refused_without_raw_echo(tmp_path: Path) -> None:
     report = exc_info.value.report
     assert report["decision"] == "invalid_events"
     assert "not valid json" not in " ".join(report["errors"])
+
+
+def test_cli_defaults_events_to_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_events = _write_events(tmp_path, _fixture_payloads("soft_convergence.json"))
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_events.write_text(source_events.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    exit_code = main(
+        [
+            "--changed-path",
+            "tools/idle_daily_summary.py",
+            "--utc-date",
+            "2026-05-18",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == ELIGIBLE_DECISION
+    assert report["eligible"] is True

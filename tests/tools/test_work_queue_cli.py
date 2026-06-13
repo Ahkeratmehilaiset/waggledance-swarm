@@ -44,6 +44,27 @@ def test_claim_and_list_round_trip(tmp_path: Path, capsys) -> None:
     assert report["claims"][0]["task_id"] == "task-001"
 
 
+def test_cli_defaults_to_runtime_bridge_root_env_for_list(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    claim_task(
+        agent="codex-1",
+        task_id="runtime-task",
+        summary="runtime claim",
+        bridge_root=runtime_bridge,
+    )
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code, report = _run(capsys, "list")
+
+    assert exit_code == 0
+    assert report["decision"] == "listed"
+    assert [claim["task_id"] for claim in report["claims"]] == ["runtime-task"]
+
+
 def test_release_archives_claim(tmp_path: Path, capsys) -> None:
     bridge = tmp_path / ".agent-bridge"
     _run(

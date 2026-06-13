@@ -15,7 +15,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.work_queue import (  # noqa: E402
-    DEFAULT_BRIDGE_ROOT,
     WorkQueueError,
     check_scope_overlap,
     claim_task,
@@ -23,12 +22,22 @@ from waggledance.core.work_queue import (  # noqa: E402
     heartbeat,
     list_claims,
     release_task,
+    resolve_bridge_root,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge work-queue CLI.")
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the runtime .agent-bridge directory. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT / AGENT_BRIDGE_ROOT when set, then "
+            "repo-local .agent-bridge."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -88,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
-    bridge_root = Path(args.bridge_root)
+    bridge_root = resolve_bridge_root(args.bridge_root)
     if args.command == "claim":
         claim = claim_task(
             agent=args.agent,

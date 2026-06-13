@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Sequence
@@ -53,6 +54,7 @@ DEFAULT_CLAIMS_DIR = DEFAULT_BRIDGE_ROOT / "work_queue" / "claims"
 DEFAULT_DONE_DIR = DEFAULT_BRIDGE_ROOT / "work_queue" / "done"
 DEFAULT_LEASE_SECONDS = 900
 DEFAULT_STALE_MAX_SECONDS = 12 * 60 * 60  # 12h matches bridge-event waiver window
+BRIDGE_ROOT_ENV_NAMES = ("AGENT_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_ROOT")
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$")
@@ -106,6 +108,22 @@ class ArchivedClaim:
     applied: bool
 
 
+def resolve_bridge_root(bridge_root: Path | None = None) -> Path:
+    """Resolve the runtime bridge root.
+
+    Explicit callers win. Otherwise agent sessions may point at a shared
+    persistent bridge through environment, while repo worktrees still carry a
+    sidecar ``.agent-bridge`` for docs and scripts.
+    """
+    if bridge_root is not None:
+        return Path(bridge_root)
+    for env_name in BRIDGE_ROOT_ENV_NAMES:
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return Path(value)
+    return DEFAULT_BRIDGE_ROOT
+
+
 def claim_task(
     *,
     agent: str,
@@ -136,7 +154,7 @@ def claim_task(
     if lease_seconds <= 0:
         raise WorkQueueError("lease_seconds must be positive")
 
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = claims_dir / f"{_safe_name(task_id)}.json"
@@ -202,7 +220,7 @@ def release_task(
     if not release_status or not release_status.strip():
         raise WorkQueueError("release_status required")
 
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     done_dir = bridge / "work_queue" / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
@@ -243,7 +261,7 @@ def heartbeat(
     """Refresh the lease on an existing claim."""
     _validate_agent(agent)
     _validate_task_id(task_id)
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     claim_path = bridge / "work_queue" / "claims" / f"{_safe_name(task_id)}.json"
     if not claim_path.exists():
         raise WorkQueueError(f"no active claim for task {task_id}")
@@ -282,7 +300,7 @@ def heartbeat(
 
 def list_claims(bridge_root: Path | None = None) -> list[Claim]:
     """Return all active claims in the work-queue."""
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     if not claims_dir.exists():
         return []
@@ -348,7 +366,7 @@ def archive_stale_claims(
         raise WorkQueueError(
             f"max_age_seconds must be positive, got {max_age_seconds}"
         )
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     now = now_utc or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=max_age_seconds)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")

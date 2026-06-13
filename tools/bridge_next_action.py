@@ -349,10 +349,14 @@ def recommend_next_action(
         if claim.agent != agent and claim.mode == "write"
     ]
     all_open_requests = _open_requests_for_agent(agent=agent, events=events)
-    open_requests, stale_open_requests = _split_fresh_and_stale_requests(
+    open_request_events, stale_open_requests = _split_fresh_and_stale_requests(
         all_open_requests,
         now_utc=effective_now,
         max_age_hours=open_request_max_age_hours,
+    )
+    open_requests = _deduplicate_repeated_wake_requests(
+        open_request_events,
+        agent=agent,
     )
     reported_stale_open_requests, archived_stale_open_requests = (
         _split_reported_and_archived_stale_requests(
@@ -383,6 +387,7 @@ def recommend_next_action(
             claims=active_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
+            open_request_event_count=len(open_request_events),
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
@@ -401,6 +406,7 @@ def recommend_next_action(
             claims=active_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
+            open_request_event_count=len(open_request_events),
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
@@ -421,6 +427,7 @@ def recommend_next_action(
             claims=active_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
+            open_request_event_count=len(open_request_events),
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
@@ -440,6 +447,7 @@ def recommend_next_action(
             claims=active_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
+            open_request_event_count=len(open_request_events),
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
@@ -455,6 +463,7 @@ def recommend_next_action(
         claims=active_claims,
         stale_claims=stale_claims,
         open_requests=open_requests,
+        open_request_event_count=len(open_request_events),
         stale_open_requests=reported_stale_open_requests,
         archived_stale_open_requests=archived_stale_open_requests,
         foreign_write_claims=foreign_write_claims,
@@ -483,6 +492,34 @@ def _open_requests_for_agent(
         if not answered:
             open_requests.append(request)
     return open_requests
+
+
+def _deduplicate_repeated_wake_requests(
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    agent: str,
+) -> list[Mapping[str, Any]]:
+    """Collapse wake-request storms without hiding other request semantics."""
+    deduped: list[Mapping[str, Any]] = []
+    wake_request_indexes: dict[tuple[str, str, str, str], int] = {}
+    target = agent.lower()
+    for request in requests:
+        if _event_type(request) != "wake_request":
+            deduped.append(request)
+            continue
+        key = (
+            _event_agent(request),
+            _task_id(request),
+            _event_status(request),
+            target,
+        )
+        index = wake_request_indexes.get(key)
+        if index is None:
+            wake_request_indexes[key] = len(deduped)
+            deduped.append(request)
+        else:
+            deduped[index] = request
+    return deduped
 
 
 def _closes_request_for_agent(
@@ -963,6 +1000,7 @@ def _report(
     events: Sequence[Mapping[str, Any]],
     claims: Sequence[Claim],
     open_requests: Sequence[Mapping[str, Any]],
+    open_request_event_count: int,
     stale_open_requests: Sequence[Mapping[str, Any]],
     archived_stale_open_requests: Sequence[Mapping[str, Any]],
     foreign_write_claims: Sequence[Claim],
@@ -985,6 +1023,12 @@ def _report(
         "stale_incoming_count": len(stale_task_ids),
         "foreign_write_claim_count": len(foreign_write_claims),
     }
+    if open_request_event_count != len(open_requests):
+        payload["open_incoming_event_count"] = open_request_event_count
+        payload["deduplicated_open_incoming_count"] = len(open_requests)
+        payload["open_incoming_duplicate_count"] = (
+            open_request_event_count - len(open_requests)
+        )
     agent_profile = _latest_agent_metadata(agent=agent, events=events)
     if agent_profile:
         payload["agent_profile"] = agent_profile
@@ -1055,6 +1099,13 @@ def _print_human(report: Mapping[str, Any]) -> None:
         own_count = len(snapshot.get("own", []))
         foreign_count = len(snapshot.get("foreign_write", []))
         print(f"claim_snapshot: own={own_count} foreign_write={foreign_count}")
+    open_event_count = int(report.get("open_incoming_event_count", 0) or 0)
+    if open_event_count:
+        print(f"open_incoming_event_count: {open_event_count}")
+        print(
+            "open_incoming_duplicate_count: "
+            f"{int(report.get('open_incoming_duplicate_count', 0) or 0)}"
+        )
     stale_count = int(report.get("stale_incoming_count", 0) or 0)
     if stale_count:
         print(f"stale_incoming_count: {stale_count}")

@@ -724,6 +724,77 @@ def test_operator_wake_request_is_incoming_for_target_agent() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260612",
+            "status": "open",
+            "message": "first wake",
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260612",
+            "status": "open",
+            "message": "latest wake",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "bridge-follow-nudge-20260612"
+    assert report["incoming"]["message"] == "latest wake"
+    assert report["open_incoming_count"] == 1
+    assert report["open_incoming_event_count"] == 2
+    assert report["open_incoming_duplicate_count"] == 1
+
+
+def test_duplicate_non_wake_requests_remain_separate_incoming_rows() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "build-consensus-needed",
+            "status": "build_consensus_requested",
+            "message": "first review request",
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "build-consensus-needed",
+            "status": "build_consensus_requested",
+            "message": "second review request",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 2
+    assert "open_incoming_event_count" not in report
+
+
 def test_reported_handoff_closes_round_two_request() -> None:
     events = [
         {

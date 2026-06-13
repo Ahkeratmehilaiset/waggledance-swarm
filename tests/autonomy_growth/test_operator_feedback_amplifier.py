@@ -2,6 +2,7 @@
 """Tests for the ADR-053 operator-feedback amplifier planner."""
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -12,6 +13,7 @@ from waggledance.core.autonomy_growth.operator_feedback_amplifier import (
     OperatorFeedbackPolicy,
     OperatorFeedbackValidationError,
     amplify_operator_feedback,
+    build_operator_feedback_scheduler_enqueue_preview,
     build_operator_feedback_scheduler_preflight,
     build_operator_feedback_scheduler_preflight_from_bridge_log,
     load_operator_feedback_policy,
@@ -465,4 +467,125 @@ def test_scheduler_preflight_bridge_log_hookup_rejects_free_string_identity() ->
         build_operator_feedback_scheduler_preflight_from_bridge_log(
             feedback_id="fb-free-string",
             durable_bridge_events=[source],
+        )
+
+
+def test_scheduler_enqueue_preview_is_queue_priority_only_without_writes() -> None:
+    current = _event(operator_id=OPERATOR_ID)
+    source = _bridge_event(current)
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[source],
+    )
+
+    preview = build_operator_feedback_scheduler_enqueue_preview(preflight)
+    as_dict = preview.to_dict()
+
+    assert preview.preview_kind == "operator_feedback_scheduler_enqueue_preview"
+    assert preview.feedback_id == "fb-001"
+    assert preview.action_id == "feedback_action:needs_solver:fb-001"
+    assert preview.verified_operator_id == OPERATOR_ID
+    assert preview.source_bridge_event_digest == preflight.source_bridge_event_digest
+    assert preview.scheduler_candidate_digest.startswith("sha256:")
+    assert preview.rate_limit_source == "durable_bridge_log"
+    assert preview.operator_fast_track_count == 0
+    assert preview.global_fast_track_count == 0
+    assert preview.global_fast_track_per_hour_max == 30
+    assert preview.queue_priority == "fast_track"
+    assert preview.priority_weight == 100
+    assert preview.fast_track_priority is True
+    assert preview.rate_limited is False
+    assert preview.scheduler_enqueue_allowed is False
+    assert preview.scheduler_tick_allowed is False
+    assert preview.queue_write_applied is False
+    assert preview.growth_intent_created is False
+    assert preview.bridge_event_written is False
+    assert preview.runtime_authority_granted is False
+    assert preview.gate_skip_allowed is False
+    assert preview.promotion_gate_skip_allowed is False
+    assert preview.adversarial_gate_skip_allowed is False
+    assert preview.canary_gate_skip_allowed is False
+    assert as_dict["next_required_integration"] == (
+        "scheduler_enqueue_adapter_separate_pr"
+    )
+
+
+def test_scheduler_enqueue_preview_global_rate_limit_stays_normal_priority() -> None:
+    current = _event(operator_id=OPERATOR_ID, feedback_id="fb-global-preview")
+    source = _bridge_event(current)
+    prior = [
+        _bridge_event(
+            _event(
+                feedback_id=f"global-preview-{index}",
+                operator_id=OTHER_OPERATOR_ID,
+                submitted_at_utc=f"2026-06-05T11:1{index}:00Z",
+            ),
+            ts_utc=f"2026-06-05T11:1{index}:01Z",
+            agent_uuid=OTHER_OPERATOR_UUID,
+        )
+        for index in range(2)
+    ]
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[*prior, source],
+        policy=_policy(fast_track_per_hour_max=10, fast_track_global_per_hour_max=2),
+    )
+
+    preview = build_operator_feedback_scheduler_enqueue_preview(preflight)
+
+    assert preview.rate_limited is True
+    assert preview.global_fast_track_count == 2
+    assert preview.global_fast_track_per_hour_max == 2
+    assert preview.queue_priority == "normal"
+    assert preview.priority_weight == 0
+    assert preview.fast_track_priority is False
+    assert preview.scheduler_enqueue_allowed is False
+
+
+@pytest.mark.parametrize(
+    "flag_name",
+    [
+        "scheduler_enqueue_allowed",
+        "scheduler_tick_allowed",
+        "gate_skip_allowed",
+        "promotion_gate_skip_allowed",
+        "adversarial_gate_skip_allowed",
+        "canary_gate_skip_allowed",
+    ],
+)
+def test_scheduler_enqueue_preview_rejects_authority_escalation(
+    flag_name: str,
+) -> None:
+    current = _event(operator_id=OPERATOR_ID)
+    source = _bridge_event(current)
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[source],
+    )
+    candidate = {
+        **preflight.scheduler_candidate_artifact,
+        flag_name: True,
+    }
+
+    with pytest.raises(OperatorFeedbackValidationError, match=flag_name):
+        build_operator_feedback_scheduler_enqueue_preview(
+            replace(preflight, scheduler_candidate_artifact=candidate)
+        )
+
+
+def test_scheduler_enqueue_preview_rejects_non_durable_rate_limit_source() -> None:
+    current = _event(operator_id=OPERATOR_ID)
+    source = _bridge_event(current)
+    preflight = build_operator_feedback_scheduler_preflight(
+        current,
+        source_bridge_event=source,
+        durable_bridge_events=[source],
+    )
+
+    with pytest.raises(OperatorFeedbackValidationError, match="durable_bridge_log"):
+        build_operator_feedback_scheduler_enqueue_preview(
+            replace(preflight, rate_limit_source="memory")
         )

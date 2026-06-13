@@ -200,6 +200,14 @@ _LAZY_EXPORTS: dict[str, tuple[str, str | None]] = {
         ".operator_feedback_amplifier",
         "OperatorFeedbackPolicy",
     ),
+    "OperatorFeedbackSchedulerEnqueuePreview": (
+        ".operator_feedback_amplifier",
+        "OperatorFeedbackSchedulerEnqueuePreview",
+    ),
+    "OperatorFeedbackSchedulerPreflight": (
+        ".operator_feedback_amplifier",
+        "OperatorFeedbackSchedulerPreflight",
+    ),
     "OperatorFeedbackValidationError": (
         ".operator_feedback_amplifier",
         "OperatorFeedbackValidationError",
@@ -207,6 +215,18 @@ _LAZY_EXPORTS: dict[str, tuple[str, str | None]] = {
     "amplify_operator_feedback": (
         ".operator_feedback_amplifier",
         "amplify_operator_feedback",
+    ),
+    "build_operator_feedback_scheduler_enqueue_preview": (
+        ".operator_feedback_amplifier",
+        "build_operator_feedback_scheduler_enqueue_preview",
+    ),
+    "build_operator_feedback_scheduler_preflight": (
+        ".operator_feedback_amplifier",
+        "build_operator_feedback_scheduler_preflight",
+    ),
+    "build_operator_feedback_scheduler_preflight_from_bridge_log": (
+        ".operator_feedback_amplifier",
+        "build_operator_feedback_scheduler_preflight_from_bridge_log",
     ),
     "load_operator_feedback_policy": (
         ".operator_feedback_amplifier",
@@ -324,8 +344,13 @@ __all__ = [
     # operator feedback amplifier (ADR-053)
     "OperatorFeedbackActionPlan",
     "OperatorFeedbackPolicy",
+    "OperatorFeedbackSchedulerEnqueuePreview",
+    "OperatorFeedbackSchedulerPreflight",
     "OperatorFeedbackValidationError",
     "amplify_operator_feedback",
+    "build_operator_feedback_scheduler_enqueue_preview",
+    "build_operator_feedback_scheduler_preflight",
+    "build_operator_feedback_scheduler_preflight_from_bridge_log",
     "load_operator_feedback_policy",
     "validate_operator_feedback_event",
 ]

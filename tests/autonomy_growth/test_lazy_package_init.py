@@ -43,3 +43,26 @@ def test_package_reexports_still_resolve_lazily() -> None:
     assert FamilyOracleFn is not None
     assert GapSignal.__name__ == "GapSignal"
     assert RuntimeGapDetector.__name__ == "RuntimeGapDetector"
+
+
+def test_operator_feedback_scheduler_preview_reexports_resolve_lazily() -> None:
+    from waggledance.core.autonomy_growth import (
+        OperatorFeedbackSchedulerEnqueuePreview,
+        OperatorFeedbackSchedulerPreflight,
+        build_operator_feedback_scheduler_enqueue_preview,
+        build_operator_feedback_scheduler_preflight_from_bridge_log,
+    )
+
+    assert (
+        OperatorFeedbackSchedulerEnqueuePreview.__name__
+        == "OperatorFeedbackSchedulerEnqueuePreview"
+    )
+    assert OperatorFeedbackSchedulerPreflight.__name__ == (
+        "OperatorFeedbackSchedulerPreflight"
+    )
+    assert build_operator_feedback_scheduler_enqueue_preview.__name__ == (
+        "build_operator_feedback_scheduler_enqueue_preview"
+    )
+    assert build_operator_feedback_scheduler_preflight_from_bridge_log.__name__ == (
+        "build_operator_feedback_scheduler_preflight_from_bridge_log"
+    )

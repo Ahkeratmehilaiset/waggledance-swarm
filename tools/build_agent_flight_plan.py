@@ -16,13 +16,18 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any, Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
+
 SCHEMA_VERSION = "agent-flight-plan-v1"
 STATUS_CONTRACT_PATH = PROJECT_ROOT / "docs" / "eig2" / "contracts" / "agent_flight_plan_statuses.json"
-DEFAULT_EVENTS_PATH = PROJECT_ROOT / ".agent-bridge" / "shared" / "events.jsonl"
 
 FORMAL_STATUSES = {
     "rco_requested": "rco_requested",
@@ -379,7 +384,8 @@ def _bootstrap_prompt(plan: dict[str, Any], target_agent: str) -> str:
 
 def build_plan(
     *,
-    events_path: Path = DEFAULT_EVENTS_PATH,
+    events_path: Path | None = None,
+    bridge_root: Path | None = None,
     claims_dir: Path | None = None,
     objective: str,
     target_agent: str = "codex",
@@ -387,17 +393,19 @@ def build_plan(
     root: Path = PROJECT_ROOT,
     max_items: int = 12,
 ) -> dict[str, Any]:
+    resolved_bridge_root = resolve_bridge_root(bridge_root)
+    resolved_events_path = events_path or resolved_bridge_root / "shared" / "events.jsonl"
     statuses = _load_statuses(root / "docs" / "eig2" / "contracts" / "agent_flight_plan_statuses.json")
     project = _projection_fn(root)
     classify = _classifier_fn(root)
-    events = [project(event) | event for event in load_events(events_path)]
+    events = [project(event) | event for event in load_events(resolved_events_path)]
     threads = _build_threads(events)
 
     summaries = {
         task_id: _thread_summary(task_id, thread, target_agent=target_agent, classify=classify)
         for task_id, thread in threads.items()
     }
-    claims_dir = claims_dir if claims_dir is not None else _infer_claims_dir(events_path)
+    claims_dir = claims_dir if claims_dir is not None else _infer_claims_dir(resolved_events_path)
     claim_files = _load_claim_files(claims_dir) if claims_dir is not None and claims_dir.exists() else None
     if claim_files is None:
         active_claims = [
@@ -439,7 +447,7 @@ def build_plan(
         "generated_at_utc": now_utc or _utcnow(),
         "objective": objective,
         "source": {
-            "events_path": str(events_path),
+            "events_path": str(resolved_events_path),
             "event_count": len(events),
             "last_event_ts_utc": str(events[-1].get("ts_utc") or "") if events else "",
         },
@@ -479,7 +487,21 @@ def write_plan(plan: dict[str, Any], output_path: Path) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl).",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--claims-dir", type=Path, default=None)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--objective", required=True)
@@ -492,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     plan = build_plan(
         events_path=args.events,
+        bridge_root=args.bridge_root,
         claims_dir=args.claims_dir,
         objective=args.objective,
         target_agent=args.agent,

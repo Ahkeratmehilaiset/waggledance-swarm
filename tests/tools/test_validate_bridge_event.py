@@ -59,6 +59,24 @@ def _write_agent_profile(
     )
 
 
+def _write_identity_registry(
+    path: Path,
+    *,
+    identities: dict[str, str] | None = None,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "waggledance.bridge_identity_registry.v1",
+                "identities": identities or {"codex-lead-1": AGENT_UUID},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_cli_returns_zero_and_json_summary_for_valid_file(
     tmp_path: Path,
     capsys,
@@ -132,6 +150,108 @@ def test_cli_agent_profiles_accept_matching_uuid(
     assert rc == 0
     assert payload["ok"] is True
     assert payload["agent_profiles_loaded"] == 1
+
+
+def test_cli_identity_registry_warn_reports_uuid_hygiene_without_failing(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    registry_path = tmp_path / "bridge_identity_registry.json"
+    _write_identity_registry(registry_path)
+    _write_jsonl(
+        events_path,
+        [
+            _good_event(agent="codex-lead-1", status="build_consensus_pass"),
+            _good_event(
+                agent="codex-lead-1",
+                status="rco_pass",
+                agent_uuid=OTHER_UUID,
+            ),
+            _good_event(agent="legacy-agent"),
+        ],
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--identity-registry",
+        str(registry_path),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    audit = payload["identity_registry_audit"]
+    assert rc == 0
+    assert payload["ok"] is True
+    assert audit["mode"] == "warn"
+    assert audit["ok"] is False
+    assert audit["missing_uuid_registered_events"] == 1
+    assert audit["mismatched_uuid_registered_events"] == 1
+    assert audit["gate_relevant_missing_uuid"] == 1
+    assert audit["gate_relevant_mismatched_uuid"] == 1
+    assert audit["non_registry_agent_event_count"] == 1
+    assert audit["examples"][0]["reason"] == "missing_uuid"
+
+
+def test_cli_identity_registry_strict_fails_uuid_hygiene_issue(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    registry_path = tmp_path / "bridge_identity_registry.json"
+    _write_identity_registry(registry_path)
+    _write_jsonl(events_path, [_good_event(agent="codex-lead-1")])
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--identity-registry",
+        str(registry_path),
+        "--identity-registry-mode",
+        "strict",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["invalid"] == 0
+    assert payload["identity_registry_audit"]["issue_count"] == 1
+
+
+def test_cli_identity_registry_strict_accepts_matching_uuid(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    registry_path = tmp_path / "bridge_identity_registry.json"
+    _write_identity_registry(registry_path)
+    _write_jsonl(
+        events_path,
+        [_good_event(agent="codex-lead-1", agent_uuid=AGENT_UUID)],
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--identity-registry",
+        str(registry_path),
+        "--identity-registry-mode",
+        "strict",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["identity_registry_audit"]["ok"] is True
 
 
 def test_cli_returns_one_for_invalid_file_and_reports_issue(

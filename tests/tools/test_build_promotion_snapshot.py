@@ -267,3 +267,73 @@ def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
 
     assert invalid == 2
     assert json.loads(capsys.readouterr().out)["decision"] == "invalid_input"
+
+
+def test_cli_default_events_uses_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in _events()),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    result = main(
+        [
+            "--repo",
+            REPO,
+            "--pr-number",
+            str(PR),
+            "--origin-main-sha",
+            BASE,
+            "--json",
+        ],
+        runner=_runner(),
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["eligible"] is True
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events_path = bridge_root / "shared" / "events.jsonl"
+    runtime_events_path.parent.mkdir(parents=True)
+    runtime_events_path.write_text(
+        "\n".join(
+            json.dumps(event, sort_keys=True)
+            for event in _events(include_consensus=False)
+        ),
+        encoding="utf-8",
+    )
+    explicit_dir = tmp_path / "explicit"
+    explicit_dir.mkdir()
+    explicit_events = _events_path(explicit_dir, _events())
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    result = main(
+        [
+            "--repo",
+            REPO,
+            "--pr-number",
+            str(PR),
+            "--events",
+            str(explicit_events),
+            "--origin-main-sha",
+            BASE,
+            "--json",
+        ],
+        runner=_runner(),
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["eligible"] is True

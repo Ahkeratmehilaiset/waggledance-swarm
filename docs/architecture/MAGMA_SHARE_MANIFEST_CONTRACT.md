@@ -127,6 +127,13 @@ manifest digests, entry count, age, context state, and the same no-authority /
 privacy flags. It does not include the full replay plan, local paths, payload
 material, transport, or runtime authority.
 
+`tools/build_magma_share_import_admission_status_bridge_event_template.py` can
+turn that admission-status object into a bridge-event template for reviewers.
+It is template-only: it does not append to the bridge, enable transport, import
+payload files, record local paths, or grant runtime authority. Ready admissions
+render as a `handoff` template; rejected or blocked admissions render as a
+`finding` template with a blocker class and digest-only context.
+
 When `--json` is set and admission is rejected, the importer still exits
 nonzero and writes the human failure line to stderr, but stdout contains a
 sanitized admission-status JSON object. `--admission-status-json` uses the same

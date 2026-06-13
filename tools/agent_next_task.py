@@ -327,6 +327,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             recommended = candidate.get("recommended_command")
             if recommended:
                 print(f"recommended_command: {recommended}")
+            for command in candidate.get("diagnostic_commands", []):
+                print(f"diagnostic_command: {command}")
         for note in report.get("notes", []):
             print(f"note: {note}")
     return int(report.get("exit_code", 0))
@@ -829,6 +831,23 @@ def _pick_production_liveness_reactivation(
             "production-liveness-reactivation-scout-"
             f"{now_utc.strftime('%Y-%m-%d')}-{peer_agent}"
         )
+        unanswered_command = (
+            f"{_python_command()} "
+            "tools\\report_unanswered_bridge_requests.py "
+            f"--events {events_path} "
+            f"--agent {peer_agent} "
+            f"--min-age-minutes {idle_warn:g} "
+            "--json"
+        )
+        wake_delivery_command = (
+            f"{_python_command()} "
+            "tools\\check_bridge_wake_delivery.py "
+            f"--bridge-root {bridge_root} "
+            f"--agent {peer_agent} "
+            f"--min-age-minutes {idle_warn:g} "
+            "--min-repeats 1 "
+            "--json"
+        )
         return {
             "kind": "production_liveness_reactivation_scout",
             "target": ".agent-bridge/shared/events.jsonl",
@@ -840,19 +859,13 @@ def _pick_production_liveness_reactivation(
             "write_scope": [],
             "authority": "read_only_recommendation_only",
             "acceptance": (
-                "Run the unanswered-request diagnostic for the stalled peer "
-                "and emit a concise bridge finding or wake handoff if the "
-                "dispatcher still has not delivered work; route any source "
-                "change through a separate write claim."
+                "Run the unanswered-request and wake-delivery diagnostics for "
+                "the stalled peer, then emit a concise bridge finding or wake "
+                "handoff if the dispatcher still has not delivered work; route "
+                "any source change through a separate write claim."
             ),
-            "recommended_command": (
-                f"{_python_command()} "
-                "tools\\report_unanswered_bridge_requests.py "
-                f"--events {events_path} "
-                f"--agent {peer_agent} "
-                f"--min-age-minutes {idle_warn:g} "
-                "--json"
-            ),
+            "recommended_command": unanswered_command,
+            "diagnostic_commands": [unanswered_command, wake_delivery_command],
         }
     return None
 

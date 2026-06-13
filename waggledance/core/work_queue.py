@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -54,7 +55,7 @@ DEFAULT_LEASE_SECONDS = 900
 DEFAULT_STALE_MAX_SECONDS = 12 * 60 * 60  # 12h matches bridge-event waiver window
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
-TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,120}$")
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$")
 ALLOWED_MODES = ("read-only", "write")
 
 
@@ -459,10 +460,17 @@ def _validate_agent(agent: str) -> None:
 def _validate_task_id(task_id: str) -> None:
     if not task_id or not TASK_ID_PATTERN.fullmatch(task_id):
         raise WorkQueueError(f"task_id invalid: {task_id!r}")
+    segments = task_id.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise WorkQueueError(f"task_id invalid: {task_id!r}")
 
 
 def _safe_name(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]", "_", value).strip("_") or "claim"
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", value).strip("_") or "claim"
+    if safe == value:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"{safe}-{digest}"
 
 
 def _normalize_scope_entry(scope: str) -> str:

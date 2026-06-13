@@ -32,6 +32,52 @@ def test_claim_creates_persistent_claim_file(tmp_path: Path) -> None:
     assert (bridge / "work_queue" / "claims" / "test-task-001.json").exists()
 
 
+def test_claim_accepts_bridge_namespaced_task_id(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "codex-tools-1/magma-share-admission-status-bridge-template-20260613"
+
+    claim = claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="claim bridge task",
+        bridge_root=bridge,
+    )
+    record = release_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        release_status="done",
+        bridge_root=bridge,
+    )
+
+    assert claim.task_id == task_id
+    assert record.task_id == task_id
+    assert not (bridge / "work_queue" / "claims" / "codex-tools-1").exists()
+    assert len(list((bridge / "work_queue" / "done").glob("*.json"))) == 1
+
+
+def test_bridge_namespaced_task_id_file_name_does_not_collide(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id="codex-tools-1/task",
+        summary="slash namespace",
+        bridge_root=bridge,
+    )
+    claim_task(
+        agent="codex-tools-1",
+        task_id="codex-tools-1_task",
+        summary="underscore namespace",
+        bridge_root=bridge,
+    )
+
+    claim_files = sorted((bridge / "work_queue" / "claims").glob("*.json"))
+    assert len(claim_files) == 2
+    assert {path.stem for path in claim_files} != {"codex-tools-1_task"}
+
+
 def test_claim_rejects_invalid_agent(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     with pytest.raises(WorkQueueError):
@@ -372,12 +418,22 @@ def test_claim_round_trip_preserves_write_scope(tmp_path: Path) -> None:
     assert listed[0].write_scope == ("tools/a.py", "tests/test_a.py")
 
 
-def test_claim_invalid_task_id_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "../escape",
+        "task/../escape",
+        "task//escape",
+        "task/",
+        "task\\escape",
+    ],
+)
+def test_claim_invalid_task_id_refused(tmp_path: Path, task_id: str) -> None:
     bridge = tmp_path / ".agent-bridge"
     with pytest.raises(WorkQueueError):
         claim_task(
             agent="claude-1",
-            task_id="../escape",
+            task_id=task_id,
             summary="x",
             bridge_root=bridge,
         )

@@ -34,9 +34,6 @@ from waggledance.core.work_queue import (  # noqa: E402
 
 
 DEFAULT_EVENTS_PATH = DEFAULT_BRIDGE_ROOT / "shared" / "events.jsonl"
-DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG = (
-    ROOT / "configs" / "bridge_liveness_suppression.json"
-)
 DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS = 12.0
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 REQUEST_TYPES = {
@@ -117,6 +114,20 @@ DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
+DEFAULT_PRODUCTION_LIVENESS_SUPPRESSED_AGENTS: Mapping[str, str] = {
+    "fable-5": (
+        "operator-reported Fable 5 access disabled; keep lane out of "
+        "actionable production liveness until model access is restored"
+    ),
+    "grok-scout-1": (
+        "operator-reported Grok budget unavailable until July; advisory lane "
+        "is suppressed from actionable production liveness"
+    ),
+    "mythos": (
+        "operator-reported Mythos 5 access disabled; keep lane out of "
+        "actionable production liveness until model access is restored"
+    ),
+}
 
 
 class BridgeNextActionError(ValueError):
@@ -170,10 +181,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--production-liveness-suppression-config",
         type=Path,
-        default=DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG,
+        default=None,
         help=(
-            "Optional JSON config listing intentionally unavailable bridge "
-            "agents to separate from actionable production-liveness stalls."
+            "Optional JSON config adding intentionally unavailable bridge "
+            "agents to the built-in production-liveness suppression map."
         ),
     )
     parser.add_argument(
@@ -202,11 +213,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "errors": ["now must be an ISO-8601 timestamp"],
                     }
                 )
-        production_liveness_suppressed_agents = (
-            _load_production_liveness_suppression_config(
-                Path(args.production_liveness_suppression_config)
+        production_liveness_suppressed_agents = {}
+        if args.production_liveness_suppression_config is not None:
+            production_liveness_suppressed_agents = (
+                _load_production_liveness_suppression_config(
+                    Path(args.production_liveness_suppression_config)
+                )
             )
-        )
         report = recommend_next_action(
             agent=args.agent,
             events=events,
@@ -355,6 +368,15 @@ def _load_production_liveness_suppression_config(path: Path) -> dict[str, str]:
     return dict(sorted(suppressed.items()))
 
 
+def _production_liveness_suppression_map(
+    extra_suppressed_agents: Mapping[str, str] | None,
+) -> dict[str, str]:
+    suppressed = dict(DEFAULT_PRODUCTION_LIVENESS_SUPPRESSED_AGENTS)
+    suppressed.update(extra_suppressed_agents or {})
+    _assert_no_private_markers(suppressed)
+    return dict(sorted(suppressed.items()))
+
+
 def recommend_next_action(
     *,
     agent: str,
@@ -466,7 +488,9 @@ def recommend_next_action(
         events=events,
         now_utc=effective_now,
         idle_warn_minutes=production_idle_warn_minutes,
-        suppressed_agents=production_liveness_suppressed_agents,
+        suppressed_agents=_production_liveness_suppression_map(
+            production_liveness_suppressed_agents
+        ),
     )
     merge_blocking_request = _latest_merge_blocking_request(open_requests)
 

@@ -1422,9 +1422,6 @@ def test_suppressed_liveness_lane_is_not_counted_as_actionable_stall() -> None:
         claims=[],
         now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
         production_idle_warn_minutes=12.0,
-        production_liveness_suppressed_agents={
-            "fable-5": "model access disabled by operator report"
-        },
     )
 
     liveness = report["production_liveness"]
@@ -1435,7 +1432,7 @@ def test_suppressed_liveness_lane_is_not_counted_as_actionable_stall() -> None:
     assert liveness["suppressed_stalled_agent_count"] == 1
     suppressed = liveness["suppressed_stalled_agents"][0]
     assert suppressed["agent"] == "fable-5"
-    assert suppressed["suppressed_reason"] == "model access disabled by operator report"
+    assert "Fable 5 access disabled" in suppressed["suppressed_reason"]
 
 
 def test_idle_protocol_counter_is_closed_by_later_consensus_target() -> None:

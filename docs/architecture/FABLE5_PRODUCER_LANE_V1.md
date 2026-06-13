@@ -65,11 +65,10 @@ Interpretation:
 * exit `2` / `decision=input_refused` means the process snapshot could not be
   collected or parsed.
 
-`tools\bridge_next_action.py` also loads
-`configs\bridge_liveness_suppression.json` and reports intentionally unavailable
-lanes in `production_liveness.suppressed_stalled_agents` instead of counting
-them as actionable `stalled_agents`. This keeps Fable/Mythos/Grok access limits
-visible as audit context without hiding real Lead/Tools/RCO stalls.
+`tools\bridge_next_action.py` reports the intentionally unavailable
+Fable/Mythos/Grok lanes in `production_liveness.suppressed_stalled_agents`
+instead of counting them as actionable `stalled_agents`. This keeps access
+limits visible as audit context without hiding real Lead/Tools/RCO stalls.
 
 ## Not a gate identity
 

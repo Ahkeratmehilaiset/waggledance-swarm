@@ -40,7 +40,6 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG,
     _load_production_liveness_suppression_config,
     read_events,
     recommend_next_action,
@@ -233,10 +232,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--production-liveness-suppression-config",
         type=Path,
-        default=DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG,
+        default=None,
         help=(
-            "Optional JSON config listing intentionally unavailable bridge "
-            "agents to separate from actionable production-liveness stalls."
+            "Optional JSON config adding intentionally unavailable bridge "
+            "agents to the built-in production-liveness suppression map."
         ),
     )
     parser.add_argument("--json", action="store_true")
@@ -254,8 +253,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         bridge_root=bridge_root,
         tail=args.tail,
         now_utc=now_utc,
-        production_liveness_suppression_config=Path(
-            args.production_liveness_suppression_config
+        production_liveness_suppression_config=(
+            Path(args.production_liveness_suppression_config)
+            if args.production_liveness_suppression_config is not None
+            else None
         ),
     )
     if args.json:
@@ -293,9 +294,7 @@ def evaluate_agent_next_task(
     bridge_root: Path = DEFAULT_BRIDGE_ROOT,
     tail: int = 50000,
     now_utc: datetime,
-    production_liveness_suppression_config: Path | None = (
-        DEFAULT_PRODUCTION_LIVENESS_SUPPRESSION_CONFIG
-    ),
+    production_liveness_suppression_config: Path | None = None,
 ) -> dict[str, Any]:
     """Return one deterministic continuous-loop recommendation for ``agent``.
 

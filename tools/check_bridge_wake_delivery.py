@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     CLOSED_REQUEST_STATUSES,
+    HEARTBEAT_ONLY_EVENT_TYPES,
     _event_agent,
     _event_recipients,
     _event_status,
@@ -267,7 +268,7 @@ def _unresolved_wake_groups(
     for index, event in enumerate(events):
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
-        if event_agent:
+        if event_agent and _is_target_delivery_activity(event):
             _clear_for_target_activity(groups, event_agent=event_agent, event_ts=event_ts)
         _clear_for_terminal_task(groups, event)
 
@@ -308,6 +309,10 @@ def _unresolved_wake_groups(
                 if isinstance(requesters, set):
                     requesters.add(event_agent)
     return groups
+
+
+def _is_target_delivery_activity(event: Mapping[str, Any]) -> bool:
+    return _event_type(event) not in HEARTBEAT_ONLY_EVENT_TYPES
 
 
 def _clear_for_target_activity(

@@ -103,8 +103,29 @@ function Read-ClaimObjects {
     return $items
 }
 
+function Get-BridgeSuppressedAgentReason {
+    param([Parameter(Mandatory)] [string] $AgentName)
+
+    $path = Join-Path (Join-Path $bridgeRoot 'shared') 'production_liveness_suppression.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+
+    $config = Get-Content -Raw -Path $path -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    if (-not $config.PSObject.Properties['suppressed_agents']) { return '' }
+
+    $agents = $config.suppressed_agents
+    $entry = $agents.PSObject.Properties[$AgentName]
+    if ($null -eq $entry) { return '' }
+    $value = $entry.Value
+    if ($null -eq $value) { return '' }
+    if ($value.PSObject.Properties['reason']) {
+        return [string]$value.reason
+    }
+    return [string]$value
+}
+
 $events = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
 $claims = @(Read-ClaimObjects)
+$suppressionReason = Get-BridgeSuppressedAgentReason -AgentName $Agent
 $ownClaims = @($claims | Where-Object { [string]$_.agent -eq $Agent })
 $foreignWriteClaims = @($claims | Where-Object { [string]$_.agent -ne $Agent -and [string]$_.mode -eq 'write' })
 
@@ -166,6 +187,11 @@ if ($ownClaims.Count -gt 0) {
     $taskId = [string]$ownClaims[0].task_id
     $summary = "continue active claim $taskId"
     $safeMode = [string]$ownClaims[0].mode
+} elseif ($suppressionReason) {
+    $kind = 'agent_suppressed_unavailable'
+    $taskId = 'agent-suppressed-unavailable'
+    $summary = "agent $Agent is suppressed unavailable: $suppressionReason"
+    $safeMode = 'read-only'
 } elseif ($openRequests.Count -gt 0) {
     $req = @($openRequests | Select-Object -Last 1)[0]
     $kind = 'answer_incoming'
@@ -194,6 +220,9 @@ $result = [pscustomobject]@{
     open_incoming_count = $openRequests.Count
     stale_incoming_count = $staleRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
+}
+if ($suppressionReason) {
+    $result | Add-Member -NotePropertyName suppression_reason -NotePropertyValue $suppressionReason
 }
 
 if ($Json) {

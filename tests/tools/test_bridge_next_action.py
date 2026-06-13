@@ -56,6 +56,40 @@ def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path)
     assert report["open_incoming_count"] == 1
 
 
+def test_suppressed_unavailable_agent_does_not_claim_operator_follow_nudge() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T11:00:00Z",
+            "agent": "operator",
+            "to": "fable-5",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260613",
+            "status": "open",
+            "severity": "medium",
+            "message": (
+                "jatka: read the bridge and answer open requests. "
+                "classification=rco_wake_requested openIncoming=7"
+            ),
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="fable-5",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 13, 11, 5, tzinfo=timezone.utc),
+        production_liveness_suppressed_agents={
+            "fable-5": "operator reported fable lane unavailable"
+        },
+    )
+
+    assert report["action"] == "agent_suppressed_unavailable"
+    assert report["task_id"] == "agent-suppressed-unavailable"
+    assert report["safe_mode"] == "read-only"
+    assert report["open_incoming_count"] == 1
+    assert report["suppression_reason"] == "operator reported fable lane unavailable"
+
+
 def test_merge_blocking_incoming_request_interrupts_own_claim(
     tmp_path: Path,
 ) -> None:

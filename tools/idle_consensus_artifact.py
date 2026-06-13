@@ -50,6 +50,9 @@ CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION = (
 COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION = (
     "idle_consensus_counterfactual_eval_admission_summary.v0"
 )
+COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION = (
+    "idle_consensus_counterfactual_eval_binding_template.v0"
+)
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -108,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--counterfactual-eval-binding-template",
+        action="store_true",
+        help=(
+            "Emit a digest-only replay_binding template for a future "
+            "counterfactual eval receipt. Writes no artifacts or bridge events."
+        ),
+    )
+    parser.add_argument(
         "--replay-seed",
         type=Path,
         default=None,
@@ -144,19 +155,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if (
         args.candidate_diff_replay_admission
+        or args.counterfactual_eval_binding_template
         or args.replay_seed is not None
         or args.candidate_diff is not None
         or args.counterfactual_eval_receipt is not None
         or args.changed_paths
     ):
         try:
-            report = build_candidate_diff_replay_admission_from_files(
-                enabled=bool(args.candidate_diff_replay_admission),
-                replay_seed_path=args.replay_seed,
-                candidate_diff_path=args.candidate_diff,
-                changed_paths=args.changed_paths,
-                counterfactual_eval_receipt_path=args.counterfactual_eval_receipt,
-            )
+            if (
+                args.candidate_diff_replay_admission
+                and args.counterfactual_eval_binding_template
+            ):
+                raise ArtifactError(
+                    "candidate diff replay modes are mutually exclusive",
+                    {
+                        "decision": "candidate_diff_replay_refused",
+                        "errors": [
+                            "--candidate-diff-replay-admission and "
+                            "--counterfactual-eval-binding-template are mutually exclusive"
+                        ],
+                        "exit_code": 2,
+                    },
+                )
+            if args.counterfactual_eval_binding_template:
+                report = build_counterfactual_eval_binding_template_from_files(
+                    enabled=bool(args.counterfactual_eval_binding_template),
+                    replay_seed_path=args.replay_seed,
+                    candidate_diff_path=args.candidate_diff,
+                    changed_paths=args.changed_paths,
+                    counterfactual_eval_receipt_path=args.counterfactual_eval_receipt,
+                )
+            else:
+                report = build_candidate_diff_replay_admission_from_files(
+                    enabled=bool(args.candidate_diff_replay_admission),
+                    replay_seed_path=args.replay_seed,
+                    candidate_diff_path=args.candidate_diff,
+                    changed_paths=args.changed_paths,
+                    counterfactual_eval_receipt_path=args.counterfactual_eval_receipt,
+                )
         except ArtifactError as exc:
             if args.json:
                 print(json.dumps(exc.report, sort_keys=True))
@@ -424,6 +460,85 @@ def build_idle_consensus_replay_seed(artifact: Mapping[str, Any]) -> dict[str, A
             "candidate_diff_digest_rederived",
             "candidate_diff_charter_gate",
             "counterfactual_eval_receipt",
+            "operator_review_gate",
+        ],
+    }
+
+
+def build_idle_consensus_counterfactual_eval_binding_template(
+    *,
+    replay_seed: Mapping[str, Any],
+    changed_paths: Sequence[str],
+    candidate_diff_text: str,
+) -> dict[str, Any]:
+    """Build a digest-only replay_binding template for a future receipt."""
+    _ensure_replay_seed_ready_for_candidate_diff_admission(replay_seed)
+    if not isinstance(candidate_diff_text, str):
+        raise ArtifactError(
+            "counterfactual eval binding template requires diff text",
+            {
+                "decision": "counterfactual_eval_binding_template_refused",
+                "errors": ["candidate diff text must be a string"],
+                "exit_code": 2,
+            },
+        )
+    _refuse_private_text(candidate_diff_text, "candidate diff")
+    normalized_paths = _normalize_changed_paths(changed_paths)
+    charter = load_charter()
+    path_gate = evaluate_paths(charter, normalized_paths)
+    diff_gate = evaluate_diff_content(charter, candidate_diff_text)
+    candidate_diff_allowed = bool(path_gate.allowed and diff_gate.allowed)
+    replay_seed_digest = sha256_digest(replay_seed)
+    candidate_diff_digest = sha256_digest(
+        {
+            "changed_paths": normalized_paths,
+            "diff_text": candidate_diff_text,
+        }
+    )
+    return {
+        "report_version": COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION,
+        "ok": candidate_diff_allowed,
+        "decision": (
+            "counterfactual_eval_binding_template_ready"
+            if candidate_diff_allowed
+            else "operator_review_required"
+        ),
+        "dry_run": True,
+        "external_effect": False,
+        "writes_applied": False,
+        "would_create_task": False,
+        "would_create_branch": False,
+        "would_create_pr": False,
+        "would_merge": False,
+        "receipt_payload_included": False,
+        "candidate_diff_charter_allowed": candidate_diff_allowed,
+        "replay_seed": {
+            "seed_version": replay_seed["seed_version"],
+            "digest": replay_seed_digest,
+            "consensus_artifact_digest": replay_seed.get(
+                "consensus_artifact",
+                {},
+            ).get("digest"),
+            "transcript_digest": replay_seed.get("transcript_digest"),
+            "convergence_digest": replay_seed.get("convergence_digest"),
+        },
+        "candidate_diff": {
+            "changed_paths": normalized_paths,
+            "digest": candidate_diff_digest,
+            "line_count": len(candidate_diff_text.splitlines()),
+            "diff_text_included": False,
+        },
+        "binding_field": "replay_binding",
+        "binding_template": {
+            "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+            "replay_seed_digest": replay_seed_digest,
+            "candidate_diff_digest": candidate_diff_digest,
+        },
+        "path_gate": _gate_decision_to_dict(path_gate),
+        "diff_gate": _gate_decision_to_dict(diff_gate),
+        "next_required_gates": [
+            "attach_binding_to_counterfactual_eval_receipt",
+            "candidate_diff_replay_admission",
             "operator_review_gate",
         ],
     }
@@ -726,6 +841,67 @@ def build_candidate_diff_replay_admission_from_files(
         changed_paths=changed_paths,
         candidate_diff_text=candidate_diff_text,
         counterfactual_eval_receipt=counterfactual_eval_receipt,
+    )
+    report["exit_code"] = 0 if report["ok"] else 1
+    return report
+
+
+def build_counterfactual_eval_binding_template_from_files(
+    *,
+    enabled: bool,
+    replay_seed_path: Path | None,
+    candidate_diff_path: Path | None,
+    changed_paths: Sequence[str],
+    counterfactual_eval_receipt_path: Path | None = None,
+) -> dict[str, Any]:
+    """Load local files and build a report-only receipt binding template."""
+    if not enabled:
+        raise ArtifactError(
+            "counterfactual eval binding template mode is required",
+            {
+                "decision": "counterfactual_eval_binding_template_refused",
+                "errors": [
+                    "--counterfactual-eval-binding-template is required with "
+                    "binding-template inputs"
+                ],
+                "exit_code": 2,
+            },
+        )
+    missing = []
+    if replay_seed_path is None:
+        missing.append("--replay-seed")
+    if candidate_diff_path is None:
+        missing.append("--candidate-diff")
+    if not changed_paths:
+        missing.append("--changed-path")
+    if missing:
+        raise ArtifactError(
+            "counterfactual eval binding template inputs are incomplete",
+            {
+                "decision": "counterfactual_eval_binding_template_refused",
+                "errors": [f"missing required argument(s): {', '.join(missing)}"],
+                "exit_code": 2,
+            },
+        )
+    if counterfactual_eval_receipt_path is not None:
+        raise ArtifactError(
+            "counterfactual eval binding template does not consume receipt payloads",
+            {
+                "decision": "counterfactual_eval_binding_template_refused",
+                "errors": [
+                    "--counterfactual-eval-receipt is not accepted in "
+                    "binding-template mode"
+                ],
+                "exit_code": 2,
+            },
+        )
+
+    replay_seed = _read_replay_seed_file(replay_seed_path)
+    candidate_diff_text = _read_text_file(candidate_diff_path, "candidate diff")
+    report = build_idle_consensus_counterfactual_eval_binding_template(
+        replay_seed=replay_seed,
+        changed_paths=changed_paths,
+        candidate_diff_text=candidate_diff_text,
     )
     report["exit_code"] = 0 if report["ok"] else 1
     return report

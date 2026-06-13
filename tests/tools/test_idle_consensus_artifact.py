@@ -14,8 +14,10 @@ from tools.idle_consensus_artifact import (
     CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
     COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_VERSION,
+    COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION,
     REPLAY_SEED_REQUIRED_FALSE_KEYS,
     build_idle_consensus_candidate_diff_replay_admission,
+    build_idle_consensus_counterfactual_eval_binding_template,
     build_idle_consensus_replay_seed,
     write_idle_consensus_artifact,
 )
@@ -570,6 +572,66 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
     assert "divergences" not in serialized
 
 
+def test_counterfactual_eval_binding_template_is_digest_only_and_replay_ready(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++A later evaluator can attach this digest-only replay binding.
+"""
+
+    template = build_idle_consensus_counterfactual_eval_binding_template(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+    )
+    receipt = {
+        **_measured_counterfactual_receipt(),
+        "replay_binding": template["binding_template"],
+    }
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+    )
+    serialized = json.dumps(template, sort_keys=True)
+
+    assert template["report_version"] == COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION
+    assert template["ok"] is True
+    assert template["decision"] == "counterfactual_eval_binding_template_ready"
+    assert template["dry_run"] is True
+    assert template["external_effect"] is False
+    assert template["writes_applied"] is False
+    assert template["would_create_task"] is False
+    assert template["would_create_branch"] is False
+    assert template["would_create_pr"] is False
+    assert template["would_merge"] is False
+    assert template["receipt_payload_included"] is False
+    assert template["candidate_diff"]["diff_text_included"] is False
+    assert template["candidate_diff"]["digest"] == _candidate_diff_digest(
+        changed_paths,
+        diff_text,
+    )
+    assert template["binding_field"] == "replay_binding"
+    assert template["binding_template"] == {
+        "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+        "replay_seed_digest": sha256_digest(artifact["replay_seed"]),
+        "candidate_diff_digest": _candidate_diff_digest(changed_paths, diff_text),
+    }
+    assert admission["counterfactual_eval"]["satisfies_replay_gate"] is True
+    assert "A later evaluator can attach" not in serialized
+    assert "diff --git" not in serialized
+    assert "per_arm" not in serialized
+    assert "divergences" not in serialized
+
+
 def test_candidate_diff_replay_admission_blocks_unbound_counterfactual_receipt(
     tmp_path: Path,
 ) -> None:
@@ -862,6 +924,62 @@ def test_cli_candidate_diff_replay_admission_accepts_counterfactual_receipt(
     assert admission["draft_pr_gate_blockers"] == ["operator_review_gate_required"]
     assert "SAMPLE_PAYLOAD_DO_NOT_EXPORT" not in completed.stdout
     assert "raw-delta-digest-not-exported" not in completed.stdout
+
+
+def test_cli_counterfactual_eval_binding_template_reports_without_payloads(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed_path = tmp_path / "replay-seed.json"
+    seed_path.write_text(
+        json.dumps(artifact["replay_seed"], sort_keys=True),
+        encoding="utf-8",
+    )
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++CLI binding template omits this raw diff text.
+"""
+    diff_path = tmp_path / "candidate.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_consensus_artifact.py"),
+            "--counterfactual-eval-binding-template",
+            "--replay-seed",
+            str(seed_path),
+            "--candidate-diff",
+            str(diff_path),
+            "--changed-path",
+            changed_paths[0],
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    template = json.loads(completed.stdout)
+    assert template["report_version"] == COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION
+    assert template["ok"] is True
+    assert template["binding_template"] == {
+        "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,
+        "replay_seed_digest": sha256_digest(artifact["replay_seed"]),
+        "candidate_diff_digest": _candidate_diff_digest(changed_paths, diff_text),
+    }
+    assert template["receipt_payload_included"] is False
+    assert template["candidate_diff"]["diff_text_included"] is False
+    assert "CLI binding template omits" not in completed.stdout
+    assert "diff --git" not in completed.stdout
 
 
 def test_cli_candidate_diff_replay_admission_returns_one_for_operator_gate(

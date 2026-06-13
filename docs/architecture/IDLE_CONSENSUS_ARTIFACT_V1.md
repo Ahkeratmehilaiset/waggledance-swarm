@@ -54,6 +54,23 @@ merge, or write artifact files. The command exits `0` when the candidate diff
 passes the charter gates and `1` when the report is valid but operator review is
 required.
 
+When a later counterfactual evaluator needs to bind its receipt to the same
+stored consensus and candidate diff, emit the digest-only binding template:
+
+```powershell
+.\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
+  --counterfactual-eval-binding-template `
+  --replay-seed .codex-audit\idle-replay-seed.json `
+  --candidate-diff .codex-audit\candidate.patch `
+  --changed-path docs\architecture\consensus_artifacts\replay.md `
+  --json
+```
+
+The `binding_template` object is the value a later counterfactual receipt should
+place under `replay_binding`. The report includes only the replay-seed digest and
+candidate-diff digest; it omits the raw diff text and receipt payload, and it
+does not write artifacts or bridge events.
+
 An optional local MAGMA receipt bundle can be written for the artifact:
 
 ```powershell

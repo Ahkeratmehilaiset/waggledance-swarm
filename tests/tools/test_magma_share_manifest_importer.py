@@ -1005,6 +1005,115 @@ def test_cli_json_failure_reports_raw_material_policy_relaxation(
     )
 
 
+def _tamper_share_import_fixture_for_rejection_case(
+    share_manifest: Path,
+    source_manifest: Path,
+    case: str,
+) -> None:
+    manifest = json.loads(share_manifest.read_text(encoding="utf-8"))
+    if case == "schema_error":
+        manifest.pop("manifest_version")
+    elif case == "sanitized_source_manifest_digest_context_drift":
+        source = json.loads(source_manifest.read_text(encoding="utf-8"))
+        source["chain_id"] = "magma:changed:after-share-export"
+        _write_json(source_manifest, source)
+        return
+    elif case == "share_manifest_entry_count_context_drift":
+        manifest["entries"].append(json.loads(json.dumps(manifest["entries"][0])))
+        manifest["entries"][1]["entry_id"] = (
+            "magma:share:import:001:entry:000002"
+        )
+        manifest["artifact_counts"]["entries"] = 2
+        manifest["artifact_counts"]["receipts"] = 2
+        manifest["artifact_counts"]["evaluation_results"] = 2
+    elif case == "receipt_digest_context_drift":
+        manifest["entries"][0]["receipt_digest"] = "sha256:" + "0" * 64
+    elif case == "evaluation_result_digest_context_drift":
+        manifest["entries"][0]["evaluation_result_digest"] = "sha256:" + "0" * 64
+    elif case == "categorical_context_drift":
+        verdict = manifest["entries"][0]["verdict"]
+        manifest["entries"][0]["verdict"] = (
+            "review" if verdict != "review" else "pass"
+        )
+    elif case == "raw_material_export_or_policy_relaxation":
+        manifest["export_policy"]["allow_raw_payloads"] = True
+    else:
+        raise AssertionError(f"unhandled rejection case: {case}")
+    _write_json(share_manifest, manifest)
+
+
+@pytest.mark.parametrize(
+    ("blocker_class", "kwargs"),
+    [
+        ("schema_error", {}),
+        ("expected_share_id_mismatch", {"expected_share_id": "magma:share:wrong"}),
+        ("expected_purpose_mismatch", {"expected_purpose": "peer_review"}),
+        ("stale_or_future_manifest", {"now": "2026-05-29T09:00:00Z"}),
+        ("source_receipt_manifest_verification_failed", {}),
+        ("sanitized_source_manifest_digest_context_drift", {}),
+        ("share_manifest_entry_count_context_drift", {}),
+        ("receipt_digest_context_drift", {}),
+        ("evaluation_result_digest_context_drift", {}),
+        ("categorical_context_drift", {}),
+        ("raw_material_export_or_policy_relaxation", {}),
+    ],
+)
+def test_cli_admission_status_failure_matrix_covers_rejection_modes(
+    tmp_path: Path,
+    blocker_class: str,
+    kwargs: dict[str, str],
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    if blocker_class == "source_receipt_manifest_verification_failed":
+        source = json.loads(source_manifest.read_text(encoding="utf-8"))
+        evaluation_path = (
+            source_manifest.parent / source["entries"][0]["evaluation_result"]
+        )
+        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+        evaluation["verdict"] = "review"
+        _write_json(evaluation_path, evaluation)
+    elif blocker_class not in {
+        "expected_share_id_mismatch",
+        "expected_purpose_mismatch",
+        "stale_or_future_manifest",
+    }:
+        _tamper_share_import_fixture_for_rejection_case(
+            share_manifest,
+            source_manifest,
+            blocker_class,
+        )
+
+    payload = _assert_failed_admission_status(
+        _run_importer_json(
+            share_manifest,
+            source_manifest,
+            admission_status_json=True,
+            **kwargs,
+        ),
+        blocker_class=blocker_class,
+        tmp_path=tmp_path,
+    )
+
+    rejection_codes = {
+        item["reason_code"]
+        for item in payload["admission_contract"]["rejection_modes"]
+    }
+    assert rejection_codes == {
+        "schema_error",
+        "expected_share_id_mismatch",
+        "expected_purpose_mismatch",
+        "stale_or_future_manifest",
+        "source_receipt_manifest_verification_failed",
+        "sanitized_source_manifest_digest_context_drift",
+        "share_manifest_entry_count_context_drift",
+        "receipt_digest_context_drift",
+        "evaluation_result_digest_context_drift",
+        "categorical_context_drift",
+        "raw_material_export_or_policy_relaxation",
+    }
+    assert blocker_class in rejection_codes
+
+
 def test_cli_json_failure_does_not_echo_unsafe_expected_share_id(
     tmp_path: Path,
 ) -> None:

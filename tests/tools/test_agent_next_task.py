@@ -279,7 +279,7 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
-def test_agent_next_task_applies_liveness_suppression_config(
+def test_agent_next_task_applies_default_bridge_liveness_suppression_config(
     tmp_path: Path,
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
@@ -297,7 +297,7 @@ def test_agent_next_task_applies_liveness_suppression_config(
         ],
     )
     _claims_dir(bridge)
-    suppression_config = tmp_path / "bridge_liveness_suppression.json"
+    suppression_config = bridge / "shared" / "production_liveness_suppression.json"
     suppression_config.write_text(
         json.dumps(
             {
@@ -317,7 +317,6 @@ def test_agent_next_task_applies_liveness_suppression_config(
         events_path=events_path,
         bridge_root=bridge,
         now_utc=NOW,
-        production_liveness_suppression_config=suppression_config,
     )
 
     liveness = report["bridge_recommendation"]["production_liveness"]

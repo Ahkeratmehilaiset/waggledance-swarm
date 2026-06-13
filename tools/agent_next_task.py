@@ -40,6 +40,7 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
+    _default_production_liveness_suppression_config,
     _load_production_liveness_suppression_config,
     read_events,
     recommend_next_action,
@@ -234,8 +235,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "Optional JSON config adding intentionally unavailable bridge "
-            "agents to the built-in production-liveness suppression map."
+            "Optional JSON config listing intentionally unavailable bridge "
+            "agents to separate from actionable production-liveness stalls. "
+            "Defaults to bridge-root/shared/production_liveness_suppression.json "
+            "when that runtime file exists."
         ),
     )
     parser.add_argument("--json", action="store_true")
@@ -253,11 +256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         bridge_root=bridge_root,
         tail=args.tail,
         now_utc=now_utc,
-        production_liveness_suppression_config=(
-            Path(args.production_liveness_suppression_config)
-            if args.production_liveness_suppression_config is not None
-            else None
-        ),
+        production_liveness_suppression_config=args.production_liveness_suppression_config,
     )
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -317,11 +316,14 @@ def evaluate_agent_next_task(
     try:
         events = read_events(events_path, tail=tail)
         claims = list_claims(bridge_root=Path(bridge_root))
+        suppression_config = _default_production_liveness_suppression_config(
+            Path(bridge_root)
+        )
+        if production_liveness_suppression_config is not None:
+            suppression_config = Path(production_liveness_suppression_config)
         production_liveness_suppressed_agents = (
-            _load_production_liveness_suppression_config(
-                Path(production_liveness_suppression_config)
-            )
-            if production_liveness_suppression_config is not None
+            _load_production_liveness_suppression_config(suppression_config)
+            if suppression_config.exists()
             else {}
         )
     except (BridgeNextActionError, WorkQueueError, OSError) as exc:

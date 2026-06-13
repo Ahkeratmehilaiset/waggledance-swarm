@@ -114,20 +114,7 @@ DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
-DEFAULT_PRODUCTION_LIVENESS_SUPPRESSED_AGENTS: Mapping[str, str] = {
-    "fable-5": (
-        "operator-reported Fable 5 access disabled; keep lane out of "
-        "actionable production liveness until model access is restored"
-    ),
-    "grok-scout-1": (
-        "operator-reported Grok budget unavailable until July; advisory lane "
-        "is suppressed from actionable production liveness"
-    ),
-    "mythos": (
-        "operator-reported Mythos 5 access disabled; keep lane out of "
-        "actionable production liveness until model access is restored"
-    ),
-}
+PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json"
 
 
 class BridgeNextActionError(ValueError):
@@ -183,8 +170,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "Optional JSON config adding intentionally unavailable bridge "
-            "agents to the built-in production-liveness suppression map."
+            "Optional JSON config listing intentionally unavailable bridge "
+            "agents to separate from actionable production-liveness stalls. "
+            "Defaults to bridge-root/shared/production_liveness_suppression.json "
+            "when that runtime file exists."
         ),
     )
     parser.add_argument(
@@ -199,9 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        events_path = args.events or (Path(args.bridge_root) / "shared" / "events.jsonl")
+        bridge_root = Path(args.bridge_root)
+        events_path = args.events or (bridge_root / "shared" / "events.jsonl")
         events = read_events(events_path, tail=args.tail)
-        claims = list_claims(bridge_root=Path(args.bridge_root))
+        claims = list_claims(bridge_root=bridge_root)
         now_utc = datetime.now(timezone.utc)
         if args.now:
             now_utc = _parse_utc(args.now)
@@ -213,13 +203,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "errors": ["now must be an ISO-8601 timestamp"],
                     }
                 )
-        production_liveness_suppressed_agents = {}
+        suppression_config = _default_production_liveness_suppression_config(
+            bridge_root
+        )
         if args.production_liveness_suppression_config is not None:
-            production_liveness_suppressed_agents = (
-                _load_production_liveness_suppression_config(
-                    Path(args.production_liveness_suppression_config)
-                )
-            )
+            suppression_config = Path(args.production_liveness_suppression_config)
+        production_liveness_suppressed_agents = (
+            _load_production_liveness_suppression_config(suppression_config)
+            if suppression_config.exists()
+            else {}
+        )
         report = recommend_next_action(
             agent=args.agent,
             events=events,
@@ -368,11 +361,14 @@ def _load_production_liveness_suppression_config(path: Path) -> dict[str, str]:
     return dict(sorted(suppressed.items()))
 
 
+def _default_production_liveness_suppression_config(bridge_root: Path) -> Path:
+    return Path(bridge_root) / "shared" / PRODUCTION_LIVENESS_SUPPRESSION_FILENAME
+
+
 def _production_liveness_suppression_map(
     extra_suppressed_agents: Mapping[str, str] | None,
 ) -> dict[str, str]:
-    suppressed = dict(DEFAULT_PRODUCTION_LIVENESS_SUPPRESSED_AGENTS)
-    suppressed.update(extra_suppressed_agents or {})
+    suppressed = dict(extra_suppressed_agents or {})
     _assert_no_private_markers(suppressed)
     return dict(sorted(suppressed.items()))
 

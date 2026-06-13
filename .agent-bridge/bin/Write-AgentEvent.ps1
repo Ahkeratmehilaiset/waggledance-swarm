@@ -133,10 +133,14 @@ $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
+$rcoReviewAgents = @('claude-rco-1', 'claude-rco-2')
+$rcoPassAuthorAliasAgents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'grok-scout-1')
+$rcoPassTaskBindingFields = @('canonical_task_id', 'branch', 'headRefName', 'head_ref_name', 'branch_name')
 $grokPrWorktreeStrictEpochUtc = '2026-06-04T08:32:00Z'
 $grokRequiredFreshnessShaFields = @('remote_main_sha', 'local_origin_main_sha', 'worktree_head')
 $grokOptionalFreshnessShaFields = @('pr_head_sha', 'reviewed_head_sha', 'target_head_sha')
 $fullGitShaPattern = '^[0-9a-f]{40}$'
+$bridgeTaskBindingPattern = '^[A-Za-z0-9._/-]{1,180}$'
 # Keep this guard in lock-step with waggledance/core/bridge_event_schema.py.
 # It must run before any bridge file I/O so invalid events fail closed.
 $requiresTaskId = (
@@ -177,6 +181,80 @@ function Test-BridgeObject {
 function Test-FullGitSha {
     param([AllowNull()] $Value)
     return ($Value -is [string] -and $Value -cmatch $fullGitShaPattern)
+}
+
+function Test-RcoTaskBindingText {
+    param([AllowNull()] $Value)
+    if (-not ($Value -is [string])) {
+        return $false
+    }
+    $text = [string]$Value
+    if (-not $text) {
+        return $false
+    }
+    if ($text -cnotmatch $bridgeTaskBindingPattern) {
+        return $false
+    }
+    if (
+        $text.Contains('\') -or
+        $text.Contains(':') -or
+        $text.Contains('..') -or
+        $text.Contains('//') -or
+        $text.StartsWith('/') -or
+        $text.EndsWith('/')
+    ) {
+        return $false
+    }
+    return $true
+}
+
+function Add-RcoTaskBindingCandidate {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.ArrayList] $Bindings,
+        [AllowNull()] $Value
+    )
+    if ($null -eq $Value) {
+        return
+    }
+    if ($Value -is [array]) {
+        foreach ($item in @($Value)) {
+            Add-RcoTaskBindingCandidate -Bindings $Bindings -Value $item
+        }
+        return
+    }
+    $text = ([string]$Value).Trim()
+    if (-not $text) {
+        return
+    }
+    if (-not (Test-RcoTaskBindingText -Value $text)) {
+        throw "rco_pass task binding contains unsafe task id"
+    }
+    if (-not $Bindings.Contains($text)) {
+        [void]$Bindings.Add($text)
+    }
+}
+
+function Add-RcoTaskBindingAliases {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.ArrayList] $Allowed,
+        [Parameter(Mandatory)] [string] $Task
+    )
+    Add-RcoTaskBindingCandidate -Bindings $Allowed -Value $Task
+    foreach ($authorAgent in $rcoPassAuthorAliasAgents) {
+        $slashPrefix = "$authorAgent/"
+        $hyphenPrefix = "$authorAgent-"
+        if ($Task.StartsWith($slashPrefix, [System.StringComparison]::Ordinal)) {
+            $rest = $Task.Substring($slashPrefix.Length)
+            if ($rest) {
+                Add-RcoTaskBindingCandidate -Bindings $Allowed -Value "$authorAgent-$rest"
+            }
+        } elseif ($Task.StartsWith($hyphenPrefix, [System.StringComparison]::Ordinal)) {
+            $rest = $Task.Substring($hyphenPrefix.Length)
+            if ($rest) {
+                Add-RcoTaskBindingCandidate -Bindings $Allowed -Value "$authorAgent/$rest"
+            }
+        }
+    }
 }
 
 function Test-BridgeNowAtOrAfter {
@@ -268,7 +346,59 @@ function Assert-GrokFreshnessPayload {
     }
 }
 
+function Assert-RcoPassTaskBinding {
+    param([AllowNull()] $Payload)
+    if (-not (
+        ($rcoReviewAgents -contains $Agent) -and
+        ($Type -eq 'decision') -and
+        ($Status -eq 'rco_pass')
+    )) {
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($TaskId)) {
+        throw "rco_pass requires non-empty -TaskId"
+    }
+    if (-not (Test-RcoTaskBindingText -Value $TaskId)) {
+        throw "rco_pass task_id contains unsafe task id"
+    }
+    if (-not (Test-BridgeObject -Value $Payload)) {
+        throw "rco_pass canonical task binding requires payload object"
+    }
+    $head = Get-BridgeObjectField -Object $Payload -Name 'head'
+    if (-not (Test-FullGitSha -Value $head)) {
+        throw "rco_pass head must be lowercase 40-hex sha"
+    }
+    if ($Message.IndexOf([string]$head, [System.StringComparison]::Ordinal) -lt 0) {
+        throw "rco_pass message must contain exact head"
+    }
+
+    $bindings = [System.Collections.ArrayList]::new()
+    foreach ($fieldName in $rcoPassTaskBindingFields) {
+        if (Test-BridgeObjectHasField -Object $Payload -Name $fieldName) {
+            Add-RcoTaskBindingCandidate -Bindings $bindings -Value (Get-BridgeObjectField -Object $Payload -Name $fieldName)
+        }
+    }
+    if (Test-BridgeObjectHasField -Object $Payload -Name 'accepted_task_ids') {
+        Add-RcoTaskBindingCandidate -Bindings $bindings -Value (Get-BridgeObjectField -Object $Payload -Name 'accepted_task_ids')
+    }
+    if ($bindings.Count -eq 0) {
+        # Existing RCO writers bind by -TaskId and carry payload {head,
+        # operator_gated}. Keep that path working while enforcing any explicit
+        # canonical binding when a caller supplies one.
+        Add-RcoTaskBindingCandidate -Bindings $bindings -Value $TaskId
+    }
+
+    $allowedTaskIds = [System.Collections.ArrayList]::new()
+    foreach ($binding in @($bindings)) {
+        Add-RcoTaskBindingAliases -Allowed $allowedTaskIds -Task ([string]$binding)
+    }
+    if (-not $allowedTaskIds.Contains($TaskId)) {
+        throw "rco_pass task_id does not match canonical task binding"
+    }
+}
+
 Assert-GrokFreshnessPayload -Payload $payload
+Assert-RcoPassTaskBinding -Payload $payload
 
 function Assert-AgentUuidMatchesProfile {
     param([Parameter(Mandatory)] [string] $BridgeRoot)

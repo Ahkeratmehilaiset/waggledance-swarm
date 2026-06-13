@@ -1240,6 +1240,66 @@ def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
     assert report["open_incoming_duplicate_count"] == 1
 
 
+def test_rco_pass_required_wake_request_remains_actionable_after_pass_token() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T10:21:01Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-1,claude-rco-2",
+            "type": "handoff",
+            "task_id": "codex-tools-1-operator-feedback-preflight-cli-20260613",
+            "status": "lead_patch_pushed_ci_pending",
+            "message": "PR #1119 patch pushed; CI pending.",
+        },
+        {
+            "ts_utc": "2026-06-13T10:34:37Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1,claude-rco-2,operator",
+            "type": "wake_request",
+            "task_id": "codex-tools-1-operator-feedback-preflight-cli-20260613",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1119 is CI green; RCO pass required.",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T10:35:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "codex-tools-1-operator-feedback-preflight-cli-20260613"
+    assert report["incoming"]["type"] == "wake_request"
+    assert report["incoming"]["status"] == "rco_pass_required_after_ci_green"
+    assert report["open_incoming_count"] == 2
+
+
+def test_rco_pass_decision_remains_response_only() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T10:34:37Z",
+            "agent": "claude-rco-1",
+            "to": "codex-lead-1,codex-tools-1",
+            "type": "decision",
+            "task_id": "codex-tools-1-operator-feedback-preflight-cli-20260613",
+            "status": "rco_pass",
+            "message": "RCO_PASS PR #1119 at exact head.",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T10:35:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_duplicate_non_wake_requests_remain_separate_incoming_rows() -> None:
     events = [
         {

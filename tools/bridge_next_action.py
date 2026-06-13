@@ -61,6 +61,9 @@ OPEN_STATUS_FRAGMENTS = (
     "proposal",
     "request",
     "requested",
+    "required",
+    "needed",
+    "missing",
     "ready",
     "pushed",
     "active",
@@ -1043,7 +1046,7 @@ def _status_has_any(status: str, candidates: Sequence[str]) -> bool:
 
 def _is_response_only_status(status: str) -> bool:
     tokens = _status_tokens(status)
-    if "not" in tokens:
+    if "not" in tokens or tokens.intersection({"required", "needed", "missing"}):
         return False
     return any(candidate in tokens for candidate in RESPONSE_ONLY_STATUS_FRAGMENTS)
 

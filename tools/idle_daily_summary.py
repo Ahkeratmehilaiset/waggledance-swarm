@@ -26,7 +26,6 @@ if str(ROOT) not in sys.path:
 
 from waggledance.core.idle_daily_summary import (  # noqa: E402
     DEFAULT_DAILY_QUOTA,
-    DEFAULT_EVENTS_PATH,
     DEFAULT_HANDOFF_DIR,
     SummaryEventError,
     SummaryPrivacyError,
@@ -42,7 +41,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Render the autonomous-merge daily summary handoff.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl).",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument(
         "--utc-date",
         default=None,
@@ -85,7 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"daily summary FAILED: invalid UTC date {utc_date!r}", file=sys.stderr)
         return 2
 
-    events = read_bridge_events(args.events)
+    events = read_bridge_events(args.events, bridge_root=args.bridge_root)
     try:
         summary = build_daily_summary(
             utc_date=utc_date,

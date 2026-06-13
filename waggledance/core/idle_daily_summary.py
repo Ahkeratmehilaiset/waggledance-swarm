@@ -24,6 +24,8 @@ from pathlib import Path
 import re
 from typing import Mapping, Sequence
 
+from waggledance.core.work_queue import resolve_bridge_root
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVENTS_PATH = ROOT / ".agent-bridge" / "shared" / "events.jsonl"
@@ -173,12 +175,31 @@ def write_summary_file(
     return out_path
 
 
-def read_bridge_events(events_path: Path) -> list[dict[str, object]]:
+def resolve_events_path(
+    events_path: Path | None = None,
+    *,
+    bridge_root: Path | None = None,
+) -> Path:
+    """Resolve bridge events input, honoring explicit paths before runtime root."""
+    if events_path is not None:
+        return events_path
+    return resolve_bridge_root(bridge_root) / "shared" / "events.jsonl"
+
+
+def read_bridge_events(
+    events_path: Path | None = None,
+    *,
+    bridge_root: Path | None = None,
+) -> list[dict[str, object]]:
     """Read newline-delimited JSON bridge events from disk."""
-    if not events_path.exists():
+    resolved_events_path = resolve_events_path(events_path, bridge_root=bridge_root)
+    if not resolved_events_path.exists():
         return []
     events: list[dict[str, object]] = []
-    for line_no, line in enumerate(events_path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_no, line in enumerate(
+        resolved_events_path.read_text(encoding="utf-8").splitlines(),
+        1,
+    ):
         if not line.strip():
             continue
         try:

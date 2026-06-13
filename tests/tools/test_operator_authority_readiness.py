@@ -264,6 +264,86 @@ def test_cli_writes_hold_report(tmp_path: Path, capsys) -> None:
     )
 
 
+def test_cli_defaults_events_to_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    phase_path = tmp_path / "phase_synthesis_refresh.json"
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    events_path = runtime_bridge / "shared" / "events.jsonl"
+    output_path = tmp_path / "operator_authority_readiness.json"
+    phase_path.write_text(
+        json.dumps(_phase_synthesis_refresh()),
+        encoding="utf-8",
+    )
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(json.dumps(_operator_approval_event()) + "\n")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    rc = main(
+        [
+            "--phase-synthesis-refresh",
+            str(phase_path),
+            "--checked-at-utc",
+            "2026-05-26T06:00:00Z",
+            "--output",
+            str(output_path),
+            "--json",
+            "--strict",
+        ]
+    )
+
+    assert rc == 0
+    stdout_report = json.loads(capsys.readouterr().out)
+    assert stdout_report["explicit_operator_approval_found"] is True
+    assert stdout_report["authority_activation_status"] == (
+        "operator_approved_activation_still_not_granted"
+    )
+
+
+def test_cli_explicit_events_override_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    phase_path = tmp_path / "phase_synthesis_refresh.json"
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events_path = runtime_bridge / "shared" / "events.jsonl"
+    explicit_events_path = tmp_path / "explicit-events.jsonl"
+    output_path = tmp_path / "operator_authority_readiness.json"
+    phase_path.write_text(
+        json.dumps(_phase_synthesis_refresh()),
+        encoding="utf-8",
+    )
+    runtime_events_path.parent.mkdir(parents=True)
+    runtime_events_path.write_text(json.dumps(_operator_approval_event()) + "\n")
+    explicit_events_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    rc = main(
+        [
+            "--phase-synthesis-refresh",
+            str(phase_path),
+            "--events",
+            str(explicit_events_path),
+            "--checked-at-utc",
+            "2026-05-26T06:00:00Z",
+            "--output",
+            str(output_path),
+            "--json",
+            "--strict",
+        ]
+    )
+
+    assert rc == STRICT_BLOCKED_EXIT_CODE
+    stdout_report = json.loads(capsys.readouterr().out)
+    assert stdout_report["explicit_operator_approval_found"] is False
+    assert stdout_report["activation_blockers"] == [
+        "explicit_operator_approval_event_missing"
+    ]
+
+
 def test_strict_exit_code_reports_blocked_hold() -> None:
     report = build_report(
         phase_synthesis_refresh=_phase_synthesis_refresh(),

@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from waggledance.core.work_queue import resolve_bridge_root
+
 
 SCHEMA_VERSION = "waggledance.operator_authority_readiness.v0"
 DECISION_PACKET_SCHEMA_VERSION = "waggledance.operator_authority_decision_packet.v0"
@@ -330,7 +332,24 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_PHASE_SYNTHESIS_REFRESH,
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge events JSONL path. Defaults to "
+            "<resolved bridge root>/shared/events.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge runtime root used when --events is omitted. Explicit "
+            "--events remains authoritative."
+        ),
+    )
     parser.add_argument(
         "--checked-at-utc",
         type=_parse_timestamp,
@@ -348,9 +367,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = (
+        args.events
+        if args.events is not None
+        else bridge_root / "shared" / "events.jsonl"
+    )
+
     report = build_report_from_paths(
         phase_synthesis_refresh_path=args.phase_synthesis_refresh,
-        events_path=args.events,
+        events_path=events_path,
         checked_at_utc=args.checked_at_utc,
     )
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"

@@ -36,6 +36,7 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     evaluate_paths,
     load_charter,
 )
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
@@ -62,7 +63,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Fail-closed autonomous promotion eligibility verifier.",
     )
     parser.add_argument("--pr-status-file", type=Path, required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--charter", type=Path, default=DEFAULT_CHARTER_PATH)
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--head", required=True)
@@ -100,6 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_path = (
+        args.events
+        or resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
+    )
     try:
         pr_status = json.loads(args.pr_status_file.read_text(encoding="utf-8"))
         if not isinstance(pr_status, Mapping):
@@ -108,7 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "invalid_pr_status", "pr status file must contain a JSON object"
                 )
             )
-        events = _read_events_fail_closed(args.events)
+        events = _read_events_fail_closed(events_path)
         prior_approved_diff_text = None
         if args.prior_approved_diff_file is not None:
             prior_approved_diff_text = args.prior_approved_diff_file.read_text(

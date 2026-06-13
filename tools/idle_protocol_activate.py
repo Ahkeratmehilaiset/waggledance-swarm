@@ -41,6 +41,7 @@ from waggledance.core.magma.receipt_bundle import (
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
+from waggledance.core.work_queue import resolve_bridge_root
 
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -59,9 +60,27 @@ def build_parser() -> argparse.ArgumentParser:
         description="Validate and optionally emit one idle-protocol v1 bridge event.",
     )
     parser.add_argument("--payload", type=Path, required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
-    parser.add_argument("--claims-dir", type=Path, default=DEFAULT_CLAIMS_DIR)
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--claims-dir",
+        type=Path,
+        default=None,
+        help="Bridge claims directory. Defaults to <bridge-root>/work_queue/claims.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--from-agent", type=parse_agent_id, default=DEFAULT_AGENT)
     parser.add_argument("--to", type=parse_agent_id, default=None)
     parser.add_argument("--task-id", default=None)
@@ -94,12 +113,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
+    claims_dir = args.claims_dir or bridge_root / "work_queue" / "claims"
     try:
         report = activate_idle_protocol(
             payload_path=args.payload,
-            events_path=args.events,
-            claims_dir=args.claims_dir,
-            bridge_root=args.bridge_root,
+            events_path=events_path,
+            claims_dir=claims_dir,
+            bridge_root=bridge_root,
             from_agent=args.from_agent,
             to_agent=args.to,
             task_id=args.task_id,

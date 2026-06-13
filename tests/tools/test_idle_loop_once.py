@@ -287,6 +287,44 @@ def test_not_idle_when_recent_agent_message(tmp_path: Path) -> None:
     assert "recent_agent_message" in report["blockers"]
 
 
+def test_wake_delivery_stall_preempts_idle_wait(tmp_path: Path) -> None:
+    events = [
+        _bridge_event(),
+        _bridge_event(
+            ts_utc="2026-05-20T11:30:00Z",
+            agent="operator",
+            type_="wake_request",
+            status="open",
+            task_id="bridge-follow-nudge-20260520",
+            to="claude-rco-1",
+            message="read the bridge and answer open requests",
+        ),
+        _bridge_event(
+            ts_utc="2026-05-20T11:40:00Z",
+            agent="operator",
+            type_="wake_request",
+            status="open",
+            task_id="bridge-follow-nudge-20260520",
+            to="claude-rco-1",
+            message="read the bridge and answer open requests again",
+        ),
+    ]
+
+    report = _tick(tmp_path, events)
+
+    assert report["decision"] == "wake_delivery_stalled"
+    assert report["next_action"] == "verify_bridge_watcher"
+    assert "check_bridge_wake_delivery.py" in report["recommended_command"]
+    assert "--fail-on-stalled" in report["recommended_command"]
+    wake_delivery = report["session_summary"]["wake_delivery"]
+    assert wake_delivery["decision"] == "wake_delivery_stalled"
+    assert wake_delivery["stalled_count"] == 1
+    assert wake_delivery["by_agent"] == {"claude-rco-1": 1}
+    assert "recent_operator_activity" in report["idle_report"]["blockers"]
+    assert any("additional wake_request writes" in note for note in report["notes"])
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
 def test_no_session_when_idle_and_no_idle_events(tmp_path: Path) -> None:
     report = _tick(tmp_path, [_bridge_event()])
 

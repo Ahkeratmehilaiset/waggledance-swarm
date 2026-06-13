@@ -39,6 +39,13 @@ from tools.idle_check import (  # noqa: E402
     DEFAULT_EVENTS_PATH,
     evaluate_idle_state,
 )
+from tools.check_bridge_wake_delivery import (  # noqa: E402
+    DEFAULT_MAX_AGE_HOURS as DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS,
+    DEFAULT_MIN_AGE_MINUTES as DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES,
+    DEFAULT_MIN_REPEATS as DEFAULT_WAKE_DELIVERY_MIN_REPEATS,
+    WakeDeliveryError,
+    check_wake_delivery,
+)
 from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
     deferred_lift_state,
 )
@@ -96,6 +103,27 @@ def build_parser() -> argparse.ArgumentParser:
             "recommendations concrete."
         ),
     )
+    parser.add_argument(
+        "--wake-delivery-min-age-minutes",
+        type=float,
+        default=DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES,
+        help=(
+            "Report repeated wake_request groups older than this many minutes "
+            "before normal idle-protocol handling."
+        ),
+    )
+    parser.add_argument(
+        "--wake-delivery-min-repeats",
+        type=int,
+        default=DEFAULT_WAKE_DELIVERY_MIN_REPEATS,
+        help="Minimum repeated wake_request count before reporting delivery stall.",
+    )
+    parser.add_argument(
+        "--wake-delivery-max-age-hours",
+        type=float,
+        default=DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS,
+        help="Ignore wake-delivery stalls whose latest wake is older than this.",
+    )
     parser.add_argument("--now", default=None)
     parser.add_argument("--json", action="store_true")
     return parser
@@ -119,6 +147,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else None
         ),
         agent=args.agent,
+        wake_delivery_min_age_minutes=args.wake_delivery_min_age_minutes,
+        wake_delivery_min_repeats=args.wake_delivery_min_repeats,
+        wake_delivery_max_age_hours=args.wake_delivery_max_age_hours,
     )
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -145,6 +176,9 @@ def evaluate_idle_loop_tick(
     open_request_max_age_hours: float,
     operator_last_activity_utc: datetime | None = None,
     agent: str | None = None,
+    wake_delivery_min_age_minutes: float = DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES,
+    wake_delivery_min_repeats: int = DEFAULT_WAKE_DELIVERY_MIN_REPEATS,
+    wake_delivery_max_age_hours: float = DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS,
 ) -> dict[str, Any]:
     """Return one read-only decision token for the idle-loop tick."""
     try:
@@ -171,6 +205,48 @@ def evaluate_idle_loop_tick(
             ],
         }
 
+    events = _read_events(events_path)
+    wake_delivery_report = _wake_delivery_report(
+        events=events,
+        events_path=events_path,
+        now_utc=now_utc,
+        min_age_minutes=wake_delivery_min_age_minutes,
+        min_repeats=wake_delivery_min_repeats,
+        max_age_hours=wake_delivery_max_age_hours,
+    )
+    if wake_delivery_report.get("stalled_count"):
+        return _report(
+            decision="wake_delivery_stalled",
+            next_action="verify_bridge_watcher",
+            recommended_command=(
+                "python tools/check_bridge_wake_delivery.py "
+                f"--events {events_path} "
+                f"--min-age-minutes {wake_delivery_min_age_minutes:g} "
+                f"--min-repeats {wake_delivery_min_repeats} "
+                f"--max-age-hours {wake_delivery_max_age_hours:g} "
+                "--fail-on-stalled --json"
+            ),
+            idle_report=idle_report,
+            session_summary={
+                "status": "wake_delivery_stalled",
+                "wake_delivery": wake_delivery_report,
+            },
+            notes=[
+                (
+                    "repeated wake_request events are visible on the bridge, "
+                    "but the target agent has not emitted later bridge activity"
+                ),
+                (
+                    "treat this as a watcher/poll-loop delivery problem; "
+                    "additional wake_request writes are not delivery proof"
+                ),
+                (
+                    "the check is read-only and grants no bridge-write, "
+                    "scheduler, merge, or gate-skip authority"
+                ),
+            ],
+        )
+
     if not idle_report["idle"]:
         return {
             "decision": "not_idle",
@@ -185,7 +261,6 @@ def evaluate_idle_loop_tick(
             ],
         }
 
-    events = _read_events(events_path)
     summary = summarize_idle_session(events)
     status = str(summary.get("status", ""))
 
@@ -396,6 +471,38 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
         if isinstance(event, dict):
             events.append(event)
     return events
+
+
+def _wake_delivery_report(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    events_path: Path,
+    now_utc: datetime,
+    min_age_minutes: float,
+    min_repeats: int,
+    max_age_hours: float,
+) -> dict[str, Any]:
+    try:
+        return check_wake_delivery(
+            events=events,
+            bridge_root=_bridge_root_for_events_path(events_path),
+            min_age_minutes=min_age_minutes,
+            min_repeats=min_repeats,
+            max_age_hours=max_age_hours,
+            now_utc=now_utc,
+        )
+    except WakeDeliveryError as exc:
+        return exc.report
+
+
+def _bridge_root_for_events_path(path: Path) -> Path | None:
+    resolved = path
+    if resolved.name != "events.jsonl":
+        return None
+    shared = resolved.parent
+    if shared.name != "shared":
+        return None
+    return shared.parent
 
 
 def _stale_terminal_session(

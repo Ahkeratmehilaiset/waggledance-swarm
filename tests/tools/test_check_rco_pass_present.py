@@ -146,6 +146,41 @@ def test_pass_at_different_old_head_is_stale_refuse() -> None:
     assert result["ok"] is False
     assert result["has_qualifying_rco_pass_at_head"] is False
     assert result["decision"] == "no_qualifying_pass"
+    assert result["has_stale_rco_pass_at_other_head"] is True
+    assert result["latest_stale_rco_pass_event"]["referenced_heads"] == [OTHER_HEAD]
+    assert result["rco_reemit_guidance"] == {
+        "required": True,
+        "reason": "stale_rco_pass_head",
+        "preferred_task_id": TASK,
+        "accepted_task_ids": [TASK],
+        "head": HEAD,
+        "stale_heads": [OTHER_HEAD],
+        "target_rco_agents": ["claude-rco-1", "claude-rco-2"],
+        "legacy_request_status": "rco_requested",
+    }
+
+
+def test_stale_pass_diagnostic_does_not_block_later_exact_pass() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at old head {OTHER_HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["has_stale_rco_pass_at_other_head"] is True
+    assert result["latest_stale_rco_pass_event"]["referenced_heads"] == [OTHER_HEAD]
+    assert result["rco_reemit_guidance"] is None
 
 
 def test_changes_requested_after_pass_refuses() -> None:
@@ -668,6 +703,10 @@ def test_cli_refuse_on_stale_head(tmp_path: Path) -> None:
     assert res.returncode != 0
     payload = json.loads(res.stdout)
     assert payload["has_qualifying_rco_pass_at_head"] is False
+    assert payload["has_stale_rco_pass_at_other_head"] is True
+    assert payload["latest_stale_rco_pass_event"]["referenced_heads"] == [OTHER_HEAD]
+    assert payload["rco_reemit_guidance"]["reason"] == "stale_rco_pass_head"
+    assert payload["rco_reemit_guidance"]["stale_heads"] == [OTHER_HEAD]
     for key in CLAIM_GATES:
         assert payload[key] is False
 

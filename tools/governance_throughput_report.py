@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
 PROPOSAL_STATUS_TOKENS = {"proposal", "proposed", "proposal_to_pr"}
@@ -77,7 +77,24 @@ def build_parser() -> argparse.ArgumentParser:
             "Report governance-throughput metrics for the WD agent bridge."
         ),
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge event JSONL path. Defaults to "
+            "<runtime bridge root>/shared/events.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Runtime bridge root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT, AGENT_BRIDGE_ROOT, then repo .agent-bridge."
+        ),
+    )
     parser.add_argument(
         "--window-days",
         type=int,
@@ -106,8 +123,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     now_utc = (
         _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
     )
+    events_path = args.events
+    if events_path is None:
+        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
     try:
-        events = read_events(args.events)
+        events = read_events(events_path)
     except OSError as exc:
         report = {
             "decision": "unknown",

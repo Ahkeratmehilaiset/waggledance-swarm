@@ -136,6 +136,53 @@ def test_merge_blocking_incoming_request_interrupts_own_claim(
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "rco_task_id_reemit_required",
+        "rco_exact_head_reemit_required",
+        "rco_reemit_required",
+    ],
+)
+def test_rco_reemit_request_interrupts_own_claim(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim = claim_task(
+        agent="codex-lead-1",
+        task_id="owned-lead-task",
+        summary="already started",
+        mode="write",
+        write_scope=["tools/x.py"],
+        bridge_root=bridge,
+    )
+    events = [
+        {
+            "ts_utc": "2026-06-13T15:45:09Z",
+            "agent": "claude-rco-1",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "codex-tools-1/agent-next-task-runtime-root-env-20260613",
+            "status": status,
+            "message": "Re-emit the review signal on the accepted exact-head task id.",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[claim],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "codex-tools-1/agent-next-task-runtime-root-env-20260613"
+    assert report["safe_mode"] == "read-only"
+    assert report["incoming"]["status"] == status
+    assert report["claim_snapshot"]["own"][0]["task_id"] == "owned-lead-task"
+    assert report["open_incoming_count"] == 1
+
+
 def test_free_text_build_consensus_request_does_not_interrupt_own_claim(
     tmp_path: Path,
 ) -> None:

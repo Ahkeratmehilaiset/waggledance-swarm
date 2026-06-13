@@ -493,3 +493,111 @@ def test_cli_main_emits_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> N
     parsed = json.loads(out)
     assert parsed["decision"] == "no_session"
     assert parsed["next_action"] == "emit_round_1"
+
+
+def test_cli_main_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from tools.idle_loop_once import main
+
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_claims = runtime_bridge / "work_queue" / "claims"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_claims.mkdir(parents=True)
+    runtime_events.write_text(json.dumps(_bridge_event()) + "\n", encoding="utf-8")
+
+    shadow_root = tmp_path / "shadow"
+    shadow_bridge = shadow_root / ".agent-bridge"
+    shadow_events = shadow_bridge / "shared" / "events.jsonl"
+    shadow_claims = shadow_bridge / "work_queue" / "claims"
+    shadow_events.parent.mkdir(parents=True)
+    shadow_claims.mkdir(parents=True)
+    shadow_events.write_text(
+        json.dumps(
+            _bridge_event(
+                ts_utc=RECENT_TS,
+                agent="claude",
+                type_="message",
+                status="proposal",
+                task_id="shadow-active",
+                to="codex",
+                message=(
+                    "This cwd-local shadow bridge should not be read when "
+                    "AGENT_BRIDGE_RUNTIME_ROOT points elsewhere."
+                ),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main(["--now", "2026-05-20T12:00:00Z", "--json"])
+
+    assert exit_code == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["decision"] == "no_session"
+    assert parsed["idle_report"]["events_path"] == str(runtime_events)
+    assert parsed["idle_report"]["claims_dir"] == str(runtime_claims)
+
+
+def test_cli_main_explicit_paths_override_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from tools.idle_loop_once import main
+
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_claims = runtime_bridge / "work_queue" / "claims"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_claims.mkdir(parents=True)
+    runtime_events.write_text(
+        json.dumps(
+            _bridge_event(
+                ts_utc=RECENT_TS,
+                agent="claude",
+                type_="message",
+                status="proposal",
+                task_id="runtime-active",
+                to="codex",
+                message=(
+                    "Runtime bridge would keep the loop active if explicit "
+                    "CLI paths did not take precedence."
+                ),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    explicit_events = tmp_path / "explicit-events.jsonl"
+    explicit_claims = tmp_path / "explicit-claims"
+    explicit_claims.mkdir()
+    explicit_events.write_text(json.dumps(_bridge_event()) + "\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    exit_code = main(
+        [
+            "--events",
+            str(explicit_events),
+            "--claims-dir",
+            str(explicit_claims),
+            "--now",
+            "2026-05-20T12:00:00Z",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["decision"] == "no_session"
+    assert parsed["idle_report"]["events_path"] == str(explicit_events)
+    assert parsed["idle_report"]["claims_dir"] == str(explicit_claims)

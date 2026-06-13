@@ -45,6 +45,7 @@ from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
 from waggledance.core.idle_protocol_session import (  # noqa: E402
     summarize_idle_session,
 )
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
 CONVERGED_STATUSES = {"soft_convergence", "hard_convergence"}
@@ -59,8 +60,30 @@ def build_parser() -> argparse.ArgumentParser:
             "Report the next idle-loop action for a scheduler or peer agent."
         ),
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
-    parser.add_argument("--claims-dir", type=Path, default=DEFAULT_CLAIMS_DIR)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--claims-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge claims directory. Defaults to "
+            "<bridge-root>/work_queue/claims."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--idle-minutes", type=int, default=60)
     parser.add_argument("--pending-ci-count", type=int, default=0)
     parser.add_argument("--open-request-max-age-hours", type=float, default=12.0)
@@ -80,9 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
+    claims_dir = args.claims_dir or bridge_root / "work_queue" / "claims"
     report = evaluate_idle_loop_tick(
-        events_path=args.events,
-        claims_dir=args.claims_dir,
+        events_path=events_path,
+        claims_dir=claims_dir,
         now_utc=_parse_utc(args.now) if args.now else datetime.now(timezone.utc),
         idle_minutes=args.idle_minutes,
         pending_ci_count=args.pending_ci_count,

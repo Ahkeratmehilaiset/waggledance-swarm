@@ -329,3 +329,71 @@ def test_cli_json_reports_unanswered_request(tmp_path: Path) -> None:
     assert report["local_paths_recorded"] is False
     assert str(events_path) not in serialized
     assert "events.jsonl" not in serialized
+
+
+def test_cli_defaults_to_runtime_bridge_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_root = tmp_path / "runtime-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(json.dumps(_request()) + "\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--now",
+            "2026-06-13T12:20:00Z",
+            "--min-age-minutes",
+            "12",
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    report = json.loads(result.stdout)
+    serialized = json.dumps(report, sort_keys=True)
+    assert report["ok"] is True
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["task_id"] == "task-1"
+    assert str(bridge_root) not in serialized
+    assert "events.jsonl" not in serialized
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_events = tmp_path / "runtime-bridge" / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_events.write_text(
+        json.dumps(_request(task_id="runtime")) + "\n", encoding="utf-8"
+    )
+    explicit_root = tmp_path / "explicit"
+    explicit_root.mkdir()
+    explicit_events = _events_file(explicit_root, [_request(task_id="explicit")])
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_events.parents[1]))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--events",
+            str(explicit_events),
+            "--now",
+            "2026-06-13T12:20:00Z",
+            "--min-age-minutes",
+            "12",
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    report = json.loads(result.stdout)
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["task_id"] == "explicit"

@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
-    DEFAULT_BRIDGE_ROOT,
+    resolve_bridge_root,
 )
 
 
@@ -47,7 +47,7 @@ class AgentIdentityError(ValueError):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge agent identity CLI.")
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument("--bridge-root", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -87,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
-    bridge_root = Path(args.bridge_root)
+    bridge_root = resolve_bridge_root(args.bridge_root)
     if args.command == "register":
         profile = register_profile(
             agent_id=args.agent,
@@ -149,7 +149,7 @@ def register_profile(
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Write a local agent profile, refusing overwrite unless force=True."""
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     _validate_agent_id(agent_id)
     _validate_kind(kind)
     _validate_agent_uuid(agent_uuid)
@@ -197,7 +197,7 @@ def register_profile(
 
 def read_profile(*, agent_id: str, bridge_root: Path | None = None) -> dict[str, Any]:
     """Read and validate one local agent profile."""
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     _validate_agent_id(agent_id)
     path = _profile_path(bridge, agent_id)
     if not path.exists():
@@ -217,7 +217,7 @@ def read_profile(*, agent_id: str, bridge_root: Path | None = None) -> dict[str,
 
 def list_profiles(bridge_root: Path | None = None) -> list[dict[str, Any]]:
     """Return all valid profiles sorted by agent_id."""
-    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    bridge = resolve_bridge_root(bridge_root)
     agents_dir = bridge / "agents"
     if not agents_dir.exists():
         return []

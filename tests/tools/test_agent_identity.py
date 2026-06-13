@@ -325,6 +325,40 @@ def test_cli_register_and_show_json(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert report["profile"]["agent_id"] == "codex"
 
 
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / "runtime" / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge))
+
+    exit_code = agent_identity.main(
+        [
+            "--json",
+            "register",
+            "--agent",
+            "codex",
+            "--kind",
+            "codex",
+            "--display-name",
+            "Codex",
+            "--agent-uuid",
+            AGENT_UUID,
+            "--capability",
+            "work_queue",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "registered"
+    assert (bridge / "agents" / "codex.json").exists()
+
+    exit_code = agent_identity.main(["--json", "show", "--agent", "codex"])
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["profile"]["agent_id"] == "codex"
+
+
 def test_cli_validate_all_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     register_profile(
         agent_id="codex",

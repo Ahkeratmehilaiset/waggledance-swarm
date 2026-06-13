@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
@@ -101,6 +102,7 @@ RCO_REEMIT_GATE_TOKENS = (
     "task-id mismatch",
     "task id mismatch",
 )
+BRIDGE_ROOT_ENV_NAMES = ("AGENT_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_ROOT")
 KNOWN_AUTHOR_AGENTS = (
     "codex-tools-1",
     "codex-lead-1",
@@ -1619,6 +1621,9 @@ def _bridge_root_for_args(events_path: Path | None, bridge_root: Path | None) ->
         and events_path.parent.name == "shared"
     ):
         return events_path.parent.parent
+    env_bridge_root = _bridge_root_from_env()
+    if env_bridge_root is not None:
+        return env_bridge_root
     return DEFAULT_BRIDGE_ROOT
 
 
@@ -1626,6 +1631,14 @@ def _events_path_for_args(events_path: Path | None, bridge_root: Path) -> Path:
     if events_path is not None:
         return events_path
     return bridge_root / "shared" / "events.jsonl"
+
+
+def _bridge_root_from_env() -> Path | None:
+    for env_name in BRIDGE_ROOT_ENV_NAMES:
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return Path(value)
+    return None
 
 
 def _completed_substrate_smoke_task_ids(

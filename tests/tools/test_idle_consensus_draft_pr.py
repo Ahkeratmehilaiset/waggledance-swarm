@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.idle_consensus_draft_pr import DraftPrPlanError, build_draft_pr_plan
+from tools.idle_consensus_draft_pr import DraftPrPlanError, build_draft_pr_plan, main
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -199,3 +199,31 @@ def test_arbitrary_head_namespace_is_refused(tmp_path: Path) -> None:
             head="codex/random-branch",
         )
     assert excinfo.value.report["decision"] == "invalid_head_ref"
+
+
+def test_cli_defaults_events_to_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_events = _write_events(tmp_path, _fixture_payloads("soft_convergence.json"))
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_events.write_text(source_events.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    exit_code = main(
+        [
+            "--changed-path",
+            "tools/idle_daily_summary.py",
+            "--utc-date",
+            "2026-05-18",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "draft_pr_plan_ready"
+    assert report["gate_report"]["eligible"] is True

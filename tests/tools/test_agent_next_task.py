@@ -315,6 +315,167 @@ def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> N
     ] == 1
 
 
+def test_prioritizes_unresolved_rco_reemit_pr_gate(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    head = "4" * 40
+    task_id = "codex-tools-1-operator-feedback-action-bridge-template-20260613"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:58:00Z",
+                "agent": "codex-tools-1",
+                "type": "finding",
+                "task_id": "continuous-operational-scout-open-pr-queue-scout-2026-05-20-0",
+                "status": "queue_snapshot",
+                "message": "open PR scout: #1122 needs RCO re-emit",
+                "payload": {
+                    "schema": "tools.continuous_scout.open_pr_queue.v1",
+                    "open_prs": [
+                        {
+                            "pr": 1122,
+                            "head": head,
+                            "gate": "needs_rco_reemit_on_canonical_task_id",
+                            "required_task_id": task_id,
+                        }
+                    ],
+                },
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_reemit_watch_scout"
+    assert report["next_action"] == "claim_and_run"
+    candidate = report["candidate"]
+    assert candidate["kind"] == "rco_task_id_reemit_watch_scout"
+    assert candidate["pr"] == 1122
+    assert candidate["task_id"] == task_id
+    assert candidate["head"] == head
+    assert candidate["author_agent"] == "codex-tools-1"
+    assert candidate["mode"] == "read-only"
+    assert candidate["write_scope"] == []
+    assert "check_rco_pass_present.py" in candidate["recommended_command"]
+    assert f"--task-id {task_id}" in candidate["recommended_command"]
+    assert f"--head {head}" in candidate["recommended_command"]
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_later_rco_response_clears_rco_reemit_priority(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    head = "5" * 40
+    task_id = "codex-tools-1-operator-feedback-action-bridge-template-20260613"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:58:00Z",
+                "agent": "codex-tools-1",
+                "type": "finding",
+                "task_id": "continuous-operational-scout-open-pr-queue-scout-2026-05-20-0",
+                "status": "queue_snapshot",
+                "message": "open PR scout: #1122 needs RCO re-emit",
+                "payload": {
+                    "schema": "tools.continuous_scout.open_pr_queue.v1",
+                    "prs": [
+                        {
+                            "pr": 1122,
+                            "head": head,
+                            "rco_gate": "no_rco_events_for_task",
+                            "required_task_id": task_id,
+                        }
+                    ],
+                },
+            },
+            {
+                "ts_utc": "2026-05-20T11:59:00Z",
+                "agent": "claude-rco-1",
+                "type": "decision",
+                "task_id": task_id,
+                "status": "rco_pass",
+                "message": f"RCO_PASS PR #1122 head={head}",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+
+
+def test_non_terminal_pr_test_pass_keeps_rco_reemit_priority(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    head = "6" * 40
+    task_id = "codex-tools-1-operator-feedback-action-bridge-template-20260613"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:58:00Z",
+                "agent": "codex-tools-1",
+                "type": "finding",
+                "task_id": "continuous-operational-scout-open-pr-queue-scout-2026-05-20-0",
+                "status": "queue_snapshot",
+                "message": "open PR scout: #1122 needs RCO re-emit",
+                "payload": {
+                    "open_prs": [
+                        {
+                            "pr": 1122,
+                            "head": head,
+                            "gate": "needs_rco_reemit_on_canonical_task_id",
+                            "required_task_id": task_id,
+                        }
+                    ],
+                },
+            },
+            {
+                "ts_utc": "2026-05-20T11:59:00Z",
+                "agent": "codex-tools-1",
+                "type": "test",
+                "task_id": "continuous-operational-scout-main-bridge-idle-health-smoke-2026-05-20-0",
+                "status": "pass",
+                "message": "PR #1122 related smoke passed; RCO still pending",
+            },
+            {
+                "ts_utc": "2026-05-20T11:59:30Z",
+                "agent": "codex-tools-1",
+                "type": "done",
+                "task_id": "continuous-operational-scout-open-pr-queue-scout-2026-05-20-0",
+                "status": "done",
+                "message": (
+                    "Completed scout; PR #1124 merged; #1122 still needs "
+                    "RCO re-emit"
+                ),
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_reemit_watch_scout"
+    assert report["candidate"]["task_id"] == task_id
+
+
 # ---------------------------------------------------------------------------
 # substrate-smoke pick branches
 # ---------------------------------------------------------------------------

@@ -287,6 +287,39 @@ def test_private_marker_refuses_to_write(tmp_path: Path) -> None:
     assert not out_dir.exists()
 
 
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    bridge = tmp_path / "runtime" / ".agent-bridge"
+    events_path = bridge / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        json.dumps(
+            {
+                "ts_utc": "2026-05-21T18:13:42Z",
+                "agent": "codex",
+                "to": "claude",
+                "type": "message",
+                "task_id": "runtime-root-status-query",
+                "status": "status_query",
+                "message": "runtime root default should be used",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge))
+
+    exit_code = main(["--agent", "claude", "--apply", "--now", NOW, "--json"])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["marker_count"] == 1
+    marker_path = Path(report["markers"][0]["path"])
+    assert marker_path.parent == bridge / "inbox" / "claude"
+    assert marker_path.exists()
+
+
 def test_cli_fails_closed_on_non_object_selected_event(tmp_path: Path, capsys) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = bridge / "shared" / "events.jsonl"

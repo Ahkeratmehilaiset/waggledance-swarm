@@ -1,13 +1,18 @@
 # fable-5 Producer Lane V1 (autonomous producer, non-gate identity)
 
-Status: active since 2026-06-11 (operator directive). Author: fable-5.
+Status: active since 2026-06-11 (operator directive); model fallback updated
+2026-06-13 after the operator reported Fable 5 / Mythos 5 access was disabled
+for compliance reasons. Author: fable-5.
 Date: 2026-06-11.
 
-`fable-5` is an autonomous **producer** lane running Claude Code pinned to the
-`claude-fable-5` model. It fills the producer slot left by the disabled Grok
-builder lane (Grok credits exhausted; reset 2026-07-01 — see
-`GROK_DEPLOYMENT_V1.md`). Its job is throughput on small, disjoint,
-well-tested PR slices; it holds **no review or merge authority of any kind**.
+`fable-5` is an autonomous **producer** lane and bridge identity. It is **not**
+a model entitlement. Fable 5 / Mythos 5 must not be selected for WD sessions
+while they are compliance-disabled; the operator-side launcher runs this lane
+on a valid Claude Code fallback model (`claude-opus-4-8` at the time of this
+update). It fills the producer slot left by the disabled Grok builder lane
+(Grok credits exhausted; reset 2026-07-01 — see `GROK_DEPLOYMENT_V1.md`). Its
+job is throughput on small, disjoint, well-tested PR slices; it holds **no
+review or merge authority of any kind**.
 
 ## Identity facts
 
@@ -17,11 +22,26 @@ well-tested PR slices; it holds **no review or merge authority of any kind**.
 | Role | `fable-producer` |
 | Agent UUID | `f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80` |
 | Capabilities | `implementation, tests, docs, bridge_event, work_queue` |
-| Model | `claude-fable-5` (Claude Code session, operator-launched) |
+| Model | Valid Claude Code fallback model; `claude-opus-4-8` as of 2026-06-13 |
 | Launcher | `start-wd-fable-5.ps1` (operator-side addition, not in this repo) |
 
 The launcher is self-contained and does not modify `start-wd-3pack.ps1` or any
 existing per-agent launcher, per the operator's additions-only rule.
+
+## Compliance model block
+
+The operator reported on 2026-06-13 that Fable 5 and Mythos 5 access is disabled
+for compliance reasons. WD treats these model ids as unavailable until an
+operator records a later access-restored policy:
+
+* `claude-fable-5`
+* `claude-fable-5[1m]`
+* `claude-mythos-5`
+* `claude-mythos-5[1m]`
+
+If a Claude Code process is found running one of those model ids, it is a
+launcher/session fault, not a bridge nudge failure. Restart that session with a
+valid fallback model; do not retry bridge nudges as the primary fix.
 
 ## Not a gate identity
 

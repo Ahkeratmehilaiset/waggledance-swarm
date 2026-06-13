@@ -16,6 +16,10 @@ BAD_COMMAND = (
     r'C:\WINDOWS\system32\cmd.exe /c ""C:\Users\janik\AppData\Roaming\npm'
     r'\claude.cmd" --dangerously-skip-permissions --model claude-fable-5"'
 )
+BAD_MYTHOS_COMMAND = (
+    r'"C:\Users\janik\AppData\Roaming\npm\\node_modules\@anthropic-ai'
+    r'\claude-code\bin\claude.exe" --model claude-mythos-5'
+)
 GOOD_COMMAND = (
     r'"C:\Users\janik\AppData\Roaming\npm\\node_modules\@anthropic-ai'
     r'\claude-code\bin\claude.exe" --model claude-opus-4-8'
@@ -51,6 +55,15 @@ def test_probe_flags_unavailable_claude_model_without_leaking_command_line() -> 
     assert "AppData" not in encoded
     assert "CommandLine" not in encoded
     assert "claude.cmd" in encoded
+
+
+def test_probe_flags_mythos_5_as_unavailable_model() -> None:
+    report = probe_claude_code_models(processes=[_process(BAD_MYTHOS_COMMAND)])
+
+    assert report["decision"] == "restart_required_invalid_model"
+    assert report["invalid_model_process_count"] == 1
+    assert report["invalid_model_processes"][0]["model"] == "claude-mythos-5"
+    assert report["invalid_model_processes"][0]["replacement_model"] == "claude-opus-4-8"
 
 
 def test_probe_accepts_valid_replacement_model() -> None:

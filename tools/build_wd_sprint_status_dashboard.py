@@ -19,7 +19,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_EVENTS_PATH = ROOT / ".agent-bridge" / "shared" / "events.jsonl"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
+
 REPORT_VERSION = "wd.50pr_sprint_status_dashboard.v0"
 DEFAULT_SPRINT_TASK_ID = "wd-50pr-sprint-plan-20260611-v2"
 DEFAULT_EXPECTED_AGENTS = (
@@ -52,7 +56,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Render a path-free, read-only WD sprint status dashboard.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl).",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--sprint-task-id", default=DEFAULT_SPRINT_TASK_ID)
     parser.add_argument(
         "--expected-agent",
@@ -94,6 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report = build_wd_sprint_status_dashboard(
         events_path=args.events,
+        bridge_root=args.bridge_root,
         sprint_task_id=args.sprint_task_id,
         expected_agents=tuple(args.expected_agents or DEFAULT_EXPECTED_AGENTS),
         expected_base_sha=args.expected_base_sha,
@@ -111,6 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def build_wd_sprint_status_dashboard(
     *,
     events_path: Path | None = None,
+    bridge_root: Path | None = None,
     events: Sequence[Mapping[str, Any]] | None = None,
     sprint_task_id: str = DEFAULT_SPRINT_TASK_ID,
     expected_agents: Sequence[str] = DEFAULT_EXPECTED_AGENTS,
@@ -128,7 +148,9 @@ def build_wd_sprint_status_dashboard(
 
     try:
         loaded_events = (
-            list(events) if events is not None else read_bridge_events(_events_path(events_path))
+            list(events)
+            if events is not None
+            else read_bridge_events(_events_path(events_path, bridge_root=bridge_root))
         )
         _assert_no_redaction_sentinels(loaded_events)
     except ValueError as exc:
@@ -511,8 +533,10 @@ def _authority_boundary() -> dict[str, bool]:
     }
 
 
-def _events_path(path: Path | None) -> Path:
-    return path if path is not None else DEFAULT_EVENTS_PATH
+def _events_path(path: Path | None, *, bridge_root: Path | None = None) -> Path:
+    if path is not None:
+        return path
+    return resolve_bridge_root(bridge_root) / "shared" / "events.jsonl"
 
 
 def _events_digest(events: Sequence[Mapping[str, Any]]) -> str:

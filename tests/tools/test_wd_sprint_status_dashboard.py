@@ -7,8 +7,11 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.build_wd_sprint_status_dashboard import (
     build_wd_sprint_status_dashboard,
+    main,
     render_markdown,
 )
 
@@ -406,3 +409,61 @@ def test_cli_json_smoke(tmp_path: Path) -> None:
     assert payload["consensus"]["responded_agents"] == ["codex-tools-1"]
     assert payload["stale_base"]["warning_count"] == 0
     assert payload["authority_boundary"]["queue_write_allowed"] is False
+
+
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    _write_events(
+        runtime_events,
+        [
+            _event(
+                agent="codex-lead-1",
+                event_type="message",
+                task_id=SPRINT_TASK,
+                status="consensus_requested",
+                payload={"base": FRESH_BASE},
+            )
+        ],
+    )
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    _write_events(
+        shadow_events,
+        [
+            _event(
+                agent="codex-lead-1",
+                event_type="message",
+                task_id=SPRINT_TASK,
+                status="consensus_requested",
+                message="contains " + ("PRIVATE" + "_MARKER"),
+            )
+        ],
+    )
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    rc = main([
+        "--sprint-task-id",
+        SPRINT_TASK,
+        "--expected-base-sha",
+        FRESH_BASE,
+        "--now",
+        "2026-06-11T16:30:00Z",
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["source"]["event_count"] == 1
+    assert payload["consensus"]["request_observed"] is True

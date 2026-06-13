@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import validate_event_line
+from waggledance.core.work_queue import resolve_bridge_root
 
 DEFAULT_EVENTS_PATH = ROOT / ".agent-bridge" / "shared" / "events.jsonl"
 DEFAULT_CONTRACT_PATH = (
@@ -662,15 +663,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify operator-feedback wiring guardrails from bridge events.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge event JSONL path. Defaults to "
+            "<runtime bridge root>/shared/events.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Runtime bridge root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT, AGENT_BRIDGE_ROOT, then repo .agent-bridge."
+        ),
+    )
     parser.add_argument("--tail", type=int, default=None)
     parser.add_argument("--per-operator-fast-track-per-hour-max", type=int)
     parser.add_argument("--global-fast-track-per-hour-max", type=int)
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args(argv)
+    events_path = args.events
+    if events_path is None:
+        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
 
     report = verify_operator_feedback_wiring_guard(
-        args.events,
+        events_path,
         tail=args.tail,
         per_operator_fast_track_per_hour_max=(
             args.per_operator_fast_track_per_hour_max

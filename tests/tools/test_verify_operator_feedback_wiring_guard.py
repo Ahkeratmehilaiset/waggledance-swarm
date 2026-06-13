@@ -408,3 +408,65 @@ def test_cli_prints_json_and_returns_one_on_violation(
     assert exit_code == 1
     assert out["ok"] is False
     assert out["issues"][0]["code"] == "operator_id_not_verified_bridge_identity"
+
+
+def test_cli_default_events_uses_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    _write_events(events_path, [
+        _event(payload=_feedback(feedback_id="fb-001")),
+        _event(
+            payload=_action(feedback_id="fb-001"),
+            ts_utc="2026-06-06T01:15:00Z",
+        ),
+    ])
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    exit_code = main(["--global-fast-track-per-hour-max", "3"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert out["ok"] is True
+    assert out["events_path"] == str(events_path)
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events_path = bridge_root / "shared" / "events.jsonl"
+    explicit_events_path = tmp_path / "explicit-events.jsonl"
+    runtime_events_path.parent.mkdir(parents=True)
+    _write_events(runtime_events_path, [
+        _event(payload=_feedback(
+            feedback_id="fb-runtime",
+            operator_id="operator:jkh",
+        )),
+    ])
+    _write_events(explicit_events_path, [
+        _event(payload=_feedback(feedback_id="fb-001")),
+        _event(
+            payload=_action(feedback_id="fb-001"),
+            ts_utc="2026-06-06T01:15:00Z",
+        ),
+    ])
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    exit_code = main([
+        "--events",
+        str(explicit_events_path),
+        "--global-fast-track-per-hour-max",
+        "3",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert out["ok"] is True
+    assert out["events_path"] == str(explicit_events_path)

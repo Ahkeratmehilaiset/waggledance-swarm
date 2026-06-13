@@ -135,7 +135,11 @@ RESPONSE_ONLY_STATUS_FRAGMENTS = (
 )
 DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
+DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES = 12.0
+DEFAULT_WAKE_DELIVERY_MIN_REPEATS = 2
+DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS = 12.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
+WAKE_DELIVERY_IGNORED_TARGETS = {*PRODUCTION_LIVENESS_IGNORED_AGENTS, "driver"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
 PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json"
 TASK_CLOSURE_KEY_PREFIX = "task:"
@@ -253,6 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             agent=args.agent,
             events=events,
             claims=claims,
+            bridge_root=bridge_root,
             now_utc=now_utc,
             open_request_max_age_hours=args.open_request_max_age_hours,
             stale_report_max_age_hours=args.stale_report_max_age_hours,
@@ -414,6 +419,7 @@ def recommend_next_action(
     agent: str,
     events: Sequence[Mapping[str, Any]],
     claims: Sequence[Claim],
+    bridge_root: Path | None = None,
     now_utc: datetime | None = None,
     open_request_max_age_hours: float | None = DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
     stale_report_max_age_hours: float | None = (
@@ -521,6 +527,7 @@ def recommend_next_action(
     )
     production_liveness = _production_liveness_report(
         events=events,
+        bridge_root=bridge_root,
         now_utc=effective_now,
         idle_warn_minutes=production_idle_warn_minutes,
         suppressed_agents=suppressed_agents,
@@ -1198,6 +1205,7 @@ def _latest_agent_metadata(
 def _production_liveness_report(
     *,
     events: Sequence[Mapping[str, Any]],
+    bridge_root: Path | None = None,
     now_utc: datetime,
     idle_warn_minutes: float | None,
     suppressed_agents: Mapping[str, str] | None = None,
@@ -1298,7 +1306,12 @@ def _production_liveness_report(
             suppressed_lookup=suppressed_lookup,
         )
 
-    if not stalled and not suppressed_stalled:
+    wake_delivery = _wake_delivery_liveness_summary(
+        events=events,
+        bridge_root=bridge_root,
+        now_utc=now_utc,
+    )
+    if not stalled and not suppressed_stalled and not wake_delivery:
         return {}
     for records in (stalled, suppressed_stalled):
         records.sort(
@@ -1316,7 +1329,197 @@ def _production_liveness_report(
     if suppressed_stalled:
         report["suppressed_stalled_agent_count"] = len(suppressed_stalled)
         report["suppressed_stalled_agents"] = suppressed_stalled
+    if wake_delivery:
+        report["wake_delivery"] = wake_delivery
     return report
+
+
+def _wake_delivery_liveness_summary(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path | None,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    groups = _unresolved_wake_delivery_groups(events)
+    stalled: list[dict[str, Any]] = []
+    max_age_minutes = DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS * 60.0
+    for group in groups.values():
+        first_ts = _parse_utc(str(group["first_ts_utc"]))
+        last_ts = _parse_utc(str(group["last_ts_utc"]))
+        if first_ts is None or last_ts is None:
+            continue
+        age_minutes = _elapsed_minutes(now_utc, first_ts)
+        latest_wake_age_minutes = _elapsed_minutes(now_utc, last_ts)
+        if age_minutes < DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES:
+            continue
+        if latest_wake_age_minutes > max_age_minutes:
+            continue
+        if int(group["wake_request_count"]) < DEFAULT_WAKE_DELIVERY_MIN_REPEATS:
+            continue
+        stalled.append(
+            _wake_delivery_row(
+                group,
+                bridge_root=bridge_root,
+                age_minutes=age_minutes,
+                latest_wake_age_minutes=latest_wake_age_minutes,
+            )
+        )
+    if not stalled:
+        return {}
+    stalled.sort(
+        key=lambda row: (
+            -int(row["wake_request_count"]),
+            -float(row["age_minutes"]),
+            str(row["target_agent"]),
+            str(row["task_id"]),
+        )
+    )
+    by_agent: dict[str, int] = {}
+    for row in stalled:
+        target = str(row["target_agent"])
+        by_agent[target] = by_agent.get(target, 0) + 1
+    return {
+        "decision": "wake_delivery_stalled",
+        "stalled_wake_count": len(stalled),
+        "by_agent": dict(sorted(by_agent.items())),
+        "stalled_wakes": stalled,
+    }
+
+
+def _unresolved_wake_delivery_groups(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for event in events:
+        event_agent = _event_agent(event)
+        event_ts = _event_ts(event)
+        if event_agent:
+            _clear_wake_delivery_groups_for_target_activity(
+                groups,
+                event_agent=event_agent,
+                event_ts=event_ts,
+            )
+        _clear_wake_delivery_groups_for_terminal_task(groups, event)
+        if _event_type(event) != "wake_request":
+            continue
+        if _event_status(event) in CLOSED_REQUEST_STATUSES:
+            continue
+        task_id = _task_id(event)
+        if not task_id:
+            continue
+        for target in _event_recipients(event):
+            if not target or target == event_agent:
+                continue
+            if target in WAKE_DELIVERY_IGNORED_TARGETS:
+                continue
+            key = (target, task_id)
+            existing = groups.get(key)
+            if existing is None:
+                groups[key] = {
+                    "target_agent": target,
+                    "task_id": task_id,
+                    "first_ts_utc": event_ts,
+                    "last_ts_utc": event_ts,
+                    "requesters": {event_agent} if event_agent else set(),
+                    "wake_request_count": 1,
+                    "last_status": _event_status(event),
+                }
+                continue
+            existing["last_ts_utc"] = event_ts
+            existing["wake_request_count"] = int(existing["wake_request_count"]) + 1
+            existing["last_status"] = _event_status(event)
+            if event_agent:
+                requesters = existing["requesters"]
+                if isinstance(requesters, set):
+                    requesters.add(event_agent)
+    return groups
+
+
+def _clear_wake_delivery_groups_for_target_activity(
+    groups: dict[tuple[str, str], dict[str, Any]],
+    *,
+    event_agent: str,
+    event_ts: str,
+) -> None:
+    for key, group in list(groups.items()):
+        target, _task_id_value = key
+        if target != event_agent:
+            continue
+        last_ts = str(group["last_ts_utc"])
+        if event_ts and event_ts > last_ts:
+            del groups[key]
+
+
+def _clear_wake_delivery_groups_for_terminal_task(
+    groups: dict[tuple[str, str], dict[str, Any]],
+    event: Mapping[str, Any],
+) -> None:
+    if _event_type(event) != "done" and _event_status(event) not in CLOSED_REQUEST_STATUSES:
+        return
+    task_id = _task_id(event)
+    if not task_id:
+        return
+    for key in list(groups):
+        _target, group_task_id = key
+        if group_task_id == task_id:
+            del groups[key]
+
+
+def _wake_delivery_row(
+    group: Mapping[str, Any],
+    *,
+    bridge_root: Path | None,
+    age_minutes: float,
+    latest_wake_age_minutes: float,
+) -> dict[str, Any]:
+    target = str(group["target_agent"])
+    wake_file = _wake_file_status(bridge_root, target)
+    requesters = group.get("requesters")
+    requester_list = (
+        sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
+    )
+    diagnosis = (
+        "wake file exists but target agent has not emitted bridge activity"
+        if wake_file["wake_file_present"]
+        else (
+            "no target activity after repeated wake_request; watcher may be absent "
+            "or target may not be polling"
+        )
+    )
+    return {
+        "target_agent": target,
+        "task_id": group["task_id"],
+        "requesters": requester_list,
+        "first_ts_utc": group["first_ts_utc"],
+        "last_ts_utc": group["last_ts_utc"],
+        "age_minutes": _round_minutes(age_minutes),
+        "latest_wake_age_minutes": _round_minutes(latest_wake_age_minutes),
+        "wake_request_count": group["wake_request_count"],
+        "last_status": group["last_status"],
+        "wake_file_checked": bridge_root is not None,
+        **wake_file,
+        "diagnosis": diagnosis,
+        "safe_next_action": (
+            "restart or verify the target agent bridge session watcher/poll loop; "
+            "do not treat additional wake_request events as delivery proof"
+        ),
+    }
+
+
+def _wake_file_status(bridge_root: Path | None, target: str) -> dict[str, Any]:
+    if bridge_root is None:
+        return {"wake_file_present": False, "wake_file_mtime_utc": ""}
+    wake_path = bridge_root / f"wake_{target}"
+    if not wake_path.exists():
+        return {"wake_file_present": False, "wake_file_mtime_utc": ""}
+    try:
+        mtime = datetime.fromtimestamp(wake_path.stat().st_mtime, tz=timezone.utc)
+        return {
+            "wake_file_present": True,
+            "wake_file_mtime_utc": _format_utc(mtime),
+        }
+    except OSError:
+        return {"wake_file_present": True, "wake_file_mtime_utc": ""}
 
 
 def _append_liveness_record(

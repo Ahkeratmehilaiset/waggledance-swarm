@@ -1828,6 +1828,121 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
     assert "production_liveness" not in report
 
 
+def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    bridge_root.mkdir()
+    (bridge_root / "wake_claude-rco-1").write_text(
+        "2026-06-06T10:05:00Z",
+        encoding="utf-8",
+    )
+    events = [
+        {
+            "ts_utc": "2026-06-06T09:58:00Z",
+            "agent": "operator",
+            "to": "driver",
+            "type": "wake_request",
+            "task_id": "merge-needed",
+            "status": "merge_requested",
+            "message": "please merge",
+        },
+        {
+            "ts_utc": "2026-06-06T09:59:00Z",
+            "agent": "operator",
+            "to": "driver",
+            "type": "wake_request",
+            "task_id": "merge-needed",
+            "status": "merge_requested",
+            "message": "please merge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    liveness = report["production_liveness"]
+    assert liveness["stalled_agent_count"] == 0
+    delivery = liveness["wake_delivery"]
+    assert delivery["decision"] == "wake_delivery_stalled"
+    assert delivery["stalled_wake_count"] == 1
+    assert delivery["by_agent"] == {"claude-rco-1": 1}
+    wake = delivery["stalled_wakes"][0]
+    assert wake["target_agent"] == "claude-rco-1"
+    assert wake["task_id"] == "rco-needed"
+    assert wake["wake_request_count"] == 2
+    assert wake["wake_file_checked"] is True
+    assert wake["wake_file_present"] is True
+    assert wake["age_minutes"] == 20.0
+    assert wake["latest_wake_age_minutes"] == 15.0
+    assert wake["safe_next_action"].startswith("restart or verify")
+
+
+def test_target_activity_clears_wake_delivery_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "claude-rco-1",
+            "type": "decision",
+            "task_id": "rco-needed",
+            "status": "rco_pass",
+            "message": "reviewed",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 10, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in report
+
+
 def test_suppressed_liveness_lane_is_not_counted_as_actionable_stall() -> None:
     events = [
         {

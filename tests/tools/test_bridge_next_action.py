@@ -2005,6 +2005,33 @@ def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
     assert report["action"] == "answer_incoming"
 
 
+def test_cli_defaults_to_runtime_bridge_root_env_for_claims(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    _events_file(runtime_bridge, [])
+    claim_task(
+        agent="codex",
+        task_id="runtime-owned-task",
+        summary="runtime claim",
+        mode="write",
+        write_scope=["tools/runtime.py"],
+        bridge_root=runtime_bridge,
+    )
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main(["--agent", "codex", "--json"])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["action"] == "continue_claim"
+    assert report["task_id"] == "runtime-owned-task"
+    assert report["active_claim_count"] == 1
+    assert report["claim_snapshot"]["own"][0]["task_id"] == "runtime-owned-task"
+
+
 def test_cli_fails_closed_on_malformed_events_file(tmp_path: Path, capsys) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = bridge / "shared" / "events.jsonl"

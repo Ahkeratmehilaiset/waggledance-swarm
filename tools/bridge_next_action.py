@@ -30,6 +30,7 @@ from waggledance.core.work_queue import (  # noqa: E402
     Claim,
     WorkQueueError,
     list_claims,
+    resolve_bridge_root,
 )
 
 
@@ -154,7 +155,16 @@ class BridgeNextActionError(ValueError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Recommend the next bridge action.")
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the runtime .agent-bridge directory. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT / AGENT_BRIDGE_ROOT when set, then "
+            "repo-local .agent-bridge."
+        ),
+    )
     parser.add_argument("--events", type=Path, default=None)
     parser.add_argument(
         "--tail",
@@ -214,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        bridge_root = Path(args.bridge_root)
+        bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = args.events or (bridge_root / "shared" / "events.jsonl")
         events = read_events(events_path, tail=args.tail)
         claims = list_claims(bridge_root=bridge_root)

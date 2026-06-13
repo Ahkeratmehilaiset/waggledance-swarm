@@ -270,6 +270,25 @@ def test_list_claims_returns_empty_when_no_claims(tmp_path: Path) -> None:
     assert list_claims(bridge_root=bridge) == []
 
 
+def test_list_claims_defaults_to_agent_bridge_runtime_root_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    claim_task(
+        agent="codex-1",
+        task_id="runtime-task",
+        summary="runtime claim",
+        bridge_root=runtime_bridge,
+    )
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    claims = list_claims()
+
+    assert [claim.task_id for claim in claims] == ["runtime-task"]
+
+
 def test_list_claims_returns_all_active(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     for i in range(3):

@@ -123,12 +123,10 @@ RESPONSE_ONLY_STATUS_FRAGMENTS = (
     "received",
     "reported",
     "resolved",
-    "retracted",
     "seen",
     "superseded",
     "validated",
     "verified",
-    "withdrawn",
 )
 DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0

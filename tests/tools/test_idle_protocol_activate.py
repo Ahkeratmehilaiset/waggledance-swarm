@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -925,6 +926,62 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0
+    report = json.loads(completed.stdout)
+    assert report["decision"] == "ready"
+    assert report["emitted"] is False
+
+
+def test_cli_uses_runtime_bridge_root_env_by_default(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    payload_path = tmp_path / "payload.json"
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_claims = runtime_bridge / "work_queue" / "claims"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_claims.mkdir(parents=True)
+    _write_json(payload_path, _proposal())
+    _write_events(runtime_events, _base_events())
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_claims = shadow_root / ".agent-bridge" / "work_queue" / "claims"
+    shadow_events.parent.mkdir(parents=True)
+    shadow_claims.mkdir(parents=True)
+    _write_events(
+        shadow_events,
+        _base_events()
+        + [
+            _event(
+                ts_utc="2026-05-17T11:55:00Z",
+                type="done",
+                status="merged_postmerge_green",
+                message="Cwd-local shadow bridge would make activation active.",
+            )
+        ],
+    )
+
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_bridge)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_protocol_activate.py"),
+            "--payload",
+            str(payload_path),
+            "--now",
+            "2026-05-17T12:00:00Z",
+            "--dry-run",
+            "--json",
+        ],
+        cwd=shadow_root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
     report = json.loads(completed.stdout)
     assert report["decision"] == "ready"
     assert report["emitted"] is False

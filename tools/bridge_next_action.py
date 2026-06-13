@@ -110,11 +110,33 @@ ANSWER_STATUS_FRAGMENTS = (
     "validated",
     "verified",
 )
+RESPONSE_ONLY_STATUS_FRAGMENTS = (
+    "accepted",
+    "ack",
+    *tuple(sorted(KNOWN_ACK_STATUSES)),
+    "answered",
+    "approved",
+    "closed",
+    "done",
+    "merged",
+    "pass",
+    "received",
+    "reported",
+    "resolved",
+    "retracted",
+    "seen",
+    "superseded",
+    "validated",
+    "verified",
+    "withdrawn",
+)
 DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
 PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json"
+TASK_CLOSURE_KEY_PREFIX = "task:"
+EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 
 
 class BridgeNextActionError(ValueError):
@@ -626,14 +648,17 @@ def _build_request_closure_index(
     for event in events:
         if not _is_answer_like(event):
             continue
-        task_id = _task_id(event)
-        if not task_id:
-            continue
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
-        task_closures = closure_index.setdefault(task_id, {})
-        if event_ts > task_closures.get(event_agent, ""):
-            task_closures[event_agent] = event_ts
+        task_id = _task_id(event)
+        if task_id:
+            closure_keys = [_task_closure_key(task_id)]
+        else:
+            closure_keys = _empty_task_closure_keys_for_answer(event)
+        for closure_key in closure_keys:
+            task_closures = closure_index.setdefault(closure_key, {})
+            if event_ts > task_closures.get(event_agent, ""):
+                task_closures[event_agent] = event_ts
     return closure_index
 
 
@@ -643,14 +668,39 @@ def _request_closed_by_index(
     agent: str,
     closure_index: Mapping[str, Mapping[str, str]],
 ) -> bool:
-    task_closures = closure_index.get(_task_id(request), {})
+    task_id = _task_id(request)
+    if task_id:
+        closure_key = _task_closure_key(task_id)
+    else:
+        closure_key = _empty_task_closure_key(
+            requester=_event_agent(request),
+            target=agent.lower(),
+        )
+    task_closures = closure_index.get(closure_key, {})
     if not task_closures:
         return False
     request_ts = _event_ts(request)
-    for closing_agent in {agent, _event_agent(request)}:
+    for closing_agent in {agent.lower(), _event_agent(request)}:
         if task_closures.get(closing_agent, "") > request_ts:
             return True
     return False
+
+
+def _task_closure_key(task_id: str) -> str:
+    return f"{TASK_CLOSURE_KEY_PREFIX}{task_id}"
+
+
+def _empty_task_closure_key(*, requester: str, target: str) -> str:
+    return f"{EMPTY_TASK_CLOSURE_KEY_PREFIX}{requester.lower()}->{target.lower()}"
+
+
+def _empty_task_closure_keys_for_answer(event: Mapping[str, Any]) -> set[str]:
+    event_agent = _event_agent(event)
+    keys: set[str] = set()
+    for recipient in _event_recipients(event):
+        keys.add(_empty_task_closure_key(requester=recipient, target=event_agent))
+        keys.add(_empty_task_closure_key(requester=event_agent, target=recipient))
+    return keys
 
 
 def _deduplicate_repeated_wake_requests(
@@ -865,6 +915,8 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
     if _is_closed_request_status(status):
         return False
+    if _is_response_only_status(status):
+        return False
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
     )
@@ -935,18 +987,28 @@ def _status_has_any(status: str, candidates: Sequence[str]) -> bool:
     return any(candidate in tokens for candidate in candidates)
 
 
+def _is_response_only_status(status: str) -> bool:
+    tokens = _status_tokens(status)
+    if "not" in tokens:
+        return False
+    return any(candidate in tokens for candidate in RESPONSE_ONLY_STATUS_FRAGMENTS)
+
+
 def _status_tokens(status: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
 
 
 def _addressed_to(event: Mapping[str, Any], agent: str) -> bool:
     target = agent.lower()
-    recipients = [
+    return target in _event_recipients(event)
+
+
+def _event_recipients(event: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
         item.strip().lower()
         for item in re.split(r"[,;\s]+", str(event.get("to") or ""))
         if item.strip()
-    ]
-    return target in recipients
+    )
 
 
 def _task_id(event: Mapping[str, Any]) -> str:

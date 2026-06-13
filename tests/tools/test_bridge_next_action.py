@@ -241,6 +241,30 @@ def test_request_changes_status_remains_open_request() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_answered_status_with_request_token_is_not_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T07:13:22Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,driver,operator",
+            "type": "decision",
+            "task_id": "",
+            "status": "review_request_answered_by_prior_build_consensus",
+            "message": "already answered by build consensus",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T07:14:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_resolved_status_with_requested_token_is_not_open_request() -> None:
     events = [
         {
@@ -746,6 +770,108 @@ def test_ack_message_statuses_close_incoming_request(status: str) -> None:
     assert report["task_id"] == "next-unclaimed-scout-or-implementation"
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 0
+
+
+def test_empty_task_request_closes_when_target_answers_requester() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T07:10:00Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "",
+            "status": "review_requested",
+            "message": "please review the current PR",
+        },
+        {
+            "ts_utc": "2026-06-13T07:12:00Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,driver,operator",
+            "type": "decision",
+            "task_id": "",
+            "status": "review_request_answered_by_prior_build_consensus",
+            "message": "already answered by build consensus",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T07:13:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
+def test_empty_task_request_closes_when_requester_retracts_for_target() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T07:10:00Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "",
+            "status": "review_requested",
+            "message": "please review the current PR",
+        },
+        {
+            "ts_utc": "2026-06-13T07:12:00Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1,operator",
+            "type": "decision",
+            "task_id": "",
+            "status": "closed",
+            "message": "withdrawing this empty-task request",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T07:13:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
+def test_empty_task_request_is_not_closed_by_unrelated_agent_answer() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T07:10:00Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "",
+            "status": "review_requested",
+            "message": "please review the current PR",
+        },
+        {
+            "ts_utc": "2026-06-13T07:12:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-lead-1,operator",
+            "type": "decision",
+            "task_id": "",
+            "status": "answered",
+            "message": "unrelated empty-task answer",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T07:13:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["message"] == "please review the current PR"
+    assert report["open_incoming_count"] == 1
 
 
 def test_requester_retraction_closes_incoming_finding_for_target() -> None:

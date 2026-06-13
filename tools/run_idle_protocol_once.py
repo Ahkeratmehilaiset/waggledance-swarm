@@ -21,17 +21,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_check import (
-    DEFAULT_CLAIMS_DIR,
-    DEFAULT_EVENTS_PATH,
     evaluate_idle_state,
 )
 from tools.idle_protocol_activate import (
     DEFAULT_AGENT,
-    DEFAULT_BRIDGE_ROOT,
     ActivationError,
     activate_idle_protocol,
     parse_agent_id,
 )
+from waggledance.core.work_queue import resolve_bridge_root
 
 
 DEFAULT_SCRATCH_DIR = Path(".codex-audit") / "idle-runner"
@@ -42,9 +40,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Check idle state and optionally start one idle-protocol v1 round.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
-    parser.add_argument("--claims-dir", type=Path, default=DEFAULT_CLAIMS_DIR)
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--claims-dir",
+        type=Path,
+        default=None,
+        help="Bridge claims directory. Defaults to <bridge-root>/work_queue/claims.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--from-agent", type=parse_agent_id, default=DEFAULT_AGENT)
     parser.add_argument("--to", type=parse_agent_id, default=None)
     parser.add_argument("--task-id", default=None)
@@ -85,11 +101,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
+    claims_dir = args.claims_dir or bridge_root / "work_queue" / "claims"
     try:
         report = run_idle_protocol_once(
-            events_path=args.events,
-            claims_dir=args.claims_dir,
-            bridge_root=args.bridge_root,
+            events_path=events_path,
+            claims_dir=claims_dir,
+            bridge_root=bridge_root,
             from_agent=args.from_agent,
             to_agent=args.to,
             task_id=args.task_id,

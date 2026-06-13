@@ -12,6 +12,7 @@ import pytest
 from tools.run_idle_protocol_once import (
     IdleRunnerError,
     build_round_one_payload,
+    main,
     run_idle_protocol_once,
 )
 from waggledance.core.bridge_event_schema import validate_event
@@ -315,3 +316,105 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
         "idle-prop-20260517t120000000000z-codex"
     )
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_cli_defaults_paths_to_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge_root = tmp_path / "runtime-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    claims_dir = bridge_root / "work_queue" / "claims"
+    events_path.parent.mkdir(parents=True)
+    claims_dir.mkdir(parents=True)
+    _write_events(events_path, _base_idle_events())
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    assert main([
+        "--scratch-dir",
+        str(tmp_path / "scratch"),
+        "--now",
+        "2026-05-17T12:00:00Z",
+        "--dry-run",
+        "--json",
+    ]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "idle_ready"
+    assert report["emitted"] is False
+    assert report["idle_report"]["idle"] is True
+    assert not events_path.read_text(encoding="utf-8").endswith("idle_proposal\n")
+
+
+def test_cli_bridge_root_argument_defaults_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge_root = tmp_path / "explicit-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    claims_dir = bridge_root / "work_queue" / "claims"
+    events_path.parent.mkdir(parents=True)
+    claims_dir.mkdir(parents=True)
+    _write_events(events_path, _base_idle_events())
+
+    assert main([
+        "--bridge-root",
+        str(bridge_root),
+        "--scratch-dir",
+        str(tmp_path / "scratch"),
+        "--now",
+        "2026-05-17T12:00:00Z",
+        "--dry-run",
+        "--json",
+    ]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "idle_ready"
+    assert report["emitted"] is False
+    assert report["idle_report"]["idle"] is True
+
+
+def test_cli_explicit_paths_override_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime_root = tmp_path / "runtime-bridge"
+    runtime_events = runtime_root / "shared" / "events.jsonl"
+    runtime_claims = runtime_root / "work_queue" / "claims"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_claims.mkdir(parents=True)
+    _write_events(
+        runtime_events,
+        _base_idle_events()
+        + [
+            _event(
+                ts_utc="2026-05-17T11:55:00Z",
+                message="Runtime-root event would block if explicit events lost.",
+            )
+        ],
+    )
+    explicit_events = tmp_path / "explicit-events.jsonl"
+    explicit_claims = tmp_path / "explicit-claims"
+    explicit_claims.mkdir()
+    _write_events(explicit_events, _base_idle_events())
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_root))
+
+    assert main([
+        "--events",
+        str(explicit_events),
+        "--claims-dir",
+        str(explicit_claims),
+        "--scratch-dir",
+        str(tmp_path / "scratch"),
+        "--now",
+        "2026-05-17T12:00:00Z",
+        "--dry-run",
+        "--json",
+    ]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "idle_ready"
+    assert report["emitted"] is False
+    assert "recent_agent_message" not in report["idle_report"]["blockers"]

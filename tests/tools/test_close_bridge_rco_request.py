@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -301,6 +302,48 @@ def test_cli_reports_malformed_events_file(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["decision"] == "invalid_events_file"
+
+
+def test_cli_default_bridge_root_uses_runtime_env_from_other_cwd(
+    tmp_path: Path,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path / "runtime",
+        [_opening_handoff("task-cli-env", "2026-05-20T18:00:00Z")],
+    )
+    other_cwd = tmp_path / "other-cwd"
+    other_cwd.mkdir()
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "task-cli-env",
+            "--pr",
+            "1234",
+            "--from-agent",
+            "codex",
+            "--now",
+            "2026-05-21T06:00:00Z",
+            "--dry-run",
+            "--json",
+        ],
+        cwd=str(other_cwd),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["decision"] == "ready"
+    assert payload["emitted"] is False
 
 
 def test_cli_smoke(tmp_path: Path) -> None:

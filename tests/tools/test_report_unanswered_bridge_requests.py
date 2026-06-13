@@ -116,6 +116,78 @@ def test_requester_terminal_event_closes_request() -> None:
     assert report["unanswered_count"] == 0
 
 
+def test_terminal_same_task_event_closes_obsolete_request_from_any_agent() -> None:
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                agent="codex-tools-1",
+                to="operator",
+                task_id="codex-tools-1-bridge-unanswered-request-diagnostics-20260613",
+                status="pr_open_ci_pending",
+            ),
+            _answer(
+                agent="codex-lead-1",
+                task_id="codex-tools-1-bridge-unanswered-request-diagnostics-20260613",
+                status="merged",
+            )
+            | {"type": "done"},
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 0
+
+
+def test_terminal_same_pr_event_closes_obsolete_request_from_any_agent() -> None:
+    terminal = _answer(
+        agent="codex-lead-1",
+        task_id="different-closeout-task",
+        status="merged",
+    )
+    terminal["type"] = "done"
+    terminal["payload"] = {"pr": 1122}
+
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                agent="codex-tools-1",
+                to="claude-rco-2",
+                task_id="codex-tools-1-bridge-suppressed-lane-nudge-hygiene-20260613",
+                status="pr_open_ci_pending",
+            ),
+            terminal,
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 0
+
+
+def test_non_terminal_third_party_event_does_not_close_request() -> None:
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                agent="codex-tools-1",
+                to="claude-rco-1",
+                task_id="task-needs-rco",
+                status="rco_requested",
+            ),
+            _answer(
+                agent="codex-lead-1",
+                task_id="task-needs-rco",
+                status="build_consensus_pass",
+            ),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["response_expected_from"] == "claude-rco-1"
+
+
 def test_min_age_filters_young_request() -> None:
     report = report_unanswered_requests(
         events=[_request(ts="2026-06-13T12:15:00Z")],

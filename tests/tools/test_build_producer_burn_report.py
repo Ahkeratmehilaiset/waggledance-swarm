@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tools.build_producer_burn_report import (
     CLAIM_GATES,
     build_burn_report,
@@ -179,6 +181,40 @@ def test_main_exit_0_when_all_ok(tmp_path):
     path = _write(tmp_path, _busy("codex-lead-1", 2))
     rc = main(["--events", str(path), "--now", NOW_TEXT, "--producer", "codex-lead-1"])
     assert rc == 0
+
+
+def test_main_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_events.write_text(
+        json.dumps(_ev("codex-lead-1", "2026-06-10T11:30:00Z")) + "\n",
+        encoding="utf-8",
+    )
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    shadow_events.write_text(
+        json.dumps(_ev("codex-tools-1", "2026-06-10T11:30:00Z")) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    rc = main(["--now", NOW_TEXT, "--producer", "codex-lead-1", "--json"])
+
+    assert rc == 0
+    art = json.loads(capsys.readouterr().out)
+    entry = art["per_producer"]["codex-lead-1"]
+    assert entry["status"] == "ok"
+    assert entry["smallest_window_burn_per_hour"] == 1.0
 
 
 def test_main_out_file_matches_stdout(tmp_path, capsys):

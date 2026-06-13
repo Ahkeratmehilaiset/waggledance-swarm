@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 from tools.producer_budget_probe import (  # noqa: E402
     DEFAULT_PRODUCERS,
     DEFAULT_WINDOW_HOURS,
@@ -92,8 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--events",
         type=Path,
-        default=Path(".agent-bridge") / "shared" / "events.jsonl",
-        help="Path to bridge events.jsonl.",
+        default=None,
+        help="Path to bridge events.jsonl (default: <bridge-root>/shared/events.jsonl).",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
     )
     parser.add_argument(
         "--producer",
@@ -151,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
 
     producers = _normalize(args.producer, DEFAULT_PRODUCERS)
     if not producers:
@@ -191,7 +203,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"--reset-at is not a valid ISO-8601 instant: {args.reset_at!r}", file=sys.stderr)
             return 2
 
-    events_path: Path = args.events
     if not events_path.exists():
         print(f"bridge events file not found: {events_path}", file=sys.stderr)
         return 3

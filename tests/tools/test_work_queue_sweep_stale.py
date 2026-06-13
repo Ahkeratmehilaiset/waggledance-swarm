@@ -52,6 +52,30 @@ def test_cli_dry_run_lists_stale_in_human_mode(
     assert (bridge / "work_queue" / "claims" / "task-cli-stale.json").exists()
 
 
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / "runtime" / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-cli-env-stale",
+        summary="stale from runtime root",
+        bridge_root=bridge,
+        now_utc=_now() - timedelta(hours=1),
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge))
+
+    exit_code = sweep_cli.main(["--max-age-seconds", "60", "--json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["archived"][0]["task_id"] == "task-cli-env-stale"
+    assert payload["archived"][0]["applied"] is False
+    # Dry-run did not mutate the runtime-root claim.
+    assert (bridge / "work_queue" / "claims" / "task-cli-env-stale.json").exists()
+
+
 def test_cli_apply_archives_and_emits_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

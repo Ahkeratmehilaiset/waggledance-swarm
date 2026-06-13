@@ -17,6 +17,11 @@ param(
     [string] $Agent,
 
     [int] $Tail = 50000,
+
+    [double] $OpenRequestMaxAgeHours = 12.0,
+
+    [string] $Now = '',
+
     [switch] $Json
 )
 
@@ -37,6 +42,41 @@ $classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
 if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
 }
+
+if (
+    [double]::IsNaN($OpenRequestMaxAgeHours) -or
+    [double]::IsInfinity($OpenRequestMaxAgeHours) -or
+    $OpenRequestMaxAgeHours -le 0
+) {
+    throw 'OpenRequestMaxAgeHours must be positive'
+}
+
+function ConvertTo-BridgeUtcDateTime {
+    param([string] $Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $styles = (
+        [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    )
+    try {
+        return ([System.DateTimeOffset]::Parse(
+            $Value,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            $styles
+        )).UtcDateTime
+    } catch {
+        return $null
+    }
+}
+
+$nowUtc = if ($Now) {
+    $parsedNow = ConvertTo-BridgeUtcDateTime -Value $Now
+    if ($null -eq $parsedNow) { throw 'Now must be an ISO-8601 timestamp' }
+    $parsedNow
+} else {
+    (Get-Date).ToUniversalTime()
+}
+$openRequestCutoffUtc = $nowUtc.AddHours(-1 * $OpenRequestMaxAgeHours)
 
 function Read-BridgeEventObjects {
     param([string] $Path, [int] $MaxLines)
@@ -74,8 +114,19 @@ $requestsForAgent = @(
         Sort-Object ts_utc
 )
 
-$openRequests = New-Object System.Collections.Generic.List[object]
+$freshRequestsForAgent = New-Object System.Collections.Generic.List[object]
+$staleRequests = New-Object System.Collections.Generic.List[object]
 foreach ($req in $requestsForAgent) {
+    $requestTs = ConvertTo-BridgeUtcDateTime -Value ([string]$req.ts_utc)
+    if ($null -ne $requestTs -and $requestTs -lt $openRequestCutoffUtc) {
+        [void]$staleRequests.Add($req)
+    } else {
+        [void]$freshRequestsForAgent.Add($req)
+    }
+}
+
+$candidateOpenRequests = New-Object System.Collections.Generic.List[object]
+foreach ($req in $freshRequestsForAgent) {
     $answer = @(
         $events |
             Where-Object {
@@ -99,9 +150,11 @@ foreach ($req in $requestsForAgent) {
             Select-Object -Last 1
     )
     if ($answer.Count -eq 0 -and $requesterClosure.Count -eq 0) {
-        [void]$openRequests.Add($req)
+        [void]$candidateOpenRequests.Add($req)
     }
 }
+
+$openRequests = $candidateOpenRequests
 
 $kind = ''
 $taskId = ''
@@ -139,6 +192,7 @@ $result = [pscustomobject]@{
     summary = $summary
     active_claim_count = $claims.Count
     open_incoming_count = $openRequests.Count
+    stale_incoming_count = $staleRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
 }
 

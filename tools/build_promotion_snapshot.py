@@ -28,6 +28,7 @@ from tools.check_promotion_eligible import (  # noqa: E402
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
 )
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 RunnerResult = Any
 Runner = Callable[[Sequence[str]], RunnerResult]
@@ -49,7 +50,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo", required=True, help="GitHub repository owner/name.")
     parser.add_argument("--pr-number", type=int, required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help=(
+            "Bridge event JSONL path. Defaults to "
+            "<runtime bridge root>/shared/events.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Runtime bridge root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT, AGENT_BRIDGE_ROOT, then repo .agent-bridge."
+        ),
+    )
     parser.add_argument("--charter", type=Path, default=DEFAULT_CHARTER_PATH)
     parser.add_argument(
         "--task-id",
@@ -88,10 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_path = args.events
+    if events_path is None:
+        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
     report = build_promotion_snapshot(
         repo=args.repo,
         pr_number=args.pr_number,
-        events_path=args.events,
+        events_path=events_path,
         charter_path=args.charter,
         task_id=args.task_id,
         origin_main_sha=args.origin_main_sha,

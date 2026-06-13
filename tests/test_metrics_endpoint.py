@@ -479,6 +479,10 @@ def test_metrics_body_contains_counterfactual_replay_observability_gauges():
             "same_sample_set": True,
             "deterministic": True,
             "divergence_count": 7,
+            "improvement_count": 5,
+            "regression_count": 1,
+            "neutral_divergence_count": 1,
+            "oracle_agreement_advantage": 0.25,
             "no_delta": False,
             "delta_digest": "sha256:operator-secret-digest",
             "per_arm": {"candidate": "operator-secret-inputs"},
@@ -491,6 +495,13 @@ def test_metrics_body_contains_counterfactual_replay_observability_gauges():
     assert "waggledance_counterfactual_replay_up 1.0" in body
     assert "waggledance_counterfactual_replay_sample_count 24.0" in body
     assert "waggledance_counterfactual_replay_divergence_count 7.0" in body
+    assert "waggledance_counterfactual_replay_improvement_count 5.0" in body
+    assert "waggledance_counterfactual_replay_regression_count 1.0" in body
+    assert "waggledance_counterfactual_replay_neutral_divergence_count 1.0" in body
+    assert (
+        "waggledance_counterfactual_replay_oracle_agreement_advantage 0.25"
+        in body
+    )
     assert "waggledance_counterfactual_replay_same_sample_set 1.0" in body
     assert "waggledance_counterfactual_replay_deterministic 1.0" in body
     assert "waggledance_counterfactual_replay_no_delta 0.0" in body
@@ -504,6 +515,10 @@ def test_metrics_body_contains_counterfactual_replay_observability_gauges():
     assert (
         'waggledance_counterfactual_replay_status{'
         'status="runtime_measured"} 1.0'
+    ) in body
+    assert (
+        'waggledance_counterfactual_replay_oracle_direction{'
+        'direction="net_improvement"} 1.0'
     ) in body
     assert "operator-secret-digest" not in body
     assert "operator-secret-inputs" not in body

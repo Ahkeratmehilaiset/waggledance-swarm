@@ -16,6 +16,7 @@ handle it — for promotion that means fail-open + status=failed). Tools-free.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Sequence
 
 from waggledance.core.magma.canonical import sha256_digest
@@ -62,6 +63,13 @@ COUNTERFACTUAL_OBSERVABILITY_STATES = (
     "measured_local_partial",
     "nondeterministic_oracle",
     "runtime_measured",
+)
+COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS = (
+    "unknown",
+    "not_applicable",
+    "net_neutral",
+    "net_improvement",
+    "net_regression",
 )
 
 _A3_LABEL_TO_OBSERVABILITY_STATE = {
@@ -321,16 +329,42 @@ def summarize_counterfactual_observability(
 
     if snapshot.get("schema_version") == COUNTERFACTUAL_DELTA_SCHEMA:
         a3_label = derive_a3_label(snapshot, min_samples=min_samples)
+        divergence_count = _optional_nonnegative_int(
+            snapshot.get("divergence_count")
+        )
+        improvement_count = _optional_nonnegative_int(
+            snapshot.get("improvement_count")
+        )
+        regression_count = _optional_nonnegative_int(
+            snapshot.get("regression_count")
+        )
+        neutral_divergence_count = _optional_nonnegative_int(
+            snapshot.get("neutral_divergence_count")
+        )
+        no_delta = snapshot.get("no_delta") is True
         return _counterfactual_observability_status(
             source_available=True,
             compute_status="computed",
             status=_state_for_a3_label(a3_label),
             a3_label=a3_label,
             sample_count=_nonnegative_int(snapshot.get("sample_count")),
-            divergence_count=_nonnegative_int(snapshot.get("divergence_count")),
+            divergence_count=divergence_count or 0,
+            improvement_count=improvement_count or 0,
+            regression_count=regression_count or 0,
+            neutral_divergence_count=neutral_divergence_count or 0,
+            oracle_agreement_advantage=_finite_float(
+                snapshot.get("oracle_agreement_advantage")
+            ),
+            net_oracle_agreement_direction=_net_oracle_agreement_direction(
+                no_delta=no_delta,
+                divergence_count=divergence_count,
+                improvement_count=improvement_count,
+                regression_count=regression_count,
+                neutral_divergence_count=neutral_divergence_count,
+            ),
             same_sample_set=_same_sample_set(snapshot),
             deterministic=snapshot.get("deterministic") is True,
-            no_delta=snapshot.get("no_delta") is True,
+            no_delta=no_delta,
             delta_digest_present=bool(snapshot.get("canonical_digest")),
             controls_present=snapshot.get("controls_present") is True,
             runtime_authority_granted=(
@@ -349,16 +383,38 @@ def summarize_counterfactual_observability(
     else:
         status = _state_for_a3_label(a3_label)
 
+    divergence_count = _optional_nonnegative_int(snapshot.get("divergence_count"))
+    improvement_count = _optional_nonnegative_int(
+        snapshot.get("improvement_count")
+    )
+    regression_count = _optional_nonnegative_int(snapshot.get("regression_count"))
+    neutral_divergence_count = _optional_nonnegative_int(
+        snapshot.get("neutral_divergence_count")
+    )
+    no_delta = snapshot.get("no_delta") is True
     return _counterfactual_observability_status(
         source_available=True,
         compute_status=compute_status,
         status=status,
         a3_label=a3_label,
         sample_count=_nonnegative_int(snapshot.get("sample_count")),
-        divergence_count=_nonnegative_int(snapshot.get("divergence_count")),
+        divergence_count=divergence_count or 0,
+        improvement_count=improvement_count or 0,
+        regression_count=regression_count or 0,
+        neutral_divergence_count=neutral_divergence_count or 0,
+        oracle_agreement_advantage=_finite_float(
+            snapshot.get("oracle_agreement_advantage")
+        ),
+        net_oracle_agreement_direction=_net_oracle_agreement_direction(
+            no_delta=no_delta,
+            divergence_count=divergence_count,
+            improvement_count=improvement_count,
+            regression_count=regression_count,
+            neutral_divergence_count=neutral_divergence_count,
+        ),
         same_sample_set=snapshot.get("same_sample_set") is True,
         deterministic=snapshot.get("deterministic") is True,
-        no_delta=snapshot.get("no_delta") is True,
+        no_delta=no_delta,
         delta_digest_present=bool(snapshot.get("delta_digest")),
         controls_present=snapshot.get("controls_present") is True,
         runtime_authority_granted=snapshot.get("runtime_authority_granted") is True,
@@ -375,6 +431,11 @@ def _counterfactual_observability_status(
     a3_label: str,
     sample_count: int = 0,
     divergence_count: int = 0,
+    improvement_count: int = 0,
+    regression_count: int = 0,
+    neutral_divergence_count: int = 0,
+    oracle_agreement_advantage: float = 0.0,
+    net_oracle_agreement_direction: str = "unknown",
     same_sample_set: bool = False,
     deterministic: bool = False,
     no_delta: bool = False,
@@ -386,14 +447,21 @@ def _counterfactual_observability_status(
 ) -> dict[str, Any]:
     if status not in COUNTERFACTUAL_OBSERVABILITY_STATES:
         status = "insufficient" if source_available else "unavailable"
+    if net_oracle_agreement_direction not in COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS:
+        net_oracle_agreement_direction = "unknown"
     return {
         "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
         "source_available": bool(source_available),
         "compute_status": compute_status,
         "status": status,
         "a3_label": a3_label,
-        "sample_count": sample_count,
-        "divergence_count": divergence_count,
+        "sample_count": _nonnegative_int(sample_count),
+        "divergence_count": _nonnegative_int(divergence_count),
+        "improvement_count": _nonnegative_int(improvement_count),
+        "regression_count": _nonnegative_int(regression_count),
+        "neutral_divergence_count": _nonnegative_int(neutral_divergence_count),
+        "oracle_agreement_advantage": _finite_float(oracle_agreement_advantage),
+        "net_oracle_agreement_direction": net_oracle_agreement_direction,
         "same_sample_set": bool(same_sample_set),
         "deterministic": bool(deterministic),
         "no_delta": bool(no_delta),
@@ -431,3 +499,50 @@ def _nonnegative_int(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
     return max(0, value)
+
+
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _finite_float(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    return numeric
+
+
+def _net_oracle_agreement_direction(
+    *,
+    no_delta: bool,
+    divergence_count: int | None,
+    improvement_count: int | None,
+    regression_count: int | None,
+    neutral_divergence_count: int | None,
+) -> str:
+    if no_delta or divergence_count == 0:
+        return "not_applicable"
+    if (
+        divergence_count is None
+        or improvement_count is None
+        or regression_count is None
+        or neutral_divergence_count is None
+    ):
+        return "unknown"
+    if (
+        improvement_count + regression_count + neutral_divergence_count
+        != divergence_count
+    ):
+        return "unknown"
+    if improvement_count > regression_count:
+        return "net_improvement"
+    if regression_count > improvement_count:
+        return "net_regression"
+    return "net_neutral"

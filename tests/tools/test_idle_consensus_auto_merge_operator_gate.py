@@ -96,6 +96,41 @@ def test_off_allowlist_change_stays_operator_gated_even_with_full_consensus(
     )
 
 
+def test_bridge_bin_change_stays_operator_gated_even_with_full_consensus(
+    tmp_path: Path,
+) -> None:
+    changed_path = ".agent-bridge/bin/Get-BridgeNextAction.ps1"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            changed_paths=[changed_path],
+            diff_text=(
+                "diff --git a/.agent-bridge/bin/Get-BridgeNextAction.ps1 "
+                "b/.agent-bridge/bin/Get-BridgeNextAction.ps1\n"
+                "--- a/.agent-bridge/bin/Get-BridgeNextAction.ps1\n"
+                "+++ b/.agent-bridge/bin/Get-BridgeNextAction.ps1\n"
+                "@@ -1,2 +1,3 @@\n"
+                "+# bridge gate script edit remains operator-gated\n"
+            ),
+        ),
+        expected_head=HEAD,
+        consensus_proposal_id=TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _full_bridge_consensus()),
+        require_bridge_consensus=True,
+    )
+
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["rco_pass_gate"]["ok"] is True
+    assert report["path_gate"]["allowed"] is False
+    assert report["path_gate"]["blocked_paths"] == [changed_path]
+    assert report["ok"] is False
+    assert report["would_merge"] is False
+    assert report["external_effect"] is False
+    assert report["operator_review_required"] is True
+    assert report["decision"] == "operator_review_required"
+    assert "path gate failed: denylist hit" in report["reasons"]
+
+
 def test_gate_skip_claim_stays_operator_gated_even_on_allowlist_with_consensus(
     tmp_path: Path,
 ) -> None:

@@ -164,7 +164,11 @@ not accidentally let claims expire while tests or model reasoning run.
 unless `$env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0` or
 `-SkipHeartbeatJob` is passed. The job emits `heartbeat/active`
 every 60 s, which updates `last_heartbeat_utc` on the agent's active
-claims.
+claims. A heartbeat is a claim-lease keepalive, not proof that the
+model loop is reading bridge events. If the agent has no active claim,
+the heartbeat helper skips emission and exits after a bounded number of
+idle iterations so orphaned helpers cannot make a stopped agent look
+alive indefinitely.
 
 See
 [`iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md`](../iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md)
@@ -331,8 +335,10 @@ operation lock / lease for TOCTOU).
      a kill, the next bootstrap in the same host inherits orphans;
      run `Stop-AgentBridgeSession.ps1` (optionally with `-Agent
      <name>`) to clean them up. Without this, dead agent shells keep
-     emitting `liveness/active` events and bumping `last_heartbeat_utc`
-     on their own claims, defeating stale-lease auto-release.
+     emitting stale helper traffic or bumping `last_heartbeat_utc`
+     on their own claims, defeating stale-lease auto-release. Current
+     heartbeat helpers are claim-aware and exit after bounded no-claim
+     idle time, but hard-killed old helpers should still be cleaned up.
      Verified by `Test-BridgeJobCleanupSmoke.ps1`.
 
 ## Commands
@@ -474,7 +480,9 @@ than 5 minutes old is considered stale; the agent is asleep.
 While holding an active write claim or actively producing review
 output, the holding agent SHOULD emit `heartbeat/active` events at
 60-second intervals so other agents and the operator can see the
-turn is still live.
+turn is still live. Heartbeat-only traffic without a matching active
+claim is not substantive progress and must not close or satisfy a
+`wake_request`.
 
 A claim with no `heartbeat` event within 5 minutes is considered
 **dropped** and may be re-claimed by another agent (or the operator

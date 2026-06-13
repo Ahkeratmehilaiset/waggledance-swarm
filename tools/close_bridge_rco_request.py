@@ -45,6 +45,11 @@ import sys
 import time
 from typing import Any, Mapping, Sequence
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 RCO_CLOSE_STATUS = "rco_closed_postmerge"
@@ -69,7 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bridge-root",
         type=Path,
-        default=DEFAULT_BRIDGE_ROOT,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
     )
     parser.add_argument(
         "--merge-commit",
@@ -109,12 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bridge_root = resolve_bridge_root(args.bridge_root)
     try:
         result = close_bridge_rco_request(
             task_id=args.task_id,
             pr_number=args.pr,
             from_agent=args.from_agent,
-            bridge_root=args.bridge_root,
+            bridge_root=bridge_root,
             merge_commit=args.merge_commit,
             merged_at=args.merged_at,
             to_agents=args.to,

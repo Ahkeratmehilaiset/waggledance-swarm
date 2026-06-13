@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
+    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
     _event_agent,
     _event_recipients,
@@ -278,11 +279,13 @@ def _close_answered_requests(
     for key, state in list(open_by_key.items()):
         target, state_task_key = key
         requester = str(state["requester"])
-        if state_task_key != event_task_key:
+        same_task = state_task_key == event_task_key
+        same_pr = _same_payload_pr(event, state)
+        if not same_task and not same_pr:
             continue
         if event_ts <= str(state["ts_utc"]):
             continue
-        if event_agent in {target, requester}:
+        if event_agent in {target, requester} or _is_terminal_closure_event(event):
             del open_by_key[key]
 
 
@@ -319,6 +322,19 @@ def _task_key(
             if rest:
                 return f"{agent}-{rest}"
     return normalized
+
+
+def _same_payload_pr(event: Mapping[str, Any], state: Mapping[str, Any]) -> bool:
+    event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
+    state_pr = str(state.get("payload_pr") or "").strip()
+    return bool(event_pr and state_pr and event_pr == state_pr)
+
+
+def _is_terminal_closure_event(event: Mapping[str, Any]) -> bool:
+    return (
+        _event_type(event) == "done"
+        or _event_status(event) in CLOSED_REQUEST_STATUSES
+    )
 
 
 def _request_row(state: Mapping[str, Any], *, age_minutes: float) -> dict[str, Any]:

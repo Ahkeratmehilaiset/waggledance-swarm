@@ -244,6 +244,77 @@ def test_ignores_stale_incoming_request_using_agent_now(tmp_path: Path) -> None:
     ]
 
 
+def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "codex-tools-1",
+                "type": "decision",
+                "task_id": "tools-active-work",
+                "status": "active",
+                "message": "tools started a producer slice",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_production_liveness_reactivation_scout"
+    assert report["next_action"] == "claim_and_run"
+    candidate = report["candidate"]
+    assert candidate["kind"] == "production_liveness_reactivation_scout"
+    assert candidate["stalled_agent"] == "codex-tools-1"
+    assert candidate["reason"] == "no_activity_since_last_event"
+    assert candidate["mode"] == "read-only"
+    assert candidate["write_scope"] == []
+    assert "report_unanswered_bridge_requests.py" in candidate["recommended_command"]
+    assert "--agent codex-tools-1" in candidate["recommended_command"]
+    assert report["bridge_recommendation"]["production_liveness"][
+        "stalled_agent_count"
+    ] == 1
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+    assert report["bridge_recommendation"]["production_liveness"][
+        "stalled_agent_count"
+    ] == 1
+
+
 # ---------------------------------------------------------------------------
 # substrate-smoke pick branches
 # ---------------------------------------------------------------------------

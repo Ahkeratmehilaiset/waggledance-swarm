@@ -74,6 +74,14 @@ SUCCESSFUL_COMPLETION_STATUSES = {
     "success",
     "verified",
 }
+PRODUCTION_PEER_AGENT = {
+    "codex-lead-1": "codex-tools-1",
+    "codex-tools-1": "codex-lead-1",
+}
+ACTIONABLE_PRODUCTION_LIVENESS_REASONS = {
+    "heartbeat_only_since_activity",
+    "no_activity_since_last_event",
+}
 # A small, stable, charter-safe pool of always-available read-only
 # verification candidates. Each entry must point at an existing path
 # in the repo, must be a pytest target, and must require no external
@@ -378,6 +386,42 @@ def evaluate_agent_next_task(
         })
 
     if bridge_action in PICK_ACTIONS:
+        production_liveness_candidate = _pick_production_liveness_reactivation(
+            agent=agent,
+            bridge_root=Path(bridge_root),
+            now_utc=now_utc,
+            bridge_recommendation=bridge_recommendation,
+        )
+        if production_liveness_candidate is not None:
+            return _with_deferred_lift_state({
+                "decision": "claim_production_liveness_reactivation_scout",
+                "next_action": "claim_and_run",
+                "exit_code": 0,
+                "agent": agent,
+                "underlying_bridge_action": bridge_action,
+                "bridge_recommendation": bridge_recommendation,
+                **_bridge_context(bridge_recommendation),
+                "candidate": production_liveness_candidate,
+                "notes": [
+                    (
+                        "bridge_next_action left the next-work choice open, "
+                        "but the primary production peer is stalled according "
+                        "to the unsuppressed production_liveness report"
+                    ),
+                    (
+                        "the picker advanced to a read-only liveness "
+                        "diagnostic before routine smoke/scout rotation so "
+                        "nudge-delivery failures do not hide behind normal "
+                        "idle work"
+                    ),
+                    (
+                        "the candidate is a recommendation only; the caller "
+                        "is responsible for claiming it before running, and "
+                        "the diagnostic grants no scheduler, bridge-write, "
+                        "merge, or gate-skip authority"
+                    ),
+                ],
+            })
         completed_task_ids = _completed_substrate_smoke_task_ids(
             agent=agent,
             events=events,
@@ -676,6 +720,73 @@ def _bridge_context(bridge_recommendation: Mapping[str, Any]) -> dict[str, Any]:
         if value:
             context[key] = value
     return context
+
+
+def _pick_production_liveness_reactivation(
+    *,
+    agent: str,
+    bridge_root: Path,
+    now_utc: datetime,
+    bridge_recommendation: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return a read-only diagnostic when the primary production peer stalled."""
+    peer_agent = PRODUCTION_PEER_AGENT.get(agent)
+    if not peer_agent:
+        return None
+
+    production_liveness = bridge_recommendation.get("production_liveness")
+    if not isinstance(production_liveness, Mapping):
+        return None
+
+    stalled_agents = production_liveness.get("stalled_agents")
+    if not isinstance(stalled_agents, Sequence) or isinstance(stalled_agents, str):
+        return None
+
+    for item in stalled_agents:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("agent") or "") != peer_agent:
+            continue
+        reason = str(item.get("reason") or "")
+        if reason not in ACTIONABLE_PRODUCTION_LIVENESS_REASONS:
+            continue
+        idle_minutes = item.get("idle_minutes", item.get("observed_minutes", 0.0))
+        try:
+            idle_minutes_float = float(idle_minutes)
+        except (TypeError, ValueError):
+            idle_minutes_float = 0.0
+        idle_warn = float(production_liveness.get("idle_warn_minutes") or 0.0)
+        events_path = bridge_root / "shared" / "events.jsonl"
+        task_id = (
+            "production-liveness-reactivation-scout-"
+            f"{now_utc.strftime('%Y-%m-%d')}-{peer_agent}"
+        )
+        return {
+            "kind": "production_liveness_reactivation_scout",
+            "target": ".agent-bridge/shared/events.jsonl",
+            "stalled_agent": peer_agent,
+            "reason": reason,
+            "idle_minutes": round(idle_minutes_float, 3),
+            "task_id_suggestion": task_id,
+            "mode": "read-only",
+            "write_scope": [],
+            "authority": "read_only_recommendation_only",
+            "acceptance": (
+                "Run the unanswered-request diagnostic for the stalled peer "
+                "and emit a concise bridge finding or wake handoff if the "
+                "dispatcher still has not delivered work; route any source "
+                "change through a separate write claim."
+            ),
+            "recommended_command": (
+                "C:\\Python\\project2-master\\.venv\\Scripts\\python.exe "
+                "tools\\report_unanswered_bridge_requests.py "
+                f"--events {events_path} "
+                f"--agent {peer_agent} "
+                f"--min-age-minutes {idle_warn:g} "
+                "--json"
+            ),
+        }
+    return None
 
 
 def _format_metadata(metadata: Mapping[str, Any]) -> str:

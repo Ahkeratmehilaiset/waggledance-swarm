@@ -5,6 +5,8 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _write_jsonl(path: Path, events: list[dict]) -> None:
     path.write_text(
@@ -131,6 +133,69 @@ def test_cli_writes_flight_plan(tmp_path: Path) -> None:
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["objective"] == "cli objective"
     assert payload["formal_statuses"]["consensus_proposal"] == "consensus_proposal"
+
+
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = importlib.import_module("tools.build_agent_flight_plan")
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    _write_jsonl(
+        runtime_events,
+        [
+            {
+                "ts_utc": "2026-05-12T00:00:00Z",
+                "agent": "codex",
+                "to": "claude",
+                "type": "decision",
+                "status": "consensus_proposal",
+                "task_id": "runtime-thread",
+                "message": "Runtime proposal",
+            }
+        ],
+    )
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    _write_jsonl(
+        shadow_events,
+        [
+            {
+                "ts_utc": "2026-05-12T00:00:00Z",
+                "agent": "codex",
+                "to": "claude",
+                "type": "decision",
+                "status": "consensus_proposal",
+                "task_id": "shadow-thread",
+                "message": "Shadow proposal",
+            }
+        ],
+    )
+
+    output_path = tmp_path / "plan.json"
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    rc = mod.main([
+        "--output",
+        str(output_path),
+        "--objective",
+        "runtime objective",
+        "--agent",
+        "codex",
+    ])
+
+    assert rc == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["source"]["events_path"] == str(runtime_events)
+    assert [item["task_id"] for item in payload["consensus_topics"]] == [
+        "runtime-thread"
+    ]
 
 
 def test_status_contract_and_schema_files_exist() -> None:

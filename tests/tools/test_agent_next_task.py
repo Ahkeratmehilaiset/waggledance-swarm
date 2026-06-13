@@ -279,6 +279,52 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
+def test_agent_next_task_applies_default_bridge_liveness_suppression_config(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:30:00Z",
+                "agent": "grok-scout-1",
+                "type": "blocked",
+                "task_id": "grok-budget",
+                "status": "redteam_blocked",
+                "message": "budget unavailable",
+            }
+        ],
+    )
+    _claims_dir(bridge)
+    suppression_config = bridge / "shared" / "production_liveness_suppression.json"
+    suppression_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "suppressed_agents": {
+                    "grok-scout-1": {
+                        "reason": "budget unavailable until reset"
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    liveness = report["bridge_recommendation"]["production_liveness"]
+    assert liveness["stalled_agent_count"] == 0
+    assert liveness["suppressed_stalled_agent_count"] == 1
+    assert liveness["suppressed_stalled_agents"][0]["agent"] == "grok-scout-1"
+
+
 def test_deferred_lift_state_returns_copy() -> None:
     state = deferred_lift_state()
     _assert_deferred_lift_state(state)

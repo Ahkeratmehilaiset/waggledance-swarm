@@ -65,6 +65,14 @@ Interpretation:
 * exit `2` / `decision=input_refused` means the process snapshot could not be
   collected or parsed.
 
+`tools\bridge_next_action.py` can report intentionally unavailable lanes
+listed in the bridge runtime
+`shared/production_liveness_suppression.json` file in
+`production_liveness.suppressed_stalled_agents` instead of counting them as
+actionable `stalled_agents`. This keeps access limits visible as audit context
+without hiding real Lead/Tools/RCO stalls, while keeping the suppression policy
+out of the repository.
+
 ## Not a gate identity
 
 The consensus merge gate recognizes build identities

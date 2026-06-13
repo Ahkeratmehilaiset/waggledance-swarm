@@ -8,7 +8,8 @@ no real GitHub call fires and the live repo is never touched.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,10 +24,12 @@ from tools.bridge_loop_tick import (
     build_pr_status_snapshot_fn,
     emit_peer_activation_event,
     evaluate_merge_ready,
+    main,
     my_unmerged_rco_passes,
     peer_activation_recommendation,
     peer_has_active_pr_producing_claim,
 )
+from waggledance.core.work_queue import claim_task
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
@@ -172,6 +175,22 @@ def _peer_activation_sent(agent: str, peer: str, ts: str) -> dict:
     }
 
 
+def _events_file(bridge_root: Path, events: list[dict]) -> Path:
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    return events_path
+
+
+def _format_z(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
 def _green_snapshot(pr: int, head: str = HEAD) -> dict:
     return {
         "pr_number": pr,
@@ -242,6 +261,87 @@ def test_pr_status_snapshot_fn_passes_resolved_expected_base_sha():
             "expected_base_sha": BASE,
         }
     ]
+
+
+def test_cli_defaults_to_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    _events_file(runtime_bridge, [_heartbeat("codex-tools-1", "2026-05-22T13:55:00Z")])
+    claim_task(
+        agent="codex-tools-1",
+        task_id="runtime-loop-claim",
+        summary="runtime bridge loop claim",
+        mode="read-only",
+        bridge_root=runtime_bridge,
+    )
+    inbox = tmp_path / "operator_inbox"
+    inbox.mkdir()
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex-tools-1",
+            "--inbox-dir",
+            str(inbox),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["next_action"] == "continue_claim"
+    assert report["next_action_detail"]["task_id"] == "runtime-loop-claim"
+
+
+def test_cli_emit_peer_activation_uses_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    now = datetime.now(timezone.utc)
+    events_path = _events_file(
+        runtime_bridge,
+        [
+            _finding("codex-lead-1", _format_z(now - timedelta(minutes=40))),
+            _heartbeat("codex-lead-1", _format_z(now - timedelta(minutes=5))),
+        ],
+    )
+    inbox = tmp_path / "operator_inbox"
+    inbox.mkdir()
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex-tools-1",
+            "--inbox-dir",
+            str(inbox),
+            "--emit-peer-activation",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["peer_activation"]["emitted"] is True
+    assert str(runtime_bridge) in report["peer_activation"]["emitted_path"]
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert events[-1]["agent"] == "codex-tools-1"
+    assert events[-1]["to"] == "codex-lead-1"
+    assert events[-1]["status"] == "scout_requested"
 
 
 def test_pr_status_snapshot_fn_prefers_explicit_expected_base_sha():

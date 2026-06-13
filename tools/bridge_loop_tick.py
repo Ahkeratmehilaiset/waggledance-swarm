@@ -49,8 +49,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.bridge_next_action import (  # noqa: E402
-    DEFAULT_BRIDGE_ROOT,
-    list_claims,
     read_events,
     recommend_next_action,
 )
@@ -68,6 +66,7 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
 )
 from tools.operator_decision_pack import scan_inbox  # noqa: E402
 from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
+from waggledance.core.work_queue import list_claims, resolve_bridge_root  # noqa: E402
 
 # Adaptive wakeup bands (seconds). Sub-300 only when there is actionable
 # merge/RCO work, to respect the ~5-minute prompt-cache TTL.
@@ -888,7 +887,16 @@ def build_loop_tick(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the runtime .agent-bridge directory. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT / AGENT_BRIDGE_ROOT when set, then "
+            "repo-local .agent-bridge."
+        ),
+    )
     parser.add_argument("--events", type=Path, default=None)
     parser.add_argument(
         "--inbox-dir", type=Path, default=ROOT / "docs" / "operator_inbox"
@@ -925,7 +933,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    events_path = args.events or (Path(args.bridge_root) / "shared" / "events.jsonl")
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or (bridge_root / "shared" / "events.jsonl")
     snapshot_fn: SnapshotFn | None = None
     if args.check_prs:
         snapshot_fn = build_pr_status_snapshot_fn(
@@ -935,7 +944,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         events = read_events(events_path)
-        claims = list_claims(bridge_root=Path(args.bridge_root))
+        claims = list_claims(bridge_root=bridge_root)
         now_utc = datetime.now(timezone.utc)
         report = build_loop_tick(
             agent=args.agent,
@@ -953,7 +962,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             and isinstance(peer_activation.get("bridge_event"), Mapping)
         ):
             event_path = emit_peer_activation_event(
-                bridge_root=Path(args.bridge_root),
+                bridge_root=bridge_root,
                 agent=args.agent,
                 event_spec=peer_activation["bridge_event"],
                 now_utc=now_utc,

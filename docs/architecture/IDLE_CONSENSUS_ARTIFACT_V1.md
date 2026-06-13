@@ -67,8 +67,9 @@ stored consensus and candidate diff, emit the digest-only binding template:
 ```
 
 The `binding_template` object is the value a later counterfactual receipt should
-place under `replay_binding`. The report includes only the replay-seed digest and
-candidate-diff digest; it omits the raw diff text and receipt payload, and it
+place under `replay_binding`; that object contains only the replay-seed digest
+and candidate-diff digest. The surrounding report may include changed-path and
+gate-summary metadata, but it omits the raw diff text and receipt payload, and it
 does not write artifacts or bridge events.
 
 An optional local MAGMA receipt bundle can be written for the artifact:

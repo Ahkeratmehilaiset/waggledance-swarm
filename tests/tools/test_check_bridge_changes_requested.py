@@ -288,6 +288,53 @@ def test_no_changes_requested_status_does_not_block() -> None:
     assert result["latest_approval_event"]["status"] == "build_consensus_pass"
 
 
+def test_no_changes_requested_approved_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-07T17:38:40Z",
+            "codex-tools-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-07T17:39:47Z",
+            "codex-tools-1",
+            "test",
+            "no_changes_requested_approved",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
+def test_no_changes_requested_text_does_not_downgrade_real_blocking_status() -> None:
+    for status in [
+        "no_changes_requested_but_blocked",
+        "no_changes_requested_rco_blocked",
+        "no_changes_requested_block_requested",
+        "no_changes_requested_changes_requested",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-07T17:39:47Z",
+                    "codex-tools-1",
+                    "test",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
+
+
 def test_veto_statuses_with_negation_words_still_block() -> None:
     for status in [
         "changes_requested_do_not_merge",
@@ -426,6 +473,63 @@ def test_no_blocker_status_does_not_block_pr_scoped_preflight() -> None:
     assert result["clear_to_merge"] is True
     assert result["latest_blocking_event"] is None
     assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
+def test_no_block_reemit_required_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-13T16:04:29Z",
+            "codex-lead-1",
+            "wake_request",
+            "producer_no_block_reemit_required",
+            task_id="codex-tools-1/agent-next-task-runtime-root-env-20260613",
+        ),
+        _event(
+            "2026-06-13T16:03:07Z",
+            "claude-rco-1",
+            "decision",
+            "rco_pass",
+            task_id="codex-tools-1/agent-next-task-runtime-root-env-20260613",
+        ),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="codex-tools-1/agent-next-task-runtime-root-env-20260613",
+        merging_agent="codex-tools-1",
+        pr_number=1133,
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
+def test_no_block_text_does_not_downgrade_real_blocking_status() -> None:
+    for status in [
+        "changes_requested_no_block",
+        "no_blocker_but_changes_requested",
+        "no_block_changes_requested",
+        "rco_blocked_no_block",
+        "no_block_but_blocked",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-13T16:13:22Z",
+                    "claude-rco-1",
+                    "finding",
+                    status,
+                    task_id="codex-tools-1/bridge-peer-gate-no-block-status-20260613",
+                )
+            ],
+            task_id="codex-tools-1/bridge-peer-gate-no-block-status-20260613",
+            merging_agent="codex-tools-1",
+            pr_number=1138,
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
 
 
 def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:

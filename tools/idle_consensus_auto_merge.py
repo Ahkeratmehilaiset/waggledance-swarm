@@ -101,6 +101,12 @@ CONSENSUS_BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 CONSENSUS_BLOCKING_WORD_TOKENS = frozenset(
     {"block", "blocked", "blocks", "blocking"}
 )
+CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
+    {
+        "no_changes_requested",
+        "no_changes_requested_approved",
+    }
+)
 LEAD_STALL_FAILOVER_THRESHOLD_SECONDS = 90 * 60
 LEAD_STALL_NON_SUBSTANTIVE_TYPES = frozenset({"heartbeat", "liveness"})
 LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
@@ -1583,9 +1589,7 @@ def _is_consensus_block(status: str) -> bool:
     if status in CONSENSUS_BLOCKING_STATUSES:
         return True
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    if normalized == "no_changes_requested" or normalized.startswith(
-        "no_changes_requested_"
-    ):
+    if normalized in CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES:
         return False
     tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
     if {"changes", "requested"}.issubset(tokens):

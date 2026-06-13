@@ -270,3 +270,30 @@ def test_action_bridge_event_template_rejects_invalid_target() -> None:
 
     assert report["ok"] is False
     assert any("to_unsafe" in item for item in report["blockers"])
+
+
+def test_action_bridge_event_template_accepts_slash_task_id() -> None:
+    report = builder.build_operator_feedback_action_bridge_event_template(
+        feedback_id="fb-001",
+        durable_bridge_events=[_bridge_event(_feedback(feedback_id="fb-001"))],
+        agent_id="codex-tools-1",
+        task_id="codex-tools-1/operator-feedback-action-template-test",
+        to="operator,codex-lead-1,claude-rco-1",
+    )
+
+    assert report["ok"] is True
+    event = report["bridge_event_template"]
+    validate_event(event)
+    assert event["task_id"] == "codex-tools-1/operator-feedback-action-template-test"
+
+
+def test_action_bridge_event_template_rejects_task_id_path_segments() -> None:
+    report = builder.build_operator_feedback_action_bridge_event_template(
+        feedback_id="fb-001",
+        durable_bridge_events=[_bridge_event(_feedback(feedback_id="fb-001"))],
+        agent_id="codex-tools-1",
+        task_id="codex-tools-1/../operator-feedback-action-template-test",
+    )
+
+    assert report["ok"] is False
+    assert any("task_id_unsafe" in item for item in report["blockers"])

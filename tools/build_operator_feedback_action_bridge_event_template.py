@@ -41,6 +41,7 @@ RATE_LIMIT_SOURCE = "durable_bridge_log"
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
+SAFE_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,191}$")
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
 PATH_MARKERS = (
@@ -548,7 +549,7 @@ def _bridge_template_input_error(
     error = _validate_bridge_agent_id("agent", agent_id)
     if error is not None:
         return error
-    if not isinstance(task_id, str) or not SAFE_REF_PATTERN.fullmatch(task_id):
+    if _validate_task_id(task_id) is not None:
         return "task_id_unsafe"
     _, target_error = _validate_bridge_targets(to)
     if target_error is not None:
@@ -577,6 +578,21 @@ def _validate_bridge_targets(raw_targets: str) -> tuple[str, str | None]:
         if error is not None:
             return "", error
     return ",".join(targets), None
+
+
+def _validate_task_id(value: Any) -> str | None:
+    if not isinstance(value, str) or not SAFE_TASK_ID_PATTERN.fullmatch(value):
+        return "task_id_unsafe"
+    if _contains_path_marker(value):
+        return "task_id_unsafe"
+    if "/" not in value:
+        return None
+    if value.endswith("/") or "//" in value:
+        return "task_id_unsafe"
+    segments = value.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        return "task_id_unsafe"
+    return None
 
 
 def _validate_bridge_agent_id(label: str, value: Any) -> str | None:

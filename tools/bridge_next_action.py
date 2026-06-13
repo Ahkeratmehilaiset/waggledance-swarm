@@ -137,6 +137,7 @@ PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json
 TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
+PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
 
 
 class BridgeNextActionError(ValueError):
@@ -662,6 +663,12 @@ def _build_request_closure_index(
             task_closures = closure_index.setdefault(closure_key, {})
             if event_ts > task_closures.get(event_agent, ""):
                 task_closures[event_agent] = event_ts
+            if closure_key.startswith(
+                PR_CLOSURE_KEY_PREFIX
+            ) and _is_explicit_terminal_pr_closure(event):
+                terminal_agent = _pr_requester_terminal_agent_key(event_agent)
+                if event_ts > task_closures.get(terminal_agent, ""):
+                    task_closures[terminal_agent] = event_ts
     return closure_index
 
 
@@ -685,7 +692,16 @@ def _request_closed_by_index(
         )
     pr_closure_key = _pr_closure_key_for_event(request)
     if pr_closure_key:
-        closure_keys.append(pr_closure_key)
+        task_closures = closure_index.get(pr_closure_key, {})
+        if task_closures:
+            target_agent = agent.lower()
+            if task_closures.get(target_agent, "") > request_ts:
+                return True
+            requester_terminal_agent = _pr_requester_terminal_agent_key(
+                _event_agent(request)
+            )
+            if task_closures.get(requester_terminal_agent, "") > request_ts:
+                return True
     for closure_key in closure_keys:
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
@@ -728,6 +744,17 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
             if normalized.isdecimal():
                 return f"{PR_CLOSURE_KEY_PREFIX}{int(normalized)}"
     return None
+
+
+def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
+    return (
+        _event_type(event) == "done"
+        or _event_status(event) in CLOSED_REQUEST_STATUSES
+    )
+
+
+def _pr_requester_terminal_agent_key(agent: str) -> str:
+    return f"{PR_REQUESTER_TERMINAL_AGENT_PREFIX}{agent}"
 
 
 def _deduplicate_repeated_wake_requests(

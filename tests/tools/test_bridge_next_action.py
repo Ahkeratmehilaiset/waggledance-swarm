@@ -382,6 +382,77 @@ def test_empty_task_pr_request_is_not_closed_by_different_pr_answer() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_same_pr_requester_build_pass_does_not_close_rco_review_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T09:00:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "pr999-rco-review",
+            "status": "rco_review_requested",
+            "message": "RCO review requested for PR #999",
+            "payload": {"pr": 999},
+        },
+        {
+            "ts_utc": "2026-06-13T09:01:00Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1,operator",
+            "type": "decision",
+            "task_id": "pr999-build-consensus",
+            "status": "build_consensus_pass",
+            "message": "Lead build consensus for PR #999",
+            "payload": {"pr": 999},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr999-rco-review"
+    assert report["open_incoming_count"] == 1
+
+
+def test_same_pr_requester_terminal_close_closes_rco_review_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-13T09:00:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "pr999-rco-review",
+            "status": "rco_review_requested",
+            "message": "RCO review requested for PR #999",
+            "payload": {"pr": 999},
+        },
+        {
+            "ts_utc": "2026-06-13T09:01:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1,operator",
+            "type": "decision",
+            "task_id": "pr999-closure",
+            "status": "superseded",
+            "message": "PR #999 review request superseded",
+            "payload": {"pr": 999},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 @pytest.mark.parametrize(
     "status",
     [

@@ -1943,6 +1943,53 @@ def test_target_activity_clears_wake_delivery_gap() -> None:
     assert "production_liveness" not in report
 
 
+def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "claude-rco-1",
+            "type": "heartbeat",
+            "task_id": "rco-heartbeat",
+            "status": "active",
+            "message": "background heartbeat",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["decision"] == "wake_delivery_stalled"
+    assert delivery["by_agent"] == {"claude-rco-1": 1}
+    wake = delivery["stalled_wakes"][0]
+    assert wake["target_agent"] == "claude-rco-1"
+    assert wake["wake_request_count"] == 2
+    assert wake["latest_wake_age_minutes"] == 15.0
+
+
 def test_suppressed_liveness_lane_is_not_counted_as_actionable_stall() -> None:
     events = [
         {

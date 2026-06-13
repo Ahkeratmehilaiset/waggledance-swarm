@@ -1393,7 +1393,7 @@ def _unresolved_wake_delivery_groups(
     for event in events:
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
-        if event_agent:
+        if event_agent and _is_wake_delivery_activity(event):
             _clear_wake_delivery_groups_for_target_activity(
                 groups,
                 event_agent=event_agent,
@@ -1433,6 +1433,10 @@ def _unresolved_wake_delivery_groups(
                 if isinstance(requesters, set):
                     requesters.add(event_agent)
     return groups
+
+
+def _is_wake_delivery_activity(event: Mapping[str, Any]) -> bool:
+    return _event_type(event) not in HEARTBEAT_ONLY_EVENT_TYPES
 
 
 def _clear_wake_delivery_groups_for_target_activity(

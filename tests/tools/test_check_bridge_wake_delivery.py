@@ -110,6 +110,30 @@ def test_target_activity_after_wake_clears_pending_group() -> None:
     assert report["stalled_wakes"] == []
 
 
+def test_target_heartbeat_after_wake_does_not_clear_pending_group() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _activity(
+                ts="2026-06-13T12:06:00Z",
+                event_type="heartbeat",
+                status="active",
+            ),
+        ],
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "wake_delivery_stalled"
+    assert report["stalled_count"] == 1
+    row = report["stalled_wakes"][0]
+    assert row["target_agent"] == "claude-rco-2"
+    assert row["wake_request_count"] == 2
+    assert row["latest_wake_age_minutes"] == 25.0
+
+
 def test_later_wake_after_activity_starts_new_unresolved_window() -> None:
     report = check_wake_delivery(
         events=[

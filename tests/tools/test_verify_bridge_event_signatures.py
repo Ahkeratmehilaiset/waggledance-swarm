@@ -106,6 +106,53 @@ def test_report_is_privacy_safe_and_cli_exits_zero(tmp_path: Path, capsys):
     assert payload["invalid_signature_count"] == 1
 
 
+def test_cli_defaults_events_to_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    events_path, key_dir = _fixture(tmp_path)
+    bridge_root = tmp_path / "runtime-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    (shared / "events.jsonl").write_text(
+        events_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    assert main(["--key-dir", str(key_dir), "--json"]) == 0
+
+    out = capsys.readouterr().out
+    assert SECRET_MESSAGE not in out
+    payload = json.loads(out)
+    assert payload["scanned_line_count"] == 6
+    assert payload["invalid_signature_count"] == 1
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    events_path, key_dir = _fixture(tmp_path)
+    bridge_root = tmp_path / "runtime-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    (shared / "events.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+
+    assert main([
+        "--events", str(events_path),
+        "--key-dir", str(key_dir),
+        "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scanned_line_count"] == 6
+    assert payload["invalid_signature_count"] == 1
+
+
 def test_init_key_and_sign_helpers(tmp_path: Path, capsys):
     key_dir = tmp_path / "fresh-keys"
     assert main(["--init-key", "claude-rco-2",

@@ -153,6 +153,51 @@ def test_guard_accepts_nested_ops_feedback_bridge_payload(tmp_path: Path) -> Non
     assert report.ops_feedback_events == 1
 
 
+def test_guard_rejects_fast_track_action_without_durable_feedback_source(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    _write_events(events_path, [
+        _event(
+            payload=_action(feedback_id="fb-orphan"),
+            ts_utc="2026-06-06T01:15:00Z",
+        ),
+    ])
+
+    report = verify_operator_feedback_wiring_guard(events_path)
+
+    assert report.ok is False
+    assert report.durable_rate_limit_ok is False
+    assert [issue.code for issue in report.issues] == [
+        "feedback_action_missing_ops_feedback_source",
+    ]
+
+
+def test_guard_rejects_feedback_action_operator_id_mismatch(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    _write_events(events_path, [
+        _event(payload=_feedback(feedback_id="fb-001")),
+        _event(
+            payload=_action(
+                feedback_id="fb-001",
+                operator_id=f"bridge:operator:{UUID_B}",
+            ),
+            agent_uuid=UUID_B,
+            ts_utc="2026-06-06T01:15:00Z",
+        ),
+    ])
+
+    report = verify_operator_feedback_wiring_guard(events_path)
+
+    assert report.ok is False
+    assert report.durable_rate_limit_ok is False
+    assert [issue.code for issue in report.issues] == [
+        "feedback_action_operator_id_mismatch",
+    ]
+
+
 def test_guard_rejects_free_string_operator_id(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     _write_events(events_path, [

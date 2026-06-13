@@ -63,6 +63,10 @@ AUTHORITY_TRUE_KEYS = frozenset({
     "counterfactual_gate_skipped",
     "validation_gate_skipped",
 })
+DURABLE_SOURCE_ISSUE_CODES = frozenset({
+    "feedback_action_missing_ops_feedback_source",
+    "feedback_action_operator_id_mismatch",
+})
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,7 @@ def verify_operator_feedback_wiring_guard(
     envelopes = _read_bridge_envelopes(path, tail=tail, issues=issues)
     feedback_records = _collect_feedback_records(envelopes, issues)
     action_records = _collect_action_records(envelopes)
+    issues.extend(_feedback_action_source_issues(feedback_records, action_records))
     issues.extend(_durable_rate_limit_issues(
         feedback_records,
         action_records,
@@ -188,7 +193,9 @@ def verify_operator_feedback_wiring_guard(
         issue.code.startswith("operator_id_") for issue in issues
     )
     durable_rate_limit_ok = not any(
-        issue.code == "per_operator_fast_track_cap_exceeded" for issue in issues
+        issue.code == "per_operator_fast_track_cap_exceeded"
+        or issue.code in DURABLE_SOURCE_ISSUE_CODES
+        for issue in issues
     )
     global_fast_track_cap_ok = not any(
         issue.code == "global_fast_track_cap_exceeded" for issue in issues
@@ -395,6 +402,44 @@ def _collect_action_records(envelopes: Sequence[BridgeEnvelope]) -> list[ActionR
             payload=payload,
         ))
     return records
+
+
+def _feedback_action_source_issues(
+    feedback_records: Sequence[FeedbackRecord],
+    action_records: Sequence[ActionRecord],
+) -> list[GuardIssue]:
+    issues: list[GuardIssue] = []
+    feedback_by_id = {
+        record.feedback_id: record
+        for record in feedback_records
+        if record.feedback_id
+    }
+    for action in action_records:
+        source = feedback_by_id.get(action.feedback_id)
+        if source is None:
+            issues.append(GuardIssue(
+                code="feedback_action_missing_ops_feedback_source",
+                message=(
+                    "feedback_action_taken must link to a durable "
+                    "ops_feedback source event"
+                ),
+                line_no=action.line_no,
+                feedback_id=action.feedback_id,
+                operator_id=action.operator_id,
+            ))
+            continue
+        if action.operator_id != source.operator_id:
+            issues.append(GuardIssue(
+                code="feedback_action_operator_id_mismatch",
+                message=(
+                    "feedback_action_taken operator_id must match its "
+                    "durable ops_feedback source"
+                ),
+                line_no=action.line_no,
+                feedback_id=action.feedback_id,
+                operator_id=action.operator_id,
+            ))
+    return issues
 
 
 def _durable_rate_limit_issues(

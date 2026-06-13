@@ -41,6 +41,7 @@ from waggledance.core.magma.receipt_bundle import (
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
+from waggledance.core.work_queue import resolve_bridge_root
 
 DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
 REPLAY_SEED_VERSION = "idle_consensus_replay_seed.v0"
@@ -94,7 +95,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Write an operator-review artifact for idle consensus.",
     )
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument(
         "--receipt-out-dir",
@@ -211,8 +226,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(report["exit_code"])
 
     try:
+        events_path = args.events
+        if events_path is None:
+            events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
         report = write_idle_consensus_artifact(
-            events_path=args.events,
+            events_path=events_path,
             out_dir=args.out_dir,
             receipt_out_dir=args.receipt_out_dir,
             now_utc=_parse_utc(args.now) if args.now else datetime.now(timezone.utc),

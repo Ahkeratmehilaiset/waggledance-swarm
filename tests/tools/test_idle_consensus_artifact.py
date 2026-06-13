@@ -1361,6 +1361,75 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
 
 
+def test_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from tools.idle_consensus_artifact import main
+
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    _write_events(runtime_events, _soft_events())
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    _write_events(shadow_events, [_proposal()])
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main([
+        "--out-dir",
+        str(tmp_path / "runtime-artifacts"),
+        "--now",
+        "2026-05-18T09:00:00Z",
+        "--json",
+    ])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "operator_review_required"
+    assert report["convergence_status"] == "soft_convergence"
+    assert Path(report["json_path"]).is_file()
+
+
+def test_cli_explicit_events_overrides_runtime_bridge_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from tools.idle_consensus_artifact import main
+
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    _write_events(runtime_events, [_proposal()])
+
+    explicit_events = tmp_path / "explicit-events.jsonl"
+    _write_events(explicit_events, _soft_events())
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    exit_code = main([
+        "--events",
+        str(explicit_events),
+        "--out-dir",
+        str(tmp_path / "explicit-artifacts"),
+        "--now",
+        "2026-05-18T09:00:00Z",
+        "--json",
+    ])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "operator_review_required"
+    assert report["convergence_status"] == "soft_convergence"
+    assert Path(report["json_path"]).is_file()
+
+
 # --- Adversarial negative cases for the #1094 receipt binding ----------
 # The replay gate must fail closed on PARTIAL or MALFORMED bindings, not
 # just the fully-wrong and fully-absent cases covered above, and it must

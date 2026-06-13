@@ -428,6 +428,36 @@ def test_no_blocker_status_does_not_block_pr_scoped_preflight() -> None:
     assert result["latest_approval_event"]["status"] == "rco_pass"
 
 
+def test_no_block_reemit_required_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-13T16:04:29Z",
+            "codex-lead-1",
+            "wake_request",
+            "producer_no_block_reemit_required",
+            task_id="codex-tools-1/agent-next-task-runtime-root-env-20260613",
+        ),
+        _event(
+            "2026-06-13T16:03:07Z",
+            "claude-rco-1",
+            "decision",
+            "rco_pass",
+            task_id="codex-tools-1/agent-next-task-runtime-root-env-20260613",
+        ),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="codex-tools-1/agent-next-task-runtime-root-env-20260613",
+        merging_agent="codex-tools-1",
+        pr_number=1133,
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
 def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:
     events = [
         _event(

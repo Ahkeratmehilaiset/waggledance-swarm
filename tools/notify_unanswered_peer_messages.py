@@ -49,7 +49,7 @@ from tools.bridge_next_action import (  # noqa: E402
     _task_id,
     read_events,
 )
-from waggledance.core.work_queue import AGENT_ID_PATTERN, DEFAULT_BRIDGE_ROOT  # noqa: E402
+from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
 
 
 DEFAULT_TAIL = 50000
@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Surface unanswered bridge peer requests into an agent inbox.",
     )
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument("--bridge-root", type=Path, default=None)
     parser.add_argument("--events", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument(
@@ -101,8 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        events_path = args.events or (Path(args.bridge_root) / "shared" / "events.jsonl")
-        out_dir = args.out_dir or (Path(args.bridge_root) / "inbox" / args.agent)
+        bridge_root = resolve_bridge_root(args.bridge_root)
+        events_path = args.events or (bridge_root / "shared" / "events.jsonl")
+        out_dir = args.out_dir or (bridge_root / "inbox" / args.agent)
         now_utc = datetime.now(timezone.utc)
         if args.now:
             parsed_now = _parse_utc(args.now)

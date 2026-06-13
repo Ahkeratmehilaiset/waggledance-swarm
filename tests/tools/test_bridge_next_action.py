@@ -724,6 +724,32 @@ def test_operator_wake_request_is_incoming_for_target_agent() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_operator_wake_request_ages_out_before_selection() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T12:00:00Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260612",
+            "status": "open",
+            "message": "old operator wake",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T03:00:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == ["bridge-follow-nudge-20260612"]
+
+
 def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
     events = [
         {

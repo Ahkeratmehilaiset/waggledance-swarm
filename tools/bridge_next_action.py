@@ -617,6 +617,34 @@ def recommend_next_action(
             production_liveness=production_liveness,
             request=request,
         )
+    wake_delivery_escalation = _wake_delivery_escalation_from_liveness(
+        production_liveness
+    )
+    if wake_delivery_escalation is not None:
+        target_agents = _string_list(wake_delivery_escalation.get("target_agents"))
+        target_text = ",".join(target_agents) if target_agents else "unknown"
+        safe_next_action = str(
+            wake_delivery_escalation.get("safe_next_action") or ""
+        )
+        return _report(
+            agent=agent,
+            action="escalate_wake_delivery_stall",
+            task_id="bridge-wake-delivery-stalled",
+            safe_mode="read-only",
+            summary=(
+                "operator action required for stalled wake delivery "
+                f"to {target_text}: {safe_next_action}"
+            ),
+            events=events,
+            claims=active_claims,
+            stale_claims=stale_claims,
+            open_requests=open_requests,
+            open_request_event_count=len(open_request_events),
+            stale_open_requests=reported_stale_open_requests,
+            archived_stale_open_requests=archived_stale_open_requests,
+            foreign_write_claims=foreign_write_claims,
+            production_liveness=production_liveness,
+        )
     if foreign_write_claims:
         claim = foreign_write_claims[0]
         scope = ",".join(claim.write_scope)
@@ -1402,6 +1430,20 @@ def _wake_delivery_escalation(by_agent: Mapping[str, int]) -> dict[str, Any]:
     }
 
 
+def _wake_delivery_escalation_from_liveness(
+    production_liveness: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    wake_delivery = production_liveness.get("wake_delivery")
+    if not isinstance(wake_delivery, Mapping):
+        return None
+    escalation = wake_delivery.get("delivery_escalation")
+    if not isinstance(escalation, Mapping):
+        return None
+    if escalation.get("operator_action_required") is not True:
+        return None
+    return escalation
+
+
 def _unresolved_wake_delivery_groups(
     events: Sequence[Mapping[str, Any]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
@@ -1692,6 +1734,20 @@ def _report(
         )
     if production_liveness:
         payload["production_liveness"] = dict(production_liveness)
+        wake_delivery_escalation = _wake_delivery_escalation_from_liveness(
+            production_liveness
+        )
+        if wake_delivery_escalation is not None:
+            payload["operator_action_required"] = True
+            payload["operator_action"] = str(
+                wake_delivery_escalation.get("safe_next_action") or ""
+            )
+            payload["operator_action_reason"] = str(
+                wake_delivery_escalation.get("reason") or ""
+            )
+            payload["operator_action_target_agents"] = _string_list(
+                wake_delivery_escalation.get("target_agents")
+            )
     if request is not None:
         incoming = {
             "agent": _event_agent(request),
@@ -1773,6 +1829,19 @@ def _print_human(report: Mapping[str, Any]) -> None:
                 "production_liveness_suppressed_stalled_agent_count: "
                 f"{suppressed_count}"
             )
+        wake_delivery = liveness.get("wake_delivery")
+        if isinstance(wake_delivery, Mapping):
+            escalation = wake_delivery.get("delivery_escalation")
+            if isinstance(escalation, Mapping) and escalation.get(
+                "operator_action_required"
+            ):
+                targets = ", ".join(_string_list(escalation.get("target_agents")))
+                print("wake_delivery_operator_action_required: true")
+                if targets:
+                    print(f"wake_delivery_target_agents: {targets}")
+                safe_next_action = str(escalation.get("safe_next_action") or "")
+                if safe_next_action:
+                    print(f"wake_delivery_safe_next_action: {safe_next_action}")
     print(f"summary: {report.get('summary', '')}")
 
 

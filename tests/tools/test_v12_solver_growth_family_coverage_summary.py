@@ -56,12 +56,34 @@ def test_builds_solver_growth_family_coverage_summary() -> None:
     assert summary["portfolio_pressure"]["candidate_total"] == 14
     assert summary["growth_targets"] == []
     assert summary["recommended_next_slice"] == (
-        "solver_growth_family_coverage_balanced_no_lowest_family"
+        "maintain_solver_growth_family_coverage"
     )
     assert summary["authority_boundary"]["read_only_summary"] is True
     assert summary["authority_boundary"]["runtime_authority"] is False
     assert summary["authority_boundary"]["promotion_authority"] is False
     assert summary["authority_boundary"]["bridge_write_authority"] is False
+
+
+def test_balanced_family_coverage_uses_maintenance_next_slice() -> None:
+    source = deepcopy(_source_report())
+    source["dispatch"]["per_family_dispatch_counts"] = {
+        "beam_search": 5,
+        "constraint_solver": 5,
+        "lookup_table": 5,
+    }
+
+    summary = build_solver_growth_family_coverage_summary(
+        now_utc=_fixed_now(),
+        min_dispatch_per_family=3,
+        a4_report=source,
+    )
+
+    assert summary["ok"] is True
+    assert summary["growth_targets"] == []
+    assert summary["coverage"]["weakest_family_count"] == 5
+    assert summary["recommended_next_slice"] == (
+        "maintain_solver_growth_family_coverage"
+    )
 
 
 def test_summary_is_path_free() -> None:

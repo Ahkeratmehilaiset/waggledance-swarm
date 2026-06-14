@@ -130,5 +130,10 @@ def test_route_registered_in_api_factory() -> None:
 
     app = create_app(Container())
 
-    paths = {route.path for route in app.routes}
-    assert "/api/eng01/advisory/latest" in paths
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/api/eng01/advisory/latest",
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_marker"] == NO_ADVISORY_YET

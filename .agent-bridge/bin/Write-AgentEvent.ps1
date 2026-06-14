@@ -511,13 +511,21 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 
 function Get-BridgeTargetKey {
     param([AllowNull()] [string] $Targets)
-    $targetList = @(
+    $targetList = @(Get-BridgeTargetList -Targets $Targets)
+    return ($targetList -join ',')
+}
+
+function Get-BridgeTargetList {
+    param([AllowNull()] [string] $Targets)
+    if ([string]::IsNullOrWhiteSpace($Targets)) {
+        return @()
+    }
+    return @(
         $Targets -split ',' |
             ForEach-Object { $_.Trim() } |
             Where-Object { $_ } |
             Sort-Object
     )
-    return ($targetList -join ',')
 }
 
 function Test-BridgeSubstantiveTargetActivity {
@@ -525,7 +533,9 @@ function Test-BridgeSubstantiveTargetActivity {
         [Parameter(Mandatory)] $SeenEvent,
         [Parameter(Mandatory)] [string] $TargetKey
     )
-    if ((Get-BridgeTargetKey -Targets ([string](Get-BridgeObjectField -Object $SeenEvent -Name 'agent'))) -cne $TargetKey) {
+    $seenAgentKey = Get-BridgeTargetKey -Targets ([string](Get-BridgeObjectField -Object $SeenEvent -Name 'agent'))
+    $targetMembers = @(Get-BridgeTargetList -Targets $TargetKey)
+    if ((-not $seenAgentKey) -or ($targetMembers -cnotcontains $seenAgentKey)) {
         return $false
     }
     $seenType = [string](Get-BridgeObjectField -Object $SeenEvent -Name 'type')

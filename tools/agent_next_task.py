@@ -848,7 +848,7 @@ def _pick_production_liveness_reactivation(
             "--min-repeats 1 "
             "--json"
         )
-        return {
+        candidate = {
             "kind": "production_liveness_reactivation_scout",
             "target": ".agent-bridge/shared/events.jsonl",
             "stalled_agent": peer_agent,
@@ -867,7 +867,41 @@ def _pick_production_liveness_reactivation(
             "recommended_command": unanswered_command,
             "diagnostic_commands": [unanswered_command, wake_delivery_command],
         }
+        wake_escalation = _wake_delivery_escalation_for_peer(
+            production_liveness,
+            peer_agent,
+        )
+        if wake_escalation is not None:
+            candidate["delivery_escalation"] = wake_escalation
+            candidate["acceptance"] = (
+                "Run the unanswered-request and wake-delivery diagnostics for "
+                "the stalled peer. If wake delivery is still stalled, do not "
+                "emit additional wake_request events as proof of progress; "
+                "verify or restart the target agent bridge session watcher. "
+                "Route any source change through a separate write claim."
+            )
+        return candidate
     return None
+
+
+def _wake_delivery_escalation_for_peer(
+    production_liveness: Mapping[str, Any],
+    peer_agent: str,
+) -> dict[str, Any] | None:
+    wake_delivery = production_liveness.get("wake_delivery")
+    if not isinstance(wake_delivery, Mapping):
+        return None
+    by_agent = wake_delivery.get("by_agent")
+    if not isinstance(by_agent, Mapping) or peer_agent not in by_agent:
+        return None
+    return {
+        "required": True,
+        "target_agents": [peer_agent],
+        "do_not_emit_additional_wake_requests": True,
+        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
+        "operator_action_required": True,
+        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+    }
 
 
 def _pick_rco_reemit_watch(

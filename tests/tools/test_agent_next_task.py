@@ -258,6 +258,24 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
                 "status": "active",
                 "message": "tools started a producer slice",
             },
+            {
+                "ts_utc": "2026-05-20T11:30:00Z",
+                "agent": "operator",
+                "to": "codex-tools-1",
+                "type": "wake_request",
+                "task_id": "tools-wake",
+                "status": "open",
+                "message": "please read bridge",
+            },
+            {
+                "ts_utc": "2026-05-20T11:40:00Z",
+                "agent": "operator",
+                "to": "codex-tools-1",
+                "type": "wake_request",
+                "task_id": "tools-wake",
+                "status": "open",
+                "message": "please read bridge again",
+            },
         ],
     )
     _claims_dir(bridge)
@@ -286,6 +304,15 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
         and "--min-repeats 1" in command
         for command in candidate["diagnostic_commands"]
     )
+    assert candidate["delivery_escalation"] == {
+        "required": True,
+        "target_agents": ["codex-tools-1"],
+        "do_not_emit_additional_wake_requests": True,
+        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
+        "operator_action_required": True,
+        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+    }
+    assert "do not emit additional wake_request events" in candidate["acceptance"]
     assert report["bridge_recommendation"]["production_liveness"][
         "stalled_agent_count"
     ] == 1

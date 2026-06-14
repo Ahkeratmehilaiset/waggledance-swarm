@@ -155,6 +155,40 @@ def test_target_heartbeat_after_wake_does_not_clear_pending_group() -> None:
     assert row["latest_wake_age_minutes"] == 25.0
 
 
+def test_recent_target_self_liveness_suppresses_restart_escalation() -> None:
+    report = check_wake_delivery(
+        events=[
+            _activity(ts="2026-06-13T12:04:00Z", event_type="decision"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _wake(ts="2026-06-13T12:10:00Z"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "wake_delivery_ok"
+    assert report["stalled_count"] == 0
+    assert report["delivery_escalation"] == {
+        "required": False,
+        "target_agents": [],
+        "do_not_emit_additional_wake_requests": False,
+        "safe_next_action": "",
+        "operator_action_required": False,
+        "reason": "",
+    }
+    assert report["self_pacing_wake_count"] == 1
+    row = report["self_pacing_wakes"][0]
+    assert row["target_agent"] == "claude-rco-2"
+    assert row["classification"] == "self_pacing_or_silent_by_design"
+    assert row["last_self_activity_ts_utc"] == "2026-06-13T12:04:00Z"
+    assert row["last_self_activity_age_minutes"] == 26.0
+    assert row["self_liveness_reason"] == (
+        "target_self_activity_within_liveness_window"
+    )
+    assert "self-paced" in row["diagnosis"]
+
+
 def test_later_wake_after_activity_starts_new_unresolved_window() -> None:
     report = check_wake_delivery(
         events=[
@@ -166,6 +200,7 @@ def test_later_wake_after_activity_starts_new_unresolved_window() -> None:
         now_utc=_now(),
         min_age_minutes=12,
         min_repeats=2,
+        self_liveness_window_minutes=5,
     )
 
     assert report["stalled_count"] == 1

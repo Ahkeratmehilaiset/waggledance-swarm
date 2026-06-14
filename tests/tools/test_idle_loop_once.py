@@ -320,6 +320,13 @@ def test_wake_delivery_stall_preempts_idle_wait(tmp_path: Path) -> None:
     assert wake_delivery["decision"] == "wake_delivery_stalled"
     assert wake_delivery["stalled_count"] == 1
     assert wake_delivery["by_agent"] == {"claude-rco-1": 1}
+    escalation = wake_delivery["delivery_escalation"]
+    assert escalation["required"] is True
+    assert escalation["target_agents"] == ["claude-rco-1"]
+    assert escalation["do_not_emit_additional_wake_requests"] is True
+    assert escalation["safe_next_action"] == (
+        "restart_or_verify_target_agent_bridge_session_watcher"
+    )
     assert "recent_operator_activity" in report["idle_report"]["blockers"]
     assert any("additional wake_request writes" in note for note in report["notes"])
     _assert_deferred_lift_state(report["deferred_lift_state"])

@@ -85,6 +85,15 @@ def test_reports_repeated_wake_without_later_target_activity() -> None:
     assert report["decision"] == "wake_delivery_stalled"
     assert report["stalled_count"] == 1
     assert report["by_agent"] == {"claude-rco-2": 1}
+    escalation = report["delivery_escalation"]
+    assert escalation == {
+        "required": True,
+        "target_agents": ["claude-rco-2"],
+        "do_not_emit_additional_wake_requests": True,
+        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
+        "operator_action_required": True,
+        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+    }
     row = report["stalled_wakes"][0]
     assert row["target_agent"] == "claude-rco-2"
     assert row["wake_request_count"] == 3
@@ -107,6 +116,14 @@ def test_target_activity_after_wake_clears_pending_group() -> None:
     )
 
     assert report["decision"] == "wake_delivery_ok"
+    assert report["delivery_escalation"] == {
+        "required": False,
+        "target_agents": [],
+        "do_not_emit_additional_wake_requests": False,
+        "safe_next_action": "",
+        "operator_action_required": False,
+        "reason": "",
+    }
     assert report["stalled_wakes"] == []
 
 
@@ -128,6 +145,10 @@ def test_target_heartbeat_after_wake_does_not_clear_pending_group() -> None:
 
     assert report["decision"] == "wake_delivery_stalled"
     assert report["stalled_count"] == 1
+    assert report["delivery_escalation"]["do_not_emit_additional_wake_requests"] is True
+    assert report["delivery_escalation"]["safe_next_action"] == (
+        "restart_or_verify_target_agent_bridge_session_watcher"
+    )
     row = report["stalled_wakes"][0]
     assert row["target_agent"] == "claude-rco-2"
     assert row["wake_request_count"] == 2

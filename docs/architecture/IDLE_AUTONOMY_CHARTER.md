@@ -65,6 +65,7 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `docs/architecture/IDLE_CONSENSUS_ARTIFACT_V1.md` (companion charter doc)
 * `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md` (consensus-approval contract — self-modification banned)
 * `tools/idle_consensus_auto_merge.py` (the merge gate itself — self-modification banned)
+* `tools/merge_with_bridge_receipt.py` (receipt-bound merge executor — self-modification banned)
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
 * `tools/check_rco_pass_present.py` (RCO-pass verifier — self-modification banned)
 * `waggledance/core/idle_consensus_charter.py` (charter allowlist/denylist evaluator — self-modification banned)

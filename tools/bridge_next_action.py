@@ -138,6 +138,7 @@ DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_REPEATS = 2
 DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS = 12.0
+DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES = 40.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 WAKE_DELIVERY_IGNORED_TARGETS = {*PRODUCTION_LIVENESS_IGNORED_AGENTS, "driver"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
@@ -1475,7 +1476,9 @@ def _wake_delivery_liveness_summary(
 ) -> dict[str, Any]:
     groups = _unresolved_wake_delivery_groups(events)
     stalled: list[dict[str, Any]] = []
+    self_pacing: list[dict[str, Any]] = []
     max_age_minutes = DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS * 60.0
+    self_liveness_by_agent = _latest_wake_delivery_self_liveness_by_agent(events)
     for group in groups.values():
         first_ts = _parse_utc(str(group["first_ts_utc"]))
         last_ts = _parse_utc(str(group["last_ts_utc"]))
@@ -1489,6 +1492,23 @@ def _wake_delivery_liveness_summary(
             continue
         if int(group["wake_request_count"]) < DEFAULT_WAKE_DELIVERY_MIN_REPEATS:
             continue
+        self_liveness = _wake_delivery_self_liveness_suppression(
+            group,
+            self_liveness_by_agent=self_liveness_by_agent,
+            now_utc=now_utc,
+        )
+        if self_liveness is not None:
+            self_pacing.append(
+                _wake_delivery_row(
+                    group,
+                    bridge_root=bridge_root,
+                    age_minutes=age_minutes,
+                    latest_wake_age_minutes=latest_wake_age_minutes,
+                    classification="self_pacing_or_silent_by_design",
+                    self_liveness=self_liveness,
+                )
+            )
+            continue
         stalled.append(
             _wake_delivery_row(
                 group,
@@ -1497,9 +1517,17 @@ def _wake_delivery_liveness_summary(
                 latest_wake_age_minutes=latest_wake_age_minutes,
             )
         )
-    if not stalled:
+    if not stalled and not self_pacing:
         return {}
     stalled.sort(
+        key=lambda row: (
+            -int(row["wake_request_count"]),
+            -float(row["age_minutes"]),
+            str(row["target_agent"]),
+            str(row["task_id"]),
+        )
+    )
+    self_pacing.sort(
         key=lambda row: (
             -int(row["wake_request_count"]),
             -float(row["age_minutes"]),
@@ -1512,11 +1540,20 @@ def _wake_delivery_liveness_summary(
         target = str(row["target_agent"])
         by_agent[target] = by_agent.get(target, 0) + 1
     return {
-        "decision": "wake_delivery_stalled",
+        "decision": "wake_delivery_stalled" if stalled else "wake_delivery_ok",
         "stalled_wake_count": len(stalled),
         "by_agent": dict(sorted(by_agent.items())),
-        "delivery_escalation": _wake_delivery_escalation(by_agent),
+        "delivery_escalation": (
+            _wake_delivery_escalation(by_agent)
+            if stalled
+            else _wake_delivery_no_escalation()
+        ),
         "stalled_wakes": stalled,
+        "self_liveness_window_minutes": (
+            DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES
+        ),
+        "self_pacing_wake_count": len(self_pacing),
+        "self_pacing_wakes": self_pacing,
     }
 
 
@@ -1528,6 +1565,17 @@ def _wake_delivery_escalation(by_agent: Mapping[str, int]) -> dict[str, Any]:
         "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
         "operator_action_required": True,
         "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+    }
+
+
+def _wake_delivery_no_escalation() -> dict[str, Any]:
+    return {
+        "required": False,
+        "target_agents": [],
+        "do_not_emit_additional_wake_requests": False,
+        "safe_next_action": "",
+        "operator_action_required": False,
+        "reason": "",
     }
 
 
@@ -1598,6 +1646,57 @@ def _is_wake_delivery_activity(event: Mapping[str, Any]) -> bool:
     return _event_type(event) not in HEARTBEAT_ONLY_EVENT_TYPES
 
 
+def _is_wake_delivery_self_liveness_activity(event: Mapping[str, Any]) -> bool:
+    if _event_type(event) in HEARTBEAT_ONLY_EVENT_TYPES:
+        return False
+    return not (_event_type(event) == "message" and _event_status(event) == "received")
+
+
+def _latest_wake_delivery_self_liveness_by_agent(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, datetime]:
+    latest: dict[str, datetime] = {}
+    for event in events:
+        agent = _event_agent(event)
+        if not agent or not _is_wake_delivery_self_liveness_activity(event):
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
+        existing = latest.get(agent)
+        if existing is None or event_ts > existing:
+            latest[agent] = event_ts
+    return latest
+
+
+def _wake_delivery_self_liveness_suppression(
+    group: Mapping[str, Any],
+    *,
+    self_liveness_by_agent: Mapping[str, datetime],
+    now_utc: datetime,
+) -> dict[str, Any] | None:
+    target = str(group["target_agent"])
+    last_self = self_liveness_by_agent.get(target)
+    if last_self is None:
+        return None
+    last_wake = _parse_utc(str(group["last_ts_utc"]))
+    if last_wake is not None and last_self > last_wake:
+        reason = "target_self_activity_after_latest_wake"
+    else:
+        reason = "target_self_activity_within_liveness_window"
+    self_age_minutes = _elapsed_minutes(now_utc, last_self)
+    if (
+        reason != "target_self_activity_after_latest_wake"
+        and self_age_minutes >= DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES
+    ):
+        return None
+    return {
+        "last_self_activity_ts_utc": _format_utc(last_self),
+        "last_self_activity_age_minutes": _round_minutes(self_age_minutes),
+        "self_liveness_reason": reason,
+    }
+
+
 def _clear_wake_delivery_groups_for_target_activity(
     groups: dict[tuple[str, str], dict[str, Any]],
     *,
@@ -1634,6 +1733,8 @@ def _wake_delivery_row(
     bridge_root: Path | None,
     age_minutes: float,
     latest_wake_age_minutes: float,
+    classification: str = "stalled_wake_delivery",
+    self_liveness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = str(group["target_agent"])
     wake_file = _wake_file_status(bridge_root, target)
@@ -1641,15 +1742,30 @@ def _wake_delivery_row(
     requester_list = (
         sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
     )
-    diagnosis = (
-        "wake file exists but target agent has not emitted bridge activity"
-        if wake_file["wake_file_present"]
-        else (
-            "no target activity after repeated wake_request; watcher may be absent "
-            "or target may not be polling"
+    if classification == "self_pacing_or_silent_by_design":
+        diagnosis = (
+            "target agent has recent self-authored bridge activity inside "
+            "the self-liveness window; treat as self-paced or silent by design"
         )
-    )
-    return {
+        safe_next_action = (
+            "wait for the target self-paced loop or recheck after the "
+            "self-liveness window; do not restart solely from repeated wakes"
+        )
+    else:
+        diagnosis = (
+            "wake file exists but target agent has not emitted bridge activity"
+            if wake_file["wake_file_present"]
+            else (
+                "no target activity after repeated wake_request; watcher may "
+                "be absent or target may not be polling"
+            )
+        )
+        safe_next_action = (
+            "restart or verify the target agent bridge session watcher/poll loop; "
+            "do not treat additional wake_request events as delivery proof"
+        )
+    row = {
+        "classification": classification,
         "target_agent": target,
         "task_id": group["task_id"],
         "requesters": requester_list,
@@ -1662,11 +1778,11 @@ def _wake_delivery_row(
         "wake_file_checked": bridge_root is not None,
         **wake_file,
         "diagnosis": diagnosis,
-        "safe_next_action": (
-            "restart or verify the target agent bridge session watcher/poll loop; "
-            "do not treat additional wake_request events as delivery proof"
-        ),
+        "safe_next_action": safe_next_action,
     }
+    if self_liveness:
+        row.update(self_liveness)
+    return row
 
 
 def _wake_file_status(bridge_root: Path | None, target: str) -> dict[str, Any]:

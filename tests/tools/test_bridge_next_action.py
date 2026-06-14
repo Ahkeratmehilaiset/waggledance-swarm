@@ -2057,6 +2057,73 @@ def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
     assert wake["safe_next_action"].startswith("restart or verify")
 
 
+def test_recent_target_self_liveness_suppresses_wake_delivery_escalation(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    bridge_root.mkdir()
+    (bridge_root / "wake_claude-rco-1").write_text(
+        "2026-06-06T10:25:00Z",
+        encoding="utf-8",
+    )
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:10:00Z",
+            "agent": "claude-rco-1",
+            "type": "decision",
+            "task_id": "rco-loop",
+            "status": "rco_loop_alive_monitoring",
+            "message": "alive but self-paced",
+        },
+        {
+            "ts_utc": "2026-06-06T10:20:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:25:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 6, 6, 10, 40, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["decision"] == "wake_delivery_ok"
+    assert delivery["stalled_wake_count"] == 0
+    assert delivery["by_agent"] == {}
+    assert delivery["delivery_escalation"] == {
+        "required": False,
+        "target_agents": [],
+        "do_not_emit_additional_wake_requests": False,
+        "safe_next_action": "",
+        "operator_action_required": False,
+        "reason": "",
+    }
+    assert delivery["self_pacing_wake_count"] == 1
+    wake = delivery["self_pacing_wakes"][0]
+    assert wake["classification"] == "self_pacing_or_silent_by_design"
+    assert wake["last_self_activity_ts_utc"] == "2026-06-06T10:10:00Z"
+    assert wake["last_self_activity_age_minutes"] == 30.0
+    assert wake["safe_next_action"].startswith("wait for the target")
+
+
 def test_target_activity_clears_wake_delivery_gap() -> None:
     events = [
         {

@@ -134,9 +134,14 @@ def read_durable_bridge_events(
     for line_no, line in selected_lines:
         if not line.strip():
             continue
+        def reject_constant(value: str) -> None:
+            raise ValueError(f"non_finite_json_constant:{value}")
+
         try:
-            raw = json.loads(line)
+            raw = json.loads(line, parse_constant=reject_constant)
         except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON at bridge log line {line_no}") from exc
+        except ValueError as exc:
             raise ValueError(f"invalid JSON at bridge log line {line_no}") from exc
         if not isinstance(raw, Mapping):
             raise ValueError(f"bridge log line {line_no} must be a JSON object")

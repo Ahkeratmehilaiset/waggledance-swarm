@@ -2,6 +2,7 @@
 """Contracts for the runtime bridge event schema validator."""
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 import hashlib
@@ -120,6 +121,56 @@ def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
     model = validate_event(_good_event(type="ownership_proposal", status="open"))
 
     assert model.type == "ownership_proposal"
+
+
+def test_event_hygiene_contract_warns_by_default_and_fails_strict(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    event_with_missing_payload = _good_event(type="unknown_signal")
+    del event_with_missing_payload["payload"]
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join([
+            json.dumps(_good_event()),
+            json.dumps(event_with_missing_payload),
+            json.dumps(_good_event(payload=None)),
+            json.dumps(_good_event(payload={"api_token_count": 0})),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    warn_rc = mod.main(["--events", str(events_path), "--json"])
+    warn_payload = json.loads(capsys.readouterr().out)
+
+    assert warn_rc == 0
+    assert warn_payload["ok"] is True
+    assert warn_payload["invalid"] == 0
+    warn_audit = warn_payload["event_hygiene_audit"]
+    assert warn_audit["mode"] == "warn"
+    assert warn_audit["ok"] is False
+    assert warn_audit["issue_count"] == 4
+    assert warn_audit["unknown_event_type_count"] == 1
+    assert warn_audit["missing_payload_count"] == 1
+    assert warn_audit["non_object_payload_count"] == 1
+    assert warn_audit["sensitive_payload_key_name_count"] == 1
+
+    strict_rc = mod.main([
+        "--events",
+        str(events_path),
+        "--event-hygiene-mode",
+        "strict",
+        "--json",
+    ])
+    strict_payload = json.loads(capsys.readouterr().out)
+
+    assert strict_rc == 1
+    assert strict_payload["ok"] is False
+    assert strict_payload["invalid"] == 0
+    assert strict_payload["event_hygiene_audit"]["mode"] == "strict"
+    assert strict_payload["event_hygiene_audit"]["issue_count"] == 4
 
 
 @pytest.mark.parametrize(

@@ -203,23 +203,20 @@ def test_variant_matrix_emits_four_counterfactual_rows_without_writes() -> None:
     assert report["variant_count"] == 4
     assert [variant["variant_id"] for variant in report["variants"]] == [
         "limited_to_idle",
-        "duplicate_to_clean_close",
+        "active_wip_to_clean_close",
         "review_to_clean_close",
         "clean_close_to_blocked",
     ]
     deltas = {variant["variant_id"]: variant["delta"] for variant in report["variants"]}
     assert deltas["limited_to_idle"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
-    assert deltas["duplicate_to_clean_close"]["kind"] == [
-        "CLOSE_DUPLICATE",
-        "CLOSE_OK",
-    ]
+    assert deltas["active_wip_to_clean_close"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
     assert deltas["review_to_clean_close"]["kind"] == ["REVIEW", "CLOSE_OK"]
     assert deltas["limited_to_idle"]["actual_gate"] == ["review", "allow"]
-    assert deltas["duplicate_to_clean_close"]["actual_gate"] == ["allow", "allow"]
+    assert deltas["active_wip_to_clean_close"]["actual_gate"] == ["review", "allow"]
     assert deltas["review_to_clean_close"]["actual_gate"] == ["review", "allow"]
-    duplicate = report["variants"][1]["counterfactual"]["evaluation_result"]
-    assert "gate_stable:allow" in duplicate["reason_codes"]
-    assert "gate_drift:allow_to_allow" not in duplicate["reason_codes"]
+    active_wip = report["variants"][1]["counterfactual"]["evaluation_result"]
+    assert "gate_drift:review_to_allow" in active_wip["reason_codes"]
+    assert "gate_stable:allow" not in active_wip["reason_codes"]
     # Fourth variant: mutation in the REVERSED direction (healthy -> blocked),
     # the only variant whose counterfactual gate is stricter than factual.
     assert deltas["clean_close_to_blocked"]["kind"] == ["CLOSE_OK", "KEEP_WIP"]

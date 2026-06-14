@@ -279,6 +279,9 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
         ],
     )
     _claims_dir(bridge)
+    (bridge / "wake_codex-tools-1").write_text(
+        "2026-05-20T11:40:00Z", encoding="utf-8"
+    )
 
     report = evaluate_agent_next_task(
         agent="codex-lead-1",
@@ -316,6 +319,12 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
     assert report["bridge_recommendation"]["production_liveness"][
         "stalled_agent_count"
     ] == 1
+    wake = report["bridge_recommendation"]["production_liveness"]["wake_delivery"][
+        "stalled_wakes"
+    ][0]
+    assert wake["target_agent"] == "codex-tools-1"
+    assert wake["wake_file_checked"] is True
+    assert wake["wake_file_present"] is True
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 

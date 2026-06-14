@@ -9,6 +9,7 @@ requests that are still open for their target agent after a minimum age.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -238,6 +239,7 @@ def report_unanswered_requests(
         "agent_filter": sorted(agent_filter) if agent_filter else [],
         "unanswered_count": len(rows),
         "by_agent": dict(sorted(by_agent.items())),
+        "pressure": _pressure_summary(rows),
         "requests": rows,
     }
 
@@ -371,6 +373,82 @@ def _request_row(state: Mapping[str, Any], *, age_minutes: float) -> dict[str, A
     if state.get("payload_pr"):
         row["pr"] = state["payload_pr"]
     return row
+
+
+def _pressure_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return a compact path-free summary for scheduler and bridge consumers."""
+    if not rows:
+        return {
+            "oldest_age_minutes": 0.0,
+            "newest_age_minutes": 0.0,
+            "target_agent_count": 0,
+            "bridge_visible_request_count": 0,
+            "requester_counts": {},
+            "status_counts": {},
+            "by_agent_oldest_age_minutes": {},
+            "oldest_request": {},
+        }
+
+    ages = [_row_age(row) for row in rows]
+    by_agent_oldest: dict[str, float] = {}
+    for row in rows:
+        target = str(row.get("target_agent") or "")
+        if not target:
+            continue
+        by_agent_oldest[target] = max(
+            by_agent_oldest.get(target, 0.0),
+            _row_age(row),
+        )
+
+    oldest = max(rows, key=_row_age)
+    return {
+        "oldest_age_minutes": round(max(ages), 3),
+        "newest_age_minutes": round(min(ages), 3),
+        "target_agent_count": len(
+            {str(row.get("target_agent") or "") for row in rows}
+        ),
+        "bridge_visible_request_count": sum(
+            1 for row in rows if row.get("bridge_visible") is True
+        ),
+        "requester_counts": _sorted_counter(
+            Counter(str(row.get("requester") or "") for row in rows)
+        ),
+        "status_counts": _sorted_counter(
+            Counter(str(row.get("status") or "") for row in rows)
+        ),
+        "by_agent_oldest_age_minutes": dict(sorted(by_agent_oldest.items())),
+        "oldest_request": _oldest_request_summary(oldest),
+    }
+
+
+def _row_age(row: Mapping[str, Any]) -> float:
+    try:
+        return float(row.get("age_minutes") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sorted_counter(counter: Counter[str]) -> dict[str, int]:
+    return {
+        key: int(value)
+        for key, value in sorted(counter.items())
+        if key and value
+    }
+
+
+def _oldest_request_summary(row: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "target_agent": row.get("target_agent"),
+        "requester": row.get("requester"),
+        "task_id": row.get("task_id"),
+        "status": row.get("status"),
+        "age_minutes": row.get("age_minutes"),
+    }
+    if row.get("pr"):
+        summary["pr"] = row.get("pr")
+    if row.get("head"):
+        summary["head"] = row.get("head")
+    return summary
 
 
 def _normalize_agent_filter(agents: Sequence[str] | None) -> set[str]:

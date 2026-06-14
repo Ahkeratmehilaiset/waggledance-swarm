@@ -319,6 +319,54 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
+def test_completed_liveness_scout_does_not_preempt_again(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "codex-tools-1",
+                "type": "decision",
+                "task_id": "tools-active-work",
+                "status": "active",
+                "message": "tools started a producer slice",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    task_id = "production-liveness-reactivation-scout-2026-05-20-codex-tools-1"
+    claim_task(
+        agent="codex-lead-1",
+        task_id=task_id,
+        summary="lead checked whether tools was stalled",
+        mode="read-only",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    release_task(
+        agent="codex-lead-1",
+        task_id=task_id,
+        release_status="done",
+        release_message="liveness scout completed",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+    assert report["bridge_recommendation"]["production_liveness"][
+        "stalled_agent_count"
+    ] == 1
+
+
 def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(

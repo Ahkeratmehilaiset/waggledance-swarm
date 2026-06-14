@@ -107,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _emit(report, as_json=args.json)
     if report["ok"] is False:
         return 2
+    if report["decision"] == "model_probe_inconclusive_missing_model_args":
+        return 5
     return 4 if report["invalid_model_process_count"] else 0
 
 
@@ -205,11 +207,21 @@ def probe_claude_code_models(
                 }
             )
 
+    modeled_model_process_count = len(claude_processes) - len(missing_model)
+    missing_model_majority = bool(
+        claude_processes and len(missing_model) > modeled_model_process_count
+    )
     if invalid:
         decision = "restart_required_invalid_model"
         nudge_retry_recommended = False
         operator_action = (
             "restart_affected_claude_code_sessions_with_replacement_model"
+        )
+    elif missing_model_majority:
+        decision = "model_probe_inconclusive_missing_model_args"
+        nudge_retry_recommended = False
+        operator_action = (
+            "inspect_or_restart_sessions_without_visible_model_pin"
         )
     elif claude_processes:
         decision = "no_invalid_model_processes_observed"
@@ -234,8 +246,10 @@ def probe_claude_code_models(
         "unavailable_models": sorted(unavailable),
         "observed_model_ids": sorted(observed_models),
         "claude_code_process_count": len(claude_processes),
+        "modeled_model_process_count": modeled_model_process_count,
         "invalid_model_process_count": len(invalid),
         "missing_model_process_count": len(missing_model),
+        "missing_model_majority": missing_model_majority,
         "invalid_model_processes": invalid,
         "missing_model_processes": missing_model,
         "authority_boundary": _authority_boundary(),
@@ -261,8 +275,10 @@ def _blocked_report(reason: str, *, replacement_model: str) -> dict[str, Any]:
         "unavailable_models": list(DEFAULT_UNAVAILABLE_MODELS),
         "observed_model_ids": [],
         "claude_code_process_count": 0,
+        "modeled_model_process_count": 0,
         "invalid_model_process_count": 0,
         "missing_model_process_count": 0,
+        "missing_model_majority": False,
         "invalid_model_processes": [],
         "missing_model_processes": [],
         "authority_boundary": _authority_boundary(),
@@ -387,6 +403,7 @@ def _emit(report: Mapping[str, Any], *, as_json: bool) -> None:
     print(f"agent CLI model probe: {report['decision']}")
     print(f"  Claude Code processes: {report['claude_code_process_count']}")
     print(f"  invalid model processes: {report['invalid_model_process_count']}")
+    print(f"  missing model processes: {report['missing_model_process_count']}")
     print(f"  operator action: {report['operator_action']}")
     if report.get("observed_model_ids"):
         print("  observed models: " + ", ".join(report["observed_model_ids"]))

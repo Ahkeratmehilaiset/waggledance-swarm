@@ -176,8 +176,8 @@ def build_variant_matrix_report(
             mutation_reason="mutation:subtool_state:DOWNTIME_to_IDLE",
         ),
         _build_variant(
-            variant_id="duplicate_to_clean_close",
-            selected_entry_id=5200,
+            variant_id="active_wip_to_clean_close",
+            selected_entry_id=5201,
             factual_state=ToolState("SPUT_02_DEPB", "ENGINEERING", comment="DepB still locked"),
             counterfactual_state=ToolState("SPUT_02_DEPB", "IDLE"),
             entries=[

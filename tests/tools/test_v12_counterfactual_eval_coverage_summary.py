@@ -44,7 +44,7 @@ def test_summary_reports_counterfactual_eval_coverage_without_authority() -> Non
     coverage = report["coverage"]
     assert coverage["variant_count"] == 4
     assert coverage["variants_with_kind_delta"] == 4
-    assert coverage["variants_with_gate_delta"] == 3
+    assert coverage["variants_with_gate_delta"] == 4
     assert coverage["runtime_smoke"]["sample_count"] == 24
     assert coverage["runtime_smoke"]["same_sample_set"] is True
     assert coverage["runtime_smoke"]["deterministic"] is True
@@ -65,7 +65,7 @@ def test_summary_reports_counterfactual_eval_coverage_without_authority() -> Non
     )
     assert (
         "add a gate-delta variant so every variant changes actual_gate"
-        in report["next_eval_targets"]
+        not in report["next_eval_targets"]
     )
     # Cleared by the second runtime-condition sample family.
     assert (
@@ -183,7 +183,10 @@ def test_markdown_carries_next_targets_and_authority_boundary() -> None:
     assert "runtime authority: `false`" in markdown
     assert "promotion authority: `false`" in markdown
     assert "bridge write authority: `false`" in markdown
-    assert "add a gate-delta variant so every variant changes actual_gate" in markdown
+    assert (
+        "add a gate-delta variant so every variant changes actual_gate"
+        not in markdown
+    )
     assert "add a second runtime-condition sample family" not in markdown
     assert "make stored-consensus replay receipt-bound in the default proof" not in markdown
 

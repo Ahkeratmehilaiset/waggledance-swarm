@@ -43,7 +43,7 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert report["counterfactual_delta_proven"] is True
     assert report["variant_count"] == 4
     assert report["variants_with_kind_delta"] == 4
-    assert report["variants_with_gate_delta"] == 3
+    assert report["variants_with_gate_delta"] == 4
     assert report["delta"] == {
         "actual_gate": ["review", "allow"],
         "kind": ["KEEP_WIP", "CLOSE_OK"],
@@ -51,7 +51,7 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     }
     assert [variant["variant_id"] for variant in report["variants"]] == [
         "limited_to_idle",
-        "duplicate_to_clean_close",
+        "active_wip_to_clean_close",
         "review_to_clean_close",
         "clean_close_to_blocked",
     ]

@@ -75,6 +75,8 @@ def test_probe_accepts_valid_replacement_model() -> None:
 
     assert report["decision"] == "no_invalid_model_processes_observed"
     assert report["invalid_model_process_count"] == 0
+    assert report["modeled_model_process_count"] == 1
+    assert report["missing_model_majority"] is False
     assert report["observed_model_ids"] == ["claude-opus-4-8"]
     assert report["nudge_retry_recommended"] is True
 
@@ -94,9 +96,30 @@ def test_probe_surfaces_claude_process_missing_model() -> None:
         processes=[_process(r"C:\Users\janik\AppData\Roaming\npm\claude.cmd")]
     )
 
-    assert report["decision"] == "no_invalid_model_processes_observed"
+    assert report["decision"] == "model_probe_inconclusive_missing_model_args"
+    assert report["operator_action"] == (
+        "inspect_or_restart_sessions_without_visible_model_pin"
+    )
+    assert report["nudge_retry_recommended"] is False
+    assert report["modeled_model_process_count"] == 0
     assert report["missing_model_process_count"] == 1
+    assert report["missing_model_majority"] is True
     assert report["missing_model_processes"][0]["process_kind"] == "claude.cmd"
+
+
+def test_probe_allows_wrapper_missing_model_when_not_majority() -> None:
+    report = probe_claude_code_models(
+        processes=[
+            _process(GOOD_COMMAND, pid=100),
+            _process(r"C:\Users\janik\AppData\Roaming\npm\claude.cmd", pid=101),
+        ]
+    )
+
+    assert report["decision"] == "no_invalid_model_processes_observed"
+    assert report["modeled_model_process_count"] == 1
+    assert report["missing_model_process_count"] == 1
+    assert report["missing_model_majority"] is False
+    assert report["nudge_retry_recommended"] is True
 
 
 def test_all_claim_gates_are_false() -> None:
@@ -187,3 +210,18 @@ def test_cli_returns_zero_for_valid_model(tmp_path: Path, capsys) -> None:
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["decision"] == "no_invalid_model_processes_observed"
+
+
+def test_cli_returns_warn_code_for_inconclusive_missing_model(tmp_path: Path, capsys) -> None:
+    path = tmp_path / "processes.json"
+    path.write_text(
+        json.dumps([_process(r"C:\Users\janik\AppData\Roaming\npm\claude.cmd")]),
+        encoding="utf-8",
+    )
+
+    rc = main(["--processes-json", str(path), "--json"])
+
+    assert rc == 5
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "model_probe_inconclusive_missing_model_args"
+    assert payload["nudge_retry_recommended"] is False

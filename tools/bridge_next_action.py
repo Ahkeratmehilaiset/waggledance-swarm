@@ -1091,6 +1091,10 @@ def _is_response_only_status(status: str) -> bool:
     tokens = _status_tokens(status)
     if "not" in tokens or tokens.intersection({"required", "needed", "missing"}):
         return False
+    if tokens.intersection({"request", "requested"}) and not tokens.intersection(
+        set(RESPONSE_ONLY_STATUS_FRAGMENTS) - {"pass"}
+    ):
+        return False
     return any(candidate in tokens for candidate in RESPONSE_ONLY_STATUS_FRAGMENTS)
 
 

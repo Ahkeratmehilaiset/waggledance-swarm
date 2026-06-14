@@ -346,6 +346,33 @@ def test_answered_status_with_request_token_is_not_open_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_pass_requested_status_remains_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T02:52:16Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "codex-lead-1/agent-next-task-wake-escalation-20260614",
+            "status": "rco_exact_head_pass_requested_after_lead_consensus",
+            "message": "RCO pass requested at exact head after lead consensus.",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T02:53:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "codex-lead-1/agent-next-task-wake-escalation-20260614"
+    assert report["incoming"]["status"] == (
+        "rco_exact_head_pass_requested_after_lead_consensus"
+    )
+
+
 def test_observed_status_with_request_token_is_not_open_request() -> None:
     events = [
         {

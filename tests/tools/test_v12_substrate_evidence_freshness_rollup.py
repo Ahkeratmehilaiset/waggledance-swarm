@@ -191,6 +191,24 @@ def test_cli_rejects_invalid_max_next_slices() -> None:
     assert "--max-next-slices must be >= 1" in completed.stderr
 
 
+def test_cli_rejects_missing_matrix_without_path_leak(tmp_path: Path) -> None:
+    missing = tmp_path / "private" / "missing-matrix.md"
+
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--matrix", str(missing), "--json"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "matrix file could not be read" in completed.stderr
+    assert str(missing) not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+
+
 def _rollup() -> dict[str, object]:
     return {
         "report_version": ROLLUP_VERSION,

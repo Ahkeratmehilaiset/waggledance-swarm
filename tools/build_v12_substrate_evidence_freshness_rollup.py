@@ -83,7 +83,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             require_fresh_matrix=bool(args.require_fresh_matrix),
             max_next_slices=args.max_next_slices,
         )
-    except (OSError, ValueError) as exc:
+    except OSError:
+        print(
+            "V12 substrate evidence freshness rollup FAILED: "
+            "matrix file could not be read",
+            file=sys.stderr,
+        )
+        return 1
+    except ValueError as exc:
         print(
             f"V12 substrate evidence freshness rollup FAILED: {exc}",
             file=sys.stderr,

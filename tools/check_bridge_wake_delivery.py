@@ -245,6 +245,7 @@ def check_wake_delivery(
         target = str(row["target_agent"])
         by_agent[target] = by_agent.get(target, 0) + 1
 
+    delivery_escalation = _delivery_escalation(stalled, by_agent)
     return {
         "ok": True,
         "decision": "wake_delivery_stalled" if stalled else "wake_delivery_ok",
@@ -255,7 +256,31 @@ def check_wake_delivery(
         "agent_filter": sorted(agent_filter) if agent_filter else [],
         "stalled_count": len(stalled),
         "by_agent": dict(sorted(by_agent.items())),
+        "delivery_escalation": delivery_escalation,
         "stalled_wakes": stalled,
+    }
+
+
+def _delivery_escalation(
+    stalled: Sequence[Mapping[str, Any]],
+    by_agent: Mapping[str, int],
+) -> dict[str, Any]:
+    stalled_present = bool(stalled)
+    return {
+        "required": stalled_present,
+        "target_agents": sorted(by_agent),
+        "do_not_emit_additional_wake_requests": stalled_present,
+        "safe_next_action": (
+            "restart_or_verify_target_agent_bridge_session_watcher"
+            if stalled_present
+            else ""
+        ),
+        "operator_action_required": stalled_present,
+        "reason": (
+            "wake_request_visible_but_no_later_target_bridge_activity"
+            if stalled_present
+            else ""
+        ),
     }
 
 

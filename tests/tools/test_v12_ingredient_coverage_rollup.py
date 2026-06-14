@@ -52,6 +52,9 @@ def test_rollup_reports_current_v12_ingredients_without_authority() -> None:
         _row(report, "counterfactual_eval")["recommended_next_slice"]
         == "maintain_counterfactual_eval_coverage"
     )
+    assert report["recommended_next_slice"] == (
+        "expand_adversarial_corpus:defect_type:charter_violation"
+    )
     authority = report["authority_boundary"]
     assert authority["runtime_authority"] is False
     assert authority["promotion_authority"] is False
@@ -105,6 +108,31 @@ def test_counterfactual_next_slice_uses_maintenance_when_targets_empty() -> None
 
     assert _row(report, "counterfactual_eval")["recommended_next_slice"] == (
         "maintain_counterfactual_eval_coverage"
+    )
+
+
+def test_rollup_recommendation_skips_non_actionable_maintenance_slices() -> None:
+    sources = _valid_injected_sources()
+    sources["solver_growth_family"] = copy.deepcopy(sources["solver_growth_family"])
+    sources["counterfactual_eval"] = copy.deepcopy(sources["counterfactual_eval"])
+    sources["solver_growth_family"]["recommended_next_slice"] = (
+        "solver_growth_family_coverage_balanced_no_lowest_family"
+    )
+    sources["counterfactual_eval"]["next_eval_targets"] = []
+
+    report = build_v12_ingredient_coverage_rollup(
+        now_utc=FIXED_NOW,
+        source_reports=sources,
+    )
+
+    assert _row(report, "solver_growth_family")["recommended_next_slice"] == (
+        "solver_growth_family_coverage_balanced_no_lowest_family"
+    )
+    assert _row(report, "counterfactual_eval")["recommended_next_slice"] == (
+        "maintain_counterfactual_eval_coverage"
+    )
+    assert report["recommended_next_slice"] == (
+        "expand_adversarial_corpus:defect_type:path_escape"
     )
 
 

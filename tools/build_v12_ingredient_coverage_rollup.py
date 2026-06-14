@@ -48,6 +48,13 @@ from tools.verify_v12_memory_palace_shortcut_runtime_promotion_design import (  
 
 REPORT_VERSION = "wd.v12.ingredient_coverage_rollup.v0"
 CLAIM_LABEL = "MEASURED_LOCAL_PARTIAL"
+NON_ACTIONABLE_NEXT_SLICES = {
+    "",
+    "no_next_slice",
+    "no_actionable_rollup_followup_available",
+    "no_rollup_followup_available",
+    "solver_growth_family_coverage_balanced_no_lowest_family",
+}
 
 COMMON_FALSE_FIELDS = (
     "runtime_authority",
@@ -506,9 +513,17 @@ def _recommended_next_slice(
         return "fix_blocked_v12_ingredient_before_claiming_rollup_complete"
     for row in rows:
         next_slice = str(row.get("recommended_next_slice", ""))
-        if next_slice:
+        if _is_actionable_next_slice(next_slice):
             return next_slice
+    if any(str(row.get("recommended_next_slice", "")) for row in rows):
+        return "no_actionable_rollup_followup_available"
     return "no_rollup_followup_available"
+
+
+def _is_actionable_next_slice(next_slice: str) -> bool:
+    if next_slice in NON_ACTIONABLE_NEXT_SLICES:
+        return False
+    return not next_slice.startswith("maintain_")
 
 
 def _authority_boundary() -> dict[str, Any]:

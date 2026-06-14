@@ -96,6 +96,91 @@ def test_reports_operator_addressed_attention_without_paths() -> None:
     assert report["local_paths_recorded"] is False
 
 
+def test_live_wake_delivery_stall_is_urgent_synthetic_attention() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                ts="2026-06-14T05:00:00Z",
+                agent="operator",
+                to="codex-lead-1",
+                event_type="wake_request",
+                task_id="bridge-follow-nudge-20260614",
+                status="open",
+                severity="",
+                message="please read bridge",
+            ),
+            _event(
+                ts="2026-06-14T05:12:00Z",
+                agent="operator",
+                to="codex-lead-1",
+                event_type="wake_request",
+                task_id="bridge-follow-nudge-20260614",
+                status="open",
+                severity="",
+                message="please read bridge again",
+            ),
+        ],
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 1
+    assert report["wake_delivery_checked"] is True
+    assert report["wake_delivery_stalled_count"] == 1
+    item = report["items"][0]
+    assert item["source_agent"] == "bridge-wake-delivery-monitor"
+    assert item["priority"] == "urgent"
+    assert item["rank_score"] > 100
+    assert item["suggested_action"] == "verify_or_restart_target_session_watcher"
+    assert item["target_agents"] == ["codex-lead-1"]
+    assert item["stalled_wake_count"] == 1
+    assert item["event_count"] == 2
+    assert item["do_not_emit_additional_wake_requests"] is True
+    assert "wake_delivery_stalled" in item["attention_reasons"]
+    encoded = json.dumps(report, sort_keys=True)
+    assert "C:\\" not in encoded
+
+
+def test_live_wake_delivery_item_clears_after_target_activity() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                ts="2026-06-14T05:00:00Z",
+                agent="operator",
+                to="codex-lead-1",
+                event_type="wake_request",
+                task_id="bridge-follow-nudge-20260614",
+                status="open",
+                severity="",
+            ),
+            _event(
+                ts="2026-06-14T05:12:00Z",
+                agent="operator",
+                to="codex-lead-1",
+                event_type="wake_request",
+                task_id="bridge-follow-nudge-20260614",
+                status="open",
+                severity="",
+            ),
+            _event(
+                ts="2026-06-14T05:20:00Z",
+                agent="codex-lead-1",
+                to="",
+                event_type="status",
+                task_id="codex-lead-active",
+                status="active",
+                severity="",
+                message="read bridge and resumed",
+            ),
+        ],
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 0
+    assert report["wake_delivery_checked"] is True
+    assert report["wake_delivery_stalled_count"] == 0
+    assert report["items"] == []
+
+
 def test_later_terminal_event_closes_operator_attention() -> None:
     report = build_operator_attention_digest(
         events=[

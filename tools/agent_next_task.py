@@ -60,8 +60,12 @@ DEFER_ACTIONS = {
     "continue_claim",
     "answer_incoming",
     "agent_suppressed_unavailable",
+    "escalate_wake_delivery_stall",
 }
-PICK_ACTIONS = {"claim_unblocked_work", "parallel_read_only"}
+PICK_ACTIONS = {
+    "claim_unblocked_work",
+    "parallel_read_only",
+}
 SUCCESSFUL_COMPLETION_TYPES = {"done", "release", "test"}
 SUCCESSFUL_COMPLETION_STATUSES = {
     "complete",

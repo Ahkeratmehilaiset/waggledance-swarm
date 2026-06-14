@@ -1912,6 +1912,17 @@ def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
         production_idle_warn_minutes=12.0,
     )
 
+    assert report["action"] == "escalate_wake_delivery_stall"
+    assert report["task_id"] == "bridge-wake-delivery-stalled"
+    assert report["safe_mode"] == "read-only"
+    assert report["operator_action_required"] is True
+    assert report["operator_action"] == (
+        "restart_or_verify_target_agent_bridge_session_watcher"
+    )
+    assert report["operator_action_reason"] == (
+        "wake_request_visible_but_no_later_target_bridge_activity"
+    )
+    assert report["operator_action_target_agents"] == ["claude-rco-1"]
     liveness = report["production_liveness"]
     assert liveness["stalled_agent_count"] == 0
     delivery = liveness["wake_delivery"]
@@ -2027,6 +2038,54 @@ def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
     assert wake["target_agent"] == "claude-rco-1"
     assert wake["wake_request_count"] == 2
     assert wake["latest_wake_age_minutes"] == 15.0
+
+
+def test_wake_delivery_gap_does_not_interrupt_active_own_claim(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    claim = claim_task(
+        agent="codex-tools-1",
+        task_id="owned-tools-task",
+        summary="already coding",
+        mode="write",
+        write_scope=["tools/x.py"],
+        bridge_root=bridge_root,
+    )
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[claim],
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "continue_claim"
+    assert report["task_id"] == "owned-tools-task"
+    assert report["operator_action_required"] is True
+    assert report["operator_action_target_agents"] == ["claude-rco-1"]
 
 
 def test_suppressed_liveness_lane_is_not_counted_as_actionable_stall() -> None:

@@ -290,32 +290,16 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
         now_utc=NOW,
     )
 
-    assert report["decision"] == "claim_production_liveness_reactivation_scout"
-    assert report["next_action"] == "claim_and_run"
-    candidate = report["candidate"]
-    assert candidate["kind"] == "production_liveness_reactivation_scout"
-    assert candidate["stalled_agent"] == "codex-tools-1"
-    assert candidate["reason"] == "no_activity_since_last_event"
-    assert candidate["mode"] == "read-only"
-    assert candidate["write_scope"] == []
-    assert "report_unanswered_bridge_requests.py" in candidate["recommended_command"]
-    assert "--agent codex-tools-1" in candidate["recommended_command"]
-    assert candidate["diagnostic_commands"][0] == candidate["recommended_command"]
-    assert any(
-        "check_bridge_wake_delivery.py" in command
-        and "--agent codex-tools-1" in command
-        and "--min-repeats 1" in command
-        for command in candidate["diagnostic_commands"]
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["next_action"] == "follow_bridge_recommendation"
+    recommendation = report["bridge_recommendation"]
+    assert recommendation["action"] == "escalate_wake_delivery_stall"
+    assert recommendation["safe_mode"] == "read-only"
+    assert recommendation["operator_action_required"] is True
+    assert recommendation["operator_action_target_agents"] == ["codex-tools-1"]
+    assert recommendation["operator_action"] == (
+        "restart_or_verify_target_agent_bridge_session_watcher"
     )
-    assert candidate["delivery_escalation"] == {
-        "required": True,
-        "target_agents": ["codex-tools-1"],
-        "do_not_emit_additional_wake_requests": True,
-        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
-        "operator_action_required": True,
-        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
-    }
-    assert "do not emit additional wake_request events" in candidate["acceptance"]
     assert report["bridge_recommendation"]["production_liveness"][
         "stalled_agent_count"
     ] == 1
@@ -357,6 +341,62 @@ def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> N
     assert report["bridge_recommendation"]["production_liveness"][
         "stalled_agent_count"
     ] == 1
+
+
+def test_defers_wake_delivery_escalation_for_non_peer_target(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+            {
+                "ts_utc": "2026-05-20T11:30:00Z",
+                "agent": "operator",
+                "to": "claude-rco-2",
+                "type": "wake_request",
+                "task_id": "rco-wake",
+                "status": "open",
+                "message": "please read bridge",
+            },
+            {
+                "ts_utc": "2026-05-20T11:40:00Z",
+                "agent": "operator",
+                "to": "claude-rco-2",
+                "type": "wake_request",
+                "task_id": "rco-wake",
+                "status": "open",
+                "message": "please read bridge again",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    (bridge / "wake_claude-rco-2").write_text(
+        "2026-05-20T11:40:00Z", encoding="utf-8"
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["next_action"] == "follow_bridge_recommendation"
+    assert "candidate" not in report
+    recommendation = report["bridge_recommendation"]
+    assert recommendation["action"] == "escalate_wake_delivery_stall"
+    assert recommendation["operator_action_required"] is True
+    assert recommendation["operator_action_target_agents"] == ["claude-rco-2"]
 
 
 def test_prioritizes_unresolved_rco_reemit_pr_gate(tmp_path: Path) -> None:

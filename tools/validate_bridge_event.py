@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import re
@@ -17,6 +18,7 @@ from waggledance.core.bridge_event_schema import (
     AGENT_ID_PATTERN,
     AGENT_UUID_PATTERN,
     BridgeEventValidationResult,
+    KNOWN_EVENT_TYPES,
     validate_event_file,
 )
 from waggledance.core.work_queue import resolve_bridge_root
@@ -24,6 +26,7 @@ from waggledance.core.work_queue import resolve_bridge_root
 
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
 IDENTITY_AUDIT_VERSION = "bridge-identity-registry-audit.v1"
+EVENT_HYGIENE_AUDIT_VERSION = "bridge-event-hygiene-audit.v1"
 GATE_RELEVANT_STATUSES = frozenset({
     "autonomous_merge_receipt",
     "build_consensus_pass",
@@ -31,6 +34,14 @@ GATE_RELEVANT_STATUSES = frozenset({
     "operator_authorized",
     "rco_pass",
 })
+SUSPICIOUS_PAYLOAD_KEY_MARKERS = (
+    "creds",
+    "do_not_leak",
+    "password",
+    "private_marker",
+    "secret",
+    "token",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,6 +114,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--event-hygiene-mode",
+        choices=["warn", "strict"],
+        default="warn",
+        help=(
+            "Whether unknown event types, non-object payloads, missing payload "
+            "fields, and sensitive-looking payload key names are warnings or "
+            "non-zero failures. Defaults to warn."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON summary.",
@@ -168,6 +189,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.identity_registry_mode,
             registry_path=args.identity_registry,
         )
+    event_hygiene_audit = _audit_event_hygiene(
+        events_path,
+        tail=args.tail,
+        max_examples=args.max_errors,
+        mode=args.event_hygiene_mode,
+    )
     _print_result(
         result,
         json_output=args.json,
@@ -176,13 +203,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         agent_profiles_path=args.agent_profiles,
         agent_profiles_loaded=len(agent_uuid_by_id),
         identity_registry_audit=identity_registry_audit,
+        event_hygiene_audit=event_hygiene_audit,
     )
     identity_registry_ok = (
         identity_registry_audit is None
         or args.identity_registry_mode == "warn"
         or bool(identity_registry_audit["ok"])
     )
-    return 0 if result.ok and identity_registry_ok else 1
+    event_hygiene_ok = (
+        args.event_hygiene_mode == "warn"
+        or bool(event_hygiene_audit["ok"])
+    )
+    return 0 if result.ok and identity_registry_ok and event_hygiene_ok else 1
 
 
 def _load_waivers(path: Path) -> tuple[dict[int, str], dict[int, str]]:
@@ -386,6 +418,119 @@ def _audit_identity_registry_uuids(
     }
 
 
+def _audit_event_hygiene(
+    events_path: Path,
+    *,
+    tail: int | None,
+    max_examples: int,
+    mode: str,
+) -> dict[str, Any]:
+    checked = 0
+    skipped_unreadable = 0
+    unknown_event_types: Counter[str] = Counter()
+    non_object_payload_types: Counter[str] = Counter()
+    missing_payload = 0
+    suspicious_payload_keys: Counter[str] = Counter()
+    examples: list[dict[str, Any]] = []
+    lines = _select_event_lines(
+        events_path.read_text(encoding="utf-8").splitlines(),
+        tail=tail,
+    )
+    for line_no, line in lines:
+        if not line.strip():
+            continue
+        checked += 1
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            skipped_unreadable += 1
+            continue
+        if not isinstance(event, dict):
+            skipped_unreadable += 1
+            continue
+
+        event_type = event.get("type")
+        if (
+            isinstance(event_type, str)
+            and event_type
+            and event_type not in KNOWN_EVENT_TYPES
+        ):
+            unknown_event_types[event_type] += 1
+            _append_hygiene_example(
+                examples,
+                max_examples=max_examples,
+                line_no=line_no,
+                agent=event.get("agent"),
+                event_type=event_type,
+                reason="unknown_event_type",
+                detail=event_type,
+            )
+
+        if "payload" not in event:
+            missing_payload += 1
+            _append_hygiene_example(
+                examples,
+                max_examples=max_examples,
+                line_no=line_no,
+                agent=event.get("agent"),
+                event_type=event_type,
+                reason="missing_payload",
+            )
+            continue
+
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload_type = type(payload).__name__
+            non_object_payload_types[payload_type] += 1
+            _append_hygiene_example(
+                examples,
+                max_examples=max_examples,
+                line_no=line_no,
+                agent=event.get("agent"),
+                event_type=event_type,
+                reason="non_object_payload",
+                detail=payload_type,
+            )
+            continue
+
+        for key in payload:
+            key_text = str(key).lower()
+            if any(marker in key_text for marker in SUSPICIOUS_PAYLOAD_KEY_MARKERS):
+                suspicious_payload_keys[key_text] += 1
+                _append_hygiene_example(
+                    examples,
+                    max_examples=max_examples,
+                    line_no=line_no,
+                    agent=event.get("agent"),
+                    event_type=event_type,
+                    reason="sensitive_payload_key_name",
+                    detail=key_text,
+                )
+
+    issue_count = (
+        sum(unknown_event_types.values())
+        + sum(non_object_payload_types.values())
+        + missing_payload
+        + sum(suspicious_payload_keys.values())
+    )
+    return {
+        "schema_version": EVENT_HYGIENE_AUDIT_VERSION,
+        "mode": mode,
+        "checked_events": checked,
+        "skipped_unreadable_event_count": skipped_unreadable,
+        "unknown_event_type_count": sum(unknown_event_types.values()),
+        "unknown_event_types": _counter_rows(unknown_event_types),
+        "non_object_payload_count": sum(non_object_payload_types.values()),
+        "non_object_payload_types": _counter_rows(non_object_payload_types),
+        "missing_payload_count": missing_payload,
+        "sensitive_payload_key_name_count": sum(suspicious_payload_keys.values()),
+        "sensitive_payload_key_names": _counter_rows(suspicious_payload_keys),
+        "ok": issue_count == 0,
+        "issue_count": issue_count,
+        "examples": examples,
+    }
+
+
 def _select_event_lines(
     lines: Sequence[str],
     *,
@@ -422,6 +567,34 @@ def _append_identity_example(
     })
 
 
+def _append_hygiene_example(
+    examples: list[dict[str, Any]],
+    *,
+    max_examples: int,
+    line_no: int,
+    agent: object,
+    event_type: object,
+    reason: str,
+    detail: str = "",
+) -> None:
+    if len(examples) >= max_examples:
+        return
+    examples.append({
+        "line_no": line_no,
+        "agent": agent if isinstance(agent, str) else "",
+        "type": event_type if isinstance(event_type, str) else "",
+        "reason": reason,
+        "detail": detail,
+    })
+
+
+def _counter_rows(counter: Counter[str]) -> list[dict[str, Any]]:
+    return [
+        {"value": value, "count": count}
+        for value, count in counter.most_common()
+    ]
+
+
 def _print_result(
     result: BridgeEventValidationResult,
     *,
@@ -432,6 +605,7 @@ def _print_result(
     agent_profiles_path: Path | None = None,
     agent_profiles_loaded: int = 0,
     identity_registry_audit: Mapping[str, Any] | None = None,
+    event_hygiene_audit: Mapping[str, Any] | None = None,
 ) -> None:
     payload = result.to_dict()
     overall_ok = result.ok
@@ -447,6 +621,11 @@ def _print_result(
         payload["identity_registry_audit"] = dict(identity_registry_audit)
         if identity_registry_audit.get("mode") == "strict":
             overall_ok = overall_ok and bool(identity_registry_audit.get("ok"))
+            payload["ok"] = overall_ok
+    if event_hygiene_audit is not None:
+        payload["event_hygiene_audit"] = dict(event_hygiene_audit)
+        if event_hygiene_audit.get("mode") == "strict":
+            overall_ok = overall_ok and bool(event_hygiene_audit.get("ok"))
             payload["ok"] = overall_ok
     if json_output:
         print(json.dumps(payload, sort_keys=True))
@@ -471,6 +650,15 @@ def _print_result(
                     f"{mode.upper()}: {issue_count} registered-agent UUID "
                     "issue(s)"
                 )
+        if event_hygiene_audit is not None:
+            issue_count = int(event_hygiene_audit.get("issue_count", 0))
+            mode = str(event_hygiene_audit.get("mode", "warn"))
+            if issue_count:
+                print(
+                    "event hygiene audit "
+                    f"{mode.upper()}: {issue_count} bridge event hygiene "
+                    "issue(s)"
+                )
         return
 
     if (
@@ -481,6 +669,18 @@ def _print_result(
         print(
             "bridge event schema FAILED: identity registry audit found "
             f"{identity_registry_audit.get('issue_count', 0)} UUID issues",
+            file=sys.stderr,
+        )
+        return
+
+    if (
+        result.ok
+        and event_hygiene_audit is not None
+        and event_hygiene_audit.get("mode") == "strict"
+    ):
+        print(
+            "bridge event schema FAILED: event hygiene audit found "
+            f"{event_hygiene_audit.get('issue_count', 0)} issue(s)",
             file=sys.stderr,
         )
         return

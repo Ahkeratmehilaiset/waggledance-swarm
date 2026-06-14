@@ -286,6 +286,64 @@ def test_cli_identity_registry_strict_accepts_matching_uuid(
     assert payload["identity_registry_audit"]["ok"] is True
 
 
+def test_cli_event_hygiene_warn_reports_bridge_event_shape_issues(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events_path,
+        [
+            _good_event(),
+            _good_event(type="correction", payload=None),
+            _good_event(payload={"api_token_count": 0}),
+        ],
+    )
+
+    rc = mod.main(["--events", str(events_path), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    audit = payload["event_hygiene_audit"]
+    assert rc == 0
+    assert payload["ok"] is True
+    assert audit["mode"] == "warn"
+    assert audit["ok"] is False
+    assert audit["unknown_event_type_count"] == 1
+    assert audit["unknown_event_types"] == [{"value": "correction", "count": 1}]
+    assert audit["non_object_payload_count"] == 1
+    assert audit["non_object_payload_types"] == [{"value": "NoneType", "count": 1}]
+    assert audit["sensitive_payload_key_name_count"] == 1
+    assert audit["sensitive_payload_key_names"] == [
+        {"value": "api_token_count", "count": 1}
+    ]
+
+
+def test_cli_event_hygiene_strict_fails_bridge_event_shape_issues(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(events_path, [_good_event(type="correction")])
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--event-hygiene-mode",
+        "strict",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["invalid"] == 0
+    assert payload["event_hygiene_audit"]["issue_count"] == 1
+
+
 def test_cli_returns_one_for_invalid_file_and_reports_issue(
     tmp_path: Path,
     capsys,

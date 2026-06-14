@@ -390,6 +390,7 @@ def evaluate_agent_next_task(
             agent=agent,
             events=events,
             claims=claims,
+            bridge_root=Path(bridge_root),
             now_utc=now_utc,
             production_liveness_suppressed_agents=(
                 production_liveness_suppressed_agents

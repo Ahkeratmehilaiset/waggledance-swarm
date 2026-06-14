@@ -90,6 +90,70 @@ def test_reports_visible_request_until_target_answers() -> None:
     assert row["response_expected_from"] == "claude-rco-1"
     assert row["head"] == "a" * 40
     assert row["pr"] == "1122"
+    assert report["pressure"] == {
+        "oldest_age_minutes": 20.0,
+        "newest_age_minutes": 20.0,
+        "target_agent_count": 1,
+        "bridge_visible_request_count": 1,
+        "requester_counts": {"codex-tools-1": 1},
+        "status_counts": {"rco_requested": 1},
+        "by_agent_oldest_age_minutes": {"claude-rco-1": 20.0},
+        "oldest_request": {
+            "target_agent": "claude-rco-1",
+            "requester": "codex-tools-1",
+            "task_id": "task-1",
+            "status": "rco_requested",
+            "age_minutes": 20.0,
+            "head": "a" * 40,
+            "pr": "1122",
+        },
+    }
+
+
+def test_pressure_summary_groups_visible_stalls_without_paths() -> None:
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                task_id="old-rco",
+                ts="2026-06-13T12:00:00Z",
+                to="claude-rco-1",
+                status="rco_requested",
+            ),
+            _request(
+                task_id="new-rco",
+                ts="2026-06-13T12:05:00Z",
+                agent="codex-lead-1",
+                to="claude-rco-2",
+                status="exact_head_review_requested",
+            ),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    pressure = report["pressure"]
+    assert pressure["oldest_age_minutes"] == 20.0
+    assert pressure["newest_age_minutes"] == 15.0
+    assert pressure["target_agent_count"] == 2
+    assert pressure["bridge_visible_request_count"] == 2
+    assert pressure["requester_counts"] == {"codex-lead-1": 1, "codex-tools-1": 1}
+    assert pressure["status_counts"] == {
+        "exact_head_review_requested": 1,
+        "rco_requested": 1,
+    }
+    assert pressure["by_agent_oldest_age_minutes"] == {
+        "claude-rco-1": 20.0,
+        "claude-rco-2": 15.0,
+    }
+    assert pressure["oldest_request"] == {
+        "target_agent": "claude-rco-1",
+        "requester": "codex-tools-1",
+        "task_id": "old-rco",
+        "status": "rco_requested",
+        "age_minutes": 20.0,
+        "head": "a" * 40,
+        "pr": "1122",
+    }
 
 
 def test_target_answer_closes_request() -> None:

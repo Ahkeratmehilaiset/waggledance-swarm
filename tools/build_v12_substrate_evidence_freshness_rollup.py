@@ -63,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail if the competitive matrix is stale.",
     )
     parser.add_argument(
+        "--require-fresh-substrate",
+        action="store_true",
+        help="Fail if any V12 substrate ingredient is not fresh for planning.",
+    )
+    parser.add_argument(
         "--max-next-slices",
         type=int,
         default=5,
@@ -81,6 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             matrix_text=matrix_text,
             max_age_days=args.max_age_days,
             require_fresh_matrix=bool(args.require_fresh_matrix),
+            require_fresh_substrate=bool(args.require_fresh_substrate),
             max_next_slices=args.max_next_slices,
         )
     except OSError:
@@ -110,6 +116,7 @@ def build_v12_substrate_evidence_freshness_rollup(
     matrix_text: str | None = None,
     max_age_days: int = DEFAULT_MAX_AGE_DAYS,
     require_fresh_matrix: bool = False,
+    require_fresh_substrate: bool = False,
     max_next_slices: int = 5,
     ingredient_rollup: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -151,6 +158,18 @@ def build_v12_substrate_evidence_freshness_rollup(
         rollup_age_days=rollup_age_days,
         max_age_days=max_age_days,
     )
+    if require_fresh_substrate:
+        stale_substrate_ids = [
+            str(row.get("id", ""))
+            for row in substrate_rows
+            if row.get("fresh_for_planning") is not True
+        ]
+        if stale_substrate_ids:
+            blockers.append(
+                "substrate_ingredients_not_fresh_for_planning:"
+                + ",".join(stale_substrate_ids)
+            )
+    blockers = sorted(set(blockers))
     stale_windows = _stale_windows(substrate_rows, matrix_report)
 
     return {
@@ -162,6 +181,7 @@ def build_v12_substrate_evidence_freshness_rollup(
         "freshness": {
             "now_date": generated_at.date().isoformat(),
             "max_age_days": max_age_days,
+            "require_fresh_substrate": bool(require_fresh_substrate),
             "ingredient_rollup_age_days": rollup_age_days,
             "substrate_fresh_for_planning": all(
                 row["fresh_for_planning"] for row in substrate_rows

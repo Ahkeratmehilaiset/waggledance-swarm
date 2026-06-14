@@ -596,10 +596,17 @@ def recommend_next_action(
         _assert_no_private_markers(report)
         return report
     if open_requests:
-        request = open_requests[-1]
+        priority_request = _latest_direct_rco_pass_block_request(
+            agent=agent,
+            requests=open_requests,
+        )
+        request = priority_request or open_requests[-1]
         requester = _event_agent(request)
         kind = f"{_event_type(request)}/{_event_status(request)}".strip("/")
-        summary = f"answer incoming {kind} from {requester}"
+        if priority_request is not None:
+            summary = f"answer direct RCO pass/block incoming {kind} from {requester}"
+        else:
+            summary = f"answer incoming {kind} from {requester}"
         return _report(
             agent=agent,
             action="answer_incoming",
@@ -696,11 +703,18 @@ def _open_requests_for_agent(
     ]
     open_requests: list[Mapping[str, Any]] = []
     for request in requests:
-        answered = _request_closed_by_index(
-            request=request,
-            agent=agent,
-            closure_index=closure_index,
-        )
+        if _is_direct_rco_pass_block_request(agent=agent, event=request):
+            answered = _direct_rco_pass_block_request_closed(
+                request=request,
+                agent=agent,
+                events=events,
+            )
+        else:
+            answered = _request_closed_by_index(
+                request=request,
+                agent=agent,
+                closure_index=closure_index,
+            )
         if not answered and _idle_protocol_progressed_by_index(
             request,
             idle_progress_index,
@@ -1053,6 +1067,93 @@ def _latest_merge_blocking_request(
         if _is_merge_blocking_request(request):
             return request
     return None
+
+
+def _latest_direct_rco_pass_block_request(
+    *,
+    agent: str,
+    requests: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    for request in reversed(requests):
+        if _is_direct_rco_pass_block_request(agent=agent, event=request):
+            return request
+    return None
+
+
+def _is_direct_rco_pass_block_request(
+    *,
+    agent: str,
+    event: Mapping[str, Any],
+) -> bool:
+    if not _is_rco_agent(agent):
+        return False
+    tokens = _merge_blocking_signal_tokens(event)
+    wants_decision = bool(tokens.intersection({"pass", "block"}))
+    asks_for_decision = bool(
+        tokens.intersection(
+            {
+                "request",
+                "requested",
+                "required",
+                "needed",
+                "missing",
+                "ready",
+                "blocking",
+                "blocker",
+            }
+        )
+    )
+    return wants_decision and asks_for_decision
+
+
+def _is_rco_agent(agent: str) -> bool:
+    return "rco" in _status_tokens(agent)
+
+
+def _direct_rco_pass_block_request_closed(
+    *,
+    request: Mapping[str, Any],
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+) -> bool:
+    request_ts = _event_ts(request)
+    request_task_id = _task_id(request)
+    request_pr_key = _pr_closure_key_for_event(request)
+    requester = _event_agent(request)
+    target = agent.lower()
+    for event in events:
+        event_ts = _event_ts(event)
+        if event_ts <= request_ts:
+            continue
+        same_task = bool(request_task_id and _task_id(event) == request_task_id)
+        event_pr_key = _pr_closure_key_for_event(event)
+        same_pr = bool(request_pr_key and event_pr_key == request_pr_key)
+        if not same_task and not same_pr:
+            continue
+        event_agent = _event_agent(event)
+        if event_agent == target and _is_substantive_rco_pass_block_response(event):
+            return True
+        if event_agent == requester and _is_explicit_terminal_pr_closure(event):
+            return True
+    return False
+
+
+def _is_substantive_rco_pass_block_response(event: Mapping[str, Any]) -> bool:
+    status_tokens = _status_tokens(_event_status(event))
+    if status_tokens.intersection(KNOWN_ACK_STATUSES) or {"wake", "ack"}.issubset(
+        status_tokens
+    ):
+        return False
+    if _event_type(event) == "finding":
+        return True
+    tokens = _merge_blocking_signal_tokens(event)
+    if {"rco", "pass"}.issubset(tokens):
+        return True
+    if "block" in tokens or "blocked" in tokens:
+        return True
+    if {"changes", "requested"}.issubset(tokens):
+        return True
+    return False
 
 
 def _is_merge_blocking_request(event: Mapping[str, Any]) -> bool:

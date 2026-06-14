@@ -1384,6 +1384,115 @@ def test_rco_pass_required_wake_request_remains_actionable_after_pass_token() ->
     assert report["open_incoming_count"] == 2
 
 
+def test_direct_rco_pass_request_wins_over_later_general_review() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-rco-pass",
+            "status": "exact_head_pass_needed_now",
+            "message": "PR #1208 is CLEAN; pass/block requested at exact head.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:05:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-2",
+            "type": "message",
+            "task_id": "general-content-review",
+            "status": "review_requested",
+            "message": "Please review this general proposal after gate work.",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:06:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr1208-rco-pass"
+    assert report["summary"].startswith("answer direct RCO pass/block incoming")
+    assert report["incoming"]["status"] == "exact_head_pass_needed_now"
+    assert report["open_incoming_count"] == 2
+
+
+def test_wake_ack_does_not_close_direct_rco_pass_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1208 is CI green; RCO pass/block required.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:01:00Z",
+            "agent": "claude-rco-2",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "pr1208-rco-pass",
+            "status": "wake_ack_corrected_rco_pass_already_posted_clear_to_merge",
+            "message": "Wake bit consumed; this is not a new RCO_PASS.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr1208-rco-pass"
+    assert report["incoming"]["status"] == "rco_pass_required_after_ci_green"
+    assert report["open_incoming_count"] == 1
+
+
+def test_real_rco_pass_closes_direct_rco_pass_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1208 is CI green; RCO pass/block required.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:03:00Z",
+            "agent": "claude-rco-2",
+            "to": "codex-tools-1,codex-lead-1",
+            "type": "decision",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass",
+            "message": "RCO_PASS PR #1208 at exact head.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:04:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_rco_pass_decision_remains_response_only() -> None:
     events = [
         {

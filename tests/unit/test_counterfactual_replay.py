@@ -320,6 +320,11 @@ def test_observability_summary_from_delta_is_privacy_safe():
         "a3_label": A3_LABEL_RUNTIME_MEASURED,
         "sample_count": 24,
         "divergence_count": 24,
+        "improvement_count": 0,
+        "regression_count": 0,
+        "neutral_divergence_count": 24,
+        "oracle_agreement_advantage": 0.0,
+        "net_oracle_agreement_direction": "net_neutral",
         "same_sample_set": True,
         "deterministic": True,
         "no_delta": False,
@@ -379,6 +384,7 @@ def test_observability_summary_requires_explicit_sample_set_digests():
     assert status["status"] == "insufficient"
     assert status["a3_label"] == A3_LABEL_INSUFFICIENT
     assert status["same_sample_set"] is False
+    assert status["net_oracle_agreement_direction"] == "not_applicable"
 
 
 def test_observability_summary_from_promotion_summary_and_missing_source():
@@ -390,11 +396,20 @@ def test_observability_summary_from_promotion_summary_and_missing_source():
         "same_sample_set": True,
         "deterministic": True,
         "divergence_count": 3,
+        "improvement_count": 2,
+        "regression_count": 1,
+        "neutral_divergence_count": 0,
+        "oracle_agreement_advantage": 0.25,
         "no_delta": False,
         "delta_digest": "sha256:private-digest",
         "per_arm": {"candidate": "private"},
     })
     assert computed["status"] == "measured_local_partial"
+    assert computed["improvement_count"] == 2
+    assert computed["regression_count"] == 1
+    assert computed["neutral_divergence_count"] == 0
+    assert computed["oracle_agreement_advantage"] == 0.25
+    assert computed["net_oracle_agreement_direction"] == "net_improvement"
     assert computed["delta_digest_present"] is True
     assert "private-digest" not in repr(computed)
     assert "per_arm" not in computed
@@ -410,6 +425,25 @@ def test_observability_summary_from_promotion_summary_and_missing_source():
     missing = summarize_counterfactual_observability(None)
     assert missing["source_available"] is False
     assert missing["status"] == "unavailable"
+
+
+def test_observability_summary_marks_missing_direction_counts_unknown():
+    status = summarize_counterfactual_observability({
+        "schema_version": "magma.counterfactual_promotion_summary.v0",
+        "status": "computed",
+        "a3_label": A3_LABEL_MEASURED_LOCAL_PARTIAL,
+        "sample_count": 5,
+        "same_sample_set": True,
+        "deterministic": True,
+        "divergence_count": 3,
+        "no_delta": False,
+        "delta_digest": "sha256:private-digest",
+    })
+
+    assert status["improvement_count"] == 0
+    assert status["regression_count"] == 0
+    assert status["neutral_divergence_count"] == 0
+    assert status["net_oracle_agreement_direction"] == "unknown"
 
 
 def test_observability_summary_bounds_stored_a3_label():

@@ -32,6 +32,7 @@ Design notes
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Iterable
 
 from fastapi import APIRouter, Request
@@ -51,6 +52,7 @@ from waggledance.adapters.http.routes.compat_dashboard import (
     _route_stage_latency_feed_state,
 )
 from waggledance.core.autonomy_growth.counterfactual_replay import (
+    COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS,
     COUNTERFACTUAL_OBSERVABILITY_STATES,
     summarize_counterfactual_observability,
 )
@@ -221,6 +223,13 @@ def _as_bool_float(value: Any) -> float:
 def _as_nonnegative_float(value: Any) -> float:
     numeric = _as_float(value)
     if numeric is None or numeric < 0:
+        return 0.0
+    return numeric
+
+
+def _as_finite_float(value: Any) -> float:
+    numeric = _as_float(value)
+    if numeric is None or not math.isfinite(numeric):
         return 0.0
     return numeric
 
@@ -924,6 +933,9 @@ class _WaggleCollector:
         numeric_gauges = {
             "sample_count": status.get("sample_count"),
             "divergence_count": status.get("divergence_count"),
+            "improvement_count": status.get("improvement_count"),
+            "regression_count": status.get("regression_count"),
+            "neutral_divergence_count": status.get("neutral_divergence_count"),
         }
         for name, value in numeric_gauges.items():
             yield GaugeMetricFamily(
@@ -931,6 +943,15 @@ class _WaggleCollector:
                 f"read-only counterfactual replay observability gauge: {name}",
                 value=_as_nonnegative_float(value),
             )
+
+        yield GaugeMetricFamily(
+            "waggledance_counterfactual_replay_oracle_agreement_advantage",
+            (
+                "read-only counterfactual replay observability gauge: "
+                "oracle_agreement_advantage"
+            ),
+            value=_as_finite_float(status.get("oracle_agreement_advantage")),
+        )
 
         status_metric = GaugeMetricFamily(
             "waggledance_counterfactual_replay_status",
@@ -947,6 +968,22 @@ class _WaggleCollector:
                 1.0 if current_status == state else 0.0,
             )
         yield status_metric
+
+        direction_metric = GaugeMetricFamily(
+            "waggledance_counterfactual_replay_oracle_direction",
+            (
+                "Current counterfactual replay net oracle-agreement direction "
+                "as fixed-state gauges."
+            ),
+            labels=["direction"],
+        )
+        current_direction = status.get("net_oracle_agreement_direction")
+        for direction in COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS:
+            direction_metric.add_metric(
+                [direction],
+                1.0 if current_direction == direction else 0.0,
+            )
+        yield direction_metric
 
     def _collect_magma_handoff_metrics(self, container: Any) -> Iterable[Any]:
         up = GaugeMetricFamily(

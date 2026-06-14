@@ -37,6 +37,10 @@ def _raw_delta() -> dict[str, object]:
         "oracle_kind": "formula_recompute",
         "deterministic": True,
         "divergence_count": 3,
+        "improvement_count": 2,
+        "regression_count": 1,
+        "neutral_divergence_count": 0,
+        "oracle_agreement_advantage": 0.25,
         "no_delta": False,
         "per_arm": {
             "candidate": {"results": [{"inputs": {"secret": "do-not-export"}}]},
@@ -69,6 +73,10 @@ def test_guard_accepts_raw_delta_and_emits_sanitized_path_free_report() -> None:
     assert report["runtime_authority_granted"] is False
     assert report["observability_summary"]["status"] == "runtime_measured"
     assert report["observability_summary"]["sample_count"] == 24
+    assert (
+        report["observability_summary"]["net_oracle_agreement_direction"]
+        == "net_improvement"
+    )
     assert "per_arm" not in rendered
     assert "divergences" not in rendered
     assert "candidate_hash" not in rendered
@@ -241,6 +249,42 @@ def test_guard_bounds_non_string_status_summary_a3_label() -> None:
     assert report["ok"] is False
     assert "status_summary_unknown_a3_label" in report["blockers"]
     assert report["observability_summary"]["a3_label"] == "INSUFFICIENT"
+
+
+def test_guard_rejects_unknown_status_summary_oracle_direction() -> None:
+    status = {
+        "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
+        "source_available": True,
+        "compute_status": "computed",
+        "status": "runtime_measured",
+        "a3_label": "RUNTIME_MEASURED",
+        "sample_count": 24,
+        "divergence_count": 3,
+        "improvement_count": 2,
+        "regression_count": 1,
+        "neutral_divergence_count": 0,
+        "oracle_agreement_advantage": 0.25,
+        "net_oracle_agreement_direction": "operator-secret-direction",
+        "same_sample_set": True,
+        "deterministic": True,
+        "no_delta": False,
+        "delta_digest_present": True,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "payload_fields_exported": False,
+    }
+
+    report = verify_counterfactual_observability_artifact(status)
+    rendered = json.dumps(report, sort_keys=True)
+
+    assert report["ok"] is False
+    assert "status_summary_unknown_oracle_direction" in report["blockers"]
+    assert (
+        report["observability_summary"]["net_oracle_agreement_direction"]
+        == "unknown"
+    )
+    assert "operator-secret-direction" not in rendered
 
 
 def test_guard_rejects_raw_fields_in_promotion_summary() -> None:

@@ -20,6 +20,7 @@ from waggledance.core.autonomy_growth.counterfactual_replay import (  # noqa: E4
     A3_LABEL_NONDETERMINISTIC_ORACLE,
     A3_LABEL_RUNTIME_MEASURED,
     COUNTERFACTUAL_DELTA_SCHEMA,
+    COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS,
     COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
     COUNTERFACTUAL_OBSERVABILITY_STATES,
     DEFAULT_A3_MIN_SAMPLES,
@@ -48,6 +49,11 @@ _AUTHORITY_FALSE_FIELDS = (
     "runtime_authority_granted",
     "external_writes_applied",
     "payload_fields_exported",
+)
+_DIRECTION_COUNT_FIELDS = (
+    "improvement_count",
+    "regression_count",
+    "neutral_divergence_count",
 )
 _KNOWN_A3_LABELS = frozenset({
     A3_LABEL_INSUFFICIENT,
@@ -229,6 +235,41 @@ def _status_summary_from_artifact(
     if not isinstance(a3_label, str) or a3_label not in _KNOWN_A3_LABELS:
         blockers.append("status_summary_unknown_a3_label")
         a3_label = A3_LABEL_INSUFFICIENT
+    divergence_count = _strict_nonnegative_int(
+        artifact,
+        "divergence_count",
+        blockers,
+    )
+    improvement_count = _optional_strict_nonnegative_int(
+        artifact,
+        "improvement_count",
+        blockers,
+    )
+    regression_count = _optional_strict_nonnegative_int(
+        artifact,
+        "regression_count",
+        blockers,
+    )
+    neutral_divergence_count = _optional_strict_nonnegative_int(
+        artifact,
+        "neutral_divergence_count",
+        blockers,
+    )
+    direction = artifact.get("net_oracle_agreement_direction")
+    if direction is None:
+        direction = _direction_from_counts(
+            no_delta=artifact.get("no_delta") is True,
+            divergence_count=divergence_count,
+            improvement_count=improvement_count,
+            regression_count=regression_count,
+            neutral_divergence_count=neutral_divergence_count,
+        )
+    elif not (
+        isinstance(direction, str)
+        and direction in COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS
+    ):
+        blockers.append("status_summary_unknown_oracle_direction")
+        direction = "unknown"
     return {
         "schema_version": COUNTERFACTUAL_OBSERVABILITY_STATUS_SCHEMA,
         "source_available": artifact.get("source_available") is True,
@@ -240,11 +281,17 @@ def _status_summary_from_artifact(
             "sample_count",
             blockers,
         ),
-        "divergence_count": _strict_nonnegative_int(
+        "divergence_count": divergence_count,
+        "improvement_count": improvement_count or 0,
+        "regression_count": regression_count or 0,
+        "neutral_divergence_count": neutral_divergence_count or 0,
+        "oracle_agreement_advantage": _finite_number(
             artifact,
-            "divergence_count",
+            "oracle_agreement_advantage",
             blockers,
+            required=False,
         ),
+        "net_oracle_agreement_direction": direction,
         "same_sample_set": artifact.get("same_sample_set") is True,
         "deterministic": artifact.get("deterministic") is True,
         "no_delta": artifact.get("no_delta") is True,
@@ -268,6 +315,22 @@ def _summary_blockers(
         blockers.append("summary_schema_mismatch")
     if summary.get("status") not in COUNTERFACTUAL_OBSERVABILITY_STATES:
         blockers.append("summary_status_unknown")
+    if (
+        summary.get("net_oracle_agreement_direction")
+        not in COUNTERFACTUAL_OBSERVABILITY_DIRECTIONS
+    ):
+        blockers.append("summary_oracle_direction_unknown")
+    for field in _DIRECTION_COUNT_FIELDS:
+        value = summary.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            blockers.append(field + "_must_be_nonnegative_int")
+    advantage = summary.get("oracle_agreement_advantage")
+    if (
+        isinstance(advantage, bool)
+        or not isinstance(advantage, (int, float))
+        or not math.isfinite(float(advantage))
+    ):
+        blockers.append("oracle_agreement_advantage_must_be_finite_number")
     for field in _AUTHORITY_FALSE_FIELDS:
         if summary.get(field) is not False:
             blockers.append(field + "_must_be_false")
@@ -293,6 +356,71 @@ def _strict_nonnegative_int(
         blockers.append(field + "_must_be_nonnegative_int")
         return 0
     return value
+
+
+def _optional_strict_nonnegative_int(
+    artifact: Mapping[str, Any],
+    field: str,
+    blockers: list[str],
+) -> int | None:
+    if field not in artifact:
+        return None
+    value = artifact.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        blockers.append(field + "_must_be_nonnegative_int")
+        return None
+    return value
+
+
+def _finite_number(
+    artifact: Mapping[str, Any],
+    field: str,
+    blockers: list[str],
+    *,
+    required: bool,
+) -> float:
+    if field not in artifact:
+        if required:
+            blockers.append(field + "_must_be_finite_number")
+        return 0.0
+    value = artifact.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        blockers.append(field + "_must_be_finite_number")
+        return 0.0
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        blockers.append(field + "_must_be_finite_number")
+        return 0.0
+    return numeric
+
+
+def _direction_from_counts(
+    *,
+    no_delta: bool,
+    divergence_count: int | None,
+    improvement_count: int | None,
+    regression_count: int | None,
+    neutral_divergence_count: int | None,
+) -> str:
+    if no_delta or divergence_count == 0:
+        return "not_applicable"
+    if (
+        divergence_count is None
+        or improvement_count is None
+        or regression_count is None
+        or neutral_divergence_count is None
+    ):
+        return "unknown"
+    if (
+        improvement_count + regression_count + neutral_divergence_count
+        != divergence_count
+    ):
+        return "unknown"
+    if improvement_count > regression_count:
+        return "net_improvement"
+    if regression_count > improvement_count:
+        return "net_regression"
+    return "net_neutral"
 
 
 def _contains_raw_field(value: Any) -> bool:

@@ -1891,6 +1891,14 @@ def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
     assert delivery["decision"] == "wake_delivery_stalled"
     assert delivery["stalled_wake_count"] == 1
     assert delivery["by_agent"] == {"claude-rco-1": 1}
+    assert delivery["delivery_escalation"] == {
+        "required": True,
+        "target_agents": ["claude-rco-1"],
+        "do_not_emit_additional_wake_requests": True,
+        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
+        "operator_action_required": True,
+        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+    }
     wake = delivery["stalled_wakes"][0]
     assert wake["target_agent"] == "claude-rco-1"
     assert wake["task_id"] == "rco-needed"
@@ -1984,6 +1992,10 @@ def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
     delivery = report["production_liveness"]["wake_delivery"]
     assert delivery["decision"] == "wake_delivery_stalled"
     assert delivery["by_agent"] == {"claude-rco-1": 1}
+    assert delivery["delivery_escalation"]["do_not_emit_additional_wake_requests"] is True
+    assert delivery["delivery_escalation"]["safe_next_action"] == (
+        "restart_or_verify_target_agent_bridge_session_watcher"
+    )
     wake = delivery["stalled_wakes"][0]
     assert wake["target_agent"] == "claude-rco-1"
     assert wake["wake_request_count"] == 2

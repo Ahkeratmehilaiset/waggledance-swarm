@@ -1382,7 +1382,19 @@ def _wake_delivery_liveness_summary(
         "decision": "wake_delivery_stalled",
         "stalled_wake_count": len(stalled),
         "by_agent": dict(sorted(by_agent.items())),
+        "delivery_escalation": _wake_delivery_escalation(by_agent),
         "stalled_wakes": stalled,
+    }
+
+
+def _wake_delivery_escalation(by_agent: Mapping[str, int]) -> dict[str, Any]:
+    return {
+        "required": True,
+        "target_agents": sorted(by_agent),
+        "do_not_emit_additional_wake_requests": True,
+        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
+        "operator_action_required": True,
+        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
     }
 
 

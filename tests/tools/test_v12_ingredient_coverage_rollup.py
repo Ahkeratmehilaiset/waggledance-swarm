@@ -48,6 +48,10 @@ def test_rollup_reports_current_v12_ingredients_without_authority() -> None:
         "memory_palace_shortcut_runtime_design",
         "memory_palace_shortcut_promotion_candidate_verification_summary",
     }
+    assert (
+        _row(report, "counterfactual_eval")["recommended_next_slice"]
+        == "maintain_counterfactual_eval_coverage"
+    )
     authority = report["authority_boundary"]
     assert authority["runtime_authority"] is False
     assert authority["promotion_authority"] is False
@@ -74,6 +78,34 @@ def test_rollup_fails_closed_on_authority_boundary_regression() -> None:
     row = _row(report, "counterfactual_eval")
     assert row["authority_boundary_ok"] is False
     assert row["authority_false_fields_ok"] is False
+
+
+def test_counterfactual_next_slice_uses_source_targets_when_present() -> None:
+    sources = _valid_injected_sources()
+
+    report = build_v12_ingredient_coverage_rollup(
+        now_utc=FIXED_NOW,
+        source_reports=sources,
+    )
+
+    assert _row(report, "counterfactual_eval")["recommended_next_slice"] == (
+        "add second runtime-condition sample family"
+    )
+
+
+def test_counterfactual_next_slice_uses_maintenance_when_targets_empty() -> None:
+    sources = _valid_injected_sources()
+    sources["counterfactual_eval"] = copy.deepcopy(sources["counterfactual_eval"])
+    sources["counterfactual_eval"]["next_eval_targets"] = []
+
+    report = build_v12_ingredient_coverage_rollup(
+        now_utc=FIXED_NOW,
+        source_reports=sources,
+    )
+
+    assert _row(report, "counterfactual_eval")["recommended_next_slice"] == (
+        "maintain_counterfactual_eval_coverage"
+    )
 
 
 def test_rollup_fails_closed_on_memory_design_verification_regression() -> None:

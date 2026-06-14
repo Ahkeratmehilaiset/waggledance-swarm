@@ -481,7 +481,7 @@ def _ingredient_next_slice(
         return str(report.get("recommended_next_slice", "expand_solver_growth_cases"))
     if ingredient_id == "counterfactual_eval":
         targets = list(report.get("next_eval_targets") or [])
-        return str(targets[0]) if targets else "add_second_counterfactual_sample_family"
+        return str(targets[0]) if targets else "maintain_counterfactual_eval_coverage"
     if ingredient_id == "adversarial_corpus":
         targets = list(report.get("maturation_targets") or [])
         if targets:

@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
@@ -218,6 +220,17 @@ def test_cli_rejects_missing_feedback_id_without_path_leak(tmp_path: Path) -> No
     assert "durable bridge log" in report["blockers"][0]["message"]
     assert str(events_path) not in serialized
     assert "events.jsonl" not in serialized
+
+
+def test_reader_rejects_non_finite_json_constants(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        '{"ts_utc":"2026-06-06T12:00:01Z","payload":{"x":NaN}}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON at bridge log line 1"):
+        builder.read_durable_bridge_events(events_path)
 
 
 def test_cli_tail_limits_bridge_log_window(tmp_path: Path) -> None:

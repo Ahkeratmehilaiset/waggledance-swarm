@@ -312,6 +312,46 @@ def test_prioritizes_stalled_primary_production_peer(tmp_path: Path) -> None:
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
+def test_primary_production_liveness_scout_includes_live_cli_probe(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "codex-tools-1",
+                "type": "decision",
+                "task_id": "tools-active-work",
+                "status": "active",
+                "message": "tools started a producer slice",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_production_liveness_reactivation_scout"
+    candidate = report["candidate"]
+    assert candidate["kind"] == "production_liveness_reactivation_scout"
+    assert any(
+        "agent_cli_model_probe.py" in command
+        and "--live" in command
+        and "--json" in command
+        for command in candidate["diagnostic_commands"]
+    )
+    assert "live CLI model diagnostics" in candidate["acceptance"]
+    assert "delivery_escalation" not in candidate
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
 def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(

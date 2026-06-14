@@ -853,6 +853,11 @@ def _pick_production_liveness_reactivation(
             "--min-repeats 1 "
             "--json"
         )
+        cli_model_probe_command = (
+            f"{_python_command()} "
+            "tools\\agent_cli_model_probe.py "
+            "--live --json"
+        )
         candidate = {
             "kind": "production_liveness_reactivation_scout",
             "target": ".agent-bridge/shared/events.jsonl",
@@ -864,13 +869,18 @@ def _pick_production_liveness_reactivation(
             "write_scope": [],
             "authority": "read_only_recommendation_only",
             "acceptance": (
-                "Run the unanswered-request and wake-delivery diagnostics for "
-                "the stalled peer, then emit a concise bridge finding or wake "
-                "handoff if the dispatcher still has not delivered work; route "
-                "any source change through a separate write claim."
+                "Run the unanswered-request, wake-delivery, and live CLI model "
+                "diagnostics for the stalled peer, then emit a concise bridge "
+                "finding or wake handoff if the dispatcher still has not "
+                "delivered work; route any source change through a separate "
+                "write claim."
             ),
             "recommended_command": unanswered_command,
-            "diagnostic_commands": [unanswered_command, wake_delivery_command],
+            "diagnostic_commands": [
+                unanswered_command,
+                wake_delivery_command,
+                cli_model_probe_command,
+            ],
         }
         wake_escalation = _wake_delivery_escalation_for_peer(
             production_liveness,
@@ -879,11 +889,12 @@ def _pick_production_liveness_reactivation(
         if wake_escalation is not None:
             candidate["delivery_escalation"] = wake_escalation
             candidate["acceptance"] = (
-                "Run the unanswered-request and wake-delivery diagnostics for "
-                "the stalled peer. If wake delivery is still stalled, do not "
-                "emit additional wake_request events as proof of progress; "
-                "verify or restart the target agent bridge session watcher. "
-                "Route any source change through a separate write claim."
+                "Run the unanswered-request, wake-delivery, and live CLI model "
+                "diagnostics for the stalled peer. If wake delivery is still "
+                "stalled, do not emit additional wake_request events as proof "
+                "of progress; verify or restart the target agent bridge "
+                "session watcher. Route any source change through a separate "
+                "write claim."
             )
         return candidate
     return None

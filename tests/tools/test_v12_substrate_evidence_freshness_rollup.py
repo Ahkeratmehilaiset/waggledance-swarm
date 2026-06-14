@@ -137,6 +137,30 @@ def test_fails_closed_when_substrate_authority_boundary_regresses() -> None:
     assert report["freshness"]["substrate_fresh_for_planning"] is False
 
 
+def test_require_fresh_substrate_fails_closed_when_substrate_not_fresh() -> None:
+    rollup = _rollup()
+    rollup["ingredients"][0] = copy.deepcopy(rollup["ingredients"][0])
+    rollup["ingredients"][0]["authority_boundary_ok"] = False
+    rollup["ingredients"][0]["blocker_count"] = 1
+
+    report = build_v12_substrate_evidence_freshness_rollup(
+        now_utc=FIXED_NOW,
+        matrix_text=_matrix(),
+        ingredient_rollup=rollup,
+        require_fresh_substrate=True,
+    )
+
+    assert report["ok"] is False
+    assert report["freshness"]["require_fresh_substrate"] is True
+    assert (
+        "substrate_ingredients_not_fresh_for_planning:counterfactual_eval"
+        in report["blockers"]
+    )
+    assert report["next_substrate_slices"] == [
+        "fix_v12_substrate_freshness_rollup_blockers_before_claiming_planning_fresh"
+    ]
+
+
 def test_markdown_is_path_free_and_carries_authority_boundary() -> None:
     report = build_v12_substrate_evidence_freshness_rollup(
         now_utc=FIXED_NOW,
@@ -176,6 +200,29 @@ def test_cli_json_smoke_on_repo_matrix() -> None:
     assert payload["ok"] is True
     assert payload["competitive_matrix"]["snapshot_age_days"] == 39
     assert payload["authority_boundary"]["promotion_authority"] is False
+
+
+def test_cli_accepts_require_fresh_substrate_when_substrate_current() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--now",
+            "2026-06-14T04:45:00Z",
+            "--require-fresh-substrate",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is True
+    assert payload["freshness"]["require_fresh_substrate"] is True
+    assert payload["freshness"]["substrate_fresh_for_planning"] is True
 
 
 def test_cli_rejects_invalid_max_next_slices() -> None:

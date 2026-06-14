@@ -38,6 +38,13 @@ from tools.bridge_next_action import (  # noqa: E402
     _task_id,
     read_events,
 )
+from tools.check_bridge_wake_delivery import (  # noqa: E402
+    DEFAULT_MAX_AGE_HOURS as DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS,
+    DEFAULT_MIN_AGE_MINUTES as DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES,
+    DEFAULT_MIN_REPEATS as DEFAULT_WAKE_DELIVERY_MIN_REPEATS,
+    WakeDeliveryError,
+    check_wake_delivery,
+)
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
@@ -47,6 +54,7 @@ DEFAULT_MAX_ITEMS = 20
 DEFAULT_MAX_AGE_HOURS = 12.0
 DEFAULT_MIN_AGE_MINUTES = 0.0
 OPERATOR_AGENT = "operator"
+WAKE_DELIVERY_MONITOR_AGENT = "bridge-wake-delivery-monitor"
 HIGH_SEVERITIES = {"critical", "high", "major"}
 TERMINAL_TYPES = {"done", "release"}
 ATTENTION_STATUS_TOKENS = {
@@ -128,6 +136,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override current UTC time for age evaluation.",
     )
+    parser.add_argument(
+        "--skip-wake-delivery",
+        action="store_true",
+        help="Do not add the live stalled-wake-delivery synthetic attention item.",
+    )
+    parser.add_argument(
+        "--wake-delivery-min-age-minutes",
+        type=float,
+        default=DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES,
+        help="Only include live wake-delivery stalls at least this old.",
+    )
+    parser.add_argument(
+        "--wake-delivery-min-repeats",
+        type=int,
+        default=DEFAULT_WAKE_DELIVERY_MIN_REPEATS,
+        help="Minimum unresolved wake_request count per target/task.",
+    )
+    parser.add_argument(
+        "--wake-delivery-max-age-hours",
+        type=float,
+        default=DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS,
+        help=(
+            "Ignore live wake-delivery stalls older than this many hours; "
+            "use <=0 to include the full selected event tail."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -143,6 +177,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_age_hours=args.max_age_hours,
             max_items=args.max_items,
             now_utc=_parse_now(args.now),
+            bridge_root=bridge_root,
+            include_wake_delivery=not args.skip_wake_delivery,
+            wake_delivery_min_age_minutes=args.wake_delivery_min_age_minutes,
+            wake_delivery_min_repeats=args.wake_delivery_min_repeats,
+            wake_delivery_max_age_hours=args.wake_delivery_max_age_hours,
         )
     except BridgeNextActionError as exc:
         report = {
@@ -178,6 +217,11 @@ def build_operator_attention_digest(
     max_age_hours: float | None = DEFAULT_MAX_AGE_HOURS,
     max_items: int = DEFAULT_MAX_ITEMS,
     now_utc: datetime | None = None,
+    bridge_root: Path | None = None,
+    include_wake_delivery: bool = True,
+    wake_delivery_min_age_minutes: float = DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES,
+    wake_delivery_min_repeats: int = DEFAULT_WAKE_DELIVERY_MIN_REPEATS,
+    wake_delivery_max_age_hours: float | None = DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS,
 ) -> dict[str, Any]:
     """Return unresolved operator-addressed bridge attention items."""
     if not math.isfinite(min_age_minutes) or min_age_minutes < 0:
@@ -213,6 +257,20 @@ def build_operator_attention_digest(
             continue
         items.append(_attention_row(state, age_minutes=age_minutes))
 
+    wake_delivery_report: dict[str, Any] | None = None
+    if include_wake_delivery:
+        wake_delivery_report = _wake_delivery_report(
+            events=events,
+            bridge_root=bridge_root,
+            now_utc=effective_now,
+            min_age_minutes=wake_delivery_min_age_minutes,
+            min_repeats=wake_delivery_min_repeats,
+            max_age_hours=wake_delivery_max_age_hours,
+        )
+        wake_delivery_item = _wake_delivery_attention_row(wake_delivery_report)
+        if wake_delivery_item is not None:
+            items.append(wake_delivery_item)
+
     items.sort(
         key=lambda row: (
             -int(row["rank_score"]),
@@ -239,6 +297,12 @@ def build_operator_attention_digest(
         "bridge_write_authority": False,
         "scheduler_authority": False,
         "runtime_authority": False,
+        "wake_delivery_checked": include_wake_delivery,
+        "wake_delivery_stalled_count": (
+            int(wake_delivery_report.get("stalled_count") or 0)
+            if isinstance(wake_delivery_report, Mapping)
+            else 0
+        ),
         "min_age_minutes": min_age_minutes,
         "max_age_hours": max_age_hours,
         "max_items": max_items,
@@ -419,6 +483,8 @@ def _priority_and_score(
 
 
 def _suggested_action(reasons: Sequence[str]) -> str:
+    if "wake_delivery_stalled" in reasons:
+        return "verify_or_restart_target_session_watcher"
     if "payload_no_more_nudges" in reasons:
         return "verify_or_restart_target_session_watcher"
     if "payload_operator_action_required" in reasons:
@@ -426,6 +492,102 @@ def _suggested_action(reasons: Sequence[str]) -> str:
     if "wake_request_to_operator" in reasons:
         return "read_bridge_and_answer_request"
     return "review_operator_addressed_event"
+
+
+def _wake_delivery_report(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path | None,
+    now_utc: datetime,
+    min_age_minutes: float,
+    min_repeats: int,
+    max_age_hours: float | None,
+) -> dict[str, Any]:
+    if not math.isfinite(min_age_minutes) or min_age_minutes < 0:
+        raise _error("wake_delivery_min_age_minutes must be finite and non-negative")
+    if min_repeats <= 0:
+        raise _error("wake_delivery_min_repeats must be positive")
+    if max_age_hours is not None and not math.isfinite(max_age_hours):
+        raise _error("wake_delivery_max_age_hours must be finite")
+    try:
+        return check_wake_delivery(
+            events=events,
+            bridge_root=bridge_root,
+            min_age_minutes=min_age_minutes,
+            min_repeats=min_repeats,
+            max_age_hours=max_age_hours,
+            now_utc=now_utc,
+        )
+    except WakeDeliveryError as exc:
+        errors = [str(error) for error in exc.report.get("errors", [])]
+        raise _error("; ".join(errors) or "wake delivery report failed") from exc
+
+
+def _wake_delivery_attention_row(
+    report: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    stalled_wakes = [
+        row
+        for row in report.get("stalled_wakes", [])
+        if isinstance(row, Mapping)
+    ]
+    if not stalled_wakes:
+        return None
+
+    target_agents = sorted(
+        {
+            str(row.get("target_agent") or "").strip()
+            for row in stalled_wakes
+            if str(row.get("target_agent") or "").strip()
+        }
+    )
+    wake_file_agents = sorted(
+        {
+            str(row.get("target_agent") or "").strip()
+            for row in stalled_wakes
+            if row.get("wake_file_present") is True
+            and str(row.get("target_agent") or "").strip()
+        }
+    )
+    wake_request_count = sum(
+        int(row.get("wake_request_count") or 0) for row in stalled_wakes
+    )
+    oldest_age = max(float(row.get("age_minutes") or 0.0) for row in stalled_wakes)
+    latest_ts = max(str(row.get("last_ts_utc") or "") for row in stalled_wakes)
+    first_ts = min(str(row.get("first_ts_utc") or "") for row in stalled_wakes)
+    target_text = ", ".join(target_agents) if target_agents else "unknown"
+    reasons = [
+        "payload_no_more_nudges",
+        "payload_operator_action_required",
+        "wake_delivery_stalled",
+    ]
+    return {
+        "priority": "urgent",
+        "rank_score": 160 + min(20, wake_request_count),
+        "source_agent": WAKE_DELIVERY_MONITOR_AGENT,
+        "task_id": "bridge-live-wake-delivery-stalled",
+        "type": "finding",
+        "status": "operator_action_required",
+        "severity": "high",
+        "ts_utc": latest_ts,
+        "first_ts_utc": first_ts,
+        "age_minutes": round(oldest_age, 3),
+        "event_count": wake_request_count,
+        "operator_addressed": True,
+        "bridge_visible": True,
+        "push_delivery_attempted": False,
+        "message": _safe_text(
+            "Wake delivery stalled for target agents: "
+            f"{target_text}. Do not emit additional wake_request events; "
+            "verify or restart the target session watcher/poll loop."
+        ),
+        "attention_reasons": reasons,
+        "suggested_action": _suggested_action(reasons),
+        "target_agents": target_agents,
+        "wake_file_present_agents": wake_file_agents,
+        "stalled_wake_count": len(stalled_wakes),
+        "do_not_emit_additional_wake_requests": True,
+    }
 
 
 def _task_key(event: Mapping[str, Any]) -> str:

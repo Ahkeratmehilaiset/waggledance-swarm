@@ -54,6 +54,32 @@ merge, or write artifact files. The command exits `0` when the candidate diff
 passes the charter gates and `1` when the report is valid but operator review is
 required.
 
+If the operator has separately approved the exact replay seed + candidate diff
+pair for later draft-PR creation, the admission check can consume a local
+digest-only reference:
+
+```powershell
+.\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
+  --candidate-diff-replay-admission `
+  --replay-seed .codex-audit\idle-replay-seed.json `
+  --candidate-diff .codex-audit\candidate.patch `
+  --changed-path docs\architecture\consensus_artifacts\replay.md `
+  --counterfactual-eval-receipt .codex-audit\counterfactual-receipt.json `
+  --operator-decision-reference .codex-audit\operator-decision-reference.json `
+  --json
+```
+
+The reference must use
+`schema_version=idle_consensus_operator_decision_reference.v0`, decision
+`approved_for_draft_pr_creation`, the expected `replay_seed_digest` and
+`candidate_diff_digest`, `operator_gate_required=true`, and false values for
+all authority flags (`auto_execute`, `external_effect`, `writes_applied`,
+`would_create_task`, `would_create_branch`, `would_create_pr`, `would_merge`,
+`runtime_authority_granted`, `external_writes_applied`). A matching reference
+clears only the `operator_review_gate_required` blocker in the report; the tool
+still writes no artifacts, appends no bridge events, and creates no task,
+branch, PR, or merge.
+
 When a later counterfactual evaluator needs to bind its receipt to the same
 stored consensus and candidate diff, emit the digest-only binding template:
 

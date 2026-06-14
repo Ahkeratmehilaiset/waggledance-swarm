@@ -79,6 +79,25 @@ def test_rollup_reports_fresh_substrate_and_historical_matrix_staleness() -> Non
             "reason": "historical_stale_allowed",
         }
     ]
+    assert report["freshness"]["stale_age_summary"] == {
+        "max_age_days": 14,
+        "window_count": 1,
+        "unknown_age_count": 0,
+        "oldest": {
+            "id": "competitive_evidence_matrix",
+            "kind": "planning_matrix",
+            "age_days": 39,
+            "band": "stale_2x_to_4x_max_age",
+        },
+        "bands": [
+            {
+                "band": "stale_2x_to_4x_max_age",
+                "count": 1,
+                "ids": ["competitive_evidence_matrix"],
+                "max_observed_age_days": 39,
+            }
+        ],
+    }
     assert report["next_substrate_slices"][0] == (
         "refresh_competitive_matrix_priority_rows_from_current_v12_proofs:G,J,L"
     )
@@ -173,6 +192,10 @@ def test_markdown_is_path_free_and_carries_authority_boundary() -> None:
 
     assert "# V12 Substrate Evidence Freshness Rollup" in markdown
     assert "competitive matrix snapshot age: `39` days" in markdown
+    assert (
+        "oldest evidence window: `competitive_evidence_matrix` "
+        "(`39` days, `stale_2x_to_4x_max_age`)"
+    ) in markdown
     assert "runtime authority: `false`" in markdown
     assert "bridge write authority: `false`" in markdown
     assert "tools/" not in encoded

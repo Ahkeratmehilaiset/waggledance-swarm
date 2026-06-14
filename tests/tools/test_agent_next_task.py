@@ -343,6 +343,62 @@ def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> N
     ] == 1
 
 
+def test_defers_wake_delivery_escalation_for_non_peer_target(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+            {
+                "ts_utc": "2026-05-20T11:30:00Z",
+                "agent": "operator",
+                "to": "claude-rco-2",
+                "type": "wake_request",
+                "task_id": "rco-wake",
+                "status": "open",
+                "message": "please read bridge",
+            },
+            {
+                "ts_utc": "2026-05-20T11:40:00Z",
+                "agent": "operator",
+                "to": "claude-rco-2",
+                "type": "wake_request",
+                "task_id": "rco-wake",
+                "status": "open",
+                "message": "please read bridge again",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    (bridge / "wake_claude-rco-2").write_text(
+        "2026-05-20T11:40:00Z", encoding="utf-8"
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["next_action"] == "follow_bridge_recommendation"
+    assert "candidate" not in report
+    recommendation = report["bridge_recommendation"]
+    assert recommendation["action"] == "escalate_wake_delivery_stall"
+    assert recommendation["operator_action_required"] is True
+    assert recommendation["operator_action_target_agents"] == ["claude-rco-2"]
+
+
 def test_prioritizes_unresolved_rco_reemit_pr_gate(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     head = "4" * 40

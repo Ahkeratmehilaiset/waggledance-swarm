@@ -31,6 +31,14 @@ SUBSTRATE_INGREDIENT_IDS = (
     "solver_growth_family",
     "adversarial_corpus",
 )
+AGE_BAND_ORDER = (
+    "future_age_invalid",
+    "fresh_age_unusable",
+    "stale_lt_2x_max_age",
+    "stale_2x_to_4x_max_age",
+    "stale_gt_4x_max_age",
+    "unknown_age",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,6 +199,10 @@ def build_v12_substrate_evidence_freshness_rollup(
             ),
             "stale_window_count": len(stale_windows),
             "stale_windows": stale_windows,
+            "stale_age_summary": _stale_age_summary(
+                stale_windows,
+                max_age_days=max_age_days,
+            ),
         },
         "substrate_ingredients": substrate_rows,
         "competitive_matrix": _competitive_matrix_summary(matrix_report),
@@ -226,6 +238,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "competitive matrix snapshot age: "
             f"`{matrix.get('snapshot_age_days', 'unknown')}` days"
         ),
+        _stale_age_summary_markdown(freshness.get("stale_age_summary")),
         "",
         "## Substrate Ingredients",
     ]
@@ -372,6 +385,85 @@ def _stale_windows(
     return stale
 
 
+def _stale_age_summary(
+    stale_windows: Sequence[Mapping[str, Any]],
+    *,
+    max_age_days: int,
+) -> dict[str, Any]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    oldest: dict[str, Any] | None = None
+    unknown_age_count = 0
+
+    for window in stale_windows:
+        age_days = _age_value(window.get("age_days"))
+        band = _age_band(age_days, max_age_days=max_age_days)
+        if age_days is None:
+            unknown_age_count += 1
+        entry = {
+            "id": str(window.get("id", "")),
+            "kind": str(window.get("kind", "")),
+            "age_days": age_days,
+            "band": band,
+        }
+        buckets.setdefault(band, []).append(entry)
+        if age_days is not None and (
+            oldest is None or age_days > _age_value(oldest.get("age_days"), default=-1)
+        ):
+            oldest = dict(entry)
+
+    bands: list[dict[str, Any]] = []
+    for band in list(AGE_BAND_ORDER) + sorted(set(buckets) - set(AGE_BAND_ORDER)):
+        entries = buckets.get(band, [])
+        if not entries:
+            continue
+        observed_ages = [
+            age
+            for age in (_age_value(entry.get("age_days")) for entry in entries)
+            if age is not None
+        ]
+        bands.append({
+            "band": band,
+            "count": len(entries),
+            "ids": [str(entry["id"]) for entry in entries],
+            "max_observed_age_days": max(observed_ages) if observed_ages else None,
+        })
+
+    return {
+        "max_age_days": max_age_days,
+        "window_count": len(stale_windows),
+        "unknown_age_count": unknown_age_count,
+        "oldest": oldest or {},
+        "bands": bands,
+    }
+
+
+def _age_band(age_days: int | None, *, max_age_days: int) -> str:
+    if age_days is None:
+        return "unknown_age"
+    if age_days < 0:
+        return "future_age_invalid"
+    if age_days <= max_age_days:
+        return "fresh_age_unusable"
+    if age_days <= max_age_days * 2:
+        return "stale_lt_2x_max_age"
+    if age_days <= max_age_days * 4:
+        return "stale_2x_to_4x_max_age"
+    return "stale_gt_4x_max_age"
+
+
+def _stale_age_summary_markdown(summary_value: Any) -> str:
+    summary = _mapping(summary_value)
+    oldest = _mapping(summary.get("oldest"))
+    if not oldest:
+        return "oldest evidence window: `none`"
+    return (
+        "oldest evidence window: "
+        f"`{oldest.get('id', 'unknown')}` "
+        f"(`{oldest.get('age_days', 'unknown')}` days, "
+        f"`{oldest.get('band', 'unknown_age')}`)"
+    )
+
+
 def _next_substrate_slices(
     substrate_rows: Sequence[Mapping[str, Any]],
     matrix_report: Mapping[str, Any],
@@ -438,6 +530,12 @@ def _as_int(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
     return max(0, value)
+
+
+def _age_value(value: Any, *, default: int | None = None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
 
 
 def _bool_text(value: Any) -> str:

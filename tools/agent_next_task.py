@@ -448,6 +448,8 @@ def evaluate_agent_next_task(
             agent=agent,
             bridge_root=Path(bridge_root),
             now_utc=now_utc,
+            events=events,
+            claims=claims,
             bridge_recommendation=bridge_recommendation,
             completed_task_ids=completed_production_liveness_task_ids,
             active_task_ids=active_production_liveness_task_ids,
@@ -923,6 +925,8 @@ def _pick_production_liveness_reactivation(
     agent: str,
     bridge_root: Path,
     now_utc: datetime,
+    events: Sequence[Mapping[str, Any]],
+    claims: Sequence[Any],
     bridge_recommendation: Mapping[str, Any],
     completed_task_ids: set[str] | None = None,
     active_task_ids: set[str] | None = None,
@@ -963,6 +967,10 @@ def _pick_production_liveness_reactivation(
             peer_agent=peer_agent,
             episode_suffix=episode_suffix,
         )
+        legacy_task_id = _production_liveness_reactivation_task_id(
+            now_utc=now_utc,
+            peer_agent=peer_agent,
+        )
         completed_matches = _matching_production_liveness_reactivation_task_ids(
             completed,
             canonical_task_id=task_id,
@@ -971,6 +979,27 @@ def _pick_production_liveness_reactivation(
             active,
             canonical_task_id=task_id,
         )
+        if legacy_task_id != task_id:
+            episode_started_at = _liveness_episode_started_at(episode_suffix)
+            if legacy_task_id in completed and (
+                episode_started_at is None
+                or _production_liveness_task_completed_at_or_after(
+                    legacy_task_id,
+                    events=events,
+                    bridge_root=bridge_root,
+                    threshold=episode_started_at,
+                )
+            ):
+                completed_matches.add(legacy_task_id)
+            if legacy_task_id in active and (
+                episode_started_at is None
+                or _production_liveness_task_active_at_or_after(
+                    legacy_task_id,
+                    claims=claims,
+                    threshold=episode_started_at,
+                )
+            ):
+                active_matches.add(legacy_task_id)
         if completed_matches or active_matches:
             continue
         unanswered_command = (
@@ -1939,6 +1968,18 @@ def _liveness_episode_suffix(item: Mapping[str, Any]) -> str:
     return ""
 
 
+def _liveness_episode_started_at(episode_suffix: str) -> datetime | None:
+    token = episode_suffix.removeprefix("since-")
+    if token == episode_suffix or not token:
+        return None
+    try:
+        return datetime.strptime(token, "%Y%m%dt%H%M%Sz").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
 def _utc_task_token(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1980,6 +2021,76 @@ def _matching_production_liveness_reactivation_task_ids(
         if task_id == canonical_task_id
         or task_id.startswith(f"{canonical_task_id}-")
     }
+
+
+def _production_liveness_task_completed_at_or_after(
+    task_id: str,
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    threshold: datetime,
+) -> bool:
+    for event in events:
+        if str(event.get("task_id") or "") != task_id:
+            continue
+        if not _is_successful_completion_event(event):
+            continue
+        completed_at = _parse_optional_utc(event.get("ts_utc"))
+        if completed_at is not None and completed_at >= threshold:
+            return True
+
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        done_files = []
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(payload.get("task_id") or "") != task_id:
+            continue
+        status = str(
+            payload.get("release_status")
+            or payload.get("status")
+            or payload.get("release_message")
+            or ""
+        )
+        if not _status_is_successful(status):
+            continue
+        completed_at = _parse_optional_utc(
+            payload.get("released_at_utc") or payload.get("claimed_at_utc")
+        )
+        if completed_at is not None and completed_at >= threshold:
+            return True
+    return False
+
+
+def _production_liveness_task_active_at_or_after(
+    task_id: str,
+    *,
+    claims: Sequence[Any],
+    threshold: datetime,
+) -> bool:
+    for claim in claims:
+        if str(getattr(claim, "task_id", "")) != task_id:
+            continue
+        observed_at = _parse_optional_utc(
+            getattr(claim, "last_heartbeat_utc", "")
+            or getattr(claim, "claimed_at_utc", "")
+        )
+        if observed_at is not None and observed_at >= threshold:
+            return True
+    return False
+
+
+def _parse_optional_utc(value: Any) -> datetime | None:
+    try:
+        return _parse_utc(str(value or ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_same_day_rco_lane_failover_task_id(

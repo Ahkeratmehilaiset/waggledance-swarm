@@ -118,6 +118,27 @@ def test_reports_repeated_wake_without_later_target_activity() -> None:
         "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
         "operator_action_required": True,
         "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+        "diagnostic_next_action": (
+            "run session_liveness_supervisor_report before writing more "
+            "wake_requests"
+        ),
+        "diagnostic_commands": [
+            {
+                "target_agent": "claude-rco-2",
+                "authority": "read_only_report_no_restart_no_gate_skip",
+                "argv": [
+                    "python",
+                    "tools/session_liveness_supervisor_report.py",
+                    "--agent",
+                    "claude-rco-2",
+                    "--json",
+                ],
+                "command": (
+                    "python tools/session_liveness_supervisor_report.py "
+                    "--agent claude-rco-2 --json"
+                ),
+            }
+        ],
     }
     row = report["stalled_wakes"][0]
     assert row["target_agent"] == "claude-rco-2"
@@ -148,6 +169,8 @@ def test_target_activity_after_wake_clears_pending_group() -> None:
         "safe_next_action": "",
         "operator_action_required": False,
         "reason": "",
+        "diagnostic_next_action": "",
+        "diagnostic_commands": [],
     }
     assert report["stalled_wakes"] == []
 
@@ -308,6 +331,18 @@ def test_wake_file_presence_is_reported(tmp_path: Path) -> None:
     assert row["wake_file_lag_seconds"] == 60.0
     assert row["wake_file_age_minutes"] == 24.0
     assert "wake file exists" in row["diagnosis"]
+    command = report["delivery_escalation"]["diagnostic_commands"][0]
+    assert command["target_agent"] == "claude-rco-2"
+    assert command["authority"] == "read_only_report_no_restart_no_gate_skip"
+    assert command["argv"] == [
+        "python",
+        "tools/session_liveness_supervisor_report.py",
+        "--bridge-root",
+        str(tmp_path),
+        "--agent",
+        "claude-rco-2",
+        "--json",
+    ]
 
 
 def test_stale_wake_file_is_not_treated_as_delivery_proof(tmp_path: Path) -> None:

@@ -283,6 +283,17 @@ def test_plural_private_marker_helper_name_is_not_input_sentinel() -> None:
     assert _find_private_marker(f"+ assert all({helper_name})\n") is None
 
 
+def test_plural_private_marker_helper_exception_is_diff_only() -> None:
+    marker = "PRIVATE" + "_MARKER"
+    helper_name = f"{marker}S"
+
+    assert _find_private_marker(helper_name) == marker
+    assert _find_private_marker(f"+ assert all('{helper_name}')\n") == marker
+    assert _find_private_marker(f"+ assert all(X{helper_name})\n") == marker
+    assert _find_private_marker(f"+ assert all({helper_name}_X)\n") == marker
+    assert _find_private_marker(f"+ assert all({marker}_X)\n") == marker
+
+
 def test_operator_gated_path_refuses() -> None:
     report = _evaluate(status=_status(changed_paths=["CLAUDE.md"]))
 

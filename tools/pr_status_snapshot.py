@@ -374,14 +374,46 @@ def _assert_no_private_markers(value: object) -> None:
         )
 
 
+def _is_allowed_private_marker_helper_reference(
+    value: str, start: int, marker: str
+) -> bool:
+    end = start + len(marker)
+    while start > 0 and _is_private_marker_identifier_char(value[start - 1]):
+        start -= 1
+    while end < len(value) and _is_private_marker_identifier_char(value[end]):
+        end += 1
+    if value[start:end] != f"{marker}S":
+        return False
+    line_start = value.rfind("\n", 0, start) + 1
+    line_end = value.find("\n", end)
+    if line_end == -1:
+        line_end = len(value)
+    line = value[line_start:line_end]
+    if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
+        return False
+    before = value[start - 1] if start > line_start else ""
+    after = value[end] if end < line_end else ""
+    return before not in {"'", '"'} and after not in {"'", '"'}
+
+
+def _is_private_marker_identifier_char(character: str) -> bool:
+    return (
+        character == "_"
+        or "0" <= character <= "9"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+    )
+
+
 def _find_private_marker(value: object) -> str | None:
     if isinstance(value, str):
         for marker in PRIVATE_MARKERS:
             if marker == PRIVATE_MARKERS[0]:
-                token_pattern = re.compile(
-                    rf"(?<![A-Za-z0-9_]){re.escape(marker)}(?![A-Za-z0-9_])"
-                )
-                if token_pattern.search(value):
+                for match in re.finditer(re.escape(marker), value):
+                    if _is_allowed_private_marker_helper_reference(
+                        value, match.start(), marker
+                    ):
+                        continue
                     return marker
                 continue
             if marker in value:

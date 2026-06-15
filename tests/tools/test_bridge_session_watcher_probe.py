@@ -13,6 +13,7 @@ from tools.bridge_session_watcher_probe import (
     main,
     probe_bridge_session_watchers,
     read_active_claim_counts,
+    read_active_claim_records,
     read_process_snapshot,
 )
 
@@ -201,6 +202,41 @@ def test_read_active_claim_counts_reads_bridge_claims(tmp_path: Path) -> None:
 
     assert counts == {"codex-lead-1": 1}
     assert errors == ["b.json"]
+
+
+def test_read_active_claim_records_preserves_identity_fields(tmp_path: Path) -> None:
+    claims = tmp_path / "work_queue" / "claims"
+    claims.mkdir(parents=True)
+    (claims / "write.json").write_text(
+        json.dumps(
+            {
+                "agent": "codex-lead-1",
+                "task_id": "write-slice",
+                "mode": "write",
+                "write_scope": ["tools/a.py"],
+                "claimed_at_utc": "2026-06-15T11:00:00Z",
+                "last_heartbeat_utc": "2026-06-15T11:05:00Z",
+                "claim_lease_expires_utc": "2026-06-15T11:10:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records, errors = read_active_claim_records(tmp_path)
+
+    assert errors == []
+    assert records == [
+        {
+            "agent": "codex-lead-1",
+            "task_id": "write-slice",
+            "mode": "write",
+            "write_scope": ["tools/a.py"],
+            "claimed_at_utc": "2026-06-15T11:00:00Z",
+            "last_heartbeat_utc": "2026-06-15T11:05:00Z",
+            "claim_lease_expires_utc": "2026-06-15T11:10:00Z",
+            "malformed": False,
+        }
+    ]
 
 
 def test_collect_live_process_snapshot_runs_read_only_process_inventory(monkeypatch) -> None:

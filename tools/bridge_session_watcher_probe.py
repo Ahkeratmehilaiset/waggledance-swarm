@@ -22,7 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
+from waggledance.core.work_queue import (  # noqa: E402
+    AGENT_ID_PATTERN,
+    ALLOWED_MODES,
+    resolve_bridge_root,
+)
 
 
 DEFAULT_TARGET_AGENTS: tuple[str, ...] = (
@@ -163,11 +167,23 @@ def collect_live_process_snapshot(
 
 
 def read_active_claim_counts(bridge_root: Path) -> tuple[dict[str, int], list[str]]:
-    claims_dir = bridge_root / "work_queue" / "claims"
+    records, errors = read_active_claim_records(bridge_root)
     counts: dict[str, int] = {}
+    for record in records:
+        agent = str(record.get("agent") or "")
+        if agent:
+            counts[agent] = counts.get(agent, 0) + 1
+    return counts, errors
+
+
+def read_active_claim_records(
+    bridge_root: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    claims_dir = bridge_root / "work_queue" / "claims"
+    records: list[dict[str, Any]] = []
     errors: list[str] = []
     if not claims_dir.exists():
-        return counts, errors
+        return records, errors
     for path in sorted(claims_dir.glob("*.json")):
         try:
             payload = json.loads(
@@ -183,8 +199,33 @@ def read_active_claim_counts(bridge_root: Path) -> tuple[dict[str, int], list[st
         agent = str(payload.get("agent") or "").strip().lower()
         if not agent or not AGENT_ID_PATTERN.fullmatch(agent):
             continue
-        counts[agent] = counts.get(agent, 0) + 1
-    return counts, errors
+        raw_mode = str(payload.get("mode") or "read-only").strip().lower()
+        mode = raw_mode if raw_mode in ALLOWED_MODES else "unknown"
+        task_id = str(payload.get("task_id") or "").strip()
+        write_scope = _claim_write_scope(payload.get("write_scope"))
+        records.append(
+            {
+                "agent": agent,
+                "task_id": task_id,
+                "mode": mode,
+                "write_scope": write_scope,
+                "claimed_at_utc": str(payload.get("claimed_at_utc") or ""),
+                "last_heartbeat_utc": str(payload.get("last_heartbeat_utc") or ""),
+                "claim_lease_expires_utc": str(
+                    payload.get("claim_lease_expires_utc") or ""
+                ),
+                "malformed": bool(not task_id or mode == "unknown"),
+            }
+        )
+    return records, errors
+
+
+def _claim_write_scope(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def probe_bridge_session_watchers(

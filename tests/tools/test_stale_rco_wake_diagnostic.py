@@ -164,6 +164,74 @@ def test_absent_wake_file_is_ok(tmp_path: Path) -> None:
     assert row["diagnosis"] == "wake_file_absent"
 
 
+def test_activity_gap_recommends_available_rco_failover(tmp_path: Path) -> None:
+    report = report_stale_rco_wakes(
+        events=[
+            _event(ts="2026-06-14T19:55:00Z", agent="claude-rco-1"),
+            _event(ts="2026-06-14T18:45:00Z", agent="claude-rco-2"),
+        ],
+        bridge_root=tmp_path,
+        agents=["claude-rco-1", "claude-rco-2"],
+        min_age_minutes=12,
+        activity_gap_minutes=45,
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_wake_ok"
+    assert report["activity_gap_count"] == 1
+    recommendation = report["rco_failover_recommendation"]
+    assert recommendation == {
+        "required": True,
+        "stale_activity_agents": ["claude-rco-2"],
+        "available_activity_agents": ["claude-rco-1"],
+        "operator_action_required": True,
+        "safe_next_action": (
+            "request_or_keep_review_with_available_recognized_rco_and_"
+            "restart_stale_rco_bridge_session"
+        ),
+        "reason": "some_recognized_rco_lanes_have_activity_gap",
+        "advisory_only": True,
+        "no_authority_granted": True,
+        "rco_absence_still_blocks_merge": True,
+    }
+    by_agent = {
+        row["target_agent"]: row for row in report["checked_rco_wakes"]
+    }
+    assert by_agent["claude-rco-1"]["last_target_activity_age_minutes"] == 5.0
+    assert by_agent["claude-rco-1"]["activity_gap_exceeded"] is False
+    assert by_agent["claude-rco-2"]["last_target_activity_age_minutes"] == 75.0
+    assert by_agent["claude-rco-2"]["activity_gap_exceeded"] is True
+
+
+def test_activity_gap_all_rco_lanes_requires_restart_before_waiting(
+    tmp_path: Path,
+) -> None:
+    report = report_stale_rco_wakes(
+        events=[
+            _event(ts="2026-06-14T18:40:00Z", agent="claude-rco-1"),
+            _event(ts="2026-06-14T18:45:00Z", agent="claude-rco-2"),
+        ],
+        bridge_root=tmp_path,
+        agents=["claude-rco-1", "claude-rco-2"],
+        activity_gap_minutes=45,
+        now_utc=_now(),
+    )
+
+    recommendation = report["rco_failover_recommendation"]
+    assert recommendation["required"] is True
+    assert recommendation["stale_activity_agents"] == [
+        "claude-rco-1",
+        "claude-rco-2",
+    ]
+    assert recommendation["available_activity_agents"] == []
+    assert recommendation["safe_next_action"] == (
+        "restart_or_verify_all_rco_bridge_session_watchers_before_"
+        "waiting_for_review"
+    )
+    assert recommendation["reason"] == "all_checked_rco_lanes_have_activity_gap"
+    assert recommendation["rco_absence_still_blocks_merge"] is True
+
+
 def test_invalid_non_rco_agent_fails_closed(tmp_path: Path) -> None:
     try:
         report_stale_rco_wakes(
@@ -173,6 +241,22 @@ def test_invalid_non_rco_agent_fails_closed(tmp_path: Path) -> None:
         )
     except StaleRcoWakeError as exc:
         assert "agent must be an RCO lane" in exc.report["errors"][0]
+    else:
+        raise AssertionError("expected StaleRcoWakeError")
+
+
+def test_invalid_activity_gap_fails_closed(tmp_path: Path) -> None:
+    try:
+        report_stale_rco_wakes(
+            events=[],
+            bridge_root=tmp_path,
+            agents=["claude-rco-1"],
+            activity_gap_minutes=-0.1,
+        )
+    except StaleRcoWakeError as exc:
+        assert exc.report["errors"] == [
+            "activity_gap_minutes must be non-negative"
+        ]
     else:
         raise AssertionError("expected StaleRcoWakeError")
 
@@ -211,5 +295,12 @@ def test_cli_json_does_not_leak_wake_path_and_can_fail_on_stale(
     report = json.loads(result.stdout)
     assert report["decision"] == "stale_rco_wake_detected"
     assert report["stale_count"] == 1
+    assert report["rco_failover_recommendation"]["advisory_only"] is True
+    assert (
+        report["rco_failover_recommendation"][
+            "rco_absence_still_blocks_merge"
+        ]
+        is True
+    )
     assert str(tmp_path) not in result.stdout
     assert "wake_claude-rco-2" not in result.stdout

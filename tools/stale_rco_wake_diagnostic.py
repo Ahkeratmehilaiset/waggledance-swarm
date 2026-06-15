@@ -36,6 +36,7 @@ from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  #
 
 DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
 DEFAULT_MIN_AGE_MINUTES = 12.0
+DEFAULT_ACTIVITY_GAP_MINUTES = 45.0
 DEFAULT_TAIL = 50000
 RCO_AGENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*-rco-\d+$")
 
@@ -87,6 +88,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only report present wake files at least this old.",
     )
     parser.add_argument(
+        "--activity-gap-minutes",
+        type=float,
+        default=DEFAULT_ACTIVITY_GAP_MINUTES,
+        help=(
+            "Report an RCO lane as activity-stale when its latest non-heartbeat "
+            "bridge activity is older than this many minutes."
+        ),
+    )
+    parser.add_argument(
         "--tail",
         type=int,
         default=DEFAULT_TAIL,
@@ -116,6 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bridge_root=bridge_root,
             agents=args.agent,
             min_age_minutes=args.min_age_minutes,
+            activity_gap_minutes=args.activity_gap_minutes,
             now_utc=_parse_now(args.now),
         )
     except BridgeNextActionError as exc:
@@ -151,6 +162,7 @@ def report_stale_rco_wakes(
     bridge_root: Path,
     agents: Sequence[str] | None = None,
     min_age_minutes: float = DEFAULT_MIN_AGE_MINUTES,
+    activity_gap_minutes: float = DEFAULT_ACTIVITY_GAP_MINUTES,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Return a read-only report for stale RCO wake files."""
@@ -160,6 +172,14 @@ def report_stale_rco_wakes(
                 "ok": False,
                 "decision": "stale_rco_wake_error",
                 "errors": ["min_age_minutes must be non-negative"],
+            }
+        )
+    if activity_gap_minutes < 0:
+        raise StaleRcoWakeError(
+            {
+                "ok": False,
+                "decision": "stale_rco_wake_error",
+                "errors": ["activity_gap_minutes must be non-negative"],
             }
         )
 
@@ -174,6 +194,7 @@ def report_stale_rco_wakes(
             events=events,
             bridge_root=bridge_root,
             min_age_minutes=min_age_minutes,
+            activity_gap_minutes=activity_gap_minutes,
             now_utc=effective_now,
         )
         checked_rows.append(row)
@@ -188,6 +209,7 @@ def report_stale_rco_wakes(
     )
     checked_rows.sort(key=lambda row: str(row.get("target_agent") or ""))
     stale_agents = [str(row["target_agent"]) for row in stale_rows]
+    failover_recommendation = _rco_failover_recommendation(checked_rows)
     return {
         "ok": True,
         "decision": (
@@ -195,8 +217,12 @@ def report_stale_rco_wakes(
         ),
         "events_checked": len(events),
         "min_age_minutes": min_age_minutes,
+        "activity_gap_minutes": activity_gap_minutes,
         "agent_filter": checked_agents,
         "stale_count": len(stale_rows),
+        "activity_gap_count": len(
+            failover_recommendation["stale_activity_agents"]
+        ),
         "by_agent": {agent: 1 for agent in stale_agents},
         "authority_boundary": {
             "read_only": True,
@@ -220,6 +246,7 @@ def report_stale_rco_wakes(
                 else ""
             ),
         },
+        "rco_failover_recommendation": failover_recommendation,
         "checked_rco_wakes": checked_rows,
         "stale_rco_wakes": stale_rows,
     }
@@ -231,10 +258,17 @@ def _rco_wake_row(
     events: Sequence[Mapping[str, Any]],
     bridge_root: Path,
     min_age_minutes: float,
+    activity_gap_minutes: float,
     now_utc: datetime,
 ) -> dict[str, Any]:
     wake_path = Path(bridge_root) / f"wake_{agent}"
     last_activity = _last_non_heartbeat_activity(events, agent)
+    last_activity_age_minutes = _activity_age_minutes(last_activity, now_utc)
+    activity_gap_exceeded = (
+        True
+        if last_activity_age_minutes is None
+        else last_activity_age_minutes >= activity_gap_minutes
+    )
     base = {
         "target_agent": agent,
         "wake_file_checked": True,
@@ -245,6 +279,9 @@ def _rco_wake_row(
         "last_target_activity_status": (
             str(last_activity["status"]) if last_activity else ""
         ),
+        "last_target_activity_age_minutes": last_activity_age_minutes,
+        "activity_gap_minutes": activity_gap_minutes,
+        "activity_gap_exceeded": activity_gap_exceeded,
     }
     if not wake_path.exists():
         return {
@@ -307,6 +344,65 @@ def _last_non_heartbeat_activity(
                 "status": _event_status(event),
             }
     return latest
+
+
+def _activity_age_minutes(
+    last_activity: Mapping[str, Any] | None,
+    now_utc: datetime,
+) -> float | None:
+    if last_activity is None:
+        return None
+    ts = last_activity.get("ts")
+    if not isinstance(ts, datetime):
+        return None
+    return round(max(0.0, (now_utc - ts).total_seconds() / 60.0), 3)
+
+
+def _rco_failover_recommendation(
+    checked_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    stale_activity_agents = sorted(
+        str(row.get("target_agent") or "")
+        for row in checked_rows
+        if row.get("activity_gap_exceeded")
+    )
+    available_activity_agents = sorted(
+        str(row.get("target_agent") or "")
+        for row in checked_rows
+        if not row.get("activity_gap_exceeded")
+    )
+    stale_activity_agents = [agent for agent in stale_activity_agents if agent]
+    available_activity_agents = [
+        agent for agent in available_activity_agents if agent
+    ]
+
+    if not stale_activity_agents:
+        safe_next_action = ""
+        reason = ""
+    elif available_activity_agents:
+        safe_next_action = (
+            "request_or_keep_review_with_available_recognized_rco_and_"
+            "restart_stale_rco_bridge_session"
+        )
+        reason = "some_recognized_rco_lanes_have_activity_gap"
+    else:
+        safe_next_action = (
+            "restart_or_verify_all_rco_bridge_session_watchers_before_"
+            "waiting_for_review"
+        )
+        reason = "all_checked_rco_lanes_have_activity_gap"
+
+    return {
+        "required": bool(stale_activity_agents),
+        "stale_activity_agents": stale_activity_agents,
+        "available_activity_agents": available_activity_agents,
+        "operator_action_required": bool(stale_activity_agents),
+        "safe_next_action": safe_next_action,
+        "reason": reason,
+        "advisory_only": True,
+        "no_authority_granted": True,
+        "rco_absence_still_blocks_merge": True,
+    }
 
 
 def _normalize_rco_agents(agents: Sequence[str] | None) -> list[str]:
@@ -377,6 +473,13 @@ def _print_human(report: Mapping[str, Any]) -> None:
             f"age={row.get('wake_age_minutes')}m "
             f"last_activity={row.get('last_target_activity_ts_utc') or 'none'}"
         )
+    failover = report.get("rco_failover_recommendation", {})
+    if isinstance(failover, Mapping) and failover.get("required"):
+        stale_agents = ", ".join(
+            str(agent) for agent in failover.get("stale_activity_agents", [])
+        )
+        print(f"rco activity-gap failover recommended: {stale_agents}")
+        print(f"safe next: {failover.get('safe_next_action')}")
 
 
 if __name__ == "__main__":

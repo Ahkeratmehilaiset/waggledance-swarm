@@ -427,11 +427,26 @@ def evaluate_agent_next_task(
         })
 
     if bridge_action in PICK_ACTIONS:
+        completed_production_liveness_task_ids = (
+            _completed_production_liveness_reactivation_task_ids(
+                events=events,
+                bridge_root=Path(bridge_root),
+                now_utc=now_utc,
+            )
+        )
+        active_production_liveness_task_ids = (
+            _active_production_liveness_reactivation_task_ids(
+                claims=claims,
+                now_utc=now_utc,
+            )
+        )
         production_liveness_candidate = _pick_production_liveness_reactivation(
             agent=agent,
             bridge_root=Path(bridge_root),
             now_utc=now_utc,
             bridge_recommendation=bridge_recommendation,
+            completed_task_ids=completed_production_liveness_task_ids,
+            active_task_ids=active_production_liveness_task_ids,
         )
         if production_liveness_candidate is not None:
             return _with_deferred_lift_state({
@@ -442,6 +457,12 @@ def evaluate_agent_next_task(
                 "underlying_bridge_action": bridge_action,
                 "bridge_recommendation": bridge_recommendation,
                 **_bridge_context(bridge_recommendation),
+                "completed_production_liveness_task_ids": sorted(
+                    completed_production_liveness_task_ids
+                ),
+                "active_production_liveness_task_ids": sorted(
+                    active_production_liveness_task_ids
+                ),
                 "candidate": production_liveness_candidate,
                 "notes": [
                     (
@@ -478,6 +499,12 @@ def evaluate_agent_next_task(
                 "underlying_bridge_action": bridge_action,
                 "bridge_recommendation": bridge_recommendation,
                 **_bridge_context(bridge_recommendation),
+                "completed_production_liveness_task_ids": sorted(
+                    completed_production_liveness_task_ids
+                ),
+                "active_production_liveness_task_ids": sorted(
+                    active_production_liveness_task_ids
+                ),
                 "candidate": rco_reemit_candidate,
                 "notes": [
                     (
@@ -533,6 +560,12 @@ def evaluate_agent_next_task(
                     "underlying_bridge_action": bridge_action,
                     "bridge_recommendation": bridge_recommendation,
                     **_bridge_context(bridge_recommendation),
+                    "completed_production_liveness_task_ids": sorted(
+                        completed_production_liveness_task_ids
+                    ),
+                    "active_production_liveness_task_ids": sorted(
+                        active_production_liveness_task_ids
+                    ),
                     "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
@@ -582,6 +615,12 @@ def evaluate_agent_next_task(
                     "underlying_bridge_action": bridge_action,
                     "bridge_recommendation": bridge_recommendation,
                     **_bridge_context(bridge_recommendation),
+                    "completed_production_liveness_task_ids": sorted(
+                        completed_production_liveness_task_ids
+                    ),
+                    "active_production_liveness_task_ids": sorted(
+                        active_production_liveness_task_ids
+                    ),
                     "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
@@ -639,6 +678,12 @@ def evaluate_agent_next_task(
                     "underlying_bridge_action": bridge_action,
                     "bridge_recommendation": bridge_recommendation,
                     **_bridge_context(bridge_recommendation),
+                    "completed_production_liveness_task_ids": sorted(
+                        completed_production_liveness_task_ids
+                    ),
+                    "active_production_liveness_task_ids": sorted(
+                        active_production_liveness_task_ids
+                    ),
                     "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                     "completed_dream_mode_task_ids": sorted(
                         completed_dream_mode_task_ids
@@ -705,6 +750,12 @@ def evaluate_agent_next_task(
                 "underlying_bridge_action": bridge_action,
                 "bridge_recommendation": bridge_recommendation,
                 **_bridge_context(bridge_recommendation),
+                "completed_production_liveness_task_ids": sorted(
+                    completed_production_liveness_task_ids
+                ),
+                "active_production_liveness_task_ids": sorted(
+                    active_production_liveness_task_ids
+                ),
                 "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                 "completed_dream_mode_task_ids": sorted(completed_dream_mode_task_ids),
                 "active_dream_mode_task_ids": sorted(active_dream_mode_task_ids),
@@ -749,6 +800,13 @@ def evaluate_agent_next_task(
             "underlying_bridge_action": bridge_action,
             "bridge_recommendation": bridge_recommendation,
             **_bridge_context(bridge_recommendation),
+            "completed_production_liveness_task_ids": sorted(
+                completed_production_liveness_task_ids
+            ),
+            "active_production_liveness_task_ids": sorted(
+                active_production_liveness_task_ids
+            ),
+            "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
             "candidate": candidate,
             "notes": [
                 (
@@ -803,11 +861,15 @@ def _pick_production_liveness_reactivation(
     bridge_root: Path,
     now_utc: datetime,
     bridge_recommendation: Mapping[str, Any],
+    completed_task_ids: set[str] | None = None,
+    active_task_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Return a read-only diagnostic when the primary production peer stalled."""
     peer_agent = PRODUCTION_PEER_AGENT.get(agent)
     if not peer_agent:
         return None
+    completed = completed_task_ids or set()
+    active = active_task_ids or set()
 
     production_liveness = bridge_recommendation.get("production_liveness")
     if not isinstance(production_liveness, Mapping):
@@ -832,10 +894,20 @@ def _pick_production_liveness_reactivation(
             idle_minutes_float = 0.0
         idle_warn = float(production_liveness.get("idle_warn_minutes") or 0.0)
         events_path = bridge_root / "shared" / "events.jsonl"
-        task_id = (
-            "production-liveness-reactivation-scout-"
-            f"{now_utc.strftime('%Y-%m-%d')}-{peer_agent}"
+        task_id = _production_liveness_reactivation_task_id(
+            now_utc=now_utc,
+            peer_agent=peer_agent,
         )
+        completed_matches = _matching_production_liveness_reactivation_task_ids(
+            completed,
+            canonical_task_id=task_id,
+        )
+        active_matches = _matching_production_liveness_reactivation_task_ids(
+            active,
+            canonical_task_id=task_id,
+        )
+        if completed_matches or active_matches:
+            continue
         unanswered_command = (
             f"{_python_command()} "
             "tools\\report_unanswered_bridge_requests.py "
@@ -881,6 +953,10 @@ def _pick_production_liveness_reactivation(
                 wake_delivery_command,
                 cli_model_probe_command,
             ],
+            "rotation": {
+                "skipped_completed_task_ids": sorted(completed_matches),
+                "skipped_active_task_ids": sorted(active_matches),
+            },
         }
         wake_escalation = _wake_delivery_escalation_for_peer(
             production_liveness,
@@ -1648,6 +1724,39 @@ def _continuous_operational_scout_task_id(
     )
 
 
+def _production_liveness_reactivation_task_id(
+    *,
+    now_utc: datetime,
+    peer_agent: str,
+) -> str:
+    return (
+        "production-liveness-reactivation-scout-"
+        f"{now_utc.strftime('%Y-%m-%d')}-{peer_agent}"
+    )
+
+
+def _is_same_day_production_liveness_reactivation_task_id(
+    task_id: str,
+    now_utc: datetime,
+) -> bool:
+    return task_id.startswith(
+        f"production-liveness-reactivation-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    )
+
+
+def _matching_production_liveness_reactivation_task_ids(
+    task_ids: set[str],
+    *,
+    canonical_task_id: str,
+) -> set[str]:
+    return {
+        task_id
+        for task_id in task_ids
+        if task_id == canonical_task_id
+        or task_id.startswith(f"{canonical_task_id}-")
+    }
+
+
 def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
     return _canonical_same_day_dream_mode_task_id(task_id, now_utc) is not None
 
@@ -1739,6 +1848,53 @@ def _completed_substrate_smoke_task_ids(
             continue
         task_id = str(payload.get("task_id", ""))
         if task_id != legacy_task_id and not task_id.startswith(prefix):
+            continue
+        status = str(
+            payload.get("release_status")
+            or payload.get("status")
+            or payload.get("release_message")
+            or ""
+        )
+        if _status_is_successful(status):
+            completed.add(task_id)
+
+    return completed
+
+
+def _completed_production_liveness_reactivation_task_ids(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    now_utc: datetime,
+) -> set[str]:
+    completed: set[str] = set()
+
+    for event in events:
+        task_id = str(event.get("task_id", ""))
+        if not _is_same_day_production_liveness_reactivation_task_id(
+            task_id,
+            now_utc,
+        ):
+            continue
+        if _is_successful_completion_event(event):
+            completed.add(task_id)
+
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        done_files = []
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        task_id = str(payload.get("task_id", ""))
+        if not _is_same_day_production_liveness_reactivation_task_id(
+            task_id,
+            now_utc,
+        ):
             continue
         status = str(
             payload.get("release_status")
@@ -1897,6 +2053,19 @@ def _active_dream_mode_task_ids(
         )
         if canonical_task_id is not None:
             active.add(canonical_task_id)
+    return active
+
+
+def _active_production_liveness_reactivation_task_ids(
+    *,
+    claims: Sequence[Any],
+    now_utc: datetime,
+) -> set[str]:
+    active: set[str] = set()
+    for claim in claims:
+        task_id = str(getattr(claim, "task_id", ""))
+        if _is_same_day_production_liveness_reactivation_task_id(task_id, now_utc):
+            active.add(task_id)
     return active
 
 

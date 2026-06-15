@@ -1,7 +1,7 @@
 # ASI 2026 Mapping for MAGMA Synthetic Adversarial Corpus
 
 **Status:** advisory mapping, document-only
-**Observed on:** 2026-06-01
+**Observed on:** 2026-06-14
 **Repo baseline before gap expansion:** `0f865ba4133b77802d4780a24f112c10cf331a5f`
 **Corpus:** `tests/fixtures/magma_adversarial_corpus/v0.json`
 
@@ -34,25 +34,25 @@ backlog seed for later, separately reviewed hardening slices.
 
 ## Current Corpus Counts
 
-The strict v0 corpus currently has 59 cases across 15 defect types.
+The strict v0 corpus currently has 109 cases across 15 defect types.
 
 | Defect type | Cases |
 |---|---:|
-| `charter_violation` | 5 |
-| `correlated_review_trap` | 3 |
+| `charter_violation` | 8 |
+| `correlated_review_trap` | 7 |
 | `evidence_spoofing` | 8 |
-| `fail-open` | 3 |
-| `governance_bypass` | 3 |
-| `hallucinated-success` | 2 |
-| `path_escape` | 2 |
-| `payload_leak` | 5 |
-| `policy_bypass` | 3 |
-| `privilege_leak` | 3 |
-| `regression-process` | 2 |
-| `risk_escalation` | 3 |
-| `spec-gaming` | 3 |
+| `fail-open` | 7 |
+| `governance_bypass` | 7 |
+| `hallucinated-success` | 7 |
+| `path_escape` | 7 |
+| `payload_leak` | 7 |
+| `policy_bypass` | 7 |
+| `privilege_leak` | 7 |
+| `regression-process` | 7 |
+| `risk_escalation` | 7 |
+| `spec-gaming` | 7 |
 | `subtle_drift` | 9 |
-| `tool_argument_abuse` | 5 |
+| `tool_argument_abuse` | 7 |
 
 PR #800 added a strict full-coverage floor of two cases for the six
 highest-risk critical defect classes. Expansion fixtures remain permissive;
@@ -92,21 +92,21 @@ number of explicit cases where coverage is currently indirect.
 
 | WD defect type | Cases | Primary ASI mapping | Rationale |
 |---|---:|---|---|
-| `charter_violation` | 5 | ASI01, ASI10 | Tests attempts to redirect the agent away from declared operator and charter constraints. This is direct goal hijack coverage and partial rogue-agent drift coverage. |
-| `correlated_review_trap` | 3 | ASI06, ASI07, ASI09 | Models review-process traps where context, reviewer coordination, or trusted review framing can steer decisions. It overlaps context poisoning, inter-agent communication, and trust exploitation. |
+| `charter_violation` | 8 | ASI01, ASI10 | Tests attempts to redirect the agent away from declared operator and charter constraints. This is direct goal hijack coverage and partial rogue-agent drift coverage, including stale exact-head consensus reuse. |
+| `correlated_review_trap` | 7 | ASI06, ASI07, ASI09 | Models review-process traps where context, reviewer coordination, or trusted review framing can steer decisions. It overlaps context poisoning, inter-agent communication, and trust exploitation. |
 | `evidence_spoofing` | 8 | ASI04, ASI06, ASI09 | Targets fabricated or misleading evidence that can poison context or exploit trust in presented proof. It now includes an explicit agentic supply-chain descriptor deception seed. |
-| `fail-open` | 3 | ASI02, ASI05, ASI08 | Covers unsafe continuation when a gate, tool, or execution check cannot prove safety. It now includes a second-order cascade propagation seed. |
-| `governance_bypass` | 3 | ASI03, ASI04, ASI07, ASI09, ASI10 | Tests attempts to route around governance controls. It now includes an explicit peer-agent/bridge spoofing seed while preserving exact-head governance boundaries. |
-| `hallucinated-success` | 2 | ASI07, ASI09 | Captures false success claims that can mislead humans or peer agents into accepting unsafe state. |
-| `path_escape` | 2 | ASI02, ASI05 | Exercises unsafe path and boundary handling that could turn a legitimate tool or artifact operation into unintended filesystem or execution impact. |
-| `payload_leak` | 5 | ASI02, ASI03 | Tests data exposure through tool use, inherited access, or unsafe output handling. |
-| `policy_bypass` | 3 | ASI01, ASI10 | Captures attempts to route around policy while preserving an appearance of compliance. This is goal hijack coverage and partial rogue-agent/spec drift coverage. |
-| `privilege_leak` | 3 | ASI03, ASI10 | Exercises exposure or misuse of privileged context. It directly maps to identity and privilege abuse and partially to rogue behavior when authority is retained or reused. |
-| `regression-process` | 2 | ASI06, ASI08 | Tests whether process drift reintroduces known failures. It overlaps persistent context/process poisoning and cascade prevention. |
-| `risk_escalation` | 3 | ASI01, ASI08, ASI10 | Captures small local deviations that compound into higher-risk behavior. It maps to goal drift, cascading failures, and rogue autonomy. |
-| `spec-gaming` | 3 | ASI01, ASI04, ASI10 | Tests reward/spec loopholes and misleading compliance. It now includes a runaway candidate loop/reward-hacking seed. |
+| `fail-open` | 7 | ASI02, ASI05, ASI08 | Covers unsafe continuation when a gate, tool, or execution check cannot prove safety. It now includes a second-order cascade propagation seed. |
+| `governance_bypass` | 7 | ASI03, ASI04, ASI07, ASI09, ASI10 | Tests attempts to route around governance controls. It now includes an explicit peer-agent/bridge spoofing seed while preserving exact-head governance boundaries. |
+| `hallucinated-success` | 7 | ASI07, ASI09 | Captures false success claims that can mislead humans or peer agents into accepting unsafe state. |
+| `path_escape` | 7 | ASI02, ASI05 | Exercises unsafe path and boundary handling that could turn a legitimate tool or artifact operation into unintended filesystem or execution impact. |
+| `payload_leak` | 7 | ASI02, ASI03 | Tests data exposure through tool use, inherited access, or unsafe output handling. |
+| `policy_bypass` | 7 | ASI01, ASI10 | Captures attempts to route around policy while preserving an appearance of compliance. This is goal hijack coverage and partial rogue-agent/spec drift coverage. |
+| `privilege_leak` | 7 | ASI03, ASI10 | Exercises exposure or misuse of privileged context. It directly maps to identity and privilege abuse and partially to rogue behavior when authority is retained or reused. |
+| `regression-process` | 7 | ASI06, ASI08 | Tests whether process drift reintroduces known failures. It overlaps persistent context/process poisoning and cascade prevention. |
+| `risk_escalation` | 7 | ASI01, ASI08, ASI10 | Captures small local deviations that compound into higher-risk behavior. It maps to goal drift, cascading failures, and rogue autonomy. |
+| `spec-gaming` | 7 | ASI01, ASI04, ASI10 | Tests reward/spec loopholes and misleading compliance. It now includes a runaway candidate loop/reward-hacking seed. |
 | `subtle_drift` | 9 | ASI01, ASI06 | Covers gradual deviation from intended objectives or context. It is strong coverage for goal hijack and memory/context poisoning style risks. |
-| `tool_argument_abuse` | 5 | ASI02, ASI05, ASI08 | Exercises unsafe tool argument construction, which can become legitimate-tool misuse, execution risk, or downstream cascade input. It now includes an explicit dry-run execution-boundary seed. |
+| `tool_argument_abuse` | 7 | ASI02, ASI05, ASI08 | Exercises unsafe tool argument construction, which can become legitimate-tool misuse, execution risk, or downstream cascade input. It now includes an explicit dry-run execution-boundary seed. |
 
 ## Follow-Up Gaps
 

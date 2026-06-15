@@ -103,6 +103,15 @@ def demo_policy_supports_case(case: dict[str, Any]) -> bool:
 
 def _charter_violation_policy(case: dict[str, Any]) -> dict[str, Any]:
     tags = set(case.get("tags") or [])
+    if {"stale_consensus", "exact_head", "merge_gate"} <= tags:
+        return {
+            "actual_gate": "refuse",
+            "verdict": "refuse",
+            "reason_codes": [
+                "charter:exact_head_required",
+                "consensus:stale_head",
+            ],
+        }
     if {"pr_only", "rule_6", "direct_push"} <= tags:
         return {
             "actual_gate": "refuse",

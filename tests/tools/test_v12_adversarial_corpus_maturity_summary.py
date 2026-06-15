@@ -68,11 +68,13 @@ def test_summary_reports_mature_adversarial_corpus_without_authority() -> None:
     # charter_violation tail-floor expansion 2026-06-11 (105 -> 106; charter_violation 6 -> 7).
     # payload_leak tail-floor expansion 2026-06-11 (106 -> 107; payload_leak 6 -> 7).
     # tool_argument_abuse tail-floor expansion 2026-06-11 (107 -> 108; tool_argument_abuse 6 -> 7).
-    assert maturity["case_count"] == 108
+    # charter_violation exact-head/stale-consensus expansion 2026-06-14
+    # (108 -> 109; charter_violation 7 -> 8).
+    assert maturity["case_count"] == 109
     assert maturity["defect_type_count"] == 15
     assert maturity["held_out_case_count"] == 6
-    assert maturity["privacy_canary_count"] == 94
-    assert maturity["peer_review_trap_count"] == 106
+    assert maturity["privacy_canary_count"] == 95
+    assert maturity["peer_review_trap_count"] == 107
     uniform = report["uniform_family_floor"]
     assert uniform == {
         "min_defect_family_floor": 7,
@@ -181,7 +183,7 @@ def test_markdown_carries_maturation_targets_and_authority_boundary() -> None:
     markdown = render_markdown(report)
 
     assert "# V12 Adversarial Corpus Maturity Summary" in markdown
-    assert "cases: `108/50`" in markdown
+    assert "cases: `109/50`" in markdown
     assert "defect family floor: `15/15 >= 7 (weakest 7)`" in markdown
     assert "historical expansion folded into v0: `true`" in markdown
     assert "corpus mutation: `false`" in markdown
@@ -195,7 +197,7 @@ def test_cli_json_smoke() -> None:
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["ok"] is True
-    assert payload["maturity"]["case_count"] == 108
+    assert payload["maturity"]["case_count"] == 109
     assert payload["uniform_family_floor"]["met"] is True
     assert payload["uniform_family_floor"]["weakest_count"] == 7
     assert payload["authority_boundary"]["promotion_authority"] is False

@@ -97,10 +97,10 @@ def test_folded_cases_byte_identical_to_strict_v0():
         assert v0_exps[exp["case_id"]] == exp, exp["case_id"]
 
 
-def test_strict_v0_charter_violation_coverage_raised_to_seven():
+def test_strict_v0_charter_violation_coverage_remains_at_least_seven():
     cases = _read_json(CORPUS_DIR / "v0.json")["cases"]
     count = sum(1 for c in cases if c["defect_type"] == "charter_violation")
-    assert count == 7
+    assert count >= 7
 
 
 def test_every_expansion_case_has_paired_refuse_expectation():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from waggledance.core.idle_daily_summary import (
     build_daily_summary,
     read_bridge_events,
     render_summary_markdown,
+    resolve_events_path,
     write_summary_file,
 )
 
@@ -68,6 +70,13 @@ def _pending_draft_event(
             "pending_reason": reason,
         },
     }
+
+
+def _write_events(path: Path, events: list[dict]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_empty_bridge_produces_zero_quota_summary() -> None:
@@ -208,6 +217,69 @@ def test_read_bridge_events_missing_file_returns_empty(tmp_path: Path) -> None:
     events_path = tmp_path / "missing.jsonl"
     events = read_bridge_events(events_path)
     assert events == []
+
+
+def test_read_bridge_events_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    runtime_event = _auto_merge_event(ts="2026-05-18T01:00:00Z", pr=470)
+    _write_events(runtime_events, [runtime_event])
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    _write_events(
+        shadow_events,
+        [_auto_merge_event(ts="2026-05-18T01:00:00Z", pr=999)],
+    )
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    assert resolve_events_path() == runtime_events
+    events = read_bridge_events()
+    assert events == [runtime_event]
+
+
+def test_idle_daily_summary_cli_uses_runtime_bridge_root_env_by_default(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import idle_daily_summary as cli
+
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    runtime_events = runtime_bridge / "shared" / "events.jsonl"
+    runtime_events.parent.mkdir(parents=True)
+    _write_events(
+        runtime_events,
+        [_auto_merge_event(ts="2026-05-18T01:00:00Z", pr=470)],
+    )
+
+    shadow_root = tmp_path / "shadow"
+    shadow_events = shadow_root / ".agent-bridge" / "shared" / "events.jsonl"
+    shadow_events.parent.mkdir(parents=True)
+    _write_events(
+        shadow_events,
+        [_pending_draft_event(ts="2026-05-18T01:00:00Z", pr=999)],
+    )
+
+    monkeypatch.chdir(shadow_root)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    rc = cli.main(["--utc-date", "2026-05-18", "--json"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "dry_run"
+    assert payload["auto_merge_count"] == 1
+    assert payload["pending_draft_count"] == 0
 
 
 def test_quota_two_merges_counted() -> None:

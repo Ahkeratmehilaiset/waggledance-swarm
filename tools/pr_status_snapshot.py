@@ -377,6 +377,13 @@ def _assert_no_private_markers(value: object) -> None:
 def _find_private_marker(value: object) -> str | None:
     if isinstance(value, str):
         for marker in PRIVATE_MARKERS:
+            if marker == PRIVATE_MARKERS[0]:
+                token_pattern = re.compile(
+                    rf"(?<![A-Za-z0-9_]){re.escape(marker)}(?![A-Za-z0-9_])"
+                )
+                if token_pattern.search(value):
+                    return marker
+                continue
             if marker in value:
                 return marker
         return None

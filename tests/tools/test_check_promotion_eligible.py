@@ -7,7 +7,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-from tools.check_promotion_eligible import evaluate_promotion_eligibility
+from tools.check_promotion_eligible import (
+    _find_private_marker,
+    evaluate_promotion_eligibility,
+)
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 NEW_HEAD = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -272,6 +275,12 @@ def test_missing_author_agent_fails_closed() -> None:
     assert report["eligible"] is False
     assert report["decision"] == "invalid_input"
     assert "author_agent is required" in report["errors"]
+
+
+def test_plural_private_marker_helper_name_is_not_input_sentinel() -> None:
+    helper_name = "PRIVATE" + "_MARKERS"
+
+    assert _find_private_marker(f"+ assert all({helper_name})\n") is None
 
 
 def test_operator_gated_path_refuses() -> None:

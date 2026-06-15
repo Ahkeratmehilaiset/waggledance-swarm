@@ -119,6 +119,8 @@ def test_happy_path_three_distinct_head_bound_identities() -> None:
     assert result["identities"]["build_tools"]["approved"] is True
     assert result["identities"]["rco"]["approved"] is True
     assert result["rco_pass_ref"]["agent"] == RCO
+    assert result["canonical_task_id"] == TASK
+    assert result["build_consensus_reemit_guidance"] == []
     assert result["head_sha"] == HEAD
 
 
@@ -243,6 +245,29 @@ def test_descriptive_build_task_id_does_not_count_when_payload_head_matches() ->
         result["identities"]["build_tools"]["task_id_mismatch"]
         == "tools-descriptive-refresh"
     )
+    assert result["canonical_task_id"] == TASK
+    assert result["build_consensus_reemit_guidance"] == [
+        {
+            "role": "build_lead",
+            "agent": LEAD,
+            "reason": "non_canonical_task_id",
+            "observed_task_id": "lead-descriptive-refresh",
+            "expected_type": "decision",
+            "expected_status": "build_consensus_pass",
+            "expected_task_id": TASK,
+            "expected_payload_head": HEAD,
+        },
+        {
+            "role": "build_tools",
+            "agent": TOOLS,
+            "reason": "non_canonical_task_id",
+            "observed_task_id": "tools-descriptive-refresh",
+            "expected_type": "decision",
+            "expected_status": "build_consensus_pass",
+            "expected_task_id": TASK,
+            "expected_payload_head": HEAD,
+        },
+    ]
     assert any("non-canonical task_id" in reason for reason in result["reasons"])
 
 

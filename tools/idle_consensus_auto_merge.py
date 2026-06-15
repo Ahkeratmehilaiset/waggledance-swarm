@@ -1252,6 +1252,11 @@ def verify_bridge_consensus(
             for reason in lead_stall_failover["reasons"]
         )
 
+    build_consensus_reemit_guidance = _build_consensus_reemit_guidance(
+        identities=identities,
+        task_id=task_id,
+        head_sha=head_sha,
+    )
     ok = not reasons
     return {
         "ok": ok,
@@ -1260,6 +1265,8 @@ def verify_bridge_consensus(
         ),
         "reasons": reasons,
         "head_sha": head_sha,
+        "canonical_task_id": task_id,
+        "build_consensus_reemit_guidance": build_consensus_reemit_guidance,
         "identities": identities,
         "rco_pass_ref": rco_pass_ref,
         "recognized_rco_agents": list(recognized_rco_agents),
@@ -1269,6 +1276,42 @@ def verify_bridge_consensus(
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
         "lead_stall_failover": lead_stall_failover,
     }
+
+
+def _build_consensus_reemit_guidance(
+    *,
+    identities: Mapping[str, Any],
+    task_id: str,
+    head_sha: str,
+) -> list[dict[str, Any]]:
+    guidance: list[dict[str, Any]] = []
+    for role in ("build_lead", "build_tools"):
+        identity = identities.get(role)
+        if not isinstance(identity, Mapping):
+            continue
+        if bool(identity.get("approved", False)):
+            continue
+        shape_mismatch = identity.get("shape_mismatch")
+        reason = "missing_head_bound_approval"
+        observed_task_id = str(identity.get("task_id_mismatch") or "")
+        if isinstance(shape_mismatch, Mapping):
+            reason = "invalid_shape"
+            observed_task_id = str(shape_mismatch.get("task_id", observed_task_id))
+        elif observed_task_id:
+            reason = "non_canonical_task_id"
+        guidance.append(
+            {
+                "role": role,
+                "agent": str(identity.get("agent", "")),
+                "reason": reason,
+                "observed_task_id": observed_task_id,
+                "expected_type": "decision",
+                "expected_status": "build_consensus_pass",
+                "expected_task_id": task_id,
+                "expected_payload_head": head_sha,
+            }
+        )
+    return guidance
 
 
 def _lead_stall_failover_disabled_report(

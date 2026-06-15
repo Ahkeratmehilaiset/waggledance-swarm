@@ -139,6 +139,70 @@ def test_release_accepts_legacy_powershell_namespaced_claim_file(
     assert len(list((bridge / "work_queue" / "done").glob("*.json"))) == 1
 
 
+def test_heartbeat_legacy_lookup_ignores_malformed_claim_files(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "codex-tools-1/legacy-with-noisy-claim-dir"
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="legacy claim",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    preferred_path = next(claims_dir.glob("*.json"))
+    legacy_path = claims_dir / "codex-tools-1_legacy-with-noisy-claim-dir.json"
+    preferred_path.rename(legacy_path)
+    (claims_dir / "broken.json").write_text("{not json", encoding="utf-8")
+    (claims_dir / "not-object.json").write_text("[]", encoding="utf-8")
+
+    refreshed = heartbeat(
+        agent="codex-tools-1",
+        task_id=task_id,
+        bridge_root=bridge,
+    )
+
+    assert refreshed.task_id == task_id
+    assert legacy_path.exists()
+
+
+def test_heartbeat_legacy_lookup_does_not_accept_colliding_safe_name_file(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    slash_task_id = "codex-tools-1/collision"
+    underscore_task_id = "codex-tools-1_collision"
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id=underscore_task_id,
+        summary="underscore claim",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    assert (claims_dir / "codex-tools-1_collision.json").exists()
+
+    with pytest.raises(WorkQueueError, match="no active claim"):
+        heartbeat(
+            agent="codex-tools-1",
+            task_id=slash_task_id,
+            bridge_root=bridge,
+        )
+
+
+def test_heartbeat_missing_claims_dir_reports_missing_claim(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="no active claim"):
+        heartbeat(
+            agent="codex-tools-1",
+            task_id="codex-tools-1/missing-claim-dir",
+            bridge_root=bridge,
+        )
+
+
 def test_claim_rejects_invalid_agent(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     with pytest.raises(WorkQueueError):

@@ -22,6 +22,8 @@ from waggledance.core.magma.share_manifest import (  # noqa: E402
     PURPOSES,
     build_magma_share_import_admission_status_summary,
     build_magma_share_import_failed_admission_status_summary,
+    build_magma_share_import_failed_replay_sanitization_summary,
+    build_magma_share_import_replay_sanitization_summary,
     build_magma_share_manifest_import_report,
     write_magma_share_import_peer_review_handoff,
 )
@@ -108,6 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
             "of the full import report."
         ),
     )
+    parser.add_argument(
+        "--replay-sanitization-summary-json",
+        action="store_true",
+        help=(
+            "Emit the path-free replay sanitization contract summary instead "
+            "of the full import report."
+        ),
+    )
     return parser
 
 
@@ -158,18 +168,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                 now_utc=now_utc,
             )
     except (OSError, ValueError) as exc:
-        if args.json or args.admission_status_json:
-            status = build_magma_share_import_failed_admission_status_summary(
-                reason=str(exc),
-                max_age_hours=args.max_age_hours,
-                expected_share_id=args.expected_share_id,
-                expected_purpose=args.expected_purpose,
-            )
+        if (
+            args.json
+            or args.admission_status_json
+            or args.replay_sanitization_summary_json
+        ):
+            if args.replay_sanitization_summary_json:
+                status = (
+                    build_magma_share_import_failed_replay_sanitization_summary(
+                        reason=str(exc),
+                        max_age_hours=args.max_age_hours,
+                        expected_share_id=args.expected_share_id,
+                        expected_purpose=args.expected_purpose,
+                    )
+                )
+            else:
+                status = build_magma_share_import_failed_admission_status_summary(
+                    reason=str(exc),
+                    max_age_hours=args.max_age_hours,
+                    expected_share_id=args.expected_share_id,
+                    expected_purpose=args.expected_purpose,
+                )
             print(json.dumps(status, indent=2, sort_keys=True))
         print(f"magma share manifest import FAILED: {exc}", file=sys.stderr)
         return 1
 
-    if args.admission_status_json:
+    if args.replay_sanitization_summary_json:
+        status = build_magma_share_import_replay_sanitization_summary(report)
+        print(json.dumps(status, indent=2, sort_keys=True))
+    elif args.admission_status_json:
         status = build_magma_share_import_admission_status_summary(report)
         print(json.dumps(status, indent=2, sort_keys=True))
     elif args.json:

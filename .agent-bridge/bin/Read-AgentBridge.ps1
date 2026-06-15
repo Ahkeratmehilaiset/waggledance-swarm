@@ -67,6 +67,90 @@ function Read-BridgeEventObjects {
     return $items
 }
 
+function Read-BridgeContinuityEventObjects {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $AgentName,
+        [int] $MaxLines = 50000
+    )
+
+    $items = New-Object System.Collections.Generic.List[object]
+    if (-not (Test-Path -LiteralPath $Path)) { return $items }
+
+    $allLines = if ($MaxLines -le 0) {
+        @(Get-Content -Path $Path -Encoding UTF8)
+    } else {
+        @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
+    }
+
+    $selectedIndexes = New-Object 'System.Collections.Generic.HashSet[int]'
+    $agentFieldNeedle = '"agent":"' + $AgentName + '"'
+    $toFieldRegex = [regex]::new(
+        '"to":"[^"]*' + [regex]::Escape($AgentName) + '[^"]*"',
+        [System.Text.RegularExpressions.RegexOptions]::Compiled -bor
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    $requestLikeStatusRegex = [regex]::new(
+        '"status":"(?:request|ready|blocked|open|proposal|fix-pushed|fix-branch-pushed|pushed|ready_for_implementation|rco_requested|review_requested|changes_requested|proposal_ready|[^"]*proposal[^"]*)"',
+        [System.Text.RegularExpressions.RegexOptions]::Compiled -bor
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+
+    for ($i = 0; $i -lt $allLines.Count; $i++) {
+        $line = [string]$allLines[$i]
+        if (-not $line) { continue }
+        if ($line.IndexOf('"type":"heartbeat"', [System.StringComparison]::Ordinal) -ge 0 -or
+            $line.IndexOf('"type":"liveness"', [System.StringComparison]::Ordinal) -ge 0) {
+            continue
+        }
+        $isAddressedToAgent = $toFieldRegex.IsMatch($line)
+        $isOwnRequestLike = (
+            $line.IndexOf($agentFieldNeedle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+            $requestLikeStatusRegex.IsMatch($line)
+        )
+        if (-not $isAddressedToAgent -and -not $isOwnRequestLike) {
+            continue
+        }
+        try {
+            $event = $line | ConvertFrom-Json
+        } catch {
+            continue
+        }
+        [void]$selectedIndexes.Add($i)
+        [void]$items.Add($event)
+    }
+
+    $taskIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($event in $items) {
+        $taskId = [string]$event.task_id
+        if ($taskId -and
+            (Test-BridgeRequestLikeEvent -Event $event) -and
+            ((Test-BridgeAddressedTo -Event $event -TargetAgent $AgentName) -or
+                [string]$event.agent -eq $AgentName)) {
+            [void]$taskIds.Add($taskId)
+        }
+    }
+
+    if ($taskIds.Count -gt 0) {
+        $taskIdPattern = (@($taskIds) | ForEach-Object { [regex]::Escape([string]$_) }) -join '|'
+        $taskIdRegex = [regex]::new(
+            $taskIdPattern,
+            [System.Text.RegularExpressions.RegexOptions]::Compiled
+        )
+        for ($i = 0; $i -lt $allLines.Count; $i++) {
+            if ($selectedIndexes.Contains($i)) { continue }
+            $line = [string]$allLines[$i]
+            if (-not $line) { continue }
+            if (-not $taskIdRegex.IsMatch($line)) { continue }
+            try {
+                [void]$items.Add(($line | ConvertFrom-Json))
+            } catch {}
+        }
+    }
+
+    return @($items | Sort-Object ts_utc)
+}
+
 function Send-ReceivedAck {
     param(
         [Parameter(Mandatory)] [string] $AgentName,
@@ -180,7 +264,15 @@ if ($Agent -and -not $NoContinuity) {
         Write-Host '  (no events.jsonl yet)'
         Write-Host ''
     } else {
-        $allEvents = Read-BridgeEventObjects -Path $eventsPath
+        $allEvents = Read-BridgeContinuityEventObjects -Path $eventsPath -AgentName $Agent
+        $displayEvents = Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail
+        $displayTaskIds = @{}
+        foreach ($displayEvent in $displayEvents) {
+            $displayTaskId = [string]$displayEvent.task_id
+            if ($displayTaskId) {
+                $displayTaskIds[$displayTaskId] = $true
+            }
+        }
         $requests = @(
             $allEvents |
                 Where-Object {
@@ -201,6 +293,26 @@ if ($Agent -and -not $NoContinuity) {
                 $latestByTask[[string]$r.task_id] = $r
             }
             $receivedByTask = @{}
+            $hiddenResolvedCount = 0
+            $replyByTask = @{}
+            $closureByTask = @{}
+            foreach ($event in $allEvents) {
+                $eventTaskId = [string]$event.task_id
+                if (-not $eventTaskId -or -not $latestByTask.ContainsKey($eventTaskId)) {
+                    continue
+                }
+                $requestForTask = $latestByTask[$eventTaskId]
+                if ([string]$event.ts_utc -le [string]$requestForTask.ts_utc) {
+                    continue
+                }
+                if ([string]$event.agent -eq $Agent -and (Test-BridgeAnswerEvent -Event $event)) {
+                    $replyByTask[$eventTaskId] = $event
+                    continue
+                }
+                if ([string]$event.agent -eq [string]$requestForTask.agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                    $closureByTask[$eventTaskId] = $event
+                }
+            }
             if (-not $NoAckReceived -and -not $Raw) {
                 foreach ($taskId in $latestByTask.Keys) {
                     $receivedByTask[$taskId] = Send-ReceivedAck `
@@ -211,37 +323,31 @@ if ($Agent -and -not $NoContinuity) {
             }
             foreach ($taskId in ($latestByTask.Keys | Sort-Object)) {
                 $req = $latestByTask[$taskId]
-                $reply = @(
-                    $allEvents |
-                        Where-Object {
-                            [string]$_.agent -eq $Agent -and
-                            [string]$_.task_id -eq $taskId -and
-                            [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                            (Test-BridgeAnswerEvent -Event $_)
-                        } |
-                        Sort-Object ts_utc |
-                        Select-Object -Last 1
-                )
+                $reply = @()
+                if ($replyByTask.ContainsKey($taskId)) {
+                    $reply = @($replyByTask[$taskId])
+                }
                 if ($reply.Count -gt 0) {
                     $last = $reply[-1]
-                    Write-Host ("  answered {0}: request {1}/{2} -> {3}/{4}" -f `
-                        $taskId, $req.type, $req.status, $last.type, $last.status)
+                    if ($displayTaskIds.ContainsKey($taskId)) {
+                        Write-Host ("  answered {0}: request {1}/{2} -> {3}/{4}" -f `
+                            $taskId, $req.type, $req.status, $last.type, $last.status)
+                    } else {
+                        $hiddenResolvedCount++
+                    }
                 } else {
-                    $closure = @(
-                        $allEvents |
-                            Where-Object {
-                                [string]$_.agent -eq [string]$req.agent -and
-                                [string]$_.task_id -eq $taskId -and
-                                [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                                (Test-BridgeRequesterClosureEvent -Event $_)
-                            } |
-                            Sort-Object ts_utc |
-                            Select-Object -Last 1
-                    )
+                    $closure = @()
+                    if ($closureByTask.ContainsKey($taskId)) {
+                        $closure = @($closureByTask[$taskId])
+                    }
                     if ($closure.Count -gt 0) {
                         $last = $closure[-1]
-                        Write-Host ("  closed-by-requester {0}: request {1}/{2} -> {3}/{4}" -f `
-                            $taskId, $req.type, $req.status, $last.type, $last.status)
+                        if ($displayTaskIds.ContainsKey($taskId)) {
+                            Write-Host ("  closed-by-requester {0}: request {1}/{2} -> {3}/{4}" -f `
+                                $taskId, $req.type, $req.status, $last.type, $last.status)
+                        } else {
+                            $hiddenResolvedCount++
+                        }
                         continue
                     }
                     $receivedSuffix = ''
@@ -252,6 +358,9 @@ if ($Agent -and -not $NoContinuity) {
                         $taskId, $receivedSuffix, $req.type, $req.status, $req.agent, $req.message) `
                         -ForegroundColor Yellow
                 }
+            }
+            if ($hiddenResolvedCount -gt 0) {
+                Write-Host ("  ({0} answered/closed item(s) outside -Tail hidden)" -f $hiddenResolvedCount)
             }
         }
 
@@ -275,57 +384,83 @@ if ($Agent -and -not $NoContinuity) {
             Write-Host '  outgoing:'
             $sentLatestByTask = @{}
             foreach ($r in $sentRequests) {
-                $sentLatestByTask[("{0}|{1}" -f [string]$r.target, [string]$r.event.task_id)] = $r
+                $sentKey = "{0}|{1}" -f [string]$r.target, [string]$r.event.task_id
+                $sentLatestByTask[$sentKey] = $r
             }
+            $sentKeysByTask = @{}
+            foreach ($sentKey in $sentLatestByTask.Keys) {
+                $sentTaskId = [string]$sentLatestByTask[$sentKey].event.task_id
+                if (-not $sentKeysByTask.ContainsKey($sentTaskId)) {
+                    $sentKeysByTask[$sentTaskId] = New-Object System.Collections.Generic.List[string]
+                }
+                [void]$sentKeysByTask[$sentTaskId].Add([string]$sentKey)
+            }
+            $sentReplyByKey = @{}
+            $sentClosureByKey = @{}
+            $sentReceivedByKey = @{}
+            foreach ($event in $allEvents) {
+                $eventTaskId = [string]$event.task_id
+                if (-not $eventTaskId -or -not $sentKeysByTask.ContainsKey($eventTaskId)) {
+                    continue
+                }
+                foreach ($sentKey in @($sentKeysByTask[$eventTaskId])) {
+                    $reqInfoForKey = $sentLatestByTask[$sentKey]
+                    $requestForKey = $reqInfoForKey.event
+                    $targetForKey = [string]$reqInfoForKey.target
+                    if ([string]$event.ts_utc -le [string]$requestForKey.ts_utc) {
+                        continue
+                    }
+                    if ([string]$event.agent -eq $targetForKey -and (Test-BridgeAnswerEvent -Event $event)) {
+                        $sentReplyByKey[$sentKey] = $event
+                        continue
+                    }
+                    if ([string]$event.agent -eq $Agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                        $sentClosureByKey[$sentKey] = $event
+                        continue
+                    }
+                    if ([string]$event.agent -eq $targetForKey -and
+                        [string]$event.type -eq 'message' -and
+                        [string]$event.status -eq 'received') {
+                        $sentReceivedByKey[$sentKey] = $event
+                    }
+                }
+            }
+            $sentHiddenResolvedCount = 0
             foreach ($taskId in ($sentLatestByTask.Keys | Sort-Object)) {
                 $reqInfo = $sentLatestByTask[$taskId]
                 $req = $reqInfo.event
                 $target = [string]$reqInfo.target
-                $reply = @(
-                    $allEvents |
-                        Where-Object {
-                            [string]$_.agent -eq $target -and
-                            [string]$_.task_id -eq [string]$req.task_id -and
-                            [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                            (Test-BridgeAnswerEvent -Event $_)
-                        } |
-                        Sort-Object ts_utc |
-                        Select-Object -Last 1
-                )
+                $reply = @()
+                if ($sentReplyByKey.ContainsKey($taskId)) {
+                    $reply = @($sentReplyByKey[$taskId])
+                }
                 if ($reply.Count -gt 0) {
                     $last = $reply[-1]
-                    Write-Host ("  answered-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
-                        $target, $req.task_id, $req.type, $req.status, $last.type, $last.status)
+                    if ($displayTaskIds.ContainsKey([string]$req.task_id)) {
+                        Write-Host ("  answered-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
+                            $target, $req.task_id, $req.type, $req.status, $last.type, $last.status)
+                    } else {
+                        $sentHiddenResolvedCount++
+                    }
                 } else {
-                    $closure = @(
-                        $allEvents |
-                            Where-Object {
-                                [string]$_.agent -eq $Agent -and
-                                [string]$_.task_id -eq [string]$req.task_id -and
-                                [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                                (Test-BridgeRequesterClosureEvent -Event $_)
-                            } |
-                            Sort-Object ts_utc |
-                            Select-Object -Last 1
-                    )
+                    $closure = @()
+                    if ($sentClosureByKey.ContainsKey($taskId)) {
+                        $closure = @($sentClosureByKey[$taskId])
+                    }
                     if ($closure.Count -gt 0) {
                         $last = $closure[-1]
-                        Write-Host ("  closed-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
-                            $Agent, $req.task_id, $req.type, $req.status, $last.type, $last.status)
+                        if ($displayTaskIds.ContainsKey([string]$req.task_id)) {
+                            Write-Host ("  closed-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
+                                $Agent, $req.task_id, $req.type, $req.status, $last.type, $last.status)
+                        } else {
+                            $sentHiddenResolvedCount++
+                        }
                         continue
                     }
-                    $received = @(
-                        $allEvents |
-                            Where-Object {
-                                [string]$_.agent -eq $target -and
-                                [string]$_.task_id -eq [string]$req.task_id -and
-                                [string]$_.type -eq 'message' -and
-                                [string]$_.status -eq 'received' -and
-                                [string]$_.ts_utc -gt [string]$req.ts_utc
-                            } |
-                            Sort-Object ts_utc |
-                            Select-Object -Last 1
-                    )
+                    $received = @()
+                    if ($sentReceivedByKey.ContainsKey($taskId)) {
+                        $received = @($sentReceivedByKey[$taskId])
+                    }
                     if ($received.Count -gt 0) {
                         Write-Host ("  RECEIVED-BY-{0} {1}: waiting for answer to {2}/{3}: {4}" -f `
                             $target, $req.task_id, $req.type, $req.status, $req.message) `
@@ -336,6 +471,9 @@ if ($Agent -and -not $NoContinuity) {
                             -ForegroundColor Yellow
                     }
                 }
+            }
+            if ($sentHiddenResolvedCount -gt 0) {
+                Write-Host ("  ({0} answered/closed item(s) outside -Tail hidden)" -f $sentHiddenResolvedCount)
             }
         }
         Write-Host ''

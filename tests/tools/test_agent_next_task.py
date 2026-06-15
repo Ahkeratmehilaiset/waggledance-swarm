@@ -447,7 +447,9 @@ def test_active_primary_production_liveness_scout_advances_to_smoke(
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
-def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> None:
+def test_prioritizes_stalled_rco_lane_failover_before_smoke(
+    tmp_path: Path,
+) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(
         bridge,
@@ -471,11 +473,110 @@ def test_does_not_prioritize_non_peer_rco_liveness_for_lead(tmp_path: Path) -> N
         now_utc=NOW,
     )
 
-    assert report["decision"] == "claim_substrate_smoke"
-    assert report["candidate"]["kind"] == "run_substrate_smoke"
+    assert report["decision"] == "claim_rco_lane_failover_scout"
+    assert report["next_action"] == "claim_and_run"
+    candidate = report["candidate"]
+    assert candidate["kind"] == "rco_lane_failover_scout"
+    assert candidate["stalled_agent"] == "claude-rco-2"
+    assert candidate["fallback_reviewers"] == ["claude-rco-1"]
+    assert candidate["mode"] == "read-only"
+    assert candidate["write_scope"] == []
+    assert "report_unanswered_bridge_requests.py" in candidate["recommended_command"]
+    assert "--agent claude-rco-2" in candidate["recommended_command"]
+    assert "check_bridge_wake_delivery.py" in candidate["diagnostic_commands"][1]
+    assert "do not substitute an RCO pass" in candidate["acceptance"]
     assert report["bridge_recommendation"]["production_liveness"][
         "stalled_agent_count"
     ] == 1
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_completed_stalled_rco_lane_failover_advances_to_smoke(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    task_id = "rco-lane-failover-scout-2026-05-20-claude-rco-2-repeat-1"
+    claim_task(
+        agent="codex-lead-1",
+        task_id=task_id,
+        summary="same-day RCO lane failover scout already completed",
+        mode="read-only",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    release_task(
+        agent="codex-lead-1",
+        task_id=task_id,
+        release_status="done",
+        release_message="diagnostic completed",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
+def test_active_stalled_rco_lane_failover_advances_to_smoke(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    task_id = "rco-lane-failover-scout-2026-05-20-claude-rco-2"
+    claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="same-day RCO lane failover scout already claimed",
+        mode="read-only",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+    _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
 def test_defers_wake_delivery_escalation_for_non_peer_target(

@@ -197,6 +197,9 @@ def build_v12_substrate_evidence_freshness_rollup(
             "competitive_matrix_fresh_for_planning": (
                 matrix_report.get("fresh_for_planning") is True
             ),
+            "competitive_matrix_priority_rows_fresh_for_planning": (
+                matrix_report.get("priority_rows_fresh_for_planning") is True
+            ),
             "stale_window_count": len(stale_windows),
             "stale_windows": stale_windows,
             "stale_age_summary": _stale_age_summary(
@@ -237,6 +240,14 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         (
             "competitive matrix snapshot age: "
             f"`{matrix.get('snapshot_age_days', 'unknown')}` days"
+        ),
+        (
+            "priority rows fresh for planning: "
+            f"`{_bool_text(matrix.get('priority_rows_fresh_for_planning'))}`"
+        ),
+        (
+            "priority rows snapshot age: "
+            f"`{matrix.get('priority_rows_snapshot_age_days', 'unknown')}` days"
         ),
         _stale_age_summary_markdown(freshness.get("stale_age_summary")),
         "",
@@ -351,6 +362,18 @@ def _competitive_matrix_summary(matrix_report: Mapping[str, Any]) -> dict[str, A
         "priority_rows": [str(item) for item in list(
             matrix_report.get("priority_rows") or []
         )],
+        "priority_rows_snapshot_date": matrix_report.get(
+            "priority_rows_snapshot_date"
+        ),
+        "priority_rows_snapshot_age_days": matrix_report.get(
+            "priority_rows_snapshot_age_days"
+        ),
+        "priority_rows_freshness_audit_date": matrix_report.get(
+            "priority_rows_freshness_audit_date"
+        ),
+        "priority_rows_fresh_for_planning": (
+            matrix_report.get("priority_rows_fresh_for_planning") is True
+        ),
         "evidence_bearing_axis_count": len(
             list(matrix_report.get("evidence_bearing_axes") or [])
         ),
@@ -478,13 +501,18 @@ def _next_substrate_slices(
 
     next_slices: list[str] = []
     if matrix_report.get("fresh_for_planning") is not True:
-        priority = ",".join(
-            str(item) for item in list(matrix_report.get("priority_rows") or [])
-        )
-        next_slices.append(
-            "refresh_competitive_matrix_priority_rows_from_current_v12_proofs:"
-            f"{priority or 'unspecified'}"
-        )
+        if matrix_report.get("priority_rows_fresh_for_planning") is True:
+            next_slices.append(
+                "refresh_remaining_competitive_matrix_evidence_rows_from_current_proofs"
+            )
+        else:
+            priority = ",".join(
+                str(item) for item in list(matrix_report.get("priority_rows") or [])
+            )
+            next_slices.append(
+                "refresh_competitive_matrix_priority_rows_from_current_v12_proofs:"
+                f"{priority or 'unspecified'}"
+            )
 
     for row in substrate_rows:
         candidate = str(row.get("recommended_next_slice", ""))

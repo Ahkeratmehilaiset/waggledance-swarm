@@ -180,7 +180,7 @@ if ($Agent -and -not $NoContinuity) {
         Write-Host '  (no events.jsonl yet)'
         Write-Host ''
     } else {
-        $allEvents = Read-BridgeEventObjects -Path $eventsPath
+        $allEvents = Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail
         $requests = @(
             $allEvents |
                 Where-Object {

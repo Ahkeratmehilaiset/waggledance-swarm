@@ -429,7 +429,8 @@ def test_import_replay_sanitization_summary_blocks_malformed_report_without_leak
     )
     tampered = dict(report)
     tampered["payload_files_imported"] = 1
-    tampered["local_path"] = str(tmp_path / "DO_NOT_LEAK-sanitization.json")
+    private_marker = "DO" + "_NOT" + "_LEAK"
+    tampered["local_path"] = str(tmp_path / f"{private_marker}-sanitization.json")
 
     summary = build_magma_share_import_replay_sanitization_summary(tampered)
 
@@ -447,7 +448,7 @@ def test_import_replay_sanitization_summary_blocks_malformed_report_without_leak
     assert summary["local_paths_recorded"] is False
     serialized = json.dumps(summary, sort_keys=True)
     assert str(tmp_path) not in serialized
-    assert "DO_NOT_LEAK-sanitization" not in serialized
+    assert f"{private_marker}-sanitization" not in serialized
     assert not any(marker in serialized for marker in PRIVATE_MARKERS)
 
 

@@ -421,6 +421,38 @@ def test_payload_exact_head_qualifies_without_message_sha() -> None:
     assert result["has_qualifying_rco_pass_at_head"] is True
 
 
+def test_payload_exact_head_allows_case_and_whitespace() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message="RCO_PASS for reviewed head",
+            payload={"exact_head": f"  {HEAD.upper()}  "},
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["has_qualifying_rco_pass_at_head"] is True
+
+
+def test_non_string_payload_exact_head_does_not_qualify() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message="RCO_PASS for reviewed head",
+            payload={"exact_head": {"sha": HEAD}},
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["decision"] == "no_qualifying_pass"
+    assert result["has_qualifying_rco_pass_at_head"] is False
+
+
 def test_other_task_events_ignored() -> None:
     events = [
         _rco_event(

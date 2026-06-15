@@ -53,7 +53,7 @@ def test_rollup_reports_current_v12_ingredients_without_authority() -> None:
         == "maintain_counterfactual_eval_coverage"
     )
     assert report["recommended_next_slice"] == (
-        "expand_adversarial_corpus:defect_type:charter_violation"
+        "expand_adversarial_corpus:defect_type:correlated_review_trap"
     )
     authority = report["authority_boundary"]
     assert authority["runtime_authority"] is False

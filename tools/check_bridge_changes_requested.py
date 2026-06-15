@@ -180,10 +180,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if result["clear_to_merge"]:
             print("safe to merge: no peer block")
         else:
-            print(
-                "BLOCKED: peer-decision changes_requested is the most recent peer signal",
-                file=sys.stderr,
-            )
+            if result.get("decision") == "invalid_identity_registry":
+                print("BLOCKED: bridge identity registry is invalid", file=sys.stderr)
+            else:
+                print(
+                    "BLOCKED: peer-decision changes_requested is the most recent peer signal",
+                    file=sys.stderr,
+                )
+            if result.get("error"):
+                print(result["error"], file=sys.stderr)
             last = result.get("latest_blocking_event") or {}
             print(
                 f"  blocked by {last.get('agent')} at {last.get('ts_utc')} "
@@ -208,11 +213,25 @@ def check_bridge_clear_to_merge(
     is in BLOCKING_STATUSES or APPROVAL_STATUSES. If the most recent peer
     decision is blocking, we refuse. Otherwise we permit.
     """
-    registry = (
-        load_bridge_identity_registry()
-        if identity_registry is None
-        else dict(identity_registry)
-    )
+    try:
+        registry = (
+            load_bridge_identity_registry()
+            if identity_registry is None
+            else dict(identity_registry)
+        )
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "clear_to_merge": False,
+            "task_id": task_id,
+            "pr_number": pr_number,
+            "merging_agent": merging_agent,
+            "latest_blocking_event": None,
+            "latest_approval_event": None,
+            "ignored_identity_mismatch_events": [],
+            "decision": "invalid_identity_registry",
+            "error": str(exc),
+        }
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
 

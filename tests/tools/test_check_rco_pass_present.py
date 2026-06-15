@@ -24,6 +24,10 @@ from tools.check_rco_pass_present import (  # noqa: E402
     check_rco_pass_present as _check_rco_pass_present,
     DEFAULT_EVENTS_PATH,
 )
+import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    load_bridge_identity_registry,
+)
 
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
@@ -89,6 +93,43 @@ def check_rco_pass_present(*args, **kwargs):
 
 
 # --- unit tests on the library function -----------------------------------
+
+
+def test_missing_identity_registry_requires_explicit_offline_opt_in(
+    tmp_path: Path,
+) -> None:
+    missing_registry = tmp_path / "missing_bridge_identity_registry.json"
+
+    with pytest.raises(ValueError, match="bridge identity registry not found"):
+        load_bridge_identity_registry(missing_registry)
+
+    assert load_bridge_identity_registry(missing_registry, allow_missing=True) == {}
+
+
+def test_missing_default_identity_registry_refuses_rco_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_registry = tmp_path / "missing_bridge_identity_registry.json"
+    monkeypatch.setattr(
+        identity_registry_module,
+        "DEFAULT_BRIDGE_IDENTITY_REGISTRY_PATH",
+        missing_registry,
+    )
+    events = [
+        _rco_event(
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+        )
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "invalid_identity_registry"
+    assert result["has_qualifying_rco_pass_at_head"] is False
+    assert "bridge identity registry not found" in result["error"]
 
 
 def test_pass_at_head_present_returns_ok() -> None:

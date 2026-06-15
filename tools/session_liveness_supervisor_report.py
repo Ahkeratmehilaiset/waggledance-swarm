@@ -37,6 +37,7 @@ from tools.bridge_session_watcher_probe import (  # noqa: E402
     collect_live_process_snapshot,
     probe_bridge_session_watchers,
     read_active_claim_counts,
+    read_active_claim_records,
     read_process_snapshot,
 )
 from tools.check_bridge_wake_delivery import (  # noqa: E402
@@ -197,8 +198,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         events = read_events(events_path, tail=args.tail)
         processes = _load_processes(args)
         screen_states = read_screen_state_snapshot(args.screen_state_json)
-        active_claim_file_counts, claim_read_errors = read_active_claim_counts(
+        active_claim_file_records, claim_read_errors = read_active_claim_records(
             bridge_root
+        )
+        active_claim_file_counts = _claim_file_counts_from_records(
+            active_claim_file_records
         )
         report = build_session_liveness_supervisor_report(
             events=events,
@@ -208,6 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             or bool(args.live_processes),
             screen_states=screen_states,
             active_claim_file_counts=active_claim_file_counts,
+            active_claim_file_records=active_claim_file_records,
             claim_read_errors=claim_read_errors,
             agents=args.agent,
             activity_gap_minutes=args.activity_gap_minutes,
@@ -259,6 +264,7 @@ def build_session_liveness_supervisor_report(
     process_snapshot_checked: bool = False,
     screen_states: Mapping[str, Mapping[str, Any]] | None = None,
     active_claim_file_counts: Mapping[str, int] | None = None,
+    active_claim_file_records: Sequence[Mapping[str, Any]] = (),
     claim_read_errors: Sequence[str] = (),
     agents: Sequence[str] | None = None,
     activity_gap_minutes: float = DEFAULT_ACTIVITY_GAP_MINUTES,
@@ -287,7 +293,10 @@ def build_session_liveness_supervisor_report(
         now_utc=effective_now,
         max_age_hours=active_claim_max_age_hours,
     )
+    claim_file_records = _claim_file_records_by_agent(active_claim_file_records)
     claim_file_counts = _claim_file_counts(active_claim_file_counts or {})
+    for agent, records in claim_file_records.items():
+        claim_file_counts[agent] = max(claim_file_counts.get(agent, 0), len(records))
     claim_counts = {
         agent: len(claims) for agent, claims in active_claims.items()
     }
@@ -338,6 +347,7 @@ def build_session_liveness_supervisor_report(
             active_claims=active_claims.get(agent, []),
             active_claim_count=claim_counts.get(agent, 0),
             active_claim_file_count=claim_file_counts.get(agent, 0),
+            active_claim_file_records=claim_file_records.get(agent, []),
             activity_gap_minutes=activity_gap_minutes,
             cycle_budget_minutes=cycle_budget_minutes,
         )
@@ -458,6 +468,7 @@ def _agent_row(
     active_claims: Sequence[Mapping[str, Any]],
     active_claim_count: int,
     active_claim_file_count: int,
+    active_claim_file_records: Sequence[Mapping[str, Any]],
     activity_gap_minutes: float,
     cycle_budget_minutes: float,
 ) -> dict[str, Any]:
@@ -470,7 +481,18 @@ def _agent_row(
     active_write_claims = [
         claim for claim in active_claims if claim["write_scope"]
     ]
-    active_unknown_scope_claim_count = max(0, active_claim_count - len(active_claims))
+    event_claim_identities = {
+        _event_claim_identity(claim) for claim in active_claims
+    }
+    file_claim_contract = _file_claim_contract(
+        active_claim_file_records,
+        active_claim_file_count=active_claim_file_count,
+        event_claim_identities=event_claim_identities,
+    )
+    active_unknown_scope_claim_count = int(
+        file_claim_contract["unmatched_count"]
+    ) + int(file_claim_contract["malformed_count"])
+    active_file_write_claim_count = int(file_claim_contract["write_count"])
     watcher_status = (
         str(watcher_row.get("status") or "unknown")
         if watcher_row
@@ -503,7 +525,9 @@ def _agent_row(
         triggers.append("idle_activity_gap_exceeded")
 
     restart_checkpoint_ready = not (
-        active_write_claims or active_unknown_scope_claim_count
+        active_write_claims
+        or active_unknown_scope_claim_count
+        or active_file_write_claim_count
     )
     restart_blocked = bool(not restart_checkpoint_ready and triggers)
     restart_recommended = bool(triggers and not restart_blocked)
@@ -547,6 +571,10 @@ def _agent_row(
         "active_write_claim_count": len(active_write_claims),
         "active_write_claims": list(active_write_claims),
         "active_unknown_scope_claim_count": active_unknown_scope_claim_count,
+        "active_claim_file_write_count": active_file_write_claim_count,
+        "active_claim_file_unmatched_count": file_claim_contract["unmatched_count"],
+        "active_claim_file_malformed_count": file_claim_contract["malformed_count"],
+        "active_claim_file_records": file_claim_contract["records"],
         "restart_checkpoint_ready": restart_checkpoint_ready,
         "restart_checkpoint_contract": {
             "version": "wd.session_restart_checkpoint_contract.v0",
@@ -556,6 +584,13 @@ def _agent_row(
             "active_claim_count": active_claim_count,
             "active_write_claim_count": len(active_write_claims),
             "active_unknown_scope_claim_count": active_unknown_scope_claim_count,
+            "active_claim_file_write_count": active_file_write_claim_count,
+            "active_claim_file_unmatched_count": file_claim_contract[
+                "unmatched_count"
+            ],
+            "active_claim_file_malformed_count": file_claim_contract[
+                "malformed_count"
+            ],
             "required_before_restart": True,
         },
         "restart_triggers": triggers,
@@ -570,6 +605,7 @@ def _agent_row(
             triggers=triggers,
             screen=screen,
             active_unknown_scope_claim_count=active_unknown_scope_claim_count,
+            active_file_write_claim_count=active_file_write_claim_count,
         ),
         "diagnosis": _diagnosis(
             restart_recommended=restart_recommended,
@@ -577,6 +613,7 @@ def _agent_row(
             triggers=triggers,
             screen=screen,
             active_unknown_scope_claim_count=active_unknown_scope_claim_count,
+            active_file_write_claim_count=active_file_write_claim_count,
         ),
     }
 
@@ -634,6 +671,103 @@ def _claim_file_counts(
             continue
         counts[agent] = max(counts.get(agent, 0), max(0, int(raw_count)))
     return counts
+
+
+def _claim_file_counts_from_records(
+    active_claim_file_records: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in active_claim_file_records:
+        agent = str(record.get("agent") or "").strip().lower()
+        if agent and AGENT_ID_PATTERN.fullmatch(agent):
+            counts[agent] = counts.get(agent, 0) + 1
+    return counts
+
+
+def _claim_file_records_by_agent(
+    active_claim_file_records: Sequence[Mapping[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    by_agent: dict[str, list[dict[str, Any]]] = {}
+    for record in active_claim_file_records:
+        agent = str(record.get("agent") or "").strip().lower()
+        if not agent or not AGENT_ID_PATTERN.fullmatch(agent):
+            continue
+        normalized = {
+            "agent": agent,
+            "task_id": str(record.get("task_id") or "").strip(),
+            "mode": str(record.get("mode") or "unknown").strip().lower(),
+            "write_scope": _write_scope(record),
+            "claimed_at_utc": str(record.get("claimed_at_utc") or ""),
+            "last_heartbeat_utc": str(record.get("last_heartbeat_utc") or ""),
+            "claim_lease_expires_utc": str(
+                record.get("claim_lease_expires_utc") or ""
+            ),
+            "malformed": bool(record.get("malformed")),
+        }
+        if not normalized["task_id"] or normalized["mode"] not in {"read-only", "write"}:
+            normalized["malformed"] = True
+        by_agent.setdefault(agent, []).append(normalized)
+    return by_agent
+
+
+def _event_claim_identity(claim: Mapping[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+    write_scope = tuple(sorted(_normalize_scope(scope) for scope in claim["write_scope"]))
+    mode = "write" if write_scope else "read-only"
+    return str(claim.get("task_id") or ""), mode, write_scope
+
+
+def _file_claim_identity(record: Mapping[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+    write_scope = tuple(sorted(_normalize_scope(scope) for scope in record["write_scope"]))
+    return str(record.get("task_id") or ""), str(record.get("mode") or ""), write_scope
+
+
+def _file_claim_contract(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    active_claim_file_count: int,
+    event_claim_identities: set[tuple[str, str, tuple[str, ...]]],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    write_count = 0
+    unmatched_count = max(0, active_claim_file_count - len(records))
+    malformed_count = 0
+    for record in records:
+        identity = _file_claim_identity(record)
+        is_write = identity[1] == "write" or bool(identity[2])
+        malformed = bool(record.get("malformed"))
+        matched = identity in event_claim_identities
+        if is_write:
+            write_count += 1
+        if malformed:
+            malformed_count += 1
+        elif not matched:
+            unmatched_count += 1
+        rows.append(
+            {
+                "task_id": identity[0],
+                "mode": identity[1],
+                "write_scope": list(identity[2]),
+                "matched_event_claim": matched,
+                "write_claim": is_write,
+                "malformed": malformed,
+                "checkpoint_blocks_restart": bool(is_write or malformed or not matched),
+                "claimed_at_utc": str(record.get("claimed_at_utc") or ""),
+                "last_heartbeat_utc": str(record.get("last_heartbeat_utc") or ""),
+                "claim_lease_expires_utc": str(
+                    record.get("claim_lease_expires_utc") or ""
+                ),
+            }
+        )
+    return {
+        "records": rows,
+        "write_count": write_count,
+        "unmatched_count": unmatched_count,
+        "malformed_count": malformed_count,
+    }
+
+
+def _normalize_scope(value: str) -> str:
+    return str(value).replace("\\", "/").strip("/").lower()
 
 
 def _claim_within_age_window(
@@ -791,12 +925,18 @@ def _safe_next_action(
     triggers: Sequence[str],
     screen: Mapping[str, Any],
     active_unknown_scope_claim_count: int,
+    active_file_write_claim_count: int,
 ) -> str:
     if restart_blocked:
+        if active_file_write_claim_count:
+            return (
+                "write durable handoff/checkpoint and release active write-mode "
+                "claim files before any restart"
+            )
         if active_unknown_scope_claim_count:
             return (
-                "write durable handoff/checkpoint or clear the active claim "
-                "file before any restart"
+                "resolve unmatched or malformed active claim-file identity "
+                "before any restart"
             )
         return (
             "write durable handoff/checkpoint and release the active write "
@@ -831,12 +971,18 @@ def _diagnosis(
     triggers: Sequence[str],
     screen: Mapping[str, Any],
     active_unknown_scope_claim_count: int,
+    active_file_write_claim_count: int,
 ) -> str:
     if restart_blocked:
+        if active_file_write_claim_count:
+            return (
+                "restart evidence is present, but an active write-mode claim "
+                "file makes restart unsafe until checkpointed"
+            )
         if active_unknown_scope_claim_count:
             return (
-                "restart evidence is present, but active claim-file state is "
-                "not represented by checkpointed bridge events"
+                "restart evidence is present, but active claim-file identity "
+                "is unmatched or malformed"
             )
         return (
             "restart evidence is present, but an active write claim makes "

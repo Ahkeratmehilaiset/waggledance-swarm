@@ -376,9 +376,18 @@ def _agent_row(
         "missing_watcher": missing_watcher,
         "missing_heartbeat": missing_heartbeat,
         "safe_next_action": safe_next_action,
+        "operator_title_map_hint": _operator_title_map_hint(agent),
         "watcher_processes": list(watcher_processes),
         "heartbeat_processes": list(heartbeat_processes),
     }
+
+
+def _operator_title_map_hint(agent: str) -> str:
+    return (
+        "if operator wake keying reports tab not found, pass "
+        f"-TitleMap '{agent}=<exact-title-substring>' or restart/retitle "
+        f"the session so the window title includes {agent}"
+    )
 
 
 def _target_agents(

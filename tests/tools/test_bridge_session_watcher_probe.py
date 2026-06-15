@@ -76,6 +76,10 @@ def test_missing_watcher_blocks_treating_more_nudges_as_delivery() -> None:
     assert row["missing_watcher"] is True
     assert row["missing_heartbeat"] is True
     assert "do not emit more wake_request" in row["safe_next_action"]
+    assert "-TitleMap 'codex-lead-1=<exact-title-substring>'" in row[
+        "operator_title_map_hint"
+    ]
+    assert "window title includes codex-lead-1" in row["operator_title_map_hint"]
 
 
 def test_explicit_agent_filter_does_not_add_other_active_claimants() -> None:

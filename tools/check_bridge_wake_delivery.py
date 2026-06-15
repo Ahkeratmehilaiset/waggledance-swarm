@@ -109,8 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SELF_LIVENESS_WINDOW_MINUTES,
         help=(
             "Treat a target agent with self-authored non-heartbeat activity "
-            "inside this window as self-paced/silent by design instead of "
-            "a wake-delivery stall."
+            "after the latest wake_request and inside this window as delivered "
+            "and self-paced instead of a wake-delivery stall."
         ),
     )
     parser.add_argument(
@@ -434,17 +434,15 @@ def _self_liveness_suppression(
     if last_self is None:
         return None
     last_wake = _parse_utc(str(group["last_ts_utc"]))
-    if last_wake is not None and last_self > last_wake:
-        reason = "target_self_activity_after_latest_wake"
-    else:
-        reason = "target_self_activity_within_liveness_window"
+    if last_wake is None or last_self <= last_wake:
+        return None
+    reason = "target_self_activity_after_latest_wake"
     self_age_minutes = max(
         0.0,
         (now_utc.astimezone(timezone.utc) - last_self).total_seconds() / 60.0,
     )
-    if reason != "target_self_activity_after_latest_wake":
-        if self_age_minutes >= self_liveness_window_minutes:
-            return None
+    if self_age_minutes >= self_liveness_window_minutes:
+        return None
     return {
         "last_self_activity_ts_utc": _format_utc(last_self),
         "last_self_activity_age_minutes": round(self_age_minutes, 3),
@@ -503,8 +501,8 @@ def _wake_row(
     requester_list = sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
     if classification == "self_pacing_or_silent_by_design":
         reason = (
-            "target agent has recent self-authored bridge activity inside "
-            "the self-liveness window; treat as self-paced or silent by design"
+            "target agent has self-authored bridge activity after the latest "
+            "wake_request; treat as delivered and self-paced"
         )
         safe_next_action = (
             "wait for the target self-paced loop or recheck after the "

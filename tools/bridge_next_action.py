@@ -1681,15 +1681,11 @@ def _wake_delivery_self_liveness_suppression(
     if last_self is None:
         return None
     last_wake = _parse_utc(str(group["last_ts_utc"]))
-    if last_wake is not None and last_self > last_wake:
-        reason = "target_self_activity_after_latest_wake"
-    else:
-        reason = "target_self_activity_within_liveness_window"
+    if last_wake is None or last_self <= last_wake:
+        return None
+    reason = "target_self_activity_after_latest_wake"
     self_age_minutes = _elapsed_minutes(now_utc, last_self)
-    if (
-        reason != "target_self_activity_after_latest_wake"
-        and self_age_minutes >= DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES
-    ):
+    if self_age_minutes >= DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES:
         return None
     return {
         "last_self_activity_ts_utc": _format_utc(last_self),
@@ -1745,8 +1741,8 @@ def _wake_delivery_row(
     )
     if classification == "self_pacing_or_silent_by_design":
         diagnosis = (
-            "target agent has recent self-authored bridge activity inside "
-            "the self-liveness window; treat as self-paced or silent by design"
+            "target agent has self-authored bridge activity after the latest "
+            "wake_request; treat as delivered and self-paced"
         )
         safe_next_action = (
             "wait for the target self-paced loop or recheck after the "

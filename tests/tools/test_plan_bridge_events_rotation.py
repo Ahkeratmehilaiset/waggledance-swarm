@@ -218,7 +218,9 @@ def test_cli_json_is_read_only_and_does_not_create_archive_dir(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"keep_days": 0}, "keep_days must be positive"),
+        ({"keep_days": 0}, "keep_days must be a finite positive number"),
+        ({"keep_days": float("nan")}, "keep_days must be a finite positive number"),
+        ({"keep_days": float("inf")}, "keep_days must be a finite positive number"),
         ({"min_recent_lines": 0}, "min_recent_lines must be at least 1"),
     ],
 )

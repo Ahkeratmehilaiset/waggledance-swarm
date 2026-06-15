@@ -11,6 +11,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any, Sequence
@@ -131,12 +132,12 @@ def plan_bridge_events_rotation(
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Return a read-only archive/recent split plan for a bridge JSONL file."""
-    if keep_days <= 0:
+    if not math.isfinite(keep_days) or keep_days <= 0:
         raise BridgeEventsRotationPlanError(
             {
                 "ok": False,
                 "decision": "bridge_events_rotation_plan_error",
-                "errors": ["keep_days must be positive"],
+                "errors": ["keep_days must be a finite positive number"],
             }
         )
     if min_recent_lines < 1:

@@ -50,6 +50,7 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
     bridge_identity_binding_status,
     load_bridge_identity_registry,
 )
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -120,7 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bridge-root",
         type=Path,
-        default=DEFAULT_BRIDGE_ROOT,
+        default=None,
+        help=(
+            "Path to the runtime .agent-bridge directory. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT / AGENT_BRIDGE_ROOT when set, then "
+            "repo-local .agent-bridge."
+        ),
     )
     parser.add_argument("--json", action="store_true")
     return parser
@@ -135,7 +141,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--from-agent must not be empty", file=sys.stderr)
         return 2
 
-    events_path = args.bridge_root / "shared" / "events.jsonl"
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = bridge_root / "shared" / "events.jsonl"
     if not events_path.exists():
         result = {
             "ok": False,

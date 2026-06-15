@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -616,6 +617,83 @@ def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
         capture_output=True,
         check=False,
     )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["clear_to_merge"] is True
+
+
+def test_cli_defaults_to_runtime_bridge_root_env(tmp_path: Path) -> None:
+    runtime_bridge = _seed_bridge(
+        tmp_path / "runtime",
+        [
+            _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+            _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        ],
+    )
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_bridge)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--json",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["clear_to_merge"] is False
+    assert payload["latest_blocking_event"]["agent"] == "codex"
+
+
+def test_cli_explicit_bridge_root_overrides_runtime_bridge_root_env(
+    tmp_path: Path,
+) -> None:
+    runtime_bridge = _seed_bridge(
+        tmp_path / "runtime",
+        [
+            _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+            _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        ],
+    )
+    explicit_bridge = _seed_bridge(
+        tmp_path / "explicit",
+        [_event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested")],
+    )
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_bridge)
+    env.pop("AGENT_BRIDGE_ROOT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(explicit_bridge),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["clear_to_merge"] is True

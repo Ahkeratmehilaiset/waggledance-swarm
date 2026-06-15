@@ -64,6 +64,18 @@ BLOCKING_STATUSES = frozenset(
 )
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
+NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
+    {
+        "no_changes_requested",
+        "no_changes_requested_approved",
+    }
+)
+NO_BLOCK_CLEAR_STATUSES = frozenset(
+    {
+        "lead_no_blocker_rco_pending",
+        "producer_no_block_reemit_required",
+    }
+)
 APPROVAL_STATUSES = frozenset(
     {
         "rco_pass",
@@ -293,15 +305,18 @@ def _status_tokens(status: str) -> set[str]:
 
 def _is_no_changes_requested_status(status: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    return normalized == "no_changes_requested" or normalized.startswith(
-        "no_changes_requested_"
-    )
+    return normalized in NO_CHANGES_REQUESTED_CLEAR_STATUSES
+
+
+def _is_no_block_status(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    return normalized in NO_BLOCK_CLEAR_STATUSES
 
 
 def _is_blocking_status(status: str) -> bool:
     if status in BLOCKING_STATUSES:
         return True
-    if _is_no_changes_requested_status(status):
+    if _is_no_changes_requested_status(status) or _is_no_block_status(status):
         return False
     tokens = _status_tokens(status)
     if {"changes", "requested"}.issubset(tokens):

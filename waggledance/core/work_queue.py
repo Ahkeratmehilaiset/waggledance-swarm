@@ -157,7 +157,7 @@ def claim_task(
     bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = claims_dir / f"{_safe_name(task_id)}.json"
+    claim_path = _claim_path_for_task(claims_dir, task_id)
 
     existing: Claim | None = None
     if claim_path.exists():
@@ -224,7 +224,7 @@ def release_task(
     claims_dir = bridge / "work_queue" / "claims"
     done_dir = bridge / "work_queue" / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = claims_dir / f"{_safe_name(task_id)}.json"
+    claim_path = _claim_path_for_task(claims_dir, task_id)
     if not claim_path.exists():
         raise WorkQueueError(f"no active claim for task {task_id}")
 
@@ -262,7 +262,7 @@ def heartbeat(
     _validate_agent(agent)
     _validate_task_id(task_id)
     bridge = resolve_bridge_root(bridge_root)
-    claim_path = bridge / "work_queue" / "claims" / f"{_safe_name(task_id)}.json"
+    claim_path = _claim_path_for_task(bridge / "work_queue" / "claims", task_id)
     if not claim_path.exists():
         raise WorkQueueError(f"no active claim for task {task_id}")
 
@@ -489,6 +489,22 @@ def _safe_name(value: str) -> str:
         return safe
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
     return f"{safe}-{digest}"
+
+
+def _claim_path_for_task(claims_dir: Path, task_id: str) -> Path:
+    preferred = claims_dir / f"{_safe_name(task_id)}.json"
+    if preferred.exists():
+        return preferred
+    if not claims_dir.exists():
+        return preferred
+    for path in sorted(claims_dir.glob("*.json")):
+        try:
+            claim = _read_claim_file(path)
+        except WorkQueueError:
+            continue
+        if claim.task_id == task_id:
+            return path
+    return preferred
 
 
 def _normalize_scope_entry(scope: str) -> str:

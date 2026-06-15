@@ -78,6 +78,67 @@ def test_bridge_namespaced_task_id_file_name_does_not_collide(
     assert {path.stem for path in claim_files} != {"codex-tools-1_task"}
 
 
+def test_heartbeat_accepts_legacy_powershell_namespaced_claim_file(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "codex-tools-1/legacy-powershell-claim"
+    initial_time = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    later_time = datetime(2026, 6, 15, 12, 5, tzinfo=timezone.utc)
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="legacy claim",
+        bridge_root=bridge,
+        now_utc=initial_time,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    preferred_path = next(claims_dir.glob("*.json"))
+    legacy_path = claims_dir / "codex-tools-1_legacy-powershell-claim.json"
+    preferred_path.rename(legacy_path)
+
+    refreshed = heartbeat(
+        agent="codex-tools-1",
+        task_id=task_id,
+        bridge_root=bridge,
+        now_utc=later_time,
+    )
+
+    assert refreshed.task_id == task_id
+    assert refreshed.last_heartbeat_utc == "2026-06-15T12:05:00Z"
+    assert legacy_path.exists()
+
+
+def test_release_accepts_legacy_powershell_namespaced_claim_file(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "codex-tools-1/legacy-release-claim"
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="legacy release",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    preferred_path = next(claims_dir.glob("*.json"))
+    legacy_path = claims_dir / "codex-tools-1_legacy-release-claim.json"
+    preferred_path.rename(legacy_path)
+
+    record = release_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        release_status="done",
+        bridge_root=bridge,
+    )
+
+    assert record.task_id == task_id
+    assert not legacy_path.exists()
+    assert len(list((bridge / "work_queue" / "done").glob("*.json"))) == 1
+
+
 def test_claim_rejects_invalid_agent(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     with pytest.raises(WorkQueueError):

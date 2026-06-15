@@ -957,9 +957,11 @@ def _pick_production_liveness_reactivation(
             idle_minutes_float = 0.0
         idle_warn = float(production_liveness.get("idle_warn_minutes") or 0.0)
         events_path = bridge_root / "shared" / "events.jsonl"
+        episode_suffix = _liveness_episode_suffix(item)
         task_id = _production_liveness_reactivation_task_id(
             now_utc=now_utc,
             peer_agent=peer_agent,
+            episode_suffix=episode_suffix,
         )
         completed_matches = _matching_production_liveness_reactivation_task_ids(
             completed,
@@ -999,6 +1001,7 @@ def _pick_production_liveness_reactivation(
             "stalled_agent": peer_agent,
             "reason": reason,
             "idle_minutes": round(idle_minutes_float, 3),
+            "liveness_episode": episode_suffix,
             "task_id_suggestion": task_id,
             "mode": "read-only",
             "write_scope": [],
@@ -1094,9 +1097,11 @@ def _pick_rco_lane_failover_scout(
         except (TypeError, ValueError):
             idle_minutes_float = 0.0
         idle_warn = float(production_liveness.get("idle_warn_minutes") or 0.0)
+        episode_suffix = _liveness_episode_suffix(item)
         task_id = _rco_lane_failover_task_id(
             now_utc=now_utc,
             stalled_agent=stalled_agent,
+            episode_suffix=episode_suffix,
         )
         completed_matches = _matching_rco_lane_failover_task_ids(
             completed,
@@ -1135,6 +1140,7 @@ def _pick_rco_lane_failover_scout(
             "fallback_reviewers": fallback_reviewers,
             "reason": reason,
             "idle_minutes": round(idle_minutes_float, 3),
+            "liveness_episode": episode_suffix,
             "task_id_suggestion": task_id,
             "mode": "read-only",
             "write_scope": [],
@@ -1892,22 +1898,66 @@ def _production_liveness_reactivation_task_id(
     *,
     now_utc: datetime,
     peer_agent: str,
+    episode_suffix: str = "",
 ) -> str:
-    return (
+    base = (
         "production-liveness-reactivation-scout-"
         f"{now_utc.strftime('%Y-%m-%d')}-{peer_agent}"
     )
+    suffix = _task_id_token(episode_suffix)
+    return f"{base}-{suffix}" if suffix else base
 
 
 def _rco_lane_failover_task_id(
     *,
     now_utc: datetime,
     stalled_agent: str,
+    episode_suffix: str = "",
 ) -> str:
-    return (
+    base = (
         "rco-lane-failover-scout-"
         f"{now_utc.strftime('%Y-%m-%d')}-{stalled_agent}"
     )
+    suffix = _task_id_token(episode_suffix)
+    return f"{base}-{suffix}" if suffix else base
+
+
+def _liveness_episode_suffix(item: Mapping[str, Any]) -> str:
+    """Return a stable token for one observed liveness-stall episode."""
+    for key in (
+        "last_activity_ts_utc",
+        "first_observed_ts_utc",
+        "last_heartbeat_ts_utc",
+    ):
+        token = _utc_task_token(item.get(key))
+        if token:
+            return f"since-{token}"
+
+    task_token = _task_id_token(str(item.get("last_activity_task_id") or ""))
+    if task_token:
+        return f"task-{task_token}"
+    return ""
+
+
+def _utc_task_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = _parse_utc(text)
+    except (TypeError, ValueError):
+        return ""
+    return parsed.strftime("%Y%m%dt%H%M%Sz")
+
+
+def _task_id_token(value: str) -> str:
+    token_chars: list[str] = []
+    for char in value.lower():
+        if ("a" <= char <= "z") or ("0" <= char <= "9"):
+            token_chars.append(char)
+        elif token_chars and token_chars[-1] != "-":
+            token_chars.append("-")
+    return "".join(token_chars).strip("-")[:48]
 
 
 def _is_same_day_production_liveness_reactivation_task_id(

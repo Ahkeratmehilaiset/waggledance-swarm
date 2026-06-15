@@ -1045,6 +1045,35 @@ def test_ack_message_statuses_close_incoming_request(status: str) -> None:
     assert report["stale_incoming_count"] == 0
 
 
+def test_observed_message_status_closes_incoming_handoff() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-15T10:45:31Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "handoff",
+            "task_id": "driver-ready-task",
+            "status": "full_consensus_driver_ready",
+            "message": "driver-ready handoff",
+        },
+        {
+            "ts_utc": "2026-06-15T10:46:56Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,driver",
+            "type": "message",
+            "task_id": "driver-ready-task",
+            "status": "driver_ready_handoff_observed_no_tools_action",
+            "message": "observed driver-ready handoff; no tools action",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
 def test_empty_task_request_closes_when_target_answers_requester() -> None:
     events = [
         {

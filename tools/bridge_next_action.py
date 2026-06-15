@@ -1204,6 +1204,7 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
     return _event_type(event) in ANSWER_TYPES and (
         status in CLOSED_REQUEST_STATUSES
+        or _is_response_only_status(status)
         or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
     )
 

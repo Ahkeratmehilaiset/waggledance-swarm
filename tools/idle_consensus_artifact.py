@@ -54,6 +54,10 @@ COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION = (
 COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION = (
     "idle_consensus_counterfactual_eval_binding_template.v0"
 )
+OPERATOR_DECISION_REFERENCE_VERSION = (
+    "idle_consensus_operator_decision_reference.v0"
+)
+OPERATOR_DECISION_APPROVED_FOR_DRAFT_PR = "approved_for_draft_pr_creation"
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -155,6 +159,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--operator-decision-reference",
+        type=Path,
+        default=None,
+        help=(
+            "Optional operator decision reference JSON for candidate-diff "
+            "replay admission. The report exports only digest-bound status."
+        ),
+    )
+    parser.add_argument(
         "--changed-path",
         action="append",
         default=[],
@@ -174,6 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.replay_seed is not None
         or args.candidate_diff is not None
         or args.counterfactual_eval_receipt is not None
+        or args.operator_decision_reference is not None
         or args.changed_paths
     ):
         try:
@@ -193,6 +207,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     },
                 )
             if args.counterfactual_eval_binding_template:
+                if args.operator_decision_reference is not None:
+                    raise ArtifactError(
+                        "counterfactual eval binding template does not consume operator decisions",
+                        {
+                            "decision": "counterfactual_eval_binding_template_refused",
+                            "errors": [
+                                "--operator-decision-reference is not accepted in "
+                                "binding-template mode"
+                            ],
+                            "exit_code": 2,
+                        },
+                    )
                 report = build_counterfactual_eval_binding_template_from_files(
                     enabled=bool(args.counterfactual_eval_binding_template),
                     replay_seed_path=args.replay_seed,
@@ -207,6 +233,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     candidate_diff_path=args.candidate_diff,
                     changed_paths=args.changed_paths,
                     counterfactual_eval_receipt_path=args.counterfactual_eval_receipt,
+                    operator_decision_reference_path=(
+                        args.operator_decision_reference
+                    ),
                 )
         except ArtifactError as exc:
             if args.json:
@@ -568,6 +597,7 @@ def build_idle_consensus_candidate_diff_replay_admission(
     changed_paths: Sequence[str],
     candidate_diff_text: str,
     counterfactual_eval_receipt: Mapping[str, Any] | None = None,
+    operator_decision_reference: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a report-only admission check for replaying a candidate diff."""
     _ensure_replay_seed_ready_for_candidate_diff_admission(replay_seed)
@@ -603,6 +633,16 @@ def build_idle_consensus_candidate_diff_replay_admission(
         replay_seed_digest=replay_seed_digest,
         candidate_diff_digest=candidate_diff_digest,
     )
+    operator_decision = _operator_decision_reference_summary(
+        operator_decision_reference,
+        replay_seed_digest=replay_seed_digest,
+        candidate_diff_digest=candidate_diff_digest,
+    )
+    eligible_for_draft_pr_gate = bool(
+        candidate_diff_allowed
+        and counterfactual_eval.get("satisfies_replay_gate") is True
+        and operator_decision.get("satisfies_operator_gate") is True
+    )
     return {
         "report_version": CANDIDATE_DIFF_REPLAY_ADMISSION_VERSION,
         "ok": candidate_diff_allowed,
@@ -632,14 +672,17 @@ def build_idle_consensus_candidate_diff_replay_admission(
             "diff_text_included": False,
         },
         "counterfactual_eval": counterfactual_eval,
+        "operator_decision_reference": operator_decision,
         "path_gate": _gate_decision_to_dict(path_gate),
         "diff_gate": _gate_decision_to_dict(diff_gate),
-        "eligible_for_draft_pr_gate": False,
+        "eligible_for_draft_pr_gate": eligible_for_draft_pr_gate,
         "draft_pr_gate_blockers": _candidate_diff_replay_blockers(
-            counterfactual_eval
+            counterfactual_eval,
+            operator_decision,
         ),
         "next_required_gates": _candidate_diff_replay_next_required_gates(
-            counterfactual_eval
+            counterfactual_eval,
+            operator_decision,
         ),
     }
 
@@ -753,6 +796,135 @@ def _counterfactual_receipt_binding_summary(
     }
 
 
+def _operator_decision_reference_summary(
+    reference: Mapping[str, Any] | None,
+    *,
+    replay_seed_digest: str,
+    candidate_diff_digest: str,
+) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": OPERATOR_DECISION_REFERENCE_VERSION,
+        "provided": False,
+        "source_digest": None,
+        "payload_included": False,
+        "decision": "",
+        "decision_approved": False,
+        "schema_version_matches": False,
+        "expected_replay_seed_digest": replay_seed_digest,
+        "expected_candidate_diff_digest": candidate_diff_digest,
+        "replay_seed_digest_matches": False,
+        "candidate_diff_digest_matches": False,
+        "operator_gate_required": None,
+        "auto_execute": None,
+        "external_effect": None,
+        "writes_applied": None,
+        "would_create_task": None,
+        "would_create_branch": None,
+        "would_create_pr": None,
+        "would_merge": None,
+        "runtime_authority_granted": None,
+        "external_writes_applied": None,
+        "authority_boundary_clear": False,
+        "satisfies_operator_gate": False,
+        "blocker": "operator_review_gate_required",
+    }
+    if reference is None:
+        return base
+    if not isinstance(reference, Mapping):
+        raise ArtifactError(
+            "candidate diff replay admission requires a mapping operator decision reference",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["operator decision reference must be a mapping"],
+                "exit_code": 2,
+            },
+        )
+    try:
+        reference_text = json.dumps(reference, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise ArtifactError(
+            "candidate diff replay admission requires a serializable operator decision reference",
+            {
+                "decision": "candidate_diff_replay_refused",
+                "errors": ["operator decision reference must be JSON serializable"],
+                "exit_code": 2,
+            },
+        ) from exc
+    _refuse_private_text(reference_text, "operator decision reference")
+
+    summary = dict(base)
+    decision = str(reference.get("decision", ""))
+    summary.update(
+        {
+            "provided": True,
+            "source_digest": sha256_digest(reference),
+            "decision": decision,
+            "decision_approved": decision == OPERATOR_DECISION_APPROVED_FOR_DRAFT_PR,
+            "schema_version_matches": (
+                reference.get("schema_version")
+                == OPERATOR_DECISION_REFERENCE_VERSION
+            ),
+            "replay_seed_digest_matches": (
+                reference.get("replay_seed_digest") == replay_seed_digest
+            ),
+            "candidate_diff_digest_matches": (
+                reference.get("candidate_diff_digest") == candidate_diff_digest
+            ),
+            "operator_gate_required": reference.get("operator_gate_required"),
+            "auto_execute": reference.get("auto_execute"),
+            "external_effect": reference.get("external_effect"),
+            "writes_applied": reference.get("writes_applied"),
+            "would_create_task": reference.get("would_create_task"),
+            "would_create_branch": reference.get("would_create_branch"),
+            "would_create_pr": reference.get("would_create_pr"),
+            "would_merge": reference.get("would_merge"),
+            "runtime_authority_granted": reference.get(
+                "runtime_authority_granted"
+            ),
+            "external_writes_applied": reference.get("external_writes_applied"),
+        }
+    )
+    authority_boundary_clear = all(
+        summary[key] is False
+        for key in (
+            "auto_execute",
+            "external_effect",
+            "writes_applied",
+            "would_create_task",
+            "would_create_branch",
+            "would_create_pr",
+            "would_merge",
+            "runtime_authority_granted",
+            "external_writes_applied",
+        )
+    )
+    summary["authority_boundary_clear"] = authority_boundary_clear
+    summary["satisfies_operator_gate"] = bool(
+        summary["schema_version_matches"]
+        and summary["decision_approved"]
+        and summary["replay_seed_digest_matches"]
+        and summary["candidate_diff_digest_matches"]
+        and summary["operator_gate_required"] is True
+        and authority_boundary_clear
+    )
+    if summary["satisfies_operator_gate"]:
+        summary["blocker"] = None
+    elif not summary["schema_version_matches"]:
+        summary["blocker"] = "operator_decision_reference_schema_mismatch"
+    elif not summary["decision_approved"]:
+        summary["blocker"] = "operator_decision_reference_not_approved"
+    elif (
+        not summary["replay_seed_digest_matches"]
+        or not summary["candidate_diff_digest_matches"]
+    ):
+        summary["blocker"] = "operator_decision_reference_binding_mismatch"
+    elif summary["operator_gate_required"] is not True:
+        summary["blocker"] = "operator_decision_reference_gate_mismatch"
+    elif not authority_boundary_clear:
+        summary["blocker"] = "operator_decision_reference_authority_boundary_failed"
+    return summary
+
+
 def _counterfactual_observability_satisfies_replay_gate(
     observability: Mapping[str, Any],
 ) -> bool:
@@ -771,6 +943,7 @@ def _counterfactual_observability_satisfies_replay_gate(
 
 def _candidate_diff_replay_blockers(
     counterfactual_eval: Mapping[str, Any],
+    operator_decision: Mapping[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
     if counterfactual_eval.get("provided") is not True:
@@ -781,12 +954,15 @@ def _candidate_diff_replay_blockers(
         blockers.append("counterfactual_eval_receipt_unbound")
     elif counterfactual_eval.get("binding", {}).get("matches") is not True:
         blockers.append("counterfactual_eval_receipt_binding_mismatch")
-    blockers.append("operator_review_gate_required")
+    operator_blocker = operator_decision.get("blocker")
+    if operator_blocker:
+        blockers.append(str(operator_blocker))
     return blockers
 
 
 def _candidate_diff_replay_next_required_gates(
     counterfactual_eval: Mapping[str, Any],
+    operator_decision: Mapping[str, Any],
 ) -> list[str]:
     gates: list[str] = []
     if counterfactual_eval.get("provided") is not True:
@@ -795,9 +971,10 @@ def _candidate_diff_replay_next_required_gates(
         gates.append("counterfactual_eval_receipt")
     elif counterfactual_eval.get("binding", {}).get("matches") is not True:
         gates.append("counterfactual_eval_receipt_binding")
+    if operator_decision.get("satisfies_operator_gate") is not True:
+        gates.append("operator_review_gate")
     gates.extend(
         [
-            "operator_review_gate",
             "draft_pr_creation",
             "ci_green",
             "mergeable_clean",
@@ -814,6 +991,7 @@ def build_candidate_diff_replay_admission_from_files(
     candidate_diff_path: Path | None,
     changed_paths: Sequence[str],
     counterfactual_eval_receipt_path: Path | None = None,
+    operator_decision_reference_path: Path | None = None,
 ) -> dict[str, Any]:
     """Load local files and build a report-only candidate diff admission."""
     if not enabled:
@@ -854,11 +1032,20 @@ def build_candidate_diff_replay_admission_from_files(
         if counterfactual_eval_receipt_path is not None
         else None
     )
+    operator_decision_reference = (
+        _read_json_object(
+            operator_decision_reference_path,
+            "operator decision reference",
+        )
+        if operator_decision_reference_path is not None
+        else None
+    )
     report = build_idle_consensus_candidate_diff_replay_admission(
         replay_seed=replay_seed,
         changed_paths=changed_paths,
         candidate_diff_text=candidate_diff_text,
         counterfactual_eval_receipt=counterfactual_eval_receipt,
+        operator_decision_reference=operator_decision_reference,
     )
     report["exit_code"] = 0 if report["ok"] else 1
     return report

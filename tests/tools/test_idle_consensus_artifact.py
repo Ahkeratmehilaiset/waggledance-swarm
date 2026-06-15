@@ -15,6 +15,7 @@ from tools.idle_consensus_artifact import (
     COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION,
+    OPERATOR_DECISION_REFERENCE_VERSION,
     REPLAY_SEED_REQUIRED_FALSE_KEYS,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_counterfactual_eval_binding_template,
@@ -237,6 +238,31 @@ def _bind_counterfactual_receipt(
                 diff_text,
             ),
         },
+    }
+
+
+def _operator_decision_reference(
+    *,
+    replay_seed: dict,
+    changed_paths: list[str],
+    diff_text: str,
+    decision: str = "approved_for_draft_pr_creation",
+) -> dict:
+    return {
+        "schema_version": OPERATOR_DECISION_REFERENCE_VERSION,
+        "decision": decision,
+        "replay_seed_digest": sha256_digest(replay_seed),
+        "candidate_diff_digest": _candidate_diff_digest(changed_paths, diff_text),
+        "operator_gate_required": True,
+        "auto_execute": False,
+        "external_effect": False,
+        "writes_applied": False,
+        "would_create_task": False,
+        "would_create_branch": False,
+        "would_create_pr": False,
+        "would_merge": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
     }
 
 
@@ -584,6 +610,143 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
     assert "raw-delta-digest-not-exported" not in serialized
     assert "per_arm" not in serialized
     assert "divergences" not in serialized
+
+
+def test_candidate_diff_replay_admission_accepts_bound_operator_decision_reference(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++Operator approved this exact replay seed and candidate diff for draft PR.
+"""
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    operator_decision = _operator_decision_reference(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=operator_decision,
+    )
+    summary = admission["operator_decision_reference"]
+    serialized = json.dumps(admission, sort_keys=True)
+
+    assert summary["provided"] is True
+    assert summary["payload_included"] is False
+    assert summary["schema_version_matches"] is True
+    assert summary["decision_approved"] is True
+    assert summary["replay_seed_digest_matches"] is True
+    assert summary["candidate_diff_digest_matches"] is True
+    assert summary["authority_boundary_clear"] is True
+    assert summary["satisfies_operator_gate"] is True
+    assert summary["blocker"] is None
+    assert admission["eligible_for_draft_pr_gate"] is True
+    assert admission["draft_pr_gate_blockers"] == []
+    assert admission["next_required_gates"] == [
+        "draft_pr_creation",
+        "ci_green",
+        "mergeable_clean",
+        "exact_head_merge",
+    ]
+    assert "Operator approved this exact replay seed" not in serialized
+    assert "diff --git" not in serialized
+
+
+def test_candidate_diff_replay_admission_blocks_operator_reference_mismatch(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    diff_text = "diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md\n"
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    operator_decision = _operator_decision_reference(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    operator_decision["candidate_diff_digest"] = "sha256:" + "f" * 64
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=operator_decision,
+    )
+    summary = admission["operator_decision_reference"]
+
+    assert summary["provided"] is True
+    assert summary["candidate_diff_digest_matches"] is False
+    assert summary["satisfies_operator_gate"] is False
+    assert summary["blocker"] == "operator_decision_reference_binding_mismatch"
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_binding_mismatch"
+    ]
+    assert admission["next_required_gates"][0] == "operator_review_gate"
+
+
+def test_candidate_diff_replay_admission_blocks_operator_reference_authority_drift(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    diff_text = "diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md\n"
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    operator_decision = _operator_decision_reference(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    operator_decision["would_create_pr"] = True
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=operator_decision,
+    )
+    summary = admission["operator_decision_reference"]
+
+    assert summary["authority_boundary_clear"] is False
+    assert summary["satisfies_operator_gate"] is False
+    assert summary["blocker"] == (
+        "operator_decision_reference_authority_boundary_failed"
+    )
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authority_boundary_failed"
+    ]
+    assert admission["next_required_gates"][0] == "operator_review_gate"
 
 
 def test_counterfactual_eval_binding_template_is_digest_only_and_replay_ready(
@@ -938,6 +1101,83 @@ def test_cli_candidate_diff_replay_admission_accepts_counterfactual_receipt(
     assert admission["draft_pr_gate_blockers"] == ["operator_review_gate_required"]
     assert "SAMPLE_PAYLOAD_DO_NOT_EXPORT" not in completed.stdout
     assert "raw-delta-digest-not-exported" not in completed.stdout
+
+
+def test_cli_candidate_diff_replay_admission_accepts_operator_reference(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed_path = tmp_path / "replay-seed.json"
+    seed_path.write_text(
+        json.dumps(artifact["replay_seed"], sort_keys=True),
+        encoding="utf-8",
+    )
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++Operator reference is bound to this exact diff.
+"""
+    diff_path = tmp_path / "candidate.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    receipt_path = tmp_path / "counterfactual-receipt.json"
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    operator_decision = _operator_decision_reference(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    operator_path = tmp_path / "operator-decision-reference.json"
+    operator_path.write_text(
+        json.dumps(operator_decision, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_consensus_artifact.py"),
+            "--candidate-diff-replay-admission",
+            "--replay-seed",
+            str(seed_path),
+            "--candidate-diff",
+            str(diff_path),
+            "--changed-path",
+            changed_paths[0],
+            "--counterfactual-eval-receipt",
+            str(receipt_path),
+            "--operator-decision-reference",
+            str(operator_path),
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    admission = json.loads(completed.stdout)
+    summary = admission["operator_decision_reference"]
+    assert summary["provided"] is True
+    assert summary["source_digest"] == sha256_digest(operator_decision)
+    assert summary["payload_included"] is False
+    assert summary["satisfies_operator_gate"] is True
+    assert summary["blocker"] is None
+    assert admission["eligible_for_draft_pr_gate"] is True
+    assert admission["draft_pr_gate_blockers"] == []
+    assert "Operator reference is bound" not in completed.stdout
+    assert "diff --git" not in completed.stdout
 
 
 def test_cli_counterfactual_eval_binding_template_reports_without_payloads(

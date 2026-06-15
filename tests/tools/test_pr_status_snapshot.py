@@ -193,6 +193,36 @@ def test_private_marker_in_diff_refused() -> None:
     assert excinfo.value.report["decision"] == "privacy_marker_refused"
 
 
+def test_plural_private_marker_helper_name_is_not_sensitive_content() -> None:
+    helper_name = "PRIVATE" + "_MARKERS"
+    diff_text = f"+ assert all({helper_name})\n"
+    calls, runner = _runner(diff_text=diff_text)
+
+    snapshot = build_pr_status_snapshot(pr_number=479, runner=runner)
+
+    assert len(calls) == 3
+    assert snapshot["diff_text"] == diff_text
+
+
+def test_plural_private_marker_helper_exception_is_diff_only() -> None:
+    marker = "PRIVATE" + "_MARKER"
+    helper_name = f"{marker}S"
+
+    assert snapshot_tool._find_private_marker(helper_name) == marker
+    assert snapshot_tool._find_private_marker(f"+ assert all('{helper_name}')\n") == marker
+
+    for diff_text in (
+        f"+ assert all(X{helper_name})\n",
+        f"+ assert all({helper_name}_X)\n",
+        f"+ assert all({marker}_X)\n",
+    ):
+        calls, runner = _runner(diff_text=diff_text)
+        with pytest.raises(PrStatusSnapshotError) as excinfo:
+            build_pr_status_snapshot(pr_number=479, runner=runner)
+        assert len(calls) == 2
+        assert excinfo.value.report["decision"] == "privacy_marker_refused"
+
+
 def test_pr_head_changed_during_snapshot_is_rejected() -> None:
     calls, runner = _runner(
         payload=_gh_payload(),

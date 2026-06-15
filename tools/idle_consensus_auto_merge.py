@@ -1600,7 +1600,14 @@ def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
     """
     payload = event.get("payload")
     if isinstance(payload, Mapping):
-        for key in ("head", "head_sha", "expected_head", "head_oid", "head_commit"):
+        for key in (
+            "head",
+            "head_sha",
+            "expected_head",
+            "exact_head",
+            "head_oid",
+            "head_commit",
+        ):
             value = payload.get(key)
             if isinstance(value, str) and value.strip().lower() == head_sha:
                 return True

@@ -3,7 +3,8 @@
 
 Enforces CLAUDE.md Rule 9a: "RCO absence = NO merge". A valid
 recognized RCO `RCO_PASS` (type=decision or rco_review, status=rco_pass)
-whose *message* contains the exact --head SHA string must be present for
+whose *message* contains the exact --head SHA string, or whose structured
+``payload.exact_head`` equals it, must be present for
 the --task-id (canonical branch name) at the *exact* --head. The passing
 RCO must not be the PR author.
 
@@ -13,7 +14,8 @@ Fail-closed rules (per spec):
    when agents write `author-agent/rest` while the queue supplied
    `author-agent-rest`, or the reverse. No other task-id mismatch counts.
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
-   AND message contains the exact --head (40-char SHA) string.
+   AND message contains the exact --head (40-char SHA) string or
+   payload.exact_head equals it.
 3. If the MOST RECENT event from any recognized RCO on task_id is a veto
    (changes_requested / finding / blocked / rco_block* etc), REFUSE
    regardless of any earlier pass.
@@ -491,7 +493,7 @@ def check_rco_pass_present(
     latest_is_veto = _is_rco_veto_event(latest_ev)
     base["latest_rco_is_veto"] = latest_is_veto
 
-    # Find qualifying head-bound passes (type-restricted, status=rco_pass, message contains exact head)
+    # Find qualifying head-bound passes (type-restricted, status=rco_pass, bound to exact head)
     qualifying: list[tuple[int, Mapping[str, Any]]] = []
     for idx, ev in rco_events:
         agent = str(ev.get("agent", ""))
@@ -704,15 +706,25 @@ def _is_qualifying_rco_pass(
     status = str(event.get("status", "")).lower()
     if status not in RCO_PASS_STATUSES:
         return False
+    if _event_binds_head(event, head):
+        return True
+    return False
+
+
+def _event_binds_head(event: Mapping[str, Any], head: str) -> bool:
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        value = payload.get("exact_head")
+        if isinstance(value, str) and value.strip().lower() == head:
+            return True
     message = str(event.get("message", "") or "")
-    # Per spec: message contains the exact --head SHA string.
+    # Per legacy spec: message contains the exact --head SHA string.
     # Use substring match on the provided head (caller normalizes to lower hex).
-    if head not in message:
-        # Also accept if message has it case-insensitively for robustness with logs,
-        # but primary is exact string containment as specified.
-        if head.lower() not in message.lower():
-            return False
-    return True
+    if head in message:
+        return True
+    # Also accept case-insensitively for robustness with logs, but primary is
+    # exact string containment as specified.
+    return head.lower() in message.lower()
 
 
 def _stale_rco_pass_events(

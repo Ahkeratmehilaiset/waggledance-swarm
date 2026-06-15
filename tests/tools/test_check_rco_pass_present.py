@@ -465,7 +465,7 @@ def test_non_decision_type_pass_ignored() -> None:
     assert result["has_qualifying_rco_pass_at_head"] is False
 
 
-def test_head_must_be_in_message_for_qualifying() -> None:
+def test_payload_head_without_exact_head_does_not_qualify() -> None:
     events = [
         _rco_event(
             ts="2026-06-03T10:00:00Z",
@@ -474,11 +474,59 @@ def test_head_must_be_in_message_for_qualifying() -> None:
             message="RCO_PASS (head not mentioned in text)",
             payload={
                 "head": HEAD
-            },  # payload does not count for this gate per spec "message"
+            },
         ),
     ]
     result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
     assert result["ok"] is False
+    assert result["has_qualifying_rco_pass_at_head"] is False
+
+
+def test_payload_exact_head_qualifies_without_message_sha() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message="RCO_PASS for reviewed head",
+            payload={"exact_head": HEAD},
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["has_qualifying_rco_pass_at_head"] is True
+
+
+def test_payload_exact_head_allows_case_and_whitespace() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message="RCO_PASS for reviewed head",
+            payload={"exact_head": f"  {HEAD.upper()}  "},
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["has_qualifying_rco_pass_at_head"] is True
+
+
+def test_non_string_payload_exact_head_does_not_qualify() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message="RCO_PASS for reviewed head",
+            payload={"exact_head": {"sha": HEAD}},
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["decision"] == "no_qualifying_pass"
     assert result["has_qualifying_rco_pass_at_head"] is False
 
 

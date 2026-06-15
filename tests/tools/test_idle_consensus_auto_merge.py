@@ -575,6 +575,89 @@ def test_consensus_rejects_operator_merge_required_rco_status(
     )
 
 
+def test_bridge_consensus_accepts_exact_head_payload_alias(tmp_path: Path) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="decision",
+            status="rco_pass",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {"payload": {"pr": 477, "exact_head": HEAD}},
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["bridge_consensus"]["rco_pass_ref"]["agent"] == "claude-rco-1"
+
+
+def test_bridge_consensus_rejects_stale_exact_head_payload_alias(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"payload": {"exact_head": OTHER_BASE}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="decision",
+            status="rco_pass",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {"payload": {"pr": 477, "exact_head": HEAD}},
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_consensus"]["ok"] is False
+    assert any(
+        f"build_lead (codex-lead-1): no head-bound approval at {HEAD}" in reason
+        for reason in report["bridge_consensus"]["reasons"]
+    )
+
+
 def test_bridge_consensus_allows_clear_preflight_status_with_block_context(
     tmp_path: Path,
 ) -> None:

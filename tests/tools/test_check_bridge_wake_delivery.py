@@ -14,6 +14,7 @@ SCRIPT = ROOT / "tools" / "check_bridge_wake_delivery.py"
 
 sys.path.insert(0, str(ROOT))
 
+from tools import check_bridge_wake_delivery as wake_delivery_module  # noqa: E402
 from tools.check_bridge_wake_delivery import (  # noqa: E402
     WakeDeliveryError,
     check_wake_delivery,
@@ -291,6 +292,25 @@ def test_min_age_filters_young_wake_group() -> None:
     )
 
     assert report["stalled_count"] == 0
+
+
+def test_default_now_uses_wall_clock_not_latest_event(monkeypatch) -> None:
+    monkeypatch.setattr(wake_delivery_module, "_utc_now", _now)
+
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+        ],
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "wake_delivery_stalled"
+    assert report["stalled_count"] == 1
+    row = report["stalled_wakes"][0]
+    assert row["age_minutes"] == 30.0
+    assert row["latest_wake_age_minutes"] == 25.0
 
 
 def test_closed_wake_status_is_not_reported() -> None:

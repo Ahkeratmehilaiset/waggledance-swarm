@@ -28,7 +28,6 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_status,
     _event_ts,
     _event_type,
-    _latest_event_time,
     _parse_utc,
     _task_id,
     read_events,
@@ -220,7 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             active_claim_max_age_hours=args.active_claim_max_age_hours,
             wake_min_age_minutes=args.wake_min_age_minutes,
             wake_min_repeats=args.wake_min_repeats,
-            now_utc=_parse_now(args.now) or _latest_event_time(events),
+            now_utc=_parse_now(args.now),
         )
     except (BridgeNextActionError, WakeDeliveryError) as exc:
         report = {
@@ -284,10 +283,7 @@ def build_session_liveness_supervisor_report(
     )
     target_agents = _normalize_agents(agents)
     screens = dict(screen_states or {})
-    effective_now = (
-        (now_utc or _latest_event_time(events) or datetime.now(timezone.utc))
-        .astimezone(timezone.utc)
-    )
+    effective_now = (now_utc or _utc_now()).astimezone(timezone.utc)
     active_claims = _active_claims_by_agent(
         events,
         now_utc=effective_now,
@@ -1127,6 +1123,10 @@ def _age_minutes(now_utc: datetime, then_utc: datetime | None) -> float | None:
         now_utc.astimezone(timezone.utc) - then_utc.astimezone(timezone.utc)
     ).total_seconds() / 60.0
     return round(max(0.0, age), 3)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).astimezone(timezone.utc)
 
 
 def _format_utc(value: datetime | None) -> str:

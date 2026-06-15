@@ -71,6 +71,10 @@ ATTENTION_STATUS_TOKENS = {
 }
 WINDOWS_PATH_RE = re.compile(r"(?i)\b[a-z]:\\[^\s\"'<>]+")
 UNIX_PATH_RE = re.compile(r"(?<![\w:/])/(?:home|users|tmp|var|mnt|workspace|w)\S*")
+WAKE_SEND_FAILED_TARGET_RE = re.compile(
+    r"\bKeying\s+['\"](?P<agent>[a-z0-9][a-z0-9_.-]*)['\"]\s+failed\b",
+    re.IGNORECASE,
+)
 
 
 class OperatorAttentionDigestError(ValueError):
@@ -320,6 +324,36 @@ def _open_operator_attention_items(
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
         _close_satisfied_items(open_by_key, event)
+        if _is_wake_send_failed_event(event):
+            target = _wake_send_failed_target(event)
+            if not target:
+                continue
+            key = (f"wake-send-failed:{target}", "")
+            previous = open_by_key.get(key)
+            event_count = int(previous.get("event_count", 0)) + 1 if previous else 1
+            first_ts = (
+                str(previous.get("first_ts_utc")) if previous else _event_ts(event)
+            )
+            open_by_key[key] = {
+                "source_agent": _event_agent(event),
+                "task_id": _task_id(event),
+                "type": _event_type(event),
+                "status": _event_status(event),
+                "severity": _severity(event),
+                "ts_utc": _event_ts(event),
+                "first_ts_utc": first_ts,
+                "event_index": index,
+                "event_count": event_count,
+                "message": _safe_text(event.get("message")),
+                "payload_pr": "",
+                "payload_head": "",
+                "target_agent": target,
+                "attention_reasons": [
+                    "operator_action_signal",
+                    "wake_send_failed",
+                ],
+            }
+            continue
         if not _is_operator_attention_event(event):
             continue
         key = (_task_key(event), _payload_scalar(event, "pr") or "")
@@ -345,11 +379,29 @@ def _open_operator_attention_items(
     return open_by_key
 
 
+def _is_wake_send_failed_event(event: Mapping[str, Any]) -> bool:
+    if _event_agent(event) != OPERATOR_AGENT:
+        return False
+    if _event_status(event) != "wake_send_failed":
+        return False
+    return bool(_wake_send_failed_target(event))
+
+
+def _wake_send_failed_target(event: Mapping[str, Any]) -> str:
+    match = WAKE_SEND_FAILED_TARGET_RE.search(str(event.get("message") or ""))
+    if not match:
+        return ""
+    return match.group("agent").strip().lower()
+
+
 def _close_satisfied_items(
     open_by_key: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
 ) -> None:
-    if not _is_closure_event(event):
+    is_closure = _is_closure_event(event)
+    event_agent = _event_agent(event)
+    event_type = _event_type(event)
+    if not is_closure and event_type == "heartbeat":
         return
     event_ts = _event_ts(event)
     event_task_key = _task_key(event)
@@ -358,9 +410,17 @@ def _close_satisfied_items(
         state_task_key, state_pr = key
         if event_ts <= str(state["ts_utc"]):
             continue
-        same_task = bool(event_task_key and event_task_key == state_task_key)
-        same_pr = bool(event_pr and state_pr and event_pr == state_pr)
-        if same_task or same_pr:
+        same_task = bool(
+            is_closure and event_task_key and event_task_key == state_task_key
+        )
+        same_pr = bool(is_closure and event_pr and state_pr and event_pr == state_pr)
+        target_agent = str(state.get("target_agent") or "")
+        target_resumed = (
+            bool(target_agent)
+            and event_agent == target_agent
+            and event_type != "heartbeat"
+        )
+        if same_task or same_pr or target_resumed:
             del open_by_key[key]
 
 
@@ -454,6 +514,8 @@ def _attention_row(state: Mapping[str, Any], *, age_minutes: float) -> dict[str,
         row["pr"] = state["payload_pr"]
     if state.get("payload_head"):
         row["head"] = state["payload_head"]
+    if state.get("target_agent"):
+        row["target_agents"] = [str(state["target_agent"])]
     return row
 
 
@@ -470,6 +532,8 @@ def _priority_and_score(
         score += 60
     if "payload_no_more_nudges" in reasons:
         score += 40
+    if "wake_send_failed" in reasons:
+        score += 90
     if "wake_request_to_operator" in reasons:
         score += 30
     if "operator_action_signal" in reasons:
@@ -483,6 +547,8 @@ def _priority_and_score(
 
 
 def _suggested_action(reasons: Sequence[str]) -> str:
+    if "wake_send_failed" in reasons:
+        return "repair_operator_wake_routing_or_title_map"
     if "wake_delivery_stalled" in reasons:
         return "verify_or_restart_target_session_watcher"
     if "payload_no_more_nudges" in reasons:

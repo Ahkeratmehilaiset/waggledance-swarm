@@ -181,6 +181,71 @@ def test_live_wake_delivery_item_clears_after_target_activity() -> None:
     assert report["items"] == []
 
 
+def test_operator_wake_send_failed_is_operator_attention() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                ts="2026-06-14T05:00:00Z",
+                agent="operator",
+                to="",
+                event_type="message",
+                task_id="wd/ops/stall-rescue-watch",
+                status="wake_send_failed",
+                severity="",
+                message=(
+                    "Keying 'codex-lead-1' failed (tab not found / UIA error): "
+                    "Tab for agent 'codex-lead-1' not found. Tip: pass "
+                    "-TitleMap 'codex-lead-1=<exact-title-substring>'."
+                ),
+            )
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 1
+    item = report["items"][0]
+    assert item["priority"] == "urgent"
+    assert item["source_agent"] == "operator"
+    assert item["status"] == "wake_send_failed"
+    assert item["target_agents"] == ["codex-lead-1"]
+    assert "wake_send_failed" in item["attention_reasons"]
+    assert item["suggested_action"] == "repair_operator_wake_routing_or_title_map"
+    assert "TitleMap" in item["message"]
+
+
+def test_operator_wake_send_failed_clears_after_target_activity() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                ts="2026-06-14T05:00:00Z",
+                agent="operator",
+                to="",
+                event_type="message",
+                task_id="wd/ops/stall-rescue-watch",
+                status="wake_send_failed",
+                severity="",
+                message="Keying 'codex-lead-1' failed (tab not found).",
+            ),
+            _event(
+                ts="2026-06-14T05:04:00Z",
+                agent="codex-lead-1",
+                to="",
+                event_type="decision",
+                task_id="lead-active",
+                status="working",
+                severity="",
+                message="lead session active again",
+            ),
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 0
+    assert report["items"] == []
+
+
 def test_later_terminal_event_closes_operator_attention() -> None:
     report = build_operator_attention_digest(
         events=[

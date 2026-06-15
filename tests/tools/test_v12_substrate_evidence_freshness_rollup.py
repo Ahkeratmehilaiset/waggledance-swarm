@@ -28,12 +28,15 @@ def _matrix(
     fresh_for_planning: str = "false",
     status: str = "historical_stale",
     historical: str = "true",
+    priority_snapshot_date: str = "2026-05-06",
+    priority_audit_date: str = "2026-06-14",
+    priority_fresh_for_planning: str = "false",
 ) -> str:
     return f"""# Competitive Evidence Matrix - fixture
 
 **Evidence snapshot date:** {snapshot_date}
 **Freshness audit:** {audit_date} read-only audit found stale evidence.
-**Freshness metadata:** `snapshot_date={snapshot_date}`; `freshness_audit_date={audit_date}`; `max_age_days=14`; `status={status}`; `fresh_for_planning={fresh_for_planning}`; `priority_rows=G,J,L`; `historical_labels_until_refreshed={historical}`.
+**Freshness metadata:** `snapshot_date={snapshot_date}`; `freshness_audit_date={audit_date}`; `max_age_days=14`; `status={status}`; `fresh_for_planning={fresh_for_planning}`; `priority_rows=G,J,L`; `priority_rows_snapshot_date={priority_snapshot_date}`; `priority_rows_freshness_audit_date={priority_audit_date}`; `priority_rows_fresh_for_planning={priority_fresh_for_planning}`; `historical_labels_until_refreshed={historical}`.
 
 ## Axes
 
@@ -63,7 +66,13 @@ def test_rollup_reports_fresh_substrate_and_historical_matrix_staleness() -> Non
     assert report["blockers"] == []
     assert report["freshness"]["substrate_fresh_for_planning"] is True
     assert report["freshness"]["competitive_matrix_fresh_for_planning"] is False
+    assert (
+        report["freshness"]["competitive_matrix_priority_rows_fresh_for_planning"]
+        is False
+    )
     assert report["competitive_matrix"]["snapshot_age_days"] == 39
+    assert report["competitive_matrix"]["priority_rows_snapshot_age_days"] == 39
+    assert report["competitive_matrix"]["priority_rows_fresh_for_planning"] is False
     assert report["competitive_matrix"]["historical_stale_allowed"] is True
     assert [row["id"] for row in report["substrate_ingredients"]] == [
         "counterfactual_eval",
@@ -103,6 +112,29 @@ def test_rollup_reports_fresh_substrate_and_historical_matrix_staleness() -> Non
     )
     assert report["authority_boundary"]["runtime_authority"] is False
     assert report["authority_boundary"]["bridge_write_authority"] is False
+
+
+def test_rollup_advances_after_priority_rows_are_current() -> None:
+    report = build_v12_substrate_evidence_freshness_rollup(
+        now_utc=FIXED_NOW,
+        matrix_text=_matrix(
+            priority_snapshot_date="2026-06-10",
+            priority_audit_date="2026-06-14",
+            priority_fresh_for_planning="true",
+        ),
+        ingredient_rollup=_rollup(),
+    )
+
+    assert report["ok"] is True
+    assert report["freshness"]["competitive_matrix_fresh_for_planning"] is False
+    assert (
+        report["freshness"]["competitive_matrix_priority_rows_fresh_for_planning"]
+        is True
+    )
+    assert report["competitive_matrix"]["priority_rows_snapshot_age_days"] == 4
+    assert report["next_substrate_slices"][0] == (
+        "refresh_remaining_competitive_matrix_evidence_rows_from_current_proofs"
+    )
 
 
 def test_require_fresh_matrix_fails_closed_on_historical_stale_matrix() -> None:
@@ -192,6 +224,8 @@ def test_markdown_is_path_free_and_carries_authority_boundary() -> None:
 
     assert "# V12 Substrate Evidence Freshness Rollup" in markdown
     assert "competitive matrix snapshot age: `39` days" in markdown
+    assert "priority rows fresh for planning: `false`" in markdown
+    assert "priority rows snapshot age: `39` days" in markdown
     assert (
         "oldest evidence window: `competitive_evidence_matrix` "
         "(`39` days, `stale_2x_to_4x_max_age`)"

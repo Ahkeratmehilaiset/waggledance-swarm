@@ -128,6 +128,21 @@ def validate_matrix_freshness(
         blockers,
     )
     priority_rows = _metadata_rows(metadata, "priority_rows", blockers)
+    priority_snapshot_date = _metadata_date_optional(
+        metadata,
+        "priority_rows_snapshot_date",
+        blockers,
+    )
+    priority_audit_date = _metadata_date_optional(
+        metadata,
+        "priority_rows_freshness_audit_date",
+        blockers,
+    )
+    priority_fresh_for_planning = _metadata_bool_optional(
+        metadata,
+        "priority_rows_fresh_for_planning",
+        blockers,
+    )
 
     if metadata_max_age is not None and metadata_max_age != max_age_days:
         blockers.append("metadata_max_age_days_mismatch")
@@ -171,6 +186,34 @@ def validate_matrix_freshness(
     if stale and not priority_rows:
         blockers.append("stale_priority_rows_missing")
 
+    priority_age_days: int | None = None
+    priority_stale: bool | None = None
+    if priority_snapshot_date is not None:
+        priority_age_days = (now - priority_snapshot_date).days
+        if priority_age_days < 0:
+            blockers.append("priority_rows_snapshot_date_in_future")
+        priority_stale = priority_age_days > max_age_days
+        if (
+            priority_fresh_for_planning is not None
+            and priority_fresh_for_planning is priority_stale
+        ):
+            blockers.append("priority_rows_fresh_for_planning_mismatch")
+    if (
+        priority_audit_date is not None
+        and priority_snapshot_date is not None
+        and priority_audit_date < priority_snapshot_date
+    ):
+        blockers.append("priority_rows_freshness_audit_before_snapshot")
+    resolved_priority_fresh_for_planning = (
+        False if priority_stale else True
+        if priority_age_days is not None
+        else priority_fresh_for_planning
+    )
+    if priority_fresh_for_planning is True and priority_snapshot_date is None:
+        blockers.append("priority_rows_snapshot_date_missing_for_priority_refresh")
+    if resolved_priority_fresh_for_planning is True and not priority_rows:
+        blockers.append("priority_rows_missing_for_priority_refresh")
+
     return {
         "ok": not blockers,
         "schema_version": "waggledance.competitive_evidence_freshness.v1",
@@ -186,6 +229,14 @@ def validate_matrix_freshness(
         "require_fresh": bool(require_fresh),
         "status": status or None,
         "priority_rows": priority_rows,
+        "priority_rows_snapshot_date": (
+            priority_snapshot_date.isoformat() if priority_snapshot_date else None
+        ),
+        "priority_rows_snapshot_age_days": priority_age_days,
+        "priority_rows_freshness_audit_date": (
+            priority_audit_date.isoformat() if priority_audit_date else None
+        ),
+        "priority_rows_fresh_for_planning": resolved_priority_fresh_for_planning,
         "evidence_bearing_axes": [
             {"axis": axis.axis, "title": axis.title, "label": axis.label}
             for axis in evidence_axes
@@ -253,6 +304,21 @@ def _metadata_date(
         return None
 
 
+def _metadata_date_optional(
+    metadata: dict[str, str],
+    key: str,
+    blockers: list[str],
+) -> date | None:
+    value = metadata.get(key)
+    if not value:
+        return None
+    try:
+        return _parse_date(value)
+    except ValueError:
+        blockers.append(f"{key}_invalid")
+        return None
+
+
 def _metadata_int(
     metadata: dict[str, str],
     key: str,
@@ -281,6 +347,23 @@ def _metadata_bool(
     value = metadata.get(key)
     if value is None:
         blockers.append(f"{key}_missing")
+        return None
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    blockers.append(f"{key}_invalid")
+    return None
+
+
+def _metadata_bool_optional(
+    metadata: dict[str, str],
+    key: str,
+    blockers: list[str],
+) -> bool | None:
+    value = metadata.get(key)
+    if value is None:
         return None
     normalized = value.strip().lower()
     if normalized == "true":

@@ -15,6 +15,9 @@ def _matrix(
         "`prior_freshness_audit_date=2026-05-27`; "
         "`max_age_days=14`; `status=historical_stale`; "
         "`fresh_for_planning=false`; `priority_rows=G,J,L`; "
+        "`priority_rows_snapshot_date=2026-05-06`; "
+        "`priority_rows_freshness_audit_date=2026-06-06`; "
+        "`priority_rows_fresh_for_planning=false`; "
         "`historical_labels_until_refreshed=true`."
     ),
     labels: str | None = None,
@@ -50,14 +53,18 @@ def test_current_repo_matrix_is_valid_but_not_fresh_for_planning() -> None:
     )
     text = mod.DEFAULT_MATRIX.read_text(encoding="utf-8")
 
-    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 11))
+    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 15))
 
     assert report["ok"] is True
     assert report["fresh_for_planning"] is False
     assert report["historical_stale_allowed"] is True
-    assert report["freshness_audit_date"] == "2026-06-11"
-    assert report["snapshot_age_days"] == 36
+    assert report["freshness_audit_date"] == "2026-06-15"
+    assert report["snapshot_age_days"] == 40
     assert report["priority_rows"] == ["G", "J", "L"]
+    assert report["priority_rows_snapshot_date"] == "2026-05-06"
+    assert report["priority_rows_snapshot_age_days"] == 40
+    assert report["priority_rows_freshness_audit_date"] == "2026-06-15"
+    assert report["priority_rows_fresh_for_planning"] is False
 
 
 def test_stale_matrix_without_historical_metadata_fails() -> None:
@@ -117,6 +124,54 @@ def test_age_equal_to_max_age_is_still_fresh() -> None:
     assert report["fresh_for_planning"] is True
 
 
+def test_priority_rows_can_be_current_while_matrix_stays_historical() -> None:
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
+    text = _matrix(
+        metadata=(
+            "`snapshot_date=2026-05-06`; `freshness_audit_date=2026-06-15`; "
+            "`max_age_days=14`; `status=historical_stale`; "
+            "`fresh_for_planning=false`; `priority_rows=G,J,L`; "
+            "`priority_rows_snapshot_date=2026-06-10`; "
+            "`priority_rows_freshness_audit_date=2026-06-15`; "
+            "`priority_rows_fresh_for_planning=true`; "
+            "`historical_labels_until_refreshed=true`."
+        ),
+    )
+
+    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 15))
+
+    assert report["ok"] is True
+    assert report["fresh_for_planning"] is False
+    assert report["priority_rows"] == ["G", "J", "L"]
+    assert report["priority_rows_snapshot_age_days"] == 5
+    assert report["priority_rows_fresh_for_planning"] is True
+
+
+def test_priority_rows_fresh_true_requires_snapshot_and_rows() -> None:
+    mod = importlib.import_module(
+        "tools.validate_competitive_evidence_matrix_freshness"
+    )
+    text = _matrix(
+        metadata=(
+            "`snapshot_date=2026-05-06`; `freshness_audit_date=2026-06-15`; "
+            "`max_age_days=14`; `status=historical_stale`; "
+            "`fresh_for_planning=false`; `priority_rows=`; "
+            "`priority_rows_fresh_for_planning=true`; "
+            "`historical_labels_until_refreshed=true`."
+        ),
+    )
+
+    report = mod.validate_matrix_freshness(text, now=date(2026, 6, 15))
+
+    assert report["ok"] is False
+    assert "priority_rows_snapshot_date_missing_for_priority_refresh" in report[
+        "blockers"
+    ]
+    assert "priority_rows_missing_for_priority_refresh" in report["blockers"]
+
+
 def test_require_fresh_fails_historical_stale_matrix(capsys) -> None:
     mod = importlib.import_module(
         "tools.validate_competitive_evidence_matrix_freshness"
@@ -162,6 +217,9 @@ def test_invalid_metadata_values_fail_closed() -> None:
             "`snapshot_date=2026-05-06`; `freshness_audit_date=not-a-date`; "
             "`max_age_days=nan`; `status=historical_stale`; "
             "`fresh_for_planning=maybe`; `priority_rows=G,too-long`; "
+            "`priority_rows_snapshot_date=not-a-date`; "
+            "`priority_rows_freshness_audit_date=not-a-date`; "
+            "`priority_rows_fresh_for_planning=maybe`; "
             "`historical_labels_until_refreshed=maybe`."
         ),
     )
@@ -173,6 +231,9 @@ def test_invalid_metadata_values_fail_closed() -> None:
     assert "max_age_days_invalid" in report["blockers"]
     assert "fresh_for_planning_invalid" in report["blockers"]
     assert "priority_rows_invalid" in report["blockers"]
+    assert "priority_rows_snapshot_date_invalid" in report["blockers"]
+    assert "priority_rows_freshness_audit_date_invalid" in report["blockers"]
+    assert "priority_rows_fresh_for_planning_invalid" in report["blockers"]
     assert "historical_labels_until_refreshed_invalid" in report["blockers"]
     assert "stale_evidence_not_marked_historical" in report["blockers"]
 

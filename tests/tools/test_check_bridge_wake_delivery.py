@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -57,6 +58,11 @@ def _activity(
 
 def _now() -> datetime:
     return datetime(2026, 6, 13, 12, 30, tzinfo=timezone.utc)
+
+
+def _set_mtime(path: Path, value: datetime) -> None:
+    timestamp = value.timestamp()
+    os.utime(path, (timestamp, timestamp))
 
 
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
@@ -271,6 +277,7 @@ def test_closed_wake_status_is_not_reported() -> None:
 def test_wake_file_presence_is_reported(tmp_path: Path) -> None:
     wake_file = tmp_path / "wake_claude-rco-2"
     wake_file.write_text("2026-06-13T12:11:00Z", encoding="utf-8")
+    _set_mtime(wake_file, datetime(2026, 6, 13, 12, 6, tzinfo=timezone.utc))
 
     report = check_wake_delivery(
         events=[
@@ -287,7 +294,36 @@ def test_wake_file_presence_is_reported(tmp_path: Path) -> None:
     assert row["wake_file_checked"] is True
     assert row["wake_file_present"] is True
     assert row["wake_file_mtime_utc"].endswith("Z")
+    assert row["wake_file_fresh_after_last_wake"] is True
+    assert row["wake_file_lag_seconds"] == 60.0
+    assert row["wake_file_age_minutes"] == 24.0
     assert "wake file exists" in row["diagnosis"]
+
+
+def test_stale_wake_file_is_not_treated_as_delivery_proof(tmp_path: Path) -> None:
+    wake_file = tmp_path / "wake_claude-rco-2"
+    wake_file.write_text("older wake signal", encoding="utf-8")
+    _set_mtime(wake_file, datetime(2026, 6, 13, 11, 59, tzinfo=timezone.utc))
+
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+        ],
+        bridge_root=tmp_path,
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    row = report["stalled_wakes"][0]
+    assert row["wake_file_checked"] is True
+    assert row["wake_file_present"] is True
+    assert row["wake_file_fresh_after_last_wake"] is False
+    assert row["wake_file_lag_seconds"] == -360.0
+    assert row["wake_file_age_minutes"] == 31.0
+    assert "stale relative to latest wake_request" in row["diagnosis"]
+    assert row["safe_next_action"].startswith("restart or verify")
 
 
 def test_agent_filter_limits_targets() -> None:

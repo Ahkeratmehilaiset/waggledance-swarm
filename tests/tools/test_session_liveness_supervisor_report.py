@@ -210,7 +210,56 @@ def test_active_write_claim_blocks_restart_until_checkpoint() -> None:
     assert row["restart_recommended"] is False
     assert row["restart_recommended_after_checkpoint"] is True
     assert row["active_write_claim_count"] == 1
+    assert row["restart_checkpoint_ready"] is False
+    assert row["restart_checkpoint_contract"] == {
+        "version": "wd.session_restart_checkpoint_contract.v0",
+        "ready": False,
+        "event_claim_count": 1,
+        "file_claim_count": 0,
+        "active_claim_count": 1,
+        "active_write_claim_count": 1,
+        "active_unknown_scope_claim_count": 0,
+        "required_before_restart": True,
+    }
     assert "release the active write claim" in row["safe_next_action"]
+
+
+def test_active_claim_file_without_event_scope_blocks_restart_fail_closed() -> None:
+    report = build_session_liveness_supervisor_report(
+        events=[],
+        active_claim_file_counts={"codex-lead-1": 1},
+        agents=["codex-lead-1"],
+        screen_states={
+            "codex-lead-1": _screen(
+                "idle_prompt",
+                agent="codex-lead-1",
+                cycle_age_minutes=120,
+            )
+        },
+        cycle_budget_minutes=90,
+        now_utc=_now(),
+    )
+
+    row = report["agents"][0]
+    assert report["decision"] == "session_restart_blocked_by_active_write_claim"
+    assert report["restart_checkpoint_blocked_count"] == 1
+    assert report["active_unknown_scope_claim_count"] == 1
+    assert row["restart_blocked"] is True
+    assert row["restart_recommended"] is False
+    assert row["restart_checkpoint_ready"] is False
+    assert row["active_write_claim_count"] == 0
+    assert row["active_unknown_scope_claim_count"] == 1
+    assert row["restart_checkpoint_contract"] == {
+        "version": "wd.session_restart_checkpoint_contract.v0",
+        "ready": False,
+        "event_claim_count": 0,
+        "file_claim_count": 1,
+        "active_claim_count": 1,
+        "active_write_claim_count": 0,
+        "active_unknown_scope_claim_count": 1,
+        "required_before_restart": True,
+    }
+    assert "active claim file" in row["safe_next_action"]
 
 
 def test_handoff_clears_write_claim_before_restart_recommendation() -> None:
@@ -244,6 +293,8 @@ def test_handoff_clears_write_claim_before_restart_recommendation() -> None:
 
     row = report["agents"][0]
     assert row["active_write_claim_count"] == 0
+    assert row["restart_checkpoint_ready"] is True
+    assert row["restart_checkpoint_contract"]["ready"] is True
     assert row["restart_recommended"] is True
     assert row["restart_blocked"] is False
 

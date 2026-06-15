@@ -2,10 +2,10 @@
 """Read-only session liveness supervisor report.
 
 This tool correlates bridge activity, wake delivery, watcher visibility,
-optional screen-state snapshots, and active write claims. It recommends when a
-target agent session should be restarted or verified, but it never performs a
-restart, sends keystrokes, writes the bridge, emits RCO decisions, or skips
-gates.
+optional screen-state snapshots, and active write/checkpoint claims. It
+recommends when a target agent session should be restarted or verified, but it
+never performs a restart, sends keystrokes, writes the bridge, emits RCO
+decisions, or skips gates.
 """
 from __future__ import annotations
 
@@ -287,20 +287,19 @@ def build_session_liveness_supervisor_report(
         now_utc=effective_now,
         max_age_hours=active_claim_max_age_hours,
     )
+    claim_file_counts = _claim_file_counts(active_claim_file_counts or {})
     claim_counts = {
         agent: len(claims) for agent, claims in active_claims.items()
     }
-    for agent, count in (active_claim_file_counts or {}).items():
-        normalized = str(agent).strip().lower()
-        if normalized and AGENT_ID_PATTERN.fullmatch(normalized):
-            claim_counts[normalized] = max(claim_counts.get(normalized, 0), int(count))
+    for agent, count in claim_file_counts.items():
+        claim_counts[agent] = max(claim_counts.get(agent, 0), count)
 
     agent_filter = target_agents or _infer_target_agents(
         events=events,
-        active_claims=active_claims,
-        active_claim_file_counts=active_claim_file_counts or {},
-        screen_states=screens,
-    )
+            active_claims=active_claims,
+            active_claim_file_counts=claim_file_counts,
+            screen_states=screens,
+        )
     watcher_report = (
         probe_bridge_session_watchers(
             processes=processes,
@@ -338,6 +337,7 @@ def build_session_liveness_supervisor_report(
             screen_state=screens.get(agent),
             active_claims=active_claims.get(agent, []),
             active_claim_count=claim_counts.get(agent, 0),
+            active_claim_file_count=claim_file_counts.get(agent, 0),
             activity_gap_minutes=activity_gap_minutes,
             cycle_budget_minutes=cycle_budget_minutes,
         )
@@ -351,6 +351,12 @@ def build_session_liveness_supervisor_report(
     restart_recommended = [row for row in rows if row["restart_recommended"]]
     restart_blocked = [row for row in rows if row["restart_blocked"]]
     watcher_repair = [row for row in rows if row["watcher_repair_recommended"]]
+    checkpoint_blocked = [
+        row for row in rows if not row["restart_checkpoint_ready"]
+    ]
+    checkpoint_unknown_count = sum(
+        int(row["active_unknown_scope_claim_count"]) for row in rows
+    )
     decision = _decision(
         restart_recommended_count=len(restart_recommended),
         restart_blocked_count=len(restart_blocked),
@@ -372,6 +378,11 @@ def build_session_liveness_supervisor_report(
         "screen_state_checked": bool(screens),
         "restart_recommended_count": len(restart_recommended),
         "restart_blocked_count": len(restart_blocked),
+        "restart_checkpoint_ready_count": sum(
+            1 for row in rows if row["restart_checkpoint_ready"]
+        ),
+        "restart_checkpoint_blocked_count": len(checkpoint_blocked),
+        "active_unknown_scope_claim_count": checkpoint_unknown_count,
         "restart_recommended_agents": [
             str(row["agent"]) for row in restart_recommended
         ],
@@ -446,6 +457,7 @@ def _agent_row(
     screen_state: Mapping[str, Any] | None,
     active_claims: Sequence[Mapping[str, Any]],
     active_claim_count: int,
+    active_claim_file_count: int,
     activity_gap_minutes: float,
     cycle_budget_minutes: float,
 ) -> dict[str, Any]:
@@ -458,6 +470,7 @@ def _agent_row(
     active_write_claims = [
         claim for claim in active_claims if claim["write_scope"]
     ]
+    active_unknown_scope_claim_count = max(0, active_claim_count - len(active_claims))
     watcher_status = (
         str(watcher_row.get("status") or "unknown")
         if watcher_row
@@ -489,7 +502,10 @@ def _agent_row(
     ):
         triggers.append("idle_activity_gap_exceeded")
 
-    restart_blocked = bool(active_write_claims and triggers)
+    restart_checkpoint_ready = not (
+        active_write_claims or active_unknown_scope_claim_count
+    )
+    restart_blocked = bool(not restart_checkpoint_ready and triggers)
     restart_recommended = bool(triggers and not restart_blocked)
     watcher_repair_recommended = bool(
         (watcher_missing or heartbeat_missing) and not restart_blocked
@@ -527,8 +543,21 @@ def _agent_row(
         "cycle_budget_exceeded": cycle_budget_exceeded,
         "cycle_budget_minutes": cycle_budget_minutes,
         "active_claim_count": active_claim_count,
+        "active_claim_file_count": active_claim_file_count,
         "active_write_claim_count": len(active_write_claims),
         "active_write_claims": list(active_write_claims),
+        "active_unknown_scope_claim_count": active_unknown_scope_claim_count,
+        "restart_checkpoint_ready": restart_checkpoint_ready,
+        "restart_checkpoint_contract": {
+            "version": "wd.session_restart_checkpoint_contract.v0",
+            "ready": restart_checkpoint_ready,
+            "event_claim_count": len(active_claims),
+            "file_claim_count": active_claim_file_count,
+            "active_claim_count": active_claim_count,
+            "active_write_claim_count": len(active_write_claims),
+            "active_unknown_scope_claim_count": active_unknown_scope_claim_count,
+            "required_before_restart": True,
+        },
         "restart_triggers": triggers,
         "restart_recommended": restart_recommended,
         "restart_blocked": restart_blocked,
@@ -540,12 +569,14 @@ def _agent_row(
             watcher_repair_recommended=watcher_repair_recommended,
             triggers=triggers,
             screen=screen,
+            active_unknown_scope_claim_count=active_unknown_scope_claim_count,
         ),
         "diagnosis": _diagnosis(
             restart_recommended=restart_recommended,
             restart_blocked=restart_blocked,
             triggers=triggers,
             screen=screen,
+            active_unknown_scope_claim_count=active_unknown_scope_claim_count,
         ),
     }
 
@@ -591,6 +622,18 @@ def _active_claims_by_agent(
     for claims in by_agent.values():
         claims.sort(key=lambda claim: str(claim["claim_ts_utc"]))
     return by_agent
+
+
+def _claim_file_counts(
+    active_claim_file_counts: Mapping[str, int],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for raw_agent, raw_count in active_claim_file_counts.items():
+        agent = str(raw_agent).strip().lower()
+        if not agent or not AGENT_ID_PATTERN.fullmatch(agent):
+            continue
+        counts[agent] = max(counts.get(agent, 0), max(0, int(raw_count)))
+    return counts
 
 
 def _claim_within_age_window(
@@ -747,8 +790,14 @@ def _safe_next_action(
     watcher_repair_recommended: bool,
     triggers: Sequence[str],
     screen: Mapping[str, Any],
+    active_unknown_scope_claim_count: int,
 ) -> str:
     if restart_blocked:
+        if active_unknown_scope_claim_count:
+            return (
+                "write durable handoff/checkpoint or clear the active claim "
+                "file before any restart"
+            )
         return (
             "write durable handoff/checkpoint and release the active write "
             "claim before any restart"
@@ -781,8 +830,14 @@ def _diagnosis(
     restart_blocked: bool,
     triggers: Sequence[str],
     screen: Mapping[str, Any],
+    active_unknown_scope_claim_count: int,
 ) -> str:
     if restart_blocked:
+        if active_unknown_scope_claim_count:
+            return (
+                "restart evidence is present, but active claim-file state is "
+                "not represented by checkpointed bridge events"
+            )
         return (
             "restart evidence is present, but an active write claim makes "
             "restart unsafe until checkpointed"
@@ -982,6 +1037,7 @@ def _authority_boundary() -> dict[str, bool]:
         "gate_skip_allowed": False,
         "merge_allowed": False,
         "network_required": False,
+        "restart_requires_checkpoint_contract": True,
     }
 
 

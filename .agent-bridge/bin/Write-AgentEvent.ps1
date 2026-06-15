@@ -272,8 +272,8 @@ function Get-BridgeObjectField {
         [Parameter(Mandatory)] $Object,
         [Parameter(Mandatory)] [string] $Name
     )
-    if ($Object -is [hashtable]) {
-        if ($Object.ContainsKey($Name)) { return $Object[$Name] }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) { return $Object[$Name] }
         return $null
     }
     $property = $Object.PSObject.Properties[$Name]
@@ -286,7 +286,7 @@ function Test-BridgeObjectHasField {
         [Parameter(Mandatory)] $Object,
         [Parameter(Mandatory)] [string] $Name
     )
-    if ($Object -is [hashtable]) { return $Object.ContainsKey($Name) }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object.Contains($Name) }
     return ($null -ne $Object.PSObject.Properties[$Name])
 }
 
@@ -509,6 +509,114 @@ if ($AgentUuid) { $event['agent_uuid'] = $AgentUuid }
 if ($SessionId) { $event['session_id'] = $SessionId }
 if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 
+function Get-BridgeTargetKey {
+    param([AllowNull()] [string] $Targets)
+    $targetList = @(Get-BridgeTargetList -Targets $Targets)
+    return ($targetList -join ',')
+}
+
+function Get-BridgeTargetList {
+    param([AllowNull()] [string] $Targets)
+    if ([string]::IsNullOrWhiteSpace($Targets)) {
+        return @()
+    }
+    return @(
+        $Targets -split ',' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ } |
+            Sort-Object
+    )
+}
+
+function Test-BridgeSubstantiveTargetActivity {
+    param(
+        [Parameter(Mandatory)] $SeenEvent,
+        [Parameter(Mandatory)] [string] $TargetKey
+    )
+    $seenAgentKey = Get-BridgeTargetKey -Targets ([string](Get-BridgeObjectField -Object $SeenEvent -Name 'agent'))
+    $targetMembers = @(Get-BridgeTargetList -Targets $TargetKey)
+    if ((-not $seenAgentKey) -or ($targetMembers -cnotcontains $seenAgentKey)) {
+        return $false
+    }
+    $seenType = [string](Get-BridgeObjectField -Object $SeenEvent -Name 'type')
+    $seenStatus = [string](Get-BridgeObjectField -Object $SeenEvent -Name 'status')
+    if ($seenType -in @('heartbeat', 'liveness', 'wake_request')) {
+        return $false
+    }
+    if (($seenType -eq 'message') -and ($ackStatuses -contains $seenStatus)) {
+        return $false
+    }
+    return $true
+}
+
+function Test-OpenOperatorBridgeFollowNudgeDuplicate {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] $Candidate
+    )
+    if ([Environment]::GetEnvironmentVariable('AGENT_BRIDGE_ALLOW_DUPLICATE_WAKE_REQUESTS', 'Process') -eq '1') {
+        return $false
+    }
+    if ([string](Get-BridgeObjectField -Object $Candidate -Name 'agent') -cne 'operator') {
+        return $false
+    }
+    if ([string](Get-BridgeObjectField -Object $Candidate -Name 'type') -cne 'wake_request') {
+        return $false
+    }
+    if ([string](Get-BridgeObjectField -Object $Candidate -Name 'status') -cne 'open') {
+        return $false
+    }
+    $candidateTaskId = [string](Get-BridgeObjectField -Object $Candidate -Name 'task_id')
+    if (-not $candidateTaskId.StartsWith('bridge-follow-nudge-', [System.StringComparison]::Ordinal)) {
+        return $false
+    }
+    $candidateTargetKey = Get-BridgeTargetKey -Targets ([string](Get-BridgeObjectField -Object $Candidate -Name 'to'))
+    if (-not $candidateTargetKey) {
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $recentLines = @(Get-Content -LiteralPath $Path -Tail 1000 -Encoding UTF8 -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+    for ($i = $recentLines.Count - 1; $i -ge 0; $i--) {
+        $text = [string]$recentLines[$i]
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        try {
+            $seen = $text | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            continue
+        }
+        if (Test-BridgeSubstantiveTargetActivity -SeenEvent $seen -TargetKey $candidateTargetKey) {
+            return $false
+        }
+        $seenTargetKey = Get-BridgeTargetKey -Targets ([string](Get-BridgeObjectField -Object $seen -Name 'to'))
+        if (
+            ([string](Get-BridgeObjectField -Object $seen -Name 'agent') -cne 'operator') -or
+            ([string](Get-BridgeObjectField -Object $seen -Name 'type') -cne 'wake_request') -or
+            ([string](Get-BridgeObjectField -Object $seen -Name 'status') -cne 'open') -or
+            ([string](Get-BridgeObjectField -Object $seen -Name 'task_id') -cne $candidateTaskId) -or
+            ($seenTargetKey -cne $candidateTargetKey)
+        ) {
+            continue
+        }
+        return $true
+    }
+    return $false
+}
+
+$eventsPath = Join-Path $sharedDir 'events.jsonl'
+if (Test-OpenOperatorBridgeFollowNudgeDuplicate -Path $eventsPath -Candidate $event) {
+    $event['suppressed_duplicate'] = $true
+    $event['suppressed_reason'] = 'open_operator_bridge_follow_nudge_without_target_activity'
+    [pscustomobject]$event
+    return
+}
+
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine)
 
 function Add-LineWithRetry {
@@ -559,7 +667,6 @@ function Write-JsonAtomic {
     throw "could not atomically replace last-event file: $Path"
 }
 
-$eventsPath = Join-Path $sharedDir 'events.jsonl'
 $dateName = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') + '.jsonl'
 $outboxPath = Join-Path $outboxDir $dateName
 # Internal review fix R6 (2026-05-09): if shared write fails after all

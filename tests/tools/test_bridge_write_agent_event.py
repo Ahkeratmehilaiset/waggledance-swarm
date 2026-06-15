@@ -27,8 +27,10 @@ MAIN_SHA = "a" * 40
 PR_HEAD_SHA = "b" * 40
 PROFILE_UUID = "11111111-2222-3333-4444-555555555555"
 OTHER_UUID = "22222222-3333-4444-5555-666666666666"
+CODEX_LEAD_UUID = "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"
 CODEX_TOOLS_UUID = "7a8af68d-20bc-4598-9953-23c5dd98b102"
 CLAUDE_RCO1_UUID = "2b2f6ff9-06c2-4ec8-b526-f10071ce7103"
+CLAUDE_RCO2_UUID = "76739997-0058-41a2-8514-78ff295537aa"
 FABLE_UUID = "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80"
 
 
@@ -230,6 +232,159 @@ def test_wake_request_requires_to_before_runtime_write(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "type=wake_request requires non-empty -To" in completed.stderr
     assert not runtime_root.exists()
+
+
+def test_operator_bridge_follow_nudge_duplicate_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    args = [
+        "-Agent",
+        "operator",
+        "-Type",
+        "wake_request",
+        "-TaskId",
+        "bridge-follow-nudge-20260614",
+        "-Status",
+        "open",
+        "-To",
+        "claude-rco-2",
+        "-Message",
+        "poll the bridge",
+    ]
+
+    first = _run_writer(root, runtime_root, *args)
+    second = _run_writer(root, runtime_root, *args)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    events_path = runtime_root / "shared" / "events.jsonl"
+    outbox_path = next((runtime_root / "outbox" / "operator").glob("*.jsonl"))
+    event_lines = events_path.read_text(encoding="utf-8").splitlines()
+    outbox_lines = outbox_path.read_text(encoding="utf-8").splitlines()
+    assert len(event_lines) == 1
+    assert len(outbox_lines) == 1
+    event = json.loads(event_lines[0])
+    assert event["agent"] == "operator"
+    assert event["task_id"] == "bridge-follow-nudge-20260614"
+    validate_event_line(event_lines[0])
+
+
+def test_operator_bridge_follow_nudge_writes_after_target_activity(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    wake_args = [
+        "-Agent",
+        "operator",
+        "-Type",
+        "wake_request",
+        "-TaskId",
+        "bridge-follow-nudge-20260614",
+        "-Status",
+        "open",
+        "-To",
+        "claude-rco-2",
+        "-Message",
+        "poll the bridge",
+    ]
+
+    first = _run_writer(root, runtime_root, *wake_args)
+    target_activity = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-2",
+        "-Type",
+        "message",
+        "-TaskId",
+        "claude-rco-2-resumed",
+        "-Status",
+        "active",
+        "-Message",
+        "target resumed polling",
+        "-AgentUuid",
+        CLAUDE_RCO2_UUID,
+    )
+    second = _run_writer(root, runtime_root, *wake_args)
+
+    assert first.returncode == 0, first.stderr
+    assert target_activity.returncode == 0, target_activity.stderr
+    assert second.returncode == 0, second.stderr
+    event_lines = (
+        (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    events = [json.loads(line) for line in event_lines]
+    assert [event["type"] for event in events] == [
+        "wake_request",
+        "message",
+        "wake_request",
+    ]
+    assert events[2]["agent"] == "operator"
+    assert events[2]["to"] == "claude-rco-2"
+
+
+def test_operator_bridge_follow_nudge_multi_target_writes_after_member_activity(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    wake_args = [
+        "-Agent",
+        "operator",
+        "-Type",
+        "wake_request",
+        "-TaskId",
+        "bridge-follow-nudge-20260614",
+        "-Status",
+        "open",
+        "-To",
+        "codex-lead-1,claude-rco-1",
+        "-Message",
+        "poll the bridge",
+    ]
+
+    first = _run_writer(root, runtime_root, *wake_args)
+    target_activity = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "codex-lead-1-resumed",
+        "-Status",
+        "active",
+        "-Message",
+        "one target resumed polling",
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+    second = _run_writer(root, runtime_root, *wake_args)
+
+    assert first.returncode == 0, first.stderr
+    assert target_activity.returncode == 0, target_activity.stderr
+    assert second.returncode == 0, second.stderr
+    event_lines = (
+        (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    events = [json.loads(line) for line in event_lines]
+    assert [event["type"] for event in events] == [
+        "wake_request",
+        "message",
+        "wake_request",
+    ]
+    assert events[2]["agent"] == "operator"
+    assert events[2]["to"] == "codex-lead-1,claude-rco-1"
+    for line in event_lines:
+        validate_event_line(line)
 
 
 def test_regex_agent_id_writes_valid_event_and_outbox(tmp_path: Path) -> None:

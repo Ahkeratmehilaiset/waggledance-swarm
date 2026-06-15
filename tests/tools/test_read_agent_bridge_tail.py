@@ -54,7 +54,37 @@ def _event(
     }
 
 
-def test_read_agent_bridge_continuity_honors_tail(tmp_path: Path) -> None:
+def _run_reader(bridge_root: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
+    return subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(READ_AGENT_BRIDGE),
+            "-Agent",
+            "codex",
+            "-NoAckReceived",
+            "-Tail",
+            "3",
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=20,
+        check=True,
+    )
+
+
+def test_read_agent_bridge_tail_does_not_hide_open_incoming(
+    tmp_path: Path,
+) -> None:
     bridge_root = tmp_path / ".agent-bridge"
     events_path = bridge_root / "shared" / "events.jsonl"
     _append_event(
@@ -82,31 +112,54 @@ def test_read_agent_bridge_continuity_honors_tail(tmp_path: Path) -> None:
             ),
         )
 
-    env = os.environ.copy()
-    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
-    result = subprocess.run(
-        [
-            _powershell(),
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(READ_AGENT_BRIDGE),
-            "-Agent",
-            "codex",
-            "-NoAckReceived",
-            "-Tail",
-            "3",
-        ],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=20,
-        check=True,
-    )
+    result = _run_reader(bridge_root)
 
-    assert "old-tail-noise-2026-05-11" not in result.stdout
-    assert "incoming: (none)" in result.stdout
+    assert "OPEN old-tail-noise-2026-05-11" in result.stdout
+
+
+def test_read_agent_bridge_tail_hides_resolved_items_outside_tail(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    _append_event(
+        events_path,
+        _event(
+            ts_utc="2026-05-11T16:00:00.0000000Z",
+            agent="claude",
+            event_type="wake_request",
+            task_id="old-resolved-tail-noise-2026-05-11",
+            status="open",
+            to="codex",
+            message="old request outside the tail window",
+        ),
+    )
+    _append_event(
+        events_path,
+        _event(
+            ts_utc="2026-05-11T16:01:00.0000000Z",
+            agent="claude",
+            event_type="done",
+            task_id="old-resolved-tail-noise-2026-05-11",
+            status="done",
+            message="closed outside the tail window",
+        ),
+    )
+    for index in range(3):
+        _append_event(
+            events_path,
+            _event(
+                ts_utc=f"2026-05-11T17:0{index}:00.0000000Z",
+                agent="codex",
+                event_type="heartbeat",
+                task_id=f"recent-tail-{index}",
+                status="active",
+                message=f"recent filler {index}",
+            ),
+        )
+
+    result = _run_reader(bridge_root)
+
+    assert "OPEN old-resolved-tail-noise-2026-05-11" not in result.stdout
+    assert "old-resolved-tail-noise-2026-05-11" not in result.stdout
+    assert "answered/closed item(s) outside -Tail hidden" in result.stdout

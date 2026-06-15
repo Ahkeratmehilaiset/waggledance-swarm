@@ -46,6 +46,7 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
     bridge_identity_binding_status,
     load_bridge_identity_registry,
 )
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 BRIDGE_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
@@ -128,7 +129,21 @@ class AutoMergeGateError(ValueError):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Idle consensus auto-merge gate.")
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--charter", type=Path, default=DEFAULT_CHARTER_PATH)
     parser.add_argument("--pr-status-file", type=Path, required=True)
     parser.add_argument("--expected-head", required=True)
@@ -196,6 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    events_path = args.events
+    if events_path is None:
+        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
     try:
         status = json.loads(args.pr_status_file.read_text(encoding="utf-8"))
         report = evaluate_auto_merge_gate(
@@ -204,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_base_sha=args.expected_base_sha,
             consensus_proposal_id=args.consensus_proposal_id,
             receipt_bundle_path=args.receipt_bundle_path,
-            events_path=args.events,
+            events_path=events_path,
             charter_path=args.charter,
             utc_date=args.utc_date,
             repo=args.repo,
@@ -213,7 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             apply=args.apply,
             require_bridge_consensus=args.require_bridge_consensus,
             allow_lead_stall_failover=args.allow_lead_stall_failover,
-            artifact_writer=_cli_artifact_writer(args),
+            artifact_writer=_cli_artifact_writer(args, events_path),
         )
     except (json.JSONDecodeError, OSError) as exc:
         report = {
@@ -1862,7 +1880,10 @@ def _today_utc() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def _cli_artifact_writer(args: argparse.Namespace) -> ArtifactWriter | None:
+def _cli_artifact_writer(
+    args: argparse.Namespace,
+    events_path: Path,
+) -> ArtifactWriter | None:
     if not args.apply or args.receipt_out_dir is None:
         return None
 
@@ -1871,7 +1892,7 @@ def _cli_artifact_writer(args: argparse.Namespace) -> ArtifactWriter | None:
 
     def writer() -> Mapping[str, Any]:
         return write_idle_consensus_artifact(
-            events_path=args.events,
+            events_path=events_path,
             out_dir=out_dir,
             receipt_out_dir=args.receipt_out_dir,
             now_utc=now_utc,

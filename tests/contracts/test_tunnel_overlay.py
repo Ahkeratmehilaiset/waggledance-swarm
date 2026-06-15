@@ -21,12 +21,22 @@ def test_adr_038_file_exists() -> None:
     assert ADR_PATH.exists()
 
 
-def test_adr_038_marks_substrate_only_landing() -> None:
-    assert "substrate-only landing" in ADR_PATH.read_text(encoding="utf-8").lower()
+def test_adr_038_marks_substrate_implementation_landing() -> None:
+    text = ADR_PATH.read_text(encoding="utf-8").lower()
+    assert "substrate implementation landing" in text
+    assert "router/mining wiring deferred" in text
 
 
 def test_machine_readable_contract_exists() -> None:
     assert CONTRACT_PATH.exists()
+
+
+def test_contract_marks_registry_implemented_but_router_wiring_deferred() -> None:
+    contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    assert "TunnelRegistry substrate implemented" in contract["description"]
+    out_of_scope = " ".join(contract["out_of_scope"])
+    assert "Implementation of TunnelRegistry class" not in out_of_scope
+    assert "Router wiring" in out_of_scope
 
 
 def test_yaml_path_pinned() -> None:

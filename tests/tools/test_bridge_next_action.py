@@ -2057,7 +2057,7 @@ def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
     assert wake["safe_next_action"].startswith("restart or verify")
 
 
-def test_recent_target_self_liveness_suppresses_wake_delivery_escalation(
+def test_prior_target_self_liveness_does_not_suppress_wake_delivery_escalation(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / ".agent-bridge"
@@ -2104,24 +2104,22 @@ def test_recent_target_self_liveness_suppresses_wake_delivery_escalation(
         production_idle_warn_minutes=12.0,
     )
 
+    assert report["action"] == "escalate_wake_delivery_stall"
+    assert report["operator_action_required"] is True
+    assert report["operator_action"] == (
+        "restart_or_verify_target_agent_bridge_session_watcher"
+    )
+    assert report["operator_action_target_agents"] == ["claude-rco-1"]
     delivery = report["production_liveness"]["wake_delivery"]
-    assert delivery["decision"] == "wake_delivery_ok"
-    assert delivery["stalled_wake_count"] == 0
-    assert delivery["by_agent"] == {}
-    assert delivery["delivery_escalation"] == {
-        "required": False,
-        "target_agents": [],
-        "do_not_emit_additional_wake_requests": False,
-        "safe_next_action": "",
-        "operator_action_required": False,
-        "reason": "",
-    }
-    assert delivery["self_pacing_wake_count"] == 1
-    wake = delivery["self_pacing_wakes"][0]
-    assert wake["classification"] == "self_pacing_or_silent_by_design"
-    assert wake["last_self_activity_ts_utc"] == "2026-06-06T10:10:00Z"
-    assert wake["last_self_activity_age_minutes"] == 30.0
-    assert wake["safe_next_action"].startswith("wait for the target")
+    assert delivery["decision"] == "wake_delivery_stalled"
+    assert delivery["stalled_wake_count"] == 1
+    assert delivery["by_agent"] == {"claude-rco-1": 1}
+    assert delivery["delivery_escalation"]["operator_action_required"] is True
+    assert delivery["self_pacing_wake_count"] == 0
+    wake = delivery["stalled_wakes"][0]
+    assert wake["classification"] == "stalled_wake_delivery"
+    assert "last_self_activity_ts_utc" not in wake
+    assert wake["safe_next_action"].startswith("restart or verify")
 
 
 def test_target_activity_clears_wake_delivery_gap() -> None:

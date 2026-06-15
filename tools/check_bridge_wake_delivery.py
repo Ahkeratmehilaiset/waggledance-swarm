@@ -14,6 +14,7 @@ import json
 import math
 from pathlib import Path
 import re
+import subprocess
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -306,7 +307,11 @@ def check_wake_delivery(
         target = str(row["target_agent"])
         by_agent[target] = by_agent.get(target, 0) + 1
 
-    delivery_escalation = _delivery_escalation(stalled, by_agent)
+    delivery_escalation = _delivery_escalation(
+        stalled,
+        by_agent,
+        bridge_root=bridge_root,
+    )
     return {
         "ok": True,
         "decision": "wake_delivery_stalled" if stalled else "wake_delivery_ok",
@@ -328,6 +333,8 @@ def check_wake_delivery(
 def _delivery_escalation(
     stalled: Sequence[Mapping[str, Any]],
     by_agent: Mapping[str, int],
+    *,
+    bridge_root: Path | None,
 ) -> dict[str, Any]:
     stalled_present = bool(stalled)
     has_send_failure = any(
@@ -349,7 +356,41 @@ def _delivery_escalation(
         "safe_next_action": safe_next_action,
         "operator_action_required": stalled_present,
         "reason": reason,
+        "diagnostic_next_action": (
+            "run session_liveness_supervisor_report before writing more wake_requests"
+            if stalled_present
+            else ""
+        ),
+        "diagnostic_commands": _session_liveness_supervisor_commands(
+            targets=by_agent,
+            bridge_root=bridge_root,
+        ),
     }
+
+
+def _session_liveness_supervisor_commands(
+    *,
+    targets: Mapping[str, int],
+    bridge_root: Path | None,
+) -> list[dict[str, Any]]:
+    commands: list[dict[str, Any]] = []
+    for target in sorted(targets):
+        argv = [
+            "python",
+            "tools/session_liveness_supervisor_report.py",
+        ]
+        if bridge_root is not None:
+            argv.extend(["--bridge-root", str(bridge_root)])
+        argv.extend(["--agent", target, "--json"])
+        commands.append(
+            {
+                "target_agent": target,
+                "authority": "read_only_report_no_restart_no_gate_skip",
+                "argv": argv,
+                "command": subprocess.list2cmdline(argv),
+            }
+        )
+    return commands
 
 
 def _unresolved_wake_groups(

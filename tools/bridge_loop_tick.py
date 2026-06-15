@@ -73,6 +73,7 @@ from waggledance.core.work_queue import list_claims, resolve_bridge_root  # noqa
 WAKEUP_ACT_NOW = 90  # merge-ready or open peer RCO addressed to me
 WAKEUP_IN_FLIGHT = 240  # CI pending on a candidate / active own claim
 WAKEUP_QUIET = 1800  # nothing pending; operator's ball or idle
+DEFAULT_MAX_PR_CHECKS = 6
 
 SnapshotFn = Callable[[int], Mapping[str, Any]]
 CommandRunner = Callable[[Sequence[str]], Any]
@@ -622,6 +623,27 @@ def my_unmerged_rco_passes(
     return candidates
 
 
+def _candidate_recency_sort_key(candidate: Mapping[str, Any]) -> tuple[float, int, str]:
+    passed_at = _parse_ts(str(candidate.get("passed_at_utc", "")))
+    timestamp = passed_at.timestamp() if passed_at is not None else 0.0
+    try:
+        pr_number = int(candidate.get("pr", 0))
+    except (TypeError, ValueError):
+        pr_number = 0
+    return (-timestamp, pr_number, str(candidate.get("task_id", "")))
+
+
+def _limit_pr_check_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    max_checks: int | None,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    if max_checks is None:
+        return list(candidates), []
+    ordered = sorted(candidates, key=_candidate_recency_sort_key)
+    return ordered[:max_checks], ordered[max_checks:]
+
+
 def _checks_green(snapshot: Mapping[str, Any]) -> bool:
     checks = snapshot.get("checks")
     if not isinstance(checks, list) or not checks:
@@ -832,6 +854,7 @@ def build_loop_tick(
     inbox_dir: Path | str,
     now_utc: datetime | None = None,
     snapshot_fn: SnapshotFn | None = None,
+    max_merge_ready_checks: int | None = None,
 ) -> dict[str, Any]:
     """Aggregate one read-only loop tick for ``agent``."""
     next_action_report = recommend_next_action(
@@ -840,11 +863,15 @@ def build_loop_tick(
     next_action = str(next_action_report.get("action", ""))
 
     candidates = my_unmerged_rco_passes(events, agent=agent, now_utc=now_utc)
+    candidates_to_check, deferred_candidates = _limit_pr_check_candidates(
+        candidates,
+        max_checks=max_merge_ready_checks if snapshot_fn is not None else None,
+    )
     merge_ready = [
         evaluate_merge_ready(
             candidate, events=events, agent=agent, snapshot_fn=snapshot_fn
         )
-        for candidate in candidates
+        for candidate in candidates_to_check
     ]
 
     packs = scan_inbox(inbox_dir)
@@ -875,6 +902,9 @@ def build_loop_tick(
         "next_action": next_action,
         "next_action_detail": next_action_report,
         "merge_ready": merge_ready,
+        "merge_ready_checked_count": len(candidates_to_check),
+        "merge_ready_deferred_count": len(deferred_candidates),
+        "merge_ready_deferred": list(deferred_candidates),
         "open_operator_packs": packs["open"],
         "invalid_operator_packs": packs["invalid"],
         "peer_activation": peer_activation,
@@ -910,6 +940,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-prs",
         action="store_true",
         help="Query gh pr view for rco_pass'd candidates (read-only).",
+    )
+    parser.add_argument(
+        "--max-pr-checks",
+        type=int,
+        default=DEFAULT_MAX_PR_CHECKS,
+        help=(
+            "Maximum recent rco_pass candidates to check with gh when "
+            "--check-prs is set. Use <=0 to check all candidates."
+        ),
     )
     parser.add_argument(
         "--expected-base-sha",
@@ -953,6 +992,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             inbox_dir=args.inbox_dir,
             now_utc=now_utc,
             snapshot_fn=snapshot_fn,
+            max_merge_ready_checks=(
+                args.max_pr_checks
+                if args.check_prs and args.max_pr_checks > 0
+                else None
+            ),
         )
         peer_activation = report.get("peer_activation", {})
         if (

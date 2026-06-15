@@ -88,6 +88,11 @@ def test_reports_visible_request_until_target_answers() -> None:
     assert row["task_id"] == "task-1"
     assert row["bridge_visible"] is True
     assert row["response_expected_from"] == "claude-rco-1"
+    assert row["first_ts_utc"] == "2026-06-13T12:00:00Z"
+    assert row["ts_utc"] == "2026-06-13T12:00:00Z"
+    assert row["age_minutes"] == 20.0
+    assert row["latest_request_age_minutes"] == 20.0
+    assert row["request_count"] == 1
     assert row["head"] == "a" * 40
     assert row["pr"] == "1122"
     assert report["pressure"] == {
@@ -103,7 +108,11 @@ def test_reports_visible_request_until_target_answers() -> None:
             "requester": "codex-tools-1",
             "task_id": "task-1",
             "status": "rco_requested",
+            "first_ts_utc": "2026-06-13T12:00:00Z",
+            "ts_utc": "2026-06-13T12:00:00Z",
             "age_minutes": 20.0,
+            "latest_request_age_minutes": 20.0,
+            "request_count": 1,
             "head": "a" * 40,
             "pr": "1122",
         },
@@ -150,7 +159,11 @@ def test_pressure_summary_groups_visible_stalls_without_paths() -> None:
         "requester": "codex-tools-1",
         "task_id": "old-rco",
         "status": "rco_requested",
+        "first_ts_utc": "2026-06-13T12:00:00Z",
+        "ts_utc": "2026-06-13T12:00:00Z",
         "age_minutes": 20.0,
+        "latest_request_age_minutes": 20.0,
+        "request_count": 1,
         "head": "a" * 40,
         "pr": "1122",
     }
@@ -229,6 +242,97 @@ def test_terminal_same_pr_event_closes_obsolete_request_from_any_agent() -> None
     assert report["unanswered_count"] == 0
 
 
+def test_autonomous_merge_receipt_closes_obsolete_driver_ready_request() -> None:
+    merge_receipt = _answer(
+        agent="claude-rco-1",
+        task_id="codex-tools-1/bridge-session-titlemap-hint-20260615",
+        status="autonomous_merge_receipt",
+    )
+    merge_receipt["payload"] = {"pr": 1233}
+
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                agent="codex-tools-1",
+                to="codex-lead-1",
+                task_id="codex-tools-1/bridge-session-titlemap-hint-20260615",
+                status="full_consensus_driver_ready",
+            )
+            | {"type": "handoff", "payload": {"pr": 1233}},
+            merge_receipt,
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 0
+
+
+def test_prior_autonomous_merge_receipt_prevents_obsolete_driver_ready_reopen() -> None:
+    merge_receipt = _answer(
+        agent="claude-rco-1",
+        task_id="codex-tools-1/bridge-session-titlemap-hint-20260615",
+        ts="2026-06-13T12:07:00Z",
+        status="autonomous_merge_receipt",
+    )
+    merge_receipt["payload"] = {"pr": 1233}
+
+    report = report_unanswered_requests(
+        events=[
+            merge_receipt,
+            _request(
+                agent="codex-tools-1",
+                to="codex-lead-1",
+                task_id="codex-tools-1/bridge-session-titlemap-hint-20260615",
+                ts="2026-06-13T12:08:00Z",
+                status="full_consensus_driver_ready",
+            )
+            | {"type": "handoff", "payload": {"pr": 1233}},
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 0
+
+
+def test_prior_closure_does_not_suppress_later_non_pr_follow_nudge() -> None:
+    answered = _answer(
+        task_id="bridge-follow-nudge-20260615",
+        ts="2026-06-13T12:05:00Z",
+        agent="codex-lead-1",
+        status="answered",
+    )
+
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                agent="operator",
+                to="codex-lead-1",
+                task_id="bridge-follow-nudge-20260615",
+                ts="2026-06-13T12:00:00Z",
+                status="open",
+            )
+            | {"payload": {}},
+            answered,
+            _request(
+                agent="operator",
+                to="codex-lead-1",
+                task_id="bridge-follow-nudge-20260615",
+                ts="2026-06-13T12:10:00Z",
+                status="open",
+            )
+            | {"payload": {}},
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["task_id"] == "bridge-follow-nudge-20260615"
+    assert report["requests"][0]["age_minutes"] == 10.0
+
+
 def test_non_terminal_third_party_event_does_not_close_request() -> None:
     report = report_unanswered_requests(
         events=[
@@ -285,7 +389,7 @@ def test_max_age_can_include_full_tail() -> None:
     assert report["max_age_hours"] is None
 
 
-def test_repeated_wake_request_uses_latest_age() -> None:
+def test_repeated_wake_request_preserves_first_open_age() -> None:
     report = report_unanswered_requests(
         events=[
             _request(ts="2026-06-13T12:00:00Z"),
@@ -296,8 +400,26 @@ def test_repeated_wake_request_uses_latest_age() -> None:
     )
 
     assert report["unanswered_count"] == 1
-    assert report["requests"][0]["age_minutes"] == 10.0
+    assert report["requests"][0]["age_minutes"] == 20.0
+    assert report["requests"][0]["latest_request_age_minutes"] == 10.0
+    assert report["requests"][0]["first_ts_utc"] == "2026-06-13T12:00:00Z"
     assert report["requests"][0]["ts_utc"] == "2026-06-13T12:10:00Z"
+    assert report["requests"][0]["request_count"] == 2
+
+
+def test_repeated_wake_request_min_age_uses_first_open_age() -> None:
+    report = report_unanswered_requests(
+        events=[
+            _request(ts="2026-06-13T12:00:00Z"),
+            _request(ts="2026-06-13T12:10:00Z"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=12,
+    )
+
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["age_minutes"] == 20.0
+    assert report["requests"][0]["latest_request_age_minutes"] == 10.0
 
 
 def test_repeated_task_from_different_requester_uses_latest_request() -> None:
@@ -320,7 +442,10 @@ def test_repeated_task_from_different_requester_uses_latest_request() -> None:
 
     assert report["unanswered_count"] == 1
     assert report["requests"][0]["requester"] == "codex-tools-1"
-    assert report["requests"][0]["age_minutes"] == 10.0
+    assert report["requests"][0]["age_minutes"] == 20.0
+    assert report["requests"][0]["latest_request_age_minutes"] == 10.0
+    assert report["requests"][0]["first_ts_utc"] == "2026-06-13T12:00:00Z"
+    assert report["requests"][0]["request_count"] == 2
 
 
 def test_slash_task_alias_answer_closes_hyphen_request() -> None:

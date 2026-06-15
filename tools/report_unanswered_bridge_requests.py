@@ -201,17 +201,29 @@ def report_unanswered_requests(
 
     rows: list[dict[str, Any]] = []
     for state in open_requests.values():
-        request_ts = _parse_utc(str(state["ts_utc"]))
-        if request_ts is None:
+        latest_request_ts = _parse_utc(str(state["ts_utc"]))
+        first_request_ts = _parse_utc(
+            str(state.get("first_ts_utc") or state["ts_utc"])
+        )
+        if latest_request_ts is None or first_request_ts is None:
             continue
-        age_minutes = (
-            effective_now.astimezone(timezone.utc) - request_ts
+        latest_age_minutes = (
+            effective_now.astimezone(timezone.utc) - latest_request_ts
         ).total_seconds() / 60.0
-        if age_minutes < min_age_minutes:
+        first_age_minutes = (
+            effective_now.astimezone(timezone.utc) - first_request_ts
+        ).total_seconds() / 60.0
+        if first_age_minutes < min_age_minutes:
             continue
-        if max_age_minutes is not None and age_minutes > max_age_minutes:
+        if max_age_minutes is not None and latest_age_minutes > max_age_minutes:
             continue
-        rows.append(_request_row(state, age_minutes=age_minutes))
+        rows.append(
+            _request_row(
+                state,
+                age_minutes=first_age_minutes,
+                latest_request_age_minutes=latest_age_minutes,
+            )
+        )
 
     rows.sort(
         key=lambda row: (
@@ -251,8 +263,24 @@ def _open_requests_by_target(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     known_agents = _known_bridge_agents(events)
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    closed_merge_task_keys: set[str] = set()
+    closed_prs: set[str] = set()
     for index, event in enumerate(events):
         _close_answered_requests(open_by_key, event, known_agents=known_agents)
+        if _is_terminal_closure_event(event):
+            if _event_status(event).endswith("merge_receipt"):
+                closed_merge_task_keys.add(
+                    _task_key(
+                        _task_id(event),
+                        known_agents=known_agents,
+                        requester=_event_agent(event),
+                    )
+                )
+            closed_pr = _payload_scalar(event, "pr") or _payload_scalar(
+                event, "pr_number"
+            )
+            if closed_pr:
+                closed_prs.add(closed_pr)
         if not _is_request_like(event):
             continue
         requester = _event_agent(event)
@@ -262,7 +290,20 @@ def _open_requests_by_target(
             if agent_filter and target not in agent_filter:
                 continue
             task_id = _task_id(event)
-            key = (target, _task_key(task_id, known_agents=known_agents, requester=requester))
+            task_key = _task_key(
+                task_id,
+                known_agents=known_agents,
+                requester=requester,
+            )
+            payload_pr = _payload_scalar(event, "pr") or _payload_scalar(
+                event, "pr_number"
+            )
+            if task_key in closed_merge_task_keys or (
+                payload_pr and payload_pr in closed_prs
+            ):
+                continue
+            key = (target, task_key)
+            previous = open_by_key.get(key)
             open_by_key[key] = {
                 "target_agent": target,
                 "requester": requester,
@@ -270,11 +311,18 @@ def _open_requests_by_target(
                 "type": _event_type(event),
                 "status": _event_status(event),
                 "ts_utc": _event_ts(event),
+                "first_ts_utc": (
+                    previous.get("first_ts_utc")
+                    if previous is not None
+                    else _event_ts(event)
+                ),
+                "request_count": int(previous.get("request_count", 1)) + 1
+                if previous is not None
+                else 1,
                 "message": _safe_message(event.get("message")),
                 "event_index": index,
                 "payload_head": _payload_scalar(event, "head"),
-                "payload_pr": _payload_scalar(event, "pr")
-                or _payload_scalar(event, "pr_number"),
+                "payload_pr": payload_pr,
             }
     return open_by_key
 
@@ -285,7 +333,7 @@ def _close_answered_requests(
     *,
     known_agents: Sequence[str],
 ) -> None:
-    if not _is_answer_like(event):
+    if not _is_answer_like(event) and not _is_terminal_closure_event(event):
         return
     event_agent = _event_agent(event)
     event_task_key = _task_key(
@@ -349,21 +397,31 @@ def _same_payload_pr(event: Mapping[str, Any], state: Mapping[str, Any]) -> bool
 
 
 def _is_terminal_closure_event(event: Mapping[str, Any]) -> bool:
+    status = _event_status(event)
     return (
         _event_type(event) == "done"
-        or _event_status(event) in CLOSED_REQUEST_STATUSES
+        or status in CLOSED_REQUEST_STATUSES
+        or status.endswith("merge_receipt")
     )
 
 
-def _request_row(state: Mapping[str, Any], *, age_minutes: float) -> dict[str, Any]:
+def _request_row(
+    state: Mapping[str, Any],
+    *,
+    age_minutes: float,
+    latest_request_age_minutes: float,
+) -> dict[str, Any]:
     row = {
         "target_agent": state["target_agent"],
         "requester": state["requester"],
         "task_id": state["task_id"],
         "type": state["type"],
         "status": state["status"],
+        "first_ts_utc": state.get("first_ts_utc") or state["ts_utc"],
         "ts_utc": state["ts_utc"],
         "age_minutes": round(age_minutes, 3),
+        "latest_request_age_minutes": round(latest_request_age_minutes, 3),
+        "request_count": int(state.get("request_count") or 1),
         "message": state["message"],
         "bridge_visible": True,
         "response_expected_from": state["target_agent"],
@@ -442,7 +500,11 @@ def _oldest_request_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "requester": row.get("requester"),
         "task_id": row.get("task_id"),
         "status": row.get("status"),
+        "first_ts_utc": row.get("first_ts_utc"),
+        "ts_utc": row.get("ts_utc"),
         "age_minutes": row.get("age_minutes"),
+        "latest_request_age_minutes": row.get("latest_request_age_minutes"),
+        "request_count": row.get("request_count"),
     }
     if row.get("pr"):
         summary["pr"] = row.get("pr")

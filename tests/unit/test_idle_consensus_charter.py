@@ -63,6 +63,9 @@ CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES = {
     "waggledance/core/magma/adversarial_corpus_eval.py",
     "tools/validate_synthetic_adversarial_corpus.py",
 }
+MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES = {
+    "tools/merge_with_bridge_receipt.py",
+}
 LEGACY_CODE_PATTERN_MARKERS = {
     "auto_execute=False",
     "operator_gate_required=True",
@@ -141,6 +144,11 @@ def test_charter_denylist_contains_corpus_policy_anchors() -> None:
     assert CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
 
 
+def test_charter_denylist_contains_merge_executor_anchor() -> None:
+    charter = load_charter()
+    assert MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
 def test_charter_preserves_existing_code_pattern_markers() -> None:
     charter = load_charter()
     code_patterns = "\n".join(charter.code_pattern_denylist)
@@ -216,6 +224,15 @@ def test_evaluate_paths_keeps_runtime_http_paths_operator_gated() -> None:
 def test_evaluate_paths_blocks_corpus_policy_anchors_despite_broad_allowlist() -> None:
     charter = load_charter()
     for path in sorted(CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False
+        assert decision.blocked_paths == (path,)
+        assert decision.reason == "denylist hit"
+
+
+def test_evaluate_paths_blocks_merge_executor_anchor_despite_broad_allowlist() -> None:
+    charter = load_charter()
+    for path in sorted(MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES):
         decision = evaluate_paths(charter, [path])
         assert decision.allowed is False
         assert decision.blocked_paths == (path,)

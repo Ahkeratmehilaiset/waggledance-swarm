@@ -1,6 +1,6 @@
 # ADR-053 — Operator-feedback amplifier (scheduler queue priority)
 
-* Status: **scheduler-preflight landing** (contract + ADR pinned; pure planner implemented; scheduler preflight artifact and no-write enqueue preview CLI implemented; bridge writer, runtime scheduler enqueue/execution, and UI deferred)
+* Status: **scheduler-preflight landing** (contract + ADR pinned; pure planner implemented; scheduler preflight artifact implemented; bridge writer, scheduler enqueue/execution, and UI deferred)
 * Date: 2026-05-12
 * Related: ADR-048 (portfolio promotion), ADR-049 (sleep consolidation)
 
@@ -25,10 +25,7 @@ A new bridge event `ops_feedback`:
 }
 ```
 
-This landing implements the pure planner, a scheduler preflight artifact, and a
-no-write scheduler enqueue preview CLI. The preview renders queue priority for
-review, but still does not enqueue, tick the scheduler, or grant runtime
-authority.
+This landing implements the pure planner plus a scheduler preflight artifact.
 The planner validates `ops_feedback` and returns a sanitized
 `feedback_action_taken` action plan. The preflight derives `operator_id` from a
 verified bridge event envelope present in the durable bridge log, rate-limits
@@ -60,11 +57,8 @@ promotion gates.
 8. **Durable rate-limit source**: scheduler preflight counts persisted bridge-log feedback events, not in-memory caller state.
 9. **Priority only**: `gate_skip_allowed=false`; canary, adversarial, and promotion gates are never skipped.
 
-Contract: `docs/eig2/contracts/operator_feedback_amplifier.json`. Pure planner,
-scheduler preflight, and no-write enqueue preview:
-`waggledance/core/autonomy_growth/operator_feedback_amplifier.py`. CLIs:
-`tools/build_operator_feedback_scheduler_preflight.py` and
-`tools/build_operator_feedback_scheduler_enqueue_preview.py`. Tests:
-`tests/contracts/test_operator_feedback_amplifier.py`,
-`tests/autonomy_growth/test_operator_feedback_amplifier.py`, and the matching
-`tests/tools/test_build_operator_feedback_scheduler_*.py` CLI coverage.
+Contract: `docs/eig2/contracts/operator_feedback_amplifier.json`. Pure planner
+and scheduler preflight:
+`waggledance/core/autonomy_growth/operator_feedback_amplifier.py`. Tests:
+`tests/contracts/test_operator_feedback_amplifier.py` and
+`tests/autonomy_growth/test_operator_feedback_amplifier.py`.

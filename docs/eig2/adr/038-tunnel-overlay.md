@@ -1,6 +1,6 @@
 # ADR-038 — Tunnel overlay as sparse audited graph
 
-* Status: **substrate-only landing** (contract + ADR pinned; implementation deferred)
+* Status: **substrate implementation landing** (contract + ADR pinned; in-memory registry implemented; router/mining wiring deferred)
 * Date: 2026-05-12
 * Related: PR #282 (L1 solver-signal YAML registry, makes signals composable), ADR-021 (progressive replay)
 
@@ -12,7 +12,7 @@ The 50-leaps menu (L2) calls for a **tunnel overlay**: a sparse audited graph of
 
 ## Decision
 
-A new `TunnelRegistry` (lives at `waggledance/core/reasoning/tunnel_overlay.py` when implemented) holds tunnels:
+A new `TunnelRegistry` (lives at `waggledance/core/reasoning/tunnel_registry.py`) holds tunnels:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -70,7 +70,7 @@ Pinned in `docs/eig2/contracts/tunnel_overlay.json` and verified by `tests/contr
 * L3 tunnel mining (Hebbian co-fire learning) — covered by Codex queue L3.
 * L4 multi-cell portfolio routing — covered by Codex L4.
 * L5 negative tunnels — direction enum here, mining covered by Codex L5 (or this if I take it).
-* Implementation of `TunnelRegistry` class — separate PR.
+* Router wiring — tunnel lookups are not yet part of live route selection.
 
 ## References
 

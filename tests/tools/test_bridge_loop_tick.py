@@ -704,6 +704,41 @@ def test_loop_tick_merge_ready_short_wakeup(tmp_path):
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
 
 
+def test_loop_tick_caps_pr_snapshot_checks_to_recent_candidates(tmp_path):
+    events = [
+        _rco_pass("old", pr=100, head=HEAD, ts="2026-05-22T13:00:00Z"),
+        _rco_pass("new", pr=102, head=HEAD, ts="2026-05-22T13:50:00Z"),
+        _rco_pass("mid", pr=101, head=HEAD, ts="2026-05-22T13:30:00Z"),
+    ]
+    calls: list[int] = []
+
+    def snapshot_fn(pr: int) -> dict:
+        calls.append(pr)
+        return _green_snapshot(pr)
+
+    report = build_loop_tick(
+        agent="claude",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=snapshot_fn,
+        max_merge_ready_checks=2,
+    )
+
+    assert calls == [102, 101]
+    assert report["merge_ready_checked_count"] == 2
+    assert report["merge_ready_deferred_count"] == 1
+    assert report["merge_ready_deferred"] == [
+        {
+            "task_id": "old",
+            "pr": 100,
+            "approved_head": HEAD,
+            "passed_at_utc": "2026-05-22T13:00:00Z",
+        }
+    ]
+
+
 def test_loop_tick_genuinely_quiet_uses_long_wakeup(tmp_path):
     report = build_loop_tick(
         agent="claude",

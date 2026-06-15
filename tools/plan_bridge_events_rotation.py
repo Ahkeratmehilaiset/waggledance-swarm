@@ -160,7 +160,7 @@ def plan_bridge_events_rotation(
 
     raw = events_path.read_bytes()
     physical_lines = raw.splitlines(keepends=True)
-    effective_now = now_utc or _latest_timestamp(physical_lines) or _utc_now()
+    effective_now = now_utc or _utc_now()
     cutoff = effective_now - timedelta(days=keep_days)
 
     split_index, blockers = _safe_prefix_split(
@@ -279,17 +279,6 @@ def _safe_prefix_split(
             break
         split_index = index + 1
     return split_index, blockers
-
-
-def _latest_timestamp(physical_lines: Sequence[bytes]) -> datetime | None:
-    latest: datetime | None = None
-    for raw_line in physical_lines:
-        event_ts = _event_timestamp(raw_line)
-        if event_ts is None:
-            continue
-        if latest is None or event_ts > latest:
-            latest = event_ts
-    return latest
 
 
 def _event_timestamp(raw_line: bytes) -> datetime | None:

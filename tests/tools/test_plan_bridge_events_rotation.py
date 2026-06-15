@@ -15,6 +15,7 @@ SCRIPT = ROOT / "tools" / "plan_bridge_events_rotation.py"
 
 sys.path.insert(0, str(ROOT))
 
+import tools.plan_bridge_events_rotation as rotation_planner  # noqa: E402
 from tools.plan_bridge_events_rotation import (  # noqa: E402
     BridgeEventsRotationPlanError,
     plan_bridge_events_rotation,
@@ -175,6 +176,32 @@ def test_no_archivable_prefix_is_explicit_noop(tmp_path: Path) -> None:
     assert report["eligible_for_rotation"] is False
     assert report["counts"]["archive_lines"] == 0
     assert report["digests"]["roundtrip_ok"] is True
+
+
+def test_default_retention_clock_uses_wall_clock_not_latest_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_path = _events_file(
+        tmp_path,
+        [
+            _event("2026-06-01T00:00:00Z", task_id="old-1"),
+            _event("2026-06-02T00:00:00Z", task_id="old-2"),
+        ],
+    )
+    monkeypatch.setattr(rotation_planner, "_utc_now", _now)
+
+    report = plan_bridge_events_rotation(
+        events_path=events_path,
+        archive_dir=tmp_path / "archive",
+        keep_days=7,
+        min_recent_lines=1,
+    )
+
+    assert report["retention"]["effective_now_utc"] == "2026-06-15T12:00:00Z"
+    assert report["retention"]["cutoff_ts_utc"] == "2026-06-08T12:00:00Z"
+    assert report["counts"]["archive_lines"] == 1
+    assert report["blockers"] == [{"line": 2, "reason": "min_recent_lines_floor"}]
 
 
 def test_cli_json_is_read_only_and_does_not_create_archive_dir(tmp_path: Path) -> None:

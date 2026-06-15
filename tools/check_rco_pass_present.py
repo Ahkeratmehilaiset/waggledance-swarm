@@ -79,6 +79,7 @@ CLAIM_GATES: tuple[str, ...] = (
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+HEAD_CANDIDATE_RE = re.compile(r"\b[0-9a-fA-F]{40}\b")
 AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 
 
@@ -238,6 +239,14 @@ def _emit(result: dict[str, Any], as_json: bool) -> None:
                     f"status={mismatch.get('status')} type={mismatch.get('type')}",
                     file=sys.stderr,
                 )
+            for stale in result.get("stale_rco_pass_events", []):
+                print(
+                    "  stale rco_pass candidate: "
+                    f"agent={stale.get('agent')} "
+                    f"task_id={stale.get('task_id')} "
+                    f"referenced_heads={','.join(stale.get('referenced_heads') or [])}",
+                    file=sys.stderr,
+                )
             guidance = result.get("rco_reemit_guidance") or {}
             if guidance:
                 print(
@@ -285,6 +294,9 @@ def _make_result(
         "task_id_mismatch_rco_events": [],
         "task_id_aliases": [],
         "accepted_task_id_alias_rco_events": [],
+        "has_stale_rco_pass_at_other_head": False,
+        "stale_rco_pass_events": [],
+        "latest_stale_rco_pass_event": None,
         "rco_reemit_guidance": None,
         "latest_rco_is_veto": latest_rco_is_veto,
         "rco_pass_event": (
@@ -351,6 +363,9 @@ def check_rco_pass_present(
         "ignored_identity_mismatch_events": [],
         "task_id_aliases": [],
         "accepted_task_id_alias_rco_events": [],
+        "has_stale_rco_pass_at_other_head": False,
+        "stale_rco_pass_events": [],
+        "latest_stale_rco_pass_event": None,
         "rco_reemit_guidance": None,
         "error": None,
     }
@@ -476,7 +491,25 @@ def check_rco_pass_present(
         if _is_qualifying_rco_pass(ev, head, agent):
             qualifying.append((idx, ev))
 
+    stale_rco_pass_events = _stale_rco_pass_events(
+        rco_events=rco_events,
+        head=head,
+        eligible_rco_agents=eligible_rco_agents,
+    )
+    base["stale_rco_pass_events"] = [event for _idx, event in stale_rco_pass_events]
+    base["has_stale_rco_pass_at_other_head"] = bool(stale_rco_pass_events)
+    if stale_rco_pass_events:
+        base["latest_stale_rco_pass_event"] = stale_rco_pass_events[-1][1]
+
     if not qualifying:
+        if stale_rco_pass_events and not base["rco_reemit_guidance"]:
+            base["rco_reemit_guidance"] = _stale_rco_reemit_guidance(
+                task_id=task_id,
+                task_id_aliases=task_id_aliases,
+                head=head,
+                eligible_rco_agents=eligible_rco_agents,
+                stale_events=[event for _idx, event in stale_rco_pass_events],
+            )
         base["decision"] = "no_qualifying_pass"
         base["has_qualifying_rco_pass_at_head"] = False
         return base
@@ -583,6 +616,33 @@ def _rco_reemit_guidance(
     }
 
 
+def _stale_rco_reemit_guidance(
+    *,
+    task_id: str,
+    task_id_aliases: Sequence[str],
+    head: str,
+    eligible_rco_agents: Sequence[str],
+    stale_events: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    stale_heads = sorted(
+        {
+            str(head_value)
+            for event in stale_events
+            for head_value in event.get("referenced_heads", [])
+        }
+    )
+    return {
+        "required": True,
+        "reason": "stale_rco_pass_head",
+        "preferred_task_id": task_id,
+        "accepted_task_ids": [task_id, *task_id_aliases],
+        "head": head,
+        "stale_heads": stale_heads,
+        "target_rco_agents": list(eligible_rco_agents),
+        "legacy_request_status": "rco_requested",
+    }
+
+
 def _author_task_id_aliases(task_id: str, author_agent: str) -> tuple[str, ...]:
     """Return deterministic author namespace slash/hyphen aliases.
 
@@ -644,6 +704,66 @@ def _is_qualifying_rco_pass(
         if head.lower() not in message.lower():
             return False
     return True
+
+
+def _stale_rco_pass_events(
+    *,
+    rco_events: Sequence[tuple[int, Mapping[str, Any]]],
+    head: str,
+    eligible_rco_agents: Sequence[str],
+) -> list[tuple[int, dict[str, Any]]]:
+    stale_events: list[tuple[int, dict[str, Any]]] = []
+    eligible = set(eligible_rco_agents)
+    for idx, event in rco_events:
+        agent = str(event.get("agent", ""))
+        if agent not in eligible:
+            continue
+        if _is_qualifying_rco_pass(event, head, agent):
+            continue
+        if not _is_rco_pass_shape(event):
+            continue
+        head_candidates = _event_head_candidates(event)
+        referenced_heads = [
+            candidate for candidate in head_candidates if candidate != head
+        ]
+        if not referenced_heads or head in head_candidates:
+            continue
+        summary = _summarize_event(event)
+        if summary is None:
+            continue
+        summary["expected_head"] = head
+        summary["referenced_heads"] = referenced_heads
+        stale_events.append((idx, summary))
+    stale_events.sort(key=lambda item: item[0])
+    return stale_events
+
+
+def _is_rco_pass_shape(event: Mapping[str, Any]) -> bool:
+    typ = str(event.get("type", "")).lower()
+    status = str(event.get("status", "")).lower()
+    return typ in DECISION_TYPES_FOR_PASS and status in RCO_PASS_STATUSES
+
+
+def _event_head_candidates(event: Mapping[str, Any]) -> list[str]:
+    text_parts = [str(event.get("message", "") or "")]
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        for key in (
+            "head",
+            "head_sha",
+            "reviewed_head_sha",
+            "target_head_sha",
+            "pr_head_sha",
+        ):
+            value = payload.get(key)
+            if isinstance(value, str):
+                text_parts.append(value)
+    elif isinstance(payload, str):
+        text_parts.append(payload)
+    joined = "\n".join(text_parts)
+    return sorted(
+        {match.group(0).lower() for match in HEAD_CANDIDATE_RE.finditer(joined)}
+    )
 
 
 def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:

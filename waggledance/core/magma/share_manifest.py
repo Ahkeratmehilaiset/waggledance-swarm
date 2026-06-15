@@ -30,6 +30,9 @@ IMPORT_ADMISSION_CONTRACT_VERSION = "magma.share_manifest_replay_admission_contr
 IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
 IMPORT_HANDOFF_STATUS_VERSION = "magma.share_manifest_import_handoff_status.v0"
 IMPORT_ADMISSION_STATUS_VERSION = "magma.share_manifest_import_admission_status.v0"
+IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION = (
+    "magma.share_manifest_replay_sanitization_summary.v0"
+)
 SHARE_MANIFEST_NAME = "share_manifest.json"
 EXPORT_REPORT_NAME = "share_export_report.json"
 IMPORT_HANDOFF_NAME = "share_import_peer_review_handoff.json"
@@ -642,6 +645,191 @@ def build_magma_share_import_failed_admission_status_summary(
         "runtime_export_enabled": False,
         "runtime_authority_granted": False,
         "runtime_authority_changed": False,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
+def build_magma_share_import_replay_sanitization_summary(
+    import_report: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a path-free replay sanitization contract summary.
+
+    This view is narrower than the full import report and complementary to the
+    admission-status summary. It records the sanitization contract boundary and
+    replay-admission check taxonomy, but it does not expose the replay plan,
+    entry ids, local paths, payload material, transport, or runtime authority.
+    """
+    source = "magma_share_manifest_import_report"
+    if import_report is None:
+        return _empty_import_replay_sanitization_summary("not_configured")
+    if not isinstance(import_report, Mapping):
+        return _blocked_import_replay_sanitization_summary(
+            source,
+            "import_report_invalid",
+        )
+
+    try:
+        expected_purpose = _import_report_expected_purpose(import_report)
+        _ensure_import_report_ready_for_handoff(
+            import_report,
+            expected_purpose=expected_purpose,
+        )
+        admission_contract = import_report.get("admission_contract")
+        if not isinstance(admission_contract, Mapping):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                "admission_contract"
+            )
+        admission_contract_digest = import_report.get("admission_contract_digest")
+        _ensure_sha256_digest(
+            "admission_contract_digest",
+            admission_contract_digest,
+        )
+        replay_plan = import_report.get("replay_plan")
+        if not isinstance(replay_plan, Mapping):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: replay_plan"
+            )
+        entry_count = replay_plan.get("entry_count")
+        if (
+            isinstance(entry_count, bool)
+            or not isinstance(entry_count, int)
+            or entry_count < 0
+        ):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                "replay_plan.entry_count"
+            )
+        artifact_counts = import_report.get("artifact_counts")
+        if not isinstance(artifact_counts, Mapping):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: artifact_counts"
+            )
+        if artifact_counts.get("payload_files") != 0:
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                "artifact_counts.payload_files"
+            )
+        required_check_names = _replay_admission_required_check_names(
+            admission_contract,
+        )
+        rejection_mode_count = _replay_admission_rejection_mode_count(
+            admission_contract,
+        )
+        report_invariants = _replay_admission_report_invariant_flags(
+            admission_contract,
+        )
+    except (TypeError, ValueError) as exc:
+        return _blocked_import_replay_sanitization_summary(
+            source,
+            _classify_import_sanitization_blocker(str(exc)),
+        )
+
+    return {
+        "summary_version": IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION,
+        "source": source,
+        "status": "ready_for_replay_sanitization_review",
+        "severity": "none",
+        "ok": True,
+        "blocker_class": "none",
+        "blockers": [],
+        "controls_present": False,
+        "manifest_version": MANIFEST_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
+        "sanitization_contract": "sanitization_v0",
+        "scope": "no_authority_metadata_replay",
+        "share_id": import_report["share_id"],
+        "purpose": import_report["purpose"],
+        "report_digest": sha256_digest(import_report),
+        "admission_contract_digest": admission_contract_digest,
+        "replay_plan_digest": sha256_digest(replay_plan),
+        "share_manifest_digest": import_report["share_manifest_digest"],
+        "source_manifest_digest": import_report["source_manifest_digest"],
+        "entry_count": entry_count,
+        "required_check_count": len(required_check_names),
+        "required_check_names": required_check_names,
+        "rejection_mode_count": rejection_mode_count,
+        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "report_invariants": report_invariants,
+        "context_verified": import_report["context_verified"],
+        "context_drift_detected": import_report["context_drift_detected"],
+        "replay_metadata_only": import_report["replay_metadata_only"],
+        "no_authority_import": import_report["no_authority_import"],
+        "full_replay_plan_exported": False,
+        "entry_ids_exported": False,
+        "transport_enabled": False,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_exported": 0,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
+def build_magma_share_import_failed_replay_sanitization_summary(
+    *,
+    reason: str,
+    max_age_hours: int = DEFAULT_IMPORT_MAX_AGE_HOURS,
+    expected_share_id: str | None = None,
+    expected_purpose: str | None = None,
+) -> dict[str, Any]:
+    """Return a sanitized fail-closed replay sanitization summary."""
+    safe_max_age_hours = _safe_import_status_max_age_hours(max_age_hours)
+    safe_expected_share_id = _safe_import_status_expected_share_id(
+        expected_share_id
+    )
+    safe_expected_purpose = (
+        expected_purpose if expected_purpose in PURPOSES else None
+    )
+    admission_contract = _replay_admission_contract(
+        max_age_hours=safe_max_age_hours,
+        expected_share_id=safe_expected_share_id,
+        expected_purpose=safe_expected_purpose,
+    )
+    blocker_class = _classify_share_import_failure_reason(reason)
+    return {
+        "summary_version": IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION,
+        "source": "magma_share_manifest_import_failure",
+        "status": "rejected",
+        "severity": "warning",
+        "ok": False,
+        "blocker_class": blocker_class,
+        "blockers": [blocker_class],
+        "controls_present": False,
+        "manifest_version": MANIFEST_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
+        "sanitization_contract": "sanitization_v0",
+        "scope": "no_authority_metadata_replay",
+        "admission_contract_digest": sha256_digest(admission_contract),
+        "expected_share_id_configured": safe_expected_share_id is not None,
+        "expected_purpose_configured": safe_expected_purpose is not None,
+        "entry_count": 0,
+        "required_check_count": len(admission_contract["required_checks"]),
+        "required_check_names": [
+            item["name"] for item in admission_contract["required_checks"]
+        ],
+        "rejection_mode_count": len(admission_contract["rejection_modes"]),
+        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "report_invariants": dict(admission_contract["report_invariants"]),
+        "context_verified": False,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "full_replay_plan_exported": False,
+        "entry_ids_exported": False,
+        "transport_enabled": False,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_exported": 0,
         "payload_files_imported": 0,
         "payload_digest_imported": False,
         "raw_material_imported": False,
@@ -1266,6 +1454,87 @@ def _blocked_import_admission_status_summary(
     }
 
 
+def _empty_import_replay_sanitization_summary(source: str) -> dict[str, Any]:
+    return {
+        "summary_version": IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION,
+        "source": source,
+        "status": "not_configured",
+        "severity": "none",
+        "ok": False,
+        "blocker_class": "not_configured",
+        "blockers": [],
+        "controls_present": False,
+        "manifest_version": MANIFEST_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
+        "sanitization_contract": "sanitization_v0",
+        "scope": "no_authority_metadata_replay",
+        "entry_count": 0,
+        "required_check_count": 0,
+        "required_check_names": [],
+        "rejection_mode_count": 0,
+        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "report_invariants": {},
+        "context_verified": False,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "full_replay_plan_exported": False,
+        "entry_ids_exported": False,
+        "transport_enabled": False,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_exported": 0,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
+def _blocked_import_replay_sanitization_summary(
+    source: str,
+    blocker_class: str,
+) -> dict[str, Any]:
+    return {
+        "summary_version": IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION,
+        "source": source,
+        "status": "blocked",
+        "severity": "warning",
+        "ok": False,
+        "blocker_class": blocker_class,
+        "blockers": [blocker_class],
+        "controls_present": False,
+        "manifest_version": MANIFEST_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
+        "sanitization_contract": "sanitization_v0",
+        "scope": "no_authority_metadata_replay",
+        "entry_count": 0,
+        "required_check_count": 0,
+        "required_check_names": [],
+        "rejection_mode_count": 0,
+        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "report_invariants": {},
+        "context_verified": False,
+        "context_drift_detected": False,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
+        "full_replay_plan_exported": False,
+        "entry_ids_exported": False,
+        "transport_enabled": False,
+        "runtime_export_enabled": False,
+        "runtime_authority_granted": False,
+        "runtime_authority_changed": False,
+        "payload_files_exported": 0,
+        "payload_files_imported": 0,
+        "payload_digest_imported": False,
+        "raw_material_imported": False,
+        "replacement_map_imported": False,
+        "local_paths_recorded": False,
+    }
+
+
 def _classify_import_admission_blocker(reason: str) -> str:
     if "admission_contract" in reason:
         return "admission_contract_invalid"
@@ -1285,6 +1554,121 @@ def _classify_import_admission_blocker(reason: str) -> str:
     if "purpose" in reason or "share_id" in reason:
         return "identity_or_purpose_invalid"
     return "import_report_invalid"
+
+
+def _classify_import_sanitization_blocker(reason: str) -> str:
+    if (
+        "required_checks" in reason
+        or "rejection_modes" in reason
+        or "report_invariants" in reason
+        or "forbidden_material_absence_preserved" in reason
+    ):
+        return "sanitization_contract_invalid"
+    return _classify_import_admission_blocker(reason)
+
+
+def _replay_admission_required_check_names(
+    admission_contract: Mapping[str, Any],
+) -> list[str]:
+    required_checks = admission_contract.get("required_checks")
+    if not isinstance(required_checks, list) or not required_checks:
+        raise ValueError(
+            "import report is not sanitization-summary-ready: required_checks"
+        )
+    names: list[str] = []
+    for index, check in enumerate(required_checks, 1):
+        if not isinstance(check, Mapping):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"required_check {index}"
+            )
+        name = check.get("name")
+        rejects_as = check.get("rejects_as")
+        if not isinstance(name, str) or not isinstance(rejects_as, str):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"required_check {index}"
+            )
+        _ensure_ref(f"required_check {index} name", name)
+        _ensure_ref(f"required_check {index} rejects_as", rejects_as)
+        names.append(name)
+    if "forbidden_material_absence_preserved" not in names:
+        raise ValueError(
+            "import report is not sanitization-summary-ready: "
+            "forbidden_material_absence_preserved"
+        )
+    return names
+
+
+def _replay_admission_rejection_mode_count(
+    admission_contract: Mapping[str, Any],
+) -> int:
+    rejection_modes = admission_contract.get("rejection_modes")
+    if not isinstance(rejection_modes, list) or not rejection_modes:
+        raise ValueError(
+            "import report is not sanitization-summary-ready: rejection_modes"
+        )
+    for index, mode in enumerate(rejection_modes, 1):
+        if not isinstance(mode, Mapping):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"rejection_mode {index}"
+            )
+        reason_code = mode.get("reason_code")
+        if not isinstance(reason_code, str):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"rejection_mode {index}"
+            )
+        _ensure_ref(f"rejection_mode {index} reason_code", reason_code)
+        if mode.get("decision") != "reject":
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"rejection_mode {index}.decision"
+            )
+        if mode.get("blocker_visible") is not True:
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"rejection_mode {index}.blocker_visible"
+            )
+    return len(rejection_modes)
+
+
+def _replay_admission_report_invariant_flags(
+    admission_contract: Mapping[str, Any],
+) -> dict[str, bool]:
+    invariants = admission_contract.get("report_invariants")
+    if not isinstance(invariants, Mapping) or not invariants:
+        raise ValueError(
+            "import report is not sanitization-summary-ready: report_invariants"
+        )
+    output: dict[str, bool] = {}
+    for name, value in invariants.items():
+        if not isinstance(name, str):
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                "report_invariants"
+            )
+        _ensure_ref("report_invariant", name)
+        if value is not True:
+            raise ValueError(
+                "import report is not sanitization-summary-ready: "
+                f"report_invariant.{name}"
+            )
+        output[name] = True
+    required = {
+        "ok_requires_replay_metadata_only",
+        "ok_requires_no_authority_import",
+        "ok_requires_runtime_authority_granted_false",
+        "ok_requires_payload_files_imported_zero",
+        "ok_requires_raw_material_imported_false",
+    }
+    if not required.issubset(output):
+        raise ValueError(
+            "import report is not sanitization-summary-ready: "
+            "report_invariants.required"
+        )
+    return output
 
 
 def _classify_share_import_failure_reason(reason: str) -> str:

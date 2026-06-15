@@ -56,6 +56,25 @@ def _activity(
     }
 
 
+def _wake_send_failed(
+    *,
+    ts: str = "2026-06-13T12:06:00Z",
+    target: str = "claude-rco-2",
+) -> dict[str, object]:
+    return {
+        "ts_utc": ts,
+        "agent": "operator",
+        "type": "message",
+        "task_id": "wd/ops/stall-rescue-watch",
+        "status": "wake_send_failed",
+        "message": (
+            f"Keying '{target}' failed (tab not found / UIA error): "
+            f"Tab for agent '{target}' not found. Tip: pass -TitleMap "
+            f"'{target}=<exact-title-substring>'."
+        ),
+    }
+
+
 def _now() -> datetime:
     return datetime(2026, 6, 13, 12, 30, tzinfo=timezone.utc)
 
@@ -315,6 +334,36 @@ def test_stale_wake_file_is_not_treated_as_delivery_proof(tmp_path: Path) -> Non
     assert row["wake_file_age_minutes"] == 31.0
     assert "stale relative to latest wake_request" in row["diagnosis"]
     assert row["safe_next_action"].startswith("restart or verify")
+
+
+def test_wake_send_failure_is_attached_to_unresolved_group() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z", to="codex-lead-1"),
+            _wake_send_failed(ts="2026-06-13T12:06:00Z", target="codex-lead-1"),
+            _wake(ts="2026-06-13T12:08:00Z", to="codex-lead-1"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "wake_delivery_stalled"
+    assert report["delivery_escalation"]["reason"] == (
+        "operator_wake_send_failed_for_unresolved_wake"
+    )
+    assert report["delivery_escalation"]["safe_next_action"] == (
+        "repair_operator_wake_routing_or_title_map"
+    )
+    row = report["stalled_wakes"][0]
+    assert row["target_agent"] == "codex-lead-1"
+    assert row["wake_send_failed_count"] == 1
+    assert row["latest_wake_send_failed_ts_utc"] == "2026-06-13T12:06:00Z"
+    assert "Tab for agent 'codex-lead-1' not found" in row[
+        "latest_wake_send_failed_message"
+    ]
+    assert "operator wake send failed" in row["diagnosis"]
+    assert "TitleMap" in row["safe_next_action"]
 
 
 def test_agent_filter_limits_targets() -> None:

@@ -2243,6 +2243,63 @@ def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
     assert wake["latest_wake_age_minutes"] == 15.0
 
 
+def test_wake_send_failure_changes_wake_delivery_escalation() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "lead-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:04:00Z",
+            "agent": "operator",
+            "type": "message",
+            "task_id": "wd/ops/stall-rescue-watch",
+            "status": "wake_send_failed",
+            "message": (
+                "Keying 'codex-lead-1' failed (tab not found / UIA error): "
+                "Tab for agent 'codex-lead-1' not found. Tip: pass "
+                "-TitleMap 'codex-lead-1=<exact-title-substring>'."
+            ),
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "lead-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["delivery_escalation"]["reason"] == (
+        "operator_wake_send_failed_for_unresolved_wake"
+    )
+    assert delivery["delivery_escalation"]["safe_next_action"] == (
+        "repair_operator_wake_routing_or_title_map"
+    )
+    wake = delivery["stalled_wakes"][0]
+    assert wake["target_agent"] == "codex-lead-1"
+    assert wake["wake_send_failed_count"] == 1
+    assert wake["latest_wake_send_failed_ts_utc"] == "2026-06-06T10:04:00Z"
+    assert "operator wake send failed" in wake["diagnosis"]
+    assert "TitleMap" in wake["safe_next_action"]
+
+
 def test_wake_delivery_gap_does_not_interrupt_active_own_claim(
     tmp_path: Path,
 ) -> None:

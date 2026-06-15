@@ -87,6 +87,10 @@ ACTIONABLE_PRODUCTION_LIVENESS_REASONS = {
     "heartbeat_only_since_activity",
     "no_activity_since_last_event",
 }
+RCO_REVIEW_AGENTS = frozenset({
+    "claude-rco-1",
+    "claude-rco-2",
+})
 RCO_RESPONSE_STATUSES = {
     "rco_pass",
     "changes_requested",
@@ -521,6 +525,65 @@ def evaluate_agent_next_task(
                     (
                         "the candidate grants no bridge-write, scheduler, "
                         "RCO review, merge, or gate-skip authority"
+                    ),
+                ],
+            })
+        completed_rco_lane_failover_task_ids = (
+            _completed_rco_lane_failover_task_ids(
+                events=events,
+                bridge_root=Path(bridge_root),
+                now_utc=now_utc,
+            )
+        )
+        active_rco_lane_failover_task_ids = _active_rco_lane_failover_task_ids(
+            claims=claims,
+            now_utc=now_utc,
+        )
+        rco_lane_failover_candidate = _pick_rco_lane_failover_scout(
+            agent=agent,
+            bridge_root=Path(bridge_root),
+            now_utc=now_utc,
+            bridge_recommendation=bridge_recommendation,
+            completed_task_ids=completed_rco_lane_failover_task_ids,
+            active_task_ids=active_rco_lane_failover_task_ids,
+        )
+        if rco_lane_failover_candidate is not None:
+            return _with_deferred_lift_state({
+                "decision": "claim_rco_lane_failover_scout",
+                "next_action": "claim_and_run",
+                "exit_code": 0,
+                "agent": agent,
+                "underlying_bridge_action": bridge_action,
+                "bridge_recommendation": bridge_recommendation,
+                **_bridge_context(bridge_recommendation),
+                "completed_production_liveness_task_ids": sorted(
+                    completed_production_liveness_task_ids
+                ),
+                "active_production_liveness_task_ids": sorted(
+                    active_production_liveness_task_ids
+                ),
+                "completed_rco_lane_failover_task_ids": sorted(
+                    completed_rco_lane_failover_task_ids
+                ),
+                "active_rco_lane_failover_task_ids": sorted(
+                    active_rco_lane_failover_task_ids
+                ),
+                "candidate": rco_lane_failover_candidate,
+                "notes": [
+                    (
+                        "bridge_next_action left the next-work choice open, "
+                        "but an unsuppressed RCO review lane is stalled in "
+                        "the production_liveness report"
+                    ),
+                    (
+                        "the picker advanced to a read-only RCO failover "
+                        "diagnostic before routine smoke/scout rotation so "
+                        "RCO2 stalls do not hide behind normal idle work"
+                    ),
+                    (
+                        "the candidate grants no RCO substitution, "
+                        "bridge-write, scheduler, merge, or gate-skip "
+                        "authority"
                     ),
                 ],
             })
@@ -994,6 +1057,107 @@ def _wake_delivery_escalation_for_peer(
         "operator_action_required": True,
         "reason": "wake_request_visible_but_no_later_target_bridge_activity",
     }
+
+
+def _pick_rco_lane_failover_scout(
+    *,
+    agent: str,
+    bridge_root: Path,
+    now_utc: datetime,
+    bridge_recommendation: Mapping[str, Any],
+    completed_task_ids: set[str] | None = None,
+    active_task_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Return a read-only diagnostic when an RCO review lane stalls."""
+    completed = completed_task_ids or set()
+    active = active_task_ids or set()
+    production_liveness = bridge_recommendation.get("production_liveness")
+    if not isinstance(production_liveness, Mapping):
+        return None
+
+    stalled_agents = production_liveness.get("stalled_agents")
+    if not isinstance(stalled_agents, Sequence) or isinstance(stalled_agents, str):
+        return None
+
+    for item in stalled_agents:
+        if not isinstance(item, Mapping):
+            continue
+        stalled_agent = str(item.get("agent") or "")
+        if stalled_agent == agent or stalled_agent not in RCO_REVIEW_AGENTS:
+            continue
+        reason = str(item.get("reason") or "")
+        if reason not in ACTIONABLE_PRODUCTION_LIVENESS_REASONS:
+            continue
+        idle_minutes = item.get("idle_minutes", item.get("observed_minutes", 0.0))
+        try:
+            idle_minutes_float = float(idle_minutes)
+        except (TypeError, ValueError):
+            idle_minutes_float = 0.0
+        idle_warn = float(production_liveness.get("idle_warn_minutes") or 0.0)
+        task_id = _rco_lane_failover_task_id(
+            now_utc=now_utc,
+            stalled_agent=stalled_agent,
+        )
+        completed_matches = _matching_rco_lane_failover_task_ids(
+            completed,
+            canonical_task_id=task_id,
+        )
+        active_matches = _matching_rco_lane_failover_task_ids(
+            active,
+            canonical_task_id=task_id,
+        )
+        if completed_matches or active_matches:
+            continue
+
+        events_path = bridge_root / "shared" / "events.jsonl"
+        unanswered_command = (
+            f"{_python_command()} "
+            "tools\\report_unanswered_bridge_requests.py "
+            f"--events {events_path} "
+            f"--agent {stalled_agent} "
+            f"--min-age-minutes {idle_warn:g} "
+            "--json"
+        )
+        wake_delivery_command = (
+            f"{_python_command()} "
+            "tools\\check_bridge_wake_delivery.py "
+            f"--bridge-root {bridge_root} "
+            f"--agent {stalled_agent} "
+            f"--min-age-minutes {idle_warn:g} "
+            "--min-repeats 1 "
+            "--json"
+        )
+        fallback_reviewers = sorted(RCO_REVIEW_AGENTS - {stalled_agent})
+        return {
+            "kind": "rco_lane_failover_scout",
+            "target": ".agent-bridge/shared/events.jsonl",
+            "stalled_agent": stalled_agent,
+            "fallback_reviewers": fallback_reviewers,
+            "reason": reason,
+            "idle_minutes": round(idle_minutes_float, 3),
+            "task_id_suggestion": task_id,
+            "mode": "read-only",
+            "write_scope": [],
+            "authority": "read_only_recommendation_only",
+            "acceptance": (
+                "Run unanswered-request and wake-delivery diagnostics for the "
+                "stalled RCO lane. If the lane is still inactive, emit a "
+                "concise bridge finding or handoff asking the operator or a "
+                "live RCO reviewer to restart/verify the stalled session; do "
+                "not substitute an RCO pass, skip gates, merge, or write "
+                "bridge state from this picker."
+            ),
+            "recommended_command": unanswered_command,
+            "diagnostic_commands": [
+                unanswered_command,
+                wake_delivery_command,
+            ],
+            "rotation": {
+                "skipped_completed_task_ids": sorted(completed_matches),
+                "skipped_active_task_ids": sorted(active_matches),
+            },
+        }
+    return None
 
 
 def _pick_rco_reemit_watch(
@@ -1735,6 +1899,17 @@ def _production_liveness_reactivation_task_id(
     )
 
 
+def _rco_lane_failover_task_id(
+    *,
+    now_utc: datetime,
+    stalled_agent: str,
+) -> str:
+    return (
+        "rco-lane-failover-scout-"
+        f"{now_utc.strftime('%Y-%m-%d')}-{stalled_agent}"
+    )
+
+
 def _is_same_day_production_liveness_reactivation_task_id(
     task_id: str,
     now_utc: datetime,
@@ -1745,6 +1920,28 @@ def _is_same_day_production_liveness_reactivation_task_id(
 
 
 def _matching_production_liveness_reactivation_task_ids(
+    task_ids: set[str],
+    *,
+    canonical_task_id: str,
+) -> set[str]:
+    return {
+        task_id
+        for task_id in task_ids
+        if task_id == canonical_task_id
+        or task_id.startswith(f"{canonical_task_id}-")
+    }
+
+
+def _is_same_day_rco_lane_failover_task_id(
+    task_id: str,
+    now_utc: datetime,
+) -> bool:
+    return task_id.startswith(
+        f"rco-lane-failover-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    )
+
+
+def _matching_rco_lane_failover_task_ids(
     task_ids: set[str],
     *,
     canonical_task_id: str,
@@ -1895,6 +2092,47 @@ def _completed_production_liveness_reactivation_task_ids(
             task_id,
             now_utc,
         ):
+            continue
+        status = str(
+            payload.get("release_status")
+            or payload.get("status")
+            or payload.get("release_message")
+            or ""
+        )
+        if _status_is_successful(status):
+            completed.add(task_id)
+
+    return completed
+
+
+def _completed_rco_lane_failover_task_ids(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    now_utc: datetime,
+) -> set[str]:
+    completed: set[str] = set()
+
+    for event in events:
+        task_id = str(event.get("task_id", ""))
+        if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
+            continue
+        if _is_successful_completion_event(event):
+            completed.add(task_id)
+
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        done_files = []
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        task_id = str(payload.get("task_id", ""))
+        if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             continue
         status = str(
             payload.get("release_status")
@@ -2065,6 +2303,19 @@ def _active_production_liveness_reactivation_task_ids(
     for claim in claims:
         task_id = str(getattr(claim, "task_id", ""))
         if _is_same_day_production_liveness_reactivation_task_id(task_id, now_utc):
+            active.add(task_id)
+    return active
+
+
+def _active_rco_lane_failover_task_ids(
+    *,
+    claims: Sequence[Any],
+    now_utc: datetime,
+) -> set[str]:
+    active: set[str] = set()
+    for claim in claims:
+        task_id = str(getattr(claim, "task_id", ""))
+        if _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             active.add(task_id)
     return active
 

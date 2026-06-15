@@ -42,6 +42,7 @@ DEFAULT_MIN_REPEATS = 2
 DEFAULT_MAX_AGE_HOURS = 12.0
 DEFAULT_SELF_LIVENESS_WINDOW_MINUTES = 40.0
 DEFAULT_TAIL = 50000
+WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS = 2.0
 
 
 class WakeDeliveryError(ValueError):
@@ -262,6 +263,7 @@ def check_wake_delivery(
                     group,
                     age_minutes=unresolved_age_minutes,
                     latest_wake_age_minutes=latest_wake_age_minutes,
+                    now_utc=effective_now,
                     bridge_root=bridge_root,
                     classification="self_pacing_or_silent_by_design",
                     self_liveness=self_liveness,
@@ -273,6 +275,7 @@ def check_wake_delivery(
                 group,
                 age_minutes=unresolved_age_minutes,
                 latest_wake_age_minutes=latest_wake_age_minutes,
+                now_utc=effective_now,
                 bridge_root=bridge_root,
             )
         )
@@ -484,12 +487,18 @@ def _wake_row(
     *,
     age_minutes: float,
     latest_wake_age_minutes: float,
+    now_utc: datetime,
     bridge_root: Path | None,
     classification: str = "stalled_wake_delivery",
     self_liveness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = str(group["target_agent"])
-    wake_file = _wake_file_status(bridge_root, target)
+    wake_file = _wake_file_status(
+        bridge_root,
+        target,
+        last_wake_ts_utc=str(group["last_ts_utc"]),
+        now_utc=now_utc,
+    )
     requesters = group.get("requesters")
     requester_list = sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
     if classification == "self_pacing_or_silent_by_design":
@@ -502,11 +511,18 @@ def _wake_row(
             "self-liveness window; do not restart solely from repeated wakes"
         )
     else:
-        reason = (
-            "wake file exists but target agent has not emitted bridge activity"
-            if wake_file["wake_file_present"]
-            else "no target activity after repeated wake_request; watcher may be absent or target may not be polling"
-        )
+        if wake_file["wake_file_present"] and wake_file["wake_file_fresh_after_last_wake"]:
+            reason = "wake file exists but target agent has not emitted bridge activity"
+        elif wake_file["wake_file_present"]:
+            reason = (
+                "wake file is stale relative to latest wake_request; watcher "
+                "may not be updating the target wake signal"
+            )
+        else:
+            reason = (
+                "no target activity after repeated wake_request; watcher may "
+                "be absent or target may not be polling"
+            )
         safe_next_action = (
             "restart or verify the target agent bridge session watcher/poll loop; "
             "do not treat additional wake_request events as delivery proof"
@@ -537,20 +553,62 @@ def _format_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _wake_file_status(bridge_root: Path | None, target: str) -> dict[str, Any]:
+def _wake_file_status(
+    bridge_root: Path | None,
+    target: str,
+    *,
+    last_wake_ts_utc: str,
+    now_utc: datetime,
+) -> dict[str, Any]:
     if bridge_root is None:
-        return {"wake_file_present": False, "wake_file_mtime_utc": ""}
+        return {
+            "wake_file_present": False,
+            "wake_file_mtime_utc": "",
+            "wake_file_age_minutes": None,
+            "wake_file_lag_seconds": None,
+            "wake_file_fresh_after_last_wake": False,
+        }
     wake_path = bridge_root / f"wake_{target}"
     if not wake_path.exists():
-        return {"wake_file_present": False, "wake_file_mtime_utc": ""}
+        return {
+            "wake_file_present": False,
+            "wake_file_mtime_utc": "",
+            "wake_file_age_minutes": None,
+            "wake_file_lag_seconds": None,
+            "wake_file_fresh_after_last_wake": False,
+        }
     try:
         mtime = datetime.fromtimestamp(wake_path.stat().st_mtime, tz=timezone.utc)
+        last_wake_ts = _parse_utc(last_wake_ts_utc)
+        lag_seconds = (
+            (mtime - last_wake_ts).total_seconds()
+            if last_wake_ts is not None
+            else None
+        )
+        fresh_after_last_wake = (
+            lag_seconds is not None
+            and lag_seconds >= -WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS
+        )
+        age_minutes = (
+            now_utc.astimezone(timezone.utc) - mtime
+        ).total_seconds() / 60.0
         return {
             "wake_file_present": True,
             "wake_file_mtime_utc": mtime.isoformat().replace("+00:00", "Z"),
+            "wake_file_age_minutes": round(age_minutes, 3),
+            "wake_file_lag_seconds": (
+                round(lag_seconds, 3) if lag_seconds is not None else None
+            ),
+            "wake_file_fresh_after_last_wake": fresh_after_last_wake,
         }
     except OSError:
-        return {"wake_file_present": True, "wake_file_mtime_utc": ""}
+        return {
+            "wake_file_present": True,
+            "wake_file_mtime_utc": "",
+            "wake_file_age_minutes": None,
+            "wake_file_lag_seconds": None,
+            "wake_file_fresh_after_last_wake": False,
+        }
 
 
 def _normalize_agent_filter(agents: Sequence[str] | None) -> set[str]:

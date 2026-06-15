@@ -963,6 +963,10 @@ def _pick_production_liveness_reactivation(
             peer_agent=peer_agent,
             episode_suffix=episode_suffix,
         )
+        legacy_task_id = _production_liveness_reactivation_task_id(
+            now_utc=now_utc,
+            peer_agent=peer_agent,
+        )
         completed_matches = _matching_production_liveness_reactivation_task_ids(
             completed,
             canonical_task_id=task_id,
@@ -971,6 +975,11 @@ def _pick_production_liveness_reactivation(
             active,
             canonical_task_id=task_id,
         )
+        if legacy_task_id != task_id:
+            if legacy_task_id in completed:
+                completed_matches.add(legacy_task_id)
+            if legacy_task_id in active:
+                active_matches.add(legacy_task_id)
         if completed_matches or active_matches:
             continue
         unanswered_command = (

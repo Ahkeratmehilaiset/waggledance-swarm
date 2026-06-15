@@ -142,6 +142,10 @@ DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES = 40.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 WAKE_DELIVERY_IGNORED_TARGETS = {*PRODUCTION_LIVENESS_IGNORED_AGENTS, "driver"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
+WAKE_SEND_FAILED_TARGET_PATTERN = re.compile(
+    r"\bKeying\s+['\"](?P<agent>[a-z0-9][a-z0-9_.-]*)['\"]\s+failed\b",
+    re.IGNORECASE,
+)
 PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json"
 TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
@@ -1278,6 +1282,13 @@ def _event_ts(event: Mapping[str, Any]) -> str:
     return str(event.get("ts_utc") or event.get("timestamp") or "")
 
 
+def _bounded_message(value: object) -> str:
+    message = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(message) > 240:
+        return f"{message[:237]}..."
+    return message
+
+
 def _latest_event_time(events: Sequence[Mapping[str, Any]]) -> datetime | None:
     parsed = [
         value
@@ -1545,7 +1556,7 @@ def _wake_delivery_liveness_summary(
         "stalled_wake_count": len(stalled),
         "by_agent": dict(sorted(by_agent.items())),
         "delivery_escalation": (
-            _wake_delivery_escalation(by_agent)
+            _wake_delivery_escalation(stalled, by_agent)
             if stalled
             else _wake_delivery_no_escalation()
         ),
@@ -1558,14 +1569,26 @@ def _wake_delivery_liveness_summary(
     }
 
 
-def _wake_delivery_escalation(by_agent: Mapping[str, int]) -> dict[str, Any]:
+def _wake_delivery_escalation(
+    stalled: Sequence[Mapping[str, Any]],
+    by_agent: Mapping[str, int],
+) -> dict[str, Any]:
+    has_send_failure = any(
+        int(row.get("wake_send_failed_count") or 0) for row in stalled
+    )
+    if has_send_failure:
+        safe_next_action = "repair_operator_wake_routing_or_title_map"
+        reason = "operator_wake_send_failed_for_unresolved_wake"
+    else:
+        safe_next_action = "restart_or_verify_target_agent_bridge_session_watcher"
+        reason = "wake_request_visible_but_no_later_target_bridge_activity"
     return {
         "required": True,
         "target_agents": sorted(by_agent),
         "do_not_emit_additional_wake_requests": True,
-        "safe_next_action": "restart_or_verify_target_agent_bridge_session_watcher",
+        "safe_next_action": safe_next_action,
         "operator_action_required": True,
-        "reason": "wake_request_visible_but_no_later_target_bridge_activity",
+        "reason": reason,
     }
 
 
@@ -1608,6 +1631,7 @@ def _unresolved_wake_delivery_groups(
                 event_ts=event_ts,
             )
         _clear_wake_delivery_groups_for_terminal_task(groups, event)
+        _record_wake_send_failure_for_groups(groups, event)
         if _event_type(event) != "wake_request":
             continue
         if _event_status(event) in CLOSED_REQUEST_STATUSES:
@@ -1641,6 +1665,40 @@ def _unresolved_wake_delivery_groups(
                 if isinstance(requesters, set):
                     requesters.add(event_agent)
     return groups
+
+
+def _record_wake_send_failure_for_groups(
+    groups: dict[tuple[str, str], dict[str, Any]],
+    event: Mapping[str, Any],
+) -> None:
+    target = _wake_send_failed_target(event)
+    if not target:
+        return
+    event_ts = _event_ts(event)
+    for (group_target, _task_id_value), group in groups.items():
+        if group_target != target:
+            continue
+        if event_ts and str(group.get("first_ts_utc") or "") and event_ts < str(
+            group["first_ts_utc"]
+        ):
+            continue
+        group["wake_send_failed_count"] = int(
+            group.get("wake_send_failed_count") or 0
+        ) + 1
+        group["latest_wake_send_failed_ts_utc"] = event_ts
+        group["latest_wake_send_failed_message"] = _bounded_message(
+            event.get("message")
+        )
+
+
+def _wake_send_failed_target(event: Mapping[str, Any]) -> str:
+    if _event_status(event) != "wake_send_failed":
+        return ""
+    match = WAKE_SEND_FAILED_TARGET_PATTERN.search(str(event.get("message") or ""))
+    if not match:
+        return ""
+    target = match.group("agent").strip().lower()
+    return target if AGENT_ID_PATTERN.fullmatch(target) else ""
 
 
 def _is_wake_delivery_activity(event: Mapping[str, Any]) -> bool:
@@ -1739,6 +1797,7 @@ def _wake_delivery_row(
     requester_list = (
         sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
     )
+    wake_send_failed_count = int(group.get("wake_send_failed_count") or 0)
     if classification == "self_pacing_or_silent_by_design":
         diagnosis = (
             "target agent has self-authored bridge activity after the latest "
@@ -1749,18 +1808,28 @@ def _wake_delivery_row(
             "self-liveness window; do not restart solely from repeated wakes"
         )
     else:
-        diagnosis = (
-            "wake file exists but target agent has not emitted bridge activity"
-            if wake_file["wake_file_present"]
-            else (
-                "no target activity after repeated wake_request; watcher may "
-                "be absent or target may not be polling"
+        if wake_send_failed_count:
+            diagnosis = (
+                "operator wake send failed during this unresolved wake window; "
+                "target session/tab routing may be unavailable"
             )
-        )
-        safe_next_action = (
-            "restart or verify the target agent bridge session watcher/poll loop; "
-            "do not treat additional wake_request events as delivery proof"
-        )
+            safe_next_action = (
+                "repair operator wake routing or TitleMap for the target session; "
+                "do not emit more wake_request events until keying succeeds"
+            )
+        else:
+            diagnosis = (
+                "wake file exists but target agent has not emitted bridge activity"
+                if wake_file["wake_file_present"]
+                else (
+                    "no target activity after repeated wake_request; watcher may "
+                    "be absent or target may not be polling"
+                )
+            )
+            safe_next_action = (
+                "restart or verify the target agent bridge session watcher/poll loop; "
+                "do not treat additional wake_request events as delivery proof"
+            )
     row = {
         "classification": classification,
         "target_agent": target,
@@ -1772,6 +1841,13 @@ def _wake_delivery_row(
         "latest_wake_age_minutes": _round_minutes(latest_wake_age_minutes),
         "wake_request_count": group["wake_request_count"],
         "last_status": group["last_status"],
+        "wake_send_failed_count": wake_send_failed_count,
+        "latest_wake_send_failed_ts_utc": str(
+            group.get("latest_wake_send_failed_ts_utc") or ""
+        ),
+        "latest_wake_send_failed_message": str(
+            group.get("latest_wake_send_failed_message") or ""
+        ),
         "wake_file_checked": bridge_root is not None,
         **wake_file,
         "diagnosis": diagnosis,

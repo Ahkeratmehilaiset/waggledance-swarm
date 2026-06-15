@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -43,6 +44,10 @@ DEFAULT_MAX_AGE_HOURS = 12.0
 DEFAULT_SELF_LIVENESS_WINDOW_MINUTES = 40.0
 DEFAULT_TAIL = 50000
 WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS = 2.0
+WAKE_SEND_FAILED_TARGET_PATTERN = re.compile(
+    r"\bKeying\s+['\"](?P<agent>[a-z0-9][a-z0-9_.-]*)['\"]\s+failed\b",
+    re.IGNORECASE,
+)
 
 
 class WakeDeliveryError(ValueError):
@@ -325,21 +330,25 @@ def _delivery_escalation(
     by_agent: Mapping[str, int],
 ) -> dict[str, Any]:
     stalled_present = bool(stalled)
+    has_send_failure = any(
+        int(row.get("wake_send_failed_count") or 0) for row in stalled
+    )
+    safe_next_action = ""
+    reason = ""
+    if stalled_present:
+        if has_send_failure:
+            safe_next_action = "repair_operator_wake_routing_or_title_map"
+            reason = "operator_wake_send_failed_for_unresolved_wake"
+        else:
+            safe_next_action = "restart_or_verify_target_agent_bridge_session_watcher"
+            reason = "wake_request_visible_but_no_later_target_bridge_activity"
     return {
         "required": stalled_present,
         "target_agents": sorted(by_agent),
         "do_not_emit_additional_wake_requests": stalled_present,
-        "safe_next_action": (
-            "restart_or_verify_target_agent_bridge_session_watcher"
-            if stalled_present
-            else ""
-        ),
+        "safe_next_action": safe_next_action,
         "operator_action_required": stalled_present,
-        "reason": (
-            "wake_request_visible_but_no_later_target_bridge_activity"
-            if stalled_present
-            else ""
-        ),
+        "reason": reason,
     }
 
 
@@ -355,6 +364,7 @@ def _unresolved_wake_groups(
         if event_agent and _is_target_delivery_activity(event):
             _clear_for_target_activity(groups, event_agent=event_agent, event_ts=event_ts)
         _clear_for_terminal_task(groups, event)
+        _record_wake_send_failure(groups, event)
 
         if _event_type(event) != "wake_request":
             continue
@@ -393,6 +403,40 @@ def _unresolved_wake_groups(
                 if isinstance(requesters, set):
                     requesters.add(event_agent)
     return groups
+
+
+def _record_wake_send_failure(
+    groups: dict[tuple[str, str], dict[str, Any]],
+    event: Mapping[str, Any],
+) -> None:
+    target = _wake_send_failed_target(event)
+    if not target:
+        return
+    event_ts = _event_ts(event)
+    for (group_target, _task_id_value), group in groups.items():
+        if group_target != target:
+            continue
+        if event_ts and str(group.get("first_ts_utc") or "") and event_ts < str(
+            group["first_ts_utc"]
+        ):
+            continue
+        group["wake_send_failed_count"] = int(
+            group.get("wake_send_failed_count") or 0
+        ) + 1
+        group["latest_wake_send_failed_ts_utc"] = event_ts
+        group["latest_wake_send_failed_message"] = _safe_message(
+            event.get("message")
+        )
+
+
+def _wake_send_failed_target(event: Mapping[str, Any]) -> str:
+    if _event_status(event) != "wake_send_failed":
+        return ""
+    match = WAKE_SEND_FAILED_TARGET_PATTERN.search(str(event.get("message") or ""))
+    if not match:
+        return ""
+    target = match.group("agent").strip().lower()
+    return target if AGENT_ID_PATTERN.fullmatch(target) else ""
 
 
 def _is_target_delivery_activity(event: Mapping[str, Any]) -> bool:
@@ -499,6 +543,7 @@ def _wake_row(
     )
     requesters = group.get("requesters")
     requester_list = sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
+    wake_send_failed_count = int(group.get("wake_send_failed_count") or 0)
     if classification == "self_pacing_or_silent_by_design":
         reason = (
             "target agent has self-authored bridge activity after the latest "
@@ -509,22 +554,39 @@ def _wake_row(
             "self-liveness window; do not restart solely from repeated wakes"
         )
     else:
-        if wake_file["wake_file_present"] and wake_file["wake_file_fresh_after_last_wake"]:
+        if wake_send_failed_count:
+            reason = (
+                "operator wake send failed during this unresolved wake window; "
+                "target session/tab routing may be unavailable"
+            )
+            safe_next_action = (
+                "repair operator wake routing or TitleMap for the target session; "
+                "do not emit more wake_request events until keying succeeds"
+            )
+        elif wake_file["wake_file_present"] and wake_file["wake_file_fresh_after_last_wake"]:
             reason = "wake file exists but target agent has not emitted bridge activity"
+            safe_next_action = (
+                "restart or verify the target agent bridge session watcher/poll loop; "
+                "do not treat additional wake_request events as delivery proof"
+            )
         elif wake_file["wake_file_present"]:
             reason = (
                 "wake file is stale relative to latest wake_request; watcher "
                 "may not be updating the target wake signal"
+            )
+            safe_next_action = (
+                "restart or verify the target agent bridge session watcher/poll loop; "
+                "do not treat additional wake_request events as delivery proof"
             )
         else:
             reason = (
                 "no target activity after repeated wake_request; watcher may "
                 "be absent or target may not be polling"
             )
-        safe_next_action = (
-            "restart or verify the target agent bridge session watcher/poll loop; "
-            "do not treat additional wake_request events as delivery proof"
-        )
+            safe_next_action = (
+                "restart or verify the target agent bridge session watcher/poll loop; "
+                "do not treat additional wake_request events as delivery proof"
+            )
     row = {
         "classification": classification,
         "target_agent": target,
@@ -537,6 +599,13 @@ def _wake_row(
         "wake_request_count": group["wake_request_count"],
         "last_status": group["last_status"],
         "last_message": group["last_message"],
+        "wake_send_failed_count": wake_send_failed_count,
+        "latest_wake_send_failed_ts_utc": str(
+            group.get("latest_wake_send_failed_ts_utc") or ""
+        ),
+        "latest_wake_send_failed_message": str(
+            group.get("latest_wake_send_failed_message") or ""
+        ),
         "wake_file_checked": bridge_root is not None,
         **wake_file,
         "diagnosis": reason,

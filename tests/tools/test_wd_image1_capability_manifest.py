@@ -2,14 +2,23 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 from tools.hex_shadow_subdivision_replay import (
     build_shadow_subdivision_replay_artifact,
 )
 from tools.wd_image1_capability_manifest import build_manifest
+from tools.wd_image1_capability_manifest import (
+    PER_QUERY_RECEIPT_COVERAGE_ENV,
+    _PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS,
+    _safe_per_query_receipt_coverage_aggregate,
+    build_per_query_receipt_coverage_aggregate,
+)
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
@@ -2364,3 +2373,80 @@ def test_cli_emits_json_and_strict_claims_fails_on_unsafe_claims() -> None:
         capture_output=True,
     )
     assert strict.returncode == 2
+
+
+# --- per-query receipt coverage aggregate (option A: default-off/on-demand) ---
+def test_per_query_coverage_flag_off_returns_none() -> None:
+    # Default OFF: no env flag -> no proof run -> None (manifest byte-unaffected).
+    prior = os.environ.pop(PER_QUERY_RECEIPT_COVERAGE_ENV, None)
+    try:
+        assert build_per_query_receipt_coverage_aggregate() is None
+    finally:
+        if prior is not None:
+            os.environ[PER_QUERY_RECEIPT_COVERAGE_ENV] = prior
+
+
+def test_per_query_coverage_force_real_aggregate_is_safe() -> None:
+    # On-demand (force) runs the REAL proof and aggregates only safe scalars.
+    aggregate = build_per_query_receipt_coverage_aggregate(force=True)
+    assert set(aggregate) == set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    assert aggregate["ok"] is True
+    assert aggregate["raw_payload_leak_check"] is True
+    ratio = aggregate["receipt_coverage_ratio"]
+    assert isinstance(ratio, float) and 0.0 <= ratio <= 1.0
+    # Forge 7: prove (do not trust the comment) that no private/raw content rode
+    # along into the aggregate that lands in the manifest.
+    blob = json.dumps(aggregate)
+    for marker in ("query_reports", "operator_note", "DO_NOT_LEAK", "context secret"):
+        assert marker not in blob
+
+
+def test_safe_aggregate_drops_unsafe_keys() -> None:
+    # Even if the proof report carries query_reports / raw context / markers, the
+    # aggregate copies ONLY the allowlisted scalar keys.
+    poisoned_report = {
+        "ok": True,
+        "receipt_coverage_ratio": 1.0,
+        "all_queries_receipt_bound": True,
+        "raw_payload_leak_check": True,
+        "authority_boundary": {
+            "default_sink_required": False,
+            "default_runtime_receipt_emission_changed": False,
+        },
+        "query_reports": [{"query": "secret query", "note": "operator_note"}],
+        "query_ids": ["q1"],
+        "report_path": "/tmp/x",
+    }
+    aggregate = _safe_per_query_receipt_coverage_aggregate(poisoned_report)
+    assert set(aggregate) == set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    assert "query_reports" not in aggregate
+    assert "query_ids" not in aggregate
+
+
+def test_safe_aggregate_raises_on_poisoned_scalar() -> None:
+    # Defense in depth: a marker smuggled into a scalar field fails closed.
+    poisoned = {
+        "ok": True,
+        "receipt_coverage_ratio": "1.0 operator_note DO_NOT_LEAK",
+        "all_queries_receipt_bound": True,
+        "raw_payload_leak_check": True,
+        "authority_boundary": {},
+    }
+    with pytest.raises(ValueError):
+        _safe_per_query_receipt_coverage_aggregate(poisoned)
+
+
+def test_flag_off_manifest_omits_coverage_key() -> None:
+    # Byte-unaffected invariant: with the flag off the magma proof has no
+    # per_query_receipt_coverage key at all.
+    prior = os.environ.pop(PER_QUERY_RECEIPT_COVERAGE_ENV, None)
+    try:
+        manifest = build_manifest()
+    finally:
+        if prior is not None:
+            os.environ[PER_QUERY_RECEIPT_COVERAGE_ENV] = prior
+    magma = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "magma_audit_log"
+    )
+    assert "per_query_receipt_coverage" not in magma["proof"]

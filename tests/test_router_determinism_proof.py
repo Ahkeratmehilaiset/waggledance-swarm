@@ -111,6 +111,15 @@ def test_raw_query_invariant_is_derived_fails_closed():
     # SHORT ALPHA token leak (#1267 gap): a 5-char name in decision_id is caught,
     # because the value-allowlist does not depend on token length.
     assert derive({**base, "decision_id": "alice"}) is False
+    # reason is matched against the EXACT closed set: a forged keyword_classifier
+    # suffix must NOT over-claim as known (the #1267 reason-suffix gap).
+    assert derive({**base, "reason": "keyword_classifier:alice"}) is False
+    assert derive({**base, "reason": "keyword_classifier:math"}) is True
+    assert derive({**base, "reason": "capsule_decision_fallback"}) is True
+    # emitted corpus id must be a safe identifier: a raw query (spaces) fails.
+    assert derive({**base, "id": "how much honey yield"}) is False
+    assert derive({**base, "id": "bee_qa_honey_yield"}) is True
+    assert derive({**base, "id": ""}) is True  # empty id allowed
 
 
 def test_empty_corpus_not_ok():

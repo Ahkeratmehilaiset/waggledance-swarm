@@ -86,14 +86,23 @@ _KNOWN_LAYERS = (
     "rule_constraints",
     "statistical",
 )
-# Reason values the router can emit: exact labels + the keyword_classifier:* and
-# capsule_decision* families.
-_KNOWN_REASON_EXACT = (
-    "capsule_decision_match",
-    "capsule_priority_fallback",
+# The EXACT closed set of reason values core/smart_router_v2 can emit. Matched
+# exactly (NOT by prefix): a prefix match on "keyword_classifier:" would let a
+# forged suffix (keyword_classifier:<raw query>) over-claim as known.
+_KNOWN_REASONS = frozenset({
     "hot_cache_hit",
-)
-_KNOWN_REASON_PREFIXES = ("capsule_decision", "keyword_classifier:")
+    "capsule_decision_match",
+    "capsule_decision_fallback",
+    "capsule_priority_fallback",
+    "keyword_classifier:math",
+    "keyword_classifier:seasonal",
+    "keyword_classifier:rule",
+    "keyword_classifier:stat",
+    "keyword_classifier:retrieval",
+})
+# Emitted corpus ids are identifiers, never free text: a safe-identifier pattern
+# rejects a raw query (which contains spaces/punctuation) smuggled into `id`.
+_SAFE_EMITTED_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 def _stable_decision(result: Any) -> dict[str, Any]:
@@ -124,10 +133,7 @@ def _allowed_decision_ids(capsule: Any) -> set[str]:
 
 
 def _reason_is_known(reason: Any) -> bool:
-    text = str(reason)
-    return text in _KNOWN_REASON_EXACT or any(
-        text.startswith(p) for p in _KNOWN_REASON_PREFIXES
-    )
+    return str(reason) in _KNOWN_REASONS
 
 
 def _derive_raw_query_not_emitted(
@@ -141,10 +147,16 @@ def _derive_raw_query_not_emitted(
 
     This is COMPLETE (no query token can occupy an allowlisted-value field) and
     false-positive-free: it does not depend on token length, so even a short alpha
-    query word (e.g. a name) injected into decision_id/reason is caught. Mirrors
-    the #1265 value-shape approach. Never hardcoded.
+    query word (e.g. a name) injected into id/decision_id/reason is caught. The
+    reason is matched against an EXACT closed set (no prefix match, so a forged
+    keyword_classifier:<raw> suffix is rejected) and the corpus id must be a safe
+    identifier (no spaces/free text). Mirrors the #1265 value-shape approach.
+    Never hardcoded.
     """
     for dec in decisions:
+        item_id = str(dec.get("id", ""))
+        if item_id and not _SAFE_EMITTED_ID_RE.match(item_id):
+            return False
         if dec.get("layer") not in allowed_layers:
             return False
         fallback = dec.get("fallback")

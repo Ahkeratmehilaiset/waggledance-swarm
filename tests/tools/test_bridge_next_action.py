@@ -302,6 +302,27 @@ def test_open_request_closure_scan_is_indexed(monkeypatch) -> None:
     assert answer_like_calls == len(events)
 
 
+def test_claim_unblocked_work_carries_active_progress_contract() -> None:
+    report = recommend_next_action(agent="codex", events=[], claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["do_not_wait"] is True
+    idle_progress = report["idle_progress"]
+    assert idle_progress["mode"] == "claim_or_assist"
+    assert idle_progress["do_not_wait"] is True
+    assert any(
+        "ready PR" in action for action in idle_progress["allowed_actions"]
+    )
+    assert any(
+        "scoped consensus" in action
+        for action in idle_progress["allowed_actions"]
+    )
+    assert any(
+        "do not ask the operator" in guardrail
+        for guardrail in idle_progress["guardrails"]
+    )
+
+
 def test_request_changes_status_remains_open_request() -> None:
     events = [
         {
@@ -1730,6 +1751,18 @@ def test_recommends_parallel_read_only_when_foreign_write_claim_exists(
     assert report["task_id"] == "bridge-review-or-scout"
     assert report["safe_mode"] == "read-only"
     assert report["foreign_write_claim_count"] == 1
+    assert report["do_not_wait"] is True
+    idle_progress = report["idle_progress"]
+    assert idle_progress["mode"] == "read_only_assist"
+    assert idle_progress["do_not_wait"] is True
+    assert any(
+        "read-only diagnostics" in action
+        for action in idle_progress["allowed_actions"]
+    )
+    assert any(
+        "active write scope" in guardrail
+        for guardrail in idle_progress["guardrails"]
+    )
 
 
 def test_ignores_expired_foreign_write_claim_when_recommending() -> None:
@@ -2656,6 +2689,8 @@ def test_cli_human_output_reports_stale_incoming(tmp_path: Path, capsys) -> None
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "action: claim_unblocked_work" in out
+    assert "do_not_wait: true" in out
+    assert "idle_progress: mode=claim_or_assist do_not_wait=true" in out
     assert "stale_incoming_count: 1" in out
     assert "stale_incoming_task_ids: old-task" in out
 

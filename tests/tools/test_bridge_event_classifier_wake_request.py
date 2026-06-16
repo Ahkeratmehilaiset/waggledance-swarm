@@ -185,6 +185,14 @@ def test_next_action_ages_out_old_operator_wake_request(tmp_path: Path) -> None:
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 1
+    assert report["do_not_wait"] is True
+    idle_progress = report["idle_progress"]
+    assert idle_progress["mode"] == "claim_or_assist"
+    assert idle_progress["do_not_wait"] is True
+    assert any(
+        "scoped consensus" in action
+        for action in idle_progress["allowed_actions"]
+    )
 
 
 def test_next_action_keeps_recent_wake_request_actionable(tmp_path: Path) -> None:

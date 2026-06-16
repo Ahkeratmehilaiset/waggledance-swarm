@@ -151,6 +151,19 @@ TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
 PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
+IDLE_PROGRESS_ALLOWED_ACTIONS = (
+    "claim next unclaimed work matching role/capabilities",
+    "review or test a ready PR that is missing this agent's gate signal",
+    "help a blocked peer with read-only diagnostics outside active write scopes",
+    "ask bridge peers for scoped consensus or ready tasks when it would unblock parallel progress",
+    "run a scoped bridge/CI/PR queue scout and publish findings only when actionable",
+)
+IDLE_PROGRESS_GUARDRAILS = (
+    "do not wait silently when action is claim_unblocked_work or parallel_read_only",
+    "do not ask the operator for generic next work",
+    "do not merge, self-approve, bypass CI/RCO/author-slot gates, or write in another agent's active write scope",
+    "if no concrete ready work exists, stop without bridge noise and check again later",
+)
 
 
 class BridgeNextActionError(ValueError):
@@ -660,12 +673,39 @@ def recommend_next_action(
     if foreign_write_claims:
         claim = foreign_write_claims[0]
         scope = ",".join(claim.write_scope)
-        return _report(
+        return _with_idle_progress(
+            _report(
+                agent=agent,
+                action="parallel_read_only",
+                task_id="bridge-review-or-scout",
+                safe_mode="read-only",
+                summary=(
+                    "foreign write claim active; do not wait - take read-only "
+                    f"review/scout outside scope: {scope}"
+                ),
+                events=events,
+                claims=active_claims,
+                stale_claims=stale_claims,
+                open_requests=open_requests,
+                open_request_event_count=len(open_request_events),
+                stale_open_requests=reported_stale_open_requests,
+                archived_stale_open_requests=archived_stale_open_requests,
+                foreign_write_claims=foreign_write_claims,
+                production_liveness=production_liveness,
+            ),
+            mode="read_only_assist",
+        )
+    return _with_idle_progress(
+        _report(
             agent=agent,
-            action="parallel_read_only",
-            task_id="bridge-review-or-scout",
-            safe_mode="read-only",
-            summary=f"foreign write claim active; take read-only work outside scope: {scope}",
+            action="claim_unblocked_work",
+            task_id="next-unclaimed-scout-or-implementation",
+            safe_mode="write-or-read-only",
+            summary=(
+                "no active claim or incoming blocker; do not wait - claim the "
+                "highest-value unblocked work, help a ready peer, or ask the "
+                "bridge for scoped consensus/tasks"
+            ),
             events=events,
             claims=active_claims,
             stale_claims=stale_claims,
@@ -675,22 +715,8 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
-        )
-    return _report(
-        agent=agent,
-        action="claim_unblocked_work",
-        task_id="next-unclaimed-scout-or-implementation",
-        safe_mode="write-or-read-only",
-        summary="no active claim or incoming blocker; claim the highest-value unblocked work",
-        events=events,
-        claims=active_claims,
-        stale_claims=stale_claims,
-        open_requests=open_requests,
-        open_request_event_count=len(open_request_events),
-        stale_open_requests=reported_stale_open_requests,
-        archived_stale_open_requests=archived_stale_open_requests,
-        foreign_write_claims=foreign_write_claims,
-        production_liveness=production_liveness,
+        ),
+        mode="claim_or_assist",
     )
 
 
@@ -2052,6 +2078,18 @@ def _report(
     return payload
 
 
+def _with_idle_progress(report: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    report["do_not_wait"] = True
+    report["idle_progress"] = {
+        "mode": mode,
+        "do_not_wait": True,
+        "allowed_actions": list(IDLE_PROGRESS_ALLOWED_ACTIONS),
+        "guardrails": list(IDLE_PROGRESS_GUARDRAILS),
+    }
+    _assert_no_private_markers(report)
+    return report
+
+
 def _assert_no_private_markers(value: object) -> None:
     text = json.dumps(value, sort_keys=True, default=str)
     if any(marker in text for marker in PRIVATE_MARKERS):
@@ -2077,6 +2115,22 @@ def _print_human(report: Mapping[str, Any]) -> None:
     print(f"action: {report.get('action', '')}")
     print(f"task_id: {report.get('task_id', '')}")
     print(f"safe_mode: {report.get('safe_mode', '')}")
+    if report.get("do_not_wait"):
+        print("do_not_wait: true")
+    idle_progress = report.get("idle_progress")
+    if isinstance(idle_progress, Mapping):
+        mode = str(idle_progress.get("mode") or "")
+        do_not_wait = bool(idle_progress.get("do_not_wait"))
+        print(
+            "idle_progress: "
+            f"mode={mode or 'unknown'} do_not_wait={str(do_not_wait).lower()}"
+        )
+        allowed = ", ".join(_string_list(idle_progress.get("allowed_actions")))
+        if allowed:
+            print(f"idle_progress_allowed_actions: {allowed}")
+        guardrails = ", ".join(_string_list(idle_progress.get("guardrails")))
+        if guardrails:
+            print(f"idle_progress_guardrails: {guardrails}")
     snapshot = report.get("claim_snapshot")
     if isinstance(snapshot, Mapping):
         own_count = len(snapshot.get("own", []))

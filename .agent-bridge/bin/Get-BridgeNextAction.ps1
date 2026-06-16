@@ -181,6 +181,20 @@ $kind = ''
 $taskId = ''
 $summary = ''
 $safeMode = 'read-only'
+$idleProgress = $null
+$idleProgressAllowedActions = @(
+    "claim next unclaimed work matching role/capabilities",
+    "review or test a ready PR that is missing this agent's gate signal",
+    "help a blocked peer with read-only diagnostics outside active write scopes",
+    "ask bridge peers for scoped consensus or ready tasks when it would unblock parallel progress",
+    "run a scoped bridge/CI/PR queue scout and publish findings only when actionable"
+)
+$idleProgressGuardrails = @(
+    "do not wait silently when action is claim_unblocked_work or parallel_read_only",
+    "do not ask the operator for generic next work",
+    "do not merge, self-approve, bypass CI/RCO/author-slot gates, or write in another agent's active write scope",
+    "if no concrete ready work exists, stop without bridge noise and check again later"
+)
 
 if ($ownClaims.Count -gt 0) {
     $kind = 'continue_claim'
@@ -201,13 +215,25 @@ if ($ownClaims.Count -gt 0) {
 } elseif ($foreignWriteClaims.Count -gt 0) {
     $kind = 'parallel_read_only'
     $taskId = 'bridge-review-or-scout'
-    $summary = "foreign write claim active; take read-only review/scout outside scope: $((@($foreignWriteClaims[0].write_scope)) -join ',')"
+    $summary = "foreign write claim active; do not wait - take read-only review/scout outside scope: $((@($foreignWriteClaims[0].write_scope)) -join ',')"
     $safeMode = 'read-only'
+    $idleProgress = [pscustomobject]@{
+        mode = 'read_only_assist'
+        do_not_wait = $true
+        allowed_actions = $idleProgressAllowedActions
+        guardrails = $idleProgressGuardrails
+    }
 } else {
     $kind = 'claim_unblocked_work'
     $taskId = 'next-unclaimed-scout-or-implementation'
-    $summary = 'no active claim or incoming blocker; claim the highest-value unblocked scout/review/implementation'
+    $summary = 'no active claim or incoming blocker; do not wait - claim the highest-value unblocked work, help a ready peer, or ask the bridge for scoped consensus/tasks'
     $safeMode = 'write-or-read-only'
+    $idleProgress = [pscustomobject]@{
+        mode = 'claim_or_assist'
+        do_not_wait = $true
+        allowed_actions = $idleProgressAllowedActions
+        guardrails = $idleProgressGuardrails
+    }
 }
 
 $result = [pscustomobject]@{
@@ -220,6 +246,10 @@ $result = [pscustomobject]@{
     open_incoming_count = $openRequests.Count
     stale_incoming_count = $staleRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
+}
+if ($idleProgress) {
+    $result | Add-Member -NotePropertyName do_not_wait -NotePropertyValue $true
+    $result | Add-Member -NotePropertyName idle_progress -NotePropertyValue $idleProgress
 }
 if ($suppressionReason) {
     $result | Add-Member -NotePropertyName suppression_reason -NotePropertyValue $suppressionReason

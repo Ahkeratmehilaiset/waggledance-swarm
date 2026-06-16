@@ -141,6 +141,28 @@ def test_forge_nondeterministic_fails_closed(monkeypatch):
     assert "non_deterministic_receipt_evidence" in report["blockers"]
 
 
+@pytest.mark.parametrize("drift_field,drift_value", [
+    ("runtime_authority_granted", True),
+    ("external_writes_applied", True),
+    ("default_sink_required", True),
+    ("temp_artifacts_removed", False),
+    ("receipt_scope", "production_default_sink"),
+])
+def test_forge_run2_drift_on_any_gated_field_fails_closed(monkeypatch, drift_field, drift_value):
+    # run1 clean, run2 flips a gated field: because every gated field is in the
+    # stable replay set, the determinism check must catch the run2 drift (so a
+    # second-run authority/scope leak can't slip past a run1-only gate).
+    seq = [_good_inner(), {**_good_inner(), drift_field: drift_value}]
+
+    def _drift():
+        return seq.pop(0) if seq else _good_inner()
+
+    monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", _drift)
+    report = mod.build_solver_trace_magma_receipt_standalone_proof()
+    assert report["ok"] is False, drift_field
+    assert "non_deterministic_receipt_evidence" in report["blockers"], drift_field
+
+
 def test_main_json_exit0():
     assert mod.main(["--json"]) == 0
 

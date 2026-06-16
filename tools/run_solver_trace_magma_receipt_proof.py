@@ -60,6 +60,7 @@ _STABLE_FIELDS = (
     "solver_call_trace_receipt_bound",
     "solver_call_trace_privacy_safe",
     "raw_payload_leak_check",
+    "runtime_authority_granted",
     "external_writes_applied",
     "default_sink_required",
     "temp_artifacts_removed",

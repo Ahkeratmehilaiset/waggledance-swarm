@@ -115,6 +115,23 @@ def build_real_loop_proof(*, now_utc: datetime | None = None) -> dict[str, Any]:
         deterministic and chain_complete and dispatch_correct and authority_held_closed
     )
 
+    # Single source of truth: derive every authority/invariant flag from the
+    # observed authority_boundary (never hardcode "safe"). If the chain ever
+    # leaked authority, these flags reflect it AND ok becomes False below, so a
+    # downstream counter that reads manifest_contribution standalone still sees
+    # the leak. claim_safe is policy-false: a local proof is never production
+    # authority, so this proof can never upgrade the literal claim.
+    runtime_authority_granted = bool(authority.get("runtime_authority_granted"))
+    external_writes_applied = bool(authority.get("external_writes_applied"))
+    scheduler_enqueue = bool(authority.get("production_scheduler_enqueue"))
+    production_flip = bool(
+        authority.get("production_control_plane_touched")
+        or authority.get("operator_gate_bypassed")
+        or authority.get("gate_skip_authority")
+    )
+    provider_calls = 1 if authority.get("provider_jobs_created") else 0
+    claim_safe = False
+
     blockers: list[str] = []
     if not deterministic:
         blockers.append("non_deterministic_replay")
@@ -156,12 +173,12 @@ def build_real_loop_proof(*, now_utc: datetime | None = None) -> dict[str, Any]:
         "manifest_contribution": {
             "capability_id": CAPABILITY_ID,
             "evidence_present": evidence_present,
-            "runtime_authority_granted": False,
-            "external_writes_applied": False,
-            "scheduler_enqueue": False,
-            "production_flip": False,
-            "provider_calls": 0,
-            "claim_safe": False,
+            "runtime_authority_granted": runtime_authority_granted,
+            "external_writes_applied": external_writes_applied,
+            "scheduler_enqueue": scheduler_enqueue,
+            "production_flip": production_flip,
+            "provider_calls": provider_calls,
+            "claim_safe": claim_safe,
             "claim_safe_rationale": (
                 "local deterministic offline proof is capability evidence, not "
                 "production runtime authority; the literal claim stays unsafe "
@@ -169,14 +186,16 @@ def build_real_loop_proof(*, now_utc: datetime | None = None) -> dict[str, Any]:
             ),
         },
         "invariants": {
-            "no_cloud_api_calls_this_session": True,
+            "no_cloud_api_calls_this_session": provider_calls == 0,
+            # The proof performs no network I/O; no observed-authority signal
+            # exists for pull/download, so this is a structural property.
             "no_pull_or_download_this_session": True,
-            "deterministic_offline": True,
-            "no_external_writes": True,
-            "no_runtime_authority_flip": True,
-            "no_scheduler_enqueue": True,
-            "no_production_flip": True,
-            "no_claim_safe_flip": True,
+            "deterministic_offline": deterministic,
+            "no_external_writes": not external_writes_applied,
+            "no_runtime_authority_flip": not runtime_authority_granted,
+            "no_scheduler_enqueue": not scheduler_enqueue,
+            "no_production_flip": not production_flip,
+            "no_claim_safe_flip": not claim_safe,
             "forbidden_vocabulary_excluded": list(FORBIDDEN_VOCABULARY),
         },
     }

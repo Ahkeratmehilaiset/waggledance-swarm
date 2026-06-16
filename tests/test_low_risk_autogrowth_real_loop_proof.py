@@ -11,6 +11,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.spec_from_file_location(
     "run_low_risk_autogrowth_real_loop_proof",
@@ -87,6 +89,71 @@ def test_no_external_write_without_out_dir(tmp_path, monkeypatch):
     rc = mod.main([])
     assert rc == 0
     assert list(tmp_path.iterdir()) == []
+
+
+def _fake_dry_run_report(authority_overrides: dict | None = None) -> dict:
+    authority = {
+        "external_writes_applied": False,
+        "production_control_plane_touched": False,
+        "production_scheduler_enqueue": False,
+        "provider_jobs_created": False,
+        "builder_jobs_created": False,
+        "gate_skip_authority": False,
+        "operator_gate_bypassed": False,
+        "runtime_authority_granted": False,
+        "fast_track_priority": False,
+    }
+    if authority_overrides:
+        authority.update(authority_overrides)
+    return {
+        "ok": True,
+        "chain": {
+            "detector_signals_recorded": 1,
+            "intents_created": 1,
+            "scheduler_outcome": "auto_promoted",
+            "auto_promoted_solver_count": 1,
+        },
+        "dispatch": {"matched": True, "output": 298.15, "expected_output": 298.15},
+        "authority_boundary": authority,
+        "no_overclaim_guardrails": {"uses_existing_low_risk_allowlist": True},
+    }
+
+
+@pytest.mark.parametrize("leak_key,contrib_key", [
+    ("runtime_authority_granted", "runtime_authority_granted"),
+    ("external_writes_applied", "external_writes_applied"),
+    ("production_scheduler_enqueue", "scheduler_enqueue"),
+    ("provider_jobs_created", "provider_calls"),
+])
+def test_authority_leak_surfaces_and_fails_closed(monkeypatch, leak_key, contrib_key):
+    # Regression for the rco-2 hardening: manifest_contribution flags are DERIVED
+    # from the observed authority_boundary, so an injected leak (a) surfaces in
+    # the counter feed (never trusts a hardcoded "safe"), (b) fails the proof
+    # closed (ok=False), and (c) never upgrades the literal claim.
+    monkeypatch.setattr(
+        mod, "build_low_risk_autogrowth_chain_dry_run",
+        lambda **kw: _fake_dry_run_report({leak_key: True}),
+    )
+    report = mod.build_real_loop_proof()
+    contrib_val = report["manifest_contribution"][contrib_key]
+    assert contrib_val not in (False, 0)  # leak reflected (True or provider_calls=1)
+    assert report["ok"] is False
+    assert "authority_flag_open" in report["blockers"]
+    assert report["evidence_vs_authority"]["evidence_present"] is False
+    assert report["manifest_contribution"]["claim_safe"] is False
+
+
+def test_clean_run_derives_all_flags_safe(monkeypatch):
+    monkeypatch.setattr(
+        mod, "build_low_risk_autogrowth_chain_dry_run",
+        lambda **kw: _fake_dry_run_report(),
+    )
+    report = mod.build_real_loop_proof()
+    assert report["ok"] is True
+    mc = report["manifest_contribution"]
+    assert mc["runtime_authority_granted"] is False
+    assert mc["provider_calls"] == 0
+    assert report["invariants"]["no_runtime_authority_flip"] is True
 
 
 def test_out_dir_writes_only_when_requested(tmp_path):

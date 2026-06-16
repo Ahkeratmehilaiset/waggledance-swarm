@@ -167,9 +167,71 @@ def scaling_track(queries: list[str], ks: list[int], repeats: int) -> list[dict[
     return out
 
 
+class _StubHotCache:
+    """Deterministic offline stand-in for the route()-relevant HotCache surface.
+
+    route() step 1 only needs ``.get(query)`` to return non-None on a hit, which
+    short-circuits to the cached layer. The real ``core.fast_memory.HotCache``
+    adds Voikko-normalized Finnish key matching (a heavy, host-dependent
+    dependency) — out of scope for an offline latency measurement. Here a hit is
+    an exact-query match against a pre-seeded set, so the measurement isolates
+    the *route()-level short-circuit benefit*, not the cache's key-matching.
+    """
+
+    def __init__(self, seeded: list[str]):
+        self._seeded = set(seeded)
+
+    def get(self, query: str):
+        return {"answer": "cached", "score": 1.0} if query in self._seeded else None
+
+
+def cache_effectiveness(
+    profile: str, queries: list[str], repeats: int, fractions: list[float],
+) -> list[dict[str, Any]]:
+    """Measure the route() HotCache short-circuit benefit vs seeded hit-rate.
+
+    For each target fraction f, seed a stub cache with the first round(f*N)
+    corpus queries, run route() over the whole corpus x repeats, and report the
+    observed hit-rate plus hit/miss/overall p50 latency. f=0 is the no-cache
+    baseline.
+    """
+    capsule = DomainCapsule.load(profile)
+    n = len(queries)
+    rows: list[dict[str, Any]] = []
+    for f in fractions:
+        seed_count = int(round(f * n))
+        cache = _StubHotCache(queries[:seed_count]) if seed_count > 0 else None
+        router = SmartRouterV2(capsule, hot_cache=cache)
+        hit_ms: list[float] = []
+        miss_ms: list[float] = []
+        all_ms: list[float] = []
+        hits = 0
+        for _ in range(repeats):
+            for q in queries:
+                t0 = time.perf_counter()
+                res = router.route(q)
+                dt = (time.perf_counter() - t0) * 1000.0
+                all_ms.append(dt)
+                if res.reason == "hot_cache_hit":
+                    hits += 1
+                    hit_ms.append(dt)
+                else:
+                    miss_ms.append(dt)
+        total = max(repeats * n, 1)
+        rows.append({
+            "seeded_fraction": round(f, 3),
+            "observed_hit_rate": round(hits / total, 4),
+            "hit_p50_ms": round(_percentile(hit_ms, 0.50), 5) if hit_ms else None,
+            "miss_p50_ms": round(_percentile(miss_ms, 0.50), 5) if miss_ms else None,
+            "overall_p50_ms": round(_percentile(all_ms, 0.50), 5),
+        })
+    return rows
+
+
 def build_envelope(
     *, profile: str, repeats: int, ks: list[int],
     representative: dict[str, Any], scaling: list[dict[str, Any]],
+    cache: list[dict[str, Any]], fractions: list[float],
     corpus_size: int,
 ) -> dict[str, Any]:
     return {
@@ -183,9 +245,11 @@ def build_envelope(
             "corpus_size": corpus_size,
             "repeats": repeats,
             "scale_k": ks,
+            "cache_fractions": fractions,
         },
         "representative": representative,
         "scaling": scaling,
+        "cache_effectiveness": cache,
         "invariants": {
             "no_cloud_api_calls_this_session": True,
             "no_pull_or_download_this_session": True,
@@ -211,6 +275,13 @@ def render_summary(env: dict[str, Any]) -> str:
         lines.append(
             f"    K={row['k_decisions']:>5}  p50={row['measured_p50_ms']}ms  p95={row['measured_p95_ms']}ms  mean={row['measured_mean_ms']}ms"
         )
+    if env.get("cache_effectiveness"):
+        lines.append("  HotCache effectiveness (route() short-circuit, stub cache):")
+        for row in env["cache_effectiveness"]:
+            lines.append(
+                f"    seeded={row['seeded_fraction']:<5} hit_rate={row['observed_hit_rate']:<6} "
+                f"hit_p50={row['hit_p50_ms']}ms miss_p50={row['miss_p50_ms']}ms overall_p50={row['overall_p50_ms']}ms"
+            )
     return "\n".join(lines)
 
 
@@ -231,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="capsule decision-set sizes K for the scaling track")
     ap.add_argument("--scale-repeats", type=int, default=20,
                     help="repeats of the corpus per K in the scaling track")
+    ap.add_argument("--cache-fractions", type=float, nargs="*",
+                    default=[0.0, 0.25, 0.5, 1.0],
+                    help="seeded HotCache hit fractions for the cache-effectiveness track")
+    ap.add_argument("--cache-repeats", type=int, default=20,
+                    help="repeats of the corpus per fraction in the cache track")
     ap.add_argument("--corpus", default="configs/benchmarks.yaml")
     ap.add_argument("--out-dir", default=None,
                     help="if set, write the JSON envelope to <out-dir>/routing_hotpath_microbench.json")
@@ -244,10 +320,15 @@ def main(argv: list[str] | None = None) -> int:
     router = SmartRouterV2(capsule)
     representative = _bench(router, queries, args.repeats)
     scaling = scaling_track(queries, list(args.scale), args.scale_repeats)
+    cache = cache_effectiveness(
+        args.profile, queries, args.cache_repeats, list(args.cache_fractions),
+    )
 
     env = build_envelope(
         profile=args.profile, repeats=args.repeats, ks=list(args.scale),
-        representative=representative, scaling=scaling, corpus_size=len(queries),
+        representative=representative, scaling=scaling,
+        cache=cache, fractions=list(args.cache_fractions),
+        corpus_size=len(queries),
     )
 
     summary = render_summary(env)

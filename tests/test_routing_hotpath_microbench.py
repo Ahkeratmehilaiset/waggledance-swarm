@@ -53,13 +53,36 @@ def test_scaling_track_structure():
             assert r[key] >= 0.0
 
 
+def test_stub_hotcache_hit_and_miss():
+    cache = mod._StubHotCache(["alpha", "beta"])
+    assert cache.get("alpha") is not None
+    assert cache.get("beta") is not None
+    assert cache.get("gamma") is None
+
+
+def test_cache_effectiveness_structure_and_hitrate():
+    # apiary is an in-repo profile; deterministic and offline.
+    rows = mod.cache_effectiveness("apiary", QUERIES, repeats=2, fractions=[0.0, 1.0])
+    assert [r["seeded_fraction"] for r in rows] == [0.0, 1.0]
+    # 0% seeded -> no hits; 100% seeded -> every query hits.
+    assert rows[0]["observed_hit_rate"] == 0.0
+    assert rows[1]["observed_hit_rate"] == 1.0
+    # a hit short-circuits, so its p50 is <= the miss p50 of the no-cache row.
+    assert rows[1]["hit_p50_ms"] is not None
+    assert rows[0]["miss_p50_ms"] is not None
+    assert rows[1]["hit_p50_ms"] <= rows[0]["miss_p50_ms"]
+
+
 def test_envelope_invariants_and_clean_summary():
     rep = mod._bench(SmartRouterV2(DomainCapsule(mod._synth_capsule(3))), QUERIES, 1)
     scaling = mod.scaling_track(QUERIES, [2], 1)
+    cache = mod.cache_effectiveness("apiary", QUERIES, repeats=1, fractions=[0.0, 1.0])
     env = mod.build_envelope(
         profile="synthetic_scaling", repeats=1, ks=[2],
-        representative=rep, scaling=scaling, corpus_size=len(QUERIES),
+        representative=rep, scaling=scaling,
+        cache=cache, fractions=[0.0, 1.0], corpus_size=len(QUERIES),
     )
+    assert env["cache_effectiveness"] == cache
     inv = env["invariants"]
     assert inv["no_cloud_api_calls_this_session"] is True
     assert inv["deterministic_offline"] is True

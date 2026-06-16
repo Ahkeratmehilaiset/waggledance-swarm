@@ -53,6 +53,26 @@ seasonal 50). **Route distribution:** `model_based` 700, `retrieval` 250,
 p50 rises ~5× for each 10× increase in K → the worst-case `match_decision` cost
 is **approximately linear, O(K)**.
 
+## HotCache effectiveness track (C3) — route() short-circuit vs hit-rate
+
+`route()` step 1 short-circuits on a `HotCache` hit. This track measures that
+benefit with a **deterministic stub cache** (exact-query hits on a seeded
+fraction of the corpus). The stub isolates the route()-level short-circuit; the
+real `core.fast_memory.HotCache` adds Voikko-normalized key matching (a
+host-dependent dependency) which is out of scope for an offline latency
+measurement.
+
+| seeded fraction | observed hit-rate | hit p50 (ms) | miss p50 (ms) | overall p50 (ms) |
+|---:|---:|---:|---:|---:|
+| 0.00 | 0.00 | — | 0.206 | 0.206 |
+| 0.25 | 0.27 | 0.003 | 0.200 | 0.180 |
+| 0.50 | 0.50 | 0.003 | 0.197 | 0.080 |
+| 1.00 | 1.00 | 0.003 | — | 0.003 |
+
+A cache hit resolves in ~0.003 ms vs a ~0.20 ms full route — roughly **65–80×
+faster per hit** — and the overall p50 falls in step with the hit-rate. The
+step-1 check adds negligible overhead on a miss.
+
 ## Findings (validating the candidates in the findings report)
 
 * **C1 — routing is not the e2e bottleneck. CONFIRMED.** Representative routing
@@ -68,6 +88,15 @@ is **approximately linear, O(K)**.
   linear scan with a keyword→decision inverted index (or first-token bucket) to
   cut the per-query cost from O(K) toward O(matched). Until then it is not worth
   the change — current production profiles are far smaller.
+* **C3 — HotCache value scales with query repetition. CONFIRMED.** A hit
+  short-circuits to ~0.003 ms (vs ~0.20 ms full route, ~65–80× faster), and the
+  overall p50 tracks the hit-rate (0.206 ms at 0 % → 0.003 ms at 100 %). The
+  step-1 check is near-free on a miss. **Implication:** HotCache pays off in
+  proportion to how repetitive the live query stream is; it is worth enabling
+  for workloads with real query repetition and costs almost nothing when hits
+  are rare. Since routing is already a small share of e2e (C1), this matters
+  most as a way to skip the *whole* downstream path on a cached answer, not to
+  shave routing itself.
 * **Cold start is negligible.** cold 0.321 ms vs warm p50 0.215 ms — no
   meaningful first-call penalty; pre-compiled patterns already do their job.
 

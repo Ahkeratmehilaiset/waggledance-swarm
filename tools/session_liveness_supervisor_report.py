@@ -70,8 +70,15 @@ TERMINAL_STATUSES = {
     "handoff",
     "blocked",
     "merged",
+    "merged_observed",
     "merged_with_magma_receipt",
 }
+SAME_TASK_RECEIPT_STATUSES = {
+    "autonomous_merge_receipt",
+    "merged_observed",
+    "merged_with_magma_receipt",
+}
+SAME_TASK_RECEIPT_EVENT_TYPES = {"decision", "done", "handoff", "release"}
 
 
 class SessionLivenessSupervisorError(ValueError):
@@ -639,6 +646,12 @@ def _active_claims_by_agent(
                 "write_scope": _write_scope(event),
             }
             continue
+        if _is_same_task_terminal_receipt(event_type=event_type, status=status):
+            for active_key in list(active):
+                _active_agent, active_task_id = active_key
+                if active_task_id == task_id:
+                    del active[active_key]
+            continue
         if key in active and (
             event_type in TERMINAL_EVENT_TYPES or status in TERMINAL_STATUSES
         ):
@@ -655,6 +668,13 @@ def _active_claims_by_agent(
     for claims in by_agent.values():
         claims.sort(key=lambda claim: str(claim["claim_ts_utc"]))
     return by_agent
+
+
+def _is_same_task_terminal_receipt(*, event_type: str, status: str) -> bool:
+    return (
+        event_type in SAME_TASK_RECEIPT_EVENT_TYPES
+        and status in SAME_TASK_RECEIPT_STATUSES
+    )
 
 
 def _claim_file_counts(

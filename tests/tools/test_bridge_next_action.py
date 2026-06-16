@@ -954,6 +954,81 @@ def test_done_postmerge_validated_closes_incoming_handoff() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_autonomous_merge_receipt_closes_same_task_incoming_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-16T00:21:54Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1,driver,claude-rco-2,operator",
+            "type": "wake_request",
+            "task_id": "codex-lead-1/wake-delivery-wall-clock-now-20260616",
+            "status": "lead_build_consensus_required_for_pr1238",
+            "message": (
+                "PR #1238 is CI green and needs lead build consensus before merge."
+            ),
+            "payload": {"pr": 1238, "head": "4" * 40},
+        },
+        {
+            "ts_utc": "2026-06-16T00:22:05Z",
+            "agent": "claude-rco-1",
+            "to": "codex-lead-1,codex-tools-1,operator",
+            "type": "decision",
+            "task_id": "codex-lead-1/wake-delivery-wall-clock-now-20260616",
+            "status": "autonomous_merge_receipt",
+            "message": (
+                "BridgeMergeDriver merged PR#1238 at head 480a283c with "
+                "--match-head-commit enforced."
+            ),
+            "payload": {},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-16T00:23:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
+def test_autonomous_merge_receipt_does_not_close_unrelated_task_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-16T00:21:54Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "still-open-task",
+            "status": "build_consensus_required",
+            "message": "needs lead build consensus before merge",
+        },
+        {
+            "ts_utc": "2026-06-16T00:22:05Z",
+            "agent": "claude-rco-1",
+            "to": "codex-lead-1,codex-tools-1,operator",
+            "type": "decision",
+            "task_id": "already-merged-task",
+            "status": "autonomous_merge_receipt",
+            "message": "BridgeMergeDriver merged a different PR.",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-16T00:23:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "still-open-task"
+    assert report["open_incoming_count"] == 1
+
+
 def test_done_verified_closes_incoming_request() -> None:
     events = [
         {

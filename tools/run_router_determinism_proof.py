@@ -77,27 +77,91 @@ def load_corpus(path: Path) -> list[dict[str, Any]]:
     return list(data.get("queries", []))
 
 
+# Router layer enum (core/smart_router_v2) - the only single-word emitted values
+# that could legitimately coincide with a query token, so they anchor the safe
+# vocabulary that the token-level leak scan must exclude to avoid false positives.
+_KNOWN_LAYERS = (
+    "model_based",
+    "retrieval",
+    "llm_reasoning",
+    "rule_constraints",
+    "statistical",
+)
+# Reason-label / classifier-class vocabulary the router can emit.
+_KNOWN_REASON_VOCAB = (
+    "capsule_decision_match",
+    "capsule_priority_fallback",
+    "keyword_classifier",
+    "math",
+    "seasonal",
+    "rule",
+    "stat",
+)
+# Minimum token length scanned for raw-query leakage. Short common words (the,
+# hive, ...) are skipped to avoid false positives; injected sentinels are long.
+_MIN_LEAK_TOKEN_LEN = 6
+
+
+def _tokenize(text: str) -> set[str]:
+    return {t.lower() for t in re.split(r"[^A-Za-z0-9]+", str(text)) if t}
+
+
 def _stable_decision(result: Any) -> dict[str, Any]:
     """Stable semantic view of a RouteResult (no volatile/raw fields)."""
     payload = result.to_dict()
     return {field: payload.get(field) for field in STABLE_DECISION_FIELDS}
 
 
+def _safe_vocab(capsule: Any) -> set[str]:
+    """Trusted terms that may legitimately appear in emitted decision fields.
+
+    Union of the router layer enum, reason/classifier vocab, and every capsule
+    decision id / declared keyword (and their subword tokens). A raw-query token
+    that is NOT in this set and shows up in the emitted body is a leak.
+    """
+    vocab: set[str] = set(_KNOWN_LAYERS) | set(_KNOWN_REASON_VOCAB)
+    vocab.add(str(getattr(capsule, "default_fallback", "") or "").lower())
+    for dec in (getattr(capsule, "key_decisions", None) or []):
+        dec_id = str(dec.get("id") or "")
+        if dec_id:
+            vocab.add(dec_id.lower())
+            vocab |= _tokenize(dec_id)
+        for kw in (dec.get("keywords") or []):
+            vocab.add(str(kw).lower())
+            vocab |= _tokenize(kw)
+    return {v for v in vocab if v}
+
+
 def _derive_raw_query_not_emitted(
     decisions: list[dict[str, Any]],
     nondeterministic: list[dict[str, Any]],
     raw_queries: list[str],
+    safe_vocab: set[str] | None = None,
 ) -> bool:
     """Re-scan the emitted data and decide the privacy invariant from data.
 
-    Fail-closed: False if any raw query string appears anywhere in the serialized
-    emitted decisions/leads. Never hardcoded.
+    Fail-closed against BOTH a full raw query AND any non-trivial raw-query TOKEN
+    (len >= _MIN_LEAK_TOKEN_LEN) that is not part of the trusted safe vocabulary -
+    so a single query token injected into a stable emitted field (e.g. a forged
+    decision_id/reason) is caught, not just a whole-query leak. Never hardcoded.
     """
+    safe = {s.lower() for s in (safe_vocab or set())}
     scan_body = json.dumps(
         {"routing_decisions": decisions, "nondeterministic_leads": nondeterministic},
         ensure_ascii=False,
-    )
-    return not any(q and q in scan_body for q in raw_queries)
+    ).lower()
+    # Whole-query leak.
+    if any(q and q.lower() in scan_body for q in raw_queries):
+        return False
+    # Token-level leak: any non-trivial, non-vocab query token present (word-
+    # boundary, so underscored capsule ids like "varroa_treatment" don't trip).
+    for q in raw_queries:
+        for tok in _tokenize(q):
+            if len(tok) < _MIN_LEAK_TOKEN_LEN or tok in safe:
+                continue
+            if re.search(r"\b" + re.escape(tok) + r"\b", scan_body):
+                return False
+    return True
 
 
 def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
@@ -143,11 +207,25 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     # routed query must have matched across the two runs.
     all_deterministic = total > 0 and deterministic_count == total
 
-    # DERIVE the privacy invariant (never hardcode): no raw query string may
+    # DERIVE the privacy invariant (never hardcode): no full raw query AND no
+    # non-trivial raw-query token (outside the trusted capsule/router vocab) may
     # appear anywhere in the serialized emitted data. Fail-closed.
     raw_query_not_emitted = _derive_raw_query_not_emitted(
-        decisions, nondeterministic, raw_queries
+        decisions, nondeterministic, raw_queries, _safe_vocab(capsule)
     )
+
+    # DERIVE the vocabulary-clean invariant by SCANNING the emitted content (not
+    # by listing the forbidden terms in the report, which would itself make the
+    # JSON contain them). Fail-closed if any forbidden term is present.
+    content_blob = json.dumps(
+        {
+            "routing_decisions": decisions,
+            "nondeterministic_leads": nondeterministic,
+            "profile": profile,
+        },
+        ensure_ascii=False,
+    )
+    forbidden_vocabulary_clean = not _vocabulary_hits(content_blob)
 
     blockers: list[str] = []
     if total == 0:
@@ -156,6 +234,8 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
         blockers.append("nondeterministic_routing")
     if not raw_query_not_emitted:
         blockers.append("raw_query_emitted")
+    if not forbidden_vocabulary_clean:
+        blockers.append("forbidden_vocabulary_emitted")
 
     return {
         "report_version": REPORT_VERSION,
@@ -178,7 +258,7 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
             "raw_query_not_emitted": raw_query_not_emitted,
             "volatile_timing_excluded": True,
             "no_superiority_claim": True,
-            "forbidden_vocabulary_excluded": list(FORBIDDEN_VOCABULARY),
+            "forbidden_vocabulary_clean": forbidden_vocabulary_clean,
         },
     }
 
@@ -199,13 +279,17 @@ def render_summary(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def assert_vocabulary_clean(text: str) -> None:
-    hit = [
+def _vocabulary_hits(text: str) -> list[str]:
+    return [
         p for p in FORBIDDEN_VOCABULARY
         if re.search(r"\b" + re.escape(p) + r"\b", text, re.IGNORECASE)
     ]
+
+
+def assert_vocabulary_clean(text: str) -> None:
+    hit = _vocabulary_hits(text)
     if hit:
-        raise SystemExit(f"forbidden vocabulary in rendered summary: {hit}")
+        raise SystemExit(f"forbidden vocabulary in rendered text: {hit}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -225,8 +309,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     summary = render_summary(report)
     assert_vocabulary_clean(summary)
+    json_report = json.dumps(report, indent=2, sort_keys=True)
+    # The JSON report no longer lists the forbidden terms, so it must itself be
+    # vocabulary-clean (not just the human summary).
+    assert_vocabulary_clean(json_report)
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        print(json_report)
     else:
         print(summary)
 

@@ -98,6 +98,16 @@ def test_raw_query_invariant_is_derived_fails_closed():
     assert mod._derive_raw_query_not_emitted(
         clean, [], ["secret query text here"]
     ) is True
+    # Token-level: ONE non-vocab token of a multi-token query in a stable field.
+    token_leak = [{"id": "x", "reason": "ZQXSENTINELTOKEN"}]
+    assert mod._derive_raw_query_not_emitted(
+        token_leak, [], ["alpha ZQXSENTINELTOKEN omega"], set()
+    ) is False
+    # Short tokens (< min length) are not treated as leaks (avoids noise).
+    short = [{"id": "x", "reason": "capsule_decision_match"}]
+    assert mod._derive_raw_query_not_emitted(
+        short, [], ["a bb match"], set()
+    ) is True
 
 
 def test_empty_corpus_not_ok():
@@ -117,11 +127,48 @@ def test_invariants_and_clean_summary():
     r = mod.diagnose("apiary", SAMPLE)
     inv = r["invariants"]
     for flag in ("deterministic_offline", "raw_query_not_emitted",
-                 "volatile_timing_excluded", "no_superiority_claim"):
+                 "volatile_timing_excluded", "no_superiority_claim",
+                 "forbidden_vocabulary_clean"):
         assert inv[flag] is True
-    assert list(inv["forbidden_vocabulary_excluded"]) == list(mod.FORBIDDEN_VOCABULARY)
-    summary = mod.render_summary(r)
-    mod.assert_vocabulary_clean(summary)
+    # The JSON report no longer lists the forbidden terms, so the report itself
+    # (not just the human summary) must be vocabulary-clean.
+    assert "forbidden_vocabulary_excluded" not in inv
+    mod.assert_vocabulary_clean(mod.render_summary(r))
+    mod.assert_vocabulary_clean(json.dumps(r))
+
+
+def test_token_injection_into_stable_field_fails_closed(monkeypatch):
+    # Reviewer forge: a single raw-query TOKEN injected into a stable emitted
+    # field (here `reason`) must flip the DERIVED privacy invariant False - not
+    # just a whole-query leak. Constant return -> deterministic, isolating the
+    # privacy blocker.
+    def _leak(result):  # noqa: ANN001
+        return {
+            "layer": "model_based", "reason": "SECRETTOKEN42",
+            "decision_id": "honey_yield", "fallback": "llm_reasoning",
+            "model": "honey_yield", "confidence": 0.5, "rules": [],
+        }
+
+    monkeypatch.setattr(mod, "_stable_decision", _leak)
+    r = mod.diagnose("apiary", [{"id": "x", "query": "alpha SECRETTOKEN42 omega"}])
+    assert r["all_deterministic"] is True  # constant view -> deterministic
+    assert r["invariants"]["raw_query_not_emitted"] is False
+    assert "raw_query_emitted" in r["blockers"]
+    assert r["ok"] is False
+
+
+def test_safe_vocab_excludes_capsule_and_layer_terms():
+    # Capsule keywords / decision ids / router layer names must NOT be treated as
+    # leaks even when they appear both in the query and the emitted fields.
+    capsule = mod.DomainCapsule.load("apiary")
+    vocab = mod._safe_vocab(capsule)
+    for term in ("retrieval", "statistical", "model_based", "honey", "varroa"):
+        assert term in vocab
+    clean = [{"id": "x", "layer": "retrieval", "reason": "capsule_decision_match",
+              "decision_id": "varroa_treatment", "fallback": "llm_reasoning"}]
+    assert mod._derive_raw_query_not_emitted(
+        clean, [], ["use retrieval for varroa please"], vocab
+    ) is True
 
 
 def test_main_json_exit0():

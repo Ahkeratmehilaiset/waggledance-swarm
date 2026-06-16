@@ -148,25 +148,49 @@ def stage_bridge_events_rotation(
         data=archive_bytes,
         expected_sha256=str(plan["digests"]["archive_sha256"]),
     )
+    after_bytes = events_path.read_bytes()
+    source_preserved = after_bytes == raw or after_bytes.startswith(raw)
+    concurrent_append_bytes_observed = (
+        len(after_bytes) - len(raw) if after_bytes.startswith(raw) else 0
+    )
+    events_after_sha256 = _sha256(after_bytes)
+    if not source_preserved:
+        report.update(
+            {
+                "ok": False,
+                "decision": "bridge_events_rotation_stage_source_changed",
+                "archive": archive_write,
+                "receipt": {
+                    "path": str(receipt_path),
+                    "write": {"action": "skipped_source_changed"},
+                },
+                "source_preserved": False,
+                "events_rewritten": False,
+                "events_after_sha256": events_after_sha256,
+                "concurrent_append_bytes_observed": concurrent_append_bytes_observed,
+            }
+        )
+        report.setdefault("errors", []).append(
+            "events file changed by more than append while archive was staged"
+        )
+        return report
+
     receipt = _build_receipt(
         plan=plan,
         stage_report=report,
         archive_path=archive_path,
         receipt_path=receipt_path,
+        source_preserved=source_preserved,
+        events_after_sha256=events_after_sha256,
+        concurrent_append_bytes_observed=concurrent_append_bytes_observed,
     )
     receipt_bytes = _json_bytes(receipt)
     receipt_write = _write_atomic_replace(path=receipt_path, data=receipt_bytes)
 
-    after_bytes = events_path.read_bytes()
-    source_preserved = after_bytes == raw or after_bytes.startswith(raw)
     report.update(
         {
-            "ok": source_preserved,
-            "decision": (
-                "bridge_events_rotation_archive_staged"
-                if source_preserved
-                else "bridge_events_rotation_stage_source_changed"
-            ),
+            "ok": True,
+            "decision": "bridge_events_rotation_archive_staged",
             "archive": archive_write,
             "receipt": {
                 "path": str(receipt_path),
@@ -175,16 +199,10 @@ def stage_bridge_events_rotation(
             },
             "source_preserved": source_preserved,
             "events_rewritten": False,
-            "events_after_sha256": _sha256(after_bytes),
-            "concurrent_append_bytes_observed": (
-                len(after_bytes) - len(raw) if after_bytes.startswith(raw) else 0
-            ),
+            "events_after_sha256": events_after_sha256,
+            "concurrent_append_bytes_observed": concurrent_append_bytes_observed,
         }
     )
-    if not source_preserved:
-        report.setdefault("errors", []).append(
-            "events file changed by more than append while archive was staged"
-        )
     return report
 
 
@@ -319,6 +337,9 @@ def _build_receipt(
     stage_report: dict[str, Any],
     archive_path: Path,
     receipt_path: Path,
+    source_preserved: bool,
+    events_after_sha256: str,
+    concurrent_append_bytes_observed: int,
 ) -> dict[str, Any]:
     return {
         "receipt_version": "bridge-events-rotation-receipt.v1",
@@ -332,7 +353,9 @@ def _build_receipt(
         "digests": plan["digests"],
         "retention": plan["retention"],
         "events_rewritten": False,
-        "source_preserved": True,
+        "source_preserved": source_preserved,
+        "events_after_sha256": events_after_sha256,
+        "concurrent_append_bytes_observed": concurrent_append_bytes_observed,
         "future_truncate_required_controls": [
             "operator-gated explicit apply flag",
             "append-race proof or cooperative writer lock",

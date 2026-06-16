@@ -20,7 +20,7 @@ enabled:
 - gate-reader window longer than the maximum open-PR lifetime
 - head-bound bridge receipt after successful rewrite
 
-The staged archive receipt records the source, archive, recent, and
-reconstructed SHA-256 digests from the read-only plan. The live source file is
-read again after staging; the report only stays `ok` when the source is still
-identical or has only grown by append.
+The staged archive receipt records the source, archive, recent, reconstructed,
+and post-stage source SHA-256 digests. The live source file is read again after
+staging before the receipt is written; the report only stays `ok` and emits a
+receipt when the source is still identical or has only grown by append.

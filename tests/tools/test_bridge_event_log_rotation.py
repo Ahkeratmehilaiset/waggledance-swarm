@@ -104,6 +104,8 @@ def test_apply_stages_archive_and_receipt_without_rewriting_events(tmp_path: Pat
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["events_rewritten"] is False
     assert receipt["source_preserved"] is True
+    assert receipt["events_after_sha256"] == report["events_after_sha256"]
+    assert receipt["concurrent_append_bytes_observed"] == 0
     assert receipt["digests"]["archive_sha256"] == report["archive"]["sha256"]
     assert "append-race proof or cooperative writer lock" in receipt[
         "future_truncate_required_controls"
@@ -169,6 +171,50 @@ def test_apply_refuses_conflicting_archive_path(tmp_path: Path) -> None:
 
     assert "archive path already exists with different bytes" in str(excinfo.value)
     assert events_path.read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_apply_skips_receipt_when_source_mutates_by_more_than_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events_path = _events_file(
+        tmp_path,
+        [
+            _event("2026-06-01T00:00:00Z", task_id="old"),
+            _event("2026-06-14T00:00:00Z", task_id="new"),
+        ],
+    )
+    mutated = json.dumps(_event("2026-06-16T00:00:00Z", task_id="tampered")).encode(
+        "utf-8"
+    ) + b"\n"
+    original_read_bytes = Path.read_bytes
+    events_read_count = 0
+
+    def read_bytes_with_non_append_race(path: Path) -> bytes:
+        nonlocal events_read_count
+        if path == events_path:
+            events_read_count += 1
+            if events_read_count >= 3:
+                return mutated
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_with_non_append_race)
+
+    report = stage_bridge_events_rotation(
+        events_path=events_path,
+        archive_dir=tmp_path / "archive",
+        keep_days=7,
+        min_recent_lines=1,
+        now_utc=_now(),
+        apply=True,
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_events_rotation_stage_source_changed"
+    assert report["source_preserved"] is False
+    assert report["events_rewritten"] is False
+    assert report["receipt"]["write"]["action"] == "skipped_source_changed"
+    assert Path(report["archive"]["path"]).exists()
+    assert Path(report["receipt"]["path"]).exists() is False
 
 
 def test_cli_apply_json_writes_archive_and_preserves_events(tmp_path: Path) -> None:

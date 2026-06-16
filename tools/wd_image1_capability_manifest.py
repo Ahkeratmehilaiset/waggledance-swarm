@@ -7098,25 +7098,27 @@ _PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS = (
     "default_sink_required",
     "default_runtime_receipt_emission_changed",
 )
-# Structural markers we forbid regardless of the upstream proof. The canary
-# sentinel is the BARE "DO_NOT_LEAK" the proof actually emits (covers the
-# "_DO_NOT_LEAK" form too, as a substring). At scan time we ALSO union the
-# proof's own _RAW_MARKERS so this can never drift from upstream's canary set.
+# Structural field-name markers we forbid (these are not canary sentinels, so
+# they are safe to name in source). The actual canary sentinels are sourced at
+# scan time from the upstream proof's own marker constant (single source of
+# truth) so we never have to embed canary literals here - that both avoids
+# drift AND keeps this module free of canary strings.
 _PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS = (
-    "DO_NOT_LEAK",
-    "PRIVATE_MARKER",
     "query_reports",
     "operator_note",
-    "context secret",
 )
 
 
 def _per_query_receipt_coverage_forbidden_markers() -> tuple[str, ...]:
-    """Union of our structural markers and the upstream proof's own _RAW_MARKERS.
+    """Union of our structural field-name markers and the upstream proof's own
+    raw-marker constant.
 
-    Sourcing the upstream canaries directly means a future change to the proof's
-    sentinel set is automatically honored here (single source of truth); the
-    import is best-effort so a refactor cannot silently disable the scan.
+    Sourcing the canary sentinels directly from upstream means a future change to
+    the proof's sentinel set is automatically honored here (single source of
+    truth) and no canary literal needs to live in this module; the import is
+    best-effort so a refactor cannot silently disable the scan. Note this is
+    defense in depth: the shape validation already guarantees the aggregate holds
+    only a float + strict bools, so no raw string can reach this scan.
     """
     markers = set(_PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS)
     try:

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import gc
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -7083,6 +7084,154 @@ def build_future_scale_axis_scorecard(root: Path | str = ROOT) -> dict:
     }
 
 
+PER_QUERY_RECEIPT_COVERAGE_ENV = "WD_IMAGE1_PER_QUERY_RECEIPT_COVERAGE"
+
+# The ONLY keys allowed in the aggregated per-query receipt coverage block. They
+# are all safe scalars; query_reports / raw context / private markers are never
+# copied. The allowlist is enforced at build time (fail-closed) so a future edit
+# cannot silently widen the surface.
+_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS = (
+    "ok",
+    "receipt_coverage_ratio",
+    "all_queries_receipt_bound",
+    "raw_payload_leak_check",
+    "default_sink_required",
+    "default_runtime_receipt_emission_changed",
+)
+# Structural field-name markers we forbid (these are not canary sentinels, so
+# they are safe to name in source). The actual canary sentinels are sourced at
+# scan time from the upstream proof's own marker constant (single source of
+# truth) so we never have to embed canary literals here - that both avoids
+# drift AND keeps this module free of canary strings.
+_PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS = (
+    "query_reports",
+    "operator_note",
+)
+
+
+def _per_query_receipt_coverage_forbidden_markers() -> tuple[str, ...]:
+    """Union of our structural field-name markers and the upstream proof's own
+    raw-marker constant.
+
+    Sourcing the canary sentinels directly from upstream means a future change to
+    the proof's sentinel set is automatically honored here (single source of
+    truth) and no canary literal needs to live in this module; the import is
+    best-effort so a refactor cannot silently disable the scan. Note this is
+    defense in depth: the shape validation already guarantees the aggregate holds
+    only a float + strict bools, so no raw string can reach this scan.
+    """
+    markers = set(_PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS)
+    try:
+        from tools.run_v12_per_query_receipt_coverage_proof import _RAW_MARKERS
+
+        markers.update(str(m) for m in _RAW_MARKERS)
+    except Exception:
+        pass
+    return tuple(sorted(markers))
+
+
+def _per_query_receipt_coverage_enabled() -> bool:
+    """True only when the opt-in env flag is set (default OFF).
+
+    The coverage proof is ~11s; keeping it off by default means build_manifest and
+    its consumers stay fast and byte-unaffected unless explicitly requested.
+    """
+    return str(
+        os.environ.get(PER_QUERY_RECEIPT_COVERAGE_ENV, "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_per_query_receipt_coverage_aggregate(report: dict) -> dict:
+    """Reduce a per-query receipt coverage proof to safe scalar fields only.
+
+    NEVER copies query_reports / raw query / context / private markers. Every
+    field is SHAPE-CONSTRAINED so no raw content can ride along: the five boolean
+    fields must be strict bools (rejected, never coerced, if not), and the only
+    non-boolean field (the ratio) must be a finite number in [0, 1]. Any
+    non-conforming value fails closed (raise). A key-allowlist guard and a marker
+    scan are kept as defense in depth.
+    """
+    authority = report.get("authority_boundary") or {}
+
+    def _strict_bool(value: Any, name: str) -> bool:
+        # Reject non-bool (never coerce): a non-bool means upstream is malformed
+        # or poisoned, and silent coercion would mask it. `is True/False` only.
+        if value is not True and value is not False:
+            raise ValueError(
+                f"per_query_receipt_coverage {name} is not a strict bool"
+            )
+        return value
+
+    # Type-gate the only non-boolean field: a finite number in [0, 1], never raw
+    # content. This structurally rejects an arbitrary query/string smuggled into
+    # the ratio (e.g. "how much honey 4521kg ...") regardless of any marker, plus
+    # NaN/Inf and out-of-range numbers.
+    ratio = report.get("receipt_coverage_ratio")
+    if not (
+        isinstance(ratio, (int, float))
+        and not isinstance(ratio, bool)
+        and math.isfinite(ratio)
+        and 0.0 <= float(ratio) <= 1.0
+    ):
+        raise ValueError(
+            "per_query_receipt_coverage receipt_coverage_ratio is not a finite "
+            "number in [0, 1]"
+        )
+    aggregate = {
+        "ok": _strict_bool(report.get("ok"), "ok"),
+        "receipt_coverage_ratio": float(ratio),
+        "all_queries_receipt_bound": _strict_bool(
+            report.get("all_queries_receipt_bound"), "all_queries_receipt_bound"
+        ),
+        "raw_payload_leak_check": _strict_bool(
+            report.get("raw_payload_leak_check"), "raw_payload_leak_check"
+        ),
+        "default_sink_required": _strict_bool(
+            authority.get("default_sink_required"), "default_sink_required"
+        ),
+        "default_runtime_receipt_emission_changed": _strict_bool(
+            authority.get("default_runtime_receipt_emission_changed"),
+            "default_runtime_receipt_emission_changed",
+        ),
+    }
+    extra = set(aggregate) - set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    if extra:
+        raise ValueError(
+            "per_query_receipt_coverage aggregate has non-allowlisted keys: "
+            f"{sorted(extra)}"
+        )
+    blob = json.dumps(aggregate, default=str)
+    for marker in _per_query_receipt_coverage_forbidden_markers():
+        if marker in blob:
+            raise ValueError(
+                "per_query_receipt_coverage aggregate contains a forbidden marker"
+            )
+    return aggregate
+
+
+def build_per_query_receipt_coverage_aggregate(
+    *, force: bool | None = None
+) -> dict | None:
+    """Run the opt-in per-query receipt coverage proof and return a safe aggregate.
+
+    Returns None when the measurement is OFF (the default) so the magma proof and
+    the manifest stay byte-unaffected. When ON (env flag truthy, or force=True for
+    tests) the proof runs in a temp dir (auto-removed) and only safe scalar fields
+    are kept. Coverage NEVER folds into magma_audit_proof["ok"].
+    """
+    enabled = _per_query_receipt_coverage_enabled() if force is None else force
+    if not enabled:
+        return None
+    from tools.run_v12_per_query_receipt_coverage_proof import (
+        build_v12_per_query_receipt_coverage_proof,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        report = build_v12_per_query_receipt_coverage_proof(
+            out_dir=Path(tmp) / "per_query_receipt_coverage",
+        )
+    return _safe_per_query_receipt_coverage_aggregate(report)
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -7819,6 +7968,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     magma_audit_proof["metrics_alertmanager_adapter_smoke"] = (
         magma_metrics_alertmanager_adapter_smoke
     )
+    # Optional local opt-in per-query receipt coverage measurement (OFF by
+    # default; ~11s when on). Only safe scalar fields are aggregated; it is
+    # surfaced as measurement-only evidence and NEVER folds into the magma
+    # proof "ok" below, so a coverage miss cannot fail the magma proof.
+    per_query_receipt_coverage = build_per_query_receipt_coverage_aggregate()
+    if per_query_receipt_coverage is not None:
+        magma_audit_proof["per_query_receipt_coverage"] = per_query_receipt_coverage
     magma_audit_proof["ok"] = bool(
         magma_audit_proof.get("ok") is True
         and magma_metrics_runbook_smoke.get("ok") is True

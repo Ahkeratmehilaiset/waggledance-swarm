@@ -12,6 +12,7 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
@@ -170,12 +171,36 @@ def _extract_milestone_values(
             ),
         }
     if capability_id == "magma_audit_log":
+        # Optional local opt-in per-query receipt coverage measurement. Present
+        # only when the manifest ran the proof (env flag on); absent by default.
+        # Surface the safe scalar fields; the claim gate derives
+        # measurement_available fail-closed from these (never upgrades satisfied).
+        coverage = _mapping(proof.get("per_query_receipt_coverage"))
         return {
             "solver_call_trace_receipt_bound": (
                 proof.get("solver_call_trace_receipt_bound") is True
             ),
             "receipt_count": _int_value(proof.get("receipt_count")),
             "default_sink_required": proof.get("default_sink_required") is True,
+            "per_query_receipt_coverage_present": bool(
+                proof.get("per_query_receipt_coverage")
+            ),
+            "per_query_receipt_coverage_ok": coverage.get("ok") is True,
+            "per_query_receipt_coverage_raw_payload_leak_check": (
+                coverage.get("raw_payload_leak_check") is True
+            ),
+            "per_query_receipt_coverage_ratio": coverage.get(
+                "receipt_coverage_ratio"
+            ),
+            "per_query_receipt_coverage_all_bound": (
+                coverage.get("all_queries_receipt_bound") is True
+            ),
+            "per_query_receipt_coverage_default_sink_required": (
+                coverage.get("default_sink_required") is True
+            ),
+            "per_query_receipt_coverage_default_runtime_emission_changed": (
+                coverage.get("default_runtime_receipt_emission_changed") is True
+            ),
         }
     if capability_id == "low_risk_autonomy_loop":
         real_loop = _mapping(proof.get("real_loop_dry_run"))
@@ -275,6 +300,28 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and magma.get("solver_call_trace_receipt_bound") is True
         and magma.get("default_sink_required") is True
     )
+    # Per-query receipt coverage is a LOCAL opt-in measurement (off by default).
+    # It is surfaced as measurement-only evidence and is DERIVED fail-closed; it
+    # NEVER influences satisfied/current_value (those stay on the real claim
+    # gate), so a 100% local measurement cannot upgrade the claim.
+    coverage_ratio = magma.get("per_query_receipt_coverage_ratio")
+    coverage_ratio_valid = (
+        isinstance(coverage_ratio, (int, float))
+        and not isinstance(coverage_ratio, bool)
+        and math.isfinite(coverage_ratio)
+        and 0.0 <= float(coverage_ratio) <= 1.0
+    )
+    coverage_measurement_available = (
+        magma.get("per_query_receipt_coverage_present") is True
+        and magma.get("per_query_receipt_coverage_ok") is True
+        and magma.get("per_query_receipt_coverage_raw_payload_leak_check") is True
+        and coverage_ratio_valid
+    )
+    measured_coverage_percent = (
+        round(float(coverage_ratio) * 100.0, 2)
+        if coverage_measurement_available
+        else None
+    )
     low_risk_real_loop_guardrail_tripped = (
         low_risk.get("runtime_authority_granted") is True
         # Full authority_boundary coverage (any axis True) - replaces the
@@ -305,9 +352,13 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "current_value": receipt_claim_gate_satisfied,
             "target_value": True,
             "satisfied": receipt_claim_gate_satisfied,
-            "coverage_measurement_available": False,
-            "measured_coverage_percent": None,
-            "measurement_basis": "manifest_claim_gate_flags",
+            "coverage_measurement_available": coverage_measurement_available,
+            "measured_coverage_percent": measured_coverage_percent,
+            "measurement_basis": (
+                "v12_per_query_receipt_coverage_proof"
+                if coverage_measurement_available
+                else "manifest_claim_gate_flags"
+            ),
         },
         "end_to_end_gated_promotions_total": {
             # Fail-closed: count promotions ONLY when the report is ok AND no

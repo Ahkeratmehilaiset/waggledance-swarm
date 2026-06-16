@@ -2,14 +2,23 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 from tools.hex_shadow_subdivision_replay import (
     build_shadow_subdivision_replay_artifact,
 )
 from tools.wd_image1_capability_manifest import build_manifest
+from tools.wd_image1_capability_manifest import (
+    PER_QUERY_RECEIPT_COVERAGE_ENV,
+    _PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS,
+    _safe_per_query_receipt_coverage_aggregate,
+    build_per_query_receipt_coverage_aggregate,
+)
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
@@ -2364,3 +2373,137 @@ def test_cli_emits_json_and_strict_claims_fails_on_unsafe_claims() -> None:
         capture_output=True,
     )
     assert strict.returncode == 2
+
+
+# --- per-query receipt coverage aggregate (option A: default-off/on-demand) ---
+def test_per_query_coverage_flag_off_returns_none() -> None:
+    # Default OFF: no env flag -> no proof run -> None (manifest byte-unaffected).
+    prior = os.environ.pop(PER_QUERY_RECEIPT_COVERAGE_ENV, None)
+    try:
+        assert build_per_query_receipt_coverage_aggregate() is None
+    finally:
+        if prior is not None:
+            os.environ[PER_QUERY_RECEIPT_COVERAGE_ENV] = prior
+
+
+def test_per_query_coverage_force_real_aggregate_is_safe() -> None:
+    # On-demand (force) runs the REAL proof and aggregates only safe scalars.
+    aggregate = build_per_query_receipt_coverage_aggregate(force=True)
+    assert set(aggregate) == set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    assert aggregate["ok"] is True
+    assert aggregate["raw_payload_leak_check"] is True
+    ratio = aggregate["receipt_coverage_ratio"]
+    assert isinstance(ratio, float) and 0.0 <= ratio <= 1.0
+    # Forge 7: prove (do not trust the comment) that no private/raw content rode
+    # along into the aggregate that lands in the manifest.
+    blob = json.dumps(aggregate)
+    for marker in ("query_reports", "operator_note", "DO_NOT_LEAK", "context secret"):
+        assert marker not in blob
+
+
+def test_safe_aggregate_drops_unsafe_keys() -> None:
+    # Even if the proof report carries query_reports / raw context / markers, the
+    # aggregate copies ONLY the allowlisted scalar keys.
+    poisoned_report = {
+        "ok": True,
+        "receipt_coverage_ratio": 1.0,
+        "all_queries_receipt_bound": True,
+        "raw_payload_leak_check": True,
+        "authority_boundary": {
+            "default_sink_required": False,
+            "default_runtime_receipt_emission_changed": False,
+        },
+        "query_reports": [{"query": "secret query", "note": "operator_note"}],
+        "query_ids": ["q1"],
+        "report_path": "/tmp/x",
+    }
+    aggregate = _safe_per_query_receipt_coverage_aggregate(poisoned_report)
+    assert set(aggregate) == set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    assert "query_reports" not in aggregate
+    assert "query_ids" not in aggregate
+
+
+def _good_coverage_report() -> dict:
+    return {
+        "ok": True,
+        "receipt_coverage_ratio": 1.0,
+        "all_queries_receipt_bound": True,
+        "raw_payload_leak_check": True,
+        "authority_boundary": {
+            "default_sink_required": False,
+            "default_runtime_receipt_emission_changed": False,
+        },
+    }
+
+
+@pytest.mark.parametrize("bad_ratio", [
+    "how much honey 4521kg SECRETZ_raw_query DO_NOT_LEAK",  # raw query + bare marker
+    "1.0 operator_note DO_NOT_LEAK",                        # marker phrase
+    "DO_NOT_LEAK",                                          # bare upstream sentinel
+    "1.0",                                                  # plain numeric string
+    float("nan"),                                           # NaN
+    float("inf"),                                           # +Inf
+    float("-inf"),                                          # -Inf
+    1.5,                                                    # out of range high
+    -0.1,                                                   # out of range low
+    True,                                                   # bool type confusion
+    None,                                                   # missing
+])
+def test_safe_aggregate_rejects_bad_ratio(bad_ratio) -> None:
+    # The ratio is shape-constrained to a finite number in [0,1]; anything else
+    # (raw string, marker, NaN/Inf, out-of-range, bool, missing) fails closed so
+    # no raw content can ride in via the only non-boolean field.
+    report = _good_coverage_report()
+    report["receipt_coverage_ratio"] = bad_ratio
+    with pytest.raises(ValueError):
+        _safe_per_query_receipt_coverage_aggregate(report)
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("ok", "true"),
+    ("all_queries_receipt_bound", 1),
+    ("raw_payload_leak_check", "DO_NOT_LEAK"),
+])
+def test_safe_aggregate_rejects_non_bool_top_field(field, bad) -> None:
+    report = _good_coverage_report()
+    report[field] = bad
+    with pytest.raises(ValueError):
+        _safe_per_query_receipt_coverage_aggregate(report)
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("default_sink_required", "False"),
+    ("default_runtime_receipt_emission_changed", 0),
+])
+def test_safe_aggregate_rejects_non_bool_authority_field(field, bad) -> None:
+    report = _good_coverage_report()
+    report["authority_boundary"][field] = bad
+    with pytest.raises(ValueError):
+        _safe_per_query_receipt_coverage_aggregate(report)
+
+
+def test_safe_aggregate_accepts_clean_report() -> None:
+    aggregate = _safe_per_query_receipt_coverage_aggregate(_good_coverage_report())
+    assert set(aggregate) == set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    assert aggregate["receipt_coverage_ratio"] == 1.0
+    assert all(
+        isinstance(aggregate[k], bool)
+        for k in _PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS
+        if k != "receipt_coverage_ratio"
+    )
+
+
+def test_flag_off_manifest_omits_coverage_key() -> None:
+    # Byte-unaffected invariant: with the flag off the magma proof has no
+    # per_query_receipt_coverage key at all.
+    prior = os.environ.pop(PER_QUERY_RECEIPT_COVERAGE_ENV, None)
+    try:
+        manifest = build_manifest()
+    finally:
+        if prior is not None:
+            os.environ[PER_QUERY_RECEIPT_COVERAGE_ENV] = prior
+    magma = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "magma_audit_log"
+    )
+    assert "per_query_receipt_coverage" not in magma["proof"]

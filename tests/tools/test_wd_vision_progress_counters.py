@@ -508,3 +508,115 @@ def test_gated_promotions_fail_closed_on_every_authority_axis() -> None:
         assert gp["guardrail_tripped"] is True, axis
         assert gp["satisfied"] is False, axis
         assert gp["current_value"] == 0, axis
+
+
+# --- per-query receipt coverage counter (option A: default-off/on-demand) ---
+def _manifest_with_coverage(coverage: object) -> dict:
+    """Minimal manifest whose magma proof carries a per_query_receipt_coverage
+    aggregate (simulates the manifest having run the opt-in proof). Pass None to
+    omit the key (the flag-off shape)."""
+    import copy
+
+    manifest = copy.deepcopy(_minimal_manifest())
+    for capability in manifest["capabilities"]:
+        if capability["capability_id"] == "magma_audit_log":
+            if coverage is not None:
+                capability["proof"]["per_query_receipt_coverage"] = coverage
+    return manifest
+
+
+def _coverage_gate(coverage: object) -> dict:
+    counters = build_vision_progress_counters(_manifest_with_coverage(coverage))
+    return counters["milestone_counters"]["per_query_receipt_claim_gate"]
+
+
+_SAFE_COVERAGE = {
+    "ok": True,
+    "receipt_coverage_ratio": 1.0,
+    "all_queries_receipt_bound": True,
+    "raw_payload_leak_check": True,
+    "default_sink_required": False,
+    "default_runtime_receipt_emission_changed": False,
+}
+
+
+def test_per_query_coverage_available_with_safe_measurement() -> None:
+    gate = _coverage_gate(_SAFE_COVERAGE)
+    assert gate["coverage_measurement_available"] is True
+    assert gate["measured_coverage_percent"] == 100.0
+    assert gate["measurement_basis"] == "v12_per_query_receipt_coverage_proof"
+    # measurement is decoupled from the real claim gate
+    assert gate["satisfied"] is False
+    assert gate["current_value"] is False
+
+
+def test_per_query_coverage_measurement_never_upgrades_satisfied() -> None:
+    # Forge: a 100% local measurement must NOT flip satisfied/current_value.
+    # satisfied with coverage present == satisfied with coverage absent.
+    with_cov = _coverage_gate(_SAFE_COVERAGE)
+    without_cov = _coverage_gate(None)
+    assert with_cov["satisfied"] == without_cov["satisfied"] is False
+    assert with_cov["current_value"] == without_cov["current_value"] is False
+
+
+def test_per_query_coverage_unavailable_when_raw_leak_check_false() -> None:
+    # Forge 6: present but raw_payload_leak_check=False -> unavailable (derived).
+    gate = _coverage_gate({**_SAFE_COVERAGE, "raw_payload_leak_check": False})
+    assert gate["coverage_measurement_available"] is False
+    assert gate["measured_coverage_percent"] is None
+    assert gate["measurement_basis"] == "manifest_claim_gate_flags"
+
+
+def test_per_query_coverage_unavailable_when_ok_false() -> None:
+    gate = _coverage_gate({**_SAFE_COVERAGE, "ok": False})
+    assert gate["coverage_measurement_available"] is False
+    assert gate["measured_coverage_percent"] is None
+
+
+def test_per_query_coverage_unavailable_when_ratio_out_of_range() -> None:
+    for bad in (1.5, -0.1):
+        gate = _coverage_gate({**_SAFE_COVERAGE, "receipt_coverage_ratio": bad})
+        assert gate["coverage_measurement_available"] is False, bad
+        assert gate["measured_coverage_percent"] is None, bad
+
+
+def test_per_query_coverage_unavailable_when_ratio_is_bool_or_missing() -> None:
+    for bad in (True, None, "1.0"):
+        gate = _coverage_gate({**_SAFE_COVERAGE, "receipt_coverage_ratio": bad})
+        assert gate["coverage_measurement_available"] is False, bad
+        assert gate["measured_coverage_percent"] is None, bad
+
+
+def test_per_query_coverage_unavailable_when_absent() -> None:
+    gate = _coverage_gate(None)
+    assert gate["coverage_measurement_available"] is False
+    assert gate["measured_coverage_percent"] is None
+    assert gate["measurement_basis"] == "manifest_claim_gate_flags"
+
+
+def test_per_query_coverage_derived_not_hardcoded() -> None:
+    # Two inputs differing only in leak_check yield different availability:
+    # proves the flag is DERIVED, not a hardcoded constant.
+    leakfree = _coverage_gate(_SAFE_COVERAGE)["coverage_measurement_available"]
+    leaky = _coverage_gate(
+        {**_SAFE_COVERAGE, "raw_payload_leak_check": False}
+    )["coverage_measurement_available"]
+    assert leakfree is True and leaky is False
+
+
+def test_per_query_coverage_partial_ratio_reported() -> None:
+    gate = _coverage_gate({**_SAFE_COVERAGE, "receipt_coverage_ratio": 0.6667})
+    assert gate["coverage_measurement_available"] is True
+    assert gate["measured_coverage_percent"] == 66.67
+
+
+def test_claim_safe_count_unaffected_by_coverage() -> None:
+    # A 100% local measurement must not bump the capability claim_safe_count.
+    base = build_vision_progress_counters(_manifest_with_coverage(None))
+    with_cov = build_vision_progress_counters(
+        _manifest_with_coverage(_SAFE_COVERAGE)
+    )
+    assert (
+        with_cov["summary"]["claim_safe_count"]
+        == base["summary"]["claim_safe_count"]
+    )

@@ -455,6 +455,48 @@ def test_legacy_primary_production_liveness_scout_advances_to_smoke(
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
+def test_legacy_primary_liveness_done_event_advances_to_smoke(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "production-liveness-reactivation-scout-2026-05-20-codex-tools-1"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "codex-tools-1",
+                "type": "decision",
+                "task_id": "tools-active-work",
+                "status": "active",
+                "message": "tools started a producer slice",
+            },
+            {
+                "ts_utc": "2026-05-20T11:45:00Z",
+                "agent": "codex-tools-1",
+                "type": "done",
+                "task_id": task_id,
+                "status": "done",
+                "message": "legacy diagnostic completed from bridge event only",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+    assert report["completed_production_liveness_task_ids"] == [task_id]
+    assert report["active_production_liveness_task_ids"] == []
+    _assert_deferred_lift_state(report["deferred_lift_state"])
+
+
 def test_old_legacy_primary_production_liveness_scout_does_not_mask_new_episode(
     tmp_path: Path,
 ) -> None:

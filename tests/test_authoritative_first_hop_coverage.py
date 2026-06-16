@@ -86,7 +86,8 @@ def test_no_raw_query_leak():
 
 def test_derive_raw_query_not_emitted_fails_closed():
     # The invariant must be DERIVED, not hardcoded: if a whole raw query survives
-    # anywhere in the emitted structures, the derive flips False.
+    # anywhere in the emitted structures, the derive flips False. It must also
+    # catch one-token leaks from multi-token raw queries.
     queries = ["how much honey can i expect from one hive this season"]
     clean_records = [{"id": "q1", "expected": "model_based", "predicted": "retrieval",
                       "reason": "keyword_classifier:retrieval",
@@ -98,6 +99,36 @@ def test_derive_raw_query_not_emitted_fails_closed():
     # leak via per_route_summary too
     assert mod._derive_raw_query_not_emitted(
         clean_records, {"model_based": {"note": queries[0]}}, queries) is False
+    # forge a partial-token leak: one non-trivial token from the raw query.
+    partial_query = "alpha zxcvsentinel omega"
+    partial_leak = [dict(clean_records[0], decision_id="zxcvsentinel")]
+    assert mod._derive_raw_query_not_emitted(
+        partial_leak, {}, [partial_query]) is False
+    numeric_query = "alpha 9090901*xyzzy omega"
+    numeric_leak = [dict(clean_records[0], decision_id="9090901")]
+    assert mod._derive_raw_query_not_emitted(
+        numeric_leak, {}, [numeric_query]) is False
+
+
+def test_diagnose_fails_closed_on_partial_raw_query_token_leak(monkeypatch):
+    # If an emitted safe-key field is forged to contain only a single
+    # non-trivial query token, the report must not remain ok=true.
+    def _fake_route(self, query):  # noqa: ANN001
+        return types.SimpleNamespace(
+            layer="retrieval",
+            reason="capsule_decision_match",
+            decision_id="zxcvsentinel",
+        )
+
+    monkeypatch.setattr(mod.SmartRouterV2, "route", _fake_route)
+    r = mod.diagnose(
+        "apiary",
+        [{"id": "leak", "query": "alpha zxcvsentinel omega",
+          "expected_route": "retrieval"}],
+    )
+    assert r["coverage_measurement_available"] is True
+    assert r["invariants"]["raw_query_not_emitted"] is False
+    assert r["ok"] is False
 
 
 def test_no_declared_order_capsule_unavailable():

@@ -23,8 +23,8 @@ NON-authoritative even if it happens to land on the priority-0 layer.
 Privacy: the raw query text is NEVER emitted. Only the corpus id, route labels,
 the fixed ``reason`` enum, the first-hop class, and the capsule-side
 ``decision_id`` are recorded. The ``raw_query_not_emitted`` invariant is DERIVED
-by re-scanning the serialized report for any corpus query text (fail-closed),
-never hardcoded True.
+by re-scanning the serialized report for any corpus query text or non-trivial
+query-derived token (fail-closed), never hardcoded True.
 
 Measurement-vs-claim: this tool only MEASURES. The WD Image1 counter's
 ``satisfied``/``current_value`` stay gated on the existing
@@ -121,9 +121,9 @@ def _derive_raw_query_not_emitted(
     """Re-scan the emitted data; fail-closed privacy invariant (never hardcoded).
 
     Returns True iff no raw corpus query text survives anywhere in the serialized
-    emitted structures. Whole-query strings are scanned (length-guarded to avoid
-    matching incidental route-label words), so any verbatim query survival flips
-    it False.
+    emitted structures. Whole-query strings and non-trivial raw-query tokens are
+    scanned (length-guarded to avoid matching incidental route-label words), so
+    any meaningful query survival flips it False.
     """
     scan_body = json.dumps(
         {"first_hop_records": records, "per_route_summary": per_route_summary},
@@ -133,7 +133,28 @@ def _derive_raw_query_not_emitted(
         q = re.sub(r"\s+", " ", str(raw)).strip().lower()
         if len(q) >= 8 and q in scan_body:
             return False
+        for token in _raw_query_privacy_needles(q):
+            if token in scan_body:
+                return False
     return True
+
+
+def _raw_query_privacy_needles(query: str) -> frozenset[str]:
+    """Return raw-query fragments specific enough to treat as privacy leaks."""
+    needles: set[str] = set()
+    for match in re.finditer(r"[a-z0-9][a-z0-9_+\-*/.:]*", query):
+        token = match.group(0).strip("._:+-*/")
+        if not token:
+            continue
+        digit_runs = re.findall(r"\d{4,}", token)
+        needles.update(digit_runs)
+        has_digit = any(ch.isdigit() for ch in token)
+        has_operator = any(ch in "+-*/_:." for ch in token)
+        if len(token) >= 12 or (has_digit and len(token) >= 4) or (
+            has_operator and len(token) >= 4
+        ):
+            needles.add(token)
+    return frozenset(needles)
 
 
 def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
@@ -202,11 +223,12 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     raw_query_not_emitted = _derive_raw_query_not_emitted(
         records, per_route_summary, raw_queries
     )
+    ok = bool(measurement_available and raw_query_not_emitted)
 
     return {
         "report_version": REPORT_VERSION,
         "generated_at_utc": _utc_iso(),
-        "ok": measurement_available,
+        "ok": ok,
         "profile": profile,
         "corpus_size": total,
         "hot_cache_count": cached,

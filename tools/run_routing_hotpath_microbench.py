@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -311,6 +312,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", default=None,
                     help="if set, write the JSON envelope to <out-dir>/routing_hotpath_microbench.json")
     args = ap.parse_args(argv)
+
+    # Fail closed: every cache fraction must be finite and within [0.0, 1.0].
+    # Out-of-range fractions would emit misleading seeded=<f> measurement rows.
+    for f in args.cache_fractions:
+        if not math.isfinite(f) or not (0.0 <= f <= 1.0):
+            ap.error(
+                f"--cache-fractions values must be finite and in [0.0, 1.0]; got {f}"
+            )
 
     corpus_path = REPO_ROOT / args.corpus
     corpus = load_corpus(corpus_path)

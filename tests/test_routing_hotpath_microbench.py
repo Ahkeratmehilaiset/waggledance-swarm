@@ -9,6 +9,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.spec_from_file_location(
     "routing_hotpath_microbench",
@@ -95,3 +97,21 @@ def test_envelope_invariants_and_clean_summary():
     low = summary.lower()
     for phrase in mod.FORBIDDEN_VOCABULARY:
         assert phrase.lower() not in low
+
+
+@pytest.mark.parametrize("bad", ["-0.5", "1.5", "nan", "inf"])
+def test_main_rejects_out_of_range_cache_fractions(bad):
+    # Fail closed: argparse error (SystemExit code 2) before any benchmarking,
+    # so out-of-range fractions can never produce misleading seeded=<f> rows.
+    with pytest.raises(SystemExit) as exc:
+        mod.main(["--cache-fractions", bad])
+    assert exc.value.code == 2
+
+
+def test_main_accepts_in_range_fractions_fast():
+    # A tiny in-range run must succeed (exit 0). Kept cheap with minimal repeats.
+    rc = mod.main([
+        "--repeats", "1", "--scale", "2", "--scale-repeats", "1",
+        "--cache-fractions", "0.0", "1.0", "--cache-repeats", "1",
+    ])
+    assert rc == 0

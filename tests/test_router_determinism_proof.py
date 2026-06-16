@@ -93,9 +93,10 @@ def test_raw_query_invariant_is_derived_fails_closed():
     capsule = mod.DomainCapsule.load("apiary")
     layers = mod._allowed_layers(capsule)
     dids = mod._allowed_decision_ids(capsule)
+    ids = {"bee_qa_honey_yield", "x"}
 
     def derive(dec):
-        return mod._derive_raw_query_not_emitted([dec], layers, dids)
+        return mod._derive_raw_query_not_emitted([dec], layers, dids, ids)
 
     base = {"id": "x", "layer": "model_based", "reason": "capsule_decision_match",
             "decision_id": "honey_yield", "fallback": "llm_reasoning"}
@@ -116,8 +117,11 @@ def test_raw_query_invariant_is_derived_fails_closed():
     assert derive({**base, "reason": "keyword_classifier:alice"}) is False
     assert derive({**base, "reason": "keyword_classifier:math"}) is True
     assert derive({**base, "reason": "capsule_decision_fallback"}) is True
-    # emitted corpus id must be a safe identifier: a raw query (spaces) fails.
+    # emitted id is MEMBERSHIP-validated against the corpus ids: a single-word
+    # query token (not a corpus id) is caught - regex was insufficient (#1267 id).
     assert derive({**base, "id": "how much honey yield"}) is False
+    assert derive({**base, "id": "hunters"}) is False  # safe-looking but not a corpus id
+    assert derive({**base, "id": "alice"}) is False
     assert derive({**base, "id": "bee_qa_honey_yield"}) is True
     assert derive({**base, "id": ""}) is True  # empty id allowed
 

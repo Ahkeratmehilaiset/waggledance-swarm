@@ -100,9 +100,6 @@ _KNOWN_REASONS = frozenset({
     "keyword_classifier:stat",
     "keyword_classifier:retrieval",
 })
-# Emitted corpus ids are identifiers, never free text: a safe-identifier pattern
-# rejects a raw query (which contains spaces/punctuation) smuggled into `id`.
-_SAFE_EMITTED_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 def _stable_decision(result: Any) -> dict[str, Any]:
@@ -140,22 +137,24 @@ def _derive_raw_query_not_emitted(
     decisions: list[dict[str, Any]],
     allowed_layers: set[str],
     allowed_decision_ids: set[str],
+    allowed_ids: set[str],
 ) -> bool:
-    """VALUE-ALLOWLIST the emitted decision fields: each must be a known router
-    output (route label / capsule decision id / reason enum), else it is a forged
-    or raw-query value and the privacy invariant fails closed.
+    """VALUE-ALLOWLIST every emitted decision field by MEMBERSHIP against known
+    sets, else it is a forged or raw-query value and the privacy invariant fails
+    closed.
 
-    This is COMPLETE (no query token can occupy an allowlisted-value field) and
-    false-positive-free: it does not depend on token length, so even a short alpha
-    query word (e.g. a name) injected into id/decision_id/reason is caught. The
-    reason is matched against an EXACT closed set (no prefix match, so a forged
-    keyword_classifier:<raw> suffix is rejected) and the corpus id must be a safe
-    identifier (no spaces/free text). Mirrors the #1265 value-shape approach.
-    Never hardcoded.
+    Each field is checked against a closed membership set: id against the input
+    corpus's declared ids, layer/fallback against the route-label set, decision_id
+    against the capsule decision ids, reason against the EXACT closed reason set
+    (no prefix match). This is COMPLETE and false-positive-free regardless of
+    token length - a short alpha query word (e.g. a name like 'hunters') injected
+    into id/decision_id/reason is caught because it is not a member of the
+    corresponding set. Mirrors the #1265/#1267 value-allowlist approach. Never
+    hardcoded.
     """
     for dec in decisions:
         item_id = str(dec.get("id", ""))
-        if item_id and not _SAFE_EMITTED_ID_RE.match(item_id):
+        if not (item_id == "" or item_id in allowed_ids):
             return False
         if dec.get("layer") not in allowed_layers:
             return False
@@ -185,6 +184,8 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     deterministic_count = 0
     nondeterministic: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
+    # The input corpus's declared ids - the only ids that may be emitted.
+    allowed_ids = {str(item.get("id")) for item in corpus if item.get("id")}
 
     for item in corpus:
         query = str(item.get("query", ""))
@@ -219,7 +220,10 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     # emitted decision field against the known router/capsule output sets - a
     # forged/raw value in any field (even a short alpha query word) fails closed.
     raw_query_not_emitted = _derive_raw_query_not_emitted(
-        decisions, _allowed_layers(capsule), _allowed_decision_ids(capsule)
+        decisions,
+        _allowed_layers(capsule),
+        _allowed_decision_ids(capsule),
+        allowed_ids,
     )
 
     # DERIVE the vocabulary-clean invariant by SCANNING the emitted content (not

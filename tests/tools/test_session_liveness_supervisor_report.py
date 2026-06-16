@@ -248,6 +248,44 @@ def test_active_write_claim_blocks_restart_until_checkpoint() -> None:
     assert "release the active write claim" in row["safe_next_action"]
 
 
+def test_same_task_autonomous_merge_receipt_clears_event_write_claim() -> None:
+    report = build_session_liveness_supervisor_report(
+        events=[
+            _event(
+                ts="2026-06-15T10:30:00Z",
+                agent="codex-lead-1",
+                event_type="claim",
+                task_id="merged-slice",
+                write_scope=["tools/session_liveness_supervisor_report.py"],
+            ),
+            _event(
+                ts="2026-06-15T10:45:00Z",
+                agent="claude-rco-1",
+                event_type="decision",
+                status="autonomous_merge_receipt",
+                task_id="merged-slice",
+            ),
+        ],
+        agents=["codex-lead-1"],
+        screen_states={
+            "codex-lead-1": _screen(
+                "idle_prompt",
+                agent="codex-lead-1",
+                cycle_age_minutes=120,
+            )
+        },
+        cycle_budget_minutes=90,
+        now_utc=_now(),
+    )
+
+    row = report["agents"][0]
+    assert report["decision"] == "session_restart_recommended"
+    assert row["active_write_claim_count"] == 0
+    assert row["restart_checkpoint_ready"] is True
+    assert row["restart_blocked"] is False
+    assert row["restart_recommended"] is True
+
+
 def test_active_claim_file_without_event_scope_blocks_restart_fail_closed() -> None:
     report = build_session_liveness_supervisor_report(
         events=[],

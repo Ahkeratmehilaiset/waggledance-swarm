@@ -56,7 +56,7 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from core.domain_capsule import DomainCapsule  # noqa: E402
+from core.domain_capsule import DomainCapsule, VALID_LAYERS  # noqa: E402
 from core.smart_router_v2 import SmartRouterV2  # noqa: E402
 
 FORBIDDEN_VOCABULARY: tuple[str, ...] = (
@@ -78,6 +78,14 @@ AUTHORITATIVE_REASONS: frozenset[str] = frozenset({
 _RECORD_KEYS: frozenset[str] = frozenset({
     "id", "expected", "predicted", "reason", "first_hop_class", "decision_id",
 })
+_FIRST_HOP_CLASSES: frozenset[str] = frozenset({
+    "authoritative", "heuristic", "cached",
+})
+_PER_ROUTE_SUMMARY_KEYS: frozenset[str] = frozenset({
+    "total", "routable", "authoritative", "heuristic", "cached",
+    "authoritative_coverage",
+})
+_KEYWORD_CLASSIFIER_REASON = re.compile(r"^keyword_classifier:[a-z_]+$")
 _SAFE_EMITTED_TOKENS: frozenset[str] = frozenset({
     "authoritative",
     "cached",
@@ -124,6 +132,70 @@ def _raw_query_leak_markers(raw: str) -> set[str]:
     return markers
 
 
+def _capsule_decision_ids(capsule: Any) -> set[str]:
+    """Capsule-declared decision ids are the only non-null ids we emit."""
+    return {
+        str(dec.get("id", ""))
+        for dec in (getattr(capsule, "key_decisions", None) or [])
+        if str(dec.get("id", ""))
+    }
+
+
+def _is_safe_reason(reason: str) -> bool:
+    return (
+        reason == HOT_CACHE_REASON
+        or reason in AUTHORITATIVE_REASONS
+        or bool(_KEYWORD_CLASSIFIER_REASON.fullmatch(reason))
+    )
+
+
+def _is_safe_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value == value
+        and value not in (float("inf"), float("-inf"))
+    )
+
+
+def _emitted_values_are_allowlisted(
+    records: list[dict[str, Any]],
+    per_route_summary: dict[str, Any],
+    allowed_decision_ids: set[str],
+) -> bool:
+    """Fail closed if an emitted field carries a non-capsule/free-form value."""
+    for record in records:
+        if set(record) - _RECORD_KEYS:
+            return False
+        if str(record.get("expected", "")) not in VALID_LAYERS:
+            return False
+        if str(record.get("predicted", "")) not in VALID_LAYERS:
+            return False
+        if str(record.get("first_hop_class", "")) not in _FIRST_HOP_CLASSES:
+            return False
+        if not _is_safe_reason(str(record.get("reason", ""))):
+            return False
+        decision_id = record.get("decision_id")
+        if decision_id not in (None, "") and str(decision_id) not in allowed_decision_ids:
+            return False
+
+    for route, summary in per_route_summary.items():
+        if str(route) not in VALID_LAYERS or not isinstance(summary, dict):
+            return False
+        if set(summary) != _PER_ROUTE_SUMMARY_KEYS:
+            return False
+        for key in ("total", "routable", "authoritative", "heuristic", "cached"):
+            value = summary.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                return False
+        coverage = summary.get("authoritative_coverage")
+        if coverage is not None and (
+            not _is_safe_number(coverage) or not 0.0 <= float(coverage) <= 1.0
+        ):
+            return False
+    return True
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -161,6 +233,7 @@ def _derive_raw_query_not_emitted(
     records: list[dict[str, Any]],
     per_route_summary: dict[str, Any],
     queries: Sequence[str],
+    allowed_decision_ids: set[str] | None = None,
 ) -> bool:
     """Re-scan the emitted data; fail-closed privacy invariant (never hardcoded).
 
@@ -173,6 +246,10 @@ def _derive_raw_query_not_emitted(
         {"first_hop_records": records, "per_route_summary": per_route_summary},
         ensure_ascii=False,
     ).lower()
+    if not _emitted_values_are_allowlisted(
+        records, per_route_summary, allowed_decision_ids or set()
+    ):
+        return False
     for raw in queries:
         for marker in _raw_query_leak_markers(raw):
             if marker in scan_body:
@@ -244,7 +321,7 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     raw_query_not_emitted = _derive_raw_query_not_emitted(
-        records, per_route_summary, raw_queries
+        records, per_route_summary, raw_queries, _capsule_decision_ids(capsule)
     )
 
     return {

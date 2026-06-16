@@ -97,13 +97,17 @@ def test_derive_raw_query_not_emitted_fails_closed():
     clean_records = [{"id": "q1", "expected": "model_based", "predicted": "retrieval",
                       "reason": "keyword_classifier:retrieval",
                       "first_hop_class": "heuristic", "decision_id": "d1"}]
-    assert mod._derive_raw_query_not_emitted(clean_records, {}, queries) is True
+    allowed_decisions = {"d1"}
+    assert mod._derive_raw_query_not_emitted(
+        clean_records, {}, queries, allowed_decisions) is True
     # forge a leak: a record field carries the raw query verbatim
     leaked = [dict(clean_records[0], decision_id=queries[0])]
-    assert mod._derive_raw_query_not_emitted(leaked, {}, queries) is False
+    assert mod._derive_raw_query_not_emitted(
+        leaked, {}, queries, allowed_decisions) is False
     # leak via per_route_summary too
     assert mod._derive_raw_query_not_emitted(
-        clean_records, {"model_based": {"note": queries[0]}}, queries) is False
+        clean_records, {"model_based": {"note": queries[0]}}, queries,
+        allowed_decisions) is False
 
 
 def test_derive_raw_query_not_emitted_rejects_partial_token_leak():
@@ -111,14 +115,34 @@ def test_derive_raw_query_not_emitted_rejects_partial_token_leak():
     clean_records = [{"id": "q1", "expected": "model_based", "predicted": "retrieval",
                       "reason": "keyword_classifier:retrieval",
                       "first_hop_class": "heuristic", "decision_id": "d1"}]
-    assert mod._derive_raw_query_not_emitted(clean_records, {}, queries) is True
+    allowed_decisions = {"d1"}
     assert mod._derive_raw_query_not_emitted(
-        [dict(clean_records[0], decision_id="SECRETZTOKEN")], {}, queries) is False
+        clean_records, {}, queries, allowed_decisions) is True
     assert mod._derive_raw_query_not_emitted(
-        [dict(clean_records[0], reason="token 9090901 leaked")], {}, queries) is False
+        [dict(clean_records[0], decision_id="SECRETZTOKEN")], {}, queries,
+        allowed_decisions) is False
     assert mod._derive_raw_query_not_emitted(
-        [dict(clean_records[0], reason="token 9090901*xyzzy leaked")], {}, queries
+        [dict(clean_records[0], reason="token 9090901 leaked")], {}, queries,
+        allowed_decisions) is False
+    assert mod._derive_raw_query_not_emitted(
+        [dict(clean_records[0], reason="token 9090901*xyzzy leaked")], {}, queries,
+        allowed_decisions
     ) is False
+
+
+def test_derive_raw_query_not_emitted_rejects_short_alpha_freeform_values():
+    queries = ["does alice keep bees", "where are the hunters today"]
+    clean_records = [{"id": "q1", "expected": "model_based", "predicted": "retrieval",
+                      "reason": "keyword_classifier:retrieval",
+                      "first_hop_class": "heuristic", "decision_id": "honey_yield"}]
+    assert mod._derive_raw_query_not_emitted(
+        clean_records, {}, queries, {"honey_yield"}) is True
+    assert mod._derive_raw_query_not_emitted(
+        [dict(clean_records[0], decision_id="alice")], {}, queries,
+        {"honey_yield"}) is False
+    assert mod._derive_raw_query_not_emitted(
+        [dict(clean_records[0], reason="route hunters")], {}, queries,
+        {"honey_yield"}) is False
 
 
 def test_no_declared_order_capsule_unavailable():

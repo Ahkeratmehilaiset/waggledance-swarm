@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.build_wd_vision_progress_counters import (
     SCHEMA_VERSION,
     build_vision_progress_counters,
@@ -706,4 +708,116 @@ def test_first_hop_derived_not_hardcoded() -> None:
     unavail = _first_hop_gate(
         {**_SAFE_FIRST_HOP, "coverage_measurement_available": False}
     )["coverage_measurement_available"]
+    assert avail is True and unavail is False
+
+
+# --- low-risk repeat-window trend counter (default-off/on-demand) ---
+_TREND_AUTHORITY_AXES = (
+    "external_writes_applied", "production_control_plane_touched",
+    "production_scheduler_enqueue", "provider_jobs_created", "builder_jobs_created",
+    "gate_skip_authority", "operator_gate_bypassed", "runtime_authority_granted",
+    "fast_track_priority",
+)
+
+
+def _good_trend():
+    return {
+        "ok": True,
+        "deterministic": True,
+        "evidence_present": True,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "window_size": 3,
+        "all_runs_ok": True,
+        "any_guardrail_tripped": False,
+        "promoted_solver_count_min": 1,
+        "promoted_solver_count_max": 1,
+        "promoted_solver_count_stable": True,
+        "measurement_basis": "v1_low_risk_real_loop_repeat_window",
+    }
+
+
+def _manifest_with_low_risk_trend(trend):
+    proof = {
+        "ok": True,
+        "real_loop_dry_run": {
+            "ok": True,
+            "claim_label": "MEASURED_LOCAL_DRY_RUN",
+            "chain": {"auto_promoted_solver_count": 1, "auto_promoted_run_count": 1},
+            "authority_boundary": {axis: False for axis in _TREND_AUTHORITY_AXES},
+            "control_plane": {"table_counts": {"provider_jobs": 0, "builder_jobs": 0}},
+        },
+    }
+    if trend is not None:
+        proof["repeat_window_trend"] = trend
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _trend_counters(trend):
+    mc = build_vision_progress_counters(_manifest_with_low_risk_trend(trend))[
+        "milestone_counters"
+    ]
+    return mc["low_risk_real_loop_repeat_window_trend"], mc[
+        "end_to_end_gated_promotions_total"
+    ]
+
+
+def test_repeat_window_trend_available_with_safe_measurement() -> None:
+    trend_gate, _ = _trend_counters(_good_trend())
+    assert trend_gate["trend_measurement_available"] is True
+    assert trend_gate["measured_window_size"] == 3
+    assert trend_gate["measured_stable_promotion_count"] == 1
+    assert trend_gate["promotion_count_stable"] is True
+    assert trend_gate["measurement_basis"] == "v1_low_risk_real_loop_repeat_window"
+    assert trend_gate["claim_safe"] is False
+
+
+def test_repeat_window_trend_never_upgrades_end_to_end_gate() -> None:
+    # The end_to_end gate verdict must be identical with the trend present (stable
+    # 100%) vs absent - the measurement is fully decoupled from the claim.
+    _, e2e_with = _trend_counters(_good_trend())
+    _, e2e_without = _trend_counters(None)
+    assert e2e_with["satisfied"] == e2e_without["satisfied"] is True
+    assert e2e_with["current_value"] == e2e_without["current_value"]
+
+
+def test_repeat_window_trend_unavailable_when_absent() -> None:
+    trend_gate, _ = _trend_counters(None)
+    assert trend_gate["trend_measurement_available"] is False
+    assert trend_gate["measured_window_size"] is None
+    assert trend_gate["measured_stable_promotion_count"] is None
+    assert trend_gate["measurement_basis"] == "manifest_real_loop_flags"
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("ok", False),
+    ("deterministic", False),
+    ("evidence_present", False),
+    ("any_guardrail_tripped", True),
+    ("promoted_solver_count_stable", False),
+    ("window_size", 1),
+])
+def test_repeat_window_trend_unavailable_when_degraded(field, bad) -> None:
+    trend = _good_trend()
+    trend[field] = bad
+    trend_gate, _ = _trend_counters(trend)
+    assert trend_gate["trend_measurement_available"] is False, field
+    assert trend_gate["measured_window_size"] is None, field
+    assert trend_gate["claim_safe"] is False, field
+
+
+def test_repeat_window_trend_derived_not_hardcoded() -> None:
+    avail = _trend_counters(_good_trend())[0]["trend_measurement_available"]
+    unavail = _trend_counters({**_good_trend(), "ok": False})[0][
+        "trend_measurement_available"
+    ]
     assert avail is True and unavail is False

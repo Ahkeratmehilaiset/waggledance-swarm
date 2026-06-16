@@ -20,7 +20,11 @@ python tools/run_routing_hotpath_microbench.py \
     --out-dir docs/runs/routing_hotpath_microbench_2026_06_16
 ```
 
-Artifact: `docs/runs/routing_hotpath_microbench_2026_06_16/routing_hotpath_microbench.json`.
+With `--out-dir` the harness writes the full JSON envelope to
+`<out-dir>/routing_hotpath_microbench.json`. That raw run-artifact is
+regenerable on demand and is **not committed in this PR** — `docs/runs/` is off
+the autonomous-merge allowlist, and the measured numbers below are the durable
+record. Regenerate it with the command above if you need the JSON.
 
 ## Representative run (profile `apiary`, 30-query corpus × 50 repeats = 1500 calls)
 

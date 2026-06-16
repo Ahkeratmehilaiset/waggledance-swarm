@@ -1442,6 +1442,28 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
         capability["proof"]["runtime_boundary_smoke"]["runtime_authority_changed"]
         is False
     )
+    real_loop = capability["proof"]["real_loop_dry_run"]
+    assert real_loop["ok"] is True
+    assert real_loop["claim_label"] == "MEASURED_LOCAL_DRY_RUN"
+    assert real_loop["local_artifacts_written"] is False
+    assert real_loop["chain"]["detector_signals_recorded"] == 1
+    assert real_loop["chain"]["intents_created"] == 1
+    assert real_loop["chain"]["intents_enqueued"] == 1
+    assert real_loop["chain"]["scheduler_outcome"] == "auto_promoted"
+    assert real_loop["chain"]["auto_promoted_solver_count"] == 1
+    assert real_loop["dispatch"]["matched"] is True
+    assert real_loop["dispatch"]["output"] == 298.15
+    assert real_loop["authority_boundary"] == {
+        "external_writes_applied": False,
+        "production_control_plane_touched": False,
+        "production_scheduler_enqueue": False,
+        "provider_jobs_created": False,
+        "builder_jobs_created": False,
+        "gate_skip_authority": False,
+        "operator_gate_bypassed": False,
+        "runtime_authority_granted": False,
+        "fast_track_priority": False,
+    }
     assert capability["proof"]["operator_metrics_smoke"]["ok"] is True
     assert (
         capability["proof"]["operator_metrics_smoke"]["operator_visible_metrics"]
@@ -1530,13 +1552,14 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert verification["gate_skip_allowed"] is False
     assert verification["artifact_payloads_included"] is False
     assert verification["local_paths_recorded"] is False
-    assert "verification summary renderer" in capability["next_smallest_pr"]
+    assert "repeat-window trend summary" in capability["next_smallest_pr"]
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert "local fallback alert state" in capability["safe_statement"]
     assert "optional sanitized Alertmanager alert feed" in (
         capability["safe_statement"]
     )
     assert "operator alert thresholds" in capability["safe_statement"]
+    assert "measured local real-loop dry run" in capability["safe_statement"]
     assert "scheduler-candidate preview artifact" in capability["safe_statement"]
     assert "template-only bridge-event renderer" in capability["safe_statement"]
     assert "local index entry" in capability["safe_statement"]

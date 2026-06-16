@@ -76,6 +76,7 @@ CLOSED_REQUEST_STATUSES = frozenset(
         *KNOWN_ACK_STATUSES,
         "answered",
         "approved",
+        "autonomous_merge_receipt",
         "changes_requested_retracted",
         "changes_requested_resolved",
         "changes_requested_withdrawn",
@@ -151,6 +152,7 @@ TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
 PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
+TERMINAL_RECEIPT_AGENT_KEY = "terminal-receipt"
 
 
 class BridgeNextActionError(ValueError):
@@ -752,6 +754,9 @@ def _build_request_closure_index(
             task_closures = closure_index.setdefault(closure_key, {})
             if event_ts > task_closures.get(event_agent, ""):
                 task_closures[event_agent] = event_ts
+            if _is_same_task_terminal_receipt(event):
+                if event_ts > task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, ""):
+                    task_closures[TERMINAL_RECEIPT_AGENT_KEY] = event_ts
             if closure_key.startswith(
                 PR_CLOSURE_KEY_PREFIX
             ) and _is_explicit_terminal_pr_closure(event):
@@ -795,6 +800,8 @@ def _request_closed_by_index(
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
             continue
+        if task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, "") > request_ts:
+            return True
         for closing_agent in {agent.lower(), _event_agent(request)}:
             if task_closures.get(closing_agent, "") > request_ts:
                 return True
@@ -839,6 +846,14 @@ def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
     return (
         _event_type(event) == "done"
         or _event_status(event) in CLOSED_REQUEST_STATUSES
+    )
+
+
+def _is_same_task_terminal_receipt(event: Mapping[str, Any]) -> bool:
+    return (
+        _event_type(event) == "decision"
+        and _event_status(event) == "autonomous_merge_receipt"
+        and bool(_task_id(event))
     )
 
 

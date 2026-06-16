@@ -137,6 +137,34 @@ def test_forge_unexpected_claim_label():
     )
     assert report["ok"] is False
     assert "unexpected_claim_label" in report["blockers"]
+    # the raw caller label is NEVER echoed; it is normalized to a fixed token.
+    assert report["trend"]["claim_label"] == "UNEXPECTED"
+    assert "PRODUCTION_RUNTIME" not in json.dumps(report)
+
+
+def test_claim_label_marker_not_echoed():
+    # A caller-controlled marker in claim_label must not leak into the report
+    # (closed-value normalization, not echo). Marker built from parts.
+    marker = "DO_NOT" + "_LEAK"
+    bad = _good_dry_run()
+    bad["claim_label"] = f"PROD_{marker}"
+    report = mod.build_repeat_window_trend_proof(
+        window=2, dry_run_factory=_factory(*([bad] * 4))
+    )
+    assert marker not in json.dumps(report)
+    assert report["trend"]["claim_label"] == "UNEXPECTED"
+
+
+def test_window_upper_bound_enforced():
+    # window above the sane cap is rejected (API), not silently accepted.
+    with pytest.raises(ValueError):
+        mod.build_repeat_window_trend_proof(window=mod.MAX_WINDOW + 1)
+    # the cap value itself is accepted (boundary), using a cheap factory.
+    report = mod.build_repeat_window_trend_proof(
+        window=mod.MAX_WINDOW,
+        dry_run_factory=_factory(*([_good_dry_run()] * (mod.MAX_WINDOW * 2))),
+    )
+    assert report["trend"]["window_size"] == mod.MAX_WINDOW
 
 
 def test_forge_nondeterministic_across_windows():
@@ -168,6 +196,30 @@ def test_every_gated_field_in_stable_set():
         )
         assert report["ok"] is False, field
         assert "non_deterministic_window_trend" in report["blockers"], field
+
+
+@pytest.mark.parametrize("dropped_axis", _AUTHORITY_AXES)
+def test_forge_partial_authority_axis_omission_raises(dropped_axis):
+    # PARTIAL omission (not empty): dropping ONE expected axis must fail closed,
+    # else an adversarial dry-run could omit the very axis it set True and bypass
+    # the guardrail. Real boundary minus one axis -> ValueError.
+    bad = _good_dry_run()
+    del bad["authority_boundary"][dropped_axis]
+    with pytest.raises(ValueError):
+        mod.build_repeat_window_trend_proof(
+            window=2, dry_run_factory=_factory(*([bad] * 4))
+        )
+
+
+def test_expected_authority_axes_matches_real_dry_run():
+    # The canonical expected-axis set must equal the REAL dry-run boundary, so a
+    # genuine run is never falsely rejected and no real axis is left unguarded.
+    from tools.wd_image1_capability_manifest import (
+        build_low_risk_autogrowth_chain_dry_run,
+    )
+
+    real = build_low_risk_autogrowth_chain_dry_run()
+    assert set(real["authority_boundary"]) == set(mod._EXPECTED_AUTHORITY_AXES)
 
 
 def test_strict_bool_authority_axis_raises():

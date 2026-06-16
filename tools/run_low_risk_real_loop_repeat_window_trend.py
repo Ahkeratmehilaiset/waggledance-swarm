@@ -52,7 +52,28 @@ FORBIDDEN_VOCABULARY: tuple[str, ...] = (
 REPORT_VERSION = "wd.low_risk_real_loop_repeat_window_trend.v1"
 MEASUREMENT_BASIS = "v1_low_risk_real_loop_repeat_window"
 DEFAULT_WINDOW = 3
+# Sane upper bound: the window only needs a few repeats to establish stability;
+# a huge window is rejected (bounds runtime/DoS, not silently accepted).
+MAX_WINDOW = 25
 EXPECTED_CLAIM_LABEL = "MEASURED_LOCAL_DRY_RUN"
+
+# The FULL authority_boundary axis set the dry-run must report. The guardrail
+# must see EVERY one of these: iterating only the present keys would let an
+# adversarial/buggy dry-run OMIT the very axis it set True (partial-omission
+# guardrail bypass), so a missing expected axis fails closed (raise), not just an
+# empty boundary. Extra (future) axes are still strict-bool-checked + covered by
+# the data-driven any() guardrail.
+_EXPECTED_AUTHORITY_AXES = frozenset({
+    "external_writes_applied",
+    "production_control_plane_touched",
+    "production_scheduler_enqueue",
+    "provider_jobs_created",
+    "builder_jobs_created",
+    "gate_skip_authority",
+    "operator_gate_bypassed",
+    "runtime_authority_granted",
+    "fast_track_priority",
+})
 
 # The stable trend fields compared across the run-twice determinism check - every
 # gated field below must appear here, else a run2 drift could pass unseen.
@@ -94,6 +115,13 @@ def _run_safe_scalars(dry_run: dict[str, Any]) -> dict[str, Any]:
     authority = dry_run.get("authority_boundary")
     if not isinstance(authority, dict) or not authority:
         raise ValueError("authority_boundary missing or not a mapping")
+    # Fail closed on a PARTIAL boundary: every expected axis must be present, so
+    # an omitted axis cannot bypass the guardrail (not just the empty case).
+    missing = _EXPECTED_AUTHORITY_AXES - set(authority)
+    if missing:
+        raise ValueError(
+            f"authority_boundary missing expected axes: {sorted(missing)}"
+        )
     for axis, flag in authority.items():
         _strict_bool(flag, f"authority_boundary.{axis}")
     chain = dry_run.get("chain")
@@ -122,6 +150,10 @@ def _summarise_window(runs: list[dict[str, Any]]) -> dict[str, Any]:
     solver_counts = [r["promoted_solver_count"] for r in runs]
     run_counts = [r["promoted_run_count"] for r in runs]
     labels = {r["claim_label"] for r in runs}
+    # Normalize to a CLOSED value: never echo caller-controlled label text into
+    # the emitted report (even on the unexpected path). Emit the expected label
+    # only when every run reports exactly it, else a fixed sanitized token.
+    claim_label = EXPECTED_CLAIM_LABEL if labels == {EXPECTED_CLAIM_LABEL} else "UNEXPECTED"
     return {
         "window_size": len(runs),
         "all_runs_ok": all(r["ok"] for r in runs),
@@ -138,7 +170,7 @@ def _summarise_window(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "external_writes_applied": any(
             r["external_writes_applied"] for r in runs
         ),
-        "claim_label": labels.pop() if len(labels) == 1 else "MIXED",
+        "claim_label": claim_label,
         "measurement_basis": MEASUREMENT_BASIS,
     }
 
@@ -152,8 +184,12 @@ def build_repeat_window_trend_proof(
     window: int = DEFAULT_WINDOW,
     dry_run_factory: Callable[[], dict[str, Any]] = build_low_risk_autogrowth_chain_dry_run,
 ) -> dict[str, Any]:
-    if not (isinstance(window, int) and not isinstance(window, bool) and window >= 2):
-        raise ValueError("window must be an int >= 2")
+    if not (
+        isinstance(window, int)
+        and not isinstance(window, bool)
+        and 2 <= window <= MAX_WINDOW
+    ):
+        raise ValueError(f"window must be an int in [2, {MAX_WINDOW}]")
 
     def _one_window() -> dict[str, Any]:
         return _summarise_window(
@@ -266,15 +302,16 @@ def assert_vocabulary_clean(text: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW,
-                        help="number of repeat runs in the window (>= 2)")
+                        help=f"number of repeat runs in the window (2..{MAX_WINDOW})")
     parser.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.window < 2:
-        build_parser().error("--window must be >= 2")
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not (2 <= args.window <= MAX_WINDOW):
+        parser.error(f"--window must be in [2, {MAX_WINDOW}]")
     report = build_repeat_window_trend_proof(window=args.window)
     summary = render_summary(report)
     assert_vocabulary_clean(summary)

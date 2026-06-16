@@ -73,3 +73,42 @@ def test_out_dir_writes_artifact(tmp_path):
     artifact = out / "ring_messaging_hierarchy_proof.json"
     assert artifact.is_file()
     assert json.loads(artifact.read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_proof_fails_closed_if_delivery_layer_delivers_everything(monkeypatch):
+    # Adversarial forge (per the #1253 happy-path lesson): a broken delivery
+    # layer that delivers EVERY message - including those that should be blocked
+    # at an invalid boundary - must make the proof fail CLOSED, not pass.
+    from waggledance.core.hex_topology.ring_messaging import RingDelivery
+
+    def _always_deliver(topology, msg, seq):
+        return RingDelivery(
+            message_id_seq=seq, delivered=True, blocked_reason=None,
+            msg=msg, blocked_category=None,
+        )
+
+    monkeypatch.setattr(mod, "deliver_one", _always_deliver)
+    report = mod.build_ring_messaging_hierarchy_proof()
+    assert report["ok"] is False
+    assert "ring_boundary_violation" in report["blockers"]
+    assert report["invariants"]["no_invalid_boundary_delivery"] is False
+
+
+def test_proof_fails_closed_if_delivery_layer_blocks_everything(monkeypatch):
+    # Mirror forge: a layer that blocks EVERYTHING (even valid neighbor/parent/
+    # child messages) must also fail the proof closed.
+    from waggledance.core.hex_topology.ring_messaging import (
+        RING_BLOCK_SCHEMA_INVALID,
+        RingDelivery,
+    )
+
+    def _always_block(topology, msg, seq):
+        return RingDelivery(
+            message_id_seq=seq, delivered=False, blocked_reason="forged",
+            msg=msg, blocked_category=RING_BLOCK_SCHEMA_INVALID,
+        )
+
+    monkeypatch.setattr(mod, "deliver_one", _always_block)
+    report = mod.build_ring_messaging_hierarchy_proof()
+    assert report["ok"] is False
+    assert "ring_boundary_violation" in report["blockers"]

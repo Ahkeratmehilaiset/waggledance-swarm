@@ -421,6 +421,60 @@ def _string_list(value: object) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _promotion_gate_diagnostics(
+    *, author_agent: str, eligibility: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Return informational hints without changing promotion eligibility."""
+    gate_results = eligibility.get("gate_results")
+    if not isinstance(gate_results, Mapping):
+        return []
+    bridge = gate_results.get("bridge_consensus")
+    if not isinstance(bridge, Mapping):
+        return []
+    by_agent = bridge.get("by_agent")
+    if not isinstance(by_agent, Mapping):
+        return []
+
+    diagnostics: list[dict[str, Any]] = []
+    if author_agent == "codex-lead-1" and bridge.get("ok") is not True:
+        for consensus in by_agent.values():
+            if not isinstance(consensus, Mapping):
+                continue
+            identities = consensus.get("identities")
+            if not isinstance(identities, Mapping):
+                continue
+            lead_identity = identities.get("build_lead")
+            tools_identity = identities.get("build_tools")
+            rco_identity = identities.get("rco")
+            if not all(
+                isinstance(item, Mapping)
+                for item in (lead_identity, tools_identity, rco_identity)
+            ):
+                continue
+            if (
+                lead_identity.get("agent") == "codex-lead-1"
+                and lead_identity.get("approved") is not True
+                and tools_identity.get("approved") is True
+                and rco_identity.get("approved") is True
+            ):
+                diagnostics.append(
+                    {
+                        "kind": "lead_authored_pr_waiting_build_lead_policy_signal",
+                        "agent": "codex-lead-1",
+                        "head_bound": True,
+                        "merge_authority_changed": False,
+                        "reason": (
+                            "current bridge-consensus contract still requires "
+                            "a head-bound build_lead approval or an explicit "
+                            "driver/operator waiver; tools and RCO approvals "
+                            "alone do not satisfy the three-identity gate"
+                        ),
+                    }
+                )
+                break
+    return diagnostics
+
+
 def _report(
     *,
     repo: str,
@@ -451,6 +505,10 @@ def _report(
         "author_agent": author_agent,
         "reasons": list(eligibility.get("reasons", [])),
         "errors": list(eligibility.get("errors", [])),
+        "gate_diagnostics": _promotion_gate_diagnostics(
+            author_agent=author_agent,
+            eligibility=eligibility,
+        ),
         "pr_status": dict(pr_status),
         "eligibility": dict(eligibility),
         "undraft_cmd": [],

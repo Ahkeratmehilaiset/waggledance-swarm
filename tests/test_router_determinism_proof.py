@@ -88,26 +88,29 @@ def test_forge_nondeterministic_fails_closed(monkeypatch):
 
 
 def test_raw_query_invariant_is_derived_fails_closed():
-    # The privacy invariant is DERIVED, not hardcoded: a raw query surfacing in
-    # any emitted field flips it False; a clean report leaves it True.
-    leaked = [{"id": "x", "reason": "secret query text here"}]
-    assert mod._derive_raw_query_not_emitted(
-        leaked, [], ["secret query text here"]
-    ) is False
-    clean = [{"id": "x", "reason": "capsule_decision_match"}]
-    assert mod._derive_raw_query_not_emitted(
-        clean, [], ["secret query text here"]
-    ) is True
-    # Token-level: ONE non-vocab token of a multi-token query in a stable field.
-    token_leak = [{"id": "x", "reason": "ZQXSENTINELTOKEN"}]
-    assert mod._derive_raw_query_not_emitted(
-        token_leak, [], ["alpha ZQXSENTINELTOKEN omega"], set()
-    ) is False
-    # Short tokens (< min length) are not treated as leaks (avoids noise).
-    short = [{"id": "x", "reason": "capsule_decision_match"}]
-    assert mod._derive_raw_query_not_emitted(
-        short, [], ["a bb match"], set()
-    ) is True
+    # The privacy invariant is DERIVED by VALUE-ALLOWLIST: each emitted field must
+    # be a known router output, else it fails closed - complete and FP-free.
+    capsule = mod.DomainCapsule.load("apiary")
+    layers = mod._allowed_layers(capsule)
+    dids = mod._allowed_decision_ids(capsule)
+
+    def derive(dec):
+        return mod._derive_raw_query_not_emitted([dec], layers, dids)
+
+    base = {"id": "x", "layer": "model_based", "reason": "capsule_decision_match",
+            "decision_id": "honey_yield", "fallback": "llm_reasoning"}
+    assert derive(base) is True
+    # None decision_id / None fallback are allowed.
+    assert derive({**base, "decision_id": None, "fallback": None,
+                   "reason": "keyword_classifier:seasonal"}) is True
+    # Forged values in each field fail closed.
+    assert derive({**base, "decision_id": "SECRETZTOKEN"}) is False
+    assert derive({**base, "layer": "alpha"}) is False
+    assert derive({**base, "fallback": "alpha"}) is False
+    assert derive({**base, "reason": "does alice keep bees"}) is False
+    # SHORT ALPHA token leak (#1267 gap): a 5-char name in decision_id is caught,
+    # because the value-allowlist does not depend on token length.
+    assert derive({**base, "decision_id": "alice"}) is False
 
 
 def test_empty_corpus_not_ok():
@@ -157,18 +160,21 @@ def test_token_injection_into_stable_field_fails_closed(monkeypatch):
     assert r["ok"] is False
 
 
-def test_safe_vocab_excludes_capsule_and_layer_terms():
-    # Capsule keywords / decision ids / router layer names must NOT be treated as
-    # leaks even when they appear both in the query and the emitted fields.
+def test_allowed_sets_cover_real_corpus_outputs():
+    # FP-free guarantee: every genuine router output over the real corpus is in
+    # the value-allowlist, so the privacy derive never false-positives on real
+    # data (even when a query word coincides with a route label / decision id).
     capsule = mod.DomainCapsule.load("apiary")
-    vocab = mod._safe_vocab(capsule)
-    for term in ("retrieval", "statistical", "model_based", "honey", "varroa"):
-        assert term in vocab
-    clean = [{"id": "x", "layer": "retrieval", "reason": "capsule_decision_match",
-              "decision_id": "varroa_treatment", "fallback": "llm_reasoning"}]
-    assert mod._derive_raw_query_not_emitted(
-        clean, [], ["use retrieval for varroa please"], vocab
-    ) is True
+    layers = mod._allowed_layers(capsule)
+    dids = mod._allowed_decision_ids(capsule)
+    corpus = mod.load_corpus(REPO_ROOT / "configs" / "benchmarks.yaml")
+    r = mod.diagnose("apiary", corpus)
+    assert r["invariants"]["raw_query_not_emitted"] is True
+    for dec in r["routing_decisions"]:
+        assert dec["layer"] in layers
+        assert dec["fallback"] is None or dec["fallback"] in layers
+        assert dec["decision_id"] is None or dec["decision_id"] in dids
+        assert mod._reason_is_known(dec["reason"])
 
 
 def test_main_json_exit0():

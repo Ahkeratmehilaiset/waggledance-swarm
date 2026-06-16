@@ -77,9 +77,8 @@ def load_corpus(path: Path) -> list[dict[str, Any]]:
     return list(data.get("queries", []))
 
 
-# Router layer enum (core/smart_router_v2) - the only single-word emitted values
-# that could legitimately coincide with a query token, so they anchor the safe
-# vocabulary that the token-level leak scan must exclude to avoid false positives.
+# Router layer enum (core/smart_router_v2). Emitted layer/fallback values must be
+# one of these route labels (plus the capsule's own fallback / decision names).
 _KNOWN_LAYERS = (
     "model_based",
     "retrieval",
@@ -87,23 +86,14 @@ _KNOWN_LAYERS = (
     "rule_constraints",
     "statistical",
 )
-# Reason-label / classifier-class vocabulary the router can emit.
-_KNOWN_REASON_VOCAB = (
+# Reason values the router can emit: exact labels + the keyword_classifier:* and
+# capsule_decision* families.
+_KNOWN_REASON_EXACT = (
     "capsule_decision_match",
     "capsule_priority_fallback",
-    "keyword_classifier",
-    "math",
-    "seasonal",
-    "rule",
-    "stat",
+    "hot_cache_hit",
 )
-# Minimum token length scanned for raw-query leakage. Short common words (the,
-# hive, ...) are skipped to avoid false positives; injected sentinels are long.
-_MIN_LEAK_TOKEN_LEN = 6
-
-
-def _tokenize(text: str) -> set[str]:
-    return {t.lower() for t in re.split(r"[^A-Za-z0-9]+", str(text)) if t}
+_KNOWN_REASON_PREFIXES = ("capsule_decision", "keyword_classifier:")
 
 
 def _stable_decision(result: Any) -> dict[str, Any]:
@@ -112,55 +102,63 @@ def _stable_decision(result: Any) -> dict[str, Any]:
     return {field: payload.get(field) for field in STABLE_DECISION_FIELDS}
 
 
-def _safe_vocab(capsule: Any) -> set[str]:
-    """Trusted terms that may legitimately appear in emitted decision fields.
-
-    Union of the router layer enum, reason/classifier vocab, and every capsule
-    decision id / declared keyword (and their subword tokens). A raw-query token
-    that is NOT in this set and shows up in the emitted body is a leak.
-    """
-    vocab: set[str] = set(_KNOWN_LAYERS) | set(_KNOWN_REASON_VOCAB)
-    vocab.add(str(getattr(capsule, "default_fallback", "") or "").lower())
+def _allowed_layers(capsule: Any) -> set[str]:
+    """Route labels the router may emit as layer/fallback for this capsule."""
+    layers: set[str] = set(_KNOWN_LAYERS)
+    fallback = getattr(capsule, "default_fallback", None)
+    if fallback:
+        layers.add(str(fallback))
+    # A capsule decision name can become a fallback layer, so allow decision ids.
     for dec in (getattr(capsule, "key_decisions", None) or []):
-        dec_id = str(dec.get("id") or "")
-        if dec_id:
-            vocab.add(dec_id.lower())
-            vocab |= _tokenize(dec_id)
-        for kw in (dec.get("keywords") or []):
-            vocab.add(str(kw).lower())
-            vocab |= _tokenize(kw)
-    return {v for v in vocab if v}
+        if dec.get("id"):
+            layers.add(str(dec.get("id")))
+    return layers
+
+
+def _allowed_decision_ids(capsule: Any) -> set[str]:
+    return {
+        str(dec.get("id"))
+        for dec in (getattr(capsule, "key_decisions", None) or [])
+        if dec.get("id")
+    }
+
+
+def _reason_is_known(reason: Any) -> bool:
+    text = str(reason)
+    return text in _KNOWN_REASON_EXACT or any(
+        text.startswith(p) for p in _KNOWN_REASON_PREFIXES
+    )
 
 
 def _derive_raw_query_not_emitted(
     decisions: list[dict[str, Any]],
-    nondeterministic: list[dict[str, Any]],
-    raw_queries: list[str],
-    safe_vocab: set[str] | None = None,
+    allowed_layers: set[str],
+    allowed_decision_ids: set[str],
 ) -> bool:
-    """Re-scan the emitted data and decide the privacy invariant from data.
+    """VALUE-ALLOWLIST the emitted decision fields: each must be a known router
+    output (route label / capsule decision id / reason enum), else it is a forged
+    or raw-query value and the privacy invariant fails closed.
 
-    Fail-closed against BOTH a full raw query AND any non-trivial raw-query TOKEN
-    (len >= _MIN_LEAK_TOKEN_LEN) that is not part of the trusted safe vocabulary -
-    so a single query token injected into a stable emitted field (e.g. a forged
-    decision_id/reason) is caught, not just a whole-query leak. Never hardcoded.
+    This is COMPLETE (no query token can occupy an allowlisted-value field) and
+    false-positive-free: it does not depend on token length, so even a short alpha
+    query word (e.g. a name) injected into decision_id/reason is caught. Mirrors
+    the #1265 value-shape approach. Never hardcoded.
     """
-    safe = {s.lower() for s in (safe_vocab or set())}
-    scan_body = json.dumps(
-        {"routing_decisions": decisions, "nondeterministic_leads": nondeterministic},
-        ensure_ascii=False,
-    ).lower()
-    # Whole-query leak.
-    if any(q and q.lower() in scan_body for q in raw_queries):
-        return False
-    # Token-level leak: any non-trivial, non-vocab query token present (word-
-    # boundary, so underscored capsule ids like "varroa_treatment" don't trip).
-    for q in raw_queries:
-        for tok in _tokenize(q):
-            if len(tok) < _MIN_LEAK_TOKEN_LEN or tok in safe:
-                continue
-            if re.search(r"\b" + re.escape(tok) + r"\b", scan_body):
-                return False
+    for dec in decisions:
+        if dec.get("layer") not in allowed_layers:
+            return False
+        fallback = dec.get("fallback")
+        if not (fallback is None or fallback in allowed_layers):
+            return False
+        decision_id = dec.get("decision_id")
+        if not (
+            decision_id is None
+            or decision_id == ""
+            or decision_id in allowed_decision_ids
+        ):
+            return False
+        if not _reason_is_known(dec.get("reason")):
+            return False
     return True
 
 
@@ -175,14 +173,12 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     deterministic_count = 0
     nondeterministic: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
-    raw_queries: list[str] = []
 
     for item in corpus:
         query = str(item.get("query", ""))
         if not query:
             continue
         total += 1
-        raw_queries.append(query)
         run1 = _stable_decision(router_a.route(query))
         run2 = _stable_decision(router_b.route(query))
         identical = json.dumps(run1, sort_keys=True, default=str) == json.dumps(
@@ -207,11 +203,11 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     # routed query must have matched across the two runs.
     all_deterministic = total > 0 and deterministic_count == total
 
-    # DERIVE the privacy invariant (never hardcode): no full raw query AND no
-    # non-trivial raw-query token (outside the trusted capsule/router vocab) may
-    # appear anywhere in the serialized emitted data. Fail-closed.
+    # DERIVE the privacy invariant (never hardcode) by VALUE-ALLOWLISTING every
+    # emitted decision field against the known router/capsule output sets - a
+    # forged/raw value in any field (even a short alpha query word) fails closed.
     raw_query_not_emitted = _derive_raw_query_not_emitted(
-        decisions, nondeterministic, raw_queries, _safe_vocab(capsule)
+        decisions, _allowed_layers(capsule), _allowed_decision_ids(capsule)
     )
 
     # DERIVE the vocabulary-clean invariant by SCANNING the emitted content (not

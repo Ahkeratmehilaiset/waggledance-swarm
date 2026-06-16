@@ -12,8 +12,15 @@ reason.
 
 These are TUNING LEADS, not defects, and routing accuracy is a capsule↔corpus
 alignment signal, not a correctness gate. Lower misroute = fewer queries falling
-to the expensive `llm_reasoning` layer. The raw query text is never emitted
-(only the corpus id + capsule-side matched keywords), so no query payload leaks.
+to the expensive `llm_reasoning` layer.
+
+The raw query text is never emitted (only the corpus id + matched keywords).
+`matched_keywords` is restricted to capsule-DECLARED keywords; the router's
+keyword-classifier branches capture raw query substrings (e.g. a numeric/operator
+token via `m.group(0)`), so any matched keyword not in the capsule's declared
+vocabulary is query-derived and is redacted to a count. The `raw_query_not_emitted`
+invariant is then DERIVED (not hardcoded) by re-scanning the emitted report and
+fails closed if any query-derived token survives.
 
 Exact validation commands::
 
@@ -64,9 +71,56 @@ def load_corpus(path: Path) -> list[dict[str, Any]]:
     return list(data.get("queries", []))
 
 
+def _capsule_keyword_vocab(capsule: Any) -> set[str]:
+    """Lower-cased set of every keyword DECLARED in the capsule's key decisions.
+
+    These are capsule-side (config-declared, finite) tokens that are safe to
+    emit. Anything else in `result.matched_keywords` (e.g. the keyword-classifier
+    branches that capture `m.group(0)` straight off the query, such as a raw
+    numeric/operator substring) is query-derived and must NOT be emitted.
+    """
+    vocab: set[str] = set()
+    for dec in (getattr(capsule, "key_decisions", None) or []):
+        for kw in (dec.get("keywords") or []):
+            vocab.add(str(kw).lower())
+    return vocab
+
+
+def _derive_raw_query_not_emitted(
+    misroutes: list[dict[str, Any]],
+    per_route_summary: dict[str, Any],
+    vocab: set[str],
+    captured_query_derived: set[str],
+) -> bool:
+    """Re-scan the emitted report and decide the privacy invariant from data.
+
+    Holds iff (a) every emitted matched keyword is capsule-declared and (b) none
+    of the redacted query-derived tokens survived anywhere in the serialized
+    emitted data. Fail-closed: any leak (now or via a future emission path) flips
+    it False. Never hardcoded True.
+    """
+    emitted_all_vocab = all(
+        str(k).lower() in vocab
+        for m in misroutes
+        for k in m.get("matched_keywords", [])
+    )
+    scan_body = json.dumps(
+        {"misroute_leads": misroutes, "per_route_summary": per_route_summary},
+        ensure_ascii=False,
+    )
+    no_query_token_in_body = not any(
+        tok and tok in scan_body for tok in captured_query_derived
+    )
+    return bool(emitted_all_vocab and no_query_token_in_body)
+
+
 def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
     capsule = DomainCapsule.load(profile)
     router = SmartRouterV2(capsule)
+    vocab = _capsule_keyword_vocab(capsule)
+    # Every classifier-captured (query-derived) token we redacted, so the
+    # privacy invariant can be DERIVED by re-scanning the emitted report.
+    captured_query_derived: set[str] = set()
 
     total = 0
     correct = 0
@@ -90,14 +144,23 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
         per_route_miss[expected] += 1
         if predicted == EXPENSIVE_LAYER:
             misroute_to_expensive += 1
+        # Emit ONLY capsule-declared keywords. Classifier branches capture raw
+        # query substrings (e.g. _MATH_KEYWORDS \d+\s*[+\-*/] -> m.group(0) like
+        # "9090901*"); those are query-derived and are redacted to a count so no
+        # query payload leaks through matched_keywords.
+        raw_kw = [str(k) for k in (result.matched_keywords or [])]
+        safe_kw = [k for k in raw_kw if k.lower() in vocab]
+        nonvocab_kw = [k for k in raw_kw if k.lower() not in vocab]
+        captured_query_derived.update(nonvocab_kw)
         misroutes.append({
             "id": str(item.get("id", "")),
             "expected": expected,
             "predicted": predicted,
             "reason": result.reason,
             "decision_id": result.decision_id,
-            # capsule-side matched keywords only - never the raw query text
-            "matched_keywords": list(result.matched_keywords or []),
+            # capsule-declared keywords only - never raw/query-derived tokens
+            "matched_keywords": safe_kw,
+            "redacted_query_derived_keyword_count": len(nonvocab_kw),
         })
 
     # Per-expected-route tuning summary: how often each route is missed and the
@@ -116,6 +179,11 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
             "top_reason": reasons.most_common(1)[0][0] if reasons else None,
         }
 
+    # DERIVE the privacy invariant - never hardcode True (fail-closed).
+    raw_query_not_emitted = _derive_raw_query_not_emitted(
+        misroutes, per_route_summary, vocab, captured_query_derived
+    )
+
     return {
         "report_version": REPORT_VERSION,
         "generated_at_utc": _utc_iso(),
@@ -131,7 +199,7 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
             "no_cloud_api_calls_this_session": True,
             "no_pull_or_download_this_session": True,
             "deterministic_offline": True,
-            "raw_query_not_emitted": True,
+            "raw_query_not_emitted": raw_query_not_emitted,
             "tuning_leads_not_defects": True,
             "no_superiority_claim": True,
             "forbidden_vocabulary_excluded": list(FORBIDDEN_VOCABULARY),

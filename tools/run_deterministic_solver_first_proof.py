@@ -27,7 +27,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -72,6 +72,41 @@ def _route_once(domain: str, query: str) -> dict[str, Any]:
     }
 
 
+PRIVACY_SENSITIVE_TRACE_KEYS = frozenset({
+    "query", "raw_query", "prompt", "input", "user_input", "text", "question",
+})
+
+
+def _norm(value: Any) -> str:
+    return " ".join(str(value).lower().split())
+
+
+def _query_leaked(trace: Any, query: str) -> bool:
+    """Fail-closed privacy check.
+
+    A leak is ANY of: (a) a privacy-sensitive trace key holding a non-empty
+    value (regardless of the value), or (b) the raw query appearing anywhere in
+    the trace under whitespace/case normalization (catches casing/spacing
+    variants the exact-match check missed).
+    """
+    def _scan(obj: Any) -> bool:
+        if isinstance(obj, Mapping):
+            for k, v in obj.items():
+                if str(k).lower() in PRIVACY_SENSITIVE_TRACE_KEYS and str(v).strip():
+                    return True
+                if _scan(v):
+                    return True
+            return False
+        if isinstance(obj, (list, tuple)):
+            return any(_scan(x) for x in obj)
+        return False
+
+    if _scan(trace):
+        return True
+    norm_q = _norm(query)
+    return bool(norm_q) and norm_q in _norm(json.dumps(trace, sort_keys=True))
+
+
 def build_deterministic_solver_first_proof(
     *, domain: str = SAMPLE_DOMAIN, query: str = SAMPLE_QUERY,
 ) -> dict[str, Any]:
@@ -84,7 +119,7 @@ def build_deterministic_solver_first_proof(
     no_llm_fallback = run1["fallback_used"] is False
     solver_first = run1["selected_solver_ids"] == EXPECTED_SOLVER_IDS
     safe_boundary_only = run1["execution_boundaries"] == ["safe_action_bus"]
-    query_text_recorded = query in json.dumps(run1["trace"], sort_keys=True)
+    query_text_recorded = _query_leaked(run1["trace"], query)
     query_not_recorded = not query_text_recorded
 
     evidence_present = bool(

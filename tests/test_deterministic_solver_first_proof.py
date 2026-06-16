@@ -80,6 +80,50 @@ def test_flags_derived_from_observed_route(monkeypatch):
     assert report["invariants"]["no_llm_fallback"] is False
 
 
+def _route_with_trace(trace):
+    def _fake(domain, query):
+        return {
+            "quality_path": "gold",
+            "fallback_used": False,
+            "selected_solver_ids": ["solve.math"],
+            "execution_boundaries": ["safe_action_bus"],
+            "trace": trace,
+            "trace_len": len(trace),
+        }
+    return _fake
+
+
+def test_privacy_leak_via_sensitive_key_fails_closed(monkeypatch):
+    # A privacy-sensitive trace key (regardless of value) is a leak.
+    trace = [{"stage": "solver_call", "capability_id": "solve.math",
+              "execution_boundary": "safe_action_bus", "query": "anything"}]
+    monkeypatch.setattr(mod, "_route_once", _route_with_trace(trace))
+    report = mod.build_deterministic_solver_first_proof()
+    assert report["ok"] is False
+    assert "raw_query_recorded_in_trace" in report["blockers"]
+    assert report["evidence_vs_authority"]["raw_query_recorded"] is True
+
+
+def test_privacy_leak_via_normalized_query_variant_fails_closed(monkeypatch):
+    # A cased/spaced variant of the raw query in any field is a leak.
+    trace = [{"stage": "solver_call", "capability_id": "solve.math",
+              "execution_boundary": "safe_action_bus", "note": "CALCULATE  2 + 2"}]
+    monkeypatch.setattr(mod, "_route_once", _route_with_trace(trace))
+    report = mod.build_deterministic_solver_first_proof()
+    assert report["ok"] is False
+    assert "raw_query_recorded_in_trace" in report["blockers"]
+
+
+def test_clean_trace_not_flagged(monkeypatch):
+    # A trace with no sensitive key and no query text passes the privacy check.
+    trace = [{"stage": "solver_call", "capability_id": "solve.math",
+              "execution_boundary": "safe_action_bus"}]
+    monkeypatch.setattr(mod, "_route_once", _route_with_trace(trace))
+    report = mod.build_deterministic_solver_first_proof()
+    assert report["evidence_vs_authority"]["raw_query_recorded"] is False
+    assert report["ok"] is True
+
+
 def test_main_json_exit0():
     assert mod.main(["--json"]) == 0
 

@@ -19,9 +19,16 @@ def test_deferred_lift_state_shape_and_authority_are_read_only() -> None:
         "merges": False,
         "skips_gates": False,
     }
-    assert state["items"]["production_two_agent_activation_loop"]["state"] == (
-        "partial_read_only_ready"
-    )
+    production_loop = state["items"]["production_two_agent_activation_loop"]
+    assert production_loop["state"] == "read_only_scheduler_ready"
+    assert production_loop["implemented_by"] == [
+        "tools/idle_loop_once.py",
+        "tools/agent_next_task.py",
+        "tools/bridge_loop_tick.py",
+        "docs/architecture/IDLE_LOOP_RUNBOOK.md",
+    ]
+    assert "read-only first action" in production_loop["safe_next"]
+    assert "not scheduler authority" in production_loop["safe_next"]
     assert state["items"]["automatic_payload_generation"]["state"] == "deferred"
     assert state["items"]["auto_conversion_consensus_to_implementation_work"][
         "state"

@@ -20,16 +20,17 @@ DEFERRED_LIFT_STATE: dict[str, Any] = {
     },
     "items": {
         "production_two_agent_activation_loop": {
-            "state": "partial_read_only_ready",
+            "state": "read_only_scheduler_ready",
             "implemented_by": [
                 "tools/idle_loop_once.py",
                 "tools/agent_next_task.py",
+                "tools/bridge_loop_tick.py",
                 "docs/architecture/IDLE_LOOP_RUNBOOK.md",
             ],
             "safe_next": (
-                "Expose readiness and scheduler recommendations only; any "
-                "bridge write stays in an explicit caller-owned claim/release "
-                "step."
+                "Use the bridge loop tick as the read-only first action for "
+                "each live-agent wakeup; opt-in peer activation remains an "
+                "explicit caller-owned bridge write, not scheduler authority."
             ),
         },
         "automatic_payload_generation": {

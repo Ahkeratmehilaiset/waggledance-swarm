@@ -473,3 +473,38 @@ def test_gated_promotions_fail_closed_on_guardrail_leaks() -> None:
         "end_to_end_gated_promotions_total"
     ]
     assert gp_leaked["production_authority_granted"] is True
+
+
+def test_gated_promotions_fail_closed_on_every_authority_axis() -> None:
+    # rco-1 re-audit fix: guardrail must derive from the FULL authority_boundary
+    # (any axis True), not a hand-enumerated subset. Forge ALL 9 emitted axes -
+    # including the 5 previously ungated (production_control_plane_touched,
+    # production_scheduler_enqueue, gate_skip_authority, operator_gate_bypassed,
+    # fast_track_priority) - and require each to fail closed.
+    import copy
+
+    base = build_manifest(ROOT)
+    axes = (
+        "external_writes_applied",
+        "production_control_plane_touched",
+        "production_scheduler_enqueue",
+        "provider_jobs_created",
+        "builder_jobs_created",
+        "gate_skip_authority",
+        "operator_gate_bypassed",
+        "runtime_authority_granted",
+        "fast_track_priority",
+    )
+    for axis in axes:
+        manifest = copy.deepcopy(base)
+        for cap in manifest["capabilities"]:
+            if cap["capability_id"] == "low_risk_autonomy_loop":
+                cap["proof"].setdefault("real_loop_dry_run", {}).setdefault(
+                    "authority_boundary", {}
+                )[axis] = True
+        gp = build_vision_progress_counters(manifest)["milestone_counters"][
+            "end_to_end_gated_promotions_total"
+        ]
+        assert gp["guardrail_tripped"] is True, axis
+        assert gp["satisfied"] is False, axis
+        assert gp["current_value"] == 0, axis

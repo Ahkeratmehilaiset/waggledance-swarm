@@ -216,6 +216,14 @@ def _extract_milestone_values(
             "dry_run_external_writes_applied": (
                 authority.get("external_writes_applied") is True
             ),
+            # Full-coverage guard: ANY authority_boundary axis being True (covers
+            # all emitted axes - production_control_plane_touched,
+            # production_scheduler_enqueue, gate_skip_authority,
+            # operator_gate_bypassed, fast_track_priority, etc.) so no
+            # hand-enumerated subset can leave a fail-open gap.
+            "dry_run_any_authority_flag": any(
+                v is True for v in authority.values()
+            ),
         }
     if capability_id == "hexagonal_upgrades":
         return {
@@ -269,6 +277,9 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
     )
     low_risk_real_loop_guardrail_tripped = (
         low_risk.get("runtime_authority_granted") is True
+        # Full authority_boundary coverage (any axis True) - replaces the
+        # hand-enumerated subset so no ungated axis can leave a fail-open.
+        or low_risk.get("dry_run_any_authority_flag") is True
         or low_risk.get("dry_run_runtime_authority_granted") is True
         or low_risk.get("dry_run_external_writes_applied") is True
         or _int_value(low_risk.get("measured_provider_jobs_created")) > 0

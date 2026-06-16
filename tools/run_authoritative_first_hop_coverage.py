@@ -21,10 +21,10 @@ Provenance, not destination: a query the keyword classifier resolves counts as
 NON-authoritative even if it happens to land on the priority-0 layer.
 
 Privacy: the raw query text is NEVER emitted. Only the corpus id, route labels,
-the fixed ``reason`` enum, the first-hop class, and the capsule-side
-``decision_id`` are recorded. The ``raw_query_not_emitted`` invariant is DERIVED
-by re-scanning the serialized report for any corpus query text (fail-closed),
-never hardcoded True.
+the fixed ``reason`` enum, the first-hop class, and capsule-declared
+``decision_id`` values are allowed. The ``raw_query_not_emitted`` invariant is
+DERIVED by allowlisting emitted fields and re-scanning the serialized report for
+raw query text or high-signal query markers (fail-closed), never hardcoded True.
 
 Measurement-vs-claim: this tool only MEASURES. The WD Image1 counter's
 ``satisfied``/``current_value`` stay gated on the existing
@@ -56,7 +56,7 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from core.domain_capsule import DomainCapsule  # noqa: E402
+from core.domain_capsule import DomainCapsule, VALID_LAYERS  # noqa: E402
 from core.smart_router_v2 import SmartRouterV2  # noqa: E402
 
 FORBIDDEN_VOCABULARY: tuple[str, ...] = (
@@ -78,6 +78,141 @@ AUTHORITATIVE_REASONS: frozenset[str] = frozenset({
 _RECORD_KEYS: frozenset[str] = frozenset({
     "id", "expected", "predicted", "reason", "first_hop_class", "decision_id",
 })
+_FIRST_HOP_CLASSES: frozenset[str] = frozenset({
+    "authoritative", "heuristic", "cached",
+})
+_PER_ROUTE_SUMMARY_KEYS: frozenset[str] = frozenset({
+    "total", "routable", "authoritative", "heuristic", "cached",
+    "authoritative_coverage",
+})
+_KEYWORD_CLASSIFIER_REASONS: frozenset[str] = frozenset({
+    "keyword_classifier:math",
+    "keyword_classifier:seasonal",
+    "keyword_classifier:rule",
+    "keyword_classifier:stat",
+    "keyword_classifier:retrieval",
+})
+_SAFE_EMITTED_TOKENS: frozenset[str] = frozenset({
+    "authoritative",
+    "cached",
+    "capsule_decision_fallback",
+    "capsule_decision_match",
+    "capsule_priority_fallback",
+    "heuristic",
+    "hot_cache_hit",
+    "keyword_classifier",
+    "llm_reasoning",
+    "model_based",
+    "retrieval",
+    "rule_constraints",
+    "statistical",
+})
+
+
+def _raw_query_leak_markers(raw: str) -> set[str]:
+    """Return raw-query markers that must not appear in emitted structures.
+
+    Whole queries catch verbatim leaks. Token markers catch sentinel/raw-derived
+    leaks without treating ordinary short domain words as violations when they
+    overlap capsule-side route labels or decision ids.
+    """
+    q = re.sub(r"\s+", " ", str(raw)).strip().lower()
+    markers: set[str] = set()
+    if len(q) >= 8:
+        markers.add(q)
+
+    for token in re.findall(r"[a-z0-9_]+", q):
+        if token in _SAFE_EMITTED_TOKENS:
+            continue
+        has_digit = any(ch.isdigit() for ch in token)
+        if (has_digit and len(token) >= 6) or len(token) >= 12:
+            markers.add(token)
+
+    for token in re.findall(r"[a-z0-9_+*.-]{5,}", q):
+        if (
+            token not in _SAFE_EMITTED_TOKENS
+            and any(ch.isdigit() for ch in token)
+            and any(ch in "+*.-" for ch in token)
+        ):
+            markers.add(token)
+    return markers
+
+
+def _capsule_decision_ids(capsule: Any) -> set[str]:
+    """Capsule-declared decision ids are the only non-null ids we emit."""
+    return {
+        str(dec.get("id", ""))
+        for dec in (getattr(capsule, "key_decisions", None) or [])
+        if str(dec.get("id", ""))
+    }
+
+
+def _corpus_record_ids(corpus: Sequence[dict[str, Any]]) -> set[str]:
+    """Corpus ids are the only non-empty record ids we emit."""
+    return {
+        str(item.get("id", ""))
+        for item in corpus
+        if str(item.get("id", "")) and item.get("query") and item.get("expected_route")
+    }
+
+
+def _is_safe_reason(reason: str) -> bool:
+    return (
+        reason == HOT_CACHE_REASON
+        or reason in AUTHORITATIVE_REASONS
+        or reason in _KEYWORD_CLASSIFIER_REASONS
+    )
+
+
+def _is_safe_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value == value
+        and value not in (float("inf"), float("-inf"))
+    )
+
+
+def _emitted_values_are_allowlisted(
+    records: list[dict[str, Any]],
+    per_route_summary: dict[str, Any],
+    allowed_decision_ids: set[str],
+    allowed_record_ids: set[str],
+) -> bool:
+    """Fail closed if an emitted field carries a non-capsule/free-form value."""
+    for record in records:
+        if set(record) - _RECORD_KEYS:
+            return False
+        record_id = record.get("id")
+        if record_id not in (None, "") and str(record_id) not in allowed_record_ids:
+            return False
+        if str(record.get("expected", "")) not in VALID_LAYERS:
+            return False
+        if str(record.get("predicted", "")) not in VALID_LAYERS:
+            return False
+        if str(record.get("first_hop_class", "")) not in _FIRST_HOP_CLASSES:
+            return False
+        if not _is_safe_reason(str(record.get("reason", ""))):
+            return False
+        decision_id = record.get("decision_id")
+        if decision_id not in (None, "") and str(decision_id) not in allowed_decision_ids:
+            return False
+
+    for route, summary in per_route_summary.items():
+        if str(route) not in VALID_LAYERS or not isinstance(summary, dict):
+            return False
+        if set(summary) != _PER_ROUTE_SUMMARY_KEYS:
+            return False
+        for key in ("total", "routable", "authoritative", "heuristic", "cached"):
+            value = summary.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                return False
+        coverage = summary.get("authoritative_coverage")
+        if coverage is not None and (
+            not _is_safe_number(coverage) or not 0.0 <= float(coverage) <= 1.0
+        ):
+            return False
+    return True
 
 
 def _utc_iso() -> str:
@@ -117,22 +252,30 @@ def _derive_raw_query_not_emitted(
     records: list[dict[str, Any]],
     per_route_summary: dict[str, Any],
     queries: Sequence[str],
+    allowed_decision_ids: set[str] | None = None,
+    allowed_record_ids: set[str] | None = None,
 ) -> bool:
     """Re-scan the emitted data; fail-closed privacy invariant (never hardcoded).
 
-    Returns True iff no raw corpus query text survives anywhere in the serialized
-    emitted structures. Whole-query strings are scanned (length-guarded to avoid
-    matching incidental route-label words), so any verbatim query survival flips
-    it False.
+    Returns True iff emitted fields match their allowlists and no raw corpus
+    query text or sentinel-like raw-query token survives anywhere in the
+    serialized emitted structures. Whole-query strings and high-signal token
+    markers are scanned so verbatim or raw-derived query survival flips it
+    False.
     """
     scan_body = json.dumps(
         {"first_hop_records": records, "per_route_summary": per_route_summary},
         ensure_ascii=False,
     ).lower()
+    if not _emitted_values_are_allowlisted(
+        records, per_route_summary, allowed_decision_ids or set(),
+        allowed_record_ids or set()
+    ):
+        return False
     for raw in queries:
-        q = re.sub(r"\s+", " ", str(raw)).strip().lower()
-        if len(q) >= 8 and q in scan_body:
-            return False
+        for marker in _raw_query_leak_markers(raw):
+            if marker in scan_body:
+                return False
     return True
 
 
@@ -200,7 +343,8 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     raw_query_not_emitted = _derive_raw_query_not_emitted(
-        records, per_route_summary, raw_queries
+        records, per_route_summary, raw_queries, _capsule_decision_ids(capsule),
+        _corpus_record_ids(corpus)
     )
 
     return {

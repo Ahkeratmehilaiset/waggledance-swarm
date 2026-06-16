@@ -140,6 +140,11 @@ def test_panel_counters_expose_measurable_milestones() -> None:
         "hybrid_retrieval_mode": "candidate",
         "hex_mesh_enabled": False,
         "hybrid_retrieval_authoritative": False,
+        # default-off first-hop coverage: absent -> measurement-only fields off
+        "first_hop_coverage_present": False,
+        "first_hop_coverage_available": False,
+        "first_hop_coverage_ratio": None,
+        "first_hop_declares_order": False,
     }
     assert by_id["magma_audit_log"]["milestones"]["receipt_count"] == 1
     assert (
@@ -620,3 +625,85 @@ def test_claim_safe_count_unaffected_by_coverage() -> None:
         with_cov["summary"]["claim_safe_count"]
         == base["summary"]["claim_safe_count"]
     )
+
+
+# --- authoritative first-hop coverage counter (default-off/on-demand) ---
+def _manifest_with_first_hop(coverage: object) -> dict:
+    import copy
+
+    manifest = copy.deepcopy(_minimal_manifest())
+    for capability in manifest["capabilities"]:
+        if capability["capability_id"] == "hex_mesh_entry" and coverage is not None:
+            capability["proof"]["first_hop_coverage"] = coverage
+    return manifest
+
+
+def _first_hop_gate(coverage: object) -> dict:
+    counters = build_vision_progress_counters(_manifest_with_first_hop(coverage))
+    return counters["milestone_counters"][
+        "authoritative_first_hop_route_order_coverage"
+    ]
+
+
+_SAFE_FIRST_HOP = {
+    "coverage_measurement_available": True,
+    "authoritative_first_hop_coverage": 0.6667,
+    "capsule_declares_authoritative_order": True,
+    "measurement_basis": "v1_first_hop_authoritative_order",
+}
+
+
+def test_first_hop_coverage_available_with_safe_measurement() -> None:
+    gate = _first_hop_gate(_SAFE_FIRST_HOP)
+    assert gate["coverage_measurement_available"] is True
+    assert gate["measured_first_hop_authoritative_percent"] == 66.67
+    assert gate["measurement_basis"] == "v1_first_hop_authoritative_order"
+
+
+def test_first_hop_measurement_never_upgrades_satisfied() -> None:
+    # A measured coverage must NOT flip satisfied/current_value off the real claim.
+    with_cov = _first_hop_gate(_SAFE_FIRST_HOP)
+    without_cov = _first_hop_gate(None)
+    assert with_cov["satisfied"] == without_cov["satisfied"] is False
+    assert with_cov["current_value"] == without_cov["current_value"] == 0.0
+
+
+def test_first_hop_unavailable_when_not_declared() -> None:
+    # capsule with no declared order -> measurement unavailable (NOT 100%).
+    gate = _first_hop_gate({**_SAFE_FIRST_HOP,
+                            "capsule_declares_authoritative_order": False,
+                            "coverage_measurement_available": False,
+                            "authoritative_first_hop_coverage": None})
+    assert gate["coverage_measurement_available"] is False
+    assert gate["measured_first_hop_authoritative_percent"] is None
+    assert gate["measurement_basis"] == "manifest_hex_mesh_flags"
+
+
+def test_first_hop_unavailable_when_flag_false() -> None:
+    gate = _first_hop_gate({**_SAFE_FIRST_HOP,
+                            "coverage_measurement_available": False})
+    assert gate["coverage_measurement_available"] is False
+    assert gate["measured_first_hop_authoritative_percent"] is None
+
+
+def test_first_hop_unavailable_when_ratio_invalid() -> None:
+    for bad in (1.5, -0.1, True, None, "0.6"):
+        gate = _first_hop_gate({**_SAFE_FIRST_HOP,
+                                "authoritative_first_hop_coverage": bad})
+        assert gate["coverage_measurement_available"] is False, bad
+        assert gate["measured_first_hop_authoritative_percent"] is None, bad
+
+
+def test_first_hop_unavailable_when_absent() -> None:
+    gate = _first_hop_gate(None)
+    assert gate["coverage_measurement_available"] is False
+    assert gate["measured_first_hop_authoritative_percent"] is None
+    assert gate["measurement_basis"] == "manifest_hex_mesh_flags"
+
+
+def test_first_hop_derived_not_hardcoded() -> None:
+    avail = _first_hop_gate(_SAFE_FIRST_HOP)["coverage_measurement_available"]
+    unavail = _first_hop_gate(
+        {**_SAFE_FIRST_HOP, "coverage_measurement_available": False}
+    )["coverage_measurement_available"]
+    assert avail is True and unavail is False

@@ -19,6 +19,12 @@ from tools.wd_image1_capability_manifest import (
     _safe_per_query_receipt_coverage_aggregate,
     build_per_query_receipt_coverage_aggregate,
 )
+from tools.wd_image1_capability_manifest import (
+    FIRST_HOP_COVERAGE_ENV,
+    _FIRST_HOP_COVERAGE_SAFE_KEYS,
+    _safe_first_hop_coverage_aggregate,
+    build_first_hop_coverage_aggregate,
+)
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
@@ -2507,3 +2513,92 @@ def test_flag_off_manifest_omits_coverage_key() -> None:
         if c["capability_id"] == "magma_audit_log"
     )
     assert "per_query_receipt_coverage" not in magma["proof"]
+
+
+# --- authoritative first-hop coverage aggregate (default-off/on-demand) ---
+def test_first_hop_coverage_flag_off_returns_none() -> None:
+    prior = os.environ.pop(FIRST_HOP_COVERAGE_ENV, None)
+    try:
+        assert build_first_hop_coverage_aggregate() is None
+    finally:
+        if prior is not None:
+            os.environ[FIRST_HOP_COVERAGE_ENV] = prior
+
+
+def test_first_hop_coverage_force_real_aggregate_is_safe() -> None:
+    aggregate = build_first_hop_coverage_aggregate(force=True)
+    assert set(aggregate) == set(_FIRST_HOP_COVERAGE_SAFE_KEYS)
+    assert aggregate["coverage_measurement_available"] is True
+    assert aggregate["capsule_declares_authoritative_order"] is True
+    assert aggregate["measurement_basis"] == "v1_first_hop_authoritative_order"
+    ratio = aggregate["authoritative_first_hop_coverage"]
+    assert ratio is None or (isinstance(ratio, float) and 0.0 <= ratio <= 1.0)
+    blob = json.dumps(aggregate)
+    for marker in ("first_hop_records", "per_route_summary", "expected", "predicted"):
+        assert marker not in blob
+
+
+def _good_first_hop_report() -> dict:
+    return {
+        "coverage_measurement_available": True,
+        "authoritative_first_hop_coverage": 0.6667,
+        "measurement_basis": "v1_first_hop_authoritative_order",
+        "corpus_size": 30,
+        "hot_cache_count": 0,
+        "routable_size": 30,
+        "authoritative_first_hop_count": 20,
+        "heuristic_first_hop_count": 10,
+        "invariants": {"capsule_declares_authoritative_order": True},
+    }
+
+
+def test_first_hop_aggregate_accepts_none_coverage_when_unavailable() -> None:
+    # capsule with no declared order: coverage None + unavailable is valid.
+    report = {**_good_first_hop_report(),
+              "coverage_measurement_available": False,
+              "authoritative_first_hop_coverage": None,
+              "invariants": {"capsule_declares_authoritative_order": False}}
+    aggregate = _safe_first_hop_coverage_aggregate(report)
+    assert aggregate["authoritative_first_hop_coverage"] is None
+    assert aggregate["coverage_measurement_available"] is False
+    assert aggregate["capsule_declares_authoritative_order"] is False
+
+
+@pytest.mark.parametrize("bad", [1.5, -0.1, float("nan"), float("inf"), "0.5", True])
+def test_first_hop_aggregate_rejects_bad_coverage(bad) -> None:
+    with pytest.raises(ValueError):
+        _safe_first_hop_coverage_aggregate(
+            {**_good_first_hop_report(), "authoritative_first_hop_coverage": bad}
+        )
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("coverage_measurement_available", "true"),
+    ("corpus_size", -1),
+    ("authoritative_first_hop_count", 1.5),
+    ("measurement_basis", "spoofed_basis"),
+])
+def test_first_hop_aggregate_rejects_bad_scalar(field, bad) -> None:
+    with pytest.raises(ValueError):
+        _safe_first_hop_coverage_aggregate({**_good_first_hop_report(), field: bad})
+
+
+def test_first_hop_aggregate_rejects_non_bool_declares_order() -> None:
+    with pytest.raises(ValueError):
+        _safe_first_hop_coverage_aggregate(
+            {**_good_first_hop_report(),
+             "invariants": {"capsule_declares_authoritative_order": 1}}
+        )
+
+
+def test_flag_off_manifest_omits_first_hop_key() -> None:
+    prior = os.environ.pop(FIRST_HOP_COVERAGE_ENV, None)
+    try:
+        manifest = build_manifest()
+    finally:
+        if prior is not None:
+            os.environ[FIRST_HOP_COVERAGE_ENV] = prior
+    hex_mesh = next(
+        c for c in manifest["capabilities"] if c["capability_id"] == "hex_mesh_entry"
+    )
+    assert "first_hop_coverage" not in hex_mesh["proof"]

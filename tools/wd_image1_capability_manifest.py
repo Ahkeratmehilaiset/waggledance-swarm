@@ -7232,6 +7232,123 @@ def build_per_query_receipt_coverage_aggregate(
     return _safe_per_query_receipt_coverage_aggregate(report)
 
 
+FIRST_HOP_COVERAGE_ENV = "WD_IMAGE1_FIRST_HOP_COVERAGE"
+
+# The ONLY keys allowed in the aggregated authoritative-first-hop coverage block.
+# All safe scalars; first_hop_records / per_route_summary (which carry capsule
+# decision ids/reasons) are never copied. Enforced fail-closed at build time.
+_FIRST_HOP_COVERAGE_SAFE_KEYS = (
+    "coverage_measurement_available",
+    "authoritative_first_hop_coverage",
+    "capsule_declares_authoritative_order",
+    "corpus_size",
+    "hot_cache_count",
+    "routable_size",
+    "authoritative_first_hop_count",
+    "heuristic_first_hop_count",
+    "measurement_basis",
+)
+_FIRST_HOP_MEASUREMENT_BASIS = "v1_first_hop_authoritative_order"
+
+
+def _first_hop_coverage_enabled() -> bool:
+    """True only when the opt-in env flag is set (default OFF).
+
+    Like the per-query receipt coverage measurement, the first-hop coverage run
+    is kept off by default so build_manifest and its consumers stay fast and
+    byte-unaffected unless explicitly requested.
+    """
+    return str(
+        os.environ.get(FIRST_HOP_COVERAGE_ENV, "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
+    """Reduce an authoritative-first-hop coverage report to safe scalar fields.
+
+    Every field is SHAPE-validated (coverage a finite number in [0,1] or None;
+    the two flags strict bool; counts non-negative ints; basis the exact expected
+    string), and only the allowlisted keys are emitted. Any non-conforming value
+    fails closed (raise) so no raw content can ride along.
+    """
+    def _strict_bool(value: Any, name: str) -> bool:
+        if value is not True and value is not False:
+            raise ValueError(f"first_hop_coverage {name} is not a strict bool")
+        return value
+
+    def _nonneg_int(value: Any, name: str) -> int:
+        if not (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+            raise ValueError(f"first_hop_coverage {name} is not a non-negative int")
+        return value
+
+    coverage = report.get("authoritative_first_hop_coverage")
+    if not (
+        coverage is None
+        or (
+            isinstance(coverage, (int, float))
+            and not isinstance(coverage, bool)
+            and math.isfinite(coverage)
+            and 0.0 <= float(coverage) <= 1.0
+        )
+    ):
+        raise ValueError(
+            "first_hop_coverage authoritative_first_hop_coverage is not None or a "
+            "finite number in [0, 1]"
+        )
+    basis = report.get("measurement_basis")
+    if basis != _FIRST_HOP_MEASUREMENT_BASIS:
+        raise ValueError("unexpected first_hop_coverage measurement_basis")
+    invariants = report.get("invariants") or {}
+    aggregate = {
+        "coverage_measurement_available": _strict_bool(
+            report.get("coverage_measurement_available"),
+            "coverage_measurement_available",
+        ),
+        "authoritative_first_hop_coverage": (
+            float(coverage) if coverage is not None else None
+        ),
+        "capsule_declares_authoritative_order": _strict_bool(
+            invariants.get("capsule_declares_authoritative_order"),
+            "capsule_declares_authoritative_order",
+        ),
+        "corpus_size": _nonneg_int(report.get("corpus_size"), "corpus_size"),
+        "hot_cache_count": _nonneg_int(report.get("hot_cache_count"), "hot_cache_count"),
+        "routable_size": _nonneg_int(report.get("routable_size"), "routable_size"),
+        "authoritative_first_hop_count": _nonneg_int(
+            report.get("authoritative_first_hop_count"),
+            "authoritative_first_hop_count",
+        ),
+        "heuristic_first_hop_count": _nonneg_int(
+            report.get("heuristic_first_hop_count"), "heuristic_first_hop_count"
+        ),
+        "measurement_basis": basis,
+    }
+    extra = set(aggregate) - set(_FIRST_HOP_COVERAGE_SAFE_KEYS)
+    if extra:
+        raise ValueError(
+            f"first_hop_coverage aggregate has non-allowlisted keys: {sorted(extra)}"
+        )
+    return aggregate
+
+
+def build_first_hop_coverage_aggregate(*, force: bool | None = None) -> dict | None:
+    """Run the opt-in authoritative-first-hop coverage measurement and return a
+    safe aggregate, or None when OFF (default) so the manifest stays
+    byte-unaffected. Measurement-only: it never flips the hex-mesh claim.
+    """
+    enabled = _first_hop_coverage_enabled() if force is None else force
+    if not enabled:
+        return None
+    from tools.run_authoritative_first_hop_coverage import (  # noqa: E402
+        diagnose as _first_hop_diagnose,
+        load_corpus as _first_hop_load_corpus,
+    )
+
+    corpus = _first_hop_load_corpus(ROOT / "configs" / "benchmarks.yaml")
+    report = _first_hop_diagnose("apiary", corpus)
+    return _safe_first_hop_coverage_aggregate(report)
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -7950,6 +8067,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         is True
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
+    # Optional local opt-in authoritative-first-hop coverage measurement (OFF by
+    # default). Only safe scalar fields are aggregated; it is measurement-only
+    # evidence and NEVER flips the hex-mesh authoritative_first_hop claim.
+    first_hop_coverage = build_first_hop_coverage_aggregate()
+    if first_hop_coverage is not None:
+        hex_entry_proof["first_hop_coverage"] = first_hop_coverage
     solver_trace_proof = build_deterministic_solver_trace_proof(root)
     magma_metrics_runbook_smoke = build_magma_handoff_provider_metrics_runbook_smoke(
         root

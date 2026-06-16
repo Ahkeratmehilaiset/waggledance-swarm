@@ -85,7 +85,13 @@ _PER_ROUTE_SUMMARY_KEYS: frozenset[str] = frozenset({
     "total", "routable", "authoritative", "heuristic", "cached",
     "authoritative_coverage",
 })
-_KEYWORD_CLASSIFIER_REASON = re.compile(r"^keyword_classifier:[a-z_]+$")
+_KEYWORD_CLASSIFIER_REASONS: frozenset[str] = frozenset({
+    "keyword_classifier:math",
+    "keyword_classifier:seasonal",
+    "keyword_classifier:rule",
+    "keyword_classifier:stat",
+    "keyword_classifier:retrieval",
+})
 _SAFE_EMITTED_TOKENS: frozenset[str] = frozenset({
     "authoritative",
     "cached",
@@ -141,11 +147,20 @@ def _capsule_decision_ids(capsule: Any) -> set[str]:
     }
 
 
+def _corpus_record_ids(corpus: Sequence[dict[str, Any]]) -> set[str]:
+    """Corpus ids are the only non-empty record ids we emit."""
+    return {
+        str(item.get("id", ""))
+        for item in corpus
+        if str(item.get("id", "")) and item.get("query") and item.get("expected_route")
+    }
+
+
 def _is_safe_reason(reason: str) -> bool:
     return (
         reason == HOT_CACHE_REASON
         or reason in AUTHORITATIVE_REASONS
-        or bool(_KEYWORD_CLASSIFIER_REASON.fullmatch(reason))
+        or reason in _KEYWORD_CLASSIFIER_REASONS
     )
 
 
@@ -162,10 +177,14 @@ def _emitted_values_are_allowlisted(
     records: list[dict[str, Any]],
     per_route_summary: dict[str, Any],
     allowed_decision_ids: set[str],
+    allowed_record_ids: set[str],
 ) -> bool:
     """Fail closed if an emitted field carries a non-capsule/free-form value."""
     for record in records:
         if set(record) - _RECORD_KEYS:
+            return False
+        record_id = record.get("id")
+        if record_id not in (None, "") and str(record_id) not in allowed_record_ids:
             return False
         if str(record.get("expected", "")) not in VALID_LAYERS:
             return False
@@ -234,6 +253,7 @@ def _derive_raw_query_not_emitted(
     per_route_summary: dict[str, Any],
     queries: Sequence[str],
     allowed_decision_ids: set[str] | None = None,
+    allowed_record_ids: set[str] | None = None,
 ) -> bool:
     """Re-scan the emitted data; fail-closed privacy invariant (never hardcoded).
 
@@ -248,7 +268,8 @@ def _derive_raw_query_not_emitted(
         ensure_ascii=False,
     ).lower()
     if not _emitted_values_are_allowlisted(
-        records, per_route_summary, allowed_decision_ids or set()
+        records, per_route_summary, allowed_decision_ids or set(),
+        allowed_record_ids or set()
     ):
         return False
     for raw in queries:
@@ -322,7 +343,8 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     raw_query_not_emitted = _derive_raw_query_not_emitted(
-        records, per_route_summary, raw_queries, _capsule_decision_ids(capsule)
+        records, per_route_summary, raw_queries, _capsule_decision_ids(capsule),
+        _corpus_record_ids(corpus)
     )
 
     return {

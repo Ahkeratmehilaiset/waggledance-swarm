@@ -93,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         exit_code = 1
     else:
-        exit_code = 0
+        exit_code = 0 if report.get("ok") is True else 1
 
     if args.json:
         print(json.dumps(report, sort_keys=True))

@@ -217,6 +217,67 @@ def test_apply_skips_receipt_when_source_mutates_by_more_than_append(
     assert Path(report["receipt"]["path"]).exists() is False
 
 
+def test_cli_apply_returns_nonzero_when_source_mutates_by_more_than_append(
+    tmp_path: Path,
+) -> None:
+    events_path = _events_file(
+        tmp_path,
+        [
+            _event("2026-06-01T00:00:00Z", task_id="old"),
+            _event("2026-06-14T00:00:00Z", task_id="new"),
+        ],
+    )
+    archive_dir = tmp_path / "archive"
+    mutated_event = _event("2026-06-16T00:00:00Z", task_id="tampered")
+    code = f"""
+import json
+from pathlib import Path
+from tools import bridge_event_log_rotation as tool
+
+events_path = Path({str(events_path)!r})
+archive_dir = Path({str(archive_dir)!r})
+mutated = (json.dumps({mutated_event!r}) + "\\n").encode("utf-8")
+original_read_bytes = Path.read_bytes
+state = {{"events_read_count": 0}}
+
+def read_bytes_with_non_append_race(path):
+    if path == events_path:
+        state["events_read_count"] += 1
+        if state["events_read_count"] >= 3:
+            return mutated
+    return original_read_bytes(path)
+
+Path.read_bytes = read_bytes_with_non_append_race
+raise SystemExit(tool.main([
+    "--events",
+    str(events_path),
+    "--archive-dir",
+    str(archive_dir),
+    "--keep-days",
+    "7",
+    "--min-recent-lines",
+    "1",
+    "--now",
+    "2026-06-15T12:00:00Z",
+    "--apply",
+    "--json",
+]))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode != 0
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_events_rotation_stage_source_changed"
+    assert report["receipt"]["write"]["action"] == "skipped_source_changed"
+
+
 def test_cli_apply_json_writes_archive_and_preserves_events(tmp_path: Path) -> None:
     events_path = _events_file(
         tmp_path,

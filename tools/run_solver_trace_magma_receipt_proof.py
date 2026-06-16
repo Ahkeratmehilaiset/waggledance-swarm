@@ -58,6 +58,8 @@ _STABLE_FIELDS = (
     "solver_call_trace_count",
     "solver_call_trace_digest_bound",
     "solver_call_trace_receipt_bound",
+    "solver_call_trace_privacy_safe",
+    "raw_payload_leak_check",
 )
 
 
@@ -81,15 +83,17 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
     receipt_bound = run1.get("solver_call_trace_receipt_bound") is True
     digest_bound = run1.get("solver_call_trace_digest_bound") is True
     verifier_ok = run1.get("verifier_ok") is True
-    # Surface the raw inner privacy verdict honestly (True/False/None) - never
-    # assume "safe" when absent. The privacy gate itself lives in the inner
-    # proof's ok (which requires solver_call_trace_privacy_safe), so inner_ok
-    # below fails this proof closed if privacy failed.
+    # Privacy gates are STRICT and INDEPENDENT - do not rely on inner ok to
+    # cover them (checklist item 1: per-field re-derive). `is True` fails closed
+    # on False AND on absent.
     privacy_safe = run1.get("solver_call_trace_privacy_safe")
+    privacy_safe_ok = run1.get("solver_call_trace_privacy_safe") is True
+    raw_payload_leak_check_ok = run1.get("raw_payload_leak_check") is True
     receipt_count = run1.get("receipt_count")
 
     evidence_present = bool(
-        deterministic and inner_ok and receipt_bound and digest_bound and verifier_ok
+        deterministic and inner_ok and receipt_bound and digest_bound
+        and verifier_ok and privacy_safe_ok and raw_payload_leak_check_ok
     )
 
     blockers: list[str] = []
@@ -103,6 +107,10 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
         blockers.append("solver_trace_not_digest_bound")
     if not verifier_ok:
         blockers.append("receipt_verifier_failed")
+    if not privacy_safe_ok:
+        blockers.append("trace_not_privacy_safe")
+    if not raw_payload_leak_check_ok:
+        blockers.append("raw_payload_leak_check_failed")
     # carry forward any blockers the inner proof reported
     for b in (run1.get("blockers") or []):
         blockers.append(f"inner:{b}")
@@ -123,6 +131,8 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
             "solver_call_trace_digest_bound": digest_bound,
             "solver_call_trace_receipt_bound": receipt_bound,
             "privacy_safe": privacy_safe,
+            "privacy_safe_ok": privacy_safe_ok,
+            "raw_payload_leak_check_ok": raw_payload_leak_check_ok,
         },
         # Provenance evidence is NOT production authority.
         "evidence_vs_authority": {

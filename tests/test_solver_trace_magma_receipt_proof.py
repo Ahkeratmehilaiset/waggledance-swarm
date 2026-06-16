@@ -35,6 +35,7 @@ def _good_inner() -> dict:
         "solver_call_trace_digest_bound": True,
         "solver_call_trace_receipt_bound": True,
         "solver_call_trace_privacy_safe": True,
+        "raw_payload_leak_check": True,
     }
 
 
@@ -67,8 +68,12 @@ def test_invariants_and_clean_summary():
     ("solver_call_trace_receipt_bound", "solver_trace_not_receipt_bound"),
     ("solver_call_trace_digest_bound", "solver_trace_not_digest_bound"),
     ("verifier_ok", "receipt_verifier_failed"),
+    ("solver_call_trace_privacy_safe", "trace_not_privacy_safe"),
+    ("raw_payload_leak_check", "raw_payload_leak_check_failed"),
 ])
 def test_forge_each_binding_field_fails_closed(monkeypatch, field, blocker):
+    # Note privacy fields: inner ok=True with privacy False must STILL fail
+    # closed (independent gate, not relying on inner ok).
     bad = _good_inner()
     bad[field] = False
     monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", lambda: dict(bad))
@@ -76,6 +81,16 @@ def test_forge_each_binding_field_fails_closed(monkeypatch, field, blocker):
     assert report["ok"] is False
     assert blocker in report["blockers"]
     assert report["evidence_vs_authority"]["evidence_present"] is False
+
+
+def test_forge_absent_privacy_field_fails_closed(monkeypatch):
+    # A missing privacy verdict must fail closed (never assume absent == safe).
+    bad = _good_inner()
+    bad.pop("solver_call_trace_privacy_safe")
+    monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", lambda: dict(bad))
+    report = mod.build_solver_trace_magma_receipt_standalone_proof()
+    assert report["ok"] is False
+    assert "trace_not_privacy_safe" in report["blockers"]
 
 
 def test_forge_nondeterministic_fails_closed(monkeypatch):

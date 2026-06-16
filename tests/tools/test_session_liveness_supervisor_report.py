@@ -13,6 +13,7 @@ SCRIPT = ROOT / "tools" / "session_liveness_supervisor_report.py"
 
 sys.path.insert(0, str(ROOT))
 
+from tools import session_liveness_supervisor_report as supervisor_module  # noqa: E402
 from tools.session_liveness_supervisor_report import (  # noqa: E402
     build_session_liveness_supervisor_report,
     main,
@@ -155,6 +156,26 @@ def test_wake_delivery_stalled_recommends_restart_when_idle() -> None:
     assert row["wake_delivery_stalled"] is True
     assert row["restart_triggers"] == ["wake_delivery_stalled"]
     assert "target-origin bridge activity" in row["safe_next_action"]
+
+
+def test_default_now_uses_wall_clock_not_latest_event(monkeypatch) -> None:
+    monkeypatch.setattr(supervisor_module, "_utc_now", _now)
+
+    report = build_session_liveness_supervisor_report(
+        events=[
+            _wake(ts="2026-06-15T11:00:00Z"),
+            _wake(ts="2026-06-15T11:05:00Z"),
+        ],
+        agents=["claude-rco-2"],
+        screen_states={"claude-rco-2": _screen("idle_prompt")},
+        wake_min_age_minutes=12,
+        wake_min_repeats=2,
+    )
+
+    row = report["agents"][0]
+    assert report["decision"] == "session_restart_recommended"
+    assert row["wake_delivery_stalled"] is True
+    assert row["restart_recommended"] is True
 
 
 def test_context_budget_exceeded_recommends_fresh_session() -> None:

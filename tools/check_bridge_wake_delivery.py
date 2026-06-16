@@ -31,7 +31,6 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_status,
     _event_ts,
     _event_type,
-    _latest_event_time,
     _parse_utc,
     _task_id,
     read_events,
@@ -227,11 +226,7 @@ def check_wake_delivery(
         max_age_minutes = None
 
     agent_filter = _normalize_agent_filter(agents)
-    effective_now = (
-        now_utc
-        or _latest_event_time(events)
-        or datetime.now(timezone.utc).astimezone(timezone.utc)
-    )
+    effective_now = now_utc or _utc_now()
     unresolved = _unresolved_wake_groups(
         events=events,
         agent_filter=agent_filter,
@@ -659,6 +654,10 @@ def _wake_row(
 
 def _format_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).astimezone(timezone.utc)
 
 
 def _wake_file_status(

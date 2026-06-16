@@ -194,10 +194,36 @@ def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:
     assert counters["summary"]["all_literal_claims_safe"] is False
     assert counters["summary"]["proof_ok_count"] == 6
     assert counters["guardrails"]["claim_safe_flip_applied"] is False
-    future = {
+    by_id = {
         item["capability_id"]: item
         for item in counters["panel_counters"]
-    }["future_waggledance_swarm"]
+    }
+    low_risk = by_id["low_risk_autonomy_loop"]
+    assert low_risk["milestones"]["real_loop_report_ok"] is True
+    assert (
+        low_risk["milestones"]["real_loop_claim_label"]
+        == "MEASURED_LOCAL_DRY_RUN"
+    )
+    assert low_risk["milestones"]["measured_auto_promoted_solver_count"] == 1
+    assert low_risk["milestones"]["measured_auto_promoted_run_count"] == 1
+    assert low_risk["milestones"]["measured_provider_jobs_created"] == 0
+    assert low_risk["milestones"]["measured_builder_jobs_created"] == 0
+    assert low_risk["milestones"]["dry_run_runtime_authority_granted"] is False
+    assert low_risk["milestones"]["dry_run_external_writes_applied"] is False
+    gated_promotions = counters["milestone_counters"][
+        "end_to_end_gated_promotions_total"
+    ]
+    assert gated_promotions == {
+        "current_value": 1,
+        "target_value": 1,
+        "satisfied": True,
+        "guardrail_runtime_authority_granted": False,
+        "guardrail_tripped": False,
+        "measurement_basis": "local_ephemeral_control_plane_real_loop",
+        "claim_label": "MEASURED_LOCAL_DRY_RUN",
+        "production_authority_granted": False,
+    }
+    future = by_id["future_waggledance_swarm"]
     assert future["milestones"]["literal_future_claim_safe"] is False
     assert future["milestones"]["future_claim_gate_satisfied"] is False
     assert future["milestones"]["required_runtime_evidence_present"] is False

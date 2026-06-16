@@ -58,6 +58,9 @@ from tools.verify_runtime_gap_scheduler_candidate_bridge_event_template_index_en
 from tools.run_runtime_gap_detector_report import (  # noqa: E402
     build_runtime_gap_detector_report,
 )
+from tools.run_low_risk_autogrowth_chain_dry_run import (  # noqa: E402
+    build_low_risk_autogrowth_chain_dry_run,
+)
 from tools.run_future_scale_composite_path_benchmark import (  # noqa: E402
     build_composite_path_benchmark,
 )
@@ -7452,6 +7455,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Read-only runtime gap signal report without detector writes, queue writes, or scheduler ticks.",
             ),
             (
+                "tools/run_low_risk_autogrowth_chain_dry_run.py",
+                "Measured local real-loop dry run from detector signal through digest, scheduler tick, auto-promotion, and dispatcher hit in a temporary control plane.",
+            ),
+            (
+                "tests/tools/test_low_risk_autogrowth_chain_dry_run.py",
+                "Dry-run tests prove the measured chain, zero provider/builder jobs, and no runtime authority grant.",
+            ),
+            (
                 "tools/build_runtime_gap_scheduler_candidate_artifact.py",
                 "Path-free scheduler-candidate preview artifact renderer for validated runtime gap reports; no enqueue, scheduler tick, bridge write, or fast-track gate skip.",
             ),
@@ -7678,6 +7689,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         is True
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
+    low_risk_real_loop_dry_run = build_low_risk_autogrowth_chain_dry_run()
     low_risk_runtime_boundary_smoke = build_low_risk_autogrowth_runtime_boundary_smoke(
         root
     )
@@ -7741,6 +7753,7 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         )
     )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
+    low_risk_autonomy_proof["real_loop_dry_run"] = low_risk_real_loop_dry_run
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
     low_risk_autonomy_proof["ops_alert_state_smoke"] = low_risk_ops_alert_state_smoke
@@ -7761,6 +7774,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     low_risk_autonomy_proof["ok"] = bool(
         low_risk_autonomy_proof.get("ok") is True
+        and low_risk_real_loop_dry_run.get("ok") is True
+        and low_risk_real_loop_dry_run.get("local_artifacts_written") is False
+        and low_risk_real_loop_dry_run.get("authority_boundary", {}).get(
+            "external_writes_applied"
+        )
+        is False
+        and low_risk_real_loop_dry_run.get("authority_boundary", {}).get(
+            "runtime_authority_granted"
+        )
+        is False
         and low_risk_runtime_boundary_smoke.get("ok") is True
         and low_risk_operator_metrics_smoke.get("ok") is True
         and low_risk_alert_runbook_smoke.get("ok") is True
@@ -8023,7 +8046,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "read-only dashboard ops overlay with local fallback alert "
                 "state, an optional sanitized Alertmanager alert feed, "
                 "fixed-label feed provider-health metrics, operator alert "
-                "thresholds, a read-only runtime gap detector report, and a "
+                "thresholds, a measured local real-loop dry run that records "
+                "a runtime gap, digests it, scheduler-ticks it, auto-promotes "
+                "one low-risk solver, and dispatches it from a temporary "
+                "control plane, a read-only runtime gap detector report, and a "
                 "path-free scheduler-candidate preview artifact plus a "
                 "template-only bridge-event renderer for that preview, plus "
                 "a local index entry for that renderer and a local verifier "
@@ -8039,6 +8065,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "reviewed deterministic compiler and executor support.",
                 "The executable proof uses an ephemeral temp DB; it does not "
                 "grant production runtime authority.",
+                "The measured real-loop dry run writes only to a new temporary "
+                "local control plane and does not create provider or builder "
+                "jobs, enqueue production scheduler work, skip gates, or "
+                "grant runtime authority.",
                 "The runtime boundary smoke proves ticker construction and "
                 "lifespan hooks, not autonomous production authority.",
                 "Operator metrics expose ticker cadence and counters, not "
@@ -8072,10 +8102,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "events, enqueueing scheduler work, or granting authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free verification summary renderer for the "
-                "runtime gap scheduler-candidate bridge-event template "
-                "index-entry verifier without appending it, transporting "
-                "payloads, or granting scheduler authority."
+                "Promote the measured local autogrowth real-loop proof into a "
+                "repeat-window trend summary without production writes, "
+                "provider calls, bridge appends, or scheduler authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

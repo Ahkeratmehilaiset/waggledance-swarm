@@ -178,6 +178,11 @@ def _extract_milestone_values(
             "default_sink_required": proof.get("default_sink_required") is True,
         }
     if capability_id == "low_risk_autonomy_loop":
+        real_loop = _mapping(proof.get("real_loop_dry_run"))
+        chain = _mapping(real_loop.get("chain"))
+        authority = _mapping(real_loop.get("authority_boundary"))
+        control_plane = _mapping(real_loop.get("control_plane"))
+        table_counts = _mapping(control_plane.get("table_counts"))
         return {
             "runtime_authority_granted": _nested_flag(
                 proof,
@@ -190,6 +195,26 @@ def _extract_milestone_values(
             "operator_visible_metrics": _nested_flag(
                 proof,
                 "operator_visible_metrics",
+            ),
+            "real_loop_report_ok": real_loop.get("ok") is True,
+            "real_loop_claim_label": str(real_loop.get("claim_label") or ""),
+            "measured_auto_promoted_solver_count": _int_value(
+                chain.get("auto_promoted_solver_count")
+            ),
+            "measured_auto_promoted_run_count": _int_value(
+                chain.get("auto_promoted_run_count")
+            ),
+            "measured_provider_jobs_created": _int_value(
+                table_counts.get("provider_jobs")
+            ),
+            "measured_builder_jobs_created": _int_value(
+                table_counts.get("builder_jobs")
+            ),
+            "dry_run_runtime_authority_granted": (
+                authority.get("runtime_authority_granted") is True
+            ),
+            "dry_run_external_writes_applied": (
+                authority.get("external_writes_applied") is True
             ),
         }
     if capability_id == "hexagonal_upgrades":
@@ -242,6 +267,21 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and magma.get("solver_call_trace_receipt_bound") is True
         and magma.get("default_sink_required") is True
     )
+    low_risk_real_loop_guardrail_tripped = (
+        low_risk.get("runtime_authority_granted") is True
+        or low_risk.get("dry_run_runtime_authority_granted") is True
+        or low_risk.get("dry_run_external_writes_applied") is True
+        or _int_value(low_risk.get("measured_provider_jobs_created")) > 0
+        or _int_value(low_risk.get("measured_builder_jobs_created")) > 0
+    )
+    low_risk_real_loop_promotions = _int_value(
+        low_risk.get("measured_auto_promoted_solver_count")
+    )
+    low_risk_real_loop_satisfied = (
+        low_risk.get("real_loop_report_ok") is True
+        and low_risk_real_loop_promotions >= 1
+        and not low_risk_real_loop_guardrail_tripped
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -259,12 +299,20 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": "manifest_claim_gate_flags",
         },
         "end_to_end_gated_promotions_total": {
-            "current_value": 0,
+            "current_value": (
+                low_risk_real_loop_promotions
+                if low_risk.get("real_loop_report_ok") is True
+                else 0
+            ),
             "target_value": 1,
-            "satisfied": False,
+            "satisfied": low_risk_real_loop_satisfied,
             "guardrail_runtime_authority_granted": (
                 low_risk.get("runtime_authority_granted") is True
             ),
+            "guardrail_tripped": low_risk_real_loop_guardrail_tripped,
+            "measurement_basis": "local_ephemeral_control_plane_real_loop",
+            "claim_label": str(low_risk.get("real_loop_claim_label") or ""),
+            "production_authority_granted": False,
         },
         "shadow_to_candidate_subdivision_transitions_total": {
             "current_value": _int_value(

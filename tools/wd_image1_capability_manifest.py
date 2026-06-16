@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import gc
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -7097,13 +7098,34 @@ _PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS = (
     "default_sink_required",
     "default_runtime_receipt_emission_changed",
 )
+# Structural markers we forbid regardless of the upstream proof. The canary
+# sentinel is the BARE "DO_NOT_LEAK" the proof actually emits (covers the
+# "_DO_NOT_LEAK" form too, as a substring). At scan time we ALSO union the
+# proof's own _RAW_MARKERS so this can never drift from upstream's canary set.
 _PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS = (
-    "_DO_NOT_LEAK",
+    "DO_NOT_LEAK",
     "PRIVATE_MARKER",
     "query_reports",
     "operator_note",
     "context secret",
 )
+
+
+def _per_query_receipt_coverage_forbidden_markers() -> tuple[str, ...]:
+    """Union of our structural markers and the upstream proof's own _RAW_MARKERS.
+
+    Sourcing the upstream canaries directly means a future change to the proof's
+    sentinel set is automatically honored here (single source of truth); the
+    import is best-effort so a refactor cannot silently disable the scan.
+    """
+    markers = set(_PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS)
+    try:
+        from tools.run_v12_per_query_receipt_coverage_proof import _RAW_MARKERS
+
+        markers.update(str(m) for m in _RAW_MARKERS)
+    except Exception:
+        pass
+    return tuple(sorted(markers))
 
 
 def _per_query_receipt_coverage_enabled() -> bool:
@@ -7120,19 +7142,54 @@ def _per_query_receipt_coverage_enabled() -> bool:
 def _safe_per_query_receipt_coverage_aggregate(report: dict) -> dict:
     """Reduce a per-query receipt coverage proof to safe scalar fields only.
 
-    NEVER copies query_reports / raw query / context / private markers. Only the
-    allowlisted scalar keys are emitted; a key-allowlist guard and a marker scan
-    fail closed (raise) rather than emit anything unexpected.
+    NEVER copies query_reports / raw query / context / private markers. Every
+    field is SHAPE-CONSTRAINED so no raw content can ride along: the five boolean
+    fields must be strict bools (rejected, never coerced, if not), and the only
+    non-boolean field (the ratio) must be a finite number in [0, 1]. Any
+    non-conforming value fails closed (raise). A key-allowlist guard and a marker
+    scan are kept as defense in depth.
     """
     authority = report.get("authority_boundary") or {}
+
+    def _strict_bool(value: Any, name: str) -> bool:
+        # Reject non-bool (never coerce): a non-bool means upstream is malformed
+        # or poisoned, and silent coercion would mask it. `is True/False` only.
+        if value is not True and value is not False:
+            raise ValueError(
+                f"per_query_receipt_coverage {name} is not a strict bool"
+            )
+        return value
+
+    # Type-gate the only non-boolean field: a finite number in [0, 1], never raw
+    # content. This structurally rejects an arbitrary query/string smuggled into
+    # the ratio (e.g. "how much honey 4521kg ...") regardless of any marker, plus
+    # NaN/Inf and out-of-range numbers.
+    ratio = report.get("receipt_coverage_ratio")
+    if not (
+        isinstance(ratio, (int, float))
+        and not isinstance(ratio, bool)
+        and math.isfinite(ratio)
+        and 0.0 <= float(ratio) <= 1.0
+    ):
+        raise ValueError(
+            "per_query_receipt_coverage receipt_coverage_ratio is not a finite "
+            "number in [0, 1]"
+        )
     aggregate = {
-        "ok": report.get("ok") is True,
-        "receipt_coverage_ratio": report.get("receipt_coverage_ratio"),
-        "all_queries_receipt_bound": report.get("all_queries_receipt_bound") is True,
-        "raw_payload_leak_check": report.get("raw_payload_leak_check") is True,
-        "default_sink_required": authority.get("default_sink_required") is True,
-        "default_runtime_receipt_emission_changed": (
-            authority.get("default_runtime_receipt_emission_changed") is True
+        "ok": _strict_bool(report.get("ok"), "ok"),
+        "receipt_coverage_ratio": float(ratio),
+        "all_queries_receipt_bound": _strict_bool(
+            report.get("all_queries_receipt_bound"), "all_queries_receipt_bound"
+        ),
+        "raw_payload_leak_check": _strict_bool(
+            report.get("raw_payload_leak_check"), "raw_payload_leak_check"
+        ),
+        "default_sink_required": _strict_bool(
+            authority.get("default_sink_required"), "default_sink_required"
+        ),
+        "default_runtime_receipt_emission_changed": _strict_bool(
+            authority.get("default_runtime_receipt_emission_changed"),
+            "default_runtime_receipt_emission_changed",
         ),
     }
     extra = set(aggregate) - set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
@@ -7142,7 +7199,7 @@ def _safe_per_query_receipt_coverage_aggregate(report: dict) -> dict:
             f"{sorted(extra)}"
         )
     blob = json.dumps(aggregate, default=str)
-    for marker in _PER_QUERY_RECEIPT_COVERAGE_FORBIDDEN_SUBSTRINGS:
+    for marker in _per_query_receipt_coverage_forbidden_markers():
         if marker in blob:
             raise ValueError(
                 "per_query_receipt_coverage aggregate contains a forbidden marker"

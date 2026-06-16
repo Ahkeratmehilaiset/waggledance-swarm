@@ -2423,17 +2423,74 @@ def test_safe_aggregate_drops_unsafe_keys() -> None:
     assert "query_ids" not in aggregate
 
 
-def test_safe_aggregate_raises_on_poisoned_scalar() -> None:
-    # Defense in depth: a marker smuggled into a scalar field fails closed.
-    poisoned = {
+def _good_coverage_report() -> dict:
+    return {
         "ok": True,
-        "receipt_coverage_ratio": "1.0 operator_note DO_NOT_LEAK",
+        "receipt_coverage_ratio": 1.0,
         "all_queries_receipt_bound": True,
         "raw_payload_leak_check": True,
-        "authority_boundary": {},
+        "authority_boundary": {
+            "default_sink_required": False,
+            "default_runtime_receipt_emission_changed": False,
+        },
     }
+
+
+@pytest.mark.parametrize("bad_ratio", [
+    "how much honey 4521kg SECRETZ_raw_query DO_NOT_LEAK",  # raw query + bare marker
+    "1.0 operator_note DO_NOT_LEAK",                        # marker phrase
+    "DO_NOT_LEAK",                                          # bare upstream sentinel
+    "1.0",                                                  # plain numeric string
+    float("nan"),                                           # NaN
+    float("inf"),                                           # +Inf
+    float("-inf"),                                          # -Inf
+    1.5,                                                    # out of range high
+    -0.1,                                                   # out of range low
+    True,                                                   # bool type confusion
+    None,                                                   # missing
+])
+def test_safe_aggregate_rejects_bad_ratio(bad_ratio) -> None:
+    # The ratio is shape-constrained to a finite number in [0,1]; anything else
+    # (raw string, marker, NaN/Inf, out-of-range, bool, missing) fails closed so
+    # no raw content can ride in via the only non-boolean field.
+    report = _good_coverage_report()
+    report["receipt_coverage_ratio"] = bad_ratio
     with pytest.raises(ValueError):
-        _safe_per_query_receipt_coverage_aggregate(poisoned)
+        _safe_per_query_receipt_coverage_aggregate(report)
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("ok", "true"),
+    ("all_queries_receipt_bound", 1),
+    ("raw_payload_leak_check", "DO_NOT_LEAK"),
+])
+def test_safe_aggregate_rejects_non_bool_top_field(field, bad) -> None:
+    report = _good_coverage_report()
+    report[field] = bad
+    with pytest.raises(ValueError):
+        _safe_per_query_receipt_coverage_aggregate(report)
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("default_sink_required", "False"),
+    ("default_runtime_receipt_emission_changed", 0),
+])
+def test_safe_aggregate_rejects_non_bool_authority_field(field, bad) -> None:
+    report = _good_coverage_report()
+    report["authority_boundary"][field] = bad
+    with pytest.raises(ValueError):
+        _safe_per_query_receipt_coverage_aggregate(report)
+
+
+def test_safe_aggregate_accepts_clean_report() -> None:
+    aggregate = _safe_per_query_receipt_coverage_aggregate(_good_coverage_report())
+    assert set(aggregate) == set(_PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS)
+    assert aggregate["receipt_coverage_ratio"] == 1.0
+    assert all(
+        isinstance(aggregate[k], bool)
+        for k in _PER_QUERY_RECEIPT_COVERAGE_SAFE_KEYS
+        if k != "receipt_coverage_ratio"
+    )
 
 
 def test_flag_off_manifest_omits_coverage_key() -> None:

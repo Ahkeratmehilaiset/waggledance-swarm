@@ -194,10 +194,36 @@ def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:
     assert counters["summary"]["all_literal_claims_safe"] is False
     assert counters["summary"]["proof_ok_count"] == 6
     assert counters["guardrails"]["claim_safe_flip_applied"] is False
-    future = {
+    by_id = {
         item["capability_id"]: item
         for item in counters["panel_counters"]
-    }["future_waggledance_swarm"]
+    }
+    low_risk = by_id["low_risk_autonomy_loop"]
+    assert low_risk["milestones"]["real_loop_report_ok"] is True
+    assert (
+        low_risk["milestones"]["real_loop_claim_label"]
+        == "MEASURED_LOCAL_DRY_RUN"
+    )
+    assert low_risk["milestones"]["measured_auto_promoted_solver_count"] == 1
+    assert low_risk["milestones"]["measured_auto_promoted_run_count"] == 1
+    assert low_risk["milestones"]["measured_provider_jobs_created"] == 0
+    assert low_risk["milestones"]["measured_builder_jobs_created"] == 0
+    assert low_risk["milestones"]["dry_run_runtime_authority_granted"] is False
+    assert low_risk["milestones"]["dry_run_external_writes_applied"] is False
+    gated_promotions = counters["milestone_counters"][
+        "end_to_end_gated_promotions_total"
+    ]
+    assert gated_promotions == {
+        "current_value": 1,
+        "target_value": 1,
+        "satisfied": True,
+        "guardrail_runtime_authority_granted": False,
+        "guardrail_tripped": False,
+        "measurement_basis": "local_ephemeral_control_plane_real_loop",
+        "claim_label": "MEASURED_LOCAL_DRY_RUN",
+        "production_authority_granted": False,
+    }
+    future = by_id["future_waggledance_swarm"]
     assert future["milestones"]["literal_future_claim_safe"] is False
     assert future["milestones"]["future_claim_gate_satisfied"] is False
     assert future["milestones"]["required_runtime_evidence_present"] is False
@@ -403,3 +429,47 @@ def test_cli_run_does_not_mutate_tracked_files(tmp_path: Path) -> None:
 
     assert json.loads(proc.stdout)["guardrails"]["read_only"] is True
     assert after == before
+
+
+def test_gated_promotions_fail_closed_on_guardrail_leaks() -> None:
+    # Regression for the tools changes_requested: a guardrail leak (runtime
+    # authority / external writes / provider jobs / builder jobs) must drive
+    # end_to_end_gated_promotions_total.current_value to 0, satisfied=False,
+    # guardrail_tripped=True - never a misleading count of 1.
+    import copy
+
+    base = build_manifest(ROOT)
+
+    def _inject(real_loop: dict, name: str) -> None:
+        if name == "runtime_authority":
+            real_loop.setdefault("authority_boundary", {})["runtime_authority_granted"] = True
+        elif name == "external_writes":
+            real_loop.setdefault("authority_boundary", {})["external_writes_applied"] = True
+        elif name == "provider_jobs":
+            real_loop.setdefault("control_plane", {}).setdefault("table_counts", {})["provider_jobs"] = 1
+        elif name == "builder_jobs":
+            real_loop.setdefault("control_plane", {}).setdefault("table_counts", {})["builder_jobs"] = 1
+
+    for name in ("runtime_authority", "external_writes", "provider_jobs", "builder_jobs"):
+        manifest = copy.deepcopy(base)
+        for cap in manifest["capabilities"]:
+            if cap["capability_id"] == "low_risk_autonomy_loop":
+                _inject(cap["proof"].setdefault("real_loop_dry_run", {}), name)
+        counters = build_vision_progress_counters(manifest)
+        gp = counters["milestone_counters"]["end_to_end_gated_promotions_total"]
+        assert gp["guardrail_tripped"] is True, name
+        assert gp["satisfied"] is False, name
+        assert gp["current_value"] == 0, name
+
+    # production_authority_granted is derived, not hardcoded: true when a
+    # runtime-authority leak is observed.
+    leaked = copy.deepcopy(base)
+    for cap in leaked["capabilities"]:
+        if cap["capability_id"] == "low_risk_autonomy_loop":
+            cap["proof"].setdefault("real_loop_dry_run", {}).setdefault(
+                "authority_boundary", {}
+            )["runtime_authority_granted"] = True
+    gp_leaked = build_vision_progress_counters(leaked)["milestone_counters"][
+        "end_to_end_gated_promotions_total"
+    ]
+    assert gp_leaked["production_authority_granted"] is True

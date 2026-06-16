@@ -60,6 +60,9 @@ _STABLE_FIELDS = (
     "solver_call_trace_receipt_bound",
     "solver_call_trace_privacy_safe",
     "raw_payload_leak_check",
+    "external_writes_applied",
+    "default_sink_required",
+    "temp_artifacts_removed",
 )
 
 
@@ -89,11 +92,29 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
     privacy_safe = run1.get("solver_call_trace_privacy_safe")
     privacy_safe_ok = run1.get("solver_call_trace_privacy_safe") is True
     raw_payload_leak_check_ok = run1.get("raw_payload_leak_check") is True
+
+    # Counts must be real positive evidence, not zero (independent gate).
     receipt_count = run1.get("receipt_count")
+    trace_count = run1.get("solver_call_trace_count")
+    receipt_count_ok = isinstance(receipt_count, int) and receipt_count >= 1
+    trace_count_ok = isinstance(trace_count, int) and trace_count >= 1
+
+    # Scope + authority/leak fields DERIVED from the observed inner result
+    # (never hardcoded "safe"); each gates independently.
+    expected_scope = "opt_in_handle_query_runtime_summary"
+    receipt_scope = run1.get("receipt_scope")
+    receipt_scope_ok = receipt_scope == expected_scope
+    runtime_authority_granted = run1.get("runtime_authority_granted") is True
+    external_writes_applied = run1.get("external_writes_applied") is True
+    default_sink_required = run1.get("default_sink_required") is True
+    temp_artifacts_removed = run1.get("temp_artifacts_removed") is True
 
     evidence_present = bool(
         deterministic and inner_ok and receipt_bound and digest_bound
         and verifier_ok and privacy_safe_ok and raw_payload_leak_check_ok
+        and receipt_count_ok and trace_count_ok and receipt_scope_ok
+        and temp_artifacts_removed
+        and not runtime_authority_granted and not external_writes_applied
     )
 
     blockers: list[str] = []
@@ -111,6 +132,18 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
         blockers.append("trace_not_privacy_safe")
     if not raw_payload_leak_check_ok:
         blockers.append("raw_payload_leak_check_failed")
+    if not receipt_count_ok:
+        blockers.append("receipt_count_not_positive")
+    if not trace_count_ok:
+        blockers.append("solver_call_trace_count_not_positive")
+    if not receipt_scope_ok:
+        blockers.append("unexpected_receipt_scope")
+    if runtime_authority_granted:
+        blockers.append("runtime_authority_granted")
+    if external_writes_applied:
+        blockers.append("external_writes_applied")
+    if not temp_artifacts_removed:
+        blockers.append("temp_artifacts_not_removed")
     # carry forward any blockers the inner proof reported
     for b in (run1.get("blockers") or []):
         blockers.append(f"inner:{b}")
@@ -126,28 +159,34 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
         "deterministic_replay": {"runs": 2, "stable_evidence_identical": deterministic},
         "receipt_evidence": {
             "receipt_count": receipt_count,
+            "receipt_count_ok": receipt_count_ok,
             "verifier_ok": verifier_ok,
-            "solver_call_trace_count": run1.get("solver_call_trace_count"),
+            "solver_call_trace_count": trace_count,
+            "solver_call_trace_count_ok": trace_count_ok,
             "solver_call_trace_digest_bound": digest_bound,
             "solver_call_trace_receipt_bound": receipt_bound,
+            "receipt_scope_ok": receipt_scope_ok,
+            "default_sink_required": default_sink_required,
             "privacy_safe": privacy_safe,
             "privacy_safe_ok": privacy_safe_ok,
             "raw_payload_leak_check_ok": raw_payload_leak_check_ok,
         },
-        # Provenance evidence is NOT production authority.
+        # Provenance evidence is NOT production authority - every field DERIVED
+        # from the observed inner result, no hardcoded "safe".
         "evidence_vs_authority": {
             "evidence_present": evidence_present,
-            "opt_in_only": True,
-            "runtime_authority_granted": False,
-            "external_writes_applied": False,
+            "opt_in_only": receipt_scope_ok,
+            "runtime_authority_granted": runtime_authority_granted,
+            "external_writes_applied": external_writes_applied,
+            "temp_artifacts_removed": temp_artifacts_removed,
         },
         "invariants": {
             "no_cloud_api_calls_this_session": True,
             "no_pull_or_download_this_session": True,
             "deterministic_offline": deterministic,
-            "opt_in_temp_only": True,
-            "no_runtime_authority_flip": True,
-            "no_external_writes": True,
+            "opt_in_temp_only": temp_artifacts_removed and receipt_scope_ok,
+            "no_runtime_authority_flip": not runtime_authority_granted,
+            "no_external_writes": not external_writes_applied,
             "forbidden_vocabulary_excluded": list(FORBIDDEN_VOCABULARY),
         },
     }

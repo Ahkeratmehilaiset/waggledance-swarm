@@ -36,6 +36,9 @@ def _good_inner() -> dict:
         "solver_call_trace_receipt_bound": True,
         "solver_call_trace_privacy_safe": True,
         "raw_payload_leak_check": True,
+        "external_writes_applied": False,
+        "default_sink_required": False,
+        "temp_artifacts_removed": True,
     }
 
 
@@ -81,6 +84,39 @@ def test_forge_each_binding_field_fails_closed(monkeypatch, field, blocker):
     assert report["ok"] is False
     assert blocker in report["blockers"]
     assert report["evidence_vs_authority"]["evidence_present"] is False
+
+
+@pytest.mark.parametrize("field,value,blocker", [
+    ("receipt_count", 0, "receipt_count_not_positive"),
+    ("solver_call_trace_count", 0, "solver_call_trace_count_not_positive"),
+    ("receipt_scope", "production_default_sink", "unexpected_receipt_scope"),
+    ("runtime_authority_granted", True, "runtime_authority_granted"),
+    ("external_writes_applied", True, "external_writes_applied"),
+    ("temp_artifacts_removed", False, "temp_artifacts_not_removed"),
+])
+def test_forge_count_scope_authority_fields_fail_closed(monkeypatch, field, value, blocker):
+    # Even with inner ok=True + all bindings true, a zero count, wrong scope, or
+    # an authority/leak flag must fail the proof closed (no hardcoded "safe").
+    bad = _good_inner()
+    bad[field] = value
+    monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", lambda: dict(bad))
+    report = mod.build_solver_trace_magma_receipt_standalone_proof()
+    assert report["ok"] is False, field
+    assert blocker in report["blockers"], field
+    assert report["evidence_vs_authority"]["evidence_present"] is False, field
+
+
+def test_authority_fields_are_derived_not_hardcoded(monkeypatch):
+    # An inner result reporting runtime authority / external writes must surface
+    # those in evidence_vs_authority + flip the invariants (derived, not hardcoded).
+    bad = {**_good_inner(), "runtime_authority_granted": True, "external_writes_applied": True}
+    monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", lambda: dict(bad))
+    report = mod.build_solver_trace_magma_receipt_standalone_proof()
+    eva = report["evidence_vs_authority"]
+    assert eva["runtime_authority_granted"] is True
+    assert eva["external_writes_applied"] is True
+    assert report["invariants"]["no_runtime_authority_flip"] is False
+    assert report["invariants"]["no_external_writes"] is False
 
 
 def test_forge_absent_privacy_field_fails_closed(monkeypatch):

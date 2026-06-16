@@ -299,9 +299,12 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": "manifest_claim_gate_flags",
         },
         "end_to_end_gated_promotions_total": {
+            # Fail-closed: count promotions ONLY when the report is ok AND no
+            # authority guardrail tripped (== low_risk_real_loop_satisfied). A
+            # guardrail leak must drive current_value to 0, never a misleading 1.
             "current_value": (
                 low_risk_real_loop_promotions
-                if low_risk.get("real_loop_report_ok") is True
+                if low_risk_real_loop_satisfied
                 else 0
             ),
             "target_value": 1,
@@ -312,7 +315,11 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "guardrail_tripped": low_risk_real_loop_guardrail_tripped,
             "measurement_basis": "local_ephemeral_control_plane_real_loop",
             "claim_label": str(low_risk.get("real_loop_claim_label") or ""),
-            "production_authority_granted": False,
+            # Derived from observed evidence (not a hardcoded "safe" literal).
+            "production_authority_granted": bool(
+                low_risk.get("runtime_authority_granted") is True
+                or low_risk.get("dry_run_runtime_authority_granted") is True
+            ),
         },
         "shadow_to_candidate_subdivision_transitions_total": {
             "current_value": _int_value(

@@ -84,6 +84,12 @@ def test_no_raw_query_leak():
     assert r["invariants"]["raw_query_not_emitted"] is True
 
 
+def test_full_corpus_raw_query_invariant_stays_clean():
+    corpus = mod.load_corpus(REPO_ROOT / "configs" / "benchmarks.yaml")
+    r = mod.diagnose("apiary", corpus)
+    assert r["invariants"]["raw_query_not_emitted"] is True
+
+
 def test_derive_raw_query_not_emitted_fails_closed():
     # The invariant must be DERIVED, not hardcoded: if a whole raw query survives
     # anywhere in the emitted structures, the derive flips False.
@@ -98,6 +104,21 @@ def test_derive_raw_query_not_emitted_fails_closed():
     # leak via per_route_summary too
     assert mod._derive_raw_query_not_emitted(
         clean_records, {"model_based": {"note": queries[0]}}, queries) is False
+
+
+def test_derive_raw_query_not_emitted_rejects_partial_token_leak():
+    queries = ["alpha SECRETZTOKEN omega", "how much honey 9090901*xyzzy"]
+    clean_records = [{"id": "q1", "expected": "model_based", "predicted": "retrieval",
+                      "reason": "keyword_classifier:retrieval",
+                      "first_hop_class": "heuristic", "decision_id": "d1"}]
+    assert mod._derive_raw_query_not_emitted(clean_records, {}, queries) is True
+    assert mod._derive_raw_query_not_emitted(
+        [dict(clean_records[0], decision_id="SECRETZTOKEN")], {}, queries) is False
+    assert mod._derive_raw_query_not_emitted(
+        [dict(clean_records[0], reason="token 9090901 leaked")], {}, queries) is False
+    assert mod._derive_raw_query_not_emitted(
+        [dict(clean_records[0], reason="token 9090901*xyzzy leaked")], {}, queries
+    ) is False
 
 
 def test_no_declared_order_capsule_unavailable():

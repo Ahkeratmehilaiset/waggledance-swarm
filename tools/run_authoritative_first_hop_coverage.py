@@ -78,6 +78,50 @@ AUTHORITATIVE_REASONS: frozenset[str] = frozenset({
 _RECORD_KEYS: frozenset[str] = frozenset({
     "id", "expected", "predicted", "reason", "first_hop_class", "decision_id",
 })
+_SAFE_EMITTED_TOKENS: frozenset[str] = frozenset({
+    "authoritative",
+    "cached",
+    "capsule_decision_fallback",
+    "capsule_decision_match",
+    "capsule_priority_fallback",
+    "heuristic",
+    "hot_cache_hit",
+    "keyword_classifier",
+    "llm_reasoning",
+    "model_based",
+    "retrieval",
+    "rule_constraints",
+    "statistical",
+})
+
+
+def _raw_query_leak_markers(raw: str) -> set[str]:
+    """Return raw-query markers that must not appear in emitted structures.
+
+    Whole queries catch verbatim leaks. Token markers catch sentinel/raw-derived
+    leaks without treating ordinary short domain words as violations when they
+    overlap capsule-side route labels or decision ids.
+    """
+    q = re.sub(r"\s+", " ", str(raw)).strip().lower()
+    markers: set[str] = set()
+    if len(q) >= 8:
+        markers.add(q)
+
+    for token in re.findall(r"[a-z0-9_]+", q):
+        if token in _SAFE_EMITTED_TOKENS:
+            continue
+        has_digit = any(ch.isdigit() for ch in token)
+        if (has_digit and len(token) >= 6) or len(token) >= 12:
+            markers.add(token)
+
+    for token in re.findall(r"[a-z0-9_+*.-]{5,}", q):
+        if (
+            token not in _SAFE_EMITTED_TOKENS
+            and any(ch.isdigit() for ch in token)
+            and any(ch in "+*.-" for ch in token)
+        ):
+            markers.add(token)
+    return markers
 
 
 def _utc_iso() -> str:
@@ -120,19 +164,19 @@ def _derive_raw_query_not_emitted(
 ) -> bool:
     """Re-scan the emitted data; fail-closed privacy invariant (never hardcoded).
 
-    Returns True iff no raw corpus query text survives anywhere in the serialized
-    emitted structures. Whole-query strings are scanned (length-guarded to avoid
-    matching incidental route-label words), so any verbatim query survival flips
-    it False.
+    Returns True iff no raw corpus query text or sentinel-like raw-query token
+    survives anywhere in the serialized emitted structures. Whole-query strings
+    and high-signal token markers are scanned so verbatim or raw-derived query
+    survival flips it False.
     """
     scan_body = json.dumps(
         {"first_hop_records": records, "per_route_summary": per_route_summary},
         ensure_ascii=False,
     ).lower()
     for raw in queries:
-        q = re.sub(r"\s+", " ", str(raw)).strip().lower()
-        if len(q) >= 8 and q in scan_body:
-            return False
+        for marker in _raw_query_leak_markers(raw):
+            if marker in scan_body:
+                return False
     return True
 
 

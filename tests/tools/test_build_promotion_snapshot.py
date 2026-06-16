@@ -159,12 +159,14 @@ def _build(
     events: list[dict] | None = None,
     base: str = BASE,
     origin_main_sha: str = BASE,
+    author_agent: str = "",
 ) -> dict:
     return build_promotion_snapshot(
         repo=REPO,
         pr_number=PR,
         events_path=_events_path(tmp_path, events if events is not None else _events()),
         origin_main_sha=origin_main_sha,
+        author_agent=author_agent,
         runner=_runner(base=base),
     )
 
@@ -217,6 +219,34 @@ def test_missing_bridge_consensus_returns_not_eligible(tmp_path: Path) -> None:
         "missing exact-head RCO_PASS from recognized non-author RCO"
         in report["reasons"]
     )
+
+
+def test_lead_authored_missing_build_lead_reports_policy_signal_needed(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _event("codex-tools-1", "build_consensus_pass", ts="2026-06-05T05:31:00Z"),
+        _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+    ]
+
+    report = _build(tmp_path, events=events, author_agent="codex-lead-1")
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["gate_diagnostics"] == [
+        {
+            "kind": "lead_authored_pr_waiting_build_lead_policy_signal",
+            "agent": "codex-lead-1",
+            "head_bound": True,
+            "merge_authority_changed": False,
+            "reason": (
+                "current bridge-consensus contract still requires "
+                "a head-bound build_lead approval or an explicit "
+                "driver/operator waiver; tools and RCO approvals "
+                "alone do not satisfy the three-identity gate"
+            ),
+        }
+    ]
 
 
 def test_missing_author_claim_fails_closed(tmp_path: Path) -> None:

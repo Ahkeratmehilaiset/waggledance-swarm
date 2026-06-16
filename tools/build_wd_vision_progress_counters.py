@@ -148,6 +148,11 @@ def _extract_milestone_values(
 ) -> dict[str, Any]:
     if capability_id == "hex_mesh_entry":
         config = _mapping(proof.get("current_config"))
+        # Optional local opt-in first-hop coverage measurement. Present only when
+        # the manifest ran the proof (env flag on); absent by default. Surface the
+        # safe scalar fields; the route-order counter derives measurement
+        # availability fail-closed and never upgrades the claim from these.
+        first_hop = _mapping(proof.get("first_hop_coverage"))
         return {
             "authoritative_first_hop_safe": bool(
                 proof.get("proves_every_query_first_enters_mesh")
@@ -158,6 +163,16 @@ def _extract_milestone_values(
             "hex_mesh_enabled": config.get("hex_mesh_enabled") is True,
             "hybrid_retrieval_authoritative": (
                 config.get("hybrid_retrieval_authoritative") is True
+            ),
+            "first_hop_coverage_present": bool(proof.get("first_hop_coverage")),
+            "first_hop_coverage_available": (
+                first_hop.get("coverage_measurement_available") is True
+            ),
+            "first_hop_coverage_ratio": first_hop.get(
+                "authoritative_first_hop_coverage"
+            ),
+            "first_hop_declares_order": (
+                first_hop.get("capsule_declares_authoritative_order") is True
             ),
         }
     if capability_id == "deterministic_solver_first":
@@ -322,6 +337,29 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         if coverage_measurement_available
         else None
     )
+    # First-hop authoritative coverage is a LOCAL opt-in measurement (off by
+    # default), surfaced as measurement-only evidence and DERIVED fail-closed; it
+    # NEVER influences current_value/satisfied (those stay on the existing
+    # hex-mesh authoritative_first_hop_safe claim), so a 100% local measurement
+    # cannot upgrade the claim. capsule with no declared order -> unavailable.
+    first_hop_ratio = hex_mesh.get("first_hop_coverage_ratio")
+    first_hop_ratio_valid = (
+        isinstance(first_hop_ratio, (int, float))
+        and not isinstance(first_hop_ratio, bool)
+        and math.isfinite(first_hop_ratio)
+        and 0.0 <= float(first_hop_ratio) <= 1.0
+    )
+    first_hop_measurement_available = (
+        hex_mesh.get("first_hop_coverage_present") is True
+        and hex_mesh.get("first_hop_coverage_available") is True
+        and hex_mesh.get("first_hop_declares_order") is True
+        and first_hop_ratio_valid
+    )
+    measured_first_hop_authoritative_percent = (
+        round(float(first_hop_ratio) * 100.0, 2)
+        if first_hop_measurement_available
+        else None
+    )
     low_risk_real_loop_guardrail_tripped = (
         low_risk.get("runtime_authority_granted") is True
         # Full authority_boundary coverage (any axis True) - replaces the
@@ -347,6 +385,15 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             else 0.0,
             "target_value": 1.0,
             "satisfied": hex_mesh.get("authoritative_first_hop_safe") is True,
+            "coverage_measurement_available": first_hop_measurement_available,
+            "measured_first_hop_authoritative_percent": (
+                measured_first_hop_authoritative_percent
+            ),
+            "measurement_basis": (
+                "v1_first_hop_authoritative_order"
+                if first_hop_measurement_available
+                else "manifest_hex_mesh_flags"
+            ),
         },
         "per_query_receipt_claim_gate": {
             "current_value": receipt_claim_gate_satisfied,

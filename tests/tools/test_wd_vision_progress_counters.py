@@ -725,8 +725,9 @@ def _good_trend():
         "ok": True,
         "deterministic": True,
         "evidence_present": True,
-        "runtime_authority_granted": False,
-        "external_writes_applied": False,
+        # PREFIXED so the root authority scan never picks these up.
+        "trend_runtime_authority_granted": False,
+        "trend_external_writes_applied": False,
         "window_size": 3,
         "all_runs_ok": True,
         "any_guardrail_tripped": False,
@@ -802,9 +803,14 @@ def test_repeat_window_trend_unavailable_when_absent() -> None:
     ("ok", False),
     ("deterministic", False),
     ("evidence_present", False),
+    ("all_runs_ok", False),
     ("any_guardrail_tripped", True),
     ("promoted_solver_count_stable", False),
     ("window_size", 1),
+    ("window_size", 1_000_000),  # above MAX_WINDOW upper bound
+    # independently re-derived authority flags (do not trust evidence_present)
+    ("trend_runtime_authority_granted", True),
+    ("trend_external_writes_applied", True),
 ])
 def test_repeat_window_trend_unavailable_when_degraded(field, bad) -> None:
     trend = _good_trend()
@@ -813,6 +819,25 @@ def test_repeat_window_trend_unavailable_when_degraded(field, bad) -> None:
     assert trend_gate["trend_measurement_available"] is False, field
     assert trend_gate["measured_window_size"] is None, field
     assert trend_gate["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("authority_field", [
+    "trend_runtime_authority_granted",
+    "trend_external_writes_applied",
+])
+def test_trend_authority_flag_does_not_leak_into_end_to_end_gate(authority_field):
+    # The CRITICAL #1271 tools forge: a trend authority flag True must NOT flip the
+    # real end_to_end gate (the trend keys are prefixed so the root _nested_flag
+    # authority scan never sees them); and the trend itself is unavailable.
+    trend = _good_trend()
+    trend[authority_field] = True
+    trend_gate, e2e_with = _trend_counters(trend)
+    _, e2e_clean = _trend_counters(_good_trend())
+    assert e2e_with["satisfied"] is True, authority_field
+    assert e2e_with["satisfied"] == e2e_clean["satisfied"], authority_field
+    assert e2e_with["current_value"] == e2e_clean["current_value"], authority_field
+    assert e2e_with["guardrail_tripped"] is False, authority_field
+    assert trend_gate["trend_measurement_available"] is False, authority_field
 
 
 def test_repeat_window_trend_derived_not_hardcoded() -> None:

@@ -2692,6 +2692,15 @@ def test_repeat_window_trend_rejects_bad_count(field, bad) -> None:
         _safe_repeat_window_trend_aggregate(report)
 
 
+@pytest.mark.parametrize("bad_window", [1, 26, 1_000_000])
+def test_repeat_window_trend_rejects_window_out_of_range(bad_window) -> None:
+    # window_size must be in [2, MAX_WINDOW]; a forged tiny/huge window fails closed.
+    report = _good_trend_report()
+    report["trend"]["window_size"] = bad_window
+    with pytest.raises(ValueError):
+        _safe_repeat_window_trend_aggregate(report)
+
+
 def test_flag_off_manifest_omits_repeat_window_trend_key() -> None:
     prior = os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
     try:

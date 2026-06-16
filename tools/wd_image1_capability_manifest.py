@@ -7353,12 +7353,16 @@ REPEAT_WINDOW_TREND_ENV = "WD_IMAGE1_REPEAT_WINDOW_TREND"
 _REPEAT_WINDOW_TREND_MEASUREMENT_BASIS = "v1_low_risk_real_loop_repeat_window"
 # The ONLY keys allowed in the aggregated repeat-window trend block (all safe
 # scalars; the proof never emits raw content). Enforced fail-closed at build time.
+# NOTE the authority flags are deliberately PREFIXED (trend_*) so the consumer's
+# generic _nested_flag(proof, "runtime_authority_granted"/"external_writes_applied")
+# root scan does NOT pick them up - a measurement-only trend field must never flip
+# the real low-risk gate (#1271 tools forge).
 _REPEAT_WINDOW_TREND_SAFE_KEYS = (
     "ok",
     "deterministic",
     "evidence_present",
-    "runtime_authority_granted",
-    "external_writes_applied",
+    "trend_runtime_authority_granted",
+    "trend_external_writes_applied",
     "window_size",
     "all_runs_ok",
     "any_guardrail_tripped",
@@ -7397,23 +7401,35 @@ def _safe_repeat_window_trend_aggregate(report: dict) -> dict:
             raise ValueError(f"repeat_window_trend {name} is not a non-negative int")
         return value
 
+    # Single source of truth for the window bound (the proof enforces it too); a
+    # forged aggregate with window_size out of [2, MAX_WINDOW] must fail closed.
+    from tools.run_low_risk_real_loop_repeat_window_trend import (  # noqa: E402
+        MAX_WINDOW as _MAX_WINDOW,
+    )
+
     eva = report.get("evidence_vs_authority") or {}
     trend = report.get("trend") or {}
     replay = report.get("deterministic_replay") or {}
     basis = report.get("measurement_basis")
     if basis != _REPEAT_WINDOW_TREND_MEASUREMENT_BASIS:
         raise ValueError("unexpected repeat_window_trend measurement_basis")
+    window_size = _ni(trend.get("window_size"), "window_size")
+    if not (2 <= window_size <= _MAX_WINDOW):
+        raise ValueError(
+            f"repeat_window_trend window_size out of range [2, {_MAX_WINDOW}]"
+        )
     aggregate = {
         "ok": _sb(report.get("ok"), "ok"),
         "deterministic": _sb(replay.get("stable_trend_identical"), "deterministic"),
         "evidence_present": _sb(eva.get("evidence_present"), "evidence_present"),
-        "runtime_authority_granted": _sb(
-            eva.get("runtime_authority_granted"), "runtime_authority_granted"
+        # PREFIXED so the consumer root authority scan never picks these up.
+        "trend_runtime_authority_granted": _sb(
+            eva.get("runtime_authority_granted"), "trend_runtime_authority_granted"
         ),
-        "external_writes_applied": _sb(
-            eva.get("external_writes_applied"), "external_writes_applied"
+        "trend_external_writes_applied": _sb(
+            eva.get("external_writes_applied"), "trend_external_writes_applied"
         ),
-        "window_size": _ni(trend.get("window_size"), "window_size"),
+        "window_size": window_size,
         "all_runs_ok": _sb(trend.get("all_runs_ok"), "all_runs_ok"),
         "any_guardrail_tripped": _sb(
             trend.get("any_guardrail_tripped"), "any_guardrail_tripped"

@@ -275,11 +275,21 @@ def _extract_milestone_values(
             "repeat_window_trend_evidence_present": (
                 trend.get("evidence_present") is True
             ),
+            "repeat_window_trend_all_runs_ok": trend.get("all_runs_ok") is True,
             "repeat_window_trend_any_guardrail_tripped": (
                 trend.get("any_guardrail_tripped") is True
             ),
             "repeat_window_trend_promotion_stable": (
                 trend.get("promoted_solver_count_stable") is True
+            ),
+            # PREFIXED authority flags (the trend aggregate prefixes them so the
+            # root authority scan above never sees them); re-derived here so trend
+            # availability independently requires no authority was granted.
+            "repeat_window_trend_runtime_authority_granted": (
+                trend.get("trend_runtime_authority_granted") is True
+            ),
+            "repeat_window_trend_external_writes_applied": (
+                trend.get("trend_external_writes_applied") is True
             ),
             "repeat_window_trend_window_size": trend.get("window_size"),
             "repeat_window_trend_promotion_count_min": trend.get(
@@ -403,19 +413,28 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
     # as measurement-only evidence DERIVED fail-closed. It NEVER influences the
     # end_to_end_gated_promotions_total satisfied/current_value above - a stable
     # 100% trend is reproducibility evidence only, never a claim upgrade.
+    from tools.run_low_risk_real_loop_repeat_window_trend import (
+        MAX_WINDOW as _trend_max_window,
+    )
+
     trend_window_size = low_risk.get("repeat_window_trend_window_size")
     trend_window_valid = (
         isinstance(trend_window_size, int)
         and not isinstance(trend_window_size, bool)
-        and trend_window_size >= 2
+        and 2 <= trend_window_size <= _trend_max_window
     )
     repeat_window_trend_available = (
         low_risk.get("repeat_window_trend_present") is True
         and low_risk.get("repeat_window_trend_ok") is True
         and low_risk.get("repeat_window_trend_deterministic") is True
         and low_risk.get("repeat_window_trend_evidence_present") is True
+        and low_risk.get("repeat_window_trend_all_runs_ok") is True
         and low_risk.get("repeat_window_trend_promotion_stable") is True
         and low_risk.get("repeat_window_trend_any_guardrail_tripped") is not True
+        # Independently re-derive (do not trust evidence_present alone): a forged
+        # aggregate that decouples these must still fail closed.
+        and low_risk.get("repeat_window_trend_runtime_authority_granted") is not True
+        and low_risk.get("repeat_window_trend_external_writes_applied") is not True
         and trend_window_valid
     )
     trend_promotion_min = low_risk.get("repeat_window_trend_promotion_count_min")

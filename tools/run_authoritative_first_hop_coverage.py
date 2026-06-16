@@ -21,10 +21,10 @@ Provenance, not destination: a query the keyword classifier resolves counts as
 NON-authoritative even if it happens to land on the priority-0 layer.
 
 Privacy: the raw query text is NEVER emitted. Only the corpus id, route labels,
-the fixed ``reason`` enum, the first-hop class, and the capsule-side
-``decision_id`` are recorded. The ``raw_query_not_emitted`` invariant is DERIVED
-by re-scanning the serialized report for any corpus query text (fail-closed),
-never hardcoded True.
+the fixed ``reason`` enum, the first-hop class, and capsule-declared
+``decision_id`` values are allowed. The ``raw_query_not_emitted`` invariant is
+DERIVED by allowlisting emitted fields and re-scanning the serialized report for
+raw query text or high-signal query markers (fail-closed), never hardcoded True.
 
 Measurement-vs-claim: this tool only MEASURES. The WD Image1 counter's
 ``satisfied``/``current_value`` stay gated on the existing
@@ -237,10 +237,11 @@ def _derive_raw_query_not_emitted(
 ) -> bool:
     """Re-scan the emitted data; fail-closed privacy invariant (never hardcoded).
 
-    Returns True iff no raw corpus query text or sentinel-like raw-query token
-    survives anywhere in the serialized emitted structures. Whole-query strings
-    and high-signal token markers are scanned so verbatim or raw-derived query
-    survival flips it False.
+    Returns True iff emitted fields match their allowlists and no raw corpus
+    query text or sentinel-like raw-query token survives anywhere in the
+    serialized emitted structures. Whole-query strings and high-signal token
+    markers are scanned so verbatim or raw-derived query survival flips it
+    False.
     """
     scan_body = json.dumps(
         {"first_hop_records": records, "per_route_summary": per_route_summary},

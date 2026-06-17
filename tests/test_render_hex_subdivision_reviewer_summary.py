@@ -123,6 +123,35 @@ def test_failed_status_renders_false_not_raw():
     assert "failed" not in json.dumps(s)
 
 
+@pytest.mark.parametrize("field", [
+    "source_contract_check",
+    "rebuilt_index_entry_check",
+])
+def test_failed_contract_check_makes_review_not_clean(field):
+    # review_clean must require BOTH contract checks (#1273 fail-open: they were
+    # omitted, so a failed source/rebuilt check with everything else ok rendered
+    # review_clean=True).
+    v = _clean_verdict()
+    v[field] = "failed"
+    s = mod.render_reviewer_summary(v)
+    assert s["review_clean"] is False, field
+
+
+@pytest.mark.parametrize("malformed", [
+    {"k": "v"},        # dict, not list
+    "blocker",          # string
+    None,               # missing
+    7,                  # int
+])
+def test_malformed_blockers_make_review_not_clean(malformed):
+    # A non-list blockers must NOT collapse to "0 blockers / clean" (#1273
+    # fail-open: _count returns 0 for a malformed value).
+    v = _clean_verdict()
+    v["blockers"] = malformed
+    s = mod.render_reviewer_summary(v)
+    assert s["review_clean"] is False, malformed
+
+
 def test_render_summary_and_json_vocabulary_clean():
     s = mod.render_reviewer_summary(_clean_verdict())
     mod.assert_vocabulary_clean(mod.render_summary(s))

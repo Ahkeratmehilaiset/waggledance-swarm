@@ -85,28 +85,40 @@ def render_reviewer_summary(verdict: Any) -> dict[str, Any]:
     (verdict_ok False, everything False/0).
     """
     v: Mapping[str, Any] = verdict if isinstance(verdict, Mapping) else {}
+    ok = v.get("ok") is True
+    # review_clean requires a STRICTLY VALID empty blockers LIST - a malformed
+    # (non-list) blockers field must NOT collapse to "0 blockers / clean" (#1273
+    # tools forge: _count returns 0 for a malformed value, which would be a
+    # fail-open). blocker_count stays informational; review_clean does not trust it.
+    blockers = v.get("blockers")
+    blockers_valid_empty = isinstance(blockers, list) and len(blockers) == 0
+    source_match = v.get("source_contract_check") == "match"
+    rebuilt_match = v.get("rebuilt_index_entry_check") == "match"
     digest_all = _all_match(v.get("digest_checks"))
     size_all = _all_match(v.get("size_checks"))
     schema_all = _all_match(v.get("schema_version_checks"))
+    all_checks = digest_all and size_all and schema_all
     summary: dict[str, Any] = {
         "report_version": REPORT_VERSION,
-        "verdict_ok": v.get("ok") is True,
-        "blocker_count": _count(v.get("blockers")),
+        "verdict_ok": ok,
+        "blocker_count": _count(blockers),
         "warning_count": _count(v.get("warnings")),
         # status values are reduced to booleans - the raw status string is never
         # rendered, so no free-form/identifier content can ride along.
-        "source_contract_match": v.get("source_contract_check") == "match",
-        "rebuilt_index_entry_match": v.get("rebuilt_index_entry_check") == "match",
+        "source_contract_match": source_match,
+        "rebuilt_index_entry_match": rebuilt_match,
         "digest_all_match": digest_all,
         "size_all_match": size_all,
         "schema_version_all_match": schema_all,
-        "all_checks_match": digest_all and size_all and schema_all,
+        "all_checks_match": all_checks,
+        # EVERY derived check + a strictly-valid empty blockers list (the two
+        # contract checks were previously omitted - another #1273 fail-open).
         "review_clean": (
-            v.get("ok") is True
-            and _count(v.get("blockers")) == 0
-            and digest_all
-            and size_all
-            and schema_all
+            ok
+            and blockers_valid_empty
+            and source_match
+            and rebuilt_match
+            and all_checks
         ),
     }
     # DERIVE path_free_verified by scanning the rendered output (never hardcoded).

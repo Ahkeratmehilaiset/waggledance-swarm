@@ -25,6 +25,12 @@ from tools.wd_image1_capability_manifest import (
     _safe_first_hop_coverage_aggregate,
     build_first_hop_coverage_aggregate,
 )
+from tools.wd_image1_capability_manifest import (
+    REPEAT_WINDOW_TREND_ENV,
+    _REPEAT_WINDOW_TREND_SAFE_KEYS,
+    _safe_repeat_window_trend_aggregate,
+    build_repeat_window_trend_aggregate,
+)
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
@@ -2602,3 +2608,108 @@ def test_flag_off_manifest_omits_first_hop_key() -> None:
         c for c in manifest["capabilities"] if c["capability_id"] == "hex_mesh_entry"
     )
     assert "first_hop_coverage" not in hex_mesh["proof"]
+
+
+# --- repeat-window trend aggregate (default-off/on-demand) ---
+def test_repeat_window_trend_flag_off_returns_none() -> None:
+    prior = os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
+    try:
+        assert build_repeat_window_trend_aggregate() is None
+    finally:
+        if prior is not None:
+            os.environ[REPEAT_WINDOW_TREND_ENV] = prior
+
+
+def test_repeat_window_trend_force_real_aggregate_is_safe() -> None:
+    aggregate = build_repeat_window_trend_aggregate(force=True)
+    assert set(aggregate) == set(_REPEAT_WINDOW_TREND_SAFE_KEYS)
+    assert aggregate["ok"] is True
+    assert aggregate["deterministic"] is True
+    assert aggregate["evidence_present"] is True
+    assert aggregate["measurement_basis"] == "v1_low_risk_real_loop_repeat_window"
+    assert isinstance(aggregate["window_size"], int) and aggregate["window_size"] >= 2
+    blob = json.dumps(aggregate)
+    for marker in ("trend", "claim_label", "report_path", "autogrowth_run_id"):
+        # only the allowlisted scalar keys; no nested proof structures / ids
+        assert marker not in set(aggregate)
+
+
+def _good_trend_report() -> dict:
+    return {
+        "ok": True,
+        "measurement_basis": "v1_low_risk_real_loop_repeat_window",
+        "deterministic_replay": {"stable_trend_identical": True},
+        "evidence_vs_authority": {
+            "evidence_present": True,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+        },
+        "trend": {
+            "window_size": 3,
+            "all_runs_ok": True,
+            "any_guardrail_tripped": False,
+            "promoted_solver_count_min": 1,
+            "promoted_solver_count_max": 1,
+            "promoted_solver_count_stable": True,
+        },
+    }
+
+
+def test_repeat_window_trend_aggregate_accepts_clean_report() -> None:
+    aggregate = _safe_repeat_window_trend_aggregate(_good_trend_report())
+    assert set(aggregate) == set(_REPEAT_WINDOW_TREND_SAFE_KEYS)
+    assert aggregate["window_size"] == 3
+
+
+def test_repeat_window_trend_rejects_bad_basis() -> None:
+    bad = _good_trend_report()
+    bad["measurement_basis"] = "spoofed"
+    with pytest.raises(ValueError):
+        _safe_repeat_window_trend_aggregate(bad)
+
+
+@pytest.mark.parametrize("path,bad", [
+    (("evidence_vs_authority", "evidence_present"), "true"),
+    (("trend", "all_runs_ok"), 1),
+    (("trend", "promoted_solver_count_stable"), "yes"),
+])
+def test_repeat_window_trend_rejects_non_bool(path, bad) -> None:
+    report = _good_trend_report()
+    report[path[0]][path[1]] = bad
+    with pytest.raises(ValueError):
+        _safe_repeat_window_trend_aggregate(report)
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("window_size", -1),
+    ("promoted_solver_count_min", 1.5),
+    ("promoted_solver_count_max", True),
+])
+def test_repeat_window_trend_rejects_bad_count(field, bad) -> None:
+    report = _good_trend_report()
+    report["trend"][field] = bad
+    with pytest.raises(ValueError):
+        _safe_repeat_window_trend_aggregate(report)
+
+
+@pytest.mark.parametrize("bad_window", [1, 26, 1_000_000])
+def test_repeat_window_trend_rejects_window_out_of_range(bad_window) -> None:
+    # window_size must be in [2, MAX_WINDOW]; a forged tiny/huge window fails closed.
+    report = _good_trend_report()
+    report["trend"]["window_size"] = bad_window
+    with pytest.raises(ValueError):
+        _safe_repeat_window_trend_aggregate(report)
+
+
+def test_flag_off_manifest_omits_repeat_window_trend_key() -> None:
+    prior = os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
+    try:
+        manifest = build_manifest()
+    finally:
+        if prior is not None:
+            os.environ[REPEAT_WINDOW_TREND_ENV] = prior
+    low_risk = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "low_risk_autonomy_loop"
+    )
+    assert "repeat_window_trend" not in low_risk["proof"]

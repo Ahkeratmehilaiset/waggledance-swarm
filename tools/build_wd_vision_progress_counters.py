@@ -223,17 +223,33 @@ def _extract_milestone_values(
         authority = _mapping(real_loop.get("authority_boundary"))
         control_plane = _mapping(real_loop.get("control_plane"))
         table_counts = _mapping(control_plane.get("table_counts"))
+        # Optional local opt-in repeat-window trend measurement. Present only when
+        # the manifest ran the proof (env flag on); absent by default. Surface the
+        # safe scalar fields; the trend counter derives availability fail-closed
+        # and NEVER upgrades the low-risk claim from these.
+        trend = _mapping(proof.get("repeat_window_trend"))
+        # The recursive _nested_flag root authority scan MUST exclude the
+        # measurement-only trend subtree: otherwise a bare authority key nested
+        # anywhere under repeat_window_trend (e.g. a forged per-window
+        # authority_boundary) would flip the real low-risk gate (#1271 tools forge:
+        # the renamed surfaced field was not enough - the whole subtree must be out
+        # of scope of the recursive scan).
+        proof_for_authority = (
+            {k: v for k, v in proof.items() if k != "repeat_window_trend"}
+            if isinstance(proof, Mapping)
+            else proof
+        )
         return {
             "runtime_authority_granted": _nested_flag(
-                proof,
+                proof_for_authority,
                 "runtime_authority_granted",
             ),
             "external_writes_applied": _nested_flag(
-                proof,
+                proof_for_authority,
                 "external_writes_applied",
             ),
             "operator_visible_metrics": _nested_flag(
-                proof,
+                proof_for_authority,
                 "operator_visible_metrics",
             ),
             "real_loop_report_ok": real_loop.get("ok") is True,
@@ -263,6 +279,32 @@ def _extract_milestone_values(
             # hand-enumerated subset can leave a fail-open gap.
             "dry_run_any_authority_flag": any(
                 v is True for v in authority.values()
+            ),
+            "repeat_window_trend_present": bool(proof.get("repeat_window_trend")),
+            "repeat_window_trend_ok": trend.get("ok") is True,
+            "repeat_window_trend_deterministic": trend.get("deterministic") is True,
+            "repeat_window_trend_evidence_present": (
+                trend.get("evidence_present") is True
+            ),
+            "repeat_window_trend_all_runs_ok": trend.get("all_runs_ok") is True,
+            "repeat_window_trend_any_guardrail_tripped": (
+                trend.get("any_guardrail_tripped") is True
+            ),
+            "repeat_window_trend_promotion_stable": (
+                trend.get("promoted_solver_count_stable") is True
+            ),
+            # PREFIXED authority flags (the trend aggregate prefixes them so the
+            # root authority scan above never sees them); re-derived here so trend
+            # availability independently requires no authority was granted.
+            "repeat_window_trend_runtime_authority_granted": (
+                trend.get("trend_runtime_authority_granted") is True
+            ),
+            "repeat_window_trend_external_writes_applied": (
+                trend.get("trend_external_writes_applied") is True
+            ),
+            "repeat_window_trend_window_size": trend.get("window_size"),
+            "repeat_window_trend_promotion_count_min": trend.get(
+                "promoted_solver_count_min"
             ),
         }
     if capability_id == "hexagonal_upgrades":
@@ -378,6 +420,41 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and low_risk_real_loop_promotions >= 1
         and not low_risk_real_loop_guardrail_tripped
     )
+    # Repeat-window trend is a LOCAL opt-in measurement (off by default), surfaced
+    # as measurement-only evidence DERIVED fail-closed. It NEVER influences the
+    # end_to_end_gated_promotions_total satisfied/current_value above - a stable
+    # 100% trend is reproducibility evidence only, never a claim upgrade.
+    from tools.run_low_risk_real_loop_repeat_window_trend import (
+        MAX_WINDOW as _trend_max_window,
+    )
+
+    trend_window_size = low_risk.get("repeat_window_trend_window_size")
+    trend_window_valid = (
+        isinstance(trend_window_size, int)
+        and not isinstance(trend_window_size, bool)
+        and 2 <= trend_window_size <= _trend_max_window
+    )
+    repeat_window_trend_available = (
+        low_risk.get("repeat_window_trend_present") is True
+        and low_risk.get("repeat_window_trend_ok") is True
+        and low_risk.get("repeat_window_trend_deterministic") is True
+        and low_risk.get("repeat_window_trend_evidence_present") is True
+        and low_risk.get("repeat_window_trend_all_runs_ok") is True
+        and low_risk.get("repeat_window_trend_promotion_stable") is True
+        and low_risk.get("repeat_window_trend_any_guardrail_tripped") is not True
+        # Independently re-derive (do not trust evidence_present alone): a forged
+        # aggregate that decouples these must still fail closed.
+        and low_risk.get("repeat_window_trend_runtime_authority_granted") is not True
+        and low_risk.get("repeat_window_trend_external_writes_applied") is not True
+        and trend_window_valid
+    )
+    trend_promotion_min = low_risk.get("repeat_window_trend_promotion_count_min")
+    measured_stable_promotion_count = (
+        trend_promotion_min
+        if (repeat_window_trend_available and isinstance(trend_promotion_min, int)
+            and not isinstance(trend_promotion_min, bool))
+        else None
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -429,6 +506,27 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
                 low_risk.get("runtime_authority_granted") is True
                 or low_risk.get("dry_run_runtime_authority_granted") is True
             ),
+        },
+        "low_risk_real_loop_repeat_window_trend": {
+            # Measurement-only reproducibility evidence (off by default). DERIVED
+            # fail-closed and fully decoupled from end_to_end_gated_promotions_total
+            # above - a stable 100% trend NEVER upgrades satisfied/current_value or
+            # claim_safe.
+            "trend_measurement_available": repeat_window_trend_available,
+            "measured_window_size": (
+                trend_window_size if repeat_window_trend_available else None
+            ),
+            "measured_stable_promotion_count": measured_stable_promotion_count,
+            "promotion_count_stable": bool(
+                repeat_window_trend_available
+                and low_risk.get("repeat_window_trend_promotion_stable") is True
+            ),
+            "measurement_basis": (
+                "v1_low_risk_real_loop_repeat_window"
+                if repeat_window_trend_available
+                else "manifest_real_loop_flags"
+            ),
+            "claim_safe": False,
         },
         "shadow_to_candidate_subdivision_transitions_total": {
             "current_value": _int_value(

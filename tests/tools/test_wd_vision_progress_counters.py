@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.build_wd_vision_progress_counters import (
     SCHEMA_VERSION,
     build_vision_progress_counters,
@@ -706,4 +708,161 @@ def test_first_hop_derived_not_hardcoded() -> None:
     unavail = _first_hop_gate(
         {**_SAFE_FIRST_HOP, "coverage_measurement_available": False}
     )["coverage_measurement_available"]
+    assert avail is True and unavail is False
+
+
+# --- low-risk repeat-window trend counter (default-off/on-demand) ---
+_TREND_AUTHORITY_AXES = (
+    "external_writes_applied", "production_control_plane_touched",
+    "production_scheduler_enqueue", "provider_jobs_created", "builder_jobs_created",
+    "gate_skip_authority", "operator_gate_bypassed", "runtime_authority_granted",
+    "fast_track_priority",
+)
+
+
+def _good_trend():
+    return {
+        "ok": True,
+        "deterministic": True,
+        "evidence_present": True,
+        # PREFIXED so the root authority scan never picks these up.
+        "trend_runtime_authority_granted": False,
+        "trend_external_writes_applied": False,
+        "window_size": 3,
+        "all_runs_ok": True,
+        "any_guardrail_tripped": False,
+        "promoted_solver_count_min": 1,
+        "promoted_solver_count_max": 1,
+        "promoted_solver_count_stable": True,
+        "measurement_basis": "v1_low_risk_real_loop_repeat_window",
+    }
+
+
+def _manifest_with_low_risk_trend(trend):
+    proof = {
+        "ok": True,
+        "real_loop_dry_run": {
+            "ok": True,
+            "claim_label": "MEASURED_LOCAL_DRY_RUN",
+            "chain": {"auto_promoted_solver_count": 1, "auto_promoted_run_count": 1},
+            "authority_boundary": {axis: False for axis in _TREND_AUTHORITY_AXES},
+            "control_plane": {"table_counts": {"provider_jobs": 0, "builder_jobs": 0}},
+        },
+    }
+    if trend is not None:
+        proof["repeat_window_trend"] = trend
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _trend_counters(trend):
+    mc = build_vision_progress_counters(_manifest_with_low_risk_trend(trend))[
+        "milestone_counters"
+    ]
+    return mc["low_risk_real_loop_repeat_window_trend"], mc[
+        "end_to_end_gated_promotions_total"
+    ]
+
+
+def test_repeat_window_trend_available_with_safe_measurement() -> None:
+    trend_gate, _ = _trend_counters(_good_trend())
+    assert trend_gate["trend_measurement_available"] is True
+    assert trend_gate["measured_window_size"] == 3
+    assert trend_gate["measured_stable_promotion_count"] == 1
+    assert trend_gate["promotion_count_stable"] is True
+    assert trend_gate["measurement_basis"] == "v1_low_risk_real_loop_repeat_window"
+    assert trend_gate["claim_safe"] is False
+
+
+def test_repeat_window_trend_never_upgrades_end_to_end_gate() -> None:
+    # The end_to_end gate verdict must be identical with the trend present (stable
+    # 100%) vs absent - the measurement is fully decoupled from the claim.
+    _, e2e_with = _trend_counters(_good_trend())
+    _, e2e_without = _trend_counters(None)
+    assert e2e_with["satisfied"] == e2e_without["satisfied"] is True
+    assert e2e_with["current_value"] == e2e_without["current_value"]
+
+
+def test_repeat_window_trend_unavailable_when_absent() -> None:
+    trend_gate, _ = _trend_counters(None)
+    assert trend_gate["trend_measurement_available"] is False
+    assert trend_gate["measured_window_size"] is None
+    assert trend_gate["measured_stable_promotion_count"] is None
+    assert trend_gate["measurement_basis"] == "manifest_real_loop_flags"
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("ok", False),
+    ("deterministic", False),
+    ("evidence_present", False),
+    ("all_runs_ok", False),
+    ("any_guardrail_tripped", True),
+    ("promoted_solver_count_stable", False),
+    ("window_size", 1),
+    ("window_size", 1_000_000),  # above MAX_WINDOW upper bound
+    # independently re-derived authority flags (do not trust evidence_present)
+    ("trend_runtime_authority_granted", True),
+    ("trend_external_writes_applied", True),
+])
+def test_repeat_window_trend_unavailable_when_degraded(field, bad) -> None:
+    trend = _good_trend()
+    trend[field] = bad
+    trend_gate, _ = _trend_counters(trend)
+    assert trend_gate["trend_measurement_available"] is False, field
+    assert trend_gate["measured_window_size"] is None, field
+    assert trend_gate["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("authority_field", [
+    "trend_runtime_authority_granted",
+    "trend_external_writes_applied",
+])
+def test_trend_authority_flag_does_not_leak_into_end_to_end_gate(authority_field):
+    # The CRITICAL #1271 tools forge: a trend authority flag True must NOT flip the
+    # real end_to_end gate (the trend keys are prefixed so the root _nested_flag
+    # authority scan never sees them); and the trend itself is unavailable.
+    trend = _good_trend()
+    trend[authority_field] = True
+    trend_gate, e2e_with = _trend_counters(trend)
+    _, e2e_clean = _trend_counters(_good_trend())
+    assert e2e_with["satisfied"] is True, authority_field
+    assert e2e_with["satisfied"] == e2e_clean["satisfied"], authority_field
+    assert e2e_with["current_value"] == e2e_clean["current_value"], authority_field
+    assert e2e_with["guardrail_tripped"] is False, authority_field
+    assert trend_gate["trend_measurement_available"] is False, authority_field
+
+
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_granted",
+    "external_writes_applied",
+    "operator_visible_metrics",
+])
+def test_bare_nested_authority_key_in_trend_subtree_does_not_leak(bare_key):
+    # The DEFINITIVE #1271 fix: even a BARE authority key nested anywhere in the
+    # measurement-only repeat_window_trend subtree (e.g. a forged per-window
+    # authority_boundary) must NOT reach the recursive root authority scan and
+    # flip the real end_to_end gate - the trend subtree is excluded from that scan.
+    trend = _good_trend()
+    trend["forged_nested"] = {"authority_boundary": {bare_key: True}}
+    _, e2e_with = _trend_counters(trend)
+    _, e2e_clean = _trend_counters(_good_trend())
+    assert e2e_with["satisfied"] is True, bare_key
+    assert e2e_with["satisfied"] == e2e_clean["satisfied"], bare_key
+    assert e2e_with["current_value"] == e2e_clean["current_value"], bare_key
+    assert e2e_with["guardrail_tripped"] is False, bare_key
+
+
+def test_repeat_window_trend_derived_not_hardcoded() -> None:
+    avail = _trend_counters(_good_trend())[0]["trend_measurement_available"]
+    unavail = _trend_counters({**_good_trend(), "ok": False})[0][
+        "trend_measurement_available"
+    ]
     assert avail is True and unavail is False

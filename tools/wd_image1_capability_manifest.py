@@ -7349,6 +7349,125 @@ def build_first_hop_coverage_aggregate(*, force: bool | None = None) -> dict | N
     return _safe_first_hop_coverage_aggregate(report)
 
 
+REPEAT_WINDOW_TREND_ENV = "WD_IMAGE1_REPEAT_WINDOW_TREND"
+_REPEAT_WINDOW_TREND_MEASUREMENT_BASIS = "v1_low_risk_real_loop_repeat_window"
+# The ONLY keys allowed in the aggregated repeat-window trend block (all safe
+# scalars; the proof never emits raw content). Enforced fail-closed at build time.
+# NOTE the authority flags are deliberately PREFIXED (trend_*) so the consumer's
+# generic _nested_flag(proof, "runtime_authority_granted"/"external_writes_applied")
+# root scan does NOT pick them up - a measurement-only trend field must never flip
+# the real low-risk gate (#1271 tools forge).
+_REPEAT_WINDOW_TREND_SAFE_KEYS = (
+    "ok",
+    "deterministic",
+    "evidence_present",
+    "trend_runtime_authority_granted",
+    "trend_external_writes_applied",
+    "window_size",
+    "all_runs_ok",
+    "any_guardrail_tripped",
+    "promoted_solver_count_min",
+    "promoted_solver_count_max",
+    "promoted_solver_count_stable",
+    "measurement_basis",
+)
+
+
+def _repeat_window_trend_enabled() -> bool:
+    """True only when the opt-in env flag is set (default OFF).
+
+    The repeat-window trend proof replays the autogrowth loop ~2*window times, so
+    it is off by default and build_manifest stays fast / byte-unaffected.
+    """
+    return str(
+        os.environ.get(REPEAT_WINDOW_TREND_ENV, "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_repeat_window_trend_aggregate(report: dict) -> dict:
+    """Reduce a repeat-window trend proof to safe scalar fields only.
+
+    Every field is SHAPE-validated (flags strict bool; counts non-negative int;
+    basis the exact expected string) and only allowlisted keys are emitted; any
+    non-conforming value fails closed (raise). Measurement-only evidence.
+    """
+    def _sb(value: Any, name: str) -> bool:
+        if value is not True and value is not False:
+            raise ValueError(f"repeat_window_trend {name} is not a strict bool")
+        return value
+
+    def _ni(value: Any, name: str) -> int:
+        if not (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+            raise ValueError(f"repeat_window_trend {name} is not a non-negative int")
+        return value
+
+    # Single source of truth for the window bound (the proof enforces it too); a
+    # forged aggregate with window_size out of [2, MAX_WINDOW] must fail closed.
+    from tools.run_low_risk_real_loop_repeat_window_trend import (  # noqa: E402
+        MAX_WINDOW as _MAX_WINDOW,
+    )
+
+    eva = report.get("evidence_vs_authority") or {}
+    trend = report.get("trend") or {}
+    replay = report.get("deterministic_replay") or {}
+    basis = report.get("measurement_basis")
+    if basis != _REPEAT_WINDOW_TREND_MEASUREMENT_BASIS:
+        raise ValueError("unexpected repeat_window_trend measurement_basis")
+    window_size = _ni(trend.get("window_size"), "window_size")
+    if not (2 <= window_size <= _MAX_WINDOW):
+        raise ValueError(
+            f"repeat_window_trend window_size out of range [2, {_MAX_WINDOW}]"
+        )
+    aggregate = {
+        "ok": _sb(report.get("ok"), "ok"),
+        "deterministic": _sb(replay.get("stable_trend_identical"), "deterministic"),
+        "evidence_present": _sb(eva.get("evidence_present"), "evidence_present"),
+        # PREFIXED so the consumer root authority scan never picks these up.
+        "trend_runtime_authority_granted": _sb(
+            eva.get("runtime_authority_granted"), "trend_runtime_authority_granted"
+        ),
+        "trend_external_writes_applied": _sb(
+            eva.get("external_writes_applied"), "trend_external_writes_applied"
+        ),
+        "window_size": window_size,
+        "all_runs_ok": _sb(trend.get("all_runs_ok"), "all_runs_ok"),
+        "any_guardrail_tripped": _sb(
+            trend.get("any_guardrail_tripped"), "any_guardrail_tripped"
+        ),
+        "promoted_solver_count_min": _ni(
+            trend.get("promoted_solver_count_min"), "promoted_solver_count_min"
+        ),
+        "promoted_solver_count_max": _ni(
+            trend.get("promoted_solver_count_max"), "promoted_solver_count_max"
+        ),
+        "promoted_solver_count_stable": _sb(
+            trend.get("promoted_solver_count_stable"), "promoted_solver_count_stable"
+        ),
+        "measurement_basis": basis,
+    }
+    extra = set(aggregate) - set(_REPEAT_WINDOW_TREND_SAFE_KEYS)
+    if extra:
+        raise ValueError(
+            f"repeat_window_trend aggregate has non-allowlisted keys: {sorted(extra)}"
+        )
+    return aggregate
+
+
+def build_repeat_window_trend_aggregate(*, force: bool | None = None) -> dict | None:
+    """Run the opt-in repeat-window trend proof and return a safe aggregate, or
+    None when OFF (default) so the manifest stays byte-unaffected.
+    Measurement-only: it never flips the low-risk claim.
+    """
+    enabled = _repeat_window_trend_enabled() if force is None else force
+    if not enabled:
+        return None
+    from tools.run_low_risk_real_loop_repeat_window_trend import (  # noqa: E402
+        build_repeat_window_trend_proof,
+    )
+
+    return _safe_repeat_window_trend_aggregate(build_repeat_window_trend_proof())
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -8020,6 +8139,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
     low_risk_autonomy_proof["real_loop_dry_run"] = low_risk_real_loop_dry_run
+    # Optional local opt-in repeat-window trend measurement (OFF by default; the
+    # proof replays the loop ~2*window times). Only safe scalar fields; it is
+    # measurement-only evidence and NEVER flips the low-risk claim.
+    repeat_window_trend = build_repeat_window_trend_aggregate()
+    if repeat_window_trend is not None:
+        low_risk_autonomy_proof["repeat_window_trend"] = repeat_window_trend
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
     low_risk_autonomy_proof["ops_alert_state_smoke"] = low_risk_ops_alert_state_smoke

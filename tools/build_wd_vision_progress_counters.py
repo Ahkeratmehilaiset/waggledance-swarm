@@ -228,17 +228,28 @@ def _extract_milestone_values(
         # safe scalar fields; the trend counter derives availability fail-closed
         # and NEVER upgrades the low-risk claim from these.
         trend = _mapping(proof.get("repeat_window_trend"))
+        # The recursive _nested_flag root authority scan MUST exclude the
+        # measurement-only trend subtree: otherwise a bare authority key nested
+        # anywhere under repeat_window_trend (e.g. a forged per-window
+        # authority_boundary) would flip the real low-risk gate (#1271 tools forge:
+        # the renamed surfaced field was not enough - the whole subtree must be out
+        # of scope of the recursive scan).
+        proof_for_authority = (
+            {k: v for k, v in proof.items() if k != "repeat_window_trend"}
+            if isinstance(proof, Mapping)
+            else proof
+        )
         return {
             "runtime_authority_granted": _nested_flag(
-                proof,
+                proof_for_authority,
                 "runtime_authority_granted",
             ),
             "external_writes_applied": _nested_flag(
-                proof,
+                proof_for_authority,
                 "external_writes_applied",
             ),
             "operator_visible_metrics": _nested_flag(
-                proof,
+                proof_for_authority,
                 "operator_visible_metrics",
             ),
             "real_loop_report_ok": real_loop.get("ok") is True,

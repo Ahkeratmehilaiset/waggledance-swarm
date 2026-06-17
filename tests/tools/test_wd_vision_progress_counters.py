@@ -840,6 +840,26 @@ def test_trend_authority_flag_does_not_leak_into_end_to_end_gate(authority_field
     assert trend_gate["trend_measurement_available"] is False, authority_field
 
 
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_granted",
+    "external_writes_applied",
+    "operator_visible_metrics",
+])
+def test_bare_nested_authority_key_in_trend_subtree_does_not_leak(bare_key):
+    # The DEFINITIVE #1271 fix: even a BARE authority key nested anywhere in the
+    # measurement-only repeat_window_trend subtree (e.g. a forged per-window
+    # authority_boundary) must NOT reach the recursive root authority scan and
+    # flip the real end_to_end gate - the trend subtree is excluded from that scan.
+    trend = _good_trend()
+    trend["forged_nested"] = {"authority_boundary": {bare_key: True}}
+    _, e2e_with = _trend_counters(trend)
+    _, e2e_clean = _trend_counters(_good_trend())
+    assert e2e_with["satisfied"] is True, bare_key
+    assert e2e_with["satisfied"] == e2e_clean["satisfied"], bare_key
+    assert e2e_with["current_value"] == e2e_clean["current_value"], bare_key
+    assert e2e_with["guardrail_tripped"] is False, bare_key
+
+
 def test_repeat_window_trend_derived_not_hardcoded() -> None:
     avail = _trend_counters(_good_trend())[0]["trend_measurement_available"]
     unavail = _trend_counters({**_good_trend(), "ok": False})[0][

@@ -31,10 +31,10 @@ def _assert_deferred_lift_state(state: dict) -> None:
         assert authority[key] is False
 
     items = state["items"]
-    assert (
-        items["production_two_agent_activation_loop"]["state"]
-        == "partial_read_only_ready"
-    )
+    production_loop = items["production_two_agent_activation_loop"]
+    assert production_loop["state"] == "read_only_scheduler_ready"
+    assert "tools/bridge_loop_tick.py" in production_loop["implemented_by"]
+    assert "not scheduler authority" in production_loop["safe_next"]
     assert items["automatic_payload_generation"]["state"] == "deferred"
     assert (
         items["auto_conversion_consensus_to_implementation_work"]["state"]

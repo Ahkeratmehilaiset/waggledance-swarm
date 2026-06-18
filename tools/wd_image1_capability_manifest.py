@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import copy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import gc
@@ -8049,6 +8050,20 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
 
     hex_upgrade_proof["reviewer_summary"] = _render_hex_reviewer_summary(
         hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification
+    )
+    # Measurement-only shadow-only invariant proof: AFFIRMATIVE evidence that the
+    # hex subdivision stays shadow-only and NO runtime shadow->candidate promotion
+    # occurs. It reuses the SAME replay artifact already built above (single
+    # source of truth, via a deep-copy factory so its own determinism re-run sees
+    # identical input) and is measurement-only - so it is NOT folded into
+    # hex_upgrade_proof["ok"] below and NEVER upgrades any claim or the honest-zero
+    # transition counter.
+    from tools.run_shadow_only_invariant_proof import (  # noqa: E402
+        build_shadow_only_invariant_proof as _build_shadow_only_invariant_proof,
+    )
+
+    hex_upgrade_proof["shadow_only_invariant"] = _build_shadow_only_invariant_proof(
+        artifact_factory=lambda: copy.deepcopy(hex_upgrade_shadow_replay),
     )
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True

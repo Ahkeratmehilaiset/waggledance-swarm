@@ -311,11 +311,23 @@ def _extract_milestone_values(
         # Path-free reviewer summary (merged renderer), present only when the
         # manifest stored it. Measurement-only safe scalars.
         reviewer = _mapping(proof.get("reviewer_summary"))
-        # Exclude the measurement-only reviewer_summary subtree from the recursive
-        # authority/mutation scans so a nested field there can never couple into the
-        # real hex-upgrade flags (recursive-scan-coupling safety, #1271).
+        # Measurement-only shadow-only invariant proof (AFFIRMATIVE evidence the
+        # subdivision stays shadow-only). Surface the COMPONENT scalars so the
+        # consumer can RE-DERIVE shadow_only_enforced itself - it must NOT trust the
+        # proof's own invariant_holds aggregate.
+        shadow_inv = _mapping(proof.get("shadow_only_invariant"))
+        shadow_inv_block = _mapping(shadow_inv.get("invariant"))
+        shadow_inv_replay = _mapping(shadow_inv.get("deterministic_replay"))
+        # Exclude the measurement-only reviewer_summary AND shadow_only_invariant
+        # subtrees from the recursive authority/mutation scans so a nested field
+        # there can never couple into the real hex-upgrade flags (recursive-scan
+        # coupling safety, #1271).
         proof_for_authority = (
-            {k: v for k, v in proof.items() if k != "reviewer_summary"}
+            {
+                k: v
+                for k, v in proof.items()
+                if k not in ("reviewer_summary", "shadow_only_invariant")
+            }
             if isinstance(proof, Mapping)
             else proof
         )
@@ -353,6 +365,37 @@ def _extract_milestone_values(
                 reviewer.get("schema_version_all_match") is True
             ),
             "reviewer_summary_blocker_count": reviewer.get("blocker_count"),
+            # Shadow-only invariant COMPONENT scalars (strict is True), plus the raw
+            # transition count so the consumer can re-derive the strict-int-0 itself.
+            # The aggregate is surfaced only so the consumer can prove it IGNORES it
+            # (an inconsistent aggregate must still fail closed).
+            "shadow_only_invariant_present": bool(proof.get("shadow_only_invariant")),
+            "shadow_only_invariant_ok": shadow_inv.get("ok") is True,
+            "shadow_only_invariant_holds": (
+                shadow_inv_block.get("invariant_holds") is True
+            ),
+            "shadow_only_invariant_deterministic": (
+                shadow_inv_replay.get("stable_identical") is True
+            ),
+            "shadow_only_artifact_ok": shadow_inv_block.get("artifact_ok") is True,
+            "shadow_only_target_state_is_shadow": (
+                shadow_inv_block.get("target_state_is_shadow") is True
+            ),
+            "shadow_only_no_runtime_mutation": (
+                shadow_inv_block.get("no_runtime_mutation") is True
+            ),
+            "shadow_only_guardrails_all_clean": (
+                shadow_inv_block.get("guardrails_all_clean") is True
+            ),
+            "shadow_only_transition_occurred": (
+                shadow_inv_block.get("transition_occurred") is True
+            ),
+            "shadow_only_transition_count": shadow_inv_block.get(
+                "shadow_to_candidate_subdivision_transitions_total"
+            ),
+            "shadow_only_invariant_claim_safe": (
+                shadow_inv_block.get("claim_safe") is True
+            ),
         }
     if capability_id == "future_waggledance_swarm":
         runtime_summary = _mapping(proof.get("runtime_evidence_summary"))
@@ -528,6 +571,37 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and hex_reviewer_all_checks_match
         and _hex_blocker_zero
     )
+    # Shadow-only invariant: AFFIRMATIVE measurement-only proof that hex
+    # subdivision stays shadow-only and NO runtime shadow->candidate promotion
+    # occurs. The consumer RE-DERIVES shadow_only_enforced from the COMPONENT
+    # booleans (it does NOT trust the proof's own invariant_holds aggregate - an
+    # inconsistent aggregate with a component False but invariant_holds True must
+    # fail closed). It NEVER upgrades a claim and NEVER raises the honest-zero
+    # shadow_to_candidate_subdivision_transitions_total counter below.
+    shadow_only_present = (
+        hex_upgrades.get("shadow_only_invariant_present") is True
+    )
+    # transition count must be a STRICT int 0 (0.0 / 0j / bool / None fail closed).
+    _shadow_only_transition_count = hex_upgrades.get("shadow_only_transition_count")
+    _shadow_only_transition_count_strict_zero = (
+        isinstance(_shadow_only_transition_count, int)
+        and not isinstance(_shadow_only_transition_count, bool)
+        and _shadow_only_transition_count == 0
+    )
+    shadow_only_enforced = bool(
+        shadow_only_present
+        and hex_upgrades.get("shadow_only_invariant_ok") is True
+        and hex_upgrades.get("shadow_only_invariant_deterministic") is True
+        and hex_upgrades.get("shadow_only_artifact_ok") is True
+        and hex_upgrades.get("shadow_only_target_state_is_shadow") is True
+        and hex_upgrades.get("shadow_only_no_runtime_mutation") is True
+        and hex_upgrades.get("shadow_only_guardrails_all_clean") is True
+        and hex_upgrades.get("shadow_only_transition_occurred") is False
+        and _shadow_only_transition_count_strict_zero
+        # A measurement-only proof must NOT self-declare claim_safe; if the
+        # surfaced proof ever flips claim_safe True, refuse to certify enforcement.
+        and hex_upgrades.get("shadow_only_invariant_claim_safe") is not True
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -628,6 +702,44 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_hex_subdivision_reviewer_summary"
                 if hex_reviewer_available
+                else "manifest_hex_upgrade_flags"
+            ),
+            "claim_safe": False,
+        },
+        "hex_subdivision_shadow_only_invariant": {
+            # AFFIRMATIVE measurement-only proof that hex subdivision stays
+            # shadow-only and NO runtime shadow->candidate promotion occurs.
+            # shadow_only_enforced is RE-DERIVED fail-closed from the proof's
+            # COMPONENT booleans (never its invariant_holds aggregate) and is fully
+            # decoupled: it NEVER upgrades a hex claim and NEVER raises the
+            # honest-zero shadow_to_candidate_subdivision_transitions_total counter.
+            "invariant_proof_available": shadow_only_present,
+            "shadow_only_enforced": shadow_only_enforced,
+            "target_state_is_shadow": bool(
+                shadow_only_present
+                and hex_upgrades.get("shadow_only_target_state_is_shadow") is True
+            ),
+            "no_runtime_mutation": bool(
+                shadow_only_present
+                and hex_upgrades.get("shadow_only_no_runtime_mutation") is True
+            ),
+            "guardrails_all_clean": bool(
+                shadow_only_present
+                and hex_upgrades.get("shadow_only_guardrails_all_clean") is True
+            ),
+            # A POSITIVELY-detected transition is a violation, surfaced honestly;
+            # it does NOT feed the progress counter (no fake transition path).
+            "transition_occurred": (
+                hex_upgrades.get("shadow_only_transition_occurred") is True
+            ),
+            "transition_count_strict_zero": _shadow_only_transition_count_strict_zero,
+            "deterministic_replay_stable": bool(
+                shadow_only_present
+                and hex_upgrades.get("shadow_only_invariant_deterministic") is True
+            ),
+            "measurement_basis": (
+                "v1_shadow_only_invariant"
+                if shadow_only_enforced
                 else "manifest_hex_upgrade_flags"
             ),
             "claim_safe": False,

@@ -335,3 +335,34 @@ def test_strict_zero_int():
     assert mod._strict_zero_int(0) is True
     for bad in (0.0, True, -1, 1, "0", None):
         assert mod._strict_zero_int(bad) is False, bad
+
+
+# ------------------------------------------------- chain wrong-depth (lead #1278)
+
+def test_chain_wrong_depth_self_consistent_fails():
+    # lead #1278 forge: a self-consistent but WRONG-DEPTH chain (3/3, all flags True)
+    # must fail - clean requires the FULL expected depth, not merely present==total.
+    p = _good_proof()
+    for k in ("chain_levels_total", "chain_levels_present", "chain_levels_ok"):
+        p["chain_final_summary"][k] = 3
+    d = _digest(p)
+    assert d["chain_summary_clean"] is False
+    assert d["cross_consistent"] is False
+
+
+@pytest.mark.parametrize("field", ["chain_levels_total", "chain_levels_present"])
+@pytest.mark.parametrize("bad", [10.0, True, "10", None, 9, 11, 0])
+def test_chain_level_count_must_equal_expected_strict_int(field, bad):
+    # Degrade ONE count (the other stays the good 10); a non-strict-int or off-by-depth
+    # value (incl present=10.0) must fail closed.
+    p = _good_proof()
+    p["chain_final_summary"][field] = bad
+    assert _digest(p)["chain_summary_clean"] is False, (field, bad)
+
+
+def test_expected_chain_depth_matches_renderer():
+    from tools.render_shadow_subdivision_verifier_chain_final_summary import (
+        _CHAIN_LEVEL_KEYS,
+    )
+
+    assert mod._EXPECTED_CHAIN_LEVEL_COUNT == len(_CHAIN_LEVEL_KEYS) == 10

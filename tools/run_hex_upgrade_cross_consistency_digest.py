@@ -48,6 +48,15 @@ if str(ROOT) not in sys.path:
 from tools.hex_shadow_subdivision_replay import (  # noqa: E402
     _contains_path_marker,
 )
+from tools.render_shadow_subdivision_verifier_chain_final_summary import (  # noqa: E402
+    _CHAIN_LEVEL_KEYS,
+)
+
+# The full EXPECTED shadow-subdivision verifier chain depth, sourced from the chain
+# renderer's own level set (single source of truth) so the digest's notion of "all
+# levels present" can never drift from the renderer. A self-consistent but wrong-depth
+# chain (e.g. present==total==3) must NOT pass (lead #1278 exact-head forge).
+_EXPECTED_CHAIN_LEVEL_COUNT = len(_CHAIN_LEVEL_KEYS)
 
 FORBIDDEN_VOCABULARY: tuple[str, ...] = (
     "conscious", "sentient", "aware", "alive", "AGI",
@@ -149,18 +158,24 @@ def _shadow_only_clean(view: Any) -> bool:
 
 def _chain_summary_clean(view: Any) -> bool:
     """Re-derive the chain final summary clean verdict from its COMPONENTS (never its
-    own ``chain_clean`` aggregate): every level/verify bool strictly True, an equal
-    strict-positive-int level count (all levels present), and a strict-int-0 blocker
+    own ``chain_clean`` aggregate): every level/verify bool strictly True, the level
+    counts present==total==the FULL expected chain depth as STRICT non-bool ints (a
+    self-consistent but wrong-depth chain, e.g. 3/3, and a non-strict count like
+    present=10.0, must both fail closed - lead #1278 forge), and a strict-int-0 blocker
     count. Absent/malformed -> False."""
     if not isinstance(view, Mapping):
         return False
     total = view.get("chain_levels_total")
     present = view.get("chain_levels_present")
+    # Both counts must be STRICT non-bool ints EQUAL to the full expected depth - not
+    # merely positive and self-consistent (3/3 or present=10.0 must fail closed).
     levels_complete = (
         isinstance(total, int)
         and not isinstance(total, bool)
-        and total > 0
-        and present == total
+        and total == _EXPECTED_CHAIN_LEVEL_COUNT
+        and isinstance(present, int)
+        and not isinstance(present, bool)
+        and present == _EXPECTED_CHAIN_LEVEL_COUNT
     )
     if not levels_complete:
         return False

@@ -65,6 +65,16 @@ _PROMOTION_RECORD_KEYS = (
     "promotion_record", "candidate_accepted", "promoted_to_candidate",
     "accepted_candidate", "shadow_to_candidate_transition",
 )
+# Explicit observed-transition-count evidence keys. If ANY of these is present
+# (at the artifact top level OR inside shadow_plan_summary) it is POSITIVE
+# evidence about how many shadow->candidate transitions occurred and MUST be a
+# strict int 0; a positive / negative / float / bool / non-int value is a
+# violation. The proof must NOT coerce an injected count away (the #1275
+# codex-tools forge: an injected transition_count=1 was silently re-derived to 0).
+_OBSERVED_TRANSITION_COUNT_KEYS = (
+    "transition_count",
+    "shadow_to_candidate_subdivision_transitions_total",
+)
 # The full guardrail axis set the artifact must report. Exactly one axis must be
 # TRUE (no_runtime_topology_mutation); every OTHER axis must be False. A missing
 # expected axis fails closed (absence != evidence).
@@ -87,6 +97,7 @@ _STABLE_FIELDS = (
     "target_state_is_shadow",
     "transition_occurred",
     "transition_count",
+    "injected_count_violation",
     "no_runtime_mutation",
     "guardrails_all_clean",
     "invariant_holds",
@@ -132,6 +143,23 @@ def _detect_transition(plan: Mapping[str, Any], artifact: Mapping[str, Any]) -> 
     return False
 
 
+def _injected_count_violation(
+    plan: Mapping[str, Any], artifact: Mapping[str, Any]
+) -> bool:
+    """True iff ANY explicit observed-transition-count field present at the
+    artifact top level OR in shadow_plan_summary is NOT a strict int 0 (positive,
+    negative, float, bool, or non-int). Absence is fine (absence != evidence); a
+    PRESENT positive/malformed count is a violation that must fail the invariant -
+    it must NEVER be coerced away to 0."""
+    for source in (artifact, plan):
+        if not isinstance(source, Mapping):
+            continue
+        for key in _OBSERVED_TRANSITION_COUNT_KEYS:
+            if key in source and not _strict_zero_int(source[key]):
+                return True
+    return False
+
+
 def build_shadow_only_invariant_proof(
     *,
     artifact_factory: Callable[[], Mapping[str, Any]] | None = None,
@@ -147,7 +175,11 @@ def build_shadow_only_invariant_proof(
         target_state_is_shadow = (
             isinstance(target, str) and target in _EXPECTED_SHADOW_TARGET_STATES
         )
-        transition_occurred = _detect_transition(plan, art)
+        # An injected explicit transition-count field that is not a strict int 0
+        # is itself positive evidence a transition occurred - fold it into the
+        # detection so it can NEVER be coerced back to a clean 0.
+        injected_count_violation = _injected_count_violation(plan, art)
+        transition_occurred = _detect_transition(plan, art) or injected_count_violation
         # transition_count is an HONEST strict-0: 0 only when the state positively
         # evidences shadow AND no transition was detected; otherwise it is the
         # count of detected transitions (>=1) which fails the invariant.
@@ -158,6 +190,7 @@ def build_shadow_only_invariant_proof(
             "target_state_is_shadow": target_state_is_shadow,
             "transition_occurred": transition_occurred,
             "transition_count": transition_count,
+            "injected_count_violation": injected_count_violation,
             "no_runtime_mutation": _strict_bool(plan.get("no_runtime_mutation")),
             "guardrails_all_clean": guardrails_all_clean,
         }
@@ -173,8 +206,9 @@ def build_shadow_only_invariant_proof(
     )
 
     # invariant_holds: fail-closed CONJUNCTION re-derived from the components -
-    # positive shadow state, no mutation, clean guardrails, NO transition, and a
-    # STRICT-int-0 transition count. Any missing/malformed component -> False.
+    # positive shadow state, no mutation, clean guardrails, NO transition, no
+    # injected positive/malformed count, and a STRICT-int-0 transition count. Any
+    # missing/malformed component -> False.
     invariant_holds = bool(
         deterministic
         and run1["artifact_ok"] is True
@@ -182,6 +216,7 @@ def build_shadow_only_invariant_proof(
         and run1["no_runtime_mutation"] is True
         and run1["guardrails_all_clean"] is True
         and run1["transition_occurred"] is False
+        and run1["injected_count_violation"] is False
         and _strict_zero_int(run1["transition_count"])
     )
 
@@ -198,6 +233,8 @@ def build_shadow_only_invariant_proof(
         blockers.append("guardrails_not_clean")
     if run1["transition_occurred"] is True:
         blockers.append("shadow_to_candidate_transition_detected")
+    if run1["injected_count_violation"] is True:
+        blockers.append("injected_transition_count_not_strict_zero")
     if not _strict_zero_int(run1["transition_count"]):
         blockers.append("transition_count_not_strict_zero")
 
@@ -212,6 +249,8 @@ def build_shadow_only_invariant_proof(
             "shadow_to_candidate_subdivision_transitions_total": run1["transition_count"],
             "target_state_is_shadow": run1["target_state_is_shadow"],
             "transition_occurred": run1["transition_occurred"],
+            # True iff an explicit injected count field was positive/malformed.
+            "injected_transition_count_violation": run1["injected_count_violation"],
             "no_runtime_mutation": run1["no_runtime_mutation"],
             "guardrails_all_clean": run1["guardrails_all_clean"],
             "artifact_ok": run1["artifact_ok"],

@@ -71,6 +71,39 @@ def test_promotion_record_violates(key):
     assert r["invariant"]["transition_occurred"] is True, key
 
 
+@pytest.mark.parametrize("location", ["artifact", "plan"])
+@pytest.mark.parametrize("key", list(mod._OBSERVED_TRANSITION_COUNT_KEYS))
+@pytest.mark.parametrize("bad", [1, 2, -1, 0.0, True, "0", [0], None])
+def test_injected_transition_count_violation_fails_closed(location, key, bad):
+    # codex-tools-1 #1275 forge: an explicit injected transition-count field at the
+    # artifact top level OR in shadow_plan_summary that is not a strict int 0 must
+    # FAIL CLOSED - the proof must NEVER coerce injected count evidence back to a
+    # clean 0 / invariant_holds True.
+    a = _real_artifact()
+    target = a if location == "artifact" else a["shadow_plan_summary"]
+    target[key] = bad
+    r = _proof(a)
+    assert r["ok"] is False, (location, key, bad)
+    assert r["invariant"]["invariant_holds"] is False, (location, key, bad)
+    assert r["invariant"]["injected_transition_count_violation"] is True, (location, key, bad)
+    assert r["invariant"]["shadow_to_candidate_subdivision_transitions_total"] != 0
+    assert "injected_transition_count_not_strict_zero" in r["blockers"]
+
+
+@pytest.mark.parametrize("location", ["artifact", "plan"])
+@pytest.mark.parametrize("key", list(mod._OBSERVED_TRANSITION_COUNT_KEYS))
+def test_injected_strict_zero_count_stays_proven(location, key):
+    # A legitimately-present STRICT int 0 count is consistent with the invariant
+    # (absence != evidence, and an explicit honest 0 must not be punished).
+    a = _real_artifact()
+    target = a if location == "artifact" else a["shadow_plan_summary"]
+    target[key] = 0
+    r = _proof(a)
+    assert r["ok"] is True, (location, key)
+    assert r["invariant"]["invariant_holds"] is True, (location, key)
+    assert r["invariant"]["injected_transition_count_violation"] is False
+
+
 def test_missing_target_state_not_proven():
     # Absence != evidence of absence: a missing target_state must NOT pass.
     a = _real_artifact()

@@ -506,20 +506,27 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
     # aggregate's own review_clean/all_checks_match - an inconsistent aggregate
     # with a component False but composite True must fail closed). blocker_count
     # must be a strict 0 int (a malformed/non-zero value is not clean).
+    # all_checks_match is the COMPLETE check composite: the three artifact-check
+    # maps AND the source-contract AND rebuilt-index-entry component checks.
     hex_reviewer_all_checks_match = bool(
         hex_upgrades.get("reviewer_summary_digest_all_match") is True
         and hex_upgrades.get("reviewer_summary_size_all_match") is True
         and hex_upgrades.get("reviewer_summary_schema_version_all_match") is True
+        and hex_upgrades.get("reviewer_summary_source_contract_match") is True
+        and hex_upgrades.get("reviewer_summary_rebuilt_index_entry_match") is True
     )
+    # blocker_count must be a STRICT int zero - 0.0 / 0j / bool must fail closed.
     _hex_blocker_count = hex_upgrades.get("reviewer_summary_blocker_count")
+    _hex_blocker_zero = (
+        isinstance(_hex_blocker_count, int)
+        and not isinstance(_hex_blocker_count, bool)
+        and _hex_blocker_count == 0
+    )
     hex_reviewer_review_clean = bool(
         hex_reviewer_available
         and hex_upgrades.get("reviewer_summary_verdict_ok") is True
-        and hex_upgrades.get("reviewer_summary_source_contract_match") is True
-        and hex_upgrades.get("reviewer_summary_rebuilt_index_entry_match") is True
         and hex_reviewer_all_checks_match
-        and _hex_blocker_count == 0
-        and not isinstance(_hex_blocker_count, bool)
+        and _hex_blocker_zero
     )
     return {
         "authoritative_first_hop_route_order_coverage": {

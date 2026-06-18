@@ -966,11 +966,12 @@ def test_hex_reviewer_inconsistent_aggregate_fails_closed(component):
     r["all_checks_match"] = True   # lying aggregate composite
     block, _ = _hex_counters(r)
     assert block["review_clean"] is False, component
-    if component in ("digest_all_match", "size_all_match", "schema_version_all_match"):
-        assert block["all_checks_match"] is False, component
+    # all_checks_match is the COMPLETE composite (incl source/rebuilt), so any
+    # of the five check components False -> all_checks_match False.
+    assert block["all_checks_match"] is False, component
 
 
-@pytest.mark.parametrize("bad_blockers", [1, -1, True, "x", None])
+@pytest.mark.parametrize("bad_blockers", [1, -1, True, "x", None, 0.0])
 def test_hex_reviewer_nonzero_or_malformed_blockers_not_clean(bad_blockers):
     r = _good_reviewer_summary()
     r["blocker_count"] = bad_blockers

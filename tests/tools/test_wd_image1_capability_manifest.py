@@ -1433,11 +1433,11 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert "verification summary bridge-event template digest" in (
         capability["safe_statement"]
     )
-    assert "reviewer summary renderer" in capability["next_smallest_pr"]
-    assert (
-        "verification summary bridge-event template index-entry verifier"
-        in capability["next_smallest_pr"]
-    )
+    # next_smallest_pr advanced beyond the now-merged chain-final-summary renderer to
+    # the next honest measurement-only step (the cross-consistency digest).
+    assert "cross-consistency digest" in capability["next_smallest_pr"]
+    assert "chain final summary" in capability["next_smallest_pr"]
+    assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 
@@ -2788,3 +2788,36 @@ def test_manifest_hex_reviewer_summary_not_folded_into_ok() -> None:
     src = inspect.getsource(mod._capabilities)
     ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
     assert "reviewer_summary" not in ok_assign
+
+
+def test_manifest_stores_chain_final_summary_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )
+    chain = hex_cap["proof"].get("chain_final_summary")
+    assert isinstance(chain, dict)
+    # content-safe by construction: only the version string + derived bools/ints
+    for key, value in chain.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, (bool, int)), key
+    assert chain["chain_clean"] is True
+    assert chain["path_free_verified"] is True
+    assert chain["chain_levels_present"] == chain["chain_levels_total"]
+    assert chain["chain_levels_total"] >= 1
+    # no raw repo path leaked into the stored summary
+    assert str(ROOT) not in json.dumps(chain)
+
+
+def test_manifest_chain_final_summary_not_folded_into_ok() -> None:
+    # The chain final summary is measurement-only: hex_upgrade proof ok must not
+    # depend on it (the ok computation does not reference chain_final_summary).
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert "chain_final_summary" not in ok_assign

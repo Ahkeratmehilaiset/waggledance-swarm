@@ -318,15 +318,23 @@ def _extract_milestone_values(
         shadow_inv = _mapping(proof.get("shadow_only_invariant"))
         shadow_inv_block = _mapping(shadow_inv.get("invariant"))
         shadow_inv_replay = _mapping(shadow_inv.get("deterministic_replay"))
-        # Exclude the measurement-only reviewer_summary AND shadow_only_invariant
-        # subtrees from the recursive authority/mutation scans so a nested field
-        # there can never couple into the real hex-upgrade flags (recursive-scan
-        # coupling safety, #1271).
+        # Path-free FINAL chain summary (merged #1276 renderer), present only when the
+        # manifest stored it. Measurement-only safe scalars; the consumer re-derives.
+        chain = _mapping(proof.get("chain_final_summary"))
+        # Exclude the measurement-only reviewer_summary, shadow_only_invariant AND
+        # chain_final_summary subtrees from the recursive authority/mutation scans so a
+        # nested field there can never couple into the real hex-upgrade flags
+        # (recursive-scan coupling safety, #1271).
         proof_for_authority = (
             {
                 k: v
                 for k, v in proof.items()
-                if k not in ("reviewer_summary", "shadow_only_invariant")
+                if k
+                not in (
+                    "reviewer_summary",
+                    "shadow_only_invariant",
+                    "chain_final_summary",
+                )
             }
             if isinstance(proof, Mapping)
             else proof
@@ -395,6 +403,40 @@ def _extract_milestone_values(
             ),
             "shadow_only_invariant_claim_safe": (
                 shadow_inv_block.get("claim_safe") is True
+            ),
+            # FINAL chain summary COMPONENT scalars (strict is True), plus level
+            # counts and the raw blocker count so the consumer can RE-DERIVE
+            # chain_clean itself - it must NOT trust the aggregate's own chain_clean
+            # (#1274: an inconsistent aggregate with a component False but chain_clean
+            # True must fail closed).
+            "chain_final_summary_present": bool(proof.get("chain_final_summary")),
+            "chain_final_summary_path_free_verified": (
+                chain.get("path_free_verified") is True
+            ),
+            "chain_final_summary_levels_all_ok": (
+                chain.get("chain_levels_all_ok") is True
+            ),
+            "chain_final_summary_levels_shape_ok": (
+                chain.get("chain_levels_shape_ok") is True
+            ),
+            "chain_final_summary_artifact_verify_clean": (
+                chain.get("artifact_verify_clean") is True
+            ),
+            "chain_final_summary_index_entry_verify_clean": (
+                chain.get("index_entry_verify_clean") is True
+            ),
+            "chain_final_summary_deepest_verify_clean": (
+                chain.get("deepest_verify_clean") is True
+            ),
+            "chain_final_summary_levels_total": chain.get("chain_levels_total"),
+            "chain_final_summary_levels_present": chain.get("chain_levels_present"),
+            "chain_final_summary_blocker_count": chain.get("total_blocker_count"),
+            "chain_final_summary_warning_count": chain.get("total_warning_count"),
+            # Defensive: the merged renderer's allowlist cannot emit claim_safe, but a
+            # forged/inconsistent summary that self-declares claim_safe True must
+            # refuse-to-certify (measurement-only never upgrades a claim).
+            "chain_final_summary_self_claim_safe": (
+                chain.get("claim_safe") is True
             ),
         }
     if capability_id == "future_waggledance_swarm":
@@ -602,6 +644,68 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         # surfaced proof ever flips claim_safe True, refuse to certify enforcement.
         and hex_upgrades.get("shadow_only_invariant_claim_safe") is not True
     )
+    # Path-free FINAL chain summary: end-to-end roll-up over every shadow-subdivision
+    # verifier chain level (merged #1276 renderer). The consumer RE-DERIVES chain_clean
+    # from the COMPONENT booleans - it does NOT trust the aggregate's own chain_clean
+    # (#1274: an inconsistent aggregate with a component False but chain_clean True must
+    # fail closed). Measurement-only: it NEVER upgrades a hex claim.
+    # Expected full chain depth (the merged renderer's _CHAIN_LEVEL_KEYS); the honest
+    # milestone is "10/10 levels". Kept as a local literal (the counter is a pure
+    # consumer of safe scalars and does not import the renderer).
+    _HEX_CHAIN_EXPECTED_LEVELS = 10
+    hex_chain_present = hex_upgrades.get("chain_final_summary_present") is True
+    hex_chain_path_free = (
+        hex_upgrades.get("chain_final_summary_path_free_verified") is True
+    )
+    # Refuse-to-certify if the summary self-declares claim_safe True: measurement-only
+    # never upgrades a claim, so an inconsistent self-declaration fails closed.
+    hex_chain_self_claim_safe = (
+        hex_upgrades.get("chain_final_summary_self_claim_safe") is True
+    )
+    hex_chain_available = (
+        hex_chain_present and hex_chain_path_free and not hex_chain_self_claim_safe
+    )
+    # levels_total/present must be EQUAL strict positive ints AND equal the expected
+    # full chain depth (10/10); a malformed/short/over count fails closed.
+    _hex_chain_total = hex_upgrades.get("chain_final_summary_levels_total")
+    _hex_chain_present_count = hex_upgrades.get("chain_final_summary_levels_present")
+    _hex_chain_levels_complete = (
+        isinstance(_hex_chain_total, int)
+        and not isinstance(_hex_chain_total, bool)
+        and _hex_chain_total == _HEX_CHAIN_EXPECTED_LEVELS
+        and isinstance(_hex_chain_present_count, int)
+        and not isinstance(_hex_chain_present_count, bool)
+        and _hex_chain_present_count == _hex_chain_total
+    )
+    # blocker_count must be a STRICT int zero (0.0 / bool / None fail closed).
+    _hex_chain_blocker_count = hex_upgrades.get("chain_final_summary_blocker_count")
+    _hex_chain_blocker_zero = (
+        isinstance(_hex_chain_blocker_count, int)
+        and not isinstance(_hex_chain_blocker_count, bool)
+        and _hex_chain_blocker_count == 0
+    )
+    def _strict_int_or_none(value: Any) -> int | None:
+        return (
+            value if isinstance(value, int) and not isinstance(value, bool) else None
+        )
+
+    # warning_count is non-fatal but surfaced as a STRICT int (else reported as None).
+    _hex_chain_warning_strict = _strict_int_or_none(
+        hex_upgrades.get("chain_final_summary_warning_count")
+    )
+    # blocker_count surfaced as a STRICT int (else None); gating uses the strict ==0
+    # derivation above, surfacing reports the real count even when non-zero.
+    _hex_chain_blocker_strict = _strict_int_or_none(_hex_chain_blocker_count)
+    hex_chain_clean = bool(
+        hex_chain_available
+        and _hex_chain_levels_complete
+        and _hex_chain_blocker_zero
+        and hex_upgrades.get("chain_final_summary_levels_all_ok") is True
+        and hex_upgrades.get("chain_final_summary_levels_shape_ok") is True
+        and hex_upgrades.get("chain_final_summary_artifact_verify_clean") is True
+        and hex_upgrades.get("chain_final_summary_index_entry_verify_clean") is True
+        and hex_upgrades.get("chain_final_summary_deepest_verify_clean") is True
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -740,6 +844,46 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_shadow_only_invariant"
                 if shadow_only_enforced
+                else "manifest_hex_upgrade_flags"
+            ),
+            "claim_safe": False,
+        },
+        "hex_subdivision_chain_final_summary": {
+            # Measurement-only path-free FINAL roll-up over the WHOLE shadow-
+            # subdivision verifier chain; DERIVED fail-closed and fully decoupled - it
+            # NEVER upgrades any hexagonal claim. chain_clean is RE-DERIVED from the
+            # COMPONENT booleans, never the aggregate's own chain_clean.
+            "chain_summary_available": hex_chain_available,
+            "chain_clean": hex_chain_clean,
+            "path_free_verified": bool(
+                hex_chain_present
+                and hex_upgrades.get("chain_final_summary_path_free_verified") is True
+            ),
+            "levels_all_ok": bool(
+                hex_chain_available
+                and hex_upgrades.get("chain_final_summary_levels_all_ok") is True
+            ),
+            "levels_shape_ok": bool(
+                hex_chain_available
+                and hex_upgrades.get("chain_final_summary_levels_shape_ok") is True
+            ),
+            # Honest 10/10 milestone: surface present/total only when the level counts
+            # are complete-and-consistent, else None (never a misleading partial).
+            "levels_present": (
+                _hex_chain_present_count if _hex_chain_levels_complete else None
+            ),
+            "levels_total": (
+                _hex_chain_total if _hex_chain_levels_complete else None
+            ),
+            "levels_complete_10_of_10": _hex_chain_levels_complete,
+            # Surface the strict-int blocker/warning counts (blocker None when not a
+            # strict int; warning None when not a strict int). Non-fatal warnings are
+            # reported but never gate chain_clean.
+            "blocker_count": _hex_chain_blocker_strict,
+            "warning_count": _hex_chain_warning_strict,
+            "measurement_basis": (
+                "v1_shadow_subdivision_verifier_chain_final_summary"
+                if hex_chain_available
                 else "manifest_hex_upgrade_flags"
             ),
             "claim_safe": False,

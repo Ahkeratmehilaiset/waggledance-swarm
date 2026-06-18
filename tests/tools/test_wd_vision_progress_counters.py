@@ -1238,3 +1238,236 @@ def test_shadow_only_subtree_excluded_from_recursive_scan(bare_key):
     milestones = by_id["hexagonal_upgrades"]["milestones"]
     assert milestones["no_runtime_mutation"] is True, bare_key
     assert milestones["runtime_authority_changed"] is False, bare_key
+
+
+# --- hex-subdivision verifier-chain FINAL summary counter (#1276 renderer wiring) ---
+def _good_chain_final_summary():
+    # Mirrors the render_shadow_subdivision_verifier_chain_final_summary output the
+    # manifest stores under hex_upgrade_proof["chain_final_summary"].
+    return {
+        "report_version": "wd.shadow_subdivision_verifier_chain_final_summary.v1",
+        "chain_levels_total": 10,
+        "chain_levels_present": 10,
+        "chain_levels_ok": 10,
+        "chain_levels_all_ok": True,
+        "chain_levels_shape_ok": True,
+        "artifact_verify_clean": True,
+        "index_entry_verify_clean": True,
+        "deepest_verify_clean": True,
+        "total_blocker_count": 0,
+        "total_warning_count": 0,
+        "chain_clean": True,
+        "path_free_verified": True,
+    }
+
+
+def _manifest_with_hex_chain(chain, *, hex_proof_extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if chain is not None:
+        proof["chain_final_summary"] = chain
+    if hex_proof_extra:
+        proof.update(hex_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "hexagonal_upgrades", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _chain_counters(chain, **kw):
+    mc = build_vision_progress_counters(_manifest_with_hex_chain(chain, **kw))[
+        "milestone_counters"
+    ]
+    return mc["hex_subdivision_chain_final_summary"], mc[
+        "shadow_to_candidate_subdivision_transitions_total"
+    ]
+
+
+def test_hex_chain_final_summary_available_with_clean_summary():
+    block, _ = _chain_counters(_good_chain_final_summary())
+    assert block["chain_summary_available"] is True
+    assert block["chain_clean"] is True
+    assert block["path_free_verified"] is True
+    assert block["levels_all_ok"] is True
+    assert block["levels_shape_ok"] is True
+    assert block["measurement_basis"] == (
+        "v1_shadow_subdivision_verifier_chain_final_summary"
+    )
+    assert block["claim_safe"] is False
+
+
+def test_hex_chain_final_summary_unavailable_when_absent():
+    block, _ = _chain_counters(None)
+    assert block["chain_summary_available"] is False
+    assert block["chain_clean"] is False
+    assert block["measurement_basis"] == "manifest_hex_upgrade_flags"
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("field", [
+    "path_free_verified",
+    "chain_levels_all_ok", "chain_levels_shape_ok",
+    "artifact_verify_clean", "index_entry_verify_clean", "deepest_verify_clean",
+])
+def test_hex_chain_consumer_rederives_fail_closed(field):
+    # Consumer RE-DERIVES chain_clean from the COMPONENT booleans fail-closed: a
+    # single degraded component -> not chain_clean (path_free -> also unavailable).
+    c = _good_chain_final_summary()
+    c[field] = False
+    block, _ = _chain_counters(c)
+    if field == "path_free_verified":
+        assert block["chain_summary_available"] is False
+    assert block["chain_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("component", [
+    "chain_levels_all_ok", "chain_levels_shape_ok",
+    "artifact_verify_clean", "index_entry_verify_clean", "deepest_verify_clean",
+])
+def test_hex_chain_inconsistent_aggregate_fails_closed(component):
+    # #1274 forge: an INCONSISTENT aggregate with a COMPONENT False but the
+    # aggregate's own chain_clean True must still render chain_clean=False (consumer
+    # never trusts the aggregate's own composite).
+    c = _good_chain_final_summary()
+    c[component] = False
+    c["chain_clean"] = True  # lying aggregate composite
+    block, _ = _chain_counters(c)
+    assert block["chain_clean"] is False, component
+
+
+@pytest.mark.parametrize("bad_blockers", [1, -1, True, "x", None, 0.0])
+def test_hex_chain_nonzero_or_malformed_blockers_not_clean(bad_blockers):
+    c = _good_chain_final_summary()
+    c["total_blocker_count"] = bad_blockers
+    block, _ = _chain_counters(c)
+    assert block["chain_clean"] is False, bad_blockers
+
+
+@pytest.mark.parametrize("total,present", [(10, 9), (0, 0), (10, 11)])
+def test_hex_chain_incomplete_levels_not_clean(total, present):
+    c = _good_chain_final_summary()
+    c["chain_levels_total"] = total
+    c["chain_levels_present"] = present
+    block, _ = _chain_counters(c)
+    assert block["chain_clean"] is False, (total, present)
+
+
+@pytest.mark.parametrize("bad_total", [True, 10.0, "10", None])
+def test_hex_chain_malformed_levels_total_not_clean(bad_total):
+    c = _good_chain_final_summary()
+    c["chain_levels_total"] = bad_total
+    c["chain_levels_present"] = bad_total
+    block, _ = _chain_counters(c)
+    assert block["chain_clean"] is False, bad_total
+
+
+def test_hex_chain_final_summary_does_not_touch_shadow_to_candidate():
+    _, s2c_with = _chain_counters(_good_chain_final_summary())
+    _, s2c_without = _chain_counters(None)
+    assert s2c_with == s2c_without
+    assert s2c_with["satisfied"] is False
+    assert s2c_with["current_value"] == 0
+
+
+@pytest.mark.parametrize("bare_key", [
+    "no_runtime_mutation", "runtime_authority_changed",
+])
+def test_hex_chain_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271 recursive-coupling safety: a bare authority/mutation key nested in the
+    # measurement-only chain_final_summary subtree must NOT reach the recursive
+    # _nested_flag scan that feeds the real hex milestones.
+    chain = _good_chain_final_summary()
+    chain["forged_nested"] = {
+        bare_key: (False if bare_key == "no_runtime_mutation" else True)
+    }
+    counters = build_vision_progress_counters(_manifest_with_hex_chain(chain))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["hexagonal_upgrades"]["milestones"]
+    assert milestones["no_runtime_mutation"] is True, bare_key
+    assert milestones["runtime_authority_changed"] is False, bare_key
+
+
+def test_hex_chain_clean_surfaces_honest_10_of_10_and_counts():
+    # The honest milestone surfaces present/total (10/10), the 10/10 flag, and the
+    # strict-int blocker/warning counts when clean.
+    block, _ = _chain_counters(_good_chain_final_summary())
+    assert block["levels_present"] == 10
+    assert block["levels_total"] == 10
+    assert block["levels_complete_10_of_10"] is True
+    assert block["blocker_count"] == 0
+    assert block["warning_count"] == 0
+
+
+def test_hex_chain_absent_surfaces_none_counts():
+    block, _ = _chain_counters(None)
+    assert block["levels_present"] is None
+    assert block["levels_total"] is None
+    assert block["levels_complete_10_of_10"] is False
+    assert block["blocker_count"] is None
+    assert block["warning_count"] is None
+
+
+@pytest.mark.parametrize("bad_total", [9, 11])
+def test_hex_chain_level_count_must_be_exactly_ten(bad_total):
+    # The expected full chain depth is 10; a consistent-but-wrong count (present ==
+    # total but != 10) still fails the honest 10/10 milestone.
+    c = _good_chain_final_summary()
+    c["chain_levels_total"] = bad_total
+    c["chain_levels_present"] = bad_total
+    block, _ = _chain_counters(c)
+    assert block["levels_complete_10_of_10"] is False, bad_total
+    assert block["chain_clean"] is False, bad_total
+    assert block["levels_present"] is None
+    assert block["levels_total"] is None
+
+
+@pytest.mark.parametrize("garbage", [None, [], "x", 0, 1, True])
+def test_hex_chain_non_mapping_summary_fails_closed(garbage):
+    block, _ = _chain_counters(garbage)
+    assert block["chain_summary_available"] is False
+    assert block["chain_clean"] is False
+
+
+def test_hex_chain_self_declared_claim_safe_refuses_to_certify():
+    # Measurement-only NEVER upgrades a claim: a summary self-declaring claim_safe
+    # True must fail closed (unavailable + not clean); emitted claim_safe stays False.
+    c = _good_chain_final_summary()
+    c["claim_safe"] = True
+    block, _ = _chain_counters(c)
+    assert block["chain_summary_available"] is False
+    assert block["chain_clean"] is False
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bad_warn", ["x", 1.5, True])
+def test_hex_chain_malformed_warning_surfaces_none_non_fatal(bad_warn):
+    # Warnings are non-fatal: a malformed count surfaces None and never gates clean.
+    c = _good_chain_final_summary()
+    c["total_warning_count"] = bad_warn
+    block, _ = _chain_counters(c)
+    assert block["warning_count"] is None
+    assert block["chain_clean"] is True
+
+
+def test_hex_chain_nonzero_warning_surfaced_not_blocking():
+    c = _good_chain_final_summary()
+    c["total_warning_count"] = 3
+    block, _ = _chain_counters(c)
+    assert block["warning_count"] == 3
+    assert block["chain_clean"] is True
+
+
+def test_hex_chain_claim_safe_hardcoded_false_even_when_clean():
+    # claim_safe is HARDCODED False on the emitted milestone regardless of cleanliness.
+    block, _ = _chain_counters(_good_chain_final_summary())
+    assert block["claim_safe"] is False

@@ -866,3 +866,139 @@ def test_repeat_window_trend_derived_not_hardcoded() -> None:
         "trend_measurement_available"
     ]
     assert avail is True and unavail is False
+
+
+# --- hex-subdivision reviewer summary counter (#1273 renderer wiring) ---
+def _good_reviewer_summary():
+    return {
+        "report_version": "wd.hex_subdivision_reviewer_summary.v1",
+        "verdict_ok": True,
+        "blocker_count": 0,
+        "warning_count": 0,
+        "source_contract_match": True,
+        "rebuilt_index_entry_match": True,
+        "digest_all_match": True,
+        "size_all_match": True,
+        "schema_version_all_match": True,
+        "all_checks_match": True,
+        "review_clean": True,
+        "path_free_verified": True,
+    }
+
+
+def _manifest_with_hex_reviewer(reviewer, *, hex_proof_extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if reviewer is not None:
+        proof["reviewer_summary"] = reviewer
+    if hex_proof_extra:
+        proof.update(hex_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "hexagonal_upgrades", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _hex_counters(reviewer, **kw):
+    mc = build_vision_progress_counters(_manifest_with_hex_reviewer(reviewer, **kw))[
+        "milestone_counters"
+    ]
+    return mc["hex_subdivision_reviewer_summary"], mc[
+        "shadow_to_candidate_subdivision_transitions_total"
+    ]
+
+
+def test_hex_reviewer_summary_available_with_clean_summary():
+    block, _ = _hex_counters(_good_reviewer_summary())
+    assert block["reviewer_summary_available"] is True
+    assert block["review_clean"] is True
+    assert block["path_free_verified"] is True
+    assert block["measurement_basis"] == "v1_hex_subdivision_reviewer_summary"
+    assert block["claim_safe"] is False
+
+
+def test_hex_reviewer_summary_unavailable_when_absent():
+    block, _ = _hex_counters(None)
+    assert block["reviewer_summary_available"] is False
+    assert block["review_clean"] is False
+    assert block["measurement_basis"] == "manifest_hex_upgrade_flags"
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("field", [
+    "verdict_ok", "path_free_verified",
+    # COMPONENT booleans the consumer must re-derive review_clean from:
+    "source_contract_match", "rebuilt_index_entry_match",
+    "digest_all_match", "size_all_match", "schema_version_all_match",
+])
+def test_hex_reviewer_summary_consumer_rederives_fail_closed(field):
+    # Consumer re-derives review_clean from the COMPONENT booleans fail-closed: a
+    # single degraded component -> not review_clean (and path_free -> unavailable).
+    r = _good_reviewer_summary()
+    r[field] = False
+    block, _ = _hex_counters(r)
+    if field == "path_free_verified":
+        assert block["reviewer_summary_available"] is False
+    assert block["review_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("component", [
+    "source_contract_match", "rebuilt_index_entry_match",
+    "digest_all_match", "size_all_match", "schema_version_all_match",
+])
+def test_hex_reviewer_inconsistent_aggregate_fails_closed(component):
+    # The #1274 tools forge: an INCONSISTENT aggregate where a COMPONENT is False
+    # but the aggregate's own composite review_clean/all_checks_match is True must
+    # still render review_clean=False (consumer does not trust the composite).
+    r = _good_reviewer_summary()
+    r[component] = False
+    r["review_clean"] = True       # lying aggregate composite
+    r["all_checks_match"] = True   # lying aggregate composite
+    block, _ = _hex_counters(r)
+    assert block["review_clean"] is False, component
+    # all_checks_match is the COMPLETE composite (incl source/rebuilt), so any
+    # of the five check components False -> all_checks_match False.
+    assert block["all_checks_match"] is False, component
+
+
+@pytest.mark.parametrize("bad_blockers", [1, -1, True, "x", None, 0.0])
+def test_hex_reviewer_nonzero_or_malformed_blockers_not_clean(bad_blockers):
+    r = _good_reviewer_summary()
+    r["blocker_count"] = bad_blockers
+    block, _ = _hex_counters(r)
+    assert block["review_clean"] is False, bad_blockers
+
+
+def test_hex_reviewer_summary_does_not_touch_shadow_to_candidate():
+    _, s2c_with = _hex_counters(_good_reviewer_summary())
+    _, s2c_without = _hex_counters(None)
+    assert s2c_with == s2c_without
+    assert s2c_with["satisfied"] is False
+    assert s2c_with["current_value"] == 0
+
+
+@pytest.mark.parametrize("bare_key", [
+    "no_runtime_mutation", "runtime_authority_changed",
+])
+def test_hex_reviewer_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271 recursive-coupling safety: a bare authority/mutation key nested in the
+    # measurement-only reviewer_summary subtree must NOT reach the recursive
+    # _nested_flag scan that feeds the real hex milestones.
+    reviewer = _good_reviewer_summary()
+    reviewer["forged_nested"] = {bare_key: (False if bare_key == "no_runtime_mutation" else True)}
+    counters = build_vision_progress_counters(_manifest_with_hex_reviewer(reviewer))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["hexagonal_upgrades"]["milestones"]
+    # the real milestones reflect the hex proof root, NOT the forged subtree
+    assert milestones["no_runtime_mutation"] is True, bare_key
+    assert milestones["runtime_authority_changed"] is False, bare_key

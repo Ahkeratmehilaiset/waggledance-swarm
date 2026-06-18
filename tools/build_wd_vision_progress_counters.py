@@ -308,13 +308,51 @@ def _extract_milestone_values(
             ),
         }
     if capability_id == "hexagonal_upgrades":
+        # Path-free reviewer summary (merged renderer), present only when the
+        # manifest stored it. Measurement-only safe scalars.
+        reviewer = _mapping(proof.get("reviewer_summary"))
+        # Exclude the measurement-only reviewer_summary subtree from the recursive
+        # authority/mutation scans so a nested field there can never couple into the
+        # real hex-upgrade flags (recursive-scan-coupling safety, #1271).
+        proof_for_authority = (
+            {k: v for k, v in proof.items() if k != "reviewer_summary"}
+            if isinstance(proof, Mapping)
+            else proof
+        )
         return {
-            "no_runtime_mutation": _nested_flag(proof, "no_runtime_mutation"),
+            "no_runtime_mutation": _nested_flag(
+                proof_for_authority, "no_runtime_mutation"
+            ),
             "runtime_authority_changed": _nested_flag(
-                proof,
+                proof_for_authority,
                 "runtime_authority_changed",
             ),
             "shadow_to_candidate_transition_count": 0,
+            "reviewer_summary_present": bool(proof.get("reviewer_summary")),
+            # Surface the COMPONENT booleans (strict is True) so the consumer can
+            # RE-DERIVE the composites itself - it must NOT trust the aggregate's
+            # own review_clean/all_checks_match (#1274 tools forge: an inconsistent
+            # aggregate with a component False but composite True must fail closed).
+            "reviewer_summary_verdict_ok": reviewer.get("verdict_ok") is True,
+            "reviewer_summary_path_free_verified": (
+                reviewer.get("path_free_verified") is True
+            ),
+            "reviewer_summary_source_contract_match": (
+                reviewer.get("source_contract_match") is True
+            ),
+            "reviewer_summary_rebuilt_index_entry_match": (
+                reviewer.get("rebuilt_index_entry_match") is True
+            ),
+            "reviewer_summary_digest_all_match": (
+                reviewer.get("digest_all_match") is True
+            ),
+            "reviewer_summary_size_all_match": (
+                reviewer.get("size_all_match") is True
+            ),
+            "reviewer_summary_schema_version_all_match": (
+                reviewer.get("schema_version_all_match") is True
+            ),
+            "reviewer_summary_blocker_count": reviewer.get("blocker_count"),
         }
     if capability_id == "future_waggledance_swarm":
         runtime_summary = _mapping(proof.get("runtime_evidence_summary"))
@@ -455,6 +493,41 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             and not isinstance(trend_promotion_min, bool))
         else None
     )
+    # Hex-subdivision reviewer summary: a path-free measurement-only surface from
+    # the merged renderer. Consumer re-derives each field fail-closed (does NOT
+    # blindly trust the manifest aggregate); it NEVER upgrades the hexagonal
+    # claim. Availability requires the summary present AND its own path-free check.
+    hex_reviewer_present = hex_upgrades.get("reviewer_summary_present") is True
+    hex_reviewer_path_free = (
+        hex_upgrades.get("reviewer_summary_path_free_verified") is True
+    )
+    hex_reviewer_available = hex_reviewer_present and hex_reviewer_path_free
+    # RE-DERIVE the composites from the COMPONENT booleans (do NOT read the
+    # aggregate's own review_clean/all_checks_match - an inconsistent aggregate
+    # with a component False but composite True must fail closed). blocker_count
+    # must be a strict 0 int (a malformed/non-zero value is not clean).
+    # all_checks_match is the COMPLETE check composite: the three artifact-check
+    # maps AND the source-contract AND rebuilt-index-entry component checks.
+    hex_reviewer_all_checks_match = bool(
+        hex_upgrades.get("reviewer_summary_digest_all_match") is True
+        and hex_upgrades.get("reviewer_summary_size_all_match") is True
+        and hex_upgrades.get("reviewer_summary_schema_version_all_match") is True
+        and hex_upgrades.get("reviewer_summary_source_contract_match") is True
+        and hex_upgrades.get("reviewer_summary_rebuilt_index_entry_match") is True
+    )
+    # blocker_count must be a STRICT int zero - 0.0 / 0j / bool must fail closed.
+    _hex_blocker_count = hex_upgrades.get("reviewer_summary_blocker_count")
+    _hex_blocker_zero = (
+        isinstance(_hex_blocker_count, int)
+        and not isinstance(_hex_blocker_count, bool)
+        and _hex_blocker_count == 0
+    )
+    hex_reviewer_review_clean = bool(
+        hex_reviewer_available
+        and hex_upgrades.get("reviewer_summary_verdict_ok") is True
+        and hex_reviewer_all_checks_match
+        and _hex_blocker_zero
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -534,6 +607,30 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             ),
             "target_value": 1,
             "satisfied": False,
+        },
+        "hex_subdivision_reviewer_summary": {
+            # Measurement-only path-free reviewer summary surface; DERIVED
+            # fail-closed and fully decoupled - it NEVER upgrades any hexagonal
+            # claim (no satisfied/current_value here that gates a claim).
+            "reviewer_summary_available": hex_reviewer_available,
+            "review_clean": hex_reviewer_review_clean,
+            "path_free_verified": bool(
+                hex_reviewer_present
+                and hex_upgrades.get("reviewer_summary_path_free_verified") is True
+            ),
+            "verdict_ok": bool(
+                hex_reviewer_available
+                and hex_upgrades.get("reviewer_summary_verdict_ok") is True
+            ),
+            "all_checks_match": bool(
+                hex_reviewer_available and hex_reviewer_all_checks_match
+            ),
+            "measurement_basis": (
+                "v1_hex_subdivision_reviewer_summary"
+                if hex_reviewer_available
+                else "manifest_hex_upgrade_flags"
+            ),
+            "claim_safe": False,
         },
         "future_claim_gate_satisfied": {
             "current_value": bool(future.get("future_claim_gate_satisfied")),

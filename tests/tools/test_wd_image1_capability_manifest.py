@@ -2713,3 +2713,36 @@ def test_flag_off_manifest_omits_repeat_window_trend_key() -> None:
         if c["capability_id"] == "low_risk_autonomy_loop"
     )
     assert "repeat_window_trend" not in low_risk["proof"]
+
+
+# --- #1273 hex reviewer-summary wired into the manifest hex_upgrade proof ---
+def test_manifest_stores_hex_reviewer_summary_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )
+    reviewer = hex_cap["proof"].get("reviewer_summary")
+    assert isinstance(reviewer, dict)
+    # content-safe by construction: only the version string + derived bools/ints
+    for key, value in reviewer.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, (bool, int)), key
+    assert reviewer["path_free_verified"] is True
+    assert reviewer["verdict_ok"] is True
+    # no raw repo path leaked into the stored summary
+    assert str(ROOT) not in json.dumps(reviewer)
+
+
+def test_manifest_hex_reviewer_summary_not_folded_into_ok() -> None:
+    # The reviewer summary is measurement-only: hex_upgrade proof ok must not
+    # depend on it. Verified structurally - the proof is ok while the summary is
+    # present, and the ok computation does not reference reviewer_summary.
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert "reviewer_summary" not in ok_assign

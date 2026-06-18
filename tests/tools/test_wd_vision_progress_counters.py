@@ -1002,3 +1002,239 @@ def test_hex_reviewer_subtree_excluded_from_recursive_scan(bare_key):
     # the real milestones reflect the hex proof root, NOT the forged subtree
     assert milestones["no_runtime_mutation"] is True, bare_key
     assert milestones["runtime_authority_changed"] is False, bare_key
+
+
+# --- hex-subdivision shadow-only invariant counter (run_shadow_only_invariant_proof wiring) ---
+def _good_shadow_only_invariant():
+    # Mirrors the measurement-only proof the manifest stores under
+    # hex_upgrade_proof["shadow_only_invariant"].
+    return {
+        "report_version": "wd.shadow_only_invariant_proof.v1",
+        "ok": True,
+        "blockers": [],
+        "measurement_basis": "v1_shadow_only_invariant",
+        "deterministic_replay": {"runs": 2, "stable_identical": True},
+        "invariant": {
+            "invariant_holds": True,
+            "shadow_to_candidate_subdivision_transitions_total": 0,
+            "target_state_is_shadow": True,
+            "transition_occurred": False,
+            "no_runtime_mutation": True,
+            "guardrails_all_clean": True,
+            "artifact_ok": True,
+            "claim_safe": False,
+        },
+    }
+
+
+def _manifest_with_shadow_only(shadow_inv, *, extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if shadow_inv is not None:
+        proof["shadow_only_invariant"] = shadow_inv
+    if extra:
+        proof.update(extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "hexagonal_upgrades", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _shadow_counters(shadow_inv, *, extra=None):
+    mc = build_vision_progress_counters(
+        _manifest_with_shadow_only(shadow_inv, extra=extra)
+    )["milestone_counters"]
+    return (
+        mc["hex_subdivision_shadow_only_invariant"],
+        mc["shadow_to_candidate_subdivision_transitions_total"],
+    )
+
+
+def test_shadow_only_enforced_with_clean_proof():
+    block, s2c = _shadow_counters(_good_shadow_only_invariant())
+    assert block["invariant_proof_available"] is True
+    assert block["shadow_only_enforced"] is True
+    assert block["target_state_is_shadow"] is True
+    assert block["no_runtime_mutation"] is True
+    assert block["guardrails_all_clean"] is True
+    assert block["transition_occurred"] is False
+    assert block["transition_count_strict_zero"] is True
+    assert block["deterministic_replay_stable"] is True
+    assert block["measurement_basis"] == "v1_shadow_only_invariant"
+    assert block["claim_safe"] is False
+    # honest-zero transition counter is left untouched by the positive evidence
+    assert s2c["current_value"] == 0
+    assert s2c["satisfied"] is False
+
+
+def test_shadow_only_unavailable_when_absent():
+    block, _ = _shadow_counters(None)
+    assert block["invariant_proof_available"] is False
+    assert block["shadow_only_enforced"] is False
+    assert block["measurement_basis"] == "manifest_hex_upgrade_flags"
+    assert block["claim_safe"] is False
+
+
+def test_shadow_only_accept_candidate_demoted_remains_shadow_only():
+    # The collapse shadow rule demotes even an ACCEPT_CANDIDATE to shadow-only:
+    # the proof's evidence is a shadow target state with NO transition. That clean
+    # demotion reads as enforced WITHOUT bumping the transition counter.
+    block, s2c = _shadow_counters(_good_shadow_only_invariant())
+    assert block["shadow_only_enforced"] is True
+    assert block["transition_occurred"] is False
+    assert s2c["current_value"] == 0 and s2c["satisfied"] is False
+
+
+def test_shadow_only_forged_promotion_fails_closed_no_fake_transition():
+    # A FORGED shadow->candidate promotion (an ACCEPT_CANDIDATE that did NOT stay
+    # shadow-only) must fail the enforcement claim AND must NOT bump the real
+    # progress counter (no fake transition path / no transition-count upgrade).
+    inv = _good_shadow_only_invariant()
+    inv["invariant"]["transition_occurred"] = True
+    inv["invariant"]["shadow_to_candidate_subdivision_transitions_total"] = 1
+    inv["invariant"]["target_state_is_shadow"] = False
+    inv["invariant"]["invariant_holds"] = True  # lying aggregate
+    block, s2c = _shadow_counters(inv)
+    assert block["shadow_only_enforced"] is False
+    assert block["transition_occurred"] is True
+    assert block["transition_count_strict_zero"] is False
+    # the honest progress counter is NOT raised by forged evidence
+    assert s2c["current_value"] == 0
+    assert s2c["satisfied"] is False
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda inv: inv["invariant"].__setitem__("target_state_is_shadow", False),
+    lambda inv: inv["invariant"].pop("target_state_is_shadow", None),  # absence != evidence
+    lambda inv: inv["invariant"].__setitem__("target_state_is_shadow", "true"),  # type-confused
+])
+def test_shadow_only_non_shadow_or_missing_target_state_fails_closed(mutate):
+    inv = _good_shadow_only_invariant()
+    mutate(inv)
+    block, _ = _shadow_counters(inv)
+    assert block["target_state_is_shadow"] is False
+    assert block["shadow_only_enforced"] is False
+
+
+@pytest.mark.parametrize("bad", [False, "true", 1, None, 0])
+def test_shadow_only_missing_or_false_no_runtime_mutation_fails_closed(bad):
+    inv = _good_shadow_only_invariant()
+    inv["invariant"]["no_runtime_mutation"] = bad
+    block, _ = _shadow_counters(inv)
+    assert block["no_runtime_mutation"] is False, bad
+    assert block["shadow_only_enforced"] is False, bad
+
+
+def test_shadow_only_missing_no_runtime_mutation_key_fails_closed():
+    inv = _good_shadow_only_invariant()
+    inv["invariant"].pop("no_runtime_mutation", None)
+    block, _ = _shadow_counters(inv)
+    assert block["no_runtime_mutation"] is False
+    assert block["shadow_only_enforced"] is False
+
+
+@pytest.mark.parametrize("bad_count", [0.0, True, 1, -1, "0", None, [0]])
+def test_shadow_only_malformed_transition_count_fails_closed(bad_count):
+    # strict-int-0: a non-strict-int (float/bool/str/None/seq) or non-zero fails
+    # closed and never certifies enforcement; the progress counter is untouched.
+    inv = _good_shadow_only_invariant()
+    inv["invariant"]["shadow_to_candidate_subdivision_transitions_total"] = bad_count
+    block, s2c = _shadow_counters(inv)
+    assert block["transition_count_strict_zero"] is False, bad_count
+    assert block["shadow_only_enforced"] is False, bad_count
+    assert s2c["current_value"] == 0 and s2c["satisfied"] is False
+
+
+@pytest.mark.parametrize("garbage", ["x", [1, 2], 123, 1.5])
+def test_shadow_only_non_mapping_evidence_fails_closed(garbage):
+    # malformed/type-confused top-level evidence (non-mapping) fails closed.
+    block, _ = _shadow_counters(garbage)
+    assert block["shadow_only_enforced"] is False, garbage
+    assert block["claim_safe"] is False
+
+
+def test_shadow_only_empty_mapping_not_available():
+    block, _ = _shadow_counters({})
+    assert block["invariant_proof_available"] is False
+    assert block["shadow_only_enforced"] is False
+
+
+@pytest.mark.parametrize("component", [
+    "artifact_ok", "target_state_is_shadow", "no_runtime_mutation",
+    "guardrails_all_clean",
+])
+def test_shadow_only_inconsistent_aggregate_fails_closed(component):
+    # The proof's own invariant_holds aggregate is True while a COMPONENT is False:
+    # the consumer RE-DERIVES from components and must fail closed (never trusts
+    # the aggregate).
+    inv = _good_shadow_only_invariant()
+    inv["invariant"][component] = False
+    inv["invariant"]["invariant_holds"] = True  # lying aggregate
+    block, _ = _shadow_counters(inv)
+    assert block["shadow_only_enforced"] is False, component
+
+
+def test_shadow_only_proof_not_ok_fails_closed():
+    inv = _good_shadow_only_invariant()
+    inv["ok"] = False
+    block, _ = _shadow_counters(inv)
+    assert block["shadow_only_enforced"] is False
+
+
+def test_shadow_only_nondeterministic_fails_closed():
+    inv = _good_shadow_only_invariant()
+    inv["deterministic_replay"]["stable_identical"] = False
+    block, _ = _shadow_counters(inv)
+    assert block["deterministic_replay_stable"] is False
+    assert block["shadow_only_enforced"] is False
+
+
+def test_shadow_only_no_claim_safe_or_transition_count_upgrade():
+    # Even a fully clean proof never sets claim_safe True; a proof that lies
+    # claim_safe=True is refused (enforcement not certified) and the counter's own
+    # claim_safe stays False.
+    block, _ = _shadow_counters(_good_shadow_only_invariant())
+    assert block["claim_safe"] is False
+    assert block["shadow_only_enforced"] is True
+
+    inv = _good_shadow_only_invariant()
+    inv["invariant"]["claim_safe"] = True  # forged self-upgrade
+    block2, _ = _shadow_counters(inv)
+    assert block2["claim_safe"] is False
+    assert block2["shadow_only_enforced"] is False
+
+
+def test_shadow_only_does_not_touch_transition_counter():
+    _, s2c_with = _shadow_counters(_good_shadow_only_invariant())
+    _, s2c_without = _shadow_counters(None)
+    assert s2c_with == s2c_without
+    assert s2c_with["current_value"] == 0
+    assert s2c_with["satisfied"] is False
+
+
+@pytest.mark.parametrize("bare_key", [
+    "no_runtime_mutation", "runtime_authority_changed",
+])
+def test_shadow_only_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271 recursive-coupling safety: a bare authority/mutation key nested in the
+    # measurement-only shadow_only_invariant subtree must NOT reach the recursive
+    # _nested_flag scan that feeds the real hex milestones.
+    inv = _good_shadow_only_invariant()
+    inv["forged_nested"] = {
+        bare_key: (False if bare_key == "no_runtime_mutation" else True)
+    }
+    counters = build_vision_progress_counters(_manifest_with_shadow_only(inv))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["hexagonal_upgrades"]["milestones"]
+    assert milestones["no_runtime_mutation"] is True, bare_key
+    assert milestones["runtime_authority_changed"] is False, bare_key

@@ -70,6 +70,7 @@ from tools.wd_image1_capability_manifest import (
 from tools.wd_image1_capability_manifest import _build_future_scale_runtime_evidence
 from tools.wd_image1_capability_manifest import build_low_risk_autonomy_proof
 from tools.wd_image1_capability_manifest import build_solver_trace_magma_receipt_proof
+from tools.build_wd_vision_progress_counters import build_vision_progress_counters
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "wd_image1_capability_manifest.py"
@@ -1438,6 +1439,47 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
         in capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True
+
+
+def test_manifest_embeds_shadow_only_invariant_proof_without_upgrading_claim() -> None:
+    report = build_manifest(ROOT)
+    capability = _by_id(report)["hexagonal_upgrades"]
+    proof = capability["proof"]
+    # The measurement-only proof is embedded but the capability claim is NOT
+    # upgraded and the hex proof "ok" is unchanged (it is not folded in).
+    assert capability["claim_safe"] is False
+    assert proof["ok"] is True
+    inv = proof["shadow_only_invariant"]
+    assert inv["report_version"] == "wd.shadow_only_invariant_proof.v1"
+    assert inv["ok"] is True
+    assert inv["measurement_basis"] == "v1_shadow_only_invariant"
+    assert inv["deterministic_replay"]["stable_identical"] is True
+    block = inv["invariant"]
+    assert block["invariant_holds"] is True
+    assert block["target_state_is_shadow"] is True
+    assert block["no_runtime_mutation"] is True
+    assert block["guardrails_all_clean"] is True
+    assert block["transition_occurred"] is False
+    # Honest STRICT-int 0 transition count (never a bool), never upgraded.
+    transition_count = block["shadow_to_candidate_subdivision_transitions_total"]
+    assert transition_count == 0
+    assert type(transition_count) is int and not isinstance(transition_count, bool)
+    assert block["claim_safe"] is False
+    # The measurement-only proof must NOT have flipped the capability claim.
+    assert proof.get("claim_safe") is not True
+    # And it surfaces affirmatively in the progress counter as shadow_only_enforced.
+    counters = build_vision_progress_counters(report)
+    shadow_counter = counters["milestone_counters"][
+        "hex_subdivision_shadow_only_invariant"
+    ]
+    assert shadow_counter["invariant_proof_available"] is True
+    assert shadow_counter["shadow_only_enforced"] is True
+    assert shadow_counter["claim_safe"] is False
+    transitions_total = counters["milestone_counters"][
+        "shadow_to_candidate_subdivision_transitions_total"
+    ]
+    assert transitions_total["current_value"] == 0
+    assert transitions_total["satisfied"] is False
 
 
 def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> None:

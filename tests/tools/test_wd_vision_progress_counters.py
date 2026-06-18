@@ -935,11 +935,14 @@ def test_hex_reviewer_summary_unavailable_when_absent():
 
 
 @pytest.mark.parametrize("field", [
-    "verdict_ok", "review_clean", "all_checks_match", "path_free_verified",
+    "verdict_ok", "path_free_verified",
+    # COMPONENT booleans the consumer must re-derive review_clean from:
+    "source_contract_match", "rebuilt_index_entry_match",
+    "digest_all_match", "size_all_match", "schema_version_all_match",
 ])
 def test_hex_reviewer_summary_consumer_rederives_fail_closed(field):
-    # Consumer re-derives every field fail-closed (does not blindly trust the
-    # aggregate): a single degraded field -> not available / not review_clean.
+    # Consumer re-derives review_clean from the COMPONENT booleans fail-closed: a
+    # single degraded component -> not review_clean (and path_free -> unavailable).
     r = _good_reviewer_summary()
     r[field] = False
     block, _ = _hex_counters(r)
@@ -947,6 +950,32 @@ def test_hex_reviewer_summary_consumer_rederives_fail_closed(field):
         assert block["reviewer_summary_available"] is False
     assert block["review_clean"] is False, field
     assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("component", [
+    "source_contract_match", "rebuilt_index_entry_match",
+    "digest_all_match", "size_all_match", "schema_version_all_match",
+])
+def test_hex_reviewer_inconsistent_aggregate_fails_closed(component):
+    # The #1274 tools forge: an INCONSISTENT aggregate where a COMPONENT is False
+    # but the aggregate's own composite review_clean/all_checks_match is True must
+    # still render review_clean=False (consumer does not trust the composite).
+    r = _good_reviewer_summary()
+    r[component] = False
+    r["review_clean"] = True       # lying aggregate composite
+    r["all_checks_match"] = True   # lying aggregate composite
+    block, _ = _hex_counters(r)
+    assert block["review_clean"] is False, component
+    if component in ("digest_all_match", "size_all_match", "schema_version_all_match"):
+        assert block["all_checks_match"] is False, component
+
+
+@pytest.mark.parametrize("bad_blockers", [1, -1, True, "x", None])
+def test_hex_reviewer_nonzero_or_malformed_blockers_not_clean(bad_blockers):
+    r = _good_reviewer_summary()
+    r["blocker_count"] = bad_blockers
+    block, _ = _hex_counters(r)
+    assert block["review_clean"] is False, bad_blockers
 
 
 def test_hex_reviewer_summary_does_not_touch_shadow_to_candidate():

@@ -329,14 +329,30 @@ def _extract_milestone_values(
             ),
             "shadow_to_candidate_transition_count": 0,
             "reviewer_summary_present": bool(proof.get("reviewer_summary")),
+            # Surface the COMPONENT booleans (strict is True) so the consumer can
+            # RE-DERIVE the composites itself - it must NOT trust the aggregate's
+            # own review_clean/all_checks_match (#1274 tools forge: an inconsistent
+            # aggregate with a component False but composite True must fail closed).
             "reviewer_summary_verdict_ok": reviewer.get("verdict_ok") is True,
-            "reviewer_summary_review_clean": reviewer.get("review_clean") is True,
-            "reviewer_summary_all_checks_match": (
-                reviewer.get("all_checks_match") is True
-            ),
             "reviewer_summary_path_free_verified": (
                 reviewer.get("path_free_verified") is True
             ),
+            "reviewer_summary_source_contract_match": (
+                reviewer.get("source_contract_match") is True
+            ),
+            "reviewer_summary_rebuilt_index_entry_match": (
+                reviewer.get("rebuilt_index_entry_match") is True
+            ),
+            "reviewer_summary_digest_all_match": (
+                reviewer.get("digest_all_match") is True
+            ),
+            "reviewer_summary_size_all_match": (
+                reviewer.get("size_all_match") is True
+            ),
+            "reviewer_summary_schema_version_all_match": (
+                reviewer.get("schema_version_all_match") is True
+            ),
+            "reviewer_summary_blocker_count": reviewer.get("blocker_count"),
         }
     if capability_id == "future_waggledance_swarm":
         runtime_summary = _mapping(proof.get("runtime_evidence_summary"))
@@ -486,11 +502,24 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         hex_upgrades.get("reviewer_summary_path_free_verified") is True
     )
     hex_reviewer_available = hex_reviewer_present and hex_reviewer_path_free
+    # RE-DERIVE the composites from the COMPONENT booleans (do NOT read the
+    # aggregate's own review_clean/all_checks_match - an inconsistent aggregate
+    # with a component False but composite True must fail closed). blocker_count
+    # must be a strict 0 int (a malformed/non-zero value is not clean).
+    hex_reviewer_all_checks_match = bool(
+        hex_upgrades.get("reviewer_summary_digest_all_match") is True
+        and hex_upgrades.get("reviewer_summary_size_all_match") is True
+        and hex_upgrades.get("reviewer_summary_schema_version_all_match") is True
+    )
+    _hex_blocker_count = hex_upgrades.get("reviewer_summary_blocker_count")
     hex_reviewer_review_clean = bool(
         hex_reviewer_available
         and hex_upgrades.get("reviewer_summary_verdict_ok") is True
-        and hex_upgrades.get("reviewer_summary_review_clean") is True
-        and hex_upgrades.get("reviewer_summary_all_checks_match") is True
+        and hex_upgrades.get("reviewer_summary_source_contract_match") is True
+        and hex_upgrades.get("reviewer_summary_rebuilt_index_entry_match") is True
+        and hex_reviewer_all_checks_match
+        and _hex_blocker_count == 0
+        and not isinstance(_hex_blocker_count, bool)
     )
     return {
         "authoritative_first_hop_route_order_coverage": {
@@ -587,8 +616,7 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
                 and hex_upgrades.get("reviewer_summary_verdict_ok") is True
             ),
             "all_checks_match": bool(
-                hex_reviewer_available
-                and hex_upgrades.get("reviewer_summary_all_checks_match") is True
+                hex_reviewer_available and hex_reviewer_all_checks_match
             ),
             "measurement_basis": (
                 "v1_hex_subdivision_reviewer_summary"

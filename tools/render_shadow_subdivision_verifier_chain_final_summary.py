@@ -76,6 +76,7 @@ _SUMMARY_SAFE_KEYS = frozenset({
     "chain_levels_present",
     "chain_levels_ok",
     "chain_levels_all_ok",
+    "chain_levels_shape_ok",
     "artifact_verify_clean",
     "index_entry_verify_clean",
     "deepest_verify_clean",
@@ -207,6 +208,25 @@ def _level_ok(value: Any) -> bool:
     return isinstance(value, Mapping) and value.get("ok") is True
 
 
+def _level_blocker_warning_shape_ok(value: Any) -> bool:
+    """Breadth shape check for EVERY chain level (not only the three verify gates):
+    any `blockers`/`warnings` field that EXISTS on a present level MUST be a list.
+
+    A non-list blockers/warnings value is malformed and fails closed even when the
+    level's own `ok` is True - it must never be silently treated as `_count`-zero /
+    clean (the #1273 lenient-count fail-open; lead exact-head forge on PR #1276:
+    `blockers='not-a-list'` on a non-verifier level previously left chain_clean True
+    with total_blocker_count 0). An ABSENT field is allowed: not every chain level
+    carries blockers/warnings (e.g. the replay artifact level carries neither, and
+    the first verification level carries blockers but no warnings)."""
+    if not isinstance(value, Mapping):
+        return False
+    for field in ("blockers", "warnings"):
+        if field in value and not isinstance(value[field], list):
+            return False
+    return True
+
+
 def _stage_artifact_verify_clean(verdict: Any) -> bool:
     """Re-derive the artifact verifier (stage A) clean status from its components.
 
@@ -279,6 +299,14 @@ def render_chain_final_summary(proof: Any) -> dict[str, Any]:
     levels_ok = sum(1 for level in levels if _level_ok(level))
     # Breadth, fail-closed: every expected level present AND every level ok==True.
     chain_levels_all_ok = present == total and levels_ok == total
+    # Breadth shape, fail-closed: EVERY present level's blockers/warnings (when the
+    # field exists) must be a strict list. A malformed (non-list) value on ANY level
+    # - including the non-verifier build levels - drives the rollup not-clean and is
+    # never silently counted as zero. Requires every expected level present too, so a
+    # dropped level cannot pass the shape gate by absence.
+    chain_levels_shape_ok = present == total and all(
+        _level_blocker_warning_shape_ok(level) for level in levels
+    )
     total_blockers = sum(
         _count(level.get("blockers")) for level in levels if isinstance(level, Mapping)
     )
@@ -297,6 +325,7 @@ def render_chain_final_summary(proof: Any) -> dict[str, Any]:
         "chain_levels_present": present,
         "chain_levels_ok": levels_ok,
         "chain_levels_all_ok": chain_levels_all_ok,
+        "chain_levels_shape_ok": chain_levels_shape_ok,
         "artifact_verify_clean": artifact_clean,
         "index_entry_verify_clean": index_clean,
         "deepest_verify_clean": deepest_clean,
@@ -304,6 +333,7 @@ def render_chain_final_summary(proof: Any) -> dict[str, Any]:
         "total_warning_count": total_warnings,
         "chain_clean": bool(
             chain_levels_all_ok
+            and chain_levels_shape_ok
             and artifact_clean
             and index_clean
             and deepest_clean
@@ -328,6 +358,7 @@ def render_summary(summary: Mapping[str, Any]) -> str:
         f"path_free_verified={summary['path_free_verified']}",
         f"  levels_ok={summary['chain_levels_ok']}/{summary['chain_levels_total']} "
         f"present={summary['chain_levels_present']} "
+        f"shape_ok={summary['chain_levels_shape_ok']} "
         f"blockers={summary['total_blocker_count']} "
         f"warnings={summary['total_warning_count']}",
         f"  artifact_verify_clean={summary['artifact_verify_clean']} "

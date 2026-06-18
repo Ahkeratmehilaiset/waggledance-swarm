@@ -20,6 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _VERIFY_KEYS = (mod._STAGE_A_KEY, mod._STAGE_B_KEY, mod._STAGE_C_KEY)
 _INDEX_ENTRY_KEYS = (mod._STAGE_B_KEY, mod._STAGE_C_KEY)
+# The non-verify (build) chain levels - breadth-only before the PR #1276 fix, so a
+# malformed blockers/warnings here was the lead's exact-head forge.
+_NON_VERIFY_KEYS = tuple(k for k in mod._CHAIN_LEVEL_KEYS if k not in _VERIFY_KEYS)
 
 
 @lru_cache(maxsize=1)
@@ -60,6 +63,7 @@ def test_real_chain_summary_clean():
     assert s["artifact_verify_clean"] is True
     assert s["index_entry_verify_clean"] is True
     assert s["deepest_verify_clean"] is True
+    assert s["chain_levels_shape_ok"] is True
     assert s["path_free_verified"] is True
     assert s["total_blocker_count"] == 0
 
@@ -123,6 +127,76 @@ def test_non_mapping_level_fails_closed(level_key):
     s = _summary(proof)
     assert s["chain_levels_all_ok"] is False, level_key
     assert s["chain_clean"] is False
+
+
+# ----------------------------------------- breadth shape: blockers/warnings (#1276)
+# Lead exact-head forge on PR #1276: a malformed (non-list) blockers/warnings on a
+# NON-verifier level (the build levels, only breadth-checked before) left
+# chain_clean True with total_blocker_count 0. Every level's blockers/warnings shape
+# must now be strict-list validated; ok stays strictly True so this is NOT caught by
+# the ok-breadth gate.
+
+@pytest.mark.parametrize("level_key", list(_NON_VERIFY_KEYS))
+@pytest.mark.parametrize("bad", ["not-a-list", {"x": 1}, 7, None])
+def test_non_verify_level_malformed_blockers_fails_closed(level_key, bad):
+    proof = _real_proof()
+    proof[level_key]["ok"] = True  # breadth ok-gate still passes
+    proof[level_key]["blockers"] = bad
+    s = _summary(proof)
+    assert s["chain_levels_all_ok"] is True, (level_key, bad)  # ok-breadth unaffected
+    assert s["chain_levels_shape_ok"] is False, (level_key, bad)
+    assert s["chain_clean"] is False, (level_key, bad)
+
+
+@pytest.mark.parametrize("level_key", list(_NON_VERIFY_KEYS))
+@pytest.mark.parametrize("bad", ["not-a-list", {"x": 1}, 7])
+def test_non_verify_level_malformed_warnings_fails_closed(level_key, bad):
+    proof = _real_proof()
+    proof[level_key]["ok"] = True
+    proof[level_key]["warnings"] = bad
+    s = _summary(proof)
+    assert s["chain_levels_all_ok"] is True, (level_key, bad)
+    assert s["chain_levels_shape_ok"] is False, (level_key, bad)
+    assert s["chain_clean"] is False, (level_key, bad)
+
+
+@pytest.mark.parametrize("level_key", list(mod._CHAIN_LEVEL_KEYS))
+def test_any_level_malformed_blockers_fails_closed(level_key):
+    # Cover EVERY level (verify + non-verify) for the non-list blockers forge.
+    proof = _real_proof()
+    proof[level_key]["ok"] = True
+    proof[level_key]["blockers"] = "not-a-list"
+    s = _summary(proof)
+    assert s["chain_levels_shape_ok"] is False, level_key
+    assert s["chain_clean"] is False, level_key
+
+
+def test_dropped_level_makes_shape_not_ok():
+    # A missing level cannot pass the shape gate by absence (present<total).
+    proof = _real_proof()
+    proof.pop(_NON_VERIFY_KEYS[0], None)
+    s = _summary(proof)
+    assert s["chain_levels_shape_ok"] is False
+    assert s["chain_clean"] is False
+
+
+def test_shape_helper():
+    assert mod._level_blocker_warning_shape_ok({"ok": True}) is True  # both absent ok
+    assert mod._level_blocker_warning_shape_ok({"blockers": []}) is True
+    assert mod._level_blocker_warning_shape_ok({"warnings": []}) is True
+    assert mod._level_blocker_warning_shape_ok(
+        {"blockers": [], "warnings": []}
+    ) is True
+    for bad in (
+        {"blockers": "x"},
+        {"warnings": "x"},
+        {"blockers": {"x": 1}},
+        {"warnings": 7},
+        {"blockers": None},
+        "not-a-mapping",
+        None,
+    ):
+        assert mod._level_blocker_warning_shape_ok(bad) is False, bad
 
 
 # ------------------------------------------------------- depth: stage A (artifact)

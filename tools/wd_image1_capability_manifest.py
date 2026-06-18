@@ -8040,6 +8040,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof[
         "shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification"
     ] = hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification
+    # Path-free reviewer summary of the deepest verifier verdict (merged renderer).
+    # Content-safe by construction (only derived booleans/counts); measurement-only,
+    # so it is NOT folded into hex_upgrade_proof["ok"] below.
+    from tools.render_hex_subdivision_reviewer_summary import (  # noqa: E402
+        render_reviewer_summary as _render_hex_reviewer_summary,
+    )
+
+    hex_upgrade_proof["reviewer_summary"] = _render_hex_reviewer_summary(
+        hex_upgrade_shadow_replay_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification
+    )
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True

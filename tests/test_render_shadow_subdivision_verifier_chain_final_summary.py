@@ -197,6 +197,34 @@ def test_shape_helper():
         None,
     ):
         assert mod._level_blocker_warning_shape_ok(bad) is False, bad
+    # blockers strict-empty: a present NON-EMPTY blockers list (the level reports a
+    # blocker) is not clean even though it is a valid list and ok stays True.
+    assert mod._level_blocker_warning_shape_ok({"blockers": ["real-blocker"]}) is False
+    # warnings shape-only: a present NON-EMPTY warnings list is non-fatal and allowed.
+    assert mod._level_blocker_warning_shape_ok({"warnings": ["a-warning"]}) is True
+
+
+def test_non_empty_blockers_on_any_level_fails_closed():
+    # A non-empty blockers list with ok=True is an inconsistent "clean" claim and must
+    # fail closed via the shape gate, not only the non-list malformed case.
+    proof = _real_proof()
+    proof[_NON_VERIFY_KEYS[0]]["ok"] = True
+    proof[_NON_VERIFY_KEYS[0]]["blockers"] = ["a-real-blocker"]
+    s = _summary(proof)
+    assert s["chain_levels_shape_ok"] is False
+    assert s["chain_clean"] is False
+
+
+def test_non_empty_warnings_on_build_level_allowed():
+    # Warnings are non-fatal: a non-empty warnings LIST on a non-verify level keeps the
+    # chain clean (surfaced only via total_warning_count), matching #1273.
+    proof = _real_proof()
+    level = next(k for k in _NON_VERIFY_KEYS if "warnings" in (proof.get(k) or {}))
+    proof[level]["warnings"] = ["a-warning"]
+    s = _summary(proof)
+    assert s["chain_levels_shape_ok"] is True
+    assert s["total_warning_count"] >= 1
+    assert s["chain_clean"] is True
 
 
 # ------------------------------------------------------- depth: stage A (artifact)

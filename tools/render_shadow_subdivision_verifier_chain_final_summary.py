@@ -209,21 +209,28 @@ def _level_ok(value: Any) -> bool:
 
 
 def _level_blocker_warning_shape_ok(value: Any) -> bool:
-    """Breadth shape check for EVERY chain level (not only the three verify gates):
-    any `blockers`/`warnings` field that EXISTS on a present level MUST be a list.
+    """Breadth shape check for EVERY chain level (not only the three verify gates).
 
-    A non-list blockers/warnings value is malformed and fails closed even when the
-    level's own `ok` is True - it must never be silently treated as `_count`-zero /
-    clean (the #1273 lenient-count fail-open; lead exact-head forge on PR #1276:
-    `blockers='not-a-list'` on a non-verifier level previously left chain_clean True
-    with total_blocker_count 0). An ABSENT field is allowed: not every chain level
-    carries blockers/warnings (e.g. the replay artifact level carries neither, and
-    the first verification level carries blockers but no warnings)."""
+    A present `blockers` field MUST be a STRICT-EMPTY list: a non-list is malformed
+    AND a non-empty list means the level reports a blocker, so neither is "clean" -
+    both fail closed even when the level's own `ok` is True. It must never be silently
+    treated as `_count`-zero / clean (the #1273 lenient-count fail-open; lead
+    exact-head forge on PR #1276: `blockers='not-a-list'` on a non-verifier level
+    previously left chain_clean True with total_blocker_count 0).
+
+    A present `warnings` field MUST be a list (shape only): warnings are non-fatal, so
+    a non-empty warnings list is allowed and surfaced via total_warning_count
+    (matches the merged #1273 reviewer-summary treatment).
+
+    An ABSENT field is allowed: not every chain level carries blockers/warnings (e.g.
+    the replay artifact level carries neither, and the first verification level
+    carries blockers but no warnings)."""
     if not isinstance(value, Mapping):
         return False
-    for field in ("blockers", "warnings"):
-        if field in value and not isinstance(value[field], list):
-            return False
+    if "blockers" in value and not _strict_empty_list(value["blockers"]):
+        return False
+    if "warnings" in value and not isinstance(value["warnings"], list):
+        return False
     return True
 
 

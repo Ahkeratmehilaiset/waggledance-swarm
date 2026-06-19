@@ -364,6 +364,16 @@ explicit local summary and bridge-event template artifacts while keeping
 `approval_granted=false`, `release_decision_made=false`, and
 `runtime_controls_added=false`; it does not append bridge events or make a
 release decision.
+`tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py`
+can build a local index entry for the operator decision-reference review bundle
+verification bridge-event template index-entry verifier-summary bridge-event
+template. The index entry records `template_index_entry`,
+`bridge_event_schema_validated`, `source_contract_check`, and
+`rebuilt_template_check` while keeping `artifact_payloads_included=false`,
+`local_paths_recorded=false`, `transport_added=false`,
+`direct_bridge_write_performed=false`, `approval_granted=false`,
+`release_decision_made=false`, and `runtime_controls_added=false`; it does not
+append bridge events or make a release decision.
 
 `tools/build_runtime_gap_scheduler_candidate_bridge_event_template_index_entry_verification_summary.py`
 can render the local runtime-gap scheduler-candidate bridge-template index-entry

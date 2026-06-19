@@ -3141,13 +3141,24 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             "solver_call_trace_receipt_bound": receipt_proof.get(
                 "solver_call_trace_receipt_bound"
             ),
+            "prometheus_metric_names": [
+                "waggledance_runtime_receipt_metrics_up",
+                "waggledance_runtime_receipt_sink_configured",
+                "waggledance_runtime_receipt_sink_calls_total",
+                "waggledance_runtime_receipt_sink_successes_total",
+                "waggledance_runtime_receipt_sink_failures_total",
+                "waggledance_runtime_receipt_bundle_receipts_total",
+                "waggledance_runtime_receipt_solver_call_trace_entries_total",
+            ],
         },
         "external_writes_applied": False,
         "safe_conclusion": (
             "SolverRouter now emits a privacy-safe selected-solver trace "
             "before SafeActionBus execution, and an opt-in MAGMA runtime "
-            "summary receipt can bind that trace. Default receipt emission "
-            "for every runtime path remains a separate proof boundary."
+            "summary receipt can bind that trace. Privacy-safe /metrics "
+            "counters expose opt-in receipt sink activity, but default "
+            "receipt emission for every runtime path remains a separate "
+            "proof boundary."
         ),
     }
 
@@ -7108,6 +7119,8 @@ def _build_future_scale_runtime_evidence(
         "tools/verify_route_stage_feed_health_drill_evidence.py",
     ]
     solver_receipt_artifacts = [
+        "waggledance/core/autonomy/runtime.py",
+        "waggledance/adapters/http/routes/metrics.py",
         "waggledance/core/magma/runtime_summary_receipt.py",
         "tools/run_runtime_receipt_emission_proof.py",
         "tools/verify_magma_receipt.py",
@@ -7121,6 +7134,15 @@ def _build_future_scale_runtime_evidence(
         "waggledance_route_stage_request_latency_histogram_ms_bucket",
         "waggledance_route_stage_request_latency_histogram_ms_sum",
         "waggledance_route_stage_request_latency_histogram_ms_count",
+    ]
+    runtime_receipt_metric_names = [
+        "waggledance_runtime_receipt_metrics_up",
+        "waggledance_runtime_receipt_sink_configured",
+        "waggledance_runtime_receipt_sink_calls_total",
+        "waggledance_runtime_receipt_sink_successes_total",
+        "waggledance_runtime_receipt_sink_failures_total",
+        "waggledance_runtime_receipt_bundle_receipts_total",
+        "waggledance_runtime_receipt_solver_call_trace_entries_total",
     ]
 
     evidence_by_axis = {
@@ -7199,9 +7221,10 @@ def _build_future_scale_runtime_evidence(
             "status": "contract_proof_available",
             "measurement_scope": (
                 "opt-in solver trace receipt binding plus feed-health drill "
-                "verification, not default all-path audit coverage"
+                "verification and scalar receipt-sink counters, not default "
+                "all-path audit coverage"
             ),
-            "metric_names": route_stage_metric_names,
+            "metric_names": route_stage_metric_names + runtime_receipt_metric_names,
             "artifact_paths": route_stage_artifacts + solver_receipt_artifacts,
             "sample": {
                 "solver_trace_receipt_proof_ok": receipt_ok,
@@ -7211,6 +7234,7 @@ def _build_future_scale_runtime_evidence(
                 "solver_call_trace_receipt_bound": solver_trace_receipt_proof.get(
                     "solver_call_trace_receipt_bound"
                 ),
+                "runtime_receipt_metric_names": runtime_receipt_metric_names,
                 "feed_health_drill_verifier_smoke_ok": drill_smoke_ok,
             },
             "evidence_freshness": "local_manifest_smoke",
@@ -9137,7 +9161,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "Solver-first routing surfaces exist, SolverRouter emits "
                 "a privacy-safe selected-solver trace, and an opt-in MAGMA "
-                "runtime summary receipt can bind that trace; default full "
+                "runtime summary receipt can bind that trace while /metrics "
+                "exposes scalar opt-in receipt sink counters; default full "
                 "coverage remains a next boundary."
             ),
             status=_status_for(solver_evidence),
@@ -9151,7 +9176,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             next_smallest_pr=(
                 "Promote the solver trace receipt sink from opt-in proof to "
-                "configured runtime coverage and exposed metrics."
+                "configured runtime coverage with an operator-owned coverage "
+                "denominator."
             ),
             proof=solver_trace_proof,
         ),

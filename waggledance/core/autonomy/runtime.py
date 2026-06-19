@@ -21,6 +21,7 @@ import inspect
 import logging
 import time
 from collections import deque
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.actions.action_bus import SafeActionBus
@@ -126,6 +127,16 @@ class AutonomyRuntime:
     ):
         self.profile = profile
         self.runtime_receipt_sink = runtime_receipt_sink
+        self._runtime_receipt_metrics_lock = Lock()
+        self._runtime_receipt_metrics: dict[str, int] = {
+            "sink_calls_total": 0,
+            "sink_successes_total": 0,
+            "sink_failures_total": 0,
+            "receipt_count_total": 0,
+            "solver_call_trace_count_total": 0,
+            "last_receipt_count": 0,
+            "last_solver_call_trace_count": 0,
+        }
 
         # Core components — let WorldModel use _UNSET sentinel for proper
         # CognitiveGraph lazy-init when persistence is enabled. Dry-run-safe
@@ -470,7 +481,61 @@ class AutonomyRuntime:
             result_keys=result_keys,
             solver_call_trace=solver_call_trace,
         )
-        return self.runtime_receipt_sink(summary)
+        solver_trace_count = self._nonnegative_int(
+            summary.get("solver_call_trace_count")
+        )
+        with self._runtime_receipt_metrics_lock:
+            self._runtime_receipt_metrics["sink_calls_total"] += 1
+            self._runtime_receipt_metrics[
+                "solver_call_trace_count_total"
+            ] += solver_trace_count
+            self._runtime_receipt_metrics[
+                "last_solver_call_trace_count"
+            ] = solver_trace_count
+        try:
+            receipt_report = self.runtime_receipt_sink(summary)
+        except Exception:
+            with self._runtime_receipt_metrics_lock:
+                self._runtime_receipt_metrics["sink_failures_total"] += 1
+            raise
+
+        receipt_count = self._receipt_count_from_sink_report(receipt_report)
+        with self._runtime_receipt_metrics_lock:
+            self._runtime_receipt_metrics["sink_successes_total"] += 1
+            self._runtime_receipt_metrics[
+                "receipt_count_total"
+            ] += receipt_count
+            self._runtime_receipt_metrics["last_receipt_count"] = receipt_count
+        return receipt_report
+
+    def runtime_receipt_metrics_snapshot(self) -> dict[str, Any]:
+        """Return privacy-safe scalar metrics for the opt-in receipt sink."""
+        with self._runtime_receipt_metrics_lock:
+            snapshot: dict[str, Any] = dict(self._runtime_receipt_metrics)
+        snapshot["sink_configured"] = self.runtime_receipt_sink is not None
+        snapshot["runtime_authority_granted"] = False
+        snapshot["external_writes_applied"] = False
+        return snapshot
+
+    @staticmethod
+    def _nonnegative_int(value: Any) -> int:
+        try:
+            parsed = int(value)
+        except (OverflowError, TypeError, ValueError):
+            return 0
+        return max(0, parsed)
+
+    @classmethod
+    def _receipt_count_from_sink_report(cls, receipt_report: Any) -> int:
+        if not isinstance(receipt_report, dict):
+            return 0
+        receipt_count = cls._nonnegative_int(receipt_report.get("receipt_count"))
+        if receipt_count:
+            return receipt_count
+        verifier_report = receipt_report.get("verifier_report")
+        if isinstance(verifier_report, dict):
+            return cls._nonnegative_int(verifier_report.get("receipt_count"))
+        return 0
 
     def _record_mission_lifecycle_audit(self, event: dict[str, Any]) -> None:
         """Project a mission-queue lifecycle event into MAGMA audit."""

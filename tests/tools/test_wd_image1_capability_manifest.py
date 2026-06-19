@@ -369,6 +369,15 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
         "receipt_count": 1,
         "solver_call_trace_count": 1,
         "solver_call_trace_receipt_bound": True,
+        "prometheus_metric_names": [
+            "waggledance_runtime_receipt_metrics_up",
+            "waggledance_runtime_receipt_sink_configured",
+            "waggledance_runtime_receipt_sink_calls_total",
+            "waggledance_runtime_receipt_sink_successes_total",
+            "waggledance_runtime_receipt_sink_failures_total",
+            "waggledance_runtime_receipt_bundle_receipts_total",
+            "waggledance_runtime_receipt_solver_call_trace_entries_total",
+        ],
     }
     assert proof["external_writes_applied"] is False
 

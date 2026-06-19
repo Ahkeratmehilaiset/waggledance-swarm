@@ -62,6 +62,7 @@ class _FakeContainer:
         route_stage_runtime_metrics=None,
         hex_topology_registry=None,
         counterfactual_replay_status=None,
+        autonomy_service=None,
     ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
         self.autogrowth_background_ticker = autogrowth_background_ticker
@@ -69,6 +70,7 @@ class _FakeContainer:
         self.route_stage_runtime_metrics = route_stage_runtime_metrics
         self.hex_topology_registry = hex_topology_registry
         self.counterfactual_replay_status = counterfactual_replay_status
+        self.autonomy_service = autonomy_service
 
 
 class _FakeHexCell:
@@ -415,6 +417,58 @@ def test_metrics_route_stage_runtime_counters_default_to_zero():
         'waggledance_route_stage_request_latency_histogram_ms_count{'
         'stage="language_detection"} 0.0'
     ) in body
+
+
+def test_metrics_body_contains_runtime_receipt_scalar_counters():
+    runtime = types.SimpleNamespace(
+        runtime_receipt_metrics_snapshot=lambda: {
+            "sink_configured": True,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+            "sink_calls_total": 3,
+            "sink_successes_total": 2,
+            "sink_failures_total": 1,
+            "receipt_count_total": 2,
+            "solver_call_trace_count_total": 2,
+            "last_receipt_count": 1,
+            "last_solver_call_trace_count": 1,
+            "private_marker": "WD_IMAGE1_PRIVATE_QUERY_MARKER",
+        }
+    )
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": True}),
+        autonomy_service=types.SimpleNamespace(_runtime=runtime),
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_runtime_receipt_metrics_up 1.0" in body
+    assert "waggledance_runtime_receipt_sink_configured 1.0" in body
+    assert "waggledance_runtime_receipt_runtime_authority_granted 0.0" in body
+    assert "waggledance_runtime_receipt_external_writes_applied 0.0" in body
+    assert "waggledance_runtime_receipt_sink_calls_total 3.0" in body
+    assert "waggledance_runtime_receipt_sink_successes_total 2.0" in body
+    assert "waggledance_runtime_receipt_sink_failures_total 1.0" in body
+    assert "waggledance_runtime_receipt_bundle_receipts_total 2.0" in body
+    assert (
+        "waggledance_runtime_receipt_solver_call_trace_entries_total 2.0"
+        in body
+    )
+    assert "waggledance_runtime_receipt_last_receipt_count 1.0" in body
+    assert "waggledance_runtime_receipt_last_solver_call_trace_count 1.0" in body
+    assert "WD_IMAGE1_PRIVATE_QUERY_MARKER" not in body
+    assert "private_marker" not in body
+
+
+def test_metrics_runtime_receipt_missing_runtime_reports_down():
+    container = _FakeContainer(_FakeHexAssist({"enabled": True}))
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_runtime_receipt_metrics_up 0.0" in body
+    assert "waggledance_runtime_receipt_sink_calls_total" not in body
 
 
 def test_metrics_body_contains_autogrowth_boundary_gauges():

@@ -117,6 +117,18 @@ def test_handle_query_emits_opt_in_runtime_summary_receipt(tmp_path: Path) -> No
     assert "private runtime query" not in emitted_text
     assert "context secret" not in emitted_text
     assert "DO_NOT_LEAK" not in emitted_text
+    assert runtime.runtime_receipt_metrics_snapshot() == {
+        "sink_calls_total": 1,
+        "sink_successes_total": 1,
+        "sink_failures_total": 0,
+        "receipt_count_total": 1,
+        "solver_call_trace_count_total": 1,
+        "last_receipt_count": 1,
+        "last_solver_call_trace_count": 1,
+        "sink_configured": True,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
 
 
 def test_handle_query_runtime_receipt_sink_failure_blocks_opt_in_path(
@@ -149,3 +161,16 @@ def test_handle_query_runtime_receipt_sink_failure_blocks_opt_in_path(
 
     with pytest.raises(RuntimeError, match="runtime receipt sink boom"):
         runtime.handle_query("receipt failure path")
+
+    assert runtime.runtime_receipt_metrics_snapshot() == {
+        "sink_calls_total": 1,
+        "sink_successes_total": 0,
+        "sink_failures_total": 1,
+        "receipt_count_total": 0,
+        "solver_call_trace_count_total": 1,
+        "last_receipt_count": 0,
+        "last_solver_call_trace_count": 1,
+        "sink_configured": True,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }

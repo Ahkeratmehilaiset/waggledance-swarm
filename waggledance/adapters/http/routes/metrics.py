@@ -267,6 +267,7 @@ class _WaggleCollector:
         yield from self._collect_hex_topology_boundary_metrics(container)
         yield from self._collect_route_stage_metrics(container)
         yield from self._collect_route_stage_runtime_metrics(container)
+        yield from self._collect_runtime_receipt_metrics(container)
         yield from self._collect_route_stage_latency_feed_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
         yield from self._collect_counterfactual_replay_metrics(container)
@@ -565,6 +566,98 @@ class _WaggleCollector:
         yield observed
         yield latency
         yield latency_histogram
+
+    def _collect_runtime_receipt_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_runtime_receipt_metrics_up",
+            (
+                "1 if opt-in runtime receipt sink metrics could be read this "
+                "scrape."
+            ),
+            value=0.0,
+        )
+        snapshot = self._runtime_receipt_metrics_snapshot(container)
+        if not isinstance(snapshot, dict):
+            yield up
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_metrics_up",
+            (
+                "1 if opt-in runtime receipt sink metrics could be read this "
+                "scrape."
+            ),
+            value=1.0,
+        )
+        bool_gauges = {
+            "sink_configured": snapshot.get("sink_configured"),
+            "runtime_authority_granted": snapshot.get("runtime_authority_granted"),
+            "external_writes_applied": snapshot.get("external_writes_applied"),
+        }
+        for name, value in bool_gauges.items():
+            yield GaugeMetricFamily(
+                f"waggledance_runtime_receipt_{name}",
+                f"Privacy-safe opt-in runtime receipt boundary gauge: {name}",
+                value=_as_bool_float(value),
+            )
+
+        counter_values = {
+            "sink_calls": snapshot.get("sink_calls_total"),
+            "sink_successes": snapshot.get("sink_successes_total"),
+            "sink_failures": snapshot.get("sink_failures_total"),
+            "bundle_receipts": snapshot.get("receipt_count_total"),
+            "solver_call_trace_entries": snapshot.get(
+                "solver_call_trace_count_total"
+            ),
+        }
+        for name, value in counter_values.items():
+            yield CounterMetricFamily(
+                f"waggledance_runtime_receipt_{name}_total",
+                f"Privacy-safe opt-in runtime receipt scalar counter: {name}",
+                value=_as_nonnegative_float(value),
+            )
+
+        gauge_values = {
+            "last_receipt_count": snapshot.get("last_receipt_count"),
+            "last_solver_call_trace_count": snapshot.get(
+                "last_solver_call_trace_count"
+            ),
+        }
+        for name, value in gauge_values.items():
+            yield GaugeMetricFamily(
+                f"waggledance_runtime_receipt_{name}",
+                f"Privacy-safe opt-in runtime receipt scalar gauge: {name}",
+                value=_as_nonnegative_float(value),
+            )
+
+    @staticmethod
+    def _runtime_receipt_metrics_snapshot(container: Any) -> dict[str, Any] | None:
+        runtime = _safe_getattr(container, "autonomy_runtime")
+        if runtime is None:
+            container_state = _safe_getattr(container, "__dict__", {})
+            service = (
+                container_state.get("autonomy_service")
+                if isinstance(container_state, dict)
+                else None
+            )
+            runtime = _safe_getattr(service, "_runtime")
+        if runtime is None:
+            return None
+        snapshot_fn = _safe_getattr(runtime, "runtime_receipt_metrics_snapshot")
+        if not callable(snapshot_fn):
+            return None
+        try:
+            snapshot = snapshot_fn() or {}
+        except Exception as exc:
+            logger.warning(
+                "metrics: runtime_receipt_metrics_snapshot() raised: %s",
+                exc,
+            )
+            return None
+        return snapshot if isinstance(snapshot, dict) else None
 
     def _collect_route_stage_latency_feed_metrics(
         self,

@@ -8090,6 +8090,34 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof["cross_consistency_digest"] = _build_cross_consistency_digest(
         hex_upgrade_proof
     )
+    # Ring-messaging + parent-child hierarchy proof (merged
+    # tools/run_ring_messaging_hierarchy_proof.py). The RAW proof embeds a
+    # forbidden-vocabulary exclusion list and per-case delivery detail, so store a
+    # CURATED content-safe summary (only derived booleans + an int + the fixed version
+    # string), never the raw proof. Measurement-only: NOT folded into
+    # hex_upgrade_proof["ok"] below and NEVER upgrades any claim.
+    from tools.run_ring_messaging_hierarchy_proof import (  # noqa: E402
+        build_ring_messaging_hierarchy_proof as _build_ring_messaging_hierarchy_proof,
+    )
+
+    _ring_proof = _build_ring_messaging_hierarchy_proof()
+    _ring_proof = _ring_proof if isinstance(_ring_proof, dict) else {}
+    _rh_hierarchy = _ring_proof.get("hierarchy")
+    _rh_hierarchy = _rh_hierarchy if isinstance(_rh_hierarchy, dict) else {}
+    _rh_ring = _ring_proof.get("ring_boundary")
+    _rh_ring = _rh_ring if isinstance(_rh_ring, dict) else {}
+    _rh_replay = _ring_proof.get("deterministic_replay")
+    _rh_replay = _rh_replay if isinstance(_rh_replay, dict) else {}
+    _rh_blockers = _ring_proof.get("blockers")
+    hex_upgrade_proof["ring_hierarchy_summary"] = {
+        "report_version": _ring_proof.get("report_version"),
+        "ok": _ring_proof.get("ok") is True,
+        "hierarchy_ok": _rh_hierarchy.get("ok") is True,
+        "ring_boundary_ok": _rh_ring.get("ok") is True,
+        "no_runtime_mutation": _rh_ring.get("no_runtime_mutation") is True,
+        "deterministic": _rh_replay.get("batch_identical") is True,
+        "blocker_count": len(_rh_blockers) if isinstance(_rh_blockers, list) else None,
+    }
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True

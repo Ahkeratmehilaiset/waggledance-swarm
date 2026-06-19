@@ -1613,3 +1613,134 @@ def test_hex_xcons_subtree_excluded_from_recursive_scan(bare_key):
 def test_hex_xcons_claim_safe_hardcoded_false_even_when_clean():
     block, _ = _xcons_counters(_good_cross_consistency_digest())
     assert block["claim_safe"] is False
+
+
+# --- hex ring-messaging + parent-child hierarchy counter (ring/hierarchy wiring) ---
+def _good_ring_hierarchy_summary():
+    # Mirrors the CURATED content-safe summary the manifest stores under
+    # hex_upgrade_proof["ring_hierarchy_summary"].
+    return {
+        "report_version": "wd.ring_messaging_hierarchy_proof.v1",
+        "ok": True,
+        "hierarchy_ok": True,
+        "ring_boundary_ok": True,
+        "no_runtime_mutation": True,
+        "deterministic": True,
+        "blocker_count": 0,
+    }
+
+
+def _manifest_with_hex_ring(summary, *, hex_proof_extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if summary is not None:
+        proof["ring_hierarchy_summary"] = summary
+    if hex_proof_extra:
+        proof.update(hex_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "hexagonal_upgrades", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _ring_counters(summary, **kw):
+    mc = build_vision_progress_counters(_manifest_with_hex_ring(summary, **kw))[
+        "milestone_counters"
+    ]
+    return mc["hex_subdivision_ring_hierarchy"], mc[
+        "shadow_to_candidate_subdivision_transitions_total"
+    ]
+
+
+def test_hex_ring_available_with_clean_summary():
+    block, _ = _ring_counters(_good_ring_hierarchy_summary())
+    assert block["ring_hierarchy_available"] is True
+    assert block["ring_hierarchy_clean"] is True
+    assert block["hierarchy_ok"] is True
+    assert block["ring_boundary_ok"] is True
+    assert block["measurement_basis"] == "v1_ring_messaging_hierarchy_proof"
+    assert block["claim_safe"] is False
+
+
+def test_hex_ring_unavailable_when_absent():
+    block, _ = _ring_counters(None)
+    assert block["ring_hierarchy_available"] is False
+    assert block["ring_hierarchy_clean"] is False
+    assert block["measurement_basis"] == "manifest_hex_upgrade_flags"
+    assert block["claim_safe"] is False
+
+
+_RING_COMPONENT_FIELDS = [
+    "hierarchy_ok",
+    "ring_boundary_ok",
+    "no_runtime_mutation",
+    "deterministic",
+]
+
+
+@pytest.mark.parametrize("field", _RING_COMPONENT_FIELDS)
+def test_hex_ring_consumer_rederives_fail_closed(field):
+    # Consumer RE-DERIVES ring_hierarchy_clean from the COMPONENT booleans fail-closed.
+    s = _good_ring_hierarchy_summary()
+    s[field] = False
+    block, _ = _ring_counters(s)
+    assert block["ring_hierarchy_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("field", _RING_COMPONENT_FIELDS)
+def test_hex_ring_inconsistent_aggregate_fails_closed(field):
+    # #1274: a component False but the proof's own ok aggregate True must still render
+    # ring_hierarchy_clean=False (consumer never trusts the aggregate's ok).
+    s = _good_ring_hierarchy_summary()
+    s[field] = False
+    s["ok"] = True  # lying aggregate
+    block, _ = _ring_counters(s)
+    assert block["ring_hierarchy_clean"] is False, field
+
+
+@pytest.mark.parametrize("bad_blockers", [1, -1, True, "x", None, 0.0])
+def test_hex_ring_nonzero_or_malformed_blockers_not_clean(bad_blockers):
+    s = _good_ring_hierarchy_summary()
+    s["blocker_count"] = bad_blockers
+    block, _ = _ring_counters(s)
+    assert block["ring_hierarchy_clean"] is False, bad_blockers
+
+
+def test_hex_ring_does_not_touch_shadow_to_candidate():
+    _, s2c_with = _ring_counters(_good_ring_hierarchy_summary())
+    _, s2c_without = _ring_counters(None)
+    assert s2c_with == s2c_without
+    assert s2c_with["satisfied"] is False
+    assert s2c_with["current_value"] == 0
+
+
+@pytest.mark.parametrize("bare_key", [
+    "no_runtime_mutation", "runtime_authority_changed",
+])
+def test_hex_ring_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271: a bare authority/mutation key nested in the measurement-only
+    # ring_hierarchy_summary subtree must NOT reach the recursive _nested_flag scan.
+    s = _good_ring_hierarchy_summary()
+    s["forged_nested"] = {
+        bare_key: (False if bare_key == "no_runtime_mutation" else True)
+    }
+    counters = build_vision_progress_counters(_manifest_with_hex_ring(s))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["hexagonal_upgrades"]["milestones"]
+    assert milestones["no_runtime_mutation"] is True, bare_key
+    assert milestones["runtime_authority_changed"] is False, bare_key
+
+
+def test_hex_ring_claim_safe_hardcoded_false_even_when_clean():
+    block, _ = _ring_counters(_good_ring_hierarchy_summary())
+    assert block["claim_safe"] is False

@@ -67,6 +67,17 @@ BLOCKING_STATUSES = frozenset(
     }
 )
 BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
+CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES = (
+    "changes_requested",
+    "rco_changes_requested",
+)
+CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
+    {
+        "concurrence",
+        "resolved",
+        "cleared",
+    }
+)
 
 # Claim gates per hard rule: all must be false in emitted artifacts.
 CLAIM_GATES: tuple[str, ...] = (
@@ -815,6 +826,18 @@ def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
 
 
 def _has_blocking_shape(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
+        if normalized == prefix:
+            return True
+        if not normalized.startswith(prefix + "_"):
+            continue
+        suffix = normalized[len(prefix) + 1 :]
+        if not suffix:
+            return True
+        if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
+            return False
+        return True
     tokens = _status_tokens(status)
     has_shape = (
         {"changes", "requested"}.issubset(tokens)

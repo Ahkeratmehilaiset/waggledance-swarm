@@ -249,6 +249,72 @@ def test_changes_requested_after_pass_refuses() -> None:
     )  # pass existed but superseded
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "changes_requested_concurrence",
+        "changes_requested_resolved",
+        "changes_requested_cleared",
+        "rco_changes_requested_cleared",
+    ],
+)
+def test_neutral_changes_requested_status_after_pass_does_not_veto(
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status=status,
+            type_="message",
+            message="neutral follow-up; not a veto",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["latest_rco_is_veto"] is False
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "changes_requested_NOT_resolved",
+        "rco_changes_requested_not_cleared",
+    ],
+)
+def test_negated_changes_requested_status_after_pass_still_vetoes(
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status=status,
+            type_="message",
+            message="still blocked; not resolved",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
 def test_pass_present_no_later_veto_ok() -> None:
     events = [
         _rco_event(

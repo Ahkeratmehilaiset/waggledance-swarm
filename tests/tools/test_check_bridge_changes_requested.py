@@ -274,6 +274,48 @@ def test_prefixed_changes_requested_status_blocks() -> None:
     assert result["latest_blocking_event"]["status"] == "rco_changes_requested_pr530"
 
 
+def test_concurrence_changes_requested_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T03:00:00Z",
+            "codex",
+            "finding",
+            "changes_requested_concurrence",
+            task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        merging_agent="codex-tools-1",
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
+def test_changes_requested_resolved_and_cleared_are_non_blocking() -> None:
+    events = [
+        _event(
+            "2026-06-19T03:00:00Z",
+            "codex",
+            "decision",
+            "changes_requested_resolved",
+        ),
+        _event(
+            "2026-06-19T03:01:00Z",
+            "codex",
+            "decision",
+            "rco_changes_requested_cleared",
+            task_id="T",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
 def test_changes_requested_clear_status_still_blocks() -> None:
     events = [
         _event(

@@ -2957,3 +2957,49 @@ def test_manifest_hex_proof_excludes_raw_ring_forbidden_vocabulary() -> None:
     blob = json.dumps(hex_cap["proof"])
     for term in ("conscious", "sentient", "self-aware", "explosive intelligence"):
         assert term not in blob, term
+
+
+def _low_risk_proof_for_reviewer():
+    manifest = build_manifest()
+    return next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "low_risk_autonomy_loop"
+    )["proof"]
+
+
+def test_manifest_stores_repeat_window_reviewer_summary_content_safe() -> None:
+    summary = _low_risk_proof_for_reviewer().get("repeat_window_trend_reviewer_summary")
+    assert isinstance(summary, dict)
+    # content-safe by construction: version string + derived bools + strict ints/None
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        elif key in (
+            "window_size", "promoted_solver_count_min", "promoted_solver_count_max",
+        ):
+            assert value is None or (
+                isinstance(value, int) and not isinstance(value, bool)
+            )
+        else:
+            assert isinstance(value, bool), key
+    assert summary["trend_review_clean"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    assert str(ROOT) not in json.dumps(summary)
+
+
+def test_manifest_repeat_window_reviewer_summary_measurement_only() -> None:
+    # Measurement-only: the reviewer summary is stored alongside a True low_risk proof
+    # ok (enriched after ok is computed, never folded into it). The low-risk
+    # ok-deriving builder must not reference the reviewer summary.
+    proof = _low_risk_proof_for_reviewer()
+    assert isinstance(proof.get("repeat_window_trend_reviewer_summary"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod)
+    parts = src.split("def build_low_risk_autonomy_proof", 1)
+    if len(parts) > 1:
+        body = parts[1].split("\ndef ", 1)[0]
+        assert "repeat_window_trend_reviewer_summary" not in body

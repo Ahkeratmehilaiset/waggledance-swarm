@@ -8248,6 +8248,18 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     repeat_window_trend = build_repeat_window_trend_aggregate()
     if repeat_window_trend is not None:
         low_risk_autonomy_proof["repeat_window_trend"] = repeat_window_trend
+    # Path-free reviewer summary of the repeat-window trend (merged #1284 renderer).
+    # Content-safe by construction (the renderer's allowlist emits only derived
+    # booleans/strict ints), so stored raw; measurement-only, so it is NOT folded into
+    # low_risk_autonomy_proof["ok"] (already computed) and NEVER flips the low-risk
+    # claim. A None/opted-out trend renders a fail-closed (not-clean) summary.
+    from tools.render_low_risk_repeat_window_trend_reviewer_summary import (  # noqa: E402
+        render_repeat_window_trend_reviewer_summary as _render_repeat_window_reviewer_summary,
+    )
+
+    low_risk_autonomy_proof["repeat_window_trend_reviewer_summary"] = (
+        _render_repeat_window_reviewer_summary(repeat_window_trend)
+    )
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
     low_risk_autonomy_proof["ops_alert_state_smoke"] = low_risk_ops_alert_state_smoke

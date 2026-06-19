@@ -1776,3 +1776,139 @@ def test_hex_ring_non_mapping_summary_not_available(bad):
     block, _ = _ring_counters(bad)
     assert block["ring_hierarchy_available"] is False
     assert block["ring_hierarchy_clean"] is False
+
+
+# --- low-risk repeat-window trend reviewer-summary counter (#1284 renderer wiring) ---
+def _good_repeat_window_reviewer_summary():
+    # Mirrors the merged #1284 render_repeat_window_trend_reviewer_summary output.
+    return {
+        "report_version": "wd.low_risk_repeat_window_trend_reviewer_summary.v1",
+        "trend_present": True,
+        "all_runs_ok": True,
+        "deterministic": True,
+        "promotion_count_stable": True,
+        "evidence_present": True,
+        "no_guardrail_tripped": True,
+        "no_runtime_authority_granted": True,
+        "no_external_writes": True,
+        "window_size_valid": True,
+        "promotion_count_positive": True,
+        "trend_review_clean": True,
+        "path_free_verified": True,
+        "claim_safe": False,
+        "window_size": 3,
+        "promoted_solver_count_min": 1,
+        "promoted_solver_count_max": 1,
+    }
+
+
+def _manifest_with_low_risk_reviewer(summary, *, low_risk_proof_extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if summary is not None:
+        proof["repeat_window_trend_reviewer_summary"] = summary
+    if low_risk_proof_extra:
+        proof.update(low_risk_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _reviewer_counters(summary, **kw):
+    mc = build_vision_progress_counters(
+        _manifest_with_low_risk_reviewer(summary, **kw)
+    )["milestone_counters"]
+    return mc["low_risk_repeat_window_trend_reviewer_summary"]
+
+
+def test_low_risk_reviewer_summary_available_with_clean_summary():
+    block = _reviewer_counters(_good_repeat_window_reviewer_summary())
+    assert block["reviewer_summary_available"] is True
+    assert block["review_clean"] is True
+    assert block["path_free_verified"] is True
+    assert block["measurement_basis"] == (
+        "v1_low_risk_repeat_window_trend_reviewer_summary"
+    )
+    assert block["claim_safe"] is False
+
+
+def test_low_risk_reviewer_summary_unavailable_when_absent():
+    block = _reviewer_counters(None)
+    assert block["reviewer_summary_available"] is False
+    assert block["review_clean"] is False
+    assert block["measurement_basis"] == "manifest_real_loop_flags"
+    assert block["claim_safe"] is False
+
+
+_RW_REVIEWER_COMPONENT_FIELDS = [
+    "trend_present", "all_runs_ok", "deterministic", "promotion_count_stable",
+    "evidence_present", "no_guardrail_tripped", "no_runtime_authority_granted",
+    "no_external_writes", "window_size_valid", "promotion_count_positive",
+]
+
+
+@pytest.mark.parametrize("field", _RW_REVIEWER_COMPONENT_FIELDS)
+def test_low_risk_reviewer_consumer_rederives_fail_closed(field):
+    s = _good_repeat_window_reviewer_summary()
+    s[field] = False
+    block = _reviewer_counters(s)
+    assert block["review_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("field", _RW_REVIEWER_COMPONENT_FIELDS)
+def test_low_risk_reviewer_inconsistent_aggregate_fails(field):
+    # #1274: a component False but the summary's own trend_review_clean True must still
+    # render review_clean=False (consumer never trusts the aggregate composite).
+    s = _good_repeat_window_reviewer_summary()
+    s[field] = False
+    s["trend_review_clean"] = True
+    block = _reviewer_counters(s)
+    assert block["review_clean"] is False, field
+
+
+def test_low_risk_reviewer_self_claim_safe_refuses_to_certify():
+    s = _good_repeat_window_reviewer_summary()
+    s["claim_safe"] = True
+    block = _reviewer_counters(s)
+    assert block["reviewer_summary_available"] is False
+    assert block["review_clean"] is False
+
+
+def test_low_risk_reviewer_path_free_false_refuses_to_certify():
+    s = _good_repeat_window_reviewer_summary()
+    s["path_free_verified"] = False
+    block = _reviewer_counters(s)
+    assert block["reviewer_summary_available"] is False
+    assert block["review_clean"] is False
+
+
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_changed", "external_writes_applied",
+])
+def test_low_risk_reviewer_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271: a bare authority key nested in the measurement-only
+    # repeat_window_trend_reviewer_summary subtree must NOT reach the recursive
+    # _nested_flag scan that feeds the real low-risk panel flags.
+    s = _good_repeat_window_reviewer_summary()
+    s["forged_nested"] = {bare_key: True}
+    counters = build_vision_progress_counters(_manifest_with_low_risk_reviewer(s))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["low_risk_autonomy_loop"]["milestones"]
+    assert milestones["runtime_authority_granted"] is False, bare_key
+    assert milestones["external_writes_applied"] is False, bare_key
+
+
+def test_low_risk_reviewer_claim_safe_hardcoded_false_even_when_clean():
+    block = _reviewer_counters(_good_repeat_window_reviewer_summary())
+    assert block["claim_safe"] is False

@@ -58,6 +58,9 @@ TEMPLATE_ARTIFACT_ID = (
 )
 _ARTIFACT_ORDER = (SUMMARY_ARTIFACT_ID, TEMPLATE_ARTIFACT_ID)
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
+_WARNING_FILENAME_TOKEN_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{1,8}$"
+)
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
 
 
@@ -161,6 +164,17 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
         summary_bridge_event_template_bytes,
     )
     _assert_summary_contract(bundle_verification_summary)
+    warning_blockers = _warning_token_list_schema_blockers(
+        bundle_verification_summary,
+        "warnings",
+        "bundle_verification_summary",
+    ) + _warning_token_list_schema_blockers(
+        summary_bridge_event_template_report,
+        "warnings",
+        "summary_bridge_event_template",
+    )
+    if warning_blockers:
+        raise TemplateIndexEntryError(warning_blockers[0])
 
     rebuilt_template = _rebuilt_template(
         bundle_verification_summary,
@@ -251,7 +265,7 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
             "handoff_ref": _safe_ref_or_invalid(reviewer.get("handoff_ref")),
             "blocker_count": 0,
             "warning_count": len(
-                _safe_token_list(bundle_verification_summary.get("warnings"))
+                _safe_warning_token_list(bundle_verification_summary.get("warnings"))
             ),
         },
         "consistency": {
@@ -286,8 +300,10 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
         "artifact_payloads_included": False,
         "local_paths_recorded": False,
         "blockers": [],
-        "warnings": _safe_token_list(bundle_verification_summary.get("warnings"))
-        + _safe_token_list(summary_bridge_event_template_report.get("warnings")),
+        "warnings": _safe_warning_token_list(bundle_verification_summary.get("warnings"))
+        + _safe_warning_token_list(
+            summary_bridge_event_template_report.get("warnings")
+        ),
     }
     _assert_no_forbidden_output(json.dumps(entry, allow_nan=False, sort_keys=True))
     return entry
@@ -749,6 +765,41 @@ def _safe_token_list(value: Any) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
     return [_safe_token(item) for item in value if isinstance(item, str)]
+
+
+def _safe_warning_token(value: Any) -> str:
+    token = _safe_token(value)
+    if token == "invalid_token" or _looks_like_warning_filename_token(token):
+        return "invalid_warning_token"
+    return token
+
+
+def _safe_warning_token_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [_safe_warning_token(item) for item in value if isinstance(item, str)]
+
+
+def _warning_token_list_schema_blockers(
+    report: Mapping[str, Any],
+    field: str,
+    prefix: str,
+) -> list[str]:
+    value = report.get(field)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return [f"{prefix}_{field}_not_list"]
+    blockers: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            blockers.append(f"{prefix}_{field}_item_not_string")
+        elif _safe_warning_token(item) == "invalid_warning_token":
+            blockers.append(f"{prefix}_{field}_item_unsafe")
+    return sorted(set(blockers))
+
+
+def _looks_like_warning_filename_token(value: str) -> bool:
+    candidate = value.rsplit(":", 1)[-1]
+    return _WARNING_FILENAME_TOKEN_RE.fullmatch(candidate) is not None
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

@@ -311,6 +311,44 @@ def test_route_stage_handoff_bundle_verification_summary_template_index_entry_re
     assert not any(marker in combined for marker in FORBIDDEN_OUTPUT_SNIPPETS)
 
 
+def test_route_stage_handoff_bundle_verification_summary_template_index_entry_rejects_warning_filename_without_leak(
+    tmp_path: Path,
+) -> None:
+    artifacts = _artifact_set()
+    artifacts["template"]["warnings"] = ["evidence.json"]
+    paths = _write_artifacts(tmp_path, artifacts)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-json",
+            str(paths["summary"]),
+            "--template-json",
+            str(paths["template"]),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "route_stage_feed_health_drill_evidence_reviewer_handoff_"
+        "bundle_verification_summary_bridge_event_template_index_"
+        "entry_failed:summary_bridge_event_template_warnings_item_unsafe"
+    ]
+    combined = result.stdout + result.stderr
+    assert "evidence.json" not in combined
+    assert str(tmp_path) not in combined
+    for path in paths.values():
+        assert path.name not in combined
+    assert not any(marker in combined for marker in FORBIDDEN_OUTPUT_SNIPPETS)
+
+
 def _artifact_set() -> dict[str, dict]:
     summary = _bundle_verification_summary()
     template = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template(

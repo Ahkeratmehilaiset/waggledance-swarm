@@ -139,6 +139,24 @@ def test_nonpositive_or_malformed_promotion_count_fails(bad):
     assert s["trend_review_clean"] is False, bad
 
 
+@pytest.mark.parametrize("bad", [0, -1, "1", 1.0, True, None])
+def test_malformed_promotion_count_max_fails(bad):
+    t = _good_trend()
+    t["promoted_solver_count_max"] = bad
+    s = _summary(t)
+    assert s["promotion_count_positive"] is False, bad
+    assert s["trend_review_clean"] is False, bad
+
+
+def test_promotion_count_min_greater_than_max_fails():
+    t = _good_trend()
+    t["promoted_solver_count_min"] = 2
+    t["promoted_solver_count_max"] = 1
+    s = _summary(t)
+    assert s["promotion_count_positive"] is False
+    assert s["trend_review_clean"] is False
+
+
 # ------------------------------------------------------------------ content-safe
 
 def test_injected_raw_content_does_not_leak():

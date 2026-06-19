@@ -109,9 +109,15 @@ def render_repeat_window_trend_reviewer_summary(trend: Any) -> dict[str, Any]:
     # window_size must be a strict int in [_MIN_WINDOW, _MAX_WINDOW].
     _window = t.get("window_size")
     window_size_valid = _strict_int(_window) and _MIN_WINDOW <= _window <= _MAX_WINDOW
-    # promotion count must be a strict positive int (a 0-count is no evidence).
+    # Promotion counts must be strict positive ints and internally consistent. A
+    # malformed max, negative max, or min > max is not a valid measurement.
     _count_min = t.get("promoted_solver_count_min")
-    promotion_count_positive = _strict_int(_count_min) and _count_min >= 1
+    _count_max = t.get("promoted_solver_count_max")
+    promotion_count_positive = (
+        _strict_int(_count_min)
+        and _strict_int(_count_max)
+        and 1 <= _count_min <= _count_max
+    )
 
     summary: dict[str, Any] = {
         "report_version": REPORT_VERSION,
@@ -129,9 +135,7 @@ def render_repeat_window_trend_reviewer_summary(trend: Any) -> dict[str, Any]:
         # raw values, surface them for the reviewer.
         "window_size": _strict_int_or_none(_window),
         "promoted_solver_count_min": _strict_int_or_none(_count_min),
-        "promoted_solver_count_max": _strict_int_or_none(
-            t.get("promoted_solver_count_max")
-        ),
+        "promoted_solver_count_max": _strict_int_or_none(_count_max),
         # RE-DERIVED fail-closed from the components above; NEVER the aggregate's own ok.
         "trend_review_clean": bool(
             trend_present

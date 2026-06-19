@@ -862,6 +862,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
+        "tests/tools/test_verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
     )
     metric_names = (
         "waggledance_route_stage_observations_total",
@@ -1010,6 +1012,14 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     drill_reviewer_handoff_bundle_index_verifier_text = (
         repo_root
         / "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py"
+    ).read_text(encoding="utf-8")
+    drill_reviewer_handoff_bundle_verification_summary_template_index_entry_verifier_text = (
+        repo_root
+        / "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py"
+    ).read_text(encoding="utf-8")
+    drill_reviewer_handoff_bundle_verification_summary_template_index_entry_verifier_tests_text = (
+        repo_root
+        / "tests/tools/test_verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py"
     ).read_text(encoding="utf-8")
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     runbook_text = (
@@ -1557,6 +1567,34 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             ).get("ok")
             is True
         ),
+        "ops_latency_feed_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verifier_present": all(
+            token
+            in "\n".join(
+                (
+                    drill_reviewer_handoff_bundle_verification_summary_template_index_entry_verifier_text,
+                    drill_reviewer_handoff_bundle_verification_summary_template_index_entry_verifier_tests_text,
+                )
+            )
+            for token in (
+                "VERIFICATION_VERSION",
+                "bundle_verification_summary_bridge_event_template_index_entry_verification.v1",
+                "verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry",
+                "source_contract_check",
+                "rebuilt_index_entry_check",
+                "bridge_event_schema_check",
+                "artifact_payloads_included",
+                "local_paths_recorded",
+                "test_route_stage_reviewer_handoff_bundle_verification_summary_template_index_entry_verifier_recomputes_digests_without_authority",
+                "bridge-template index entry verification FAILED",
+            )
+        )
+        and (
+            drill_verifier_smoke.get(
+                "reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_smoke",
+                {},
+            ).get("ok")
+            is True
+        ),
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
@@ -1730,6 +1768,15 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             VERIFICATION_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_INDEX_VERIFICATION_VERSION,
             verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index,
         )
+        from tools.verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry import (
+            EVENT_STATUS as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_STATUS,
+            INDEX_ENTRY_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION,
+            SUMMARY_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION,
+            TEMPLATE_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION,
+            VERIFICATION_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION,
+            build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry,
+            verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry,
+        )
     except Exception as exc:  # pragma: no cover - defensive manifest guard.
         return {
             "ok": False,
@@ -1796,6 +1843,12 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             "reviewer_handoff_bundle_index_verification_smoke": {
                 "ok": False,
                 "blocked_reason": f"reviewer_handoff_bundle_index_verification_import_failed:{exc.__class__.__name__}",
+                "verification_version": None,
+                "direct_bridge_write_performed": False,
+            },
+            "reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_smoke": {
+                "ok": False,
+                "blocked_reason": f"reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_import_failed:{exc.__class__.__name__}",
                 "verification_version": None,
                 "direct_bridge_write_performed": False,
             },
@@ -2004,6 +2057,187 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         reviewer_handoff_summary=reviewer_handoff_summary,
         verification_report_bytes=final_verification_bytes,
         reviewer_handoff_summary_bytes=reviewer_handoff_summary_bytes,
+    )
+    no_authority_fields = {
+        "approval_granted": False,
+        "release_decision_made": False,
+        "automatic_release_decision": False,
+        "direct_bridge_write_performed": False,
+        "transport_added": False,
+        "external_fetch_performed": False,
+        "runtime_controls_added": False,
+        "controls_present": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "network_access_performed": False,
+        "artifact_payloads_included": False,
+        "local_paths_recorded": False,
+    }
+    no_authority_boundary = {
+        "manual_review_required": True,
+        **no_authority_fields,
+    }
+    reviewer_handoff_bundle_verification_summary = {
+        "proof_id": (
+            "route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_"
+            "verification_summary_v1"
+        ),
+        "ok": True,
+        "summary_version": (
+            DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION
+        ),
+        "created_at_utc": "2026-06-19T06:50:00Z",
+        "route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification": {
+            "verification_ok": True,
+            "verification_version": reviewer_handoff_bundle_index_verification.get(
+                "verification_version"
+            ),
+            "bundle_index_version": reviewer_handoff_bundle_index_verification.get(
+                "bundle_index_version"
+            ),
+            "artifact_count_checked": reviewer_handoff_bundle_index_verification.get(
+                "artifact_count_checked"
+            ),
+            "digest_checks": reviewer_handoff_bundle_index_verification.get(
+                "digest_checks",
+                {},
+            ),
+            "size_checks": reviewer_handoff_bundle_index_verification.get(
+                "size_checks",
+                {},
+            ),
+            "schema_version_checks": reviewer_handoff_bundle_index_verification.get(
+                "schema_version_checks",
+                {},
+            ),
+            "source_contract_check": reviewer_handoff_bundle_index_verification.get(
+                "source_contract_check"
+            ),
+            "rebuilt_bundle_index_check": reviewer_handoff_bundle_index_verification.get(
+                "rebuilt_bundle_index_check"
+            ),
+            "reviewer_handoff_summary_check": reviewer_handoff_bundle_index_verification.get(
+                "reviewer_handoff_summary_check"
+            ),
+            "template_only": True,
+            "blocker_count": 0,
+            "blockers": [],
+            "warning_count": 0,
+            "warnings": [],
+        },
+        "operator_boundary": no_authority_boundary,
+        "reviewer_next_actions": [
+            "review_route_stage_reviewer_handoff_bundle_verification_summary_bridge_event_template",
+            "append_bridge_event_separately_only_after_manual_review",
+        ],
+        "template_only": True,
+        "manual_review_required": True,
+        **no_authority_fields,
+        "blockers": [],
+        "warnings": [],
+    }
+    reviewer_handoff_bundle_verification_summary_template_payload = {
+        "schema_version": (
+            DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION
+        ),
+        "summary_version": (
+            DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION
+        ),
+        "route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification": reviewer_handoff_bundle_verification_summary[
+            "route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification"
+        ],
+        "operator_boundary": no_authority_boundary,
+        "template_only": True,
+        "manual_review_required": True,
+        **no_authority_fields,
+    }
+    reviewer_handoff_bundle_verification_summary_template = {
+        "proof_id": (
+            "route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_"
+            "verification_summary_bridge_event_template_v1"
+        ),
+        "ok": True,
+        "template_version": (
+            DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION
+        ),
+        "bridge_event_template": {
+            "ts_utc": "2026-06-19T06:55:00Z",
+            "agent": "codex-lead-1",
+            "type": "handoff",
+            "task_id": "wd-image1-route-stage-reviewer-handoff-bundle-verification-summary-template-index",
+            "status": (
+                DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_STATUS
+            ),
+            "severity": "medium",
+            "to": "operator,claude-rco-1,codex-tools-1",
+            "message": (
+                "Route-stage reviewer handoff bundle verification summary "
+                "bridge-event template ready; manual review required."
+            ),
+            "paths": [],
+            "write_scope": [],
+            "run_id": "codex-lead-1-20260619T065500Z",
+            "role": "lead-impl",
+            "session_id": "codex-lead-1-20260619T065500Z",
+            "capabilities": [
+                "wd_image1",
+                "route_stage_feed",
+                "bridge_event",
+            ],
+            "pid": 0,
+            "cwd": "template_not_emitted",
+            "payload": (
+                reviewer_handoff_bundle_verification_summary_template_payload
+            ),
+        },
+        "template_only": True,
+        "manual_review_required": True,
+        **no_authority_fields,
+        "blockers": [],
+        "warnings": [],
+    }
+    reviewer_handoff_bundle_verification_summary_bytes = json.dumps(
+        reviewer_handoff_bundle_verification_summary,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    reviewer_handoff_bundle_verification_summary_template_bytes = json.dumps(
+        reviewer_handoff_bundle_verification_summary_template,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    reviewer_handoff_bundle_verification_summary_template_index_entry = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry(
+        bundle_verification_summary=(
+            reviewer_handoff_bundle_verification_summary
+        ),
+        bridge_event_template_report=(
+            reviewer_handoff_bundle_verification_summary_template
+        ),
+        bundle_verification_summary_bytes=(
+            reviewer_handoff_bundle_verification_summary_bytes
+        ),
+        bridge_event_template_bytes=(
+            reviewer_handoff_bundle_verification_summary_template_bytes
+        ),
+    )
+    reviewer_handoff_bundle_verification_summary_template_index_entry_verification = verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry(
+        index_entry=(
+            reviewer_handoff_bundle_verification_summary_template_index_entry
+        ),
+        bundle_verification_summary=(
+            reviewer_handoff_bundle_verification_summary
+        ),
+        bridge_event_template_report=(
+            reviewer_handoff_bundle_verification_summary_template
+        ),
+        bundle_verification_summary_bytes=(
+            reviewer_handoff_bundle_verification_summary_bytes
+        ),
+        bridge_event_template_bytes=(
+            reviewer_handoff_bundle_verification_summary_template_bytes
+        ),
     )
     template_event = template_report.get("bridge_event_template")
     template_payload = (
@@ -2613,6 +2847,92 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         ),
         "blockers": reviewer_handoff_bundle_index_verification.get("blockers", []),
     }
+    reviewer_handoff_bundle_verification_summary_template_index_entry_verification_smoke = {
+        "ok": (
+            reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "ok"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "verification_version"
+            )
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "index_entry_version"
+            )
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERSION
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "source_contract_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "rebuilt_index_entry_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "bridge_event_schema_check"
+            )
+            == "match"
+            and set(
+                reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                    "digest_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "direct_bridge_write_performed"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "artifact_payloads_included"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "local_paths_recorded"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+                "network_access_performed"
+            )
+            is False
+        ),
+        "verification_version": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "verification_version"
+        ),
+        "index_entry_version": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "index_entry_version"
+        ),
+        "source_contract_check": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "source_contract_check"
+        ),
+        "rebuilt_index_entry_check": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "rebuilt_index_entry_check"
+        ),
+        "bridge_event_schema_check": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "bridge_event_schema_check"
+        ),
+        "digest_checks": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "digest_checks",
+            {},
+        ),
+        "direct_bridge_write_performed": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "direct_bridge_write_performed"
+        ),
+        "artifact_payloads_included": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "artifact_payloads_included"
+        ),
+        "local_paths_recorded": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "local_paths_recorded"
+        ),
+        "network_access_performed": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "network_access_performed"
+        ),
+        "blockers": reviewer_handoff_bundle_verification_summary_template_index_entry_verification.get(
+            "blockers",
+            [],
+        ),
+    }
     tampered = deepcopy(package)
     tampered["api_ops"]["route_stage_latency"]["feed_state"]["feed_health"][
         "runtime_authority_granted"
@@ -2646,6 +2966,10 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             and reviewer_handoff_summary_smoke["ok"] is True
             and reviewer_handoff_bundle_index_smoke["ok"] is True
             and reviewer_handoff_bundle_index_verification_smoke["ok"] is True
+            and reviewer_handoff_bundle_verification_summary_template_index_entry_verification_smoke[
+                "ok"
+            ]
+            is True
         ),
         "package_schema_version": PACKAGE_SCHEMA_VERSION,
         "verification_schema_version": VERIFICATION_SCHEMA_VERSION,
@@ -2674,6 +2998,9 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "reviewer_handoff_bundle_index_smoke": reviewer_handoff_bundle_index_smoke,
         "reviewer_handoff_bundle_index_verification_smoke": (
             reviewer_handoff_bundle_index_verification_smoke
+        ),
+        "reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_smoke": (
+            reviewer_handoff_bundle_verification_summary_template_index_entry_verification_smoke
         ),
         "valid_report_blockers": valid_report.get("blockers", []),
         "tampered_report_blockers": tampered_report.get("blockers", []),

@@ -1943,6 +1943,42 @@ def test_report_surfaces_agent_profile_and_claim_role_metadata() -> None:
     assert foreign["claim_lease_expires_utc"] == "2026-05-23T15:20:00Z"
 
 
+def test_agent_profile_omits_session_id_from_known_peer_agent() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-19T20:20:00Z",
+            "agent": "codex-tools-1",
+            "type": "heartbeat",
+            "task_id": "tools-heartbeat",
+            "status": "active",
+            "session_id": "codex-tools-1-20260616T040417Z",
+        },
+        {
+            "ts_utc": "2026-06-19T20:33:12Z",
+            "agent": "codex-lead-1",
+            "type": "message",
+            "task_id": "lead-status",
+            "status": "answered",
+            "role": "lead_impl",
+            "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+            "session_id": "codex-tools-1-20260616T040417Z",
+            "capabilities": ["implementation", "work_queue"],
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["agent_profile"] == {
+        "role": "lead_impl",
+        "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+        "capabilities": ["implementation", "work_queue"],
+    }
+
+
 def test_incoming_report_surfaces_requester_role_metadata() -> None:
     events = [
         {

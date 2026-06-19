@@ -8,6 +8,7 @@ Persisted as JSON for portability.
 """
 
 import json
+import inspect
 import logging
 import os
 import tempfile
@@ -22,6 +23,12 @@ log = logging.getLogger("waggledance.cognitive_graph")
 
 # Valid edge types
 EDGE_TYPES = ("causal", "derived_from", "input_to", "semantic")
+
+
+def _node_link_links_arg(func) -> Dict[str, str]:
+    """Return the NetworkX kwarg for storing node-link edges under 'links'."""
+    params = inspect.signature(func).parameters
+    return {"edges" if "edges" in params else "link": "links"}
 
 
 class CognitiveGraph:
@@ -39,7 +46,10 @@ class CognitiveGraph:
         if p.exists():
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                self.graph = nx.node_link_graph(data, edges="links")
+                self.graph = nx.node_link_graph(
+                    data,
+                    **_node_link_links_arg(nx.node_link_graph),
+                )
                 log.info(f"CognitiveGraph loaded: {self.graph.number_of_nodes()} nodes, "
                          f"{self.graph.number_of_edges()} edges")
             except Exception as e:
@@ -56,7 +66,7 @@ class CognitiveGraph:
             check_disk_space(str(p.parent), label="CognitiveGraph")
         except (ImportError, OSError):
             pass
-        data = nx.node_link_data(self.graph, edges="links")
+        data = nx.node_link_data(self.graph, **_node_link_links_arg(nx.node_link_data))
         content = json.dumps(data, ensure_ascii=False)
         # Atomic write: temp file + os.replace to prevent corruption
         fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")

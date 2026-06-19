@@ -41,6 +41,7 @@ from tools.build_route_stage_feed_health_drill_evidence_verification_summary_bri
     _safe_ref_or_invalid,
     _safe_token,
     _safe_token_list,
+    _safe_warning_token_list,
     _token_list_schema_blockers,
     _utc_iso,
     _validate_targets,
@@ -254,7 +255,7 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
             "template_only": True,
             "blocker_count": 0,
             "warning_count": _as_nonnegative_int(verification.get("warning_count")),
-            "warnings": _safe_token_list(verification.get("warnings")),
+            "warnings": _safe_warning_token_list(verification.get("warnings")),
         },
         "operator_boundary": {
             "verification_report_boundary_ok": True,
@@ -351,7 +352,7 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
         "artifact_payloads_included": False,
         "local_paths_recorded": False,
         "blockers": [],
-        "warnings": _safe_token_list(summary.get("warnings")),
+        "warnings": _safe_warning_token_list(summary.get("warnings")),
     }
 
 
@@ -424,7 +425,7 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         blockers.append("bundle_verification_blocker_count_nonzero")
     if _safe_token_list(verification.get("blockers")):
         blockers.append("bundle_verification_blockers_present")
-    verification_warnings = _safe_token_list(verification.get("warnings"))
+    verification_warnings = _safe_warning_token_list(verification.get("warnings"))
     if verification.get("warning_count") != len(verification_warnings):
         blockers.append("bundle_verification_warning_count_mismatch")
     blockers.extend(

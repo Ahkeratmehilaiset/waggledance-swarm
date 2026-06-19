@@ -390,6 +390,46 @@ def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_r
     assert not any(marker in combined for marker in FORBIDDEN_OUTPUT_SNIPPETS)
 
 
+def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_rejects_warning_filename_without_leak(
+    tmp_path: Path,
+) -> None:
+    summary = _bundle_verification_summary()
+    summary["warnings"] = ["evidence.json"]
+    summary_path = tmp_path / "handoff_bundle_verification_summary.json"
+    summary_path.write_bytes(_json_bytes(summary))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-json",
+            str(summary_path),
+            "--agent",
+            "codex-lead-1",
+            "--task-id",
+            "wd-image1-route-stage-bundle-summary-template",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "route_stage_feed_health_drill_evidence_reviewer_"
+        "handoff_bundle_verification_summary_bridge_event_template_failed:"
+        "bundle_verification_summary_warnings_item_unsafe"
+    ]
+    combined = result.stdout + result.stderr
+    assert "evidence.json" not in combined
+    assert str(tmp_path) not in combined
+    assert summary_path.name not in combined
+    assert not any(marker in combined for marker in FORBIDDEN_OUTPUT_SNIPPETS)
+
+
 def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_non_finite_json_is_path_free(
     tmp_path: Path,
 ) -> None:

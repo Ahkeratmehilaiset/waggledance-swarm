@@ -56,6 +56,9 @@ _ARTIFACT_IDS = (SUMMARY_ARTIFACT_ID, TEMPLATE_ARTIFACT_ID)
 _AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$")
+_WARNING_FILENAME_TOKEN_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{1,8}$"
+)
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
@@ -224,7 +227,7 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
 
     verification = _mapping(summary.get(ROUTE_STAGE_VERIFICATION_KEY))
     reviewer = _mapping(summary.get("reviewer_ownership"))
-    warnings = _safe_token_list(summary.get("warnings"))
+    warnings = _safe_warning_token_list(summary.get("warnings"))
     payload = {
         "schema_version": TEMPLATE_VERSION,
         "summary_version": SOURCE_SUMMARY_VERSION,
@@ -255,7 +258,7 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
             "template_only": True,
             "blocker_count": 0,
             "warning_count": _as_nonnegative_int(verification.get("warning_count")),
-            "warnings": _safe_token_list(verification.get("warnings")),
+            "warnings": _safe_warning_token_list(verification.get("warnings")),
         },
         "operator_boundary": {
             "verification_report_boundary_ok": True,
@@ -620,7 +623,11 @@ def _token_list_schema_blockers(
     for item in value:
         if not isinstance(item, str):
             blockers.append(f"{prefix}_{field}_item_not_string")
-        elif _safe_token(item) == "invalid_token":
+        elif field == "warnings" and _safe_warning_token(item) == (
+            "invalid_warning_token"
+        ):
+            blockers.append(f"{prefix}_{field}_item_unsafe")
+        elif field != "warnings" and _safe_token(item) == "invalid_token":
             blockers.append(f"{prefix}_{field}_item_unsafe")
     return sorted(set(blockers))
 
@@ -639,6 +646,24 @@ def _safe_token_list(value: Any) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
     return [_safe_token(item) for item in value if isinstance(item, str)]
+
+
+def _safe_warning_token(value: Any) -> str:
+    token = _safe_token(value)
+    if token == "invalid_token" or _looks_like_warning_filename_token(token):
+        return "invalid_warning_token"
+    return token
+
+
+def _safe_warning_token_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [_safe_warning_token(item) for item in value if isinstance(item, str)]
+
+
+def _looks_like_warning_filename_token(value: str) -> bool:
+    candidate = value.rsplit(":", 1)[-1]
+    return _WARNING_FILENAME_TOKEN_RE.fullmatch(candidate) is not None
 
 
 def _safe_ref(value: Any) -> bool:

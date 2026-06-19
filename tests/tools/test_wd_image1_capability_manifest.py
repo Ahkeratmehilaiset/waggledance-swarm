@@ -2854,3 +2854,54 @@ def test_manifest_cross_consistency_digest_not_folded_into_ok() -> None:
     src = inspect.getsource(mod._capabilities)
     ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
     assert "cross_consistency_digest" not in ok_assign
+
+
+def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )
+    summary = hex_cap["proof"].get("ring_hierarchy_summary")
+    assert isinstance(summary, dict)
+    # content-safe by construction: version string + derived bools + an int
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        elif key == "blocker_count":
+            assert value is None or (
+                isinstance(value, int) and not isinstance(value, bool)
+            )
+        else:
+            assert isinstance(value, bool), key
+    assert summary["ok"] is True
+    assert summary["hierarchy_ok"] is True
+    assert summary["ring_boundary_ok"] is True
+    assert summary["no_runtime_mutation"] is True
+    assert summary["deterministic"] is True
+    assert summary["blocker_count"] == 0
+    assert str(ROOT) not in json.dumps(summary)
+
+
+def test_manifest_ring_hierarchy_summary_not_folded_into_ok() -> None:
+    # The ring/hierarchy summary is measurement-only: hex_upgrade proof ok must not
+    # depend on it (the ok computation does not reference ring_hierarchy_summary).
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert "ring_hierarchy_summary" not in ok_assign
+
+
+def test_manifest_hex_proof_excludes_raw_ring_forbidden_vocabulary() -> None:
+    # The CURATED ring summary must NOT embed the raw proof's forbidden_vocabulary
+    # exclusion list (which would otherwise leak the forbidden terms into the manifest).
+    manifest = build_manifest()
+    hex_cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )
+    blob = json.dumps(hex_cap["proof"])
+    for term in ("conscious", "sentient", "self-aware", "explosive intelligence"):
+        assert term not in blob, term

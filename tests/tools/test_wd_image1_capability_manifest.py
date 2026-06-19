@@ -1621,10 +1621,13 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert verification["gate_skip_allowed"] is False
     assert verification["artifact_payloads_included"] is False
     assert verification["local_paths_recorded"] is False
-    # next_smallest_pr advanced beyond the now-wired cross-consistency digest to a
-    # path-free, template-only bridge-event renderer for that digest.
+    # next_smallest_pr advanced beyond the now-wired cross-consistency digest bridge-event
+    # template (#1291) to a local index entry for that template (next chain step).
     assert "cross-consistency digest" in capability["next_smallest_pr"]
-    assert "bridge-event renderer" in capability["next_smallest_pr"]
+    assert "index entry" in capability["next_smallest_pr"]
+    assert "bridge-event template" in capability["next_smallest_pr"]
+    # no longer the just-completed renderer slice.
+    assert "bridge-event renderer" not in capability["next_smallest_pr"]
     # no longer the just-completed digest slice ("Add a ... digest confirming ...").
     assert "digest confirming the real-loop dry-run proof" not in (
         capability["next_smallest_pr"]
@@ -3177,17 +3180,93 @@ def test_manifest_low_risk_cross_consistency_digest_cannot_flip_ok(monkeypatch) 
 
 
 def test_manifest_low_risk_next_smallest_pr_advanced_beyond_cross_consistency_digest() -> None:
-    # This slice WIRES the cross-consistency digest, so next_smallest_pr must advance
-    # beyond the now-completed digest work to the next honest smallest step (a
-    # template-only bridge-event renderer FOR that digest).
+    # The #1291 bridge-event-template WIRING slice advances next_smallest_pr beyond the
+    # now-completed renderer/wiring work to the next honest smallest step: a local index
+    # entry for the cross-consistency digest bridge-event template.
     manifest = build_manifest()
     cap = next(
         c for c in manifest["capabilities"]
         if c["capability_id"] == "low_risk_autonomy_loop"
     )
     nsp = cap["next_smallest_pr"].lower()
-    # no longer the just-completed "Add a ... cross-consistency digest confirming ..." slice
-    assert "digest confirming the real-loop dry-run proof" not in nsp
-    # advanced to the next step: a template-only bridge-event renderer for the digest
-    assert "bridge-event renderer" in nsp
-    assert "cross-consistency digest" in nsp
+    # no longer the just-completed renderer slice
+    assert "bridge-event renderer" not in nsp
+    # advanced to the next step: a local index entry for the bridge-event template
+    assert "index entry" in nsp
+    assert "bridge-event template" in nsp
+
+
+def test_manifest_stores_low_risk_xcons_template_summary_content_safe() -> None:
+    summary = _low_risk_proof_for_reviewer().get(
+        "cross_consistency_digest_bridge_event_template"
+    )
+    assert isinstance(summary, dict)
+    # content-safe by construction: only the version string + derived booleans - NEVER
+    # the raw bridge-event (no message text, ts_utc, agent, payload).
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["template_available"] is True
+    assert summary["template_only"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_approval_granted"] is True
+    assert summary["cross_consistent"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    # the all-bool check above already proves no raw event/message/payload (strings/dicts)
+    # is stored; ts_utc is the distinctive raw-event timestamp that must never appear.
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
+def test_manifest_low_risk_xcons_template_measurement_only() -> None:
+    # Enriched AFTER the low-risk ok recompute, so the ok expression cannot reference it.
+    proof = _low_risk_proof_for_reviewer()
+    assert isinstance(proof.get("cross_consistency_digest_bridge_event_template"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_assign = cap_src.split('low_risk_autonomy_proof["ok"] = bool(', 1)[1].split(
+        ")", 1
+    )[0]
+    assert "cross_consistency_digest_bridge_event_template" not in ok_assign
+    ok_idx = cap_src.index('low_risk_autonomy_proof["ok"] = bool(')
+    tpl_idx = cap_src.index(
+        'low_risk_autonomy_proof["cross_consistency_digest_bridge_event_template"]'
+    )
+    assert tpl_idx > ok_idx, (
+        "template summary must be enriched after the low-risk ok recomputation"
+    )
+
+
+def test_manifest_low_risk_xcons_template_cannot_flip_ok(monkeypatch) -> None:
+    # A forged "lying" template summary (self-claim_safe True, every clean flag False)
+    # must leave the low-risk proof ok byte-identical and be stored as-is (decoupled).
+    baseline_ok = _low_risk_proof_for_reviewer().get("ok")
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "template_available": False,
+        "template_only": False,
+        "no_runtime_authority_granted": False,
+        "no_approval_granted": False,
+        "cross_consistent": False,
+        "all_views_present": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_low_risk_cross_consistency_bridge_event_template_summary",
+        lambda *_a, **_k: dict(forged),
+    )
+    proof = _low_risk_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert proof.get("cross_consistency_digest_bridge_event_template") == forged

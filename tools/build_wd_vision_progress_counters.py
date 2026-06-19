@@ -235,12 +235,19 @@ def _extract_milestone_values(
         # present only when the manifest stored it. Measurement-only safe scalars (derived
         # booleans only); the consumer re-derives cross_consistent from its COMPONENTS.
         cross = _mapping(proof.get("cross_consistency_digest"))
+        # Path-free bridge-event TEMPLATE summary (#1291 wiring): a curated content-safe
+        # projection (derived booleans only) of the cross-consistency digest bridge-event
+        # template; present only when the manifest stored it. The consumer re-derives
+        # template_clean from its COMPONENTS (never the template's own composite).
+        cross_tpl = _mapping(
+            proof.get("cross_consistency_digest_bridge_event_template")
+        )
         # The recursive _nested_flag root authority scan MUST exclude the measurement-only
-        # trend, trend-reviewer-summary AND cross-consistency-digest subtrees: otherwise a
-        # bare authority key nested anywhere under them (e.g. a forged per-window
-        # authority_boundary) would flip the real low-risk gate (#1271 tools forge: the
-        # renamed surfaced field was not enough - the whole subtree must be out of scope of
-        # the recursive scan).
+        # trend, trend-reviewer-summary, cross-consistency-digest AND its bridge-event
+        # template-summary subtrees: otherwise a bare authority key nested anywhere under
+        # them (e.g. a forged per-window authority_boundary) would flip the real low-risk
+        # gate (#1271 tools forge: the renamed surfaced field was not enough - the whole
+        # subtree must be out of scope of the recursive scan).
         proof_for_authority = (
             {
                 k: v
@@ -250,6 +257,7 @@ def _extract_milestone_values(
                     "repeat_window_trend",
                     "repeat_window_trend_reviewer_summary",
                     "cross_consistency_digest",
+                    "cross_consistency_digest_bridge_event_template",
                 )
             }
             if isinstance(proof, Mapping)
@@ -407,6 +415,47 @@ def _extract_milestone_values(
             "cross_consistency_self_claim_safe": (
                 cross.get("claim_safe") is True
             ),
+            # #1291 bridge-event template-summary components (re-derived; never the
+            # template's own composite). The manifest stores no-authority axes as no_*
+            # derived booleans (present-and-True == that axis was strictly False).
+            "xcons_template_present": bool(
+                proof.get("cross_consistency_digest_bridge_event_template")
+            ),
+            "xcons_template_available": cross_tpl.get("template_available") is True,
+            "xcons_template_only": cross_tpl.get("template_only") is True,
+            "xcons_template_no_runtime_authority_granted": (
+                cross_tpl.get("no_runtime_authority_granted") is True
+            ),
+            "xcons_template_no_direct_bridge_write": (
+                cross_tpl.get("no_direct_bridge_write") is True
+            ),
+            "xcons_template_no_bridge_event_written": (
+                cross_tpl.get("no_bridge_event_written") is True
+            ),
+            "xcons_template_no_approval_granted": (
+                cross_tpl.get("no_approval_granted") is True
+            ),
+            "xcons_template_cross_consistent": (
+                cross_tpl.get("cross_consistent") is True
+            ),
+            "xcons_template_all_views_present": (
+                cross_tpl.get("all_views_present") is True
+            ),
+            # the per-view component verdicts the template carries - required in
+            # template_clean so a forged composite (cross_consistent True while a view
+            # verdict is False) fails closed (#1274 inconsistent-aggregate).
+            "xcons_template_real_loop_clean": (
+                cross_tpl.get("real_loop_clean") is True
+            ),
+            "xcons_template_trend_clean": cross_tpl.get("trend_clean") is True,
+            "xcons_template_reviewer_clean": cross_tpl.get("reviewer_clean") is True,
+            "xcons_template_reviewer_matches_trend": (
+                cross_tpl.get("reviewer_matches_trend") is True
+            ),
+            "xcons_template_path_free_verified": (
+                cross_tpl.get("path_free_verified") is True
+            ),
+            "xcons_template_self_claim_safe": cross_tpl.get("claim_safe") is True,
         }
     if capability_id == "hexagonal_upgrades":
         # Path-free reviewer summary (merged renderer), present only when the
@@ -817,6 +866,38 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and low_risk.get("cross_consistency_reviewer_clean") is True
         and low_risk.get("cross_consistency_reviewer_matches_trend") is True
     )
+    # #1291 cross-consistency digest bridge-event TEMPLATE summary: a curated content-safe
+    # projection. Availability requires present AND path-free AND NOT self-claim_safe.
+    lr_xcons_tpl_present = low_risk.get("xcons_template_present") is True
+    lr_xcons_tpl_path_free = (
+        low_risk.get("xcons_template_path_free_verified") is True
+    )
+    lr_xcons_tpl_self_claim_safe = (
+        low_risk.get("xcons_template_self_claim_safe") is True
+    )
+    lr_xcons_tpl_available = (
+        lr_xcons_tpl_present
+        and lr_xcons_tpl_path_free
+        and not lr_xcons_tpl_self_claim_safe
+    )
+    # RE-DERIVE template_clean from the summary's COMPONENT booleans (#1274): build
+    # verdicts + every no-authority/approval axis present-and-True (refuse-to-certify on
+    # self-approval) + the cross-consistency verdicts it carries. Never a template composite.
+    lr_xcons_template_clean = bool(
+        lr_xcons_tpl_available
+        and low_risk.get("xcons_template_available") is True
+        and low_risk.get("xcons_template_only") is True
+        and low_risk.get("xcons_template_no_runtime_authority_granted") is True
+        and low_risk.get("xcons_template_no_direct_bridge_write") is True
+        and low_risk.get("xcons_template_no_bridge_event_written") is True
+        and low_risk.get("xcons_template_no_approval_granted") is True
+        and low_risk.get("xcons_template_cross_consistent") is True
+        and low_risk.get("xcons_template_all_views_present") is True
+        and low_risk.get("xcons_template_real_loop_clean") is True
+        and low_risk.get("xcons_template_trend_clean") is True
+        and low_risk.get("xcons_template_reviewer_clean") is True
+        and low_risk.get("xcons_template_reviewer_matches_trend") is True
+    )
     # Hex-subdivision reviewer summary: a path-free measurement-only surface from
     # the merged renderer. Consumer re-derives each field fail-closed (does NOT
     # blindly trust the manifest aggregate); it NEVER upgrades the hexagonal
@@ -1123,6 +1204,45 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_low_risk_cross_consistency_digest"
                 if lr_xcons_available
+                else "manifest_real_loop_flags"
+            ),
+            "claim_safe": False,
+        },
+        "low_risk_cross_consistency_digest_bridge_event_template": {
+            # Measurement-only path-free SUMMARY of the #1291 cross-consistency digest
+            # bridge-event template (a reviewer-handoff artifact). DERIVED fail-closed and
+            # fully decoupled - it NEVER upgrades any low-risk claim. template_clean is
+            # RE-DERIVED from the summary's COMPONENT booleans, never a template composite;
+            # refuse-to-certify on self-claim_safe / self-approval.
+            "template_available": lr_xcons_tpl_available,
+            "template_clean": lr_xcons_template_clean,
+            "template_only": bool(
+                lr_xcons_tpl_available
+                and low_risk.get("xcons_template_only") is True
+            ),
+            "path_free_verified": bool(
+                lr_xcons_tpl_present
+                and low_risk.get("xcons_template_path_free_verified") is True
+            ),
+            "no_runtime_authority_granted": bool(
+                lr_xcons_tpl_available
+                and low_risk.get("xcons_template_no_runtime_authority_granted") is True
+            ),
+            "no_direct_bridge_write": bool(
+                lr_xcons_tpl_available
+                and low_risk.get("xcons_template_no_direct_bridge_write") is True
+            ),
+            "no_approval_granted": bool(
+                lr_xcons_tpl_available
+                and low_risk.get("xcons_template_no_approval_granted") is True
+            ),
+            "cross_consistent": bool(
+                lr_xcons_tpl_available
+                and low_risk.get("xcons_template_cross_consistent") is True
+            ),
+            "measurement_basis": (
+                "v1_low_risk_cross_consistency_digest_bridge_event_template"
+                if lr_xcons_tpl_available
                 else "manifest_real_loop_flags"
             ),
             "claim_safe": False,

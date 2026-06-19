@@ -479,14 +479,26 @@ def _extract_milestone_values(
             # Ring-messaging + parent-child hierarchy summary COMPONENT scalars (strict
             # is True) so the consumer can RE-DERIVE the clean flag itself - it must NOT
             # trust the proof's own ok aggregate (#1274).
-            "ring_hierarchy_present": bool(proof.get("ring_hierarchy_summary")),
+            "ring_hierarchy_present": isinstance(
+                proof.get("ring_hierarchy_summary"), Mapping
+            ),
+            "ring_hierarchy_path_free_verified": (
+                ring.get("path_free_verified") is True
+            ),
             "ring_hierarchy_hierarchy_ok": ring.get("hierarchy_ok") is True,
             "ring_hierarchy_ring_boundary_ok": ring.get("ring_boundary_ok") is True,
             "ring_hierarchy_no_runtime_mutation": (
                 ring.get("no_runtime_mutation") is True
             ),
+            "ring_hierarchy_no_invalid_boundary_delivery": (
+                ring.get("no_invalid_boundary_delivery") is True
+            ),
             "ring_hierarchy_deterministic": ring.get("deterministic") is True,
             "ring_hierarchy_blocker_count": ring.get("blocker_count"),
+            # Defensive: the curated summary never self-declares claim_safe, but a
+            # forged/inconsistent summary that does must refuse-to-certify
+            # (measurement-only never upgrades a claim) - mirrors the digest guard.
+            "ring_hierarchy_self_claim_safe": ring.get("claim_safe") is True,
         }
     if capability_id == "future_waggledance_swarm":
         runtime_summary = _mapping(proof.get("runtime_evidence_summary"))
@@ -780,6 +792,17 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
     # from the COMPONENT booleans + a strict-int-0 blocker count - it does NOT trust the
     # proof's own ok aggregate (#1274). Measurement-only: NEVER upgrades a claim.
     hex_ring_present = hex_upgrades.get("ring_hierarchy_present") is True
+    # Refuse-to-certify if the summary self-declares claim_safe True (measurement-only
+    # never upgrades a claim) - mirrors the cross_consistency_self_claim_safe guard.
+    hex_ring_self_claim_safe = (
+        hex_upgrades.get("ring_hierarchy_self_claim_safe") is True
+    )
+    hex_ring_path_free = (
+        hex_upgrades.get("ring_hierarchy_path_free_verified") is True
+    )
+    hex_ring_available = (
+        hex_ring_present and hex_ring_path_free and not hex_ring_self_claim_safe
+    )
     _hex_ring_blocker_count = hex_upgrades.get("ring_hierarchy_blocker_count")
     _hex_ring_blocker_zero = (
         isinstance(_hex_ring_blocker_count, int)
@@ -787,11 +810,12 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and _hex_ring_blocker_count == 0
     )
     hex_ring_hierarchy_clean = bool(
-        hex_ring_present
+        hex_ring_available
         and _hex_ring_blocker_zero
         and hex_upgrades.get("ring_hierarchy_hierarchy_ok") is True
         and hex_upgrades.get("ring_hierarchy_ring_boundary_ok") is True
         and hex_upgrades.get("ring_hierarchy_no_runtime_mutation") is True
+        and hex_upgrades.get("ring_hierarchy_no_invalid_boundary_delivery") is True
         and hex_upgrades.get("ring_hierarchy_deterministic") is True
     )
     return {
@@ -1014,29 +1038,35 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             # Measurement-only ring-messaging + parent-child hierarchy roll-up; DERIVED
             # fail-closed and fully decoupled - it NEVER upgrades any hexagonal claim.
             # ring_hierarchy_clean is RE-DERIVED from the COMPONENT booleans, never the
-            # proof's own ok aggregate. The manifest stores a content-safe-by-construction
-            # summary, so presence is the availability signal.
-            "ring_hierarchy_available": hex_ring_present,
+            # proof's own ok aggregate. Availability requires the summary present AND no
+            # self-declared claim_safe (refuse-to-certify) - the curated summary is
+            # otherwise content-safe by construction.
+            "ring_hierarchy_available": hex_ring_available,
             "ring_hierarchy_clean": hex_ring_hierarchy_clean,
             "hierarchy_ok": bool(
-                hex_ring_present
+                hex_ring_available
                 and hex_upgrades.get("ring_hierarchy_hierarchy_ok") is True
             ),
             "ring_boundary_ok": bool(
-                hex_ring_present
+                hex_ring_available
                 and hex_upgrades.get("ring_hierarchy_ring_boundary_ok") is True
             ),
             "no_runtime_mutation": bool(
-                hex_ring_present
+                hex_ring_available
                 and hex_upgrades.get("ring_hierarchy_no_runtime_mutation") is True
             ),
+            "no_invalid_boundary_delivery": bool(
+                hex_ring_available
+                and hex_upgrades.get("ring_hierarchy_no_invalid_boundary_delivery")
+                is True
+            ),
             "deterministic": bool(
-                hex_ring_present
+                hex_ring_available
                 and hex_upgrades.get("ring_hierarchy_deterministic") is True
             ),
             "measurement_basis": (
                 "v1_ring_messaging_hierarchy_proof"
-                if hex_ring_present
+                if hex_ring_available
                 else "manifest_hex_upgrade_flags"
             ),
             "claim_safe": False,

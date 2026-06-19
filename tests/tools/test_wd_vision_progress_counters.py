@@ -1625,8 +1625,10 @@ def _good_ring_hierarchy_summary():
         "hierarchy_ok": True,
         "ring_boundary_ok": True,
         "no_runtime_mutation": True,
+        "no_invalid_boundary_delivery": True,
         "deterministic": True,
         "blocker_count": 0,
+        "path_free_verified": True,
     }
 
 
@@ -1683,6 +1685,7 @@ _RING_COMPONENT_FIELDS = [
     "hierarchy_ok",
     "ring_boundary_ok",
     "no_runtime_mutation",
+    "no_invalid_boundary_delivery",
     "deterministic",
 ]
 
@@ -1744,3 +1747,32 @@ def test_hex_ring_subtree_excluded_from_recursive_scan(bare_key):
 def test_hex_ring_claim_safe_hardcoded_false_even_when_clean():
     block, _ = _ring_counters(_good_ring_hierarchy_summary())
     assert block["claim_safe"] is False
+
+
+def test_hex_ring_self_claim_safe_refuses_to_certify():
+    # rco-1/lead #1280 forge: a summary self-declaring claim_safe True (all components
+    # otherwise clean) must fail closed - measurement-only never upgrades a claim.
+    s = _good_ring_hierarchy_summary()
+    s["claim_safe"] = True
+    block, _ = _ring_counters(s)
+    assert block["ring_hierarchy_available"] is False
+    assert block["ring_hierarchy_clean"] is False
+
+
+def test_hex_ring_path_free_false_refuses_to_certify():
+    # rco-2 #1280 forge: path_free_verified=False (else clean) must gate availability +
+    # clean (uniform with the chain/digest milestones).
+    s = _good_ring_hierarchy_summary()
+    s["path_free_verified"] = False
+    block, _ = _ring_counters(s)
+    assert block["ring_hierarchy_available"] is False
+    assert block["ring_hierarchy_clean"] is False
+
+
+@pytest.mark.parametrize("bad", ["notadict", 7, ["x"], ("a",)])
+def test_hex_ring_non_mapping_summary_not_available(bad):
+    # rco-2 #1280 forge: a malformed NON-dict (but truthy) summary must NOT read
+    # available (present must be isinstance-Mapping, not merely truthy).
+    block, _ = _ring_counters(bad)
+    assert block["ring_hierarchy_available"] is False
+    assert block["ring_hierarchy_clean"] is False

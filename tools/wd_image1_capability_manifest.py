@@ -8108,16 +8108,33 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     _rh_ring = _rh_ring if isinstance(_rh_ring, dict) else {}
     _rh_replay = _ring_proof.get("deterministic_replay")
     _rh_replay = _rh_replay if isinstance(_rh_replay, dict) else {}
+    _rh_invariants = _ring_proof.get("invariants")
+    _rh_invariants = _rh_invariants if isinstance(_rh_invariants, dict) else {}
     _rh_blockers = _ring_proof.get("blockers")
-    hex_upgrade_proof["ring_hierarchy_summary"] = {
+    _ring_summary = {
         "report_version": _ring_proof.get("report_version"),
         "ok": _ring_proof.get("ok") is True,
         "hierarchy_ok": _rh_hierarchy.get("ok") is True,
         "ring_boundary_ok": _rh_ring.get("ok") is True,
         "no_runtime_mutation": _rh_ring.get("no_runtime_mutation") is True,
+        # Curated from the raw proof's invariants block (only this single derived bool,
+        # never the raw invariants which also carry a forbidden-vocabulary list).
+        "no_invalid_boundary_delivery": (
+            _rh_invariants.get("no_invalid_boundary_delivery") is True
+        ),
         "deterministic": _rh_replay.get("batch_identical") is True,
         "blocker_count": len(_rh_blockers) if isinstance(_rh_blockers, list) else None,
     }
+    # DERIVE path_free_verified by scanning the curated summary (never hardcoded); by
+    # construction it holds only derived bools/int + the version constant, so this is
+    # True - but it is verified, so a future raw field would flip it. Lets the counter
+    # gate availability on path_free, uniform with the chain/digest milestones.
+    from tools.hex_shadow_subdivision_replay import (  # noqa: E402
+        _contains_path_marker as _ring_path_marker_check,
+    )
+
+    _ring_summary["path_free_verified"] = not _ring_path_marker_check(_ring_summary)
+    hex_upgrade_proof["ring_hierarchy_summary"] = _ring_summary
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True

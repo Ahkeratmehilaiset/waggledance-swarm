@@ -1893,6 +1893,35 @@ def test_low_risk_reviewer_path_free_false_refuses_to_certify():
     assert block["review_clean"] is False
 
 
+@pytest.mark.parametrize("field,value", [
+    ("window_size", 1),
+    ("window_size", 26),
+    ("window_size", 3.0),
+    ("window_size", True),
+    ("promoted_solver_count_min", 0),
+    ("promoted_solver_count_min", 1.0),
+    ("promoted_solver_count_min", True),
+    ("promoted_solver_count_max", 0),
+    ("promoted_solver_count_max", 1.0),
+    ("promoted_solver_count_max", True),
+])
+def test_low_risk_reviewer_count_window_values_rederived_fail_closed(field, value):
+    s = _good_repeat_window_reviewer_summary()
+    s[field] = value
+    block = _reviewer_counters(s)
+    assert block["review_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+def test_low_risk_reviewer_count_min_greater_than_max_fails_closed():
+    s = _good_repeat_window_reviewer_summary()
+    s["promoted_solver_count_min"] = 2
+    s["promoted_solver_count_max"] = 1
+    block = _reviewer_counters(s)
+    assert block["review_clean"] is False
+    assert block["claim_safe"] is False
+
+
 @pytest.mark.parametrize("bare_key", [
     "runtime_authority_changed", "external_writes_applied",
 ])

@@ -354,6 +354,15 @@ def _extract_milestone_values(
             "repeat_window_reviewer_summary_promotion_count_positive": (
                 trend_reviewer.get("promotion_count_positive") is True
             ),
+            "repeat_window_reviewer_summary_window_size": trend_reviewer.get(
+                "window_size"
+            ),
+            "repeat_window_reviewer_summary_promotion_count_min": (
+                trend_reviewer.get("promoted_solver_count_min")
+            ),
+            "repeat_window_reviewer_summary_promotion_count_max": (
+                trend_reviewer.get("promoted_solver_count_max")
+            ),
             # Refuse-to-certify if the summary self-declares claim_safe True.
             "repeat_window_reviewer_summary_self_claim_safe": (
                 trend_reviewer.get("claim_safe") is True
@@ -707,6 +716,25 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
     rw_reviewer_available = (
         rw_reviewer_present and rw_reviewer_path_free and not rw_reviewer_self_claim_safe
     )
+    rw_reviewer_window_size = low_risk.get("repeat_window_reviewer_summary_window_size")
+    rw_reviewer_count_min = low_risk.get(
+        "repeat_window_reviewer_summary_promotion_count_min"
+    )
+    rw_reviewer_count_max = low_risk.get(
+        "repeat_window_reviewer_summary_promotion_count_max"
+    )
+    rw_reviewer_window_valid = (
+        isinstance(rw_reviewer_window_size, int)
+        and not isinstance(rw_reviewer_window_size, bool)
+        and 2 <= rw_reviewer_window_size <= _trend_max_window
+    )
+    rw_reviewer_count_valid = (
+        isinstance(rw_reviewer_count_min, int)
+        and not isinstance(rw_reviewer_count_min, bool)
+        and isinstance(rw_reviewer_count_max, int)
+        and not isinstance(rw_reviewer_count_max, bool)
+        and 1 <= rw_reviewer_count_min <= rw_reviewer_count_max
+    )
     rw_reviewer_clean = bool(
         rw_reviewer_available
         and low_risk.get("repeat_window_reviewer_summary_trend_present") is True
@@ -720,9 +748,11 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         ) is True
         and low_risk.get("repeat_window_reviewer_summary_no_external_writes") is True
         and low_risk.get("repeat_window_reviewer_summary_window_size_valid") is True
+        and rw_reviewer_window_valid
         and low_risk.get(
             "repeat_window_reviewer_summary_promotion_count_positive"
         ) is True
+        and rw_reviewer_count_valid
     )
     # Hex-subdivision reviewer summary: a path-free measurement-only surface from
     # the merged renderer. Consumer re-derives each field fail-closed (does NOT

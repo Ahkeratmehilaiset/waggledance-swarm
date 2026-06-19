@@ -7671,6 +7671,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Explicit CLI verifies a local operator decision-reference review bundle verification bridge-event template index-entry verification summary bridge-event template index entry by recomputing artifact checks without granting approval.",
             ),
             (
+                "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary.py",
+                "Explicit CLI renders a local operator decision-reference review bundle verification bridge-event template index-entry verification summary bridge-event template index-entry verifier summary without appending it or granting approval.",
+            ),
+            (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
                 "Ops API exposes sanitized read-only MAGMA import handoff status, bounded history, provider health, thresholds, operator-owned feed freshness source state, and metrics alert-state feed state.",
             ),
@@ -7773,6 +7777,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verifier.py",
                 "Reviewer handoff bundle operator decision-reference review bundle verification bridge-event template index-entry verification summary bridge-event template index-entry verifier tests prove recomputed digest checks, path-free CLI output, no payload inclusion, and no approval automation.",
+            ),
+            (
+                "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary.py",
+                "Reviewer handoff bundle operator decision-reference review bundle verification bridge-event template index-entry verification summary bridge-event template index-entry verifier-summary tests prove path-free reviewer context, no payload inclusion, and no approval automation.",
             ),
             (
                 "tests/test_metrics_endpoint.py",
@@ -8531,11 +8539,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local verification summary renderer for the operator "
+                "Add a local bridge-event template renderer for the operator "
                 "decision-reference "
                 "review bundle verification bridge-event template "
                 "index-entry verification summary bridge-event template "
-                "index-entry verifier without appending it."
+                "index-entry verifier summary without appending it or "
+                "granting approval."
             ),
             proof=magma_audit_proof,
         ),

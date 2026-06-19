@@ -357,6 +357,92 @@ def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_t
         assert summary_path.name not in result.stdout
 
 
+def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_template_rejects_filename_warning_tokens_without_leak() -> None:
+    cases = (
+        (
+            "summary-warning-report.json",
+            lambda summary, token: summary.__setitem__("warnings", [token]),
+            "index_entry_verification_summary_warnings_item_unsafe",
+        ),
+        (
+            "verification-warning.log",
+            lambda summary, token: summary[ROUTE_STAGE_VERIFICATION_KEY].__setitem__(
+                "warnings",
+                [token],
+            ),
+            "index_entry_verification_warnings_item_unsafe",
+        ),
+    )
+
+    for token, mutate, expected_reason in cases:
+        summary = _index_entry_verification_summary()
+        mutate(summary, token)
+
+        report = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+            summary=summary,
+            agent_id="codex-lead-1",
+            task_id="wd-image1-route-stage-verifier-summary-template",
+            to="operator,claude-rco-1",
+            run_id="codex-lead-1-20260606T060000Z",
+            session_id="codex-lead-1-20260606T060000Z",
+            now_utc=FIXED_NOW,
+        )
+
+        encoded = json.dumps(report, sort_keys=True)
+        assert report["ok"] is False, token
+        assert report["blockers"] == [
+            "route_stage_feed_health_drill_evidence_verification_summary_"
+            "bridge_event_template_index_entry_verification_summary_"
+            f"bridge_event_template_failed:{expected_reason}"
+        ], token
+        assert report["direct_bridge_write_performed"] is False
+        assert report["artifact_payloads_included"] is False
+        assert report["local_paths_recorded"] is False
+        assert token not in encoded
+
+
+def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_template_cli_rejects_filename_warning_token_without_leak(
+    tmp_path: Path,
+) -> None:
+    token = "summary-warning-report.json"
+    summary = _index_entry_verification_summary()
+    summary["warnings"] = [token]
+    summary_path = tmp_path / "index_entry_verification_summary.json"
+    summary_path.write_bytes(_json_bytes(summary))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--summary-json",
+            str(summary_path),
+            "--agent",
+            "codex-lead-1",
+            "--task-id",
+            "wd-image1-route-stage-verifier-summary-template",
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["blockers"] == [
+        "route_stage_feed_health_drill_evidence_verification_summary_"
+        "bridge_event_template_index_entry_verification_summary_"
+        "bridge_event_template_failed:"
+        "index_entry_verification_summary_warnings_item_unsafe"
+    ]
+    combined = result.stdout + result.stderr
+    assert token not in combined
+    assert str(tmp_path) not in combined
+    assert summary_path.name not in combined
+    assert not any(marker in combined for marker in FORBIDDEN_OUTPUT_SNIPPETS)
+
+
 def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_template_rejects_path_markers_without_leak(
     tmp_path: Path,
 ) -> None:

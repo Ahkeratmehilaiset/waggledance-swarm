@@ -58,6 +58,12 @@ _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
+_FILENAME_TOKEN_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,191}\."
+    r"(?:jsonl?|txt|log|md|csv|ya?ml|xml|html?|py|ps1|sh|bat|cmd|zip|"
+    r"tar|tgz|gz|png|jpe?g|gif|svg|pdf)$",
+    re.IGNORECASE,
+)
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {
         "payload",
@@ -630,6 +636,7 @@ def _safe_token(value: Any) -> str:
         value
         if isinstance(value, str)
         and _SAFE_TOKEN_RE.fullmatch(value)
+        and _FILENAME_TOKEN_RE.fullmatch(value) is None
         and not _forbidden_output_markers(value)
         else "invalid_token"
     )

@@ -88,6 +88,28 @@ def test_route_stage_reviewer_handoff_bundle_verification_summary_template_index
     assert report["local_paths_recorded"] is False
 
 
+def test_route_stage_reviewer_handoff_bundle_verification_summary_template_index_entry_filters_filename_warning_tokens() -> None:
+    token = "summary-warning-report.json"
+    artifacts = _artifact_set()
+    artifacts["summary"]["warnings"] = [token]
+    raw = _artifact_bytes(artifacts)
+
+    index_entry = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry(
+        bundle_verification_summary=artifacts["summary"],
+        bridge_event_template_report=artifacts["template"],
+        bundle_verification_summary_bytes=raw["summary"],
+        bridge_event_template_bytes=raw["template"],
+        now_utc=FIXED_NOW,
+    )
+
+    encoded = json.dumps(index_entry, sort_keys=True)
+    assert index_entry["ok"] is True
+    assert index_entry["warnings"] == ["invalid_token"]
+    assert index_entry["artifact_payloads_included"] is False
+    assert index_entry["local_paths_recorded"] is False
+    assert token not in encoded
+
+
 def test_route_stage_reviewer_handoff_bundle_verification_summary_template_index_entry_verifier_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

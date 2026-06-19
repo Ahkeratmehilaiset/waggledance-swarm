@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -82,6 +83,12 @@ _TEMPLATE_REPORT_KEYS = frozenset(
         "blockers",
         "warnings",
     }
+)
+_FILENAME_TOKEN_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,191}\."
+    r"(?:jsonl?|txt|log|md|csv|ya?ml|xml|html?|py|ps1|sh|bat|cmd|zip|"
+    r"tar|tgz|gz|png|jpe?g|gif|svg|pdf)$",
+    re.IGNORECASE,
 )
 
 
@@ -856,7 +863,12 @@ def _safe_reason(value: Any) -> str:
 
 
 def _safe_token(value: Any, fallback: str = "invalid_token") -> str:
-    if isinstance(value, str) and value and not _forbidden_output_markers(value):
+    if (
+        isinstance(value, str)
+        and value
+        and _FILENAME_TOKEN_RE.fullmatch(value) is None
+        and not _forbidden_output_markers(value)
+    ):
         return value[:256]
     return fallback
 

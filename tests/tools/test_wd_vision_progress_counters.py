@@ -230,6 +230,20 @@ def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:
         "claim_label": "MEASURED_LOCAL_DRY_RUN",
         "production_authority_granted": False,
     }
+    contribution = counters["milestone_counters"][
+        "low_risk_real_loop_manifest_contribution"
+    ]
+    assert contribution == {
+        "contribution_available": True,
+        "evidence_count": 1,
+        "evidence_present": True,
+        "deterministic": True,
+        "guardrail_tripped": False,
+        "provider_calls": 0,
+        "production_authority_granted": False,
+        "measurement_basis": "v1_low_risk_real_loop_manifest_contribution",
+        "claim_safe": False,
+    }
     future = by_id["future_waggledance_swarm"]
     assert future["milestones"]["literal_future_claim_safe"] is False
     assert future["milestones"]["future_claim_gate_satisfied"] is False
@@ -1970,6 +1984,175 @@ def test_low_risk_reviewer_subtree_exclusion_positive_control(authority_key):
 
 def test_low_risk_reviewer_claim_safe_hardcoded_false_even_when_clean():
     block = _reviewer_counters(_good_repeat_window_reviewer_summary())
+    assert block["claim_safe"] is False
+
+
+# --- low-risk deterministic real-loop manifest-contribution counter ---
+def _good_real_loop_manifest_contribution():
+    return {
+        "report_version": "wd.low_risk_autogrowth_real_loop_proof.v1",
+        "ok": True,
+        "deterministic": True,
+        "evidence_present": True,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+        "scheduler_enqueue": False,
+        "production_flip": False,
+        "production_authority_granted": False,
+        "provider_calls": 0,
+        "claim_safe": False,
+        "measurement_basis": "v1_low_risk_real_loop_manifest_contribution",
+    }
+
+
+def _manifest_with_real_loop_manifest_contribution(
+    contribution, *, low_risk_proof_extra=None
+):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if contribution is not None:
+        proof["real_loop_manifest_contribution"] = contribution
+    if low_risk_proof_extra:
+        proof.update(low_risk_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _real_loop_manifest_contribution_counter(contribution, **kw):
+    mc = build_vision_progress_counters(
+        _manifest_with_real_loop_manifest_contribution(contribution, **kw)
+    )["milestone_counters"]
+    return mc["low_risk_real_loop_manifest_contribution"]
+
+
+def test_real_loop_manifest_contribution_available_with_clean_view():
+    block = _real_loop_manifest_contribution_counter(
+        _good_real_loop_manifest_contribution()
+    )
+    assert block["contribution_available"] is True
+    assert block["evidence_count"] == 1
+    assert block["evidence_present"] is True
+    assert block["deterministic"] is True
+    assert block["guardrail_tripped"] is False
+    assert block["provider_calls"] == 0
+    assert block["production_authority_granted"] is False
+    assert block["measurement_basis"] == "v1_low_risk_real_loop_manifest_contribution"
+    assert block["claim_safe"] is False
+
+
+def test_real_loop_manifest_contribution_unavailable_when_absent():
+    block = _real_loop_manifest_contribution_counter(None)
+    assert block["contribution_available"] is False
+    assert block["evidence_count"] == 0
+    assert block["measurement_basis"] == "manifest_real_loop_flags"
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bad", ["notadict", 7, ["x"], ("a",)])
+def test_real_loop_manifest_contribution_non_mapping_not_available(bad):
+    block = _real_loop_manifest_contribution_counter(bad)
+    assert block["contribution_available"] is False
+    assert block["evidence_count"] == 0
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("ok", False),
+    ("deterministic", False),
+    ("evidence_present", False),
+    ("runtime_authority_granted", True),
+    ("external_writes_applied", True),
+    ("scheduler_enqueue", True),
+    ("production_flip", True),
+    ("production_authority_granted", True),
+    ("provider_calls", 1),
+    ("claim_safe", True),
+])
+def test_real_loop_manifest_contribution_rederived_fail_closed(field, bad):
+    contribution = _good_real_loop_manifest_contribution()
+    contribution[field] = bad
+    block = _real_loop_manifest_contribution_counter(contribution)
+    assert block["contribution_available"] is False, field
+    assert block["evidence_count"] == 0, field
+    assert block["claim_safe"] is False, field
+    if field in {
+        "runtime_authority_granted",
+        "external_writes_applied",
+        "scheduler_enqueue",
+        "production_flip",
+        "production_authority_granted",
+        "provider_calls",
+        "claim_safe",
+    }:
+        assert block["guardrail_tripped"] is True, field
+
+
+def test_real_loop_manifest_contribution_bad_provider_calls_not_available():
+    contribution = _good_real_loop_manifest_contribution()
+    contribution["provider_calls"] = "0"
+    block = _real_loop_manifest_contribution_counter(contribution)
+    assert block["contribution_available"] is False
+    assert block["provider_calls"] is None
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_real_loop_manifest_contribution_subtree_excluded_from_recursive_scan(
+    bare_key,
+):
+    contribution = _good_real_loop_manifest_contribution()
+    contribution["forged_nested"] = {bare_key: True}
+    counters = build_vision_progress_counters(
+        _manifest_with_real_loop_manifest_contribution(contribution)
+    )
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["low_risk_autonomy_loop"]["milestones"]
+    assert milestones["runtime_authority_granted"] is False, bare_key
+    assert milestones["external_writes_applied"] is False, bare_key
+
+
+@pytest.mark.parametrize("authority_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_real_loop_manifest_contribution_subtree_exclusion_positive_control(
+    authority_key,
+):
+    def _milestones(manifest):
+        counters = build_vision_progress_counters(manifest)
+        by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+        return by_id["low_risk_autonomy_loop"]["milestones"]
+
+    inside = _good_real_loop_manifest_contribution()
+    inside["forged_nested"] = {authority_key: True}
+    inside_ms = _milestones(_manifest_with_real_loop_manifest_contribution(inside))
+    assert inside_ms[authority_key] is False, f"inside:{authority_key}"
+
+    outside_ms = _milestones(
+        _manifest_with_real_loop_manifest_contribution(
+            _good_real_loop_manifest_contribution(),
+            low_risk_proof_extra={"forged_outside": {authority_key: True}},
+        )
+    )
+    assert outside_ms[authority_key] is True, f"outside:{authority_key}"
+
+
+def test_real_loop_manifest_contribution_claim_safe_hardcoded_false_even_when_clean():
+    block = _real_loop_manifest_contribution_counter(
+        _good_real_loop_manifest_contribution()
+    )
     assert block["claim_safe"] is False
 
 

@@ -31,6 +31,11 @@ from tools.wd_image1_capability_manifest import (
     _safe_repeat_window_trend_aggregate,
     build_repeat_window_trend_aggregate,
 )
+from tools.wd_image1_capability_manifest import (
+    _REAL_LOOP_MANIFEST_CONTRIBUTION_SAFE_KEYS,
+    _safe_real_loop_manifest_contribution,
+    build_real_loop_manifest_contribution,
+)
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
@@ -1533,6 +1538,24 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
         "runtime_authority_granted": False,
         "fast_track_priority": False,
     }
+    manifest_contribution = capability["proof"]["real_loop_manifest_contribution"]
+    assert set(manifest_contribution) == set(
+        _REAL_LOOP_MANIFEST_CONTRIBUTION_SAFE_KEYS
+    )
+    assert manifest_contribution["ok"] is True
+    assert manifest_contribution["deterministic"] is True
+    assert manifest_contribution["evidence_present"] is True
+    assert manifest_contribution["runtime_authority_granted"] is False
+    assert manifest_contribution["external_writes_applied"] is False
+    assert manifest_contribution["scheduler_enqueue"] is False
+    assert manifest_contribution["production_flip"] is False
+    assert manifest_contribution["production_authority_granted"] is False
+    assert manifest_contribution["provider_calls"] == 0
+    assert manifest_contribution["claim_safe"] is False
+    assert (
+        manifest_contribution["measurement_basis"]
+        == "v1_low_risk_real_loop_manifest_contribution"
+    )
     assert capability["proof"]["operator_metrics_smoke"]["ok"] is True
     assert (
         capability["proof"]["operator_metrics_smoke"]["operator_visible_metrics"]
@@ -3177,6 +3200,105 @@ def test_manifest_low_risk_cross_consistency_digest_cannot_flip_ok(monkeypatch) 
     proof = _low_risk_proof_for_reviewer()
     assert proof.get("ok") == baseline_ok
     assert proof.get("cross_consistency_digest") == forged
+
+
+def _good_real_loop_manifest_contribution_report() -> dict:
+    return {
+        "report_version": "wd.low_risk_autogrowth_real_loop_proof.v1",
+        "ok": True,
+        "deterministic_replay": {"evidence_identical": True},
+        "evidence_vs_authority": {
+            "evidence_present": True,
+            "production_authority_granted": False,
+        },
+        "manifest_contribution": {
+            "capability_id": "low_risk_autonomy_loop",
+            "evidence_present": True,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+            "scheduler_enqueue": False,
+            "production_flip": False,
+            "provider_calls": 0,
+            "claim_safe": False,
+        },
+    }
+
+
+def test_real_loop_manifest_contribution_aggregate_accepts_clean_report() -> None:
+    aggregate = _safe_real_loop_manifest_contribution(
+        _good_real_loop_manifest_contribution_report()
+    )
+    assert set(aggregate) == set(_REAL_LOOP_MANIFEST_CONTRIBUTION_SAFE_KEYS)
+    assert aggregate["ok"] is True
+    assert aggregate["deterministic"] is True
+    assert aggregate["evidence_present"] is True
+    assert aggregate["production_authority_granted"] is False
+    assert aggregate["provider_calls"] == 0
+    assert aggregate["claim_safe"] is False
+
+
+@pytest.mark.parametrize("path,bad", [
+    (("report_version",), "unexpected"),
+    (("deterministic_replay", "evidence_identical"), "true"),
+    (("manifest_contribution", "provider_calls"), True),
+    (("manifest_contribution", "provider_calls"), -1),
+    (("manifest_contribution", "capability_id"), "hex_mesh_entry"),
+])
+def test_real_loop_manifest_contribution_aggregate_rejects_bad_shape(
+    path, bad
+) -> None:
+    report = _good_real_loop_manifest_contribution_report()
+    target = report
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = bad
+    with pytest.raises(ValueError):
+        _safe_real_loop_manifest_contribution(report)
+
+
+def test_build_real_loop_manifest_contribution_returns_safe_scalar_view() -> None:
+    aggregate = build_real_loop_manifest_contribution()
+    assert set(aggregate) == set(_REAL_LOOP_MANIFEST_CONTRIBUTION_SAFE_KEYS)
+    assert aggregate["ok"] is True
+    assert aggregate["evidence_present"] is True
+    assert aggregate["runtime_authority_granted"] is False
+    assert aggregate["claim_safe"] is False
+
+
+def test_manifest_real_loop_manifest_contribution_measurement_only() -> None:
+    # Measurement-only: the contribution is enriched AFTER the low-risk proof ok is
+    # recomputed, so the ok expression cannot reference it.
+    proof = _low_risk_proof_for_reviewer()
+    assert isinstance(proof.get("real_loop_manifest_contribution"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_assign = cap_src.split('low_risk_autonomy_proof["ok"] = bool(', 1)[1].split(
+        ")", 1
+    )[0]
+    assert "real_loop_manifest_contribution" not in ok_assign
+    ok_idx = cap_src.index('low_risk_autonomy_proof["ok"] = bool(')
+    contribution_idx = cap_src.index(
+        'low_risk_autonomy_proof["real_loop_manifest_contribution"]'
+    )
+    assert contribution_idx > ok_idx
+
+
+def test_manifest_real_loop_manifest_contribution_cannot_flip_ok(
+    monkeypatch,
+) -> None:
+    baseline_ok = _low_risk_proof_for_reviewer().get("ok")
+    import tools.run_low_risk_autogrowth_real_loop_proof as rmod
+
+    forged = _good_real_loop_manifest_contribution_report()
+    forged["manifest_contribution"]["claim_safe"] = True
+    monkeypatch.setattr(rmod, "build_real_loop_proof", lambda *_a, **_k: forged)
+
+    proof = _low_risk_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert proof["real_loop_manifest_contribution"]["claim_safe"] is True
 
 
 def test_manifest_low_risk_next_smallest_pr_advanced_beyond_cross_consistency_digest() -> None:

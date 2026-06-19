@@ -1090,6 +1090,9 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1937,6 +1940,72 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert reviewer_handoff_summary_smoke["artifact_payloads_included"] is False
     assert reviewer_handoff_summary_smoke["local_paths_recorded"] is False
     assert reviewer_handoff_summary_smoke["network_access_performed"] is False
+    reviewer_handoff_bundle_index_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_index_smoke"
+    ]
+    assert reviewer_handoff_bundle_index_smoke["ok"] is True
+    assert reviewer_handoff_bundle_index_smoke["artifact_count"] == 2
+    assert reviewer_handoff_bundle_index_smoke["source_contract_check"] == "match"
+    assert reviewer_handoff_bundle_index_smoke["rebuilt_summary_check"] == "match"
+    assert (
+        reviewer_handoff_bundle_index_smoke["direct_bridge_write_performed"]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_index_smoke["artifact_payloads_included"] is False
+    )
+    assert reviewer_handoff_bundle_index_smoke["local_paths_recorded"] is False
+    assert reviewer_handoff_bundle_index_smoke["network_access_performed"] is False
+    reviewer_handoff_bundle_index_verification_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_index_verification_smoke"
+    ]
+    assert reviewer_handoff_bundle_index_verification_smoke["ok"] is True
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke["source_contract_check"]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke[
+            "rebuilt_bundle_index_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke[
+            "reviewer_handoff_summary_check"
+        ]
+        == "match"
+    )
+    assert (
+        set(
+            reviewer_handoff_bundle_index_verification_smoke[
+                "digest_checks"
+            ].values()
+        )
+        == {"match"}
+    )
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke["local_paths_recorded"]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_index_verification_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -1957,10 +2026,11 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "local index entry for that renderer" in capability["safe_statement"]
     assert "local verifier for that index entry" in capability["safe_statement"]
     assert "reviewer handoff summary" in capability["safe_statement"]
-    assert "reviewer handoff summary" in (
-        capability["next_smallest_pr"]
-    )
-    assert "handoff bundle index" in capability["next_smallest_pr"]
+    assert "handoff bundle index" in capability["safe_statement"]
+    assert "handoff bundle" in capability["next_smallest_pr"]
+    assert "verification" in capability["next_smallest_pr"]
+    assert "reviewer summary" in capability["next_smallest_pr"]
+    assert "without including payloads" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

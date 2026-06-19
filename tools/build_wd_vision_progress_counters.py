@@ -231,17 +231,26 @@ def _extract_milestone_values(
         # Path-free reviewer summary of the trend (merged #1284 renderer), present only
         # when the manifest stored it. Measurement-only safe scalars; consumer re-derives.
         trend_reviewer = _mapping(proof.get("repeat_window_trend_reviewer_summary"))
+        # Path-free cross-consistency digest confirming the three low-risk views AGREE,
+        # present only when the manifest stored it. Measurement-only safe scalars (derived
+        # booleans only); the consumer re-derives cross_consistent from its COMPONENTS.
+        cross = _mapping(proof.get("cross_consistency_digest"))
         # The recursive _nested_flag root authority scan MUST exclude the measurement-only
-        # trend AND trend-reviewer-summary subtrees: otherwise a bare authority key nested
-        # anywhere under them (e.g. a forged per-window authority_boundary) would flip the
-        # real low-risk gate (#1271 tools forge: the renamed surfaced field was not enough
-        # - the whole subtree must be out of scope of the recursive scan).
+        # trend, trend-reviewer-summary AND cross-consistency-digest subtrees: otherwise a
+        # bare authority key nested anywhere under them (e.g. a forged per-window
+        # authority_boundary) would flip the real low-risk gate (#1271 tools forge: the
+        # renamed surfaced field was not enough - the whole subtree must be out of scope of
+        # the recursive scan).
         proof_for_authority = (
             {
                 k: v
                 for k, v in proof.items()
                 if k
-                not in ("repeat_window_trend", "repeat_window_trend_reviewer_summary")
+                not in (
+                    "repeat_window_trend",
+                    "repeat_window_trend_reviewer_summary",
+                    "cross_consistency_digest",
+                )
             }
             if isinstance(proof, Mapping)
             else proof
@@ -366,6 +375,37 @@ def _extract_milestone_values(
             # Refuse-to-certify if the summary self-declares claim_safe True.
             "repeat_window_reviewer_summary_self_claim_safe": (
                 trend_reviewer.get("claim_safe") is True
+            ),
+            # Cross-consistency digest COMPONENT scalars (strict is True) so the consumer
+            # can RE-DERIVE cross_consistent itself - it must NOT trust the digest's own
+            # cross_consistent aggregate (#1274). A forged/inconsistent digest must fail
+            # closed.
+            "cross_consistency_digest_present": bool(
+                proof.get("cross_consistency_digest")
+            ),
+            "cross_consistency_path_free_verified": (
+                cross.get("path_free_verified") is True
+            ),
+            "cross_consistency_all_views_present": (
+                cross.get("all_views_present") is True
+            ),
+            "cross_consistency_real_loop_clean": (
+                cross.get("real_loop_clean") is True
+            ),
+            "cross_consistency_trend_clean": (
+                cross.get("trend_clean") is True
+            ),
+            "cross_consistency_reviewer_clean": (
+                cross.get("reviewer_clean") is True
+            ),
+            "cross_consistency_reviewer_matches_trend": (
+                cross.get("reviewer_matches_trend") is True
+            ),
+            # Defensive: the digest's allowlist hardcodes claim_safe False, but a
+            # forged/inconsistent digest self-declaring claim_safe True must
+            # refuse-to-certify (measurement-only never upgrades a claim).
+            "cross_consistency_self_claim_safe": (
+                cross.get("claim_safe") is True
             ),
         }
     if capability_id == "hexagonal_upgrades":
@@ -754,6 +794,29 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         ) is True
         and rw_reviewer_count_valid
     )
+    # Low-risk cross-consistency digest: confirms the three low-risk measurement views
+    # (real-loop dry-run, repeat-window trend, reviewer summary) AGREE. The consumer
+    # RE-DERIVES cross_consistent from the digest's COMPONENT booleans - it does NOT trust
+    # the digest's own cross_consistent aggregate (#1274). Refuse-to-certify on a
+    # self-declared claim_safe. Measurement-only: NEVER upgrades the low-risk claim.
+    lr_xcons_present = low_risk.get("cross_consistency_digest_present") is True
+    lr_xcons_path_free = (
+        low_risk.get("cross_consistency_path_free_verified") is True
+    )
+    lr_xcons_self_claim_safe = (
+        low_risk.get("cross_consistency_self_claim_safe") is True
+    )
+    lr_xcons_available = (
+        lr_xcons_present and lr_xcons_path_free and not lr_xcons_self_claim_safe
+    )
+    lr_cross_consistent = bool(
+        lr_xcons_available
+        and low_risk.get("cross_consistency_all_views_present") is True
+        and low_risk.get("cross_consistency_real_loop_clean") is True
+        and low_risk.get("cross_consistency_trend_clean") is True
+        and low_risk.get("cross_consistency_reviewer_clean") is True
+        and low_risk.get("cross_consistency_reviewer_matches_trend") is True
+    )
     # Hex-subdivision reviewer summary: a path-free measurement-only surface from
     # the merged renderer. Consumer re-derives each field fail-closed (does NOT
     # blindly trust the manifest aggregate); it NEVER upgrades the hexagonal
@@ -1021,6 +1084,45 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_low_risk_repeat_window_trend_reviewer_summary"
                 if rw_reviewer_available
+                else "manifest_real_loop_flags"
+            ),
+            "claim_safe": False,
+        },
+        "low_risk_cross_consistency_digest": {
+            # Measurement-only path-free digest confirming the three low-risk views
+            # (real-loop dry-run, repeat-window trend, reviewer summary) AGREE; DERIVED
+            # fail-closed and fully decoupled - it NEVER upgrades any low-risk claim.
+            # cross_consistent is RE-DERIVED from the digest's COMPONENT booleans, never
+            # the digest's own cross_consistent aggregate.
+            "digest_available": lr_xcons_available,
+            "cross_consistent": lr_cross_consistent,
+            "path_free_verified": bool(
+                lr_xcons_present
+                and low_risk.get("cross_consistency_path_free_verified") is True
+            ),
+            "all_views_present": bool(
+                lr_xcons_available
+                and low_risk.get("cross_consistency_all_views_present") is True
+            ),
+            "real_loop_clean": bool(
+                lr_xcons_available
+                and low_risk.get("cross_consistency_real_loop_clean") is True
+            ),
+            "trend_clean": bool(
+                lr_xcons_available
+                and low_risk.get("cross_consistency_trend_clean") is True
+            ),
+            "reviewer_clean": bool(
+                lr_xcons_available
+                and low_risk.get("cross_consistency_reviewer_clean") is True
+            ),
+            "reviewer_matches_trend": bool(
+                lr_xcons_available
+                and low_risk.get("cross_consistency_reviewer_matches_trend") is True
+            ),
+            "measurement_basis": (
+                "v1_low_risk_cross_consistency_digest"
+                if lr_xcons_available
                 else "manifest_real_loop_flags"
             ),
             "claim_safe": False,

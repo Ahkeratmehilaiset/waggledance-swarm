@@ -1971,3 +1971,187 @@ def test_low_risk_reviewer_subtree_exclusion_positive_control(authority_key):
 def test_low_risk_reviewer_claim_safe_hardcoded_false_even_when_clean():
     block = _reviewer_counters(_good_repeat_window_reviewer_summary())
     assert block["claim_safe"] is False
+
+
+# --- low-risk cross-consistency digest counter (this slice) ---
+def _good_low_risk_cross_consistency_digest():
+    # Mirrors build_low_risk_cross_consistency_digest output the manifest stores under
+    # low_risk_autonomy_proof["cross_consistency_digest"].
+    return {
+        "report_version": "wd.low_risk_cross_consistency_digest.v1",
+        "real_loop_present": True,
+        "repeat_window_trend_present": True,
+        "reviewer_summary_present": True,
+        "all_views_present": True,
+        "real_loop_clean": True,
+        "trend_clean": True,
+        "reviewer_clean": True,
+        "reviewer_matches_trend": True,
+        "cross_consistent": True,
+        "path_free_verified": True,
+        "claim_safe": False,
+    }
+
+
+def _manifest_with_low_risk_xcons(digest, *, low_risk_proof_extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if digest is not None:
+        proof["cross_consistency_digest"] = digest
+    if low_risk_proof_extra:
+        proof.update(low_risk_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _lr_xcons_counters(digest, **kw):
+    mc = build_vision_progress_counters(
+        _manifest_with_low_risk_xcons(digest, **kw)
+    )["milestone_counters"]
+    return mc["low_risk_cross_consistency_digest"]
+
+
+def test_low_risk_xcons_available_with_clean_digest():
+    block = _lr_xcons_counters(_good_low_risk_cross_consistency_digest())
+    assert block["digest_available"] is True
+    assert block["cross_consistent"] is True
+    assert block["path_free_verified"] is True
+    assert block["all_views_present"] is True
+    assert block["real_loop_clean"] is True
+    assert block["trend_clean"] is True
+    assert block["reviewer_clean"] is True
+    assert block["reviewer_matches_trend"] is True
+    assert block["measurement_basis"] == "v1_low_risk_cross_consistency_digest"
+    assert block["claim_safe"] is False
+
+
+def test_low_risk_xcons_unavailable_when_absent():
+    block = _lr_xcons_counters(None)
+    assert block["digest_available"] is False
+    assert block["cross_consistent"] is False
+    assert block["measurement_basis"] == "manifest_real_loop_flags"
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bad", ["notadict", 7, ["x"], ("a",)])
+def test_low_risk_xcons_non_mapping_not_available(bad):
+    # a malformed NON-dict (but truthy) digest must NOT read available (present must be
+    # isinstance-Mapping, not merely truthy).
+    block = _lr_xcons_counters(bad)
+    assert block["digest_available"] is False
+    assert block["cross_consistent"] is False
+
+
+_LR_XCONS_COMPONENT_FIELDS = [
+    "path_free_verified",
+    "all_views_present",
+    "real_loop_clean",
+    "trend_clean",
+    "reviewer_clean",
+    "reviewer_matches_trend",
+]
+
+
+@pytest.mark.parametrize("field", _LR_XCONS_COMPONENT_FIELDS)
+def test_low_risk_xcons_consumer_rederives_fail_closed(field):
+    # Consumer RE-DERIVES cross_consistent from the COMPONENT booleans fail-closed.
+    d = _good_low_risk_cross_consistency_digest()
+    d[field] = False
+    block = _lr_xcons_counters(d)
+    if field == "path_free_verified":
+        assert block["digest_available"] is False
+    assert block["cross_consistent"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("field", [
+    "all_views_present", "real_loop_clean", "trend_clean", "reviewer_clean",
+    "reviewer_matches_trend",
+])
+def test_low_risk_xcons_inconsistent_aggregate_fails_closed(field):
+    # #1274: a component False but the digest's own cross_consistent True must still
+    # render cross_consistent=False (consumer never trusts the aggregate composite).
+    d = _good_low_risk_cross_consistency_digest()
+    d[field] = False
+    d["cross_consistent"] = True  # lying aggregate composite
+    block = _lr_xcons_counters(d)
+    assert block["cross_consistent"] is False, field
+
+
+def test_low_risk_xcons_self_claim_safe_refuses_to_certify():
+    # A digest self-declaring claim_safe True must fail closed (measurement-only never
+    # upgrades a claim).
+    d = _good_low_risk_cross_consistency_digest()
+    d["claim_safe"] = True
+    block = _lr_xcons_counters(d)
+    assert block["digest_available"] is False
+    assert block["cross_consistent"] is False
+
+
+def test_low_risk_xcons_path_free_false_refuses_to_certify():
+    d = _good_low_risk_cross_consistency_digest()
+    d["path_free_verified"] = False
+    block = _lr_xcons_counters(d)
+    assert block["digest_available"] is False
+    assert block["cross_consistent"] is False
+
+
+def test_low_risk_xcons_claim_safe_hardcoded_false_even_when_clean():
+    block = _lr_xcons_counters(_good_low_risk_cross_consistency_digest())
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_low_risk_xcons_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271: a bare authority key nested in the measurement-only cross_consistency_digest
+    # subtree must NOT reach the recursive _nested_flag scan feeding the real low-risk
+    # panel flags.
+    d = _good_low_risk_cross_consistency_digest()
+    d["forged_nested"] = {bare_key: True}
+    counters = build_vision_progress_counters(_manifest_with_low_risk_xcons(d))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["low_risk_autonomy_loop"]["milestones"]
+    assert milestones["runtime_authority_granted"] is False, bare_key
+    assert milestones["external_writes_applied"] is False, bare_key
+
+
+@pytest.mark.parametrize("authority_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_low_risk_xcons_subtree_exclusion_positive_control(authority_key):
+    # The recursive authority scan must keep its TEETH outside the excluded digest
+    # subtree. The SAME nested authority key trips the milestone when placed OUTSIDE
+    # cross_consistency_digest but must NOT trip when nested INSIDE it -> the exclusion is
+    # surgical, not a blanket authority-scan disable.
+    def _milestones(manifest):
+        counters = build_vision_progress_counters(manifest)
+        by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+        return by_id["low_risk_autonomy_loop"]["milestones"]
+
+    # INSIDE the excluded subtree -> excluded, not tripped
+    inside_digest = _good_low_risk_cross_consistency_digest()
+    inside_digest["forged_nested"] = {authority_key: True}
+    inside_ms = _milestones(_manifest_with_low_risk_xcons(inside_digest))
+    assert inside_ms[authority_key] is False, f"inside:{authority_key}"
+
+    # OUTSIDE the excluded subtree (elsewhere in the low-risk proof) -> teeth intact
+    outside_ms = _milestones(
+        _manifest_with_low_risk_xcons(
+            _good_low_risk_cross_consistency_digest(),
+            low_risk_proof_extra={"forged_outside": {authority_key: True}},
+        )
+    )
+    assert outside_ms[authority_key] is True, f"outside:{authority_key}"

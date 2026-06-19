@@ -321,10 +321,13 @@ def _extract_milestone_values(
         # Path-free FINAL chain summary (merged #1276 renderer), present only when the
         # manifest stored it. Measurement-only safe scalars; the consumer re-derives.
         chain = _mapping(proof.get("chain_final_summary"))
-        # Exclude the measurement-only reviewer_summary, shadow_only_invariant AND
-        # chain_final_summary subtrees from the recursive authority/mutation scans so a
-        # nested field there can never couple into the real hex-upgrade flags
-        # (recursive-scan coupling safety, #1271).
+        # Path-free cross-consistency digest (merged #1278), present only when the
+        # manifest stored it. Measurement-only safe scalars; the consumer re-derives.
+        cross = _mapping(proof.get("cross_consistency_digest"))
+        # Exclude the measurement-only reviewer_summary, shadow_only_invariant,
+        # chain_final_summary AND cross_consistency_digest subtrees from the recursive
+        # authority/mutation scans so a nested field there can never couple into the
+        # real hex-upgrade flags (recursive-scan coupling safety, #1271).
         proof_for_authority = (
             {
                 k: v
@@ -334,6 +337,7 @@ def _extract_milestone_values(
                     "reviewer_summary",
                     "shadow_only_invariant",
                     "chain_final_summary",
+                    "cross_consistency_digest",
                 )
             }
             if isinstance(proof, Mapping)
@@ -437,6 +441,33 @@ def _extract_milestone_values(
             # refuse-to-certify (measurement-only never upgrades a claim).
             "chain_final_summary_self_claim_safe": (
                 chain.get("claim_safe") is True
+            ),
+            # Cross-consistency digest (#1278) COMPONENT scalars (strict is True) so the
+            # consumer can RE-DERIVE cross_consistent itself - it must NOT trust the
+            # digest's own cross_consistent aggregate (#1274).
+            "cross_consistency_digest_present": bool(
+                proof.get("cross_consistency_digest")
+            ),
+            "cross_consistency_path_free_verified": (
+                cross.get("path_free_verified") is True
+            ),
+            "cross_consistency_all_views_present": (
+                cross.get("all_views_present") is True
+            ),
+            "cross_consistency_reviewer_clean": (
+                cross.get("reviewer_clean") is True
+            ),
+            "cross_consistency_shadow_only_clean": (
+                cross.get("shadow_only_clean") is True
+            ),
+            "cross_consistency_chain_summary_clean": (
+                cross.get("chain_summary_clean") is True
+            ),
+            # Defensive: the digest's allowlist hardcodes claim_safe False, but a
+            # forged/inconsistent digest self-declaring claim_safe True must
+            # refuse-to-certify (measurement-only never upgrades a claim).
+            "cross_consistency_self_claim_safe": (
+                cross.get("claim_safe") is True
             ),
         }
     if capability_id == "future_waggledance_swarm":
@@ -706,6 +737,27 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and hex_upgrades.get("chain_final_summary_index_entry_verify_clean") is True
         and hex_upgrades.get("chain_final_summary_deepest_verify_clean") is True
     )
+    # Cross-consistency digest (#1278): confirms the three measurement views AGREE. The
+    # consumer RE-DERIVES cross_consistent from the digest's COMPONENT booleans - it
+    # does NOT trust the digest's own cross_consistent aggregate (#1274). Refuse-to-
+    # certify on a self-declared claim_safe. Measurement-only: NEVER upgrades a claim.
+    hex_xcons_present = hex_upgrades.get("cross_consistency_digest_present") is True
+    hex_xcons_path_free = (
+        hex_upgrades.get("cross_consistency_path_free_verified") is True
+    )
+    hex_xcons_self_claim_safe = (
+        hex_upgrades.get("cross_consistency_self_claim_safe") is True
+    )
+    hex_xcons_available = (
+        hex_xcons_present and hex_xcons_path_free and not hex_xcons_self_claim_safe
+    )
+    hex_cross_consistent = bool(
+        hex_xcons_available
+        and hex_upgrades.get("cross_consistency_all_views_present") is True
+        and hex_upgrades.get("cross_consistency_reviewer_clean") is True
+        and hex_upgrades.get("cross_consistency_shadow_only_clean") is True
+        and hex_upgrades.get("cross_consistency_chain_summary_clean") is True
+    )
     return {
         "authoritative_first_hop_route_order_coverage": {
             "current_value": 1.0
@@ -884,6 +936,40 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_shadow_subdivision_verifier_chain_final_summary"
                 if hex_chain_available
+                else "manifest_hex_upgrade_flags"
+            ),
+            "claim_safe": False,
+        },
+        "hex_subdivision_cross_consistency_digest": {
+            # Measurement-only path-free digest confirming the three hex-upgrade views
+            # AGREE; DERIVED fail-closed and fully decoupled - it NEVER upgrades any
+            # hexagonal claim. cross_consistent is RE-DERIVED from the digest's
+            # COMPONENT booleans, never the digest's own cross_consistent aggregate.
+            "digest_available": hex_xcons_available,
+            "cross_consistent": hex_cross_consistent,
+            "path_free_verified": bool(
+                hex_xcons_present
+                and hex_upgrades.get("cross_consistency_path_free_verified") is True
+            ),
+            "all_views_present": bool(
+                hex_xcons_available
+                and hex_upgrades.get("cross_consistency_all_views_present") is True
+            ),
+            "reviewer_clean": bool(
+                hex_xcons_available
+                and hex_upgrades.get("cross_consistency_reviewer_clean") is True
+            ),
+            "shadow_only_clean": bool(
+                hex_xcons_available
+                and hex_upgrades.get("cross_consistency_shadow_only_clean") is True
+            ),
+            "chain_summary_clean": bool(
+                hex_xcons_available
+                and hex_upgrades.get("cross_consistency_chain_summary_clean") is True
+            ),
+            "measurement_basis": (
+                "v1_hex_upgrade_cross_consistency_digest"
+                if hex_xcons_available
                 else "manifest_hex_upgrade_flags"
             ),
             "claim_safe": False,

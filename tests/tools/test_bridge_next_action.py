@@ -1979,6 +1979,43 @@ def test_agent_profile_omits_session_id_from_known_peer_agent() -> None:
     }
 
 
+def test_agent_profile_keeps_session_id_for_longest_matching_agent_prefix() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-19T20:19:00Z",
+            "agent": "codex",
+            "type": "heartbeat",
+            "task_id": "legacy-codex-heartbeat",
+            "status": "active",
+            "session_id": "codex-legacy-session",
+        },
+        {
+            "ts_utc": "2026-06-19T20:20:00Z",
+            "agent": "codex-tools-1",
+            "type": "heartbeat",
+            "task_id": "tools-heartbeat",
+            "status": "active",
+            "role": "tools-tests",
+            "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+            "session_id": "codex-tools-1-20260616T040417Z",
+            "capabilities": ["tools", "work_queue"],
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["agent_profile"] == {
+        "role": "tools-tests",
+        "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+        "session_id": "codex-tools-1-20260616T040417Z",
+        "capabilities": ["tools", "work_queue"],
+    }
+
+
 def test_incoming_report_surfaces_requester_role_metadata() -> None:
     events = [
         {

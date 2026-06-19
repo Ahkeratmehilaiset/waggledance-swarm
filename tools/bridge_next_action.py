@@ -1313,19 +1313,30 @@ def _session_id_conflicts_with_other_agent(
     event_agent: str,
     known_agents: Sequence[str],
 ) -> bool:
-    normalized_session_id = session_id.lower()
     normalized_event_agent = event_agent.lower()
+    owner = _session_id_owner_agent(
+        session_id=session_id,
+        known_agents=known_agents,
+    )
+    return owner is not None and owner != normalized_event_agent
+
+
+def _session_id_owner_agent(
+    *,
+    session_id: str,
+    known_agents: Sequence[str],
+) -> str | None:
+    normalized_session_id = session_id.lower()
+    matches: list[str] = []
     for known_agent in known_agents:
         candidate = str(known_agent or "").strip().lower()
-        if (
-            not candidate
-            or candidate == "unknown"
-            or candidate == normalized_event_agent
-        ):
+        if not candidate or candidate == "unknown":
             continue
         if normalized_session_id.startswith(f"{candidate}-"):
-            return True
-    return False
+            matches.append(candidate)
+    if not matches:
+        return None
+    return max(matches, key=len)
 
 
 def _event_status(event: Mapping[str, Any]) -> str:

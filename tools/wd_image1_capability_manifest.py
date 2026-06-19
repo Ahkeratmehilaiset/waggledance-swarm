@@ -8372,6 +8372,24 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_autonomy_proof["repeat_window_trend_reviewer_summary"] = (
         _render_repeat_window_reviewer_summary(repeat_window_trend)
     )
+    # Path-free cross-consistency digest: confirms the three already-stored low-risk
+    # measurement views (real_loop_dry_run, repeat_window_trend, and the
+    # repeat_window_trend_reviewer_summary just added) are EACH re-derived clean from
+    # their own component scalars AND mutually coherent (the reviewer summary faithfully
+    # renders the trend). Enriched AFTER low_risk_autonomy_proof["ok"] is recomputed
+    # above (and after the two trend views are stored) so it is structurally impossible
+    # for the ok expression to reference it (decoupled by construction, not by
+    # convention). Content-safe by construction (the digest's allowlist emits only
+    # derived booleans), so stored raw; measurement-only - NOT folded into ok and NEVER
+    # flips the low-risk claim. A None/opted-out trend yields a fail-closed (not
+    # cross_consistent) digest.
+    from tools.run_low_risk_cross_consistency_digest import (  # noqa: E402
+        build_low_risk_cross_consistency_digest as _build_low_risk_xcons_digest,
+    )
+
+    low_risk_autonomy_proof["cross_consistency_digest"] = (
+        _build_low_risk_xcons_digest(low_risk_autonomy_proof)
+    )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     # Optional local opt-in authoritative-first-hop coverage measurement (OFF by
     # default). Only safe scalar fields are aggregated; it is measurement-only
@@ -8689,12 +8707,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "events, enqueueing scheduler work, or granting authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free, measurement-only low-risk cross-consistency "
-                "digest confirming the real-loop dry-run proof, repeat-window "
-                "trend, and reviewer summary are each re-derived clean from "
-                "component scalars and mutually coherent (derived booleans/strict "
-                "ints only), without production writes, provider calls, bridge "
-                "appends, scheduler authority, or claim_safe upgrade."
+                "Add a path-free, template-only bridge-event renderer for the "
+                "low-risk cross-consistency digest that turns it into schema-valid "
+                "reviewer-handoff JSON (derived booleans/strict ints only), without "
+                "appending it, including payloads/paths, transporting, enqueueing "
+                "scheduler work, upgrading any claim, or granting runtime authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

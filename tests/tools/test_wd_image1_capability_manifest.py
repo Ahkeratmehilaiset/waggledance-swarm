@@ -1615,10 +1615,14 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert verification["gate_skip_allowed"] is False
     assert verification["artifact_payloads_included"] is False
     assert verification["local_paths_recorded"] is False
-    # next_smallest_pr advanced beyond the now-default repeat-window trend evidence
-    # to a path-free, measurement-only reviewer-summary render of that trend.
-    assert "repeat-window trend" in capability["next_smallest_pr"]
-    assert "reviewer summary" in capability["next_smallest_pr"]
+    # next_smallest_pr advanced beyond the now-wired cross-consistency digest to a
+    # path-free, template-only bridge-event renderer for that digest.
+    assert "cross-consistency digest" in capability["next_smallest_pr"]
+    assert "bridge-event renderer" in capability["next_smallest_pr"]
+    # no longer the just-completed digest slice ("Add a ... digest confirming ...").
+    assert "digest confirming the real-loop dry-run proof" not in (
+        capability["next_smallest_pr"]
+    )
     assert "Promote the measured local autogrowth real-loop proof" not in (
         capability["next_smallest_pr"]
     )
@@ -3052,17 +3056,92 @@ def test_manifest_reviewer_summary_cannot_flip_low_risk_ok(monkeypatch) -> None:
     assert proof.get("repeat_window_trend_reviewer_summary") == forged
 
 
-def test_manifest_low_risk_next_smallest_pr_advanced_beyond_reviewer_summary() -> None:
-    # #1286 review: the wiring slice must advance next_smallest_pr beyond the
-    # now-completed reviewer-summary render/wire work to the next honest smallest step.
+def test_manifest_stores_low_risk_cross_consistency_digest_content_safe() -> None:
+    digest = _low_risk_proof_for_reviewer().get("cross_consistency_digest")
+    assert isinstance(digest, dict)
+    # content-safe by construction: only the version string + derived booleans
+    for key, value in digest.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert digest["cross_consistent"] is True
+    assert digest["all_views_present"] is True
+    assert digest["real_loop_clean"] is True
+    assert digest["trend_clean"] is True
+    assert digest["reviewer_clean"] is True
+    assert digest["reviewer_matches_trend"] is True
+    assert digest["path_free_verified"] is True
+    assert digest["claim_safe"] is False
+    # no raw repo path leaked into the stored digest
+    assert str(ROOT) not in json.dumps(digest)
+
+
+def test_manifest_low_risk_cross_consistency_digest_measurement_only() -> None:
+    # Measurement-only: the digest is enriched AFTER the low-risk proof ok is recomputed,
+    # so the ok expression cannot reference it. Asserted against the REAL _capabilities ok
+    # recomputation (the actual insertion + ok block live in _capabilities).
+    proof = _low_risk_proof_for_reviewer()
+    assert isinstance(proof.get("cross_consistency_digest"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_assign = cap_src.split('low_risk_autonomy_proof["ok"] = bool(', 1)[1].split(
+        ")", 1
+    )[0]
+    assert "cross_consistency_digest" not in ok_assign
+    # The ok recomputation must PRECEDE the digest insertion, so the digest is provably
+    # outside the ok expression (decoupled by construction, not just by convention).
+    ok_idx = cap_src.index('low_risk_autonomy_proof["ok"] = bool(')
+    digest_idx = cap_src.index(
+        'low_risk_autonomy_proof["cross_consistency_digest"]'
+    )
+    assert digest_idx > ok_idx, (
+        "cross-consistency digest must be enriched after the low-risk ok recomputation"
+    )
+
+
+def test_manifest_low_risk_cross_consistency_digest_cannot_flip_ok(monkeypatch) -> None:
+    # Runtime proof of decoupling at the real _capabilities level: a forged "lying" digest
+    # (self-claim_safe True, every clean flag False) must leave the low-risk proof ok
+    # byte-identical to the clean baseline, and the forged digest is still stored raw
+    # (measurement-only, never folded into ok).
+    baseline_ok = _low_risk_proof_for_reviewer().get("ok")
+    import tools.run_low_risk_cross_consistency_digest as xmod
+
+    forged = {
+        "report_version": "forged",
+        "cross_consistent": False,
+        "all_views_present": False,
+        "real_loop_clean": False,
+        "trend_clean": False,
+        "reviewer_clean": False,
+        "reviewer_matches_trend": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        xmod, "build_low_risk_cross_consistency_digest", lambda *_a, **_k: dict(forged)
+    )
+    proof = _low_risk_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert proof.get("cross_consistency_digest") == forged
+
+
+def test_manifest_low_risk_next_smallest_pr_advanced_beyond_cross_consistency_digest() -> None:
+    # This slice WIRES the cross-consistency digest, so next_smallest_pr must advance
+    # beyond the now-completed digest work to the next honest smallest step (a
+    # template-only bridge-event renderer FOR that digest).
     manifest = build_manifest()
     cap = next(
         c for c in manifest["capabilities"]
         if c["capability_id"] == "low_risk_autonomy_loop"
     )
     nsp = cap["next_smallest_pr"].lower()
-    # no longer the just-completed "render ... reviewer summary" slice
-    assert "render the now-default repeat-window trend" not in nsp
-    # advanced to the next measurement-only step (low-risk cross-consistency digest)
+    # no longer the just-completed "Add a ... cross-consistency digest confirming ..." slice
+    assert "digest confirming the real-loop dry-run proof" not in nsp
+    # advanced to the next step: a template-only bridge-event renderer for the digest
+    assert "bridge-event renderer" in nsp
     assert "cross-consistency digest" in nsp
-    assert "measurement-only" in nsp

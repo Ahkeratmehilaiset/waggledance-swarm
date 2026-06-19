@@ -223,10 +223,10 @@ def _extract_milestone_values(
         authority = _mapping(real_loop.get("authority_boundary"))
         control_plane = _mapping(real_loop.get("control_plane"))
         table_counts = _mapping(control_plane.get("table_counts"))
-        # Optional local opt-in repeat-window trend measurement. Present only when
-        # the manifest ran the proof (env flag on); absent by default. Surface the
-        # safe scalar fields; the trend counter derives availability fail-closed
-        # and NEVER upgrades the low-risk claim from these.
+        # Repeat-window trend measurement (DEFAULT-ON; opt OUT via the manifest env
+        # flag). Present whenever the manifest ran the proof. Surface the safe
+        # scalar fields; the trend counter derives availability fail-closed and
+        # NEVER upgrades the low-risk claim from these.
         trend = _mapping(proof.get("repeat_window_trend"))
         # The recursive _nested_flag root authority scan MUST exclude the
         # measurement-only trend subtree: otherwise a bare authority key nested
@@ -604,9 +604,9 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and low_risk_real_loop_promotions >= 1
         and not low_risk_real_loop_guardrail_tripped
     )
-    # Repeat-window trend is a LOCAL opt-in measurement (off by default), surfaced
-    # as measurement-only evidence DERIVED fail-closed. It NEVER influences the
-    # end_to_end_gated_promotions_total satisfied/current_value above - a stable
+    # Repeat-window trend is a LOCAL measurement (DEFAULT-ON; opt-out via env),
+    # surfaced as measurement-only evidence DERIVED fail-closed. It NEVER influences
+    # the end_to_end_gated_promotions_total satisfied/current_value above - a stable
     # 100% trend is reproducibility evidence only, never a claim upgrade.
     from tools.run_low_risk_real_loop_repeat_window_trend import (
         MAX_WINDOW as _trend_max_window,
@@ -871,8 +871,8 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             ),
         },
         "low_risk_real_loop_repeat_window_trend": {
-            # Measurement-only reproducibility evidence (off by default). DERIVED
-            # fail-closed and fully decoupled from end_to_end_gated_promotions_total
+            # Measurement-only reproducibility evidence (default-on; opt-out via env).
+            # DERIVED fail-closed and fully decoupled from end_to_end_gated_promotions_total
             # above - a stable 100% trend NEVER upgrades satisfied/current_value or
             # claim_safe.
             "trend_measurement_available": repeat_window_trend_available,

@@ -1615,7 +1615,13 @@ def test_manifest_embeds_low_risk_autonomy_proof_without_upgrading_claim() -> No
     assert verification["gate_skip_allowed"] is False
     assert verification["artifact_payloads_included"] is False
     assert verification["local_paths_recorded"] is False
-    assert "repeat-window trend summary" in capability["next_smallest_pr"]
+    # next_smallest_pr advanced beyond the now-default repeat-window trend evidence
+    # to a path-free, measurement-only reviewer-summary render of that trend.
+    assert "repeat-window trend" in capability["next_smallest_pr"]
+    assert "reviewer summary" in capability["next_smallest_pr"]
+    assert "Promote the measured local autogrowth real-loop proof" not in (
+        capability["next_smallest_pr"]
+    )
     assert "read-only dashboard ops overlay" in capability["safe_statement"]
     assert "local fallback alert state" in capability["safe_statement"]
     assert "optional sanitized Alertmanager alert feed" in (
@@ -2652,13 +2658,32 @@ def test_flag_off_manifest_omits_first_hop_key() -> None:
     assert "first_hop_coverage" not in hex_mesh["proof"]
 
 
-# --- repeat-window trend aggregate (default-off/on-demand) ---
-def test_repeat_window_trend_flag_off_returns_none() -> None:
+# --- repeat-window trend aggregate (default-on measurement-only evidence) ---
+def test_repeat_window_trend_default_on_returns_aggregate() -> None:
+    # Default-on: with the env flag unset the proof runs and yields a safe aggregate.
     prior = os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
+    try:
+        aggregate = build_repeat_window_trend_aggregate()
+    finally:
+        if prior is not None:
+            os.environ[REPEAT_WINDOW_TREND_ENV] = prior
+    assert aggregate is not None
+    assert set(aggregate) == set(_REPEAT_WINDOW_TREND_SAFE_KEYS)
+    assert aggregate["ok"] is True
+    assert aggregate["measurement_basis"] == "v1_low_risk_real_loop_repeat_window"
+
+
+@pytest.mark.parametrize("token", ["0", "false", "off", "no", "FALSE", "Off"])
+def test_repeat_window_trend_opt_out_returns_none(token) -> None:
+    # An explicit falsey env value opts OUT (returns None) for fast/byte-minimal builds.
+    prior = os.environ.get(REPEAT_WINDOW_TREND_ENV)
+    os.environ[REPEAT_WINDOW_TREND_ENV] = token
     try:
         assert build_repeat_window_trend_aggregate() is None
     finally:
-        if prior is not None:
+        if prior is None:
+            os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
+        else:
             os.environ[REPEAT_WINDOW_TREND_ENV] = prior
 
 
@@ -2743,12 +2768,39 @@ def test_repeat_window_trend_rejects_window_out_of_range(bad_window) -> None:
         _safe_repeat_window_trend_aggregate(report)
 
 
-def test_flag_off_manifest_omits_repeat_window_trend_key() -> None:
+def test_default_manifest_includes_repeat_window_trend_key() -> None:
+    # Default-on: build_manifest ships the measurement-only trend as default evidence
+    # under the low-risk capability proof.
     prior = os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
     try:
         manifest = build_manifest()
     finally:
         if prior is not None:
+            os.environ[REPEAT_WINDOW_TREND_ENV] = prior
+    low_risk = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "low_risk_autonomy_loop"
+    )
+    assert "repeat_window_trend" in low_risk["proof"]
+    trend = low_risk["proof"]["repeat_window_trend"]
+    assert set(trend) == set(_REPEAT_WINDOW_TREND_SAFE_KEYS)
+    assert trend["ok"] is True
+    assert trend["measurement_basis"] == "v1_low_risk_real_loop_repeat_window"
+    # measurement-only: no authority granted, no writes (prefixed so the consumer's
+    # root authority scan never picks them up).
+    assert trend["trend_runtime_authority_granted"] is False
+    assert trend["trend_external_writes_applied"] is False
+
+
+def test_opt_out_manifest_omits_repeat_window_trend_key() -> None:
+    prior = os.environ.get(REPEAT_WINDOW_TREND_ENV)
+    os.environ[REPEAT_WINDOW_TREND_ENV] = "0"
+    try:
+        manifest = build_manifest()
+    finally:
+        if prior is None:
+            os.environ.pop(REPEAT_WINDOW_TREND_ENV, None)
+        else:
             os.environ[REPEAT_WINDOW_TREND_ENV] = prior
     low_risk = next(
         c for c in manifest["capabilities"]

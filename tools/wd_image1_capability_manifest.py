@@ -7375,14 +7375,21 @@ _REPEAT_WINDOW_TREND_SAFE_KEYS = (
 
 
 def _repeat_window_trend_enabled() -> bool:
-    """True only when the opt-in env flag is set (default OFF).
+    """True by default (measurement-only DEFAULT evidence); an explicit falsey env
+    value opts OUT.
 
-    The repeat-window trend proof replays the autogrowth loop ~2*window times, so
-    it is off by default and build_manifest stays fast / byte-unaffected.
+    The repeat-window trend proof replays the autogrowth loop ~2*window times
+    (~1s) and is now DEFAULT-ON so the low-risk capability ships the
+    reproducibility measurement as default evidence. Set
+    WD_IMAGE1_REPEAT_WINDOW_TREND to a falsey token (0/false/no/off) to opt out for
+    a fast / byte-minimal manifest build. The proof stays measurement-only: it
+    never flips the low-risk claim, grants authority, writes, or appends to the
+    bridge.
     """
-    return str(
-        os.environ.get(REPEAT_WINDOW_TREND_ENV, "")
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    raw = os.environ.get(REPEAT_WINDOW_TREND_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _safe_repeat_window_trend_aggregate(report: dict) -> dict:
@@ -7455,9 +7462,9 @@ def _safe_repeat_window_trend_aggregate(report: dict) -> dict:
 
 
 def build_repeat_window_trend_aggregate(*, force: bool | None = None) -> dict | None:
-    """Run the opt-in repeat-window trend proof and return a safe aggregate, or
-    None when OFF (default) so the manifest stays byte-unaffected.
-    Measurement-only: it never flips the low-risk claim.
+    """Run the repeat-window trend proof (DEFAULT-ON) and return a safe aggregate,
+    or None when explicitly opted OUT (falsey env) so the manifest stays
+    byte-minimal. Measurement-only: it never flips the low-risk claim.
     """
     enabled = _repeat_window_trend_enabled() if force is None else force
     if not enabled:
@@ -8234,9 +8241,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     )
     low_risk_autonomy_proof["runtime_boundary_smoke"] = low_risk_runtime_boundary_smoke
     low_risk_autonomy_proof["real_loop_dry_run"] = low_risk_real_loop_dry_run
-    # Optional local opt-in repeat-window trend measurement (OFF by default; the
-    # proof replays the loop ~2*window times). Only safe scalar fields; it is
-    # measurement-only evidence and NEVER flips the low-risk claim.
+    # Repeat-window trend measurement, DEFAULT-ON measurement-only evidence (the
+    # proof replays the loop ~2*window times; opt OUT via a falsey
+    # WD_IMAGE1_REPEAT_WINDOW_TREND for a byte-minimal build). Only safe scalar
+    # fields; it is measurement-only evidence and NEVER flips the low-risk claim.
     repeat_window_trend = build_repeat_window_trend_aggregate()
     if repeat_window_trend is not None:
         low_risk_autonomy_proof["repeat_window_trend"] = repeat_window_trend
@@ -8601,9 +8609,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "events, enqueueing scheduler work, or granting authority.",
             ),
             next_smallest_pr=(
-                "Promote the measured local autogrowth real-loop proof into a "
-                "repeat-window trend summary without production writes, "
-                "provider calls, bridge appends, or scheduler authority."
+                "Render the now-default repeat-window trend into a path-free, "
+                "measurement-only reviewer summary (derived booleans/strict ints "
+                "only) without production writes, provider calls, bridge appends, "
+                "or scheduler authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

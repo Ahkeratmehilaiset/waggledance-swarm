@@ -7,13 +7,17 @@
     Watch-Bridge.ps1 is intentionally a wake sentinel writer only: it creates
     wake_<agent> when targeted bridge traffic arrives. This script is the
     companion consumer loop that checks and consumes that sentinel, then invokes
-    `codex exec` with a short bridge prompt.
+    `codex exec` with a short bridge prompt. Real Codex ticks are wrapped with
+    Start-BridgeHeartbeat.ps1 so active bridge claims do not stale-release while
+    the model is still implementing or running tests.
 
     By default the loop is bounded to ten minutes but it still runs every poll
     interval even when no wake file exists. That default keeps bridge work
     moving instead of waiting forever for the next sentinel. Use -WakeOnly when
     a caller wants event-only execution.
 
+    The default Codex sandbox is workspace-write with on-request approvals.
+    Operators can still opt into broader authority explicitly at launch time.
     The Codex CLI arguments are held in a PowerShell array so long values such
     as `danger-full-access` and worktree paths cannot be split by line wrapping.
 #>
@@ -34,16 +38,19 @@ param(
 
     [string] $Model = '',
     [ValidateSet('read-only','workspace-write','danger-full-access')]
-    [string] $Sandbox = 'danger-full-access',
+    [string] $Sandbox = 'workspace-write',
     [ValidateSet('untrusted','on-failure','on-request','never')]
-    [string] $ApprovalPolicy = 'never',
+    [string] $ApprovalPolicy = 'on-request',
     [string] $CodexCommand = '',
 
     [int] $PollSeconds = 60,
     [int] $DurationMinutes = 10,
     [int] $MaxIterations = 0,
+    [int] $HeartbeatIntervalSeconds = 60,
+    [int] $HeartbeatMaxIdleWithoutClaimIterations = 10,
     [switch] $Forever,
     [switch] $WakeOnly,
+    [switch] $SkipHeartbeatDuringCodex,
     [switch] $DryRun,
 
     [string] $Prompt = '',
@@ -125,8 +132,83 @@ function Resolve-CodexCommand {
     throw 'could not resolve Codex CLI command'
 }
 
+function Start-ConsumerHeartbeatJob {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptPath,
+        [Parameter(Mandatory)] [string] $AgentName,
+        [Parameter(Mandatory)] [string] $RuntimeRootPath,
+        [string] $RoleName,
+        [string] $AgentUuidValue,
+        [string] $CapabilityText,
+        [int] $IntervalSeconds,
+        [int] $MaxIdleWithoutClaimIterations,
+        [int] $Iteration
+    )
+
+    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+        throw "missing heartbeat helper: $ScriptPath"
+    }
+
+    $jobName = "agent-bridge-consumer-heartbeat-$AgentName-$PID-$Iteration"
+    return Start-Job -Name $jobName -ScriptBlock {
+        param(
+            $scriptPathArg,
+            $agentArg,
+            $runtimeArg,
+            $roleArg,
+            $agentUuidArg,
+            $capabilitiesTextArg,
+            $intervalSecondsArg,
+            $maxIdleArg
+        )
+        & $scriptPathArg `
+            -Agent $agentArg `
+            -RuntimeRoot $runtimeArg `
+            -Role $roleArg `
+            -AgentUuid $agentUuidArg `
+            -Capabilities @($capabilitiesTextArg) `
+            -IntervalSeconds $intervalSecondsArg `
+            -MaxIdleWithoutClaimIterations $maxIdleArg
+    } -ArgumentList `
+        $ScriptPath,
+        $AgentName,
+        $RuntimeRootPath,
+        $RoleName,
+        $AgentUuidValue,
+        $CapabilityText,
+        $IntervalSeconds,
+        $MaxIdleWithoutClaimIterations
+}
+
+function Stop-ConsumerHeartbeatJob {
+    param(
+        [AllowNull()] $Job,
+        [Parameter(Mandatory)] [string] $LogPath
+    )
+
+    if ($null -eq $Job) { return }
+
+    try {
+        Stop-Job -Job $Job -ErrorAction SilentlyContinue | Out-Null
+        $heartbeatOutput = Receive-Job -Job $Job -ErrorAction SilentlyContinue | Out-String
+        if ($heartbeatOutput.Trim()) {
+            @(
+                ''
+                '--- bridge heartbeat job output ---'
+                $heartbeatOutput.TrimEnd()
+            ) | Out-File -LiteralPath $LogPath -Encoding UTF8 -Append
+        }
+    } finally {
+        Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+
 if ($PollSeconds -lt 0) { throw 'PollSeconds must be >= 0' }
 if ($DurationMinutes -lt 0) { throw 'DurationMinutes must be >= 0' }
+if ($HeartbeatIntervalSeconds -lt 1) { throw 'HeartbeatIntervalSeconds must be >= 1' }
+if ($HeartbeatMaxIdleWithoutClaimIterations -lt 1) {
+    throw 'HeartbeatMaxIdleWithoutClaimIterations must be >= 1'
+}
 if ((-not $Forever) -and $DurationMinutes -eq 0 -and $MaxIterations -le 0) {
     throw 'Use -Forever or set -MaxIterations when DurationMinutes is 0'
 }
@@ -188,6 +270,11 @@ $testWake = Join-Path $PSScriptRoot 'Test-BridgeWake.ps1'
 if (-not (Test-Path -LiteralPath $testWake -PathType Leaf)) {
     throw "missing wake consumer helper: $testWake"
 }
+$heartbeatScript = Join-Path $PSScriptRoot 'Start-BridgeHeartbeat.ps1'
+$heartbeatDuringCodex = (
+    (-not $SkipHeartbeatDuringCodex) -and
+    $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED -ne '0'
+)
 
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_AGENT = $Agent
@@ -243,15 +330,34 @@ while ($true) {
     $logPath = Join-Path $logFull ("{0}-{1:000}-{2}.log" -f $Agent, $iteration, $stamp)
     $exitCode = $null
     $errorText = ''
+    $heartbeatJob = $null
+    $heartbeatError = ''
 
     if ($shouldRun -and -not $DryRun) {
         try {
+            if ($heartbeatDuringCodex) {
+                $heartbeatJob = Start-ConsumerHeartbeatJob `
+                    -ScriptPath $heartbeatScript `
+                    -AgentName $Agent `
+                    -RuntimeRootPath $runtimeFull `
+                    -RoleName $Role `
+                    -AgentUuidValue $AgentUuid `
+                    -CapabilityText (@($Capabilities) -join ',') `
+                    -IntervalSeconds $HeartbeatIntervalSeconds `
+                    -MaxIdleWithoutClaimIterations $HeartbeatMaxIdleWithoutClaimIterations `
+                    -Iteration $iteration
+            }
             $Prompt | & $codexCommandResolved @codexArgs *> $logPath
             $exitCode = $LASTEXITCODE
         } catch {
             $exitCode = 1
             $errorText = $_.Exception.Message
+            if ($null -eq $heartbeatJob -and $heartbeatDuringCodex) {
+                $heartbeatError = $errorText
+            }
             $errorText | Out-File -LiteralPath $logPath -Encoding UTF8 -Append
+        } finally {
+            Stop-ConsumerHeartbeatJob -Job $heartbeatJob -LogPath $logPath
         }
     }
 
@@ -271,6 +377,9 @@ while ($true) {
         log_path          = $logPath
         exit_code         = $exitCode
         error             = $errorText
+        heartbeat_enabled = [bool]$heartbeatDuringCodex
+        heartbeat_job_id  = if ($null -ne $heartbeatJob) { [string]$heartbeatJob.Id } else { '' }
+        heartbeat_error   = $heartbeatError
     }
 
     if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }

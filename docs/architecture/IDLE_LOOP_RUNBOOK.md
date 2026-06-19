@@ -229,6 +229,12 @@ unless `-Model` or `AGENT_BRIDGE_CODEX_MODEL` is set, so it follows the current
 Codex config default instead of pinning a stale limited model. On Windows the
 consumer resolves `codex.cmd` before the PowerShell `codex.ps1` shim, because
 the shim exits the host process unhelpfully inside long-running automation.
+Real Codex ticks start `Start-BridgeHeartbeat.ps1` for the tick duration, so a
+claim opened inside `codex exec` does not stale-release during long tests.
+The source defaults are conservative: `-Sandbox workspace-write` and
+`-ApprovalPolicy on-request`. Trusted operator-run loops that need cross-repo
+bridge writes must pass broader authority explicitly, for example
+`-Sandbox danger-full-access -ApprovalPolicy never`.
 
 ## Self-pacing tick (`tools/bridge_loop_tick.py`)
 

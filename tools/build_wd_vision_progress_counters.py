@@ -223,6 +223,13 @@ def _extract_milestone_values(
         authority = _mapping(real_loop.get("authority_boundary"))
         control_plane = _mapping(real_loop.get("control_plane"))
         table_counts = _mapping(control_plane.get("table_counts"))
+        # Deterministic real-loop manifest contribution: safe scalar
+        # evidence-vs-authority counters from run_low_risk_autogrowth_real_loop_proof.
+        # Measurement-only; the milestone counter re-derives availability fail-closed
+        # and never upgrades claim_safe.
+        real_loop_manifest = _mapping(
+            proof.get("real_loop_manifest_contribution")
+        )
         # Repeat-window trend measurement (DEFAULT-ON; opt OUT via the manifest env
         # flag). Present whenever the manifest ran the proof. Surface the safe
         # scalar fields; the trend counter derives availability fail-closed and
@@ -254,6 +261,7 @@ def _extract_milestone_values(
                 for k, v in proof.items()
                 if k
                 not in (
+                    "real_loop_manifest_contribution",
                     "repeat_window_trend",
                     "repeat_window_trend_reviewer_summary",
                     "cross_consistency_digest",
@@ -303,6 +311,39 @@ def _extract_milestone_values(
             # hand-enumerated subset can leave a fail-open gap.
             "dry_run_any_authority_flag": any(
                 v is True for v in authority.values()
+            ),
+            "real_loop_manifest_contribution_present": isinstance(
+                proof.get("real_loop_manifest_contribution"), Mapping
+            ),
+            "real_loop_manifest_contribution_ok": (
+                real_loop_manifest.get("ok") is True
+            ),
+            "real_loop_manifest_contribution_deterministic": (
+                real_loop_manifest.get("deterministic") is True
+            ),
+            "real_loop_manifest_contribution_evidence_present": (
+                real_loop_manifest.get("evidence_present") is True
+            ),
+            "real_loop_manifest_contribution_runtime_authority_granted": (
+                real_loop_manifest.get("runtime_authority_granted") is True
+            ),
+            "real_loop_manifest_contribution_external_writes_applied": (
+                real_loop_manifest.get("external_writes_applied") is True
+            ),
+            "real_loop_manifest_contribution_scheduler_enqueue": (
+                real_loop_manifest.get("scheduler_enqueue") is True
+            ),
+            "real_loop_manifest_contribution_production_flip": (
+                real_loop_manifest.get("production_flip") is True
+            ),
+            "real_loop_manifest_contribution_production_authority_granted": (
+                real_loop_manifest.get("production_authority_granted") is True
+            ),
+            "real_loop_manifest_contribution_provider_calls": (
+                real_loop_manifest.get("provider_calls")
+            ),
+            "real_loop_manifest_contribution_claim_safe": (
+                real_loop_manifest.get("claim_safe") is True
             ),
             "repeat_window_trend_present": bool(proof.get("repeat_window_trend")),
             "repeat_window_trend_ok": trend.get("ok") is True,
@@ -754,6 +795,46 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and low_risk_real_loop_promotions >= 1
         and not low_risk_real_loop_guardrail_tripped
     )
+    # Deterministic real-loop manifest contribution: LOCAL measurement evidence from
+    # the dedicated proof. Count evidence only when the proof is present, deterministic,
+    # evidence_present, and every authority/write/scheduler/provider/claim-safe axis
+    # stays closed. This is deliberately decoupled from
+    # end_to_end_gated_promotions_total; it never grants runtime authority or upgrades
+    # a literal claim.
+    real_loop_manifest_provider_calls = low_risk.get(
+        "real_loop_manifest_contribution_provider_calls"
+    )
+    real_loop_manifest_provider_calls_valid = (
+        isinstance(real_loop_manifest_provider_calls, int)
+        and not isinstance(real_loop_manifest_provider_calls, bool)
+        and real_loop_manifest_provider_calls >= 0
+    )
+    real_loop_manifest_guardrail_tripped = bool(
+        low_risk.get("real_loop_manifest_contribution_runtime_authority_granted")
+        is True
+        or low_risk.get("real_loop_manifest_contribution_external_writes_applied")
+        is True
+        or low_risk.get("real_loop_manifest_contribution_scheduler_enqueue")
+        is True
+        or low_risk.get("real_loop_manifest_contribution_production_flip") is True
+        or low_risk.get(
+            "real_loop_manifest_contribution_production_authority_granted"
+        )
+        is True
+        or (
+            real_loop_manifest_provider_calls_valid
+            and real_loop_manifest_provider_calls > 0
+        )
+        or low_risk.get("real_loop_manifest_contribution_claim_safe") is True
+    )
+    real_loop_manifest_contribution_available = bool(
+        low_risk.get("real_loop_manifest_contribution_present") is True
+        and low_risk.get("real_loop_manifest_contribution_ok") is True
+        and low_risk.get("real_loop_manifest_contribution_deterministic") is True
+        and low_risk.get("real_loop_manifest_contribution_evidence_present") is True
+        and real_loop_manifest_provider_calls_valid
+        and not real_loop_manifest_guardrail_tripped
+    )
     # Repeat-window trend is a LOCAL measurement (DEFAULT-ON; opt-out via env),
     # surfaced as measurement-only evidence DERIVED fail-closed. It NEVER influences
     # the end_to_end_gated_promotions_total satisfied/current_value above - a stable
@@ -1128,6 +1209,47 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
                 low_risk.get("runtime_authority_granted") is True
                 or low_risk.get("dry_run_runtime_authority_granted") is True
             ),
+        },
+        "low_risk_real_loop_manifest_contribution": {
+            # Measurement-only evidence-vs-authority contribution from the
+            # deterministic real-loop proof. DERIVED fail-closed and fully
+            # decoupled from runtime authority and literal claim safety.
+            "contribution_available": real_loop_manifest_contribution_available,
+            "evidence_count": 1 if real_loop_manifest_contribution_available else 0,
+            "evidence_present": bool(
+                real_loop_manifest_contribution_available
+                and low_risk.get(
+                    "real_loop_manifest_contribution_evidence_present"
+                )
+                is True
+            ),
+            "deterministic": bool(
+                real_loop_manifest_contribution_available
+                and low_risk.get("real_loop_manifest_contribution_deterministic")
+                is True
+            ),
+            "guardrail_tripped": real_loop_manifest_guardrail_tripped,
+            "provider_calls": (
+                real_loop_manifest_provider_calls
+                if real_loop_manifest_provider_calls_valid
+                else None
+            ),
+            "production_authority_granted": bool(
+                low_risk.get(
+                    "real_loop_manifest_contribution_production_authority_granted"
+                )
+                is True
+                or low_risk.get(
+                    "real_loop_manifest_contribution_runtime_authority_granted"
+                )
+                is True
+            ),
+            "measurement_basis": (
+                "v1_low_risk_real_loop_manifest_contribution"
+                if real_loop_manifest_contribution_available
+                else "manifest_real_loop_flags"
+            ),
+            "claim_safe": False,
         },
         "low_risk_real_loop_repeat_window_trend": {
             # Measurement-only reproducibility evidence (default-on; opt-out via env).

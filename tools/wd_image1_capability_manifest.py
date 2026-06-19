@@ -7697,6 +7697,108 @@ def _low_risk_cross_consistency_bridge_event_template_summary(
     return summary
 
 
+_REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
+    "wd.low_risk_autogrowth_real_loop_proof.v1"
+)
+_REAL_LOOP_MANIFEST_CONTRIBUTION_MEASUREMENT_BASIS = (
+    "v1_low_risk_real_loop_manifest_contribution"
+)
+_REAL_LOOP_MANIFEST_CONTRIBUTION_SAFE_KEYS = (
+    "report_version",
+    "ok",
+    "deterministic",
+    "evidence_present",
+    "runtime_authority_granted",
+    "external_writes_applied",
+    "scheduler_enqueue",
+    "production_flip",
+    "production_authority_granted",
+    "provider_calls",
+    "claim_safe",
+    "measurement_basis",
+)
+
+
+def _safe_real_loop_manifest_contribution(report: dict[str, Any]) -> dict[str, Any]:
+    """Reduce the deterministic real-loop proof to manifest-safe scalar counters."""
+
+    def _sb(value: Any, name: str) -> bool:
+        if value is not True and value is not False:
+            raise ValueError(f"real_loop_manifest_contribution {name} is not a strict bool")
+        return value
+
+    def _ni(value: Any, name: str) -> int:
+        if not (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+            raise ValueError(
+                f"real_loop_manifest_contribution {name} is not a non-negative int"
+            )
+        return value
+
+    if not isinstance(report, dict):
+        raise ValueError("real_loop_manifest_contribution report is not a mapping")
+    contribution = report.get("manifest_contribution")
+    evidence_vs_authority = report.get("evidence_vs_authority")
+    deterministic_replay = report.get("deterministic_replay")
+    if not isinstance(contribution, dict):
+        raise ValueError("real_loop_manifest_contribution contribution missing")
+    if not isinstance(evidence_vs_authority, dict):
+        raise ValueError("real_loop_manifest_contribution evidence_vs_authority missing")
+    if not isinstance(deterministic_replay, dict):
+        raise ValueError("real_loop_manifest_contribution deterministic_replay missing")
+    if report.get("report_version") != _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION:
+        raise ValueError("unexpected real_loop_manifest_contribution report_version")
+    if contribution.get("capability_id") != "low_risk_autonomy_loop":
+        raise ValueError("unexpected real_loop_manifest_contribution capability_id")
+
+    aggregate: dict[str, Any] = {
+        "report_version": _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION,
+        "ok": _sb(report.get("ok"), "ok"),
+        "deterministic": _sb(
+            deterministic_replay.get("evidence_identical"), "deterministic"
+        ),
+        "evidence_present": _sb(
+            contribution.get("evidence_present"), "evidence_present"
+        ),
+        "runtime_authority_granted": _sb(
+            contribution.get("runtime_authority_granted"),
+            "runtime_authority_granted",
+        ),
+        "external_writes_applied": _sb(
+            contribution.get("external_writes_applied"), "external_writes_applied"
+        ),
+        "scheduler_enqueue": _sb(
+            contribution.get("scheduler_enqueue"), "scheduler_enqueue"
+        ),
+        "production_flip": _sb(
+            contribution.get("production_flip"), "production_flip"
+        ),
+        "production_authority_granted": _sb(
+            evidence_vs_authority.get("production_authority_granted"),
+            "production_authority_granted",
+        ),
+        "provider_calls": _ni(contribution.get("provider_calls"), "provider_calls"),
+        "claim_safe": _sb(contribution.get("claim_safe"), "claim_safe"),
+        "measurement_basis": _REAL_LOOP_MANIFEST_CONTRIBUTION_MEASUREMENT_BASIS,
+    }
+    extra = set(aggregate) - set(_REAL_LOOP_MANIFEST_CONTRIBUTION_SAFE_KEYS)
+    if extra:
+        raise ValueError(
+            "real_loop_manifest_contribution aggregate has non-allowlisted "
+            f"keys: {sorted(extra)}"
+        )
+    return aggregate
+
+
+def build_real_loop_manifest_contribution() -> dict[str, Any]:
+    """Run the deterministic real-loop proof and return safe manifest counters."""
+
+    from tools.run_low_risk_autogrowth_real_loop_proof import (  # noqa: E402
+        build_real_loop_proof,
+    )
+
+    return _safe_real_loop_manifest_contribution(build_real_loop_proof())
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -8093,8 +8195,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Measured local real-loop dry run from detector signal through digest, scheduler tick, auto-promotion, and dispatcher hit in a temporary control plane.",
             ),
             (
+                "tools/run_low_risk_autogrowth_real_loop_proof.py",
+                "Deterministic offline real-loop proof emits an evidence-vs-authority manifest contribution without runtime authority or claim-safe escalation.",
+            ),
+            (
                 "tests/tools/test_low_risk_autogrowth_chain_dry_run.py",
                 "Dry-run tests prove the measured chain, zero provider/builder jobs, and no runtime authority grant.",
+            ),
+            (
+                "tests/test_low_risk_autogrowth_real_loop_proof.py",
+                "Real-loop proof tests prove deterministic replay, evidence-vs-authority separation, and no claim-safe flip.",
             ),
             (
                 "tools/build_runtime_gap_scheduler_candidate_artifact.py",
@@ -8535,6 +8645,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         )
         is True
     )
+    # Deterministic real-loop proof contribution: safe scalar evidence-vs-authority
+    # counters from tools/run_low_risk_autogrowth_real_loop_proof.py. Enriched AFTER
+    # low_risk_autonomy_proof["ok"] is recomputed so it cannot upgrade the proof,
+    # grant runtime authority, or flip claim_safe by construction.
+    low_risk_autonomy_proof["real_loop_manifest_contribution"] = (
+        build_real_loop_manifest_contribution()
+    )
     # Path-free reviewer summary of the repeat-window trend (merged #1284 renderer),
     # enriched AFTER low_risk_autonomy_proof["ok"] is recomputed above so it is
     # structurally impossible for the ok expression to reference it (decoupled by
@@ -8845,7 +8962,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "thresholds, a measured local real-loop dry run that records "
                 "a runtime gap, digests it, scheduler-ticks it, auto-promotes "
                 "one low-risk solver, and dispatches it from a temporary "
-                "control plane, a read-only runtime gap detector report, and a "
+                "control plane, a deterministic offline real-loop proof "
+                "contribution that separates evidence from production "
+                "authority, a read-only runtime gap detector report, and a "
                 "path-free scheduler-candidate preview artifact plus a "
                 "template-only bridge-event renderer for that preview, plus "
                 "a local index entry for that renderer and a local verifier "
@@ -8865,6 +8984,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "local control plane and does not create provider or builder "
                 "jobs, enqueue production scheduler work, skip gates, or "
                 "grant runtime authority.",
+                "The deterministic real-loop proof contribution is "
+                "counter-shaped evidence only; it does not grant production "
+                "authority or make the literal claim safe.",
                 "The runtime boundary smoke proves ticker construction and "
                 "lifespan hooks, not autonomous production authority.",
                 "Operator metrics expose ticker cadence and counters, not "

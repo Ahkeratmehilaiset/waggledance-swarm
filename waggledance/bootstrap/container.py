@@ -1,8 +1,10 @@
 """Dependency injection container -- wires everything together."""
 
 import logging
+from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
+from uuid import uuid4
 
 log = logging.getLogger(__name__)
 
@@ -527,7 +529,11 @@ class Container:
         )
         resource_kernel.resource_guard = self.resource_guard
 
-        runtime = AutonomyRuntime(profile=profile, resource_kernel=resource_kernel)
+        runtime = AutonomyRuntime(
+            profile=profile,
+            resource_kernel=resource_kernel,
+            runtime_receipt_sink=self._runtime_receipt_sink(),
+        )
         lifecycle = AutonomyLifecycle(
             primary=self._settings.runtime_primary,
             compatibility_mode=self._settings.compatibility_mode,
@@ -546,6 +552,111 @@ class Container:
             profile=profile,
             night_pipeline=self.night_pipeline,
         )
+
+    def _runtime_receipt_sink(self):
+        """Build the optional settings-wired MAGMA runtime receipt sink."""
+        cfg = self._settings.get("runtime.runtime_receipt_sink", {}) or {}
+        if not isinstance(cfg, dict):
+            log.warning(
+                "runtime.runtime_receipt_sink must be a mapping; "
+                "runtime receipts disabled"
+            )
+            return None
+        if cfg.get("enabled") is not True:
+            return None
+
+        base_dir = Path(
+            str(cfg.get("out_dir") or "data/runtime/runtime_summary_receipts")
+        )
+        evaluation_version = str(
+            cfg.get("evaluation_version") or "magma.evaluation_result.v1"
+        )
+
+        def sink(summary: dict):
+            from tools.verify_magma_receipt import verify_manifest
+            from waggledance.core.magma.runtime_summary_receipt import (
+                write_runtime_summary_receipt_bundle,
+            )
+
+            now_utc = datetime.now(timezone.utc)
+            action_id = self._runtime_receipt_safe_fragment(
+                summary.get("action_id")
+            )
+            out_dir = base_dir / (
+                f"{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}-"
+                f"{uuid4().hex[:12]}-{action_id}"
+            )
+            report = write_runtime_summary_receipt_bundle(
+                out_dir=out_dir,
+                summary_payload=summary,
+                now_utc=now_utc,
+                verify_manifest=verify_manifest,
+                evaluation_version=evaluation_version,
+            )
+            return self._runtime_receipt_path_free_report(report)
+
+        return sink
+
+    @staticmethod
+    def _runtime_receipt_safe_fragment(value) -> str:
+        text = str(value or "runtime-summary")
+        safe = "".join(
+            char if char.isalnum() or char in "._-" else "-"
+            for char in text
+        ).strip("-._")
+        return (safe or "runtime-summary")[:80]
+
+    @staticmethod
+    def _runtime_receipt_path_free_report(report):
+        if not isinstance(report, dict):
+            return {
+                "receipt_count": 0,
+                "verifier_report": {
+                    "ok": False,
+                    "receipt_count": 0,
+                    "errors": ["runtime receipt sink returned non-mapping report"],
+                },
+                "local_artifacts_written": True,
+                "runtime_authority_granted": False,
+                "external_writes_applied": False,
+                "paths_returned": False,
+            }
+        verifier_report = report.get("verifier_report")
+        if not isinstance(verifier_report, dict):
+            verifier_report = {}
+        receipt_count = Container._nonnegative_int(
+            report.get("receipt_count")
+            if report.get("receipt_count") is not None
+            else verifier_report.get("receipt_count")
+        )
+        verifier_receipt_count = Container._nonnegative_int(
+            verifier_report.get("receipt_count")
+            if verifier_report.get("receipt_count") is not None
+            else receipt_count
+        )
+        errors = verifier_report.get("errors", [])
+        if not isinstance(errors, list):
+            errors = [str(errors)]
+        return {
+            "receipt_count": receipt_count,
+            "verifier_report": {
+                "ok": verifier_report.get("ok") is True,
+                "receipt_count": verifier_receipt_count,
+                "errors": [str(error) for error in errors],
+            },
+            "local_artifacts_written": True,
+            "runtime_authority_granted": False,
+            "external_writes_applied": False,
+            "paths_returned": False,
+        }
+
+    @staticmethod
+    def _nonnegative_int(value) -> int:
+        try:
+            parsed = int(value)
+        except (OverflowError, TypeError, ValueError):
+            return 0
+        return max(0, parsed)
 
     @cached_property
     def faiss_registry(self):

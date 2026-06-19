@@ -1098,6 +1098,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2032,6 +2034,84 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    reviewer_handoff_bundle_verification_summary_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verification_summary_smoke"
+    ]
+    assert reviewer_handoff_bundle_verification_summary_smoke["ok"] is True
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke["verification_ok"]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "source_contract_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "rebuilt_bundle_index_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "reviewer_handoff_summary_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "artifact_count_checked"
+        ]
+        == 2
+    )
+    assert (
+        set(
+            reviewer_handoff_bundle_verification_summary_smoke[
+                "digest_checks"
+            ].values()
+        )
+        == {"match"}
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "verification_report_boundary_ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "manual_review_required"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke["approval_granted"]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke["local_paths_recorded"]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2053,10 +2133,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "local verifier for that index entry" in capability["safe_statement"]
     assert "reviewer handoff summary" in capability["safe_statement"]
     assert "handoff bundle index" in capability["safe_statement"]
+    assert "path-free verification summary" in capability["safe_statement"]
     assert "handoff bundle" in capability["next_smallest_pr"]
-    assert "verification" in capability["next_smallest_pr"]
-    assert "reviewer summary" in capability["next_smallest_pr"]
+    assert "verification summary" in capability["next_smallest_pr"]
+    assert "template-only bridge-event JSON" in capability["next_smallest_pr"]
     assert "without including payloads" in capability["next_smallest_pr"]
+    assert "reviewer summary" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

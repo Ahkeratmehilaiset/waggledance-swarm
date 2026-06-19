@@ -437,6 +437,21 @@ guardrail status. The summary is context only: it keeps
 `approval_granted=false`, `release_decision_made=false`,
 `runtime_controls_added=false`, and `network_access_performed=false`.
 
+`tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py`
+can render the final route-stage feed-health verifier-chain result as path-free
+reviewer handoff context. `tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py`
+can bind that final verifier result to the reviewer handoff summary by digest,
+size, schema, source-contract, and rebuilt-summary checks.
+`tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py`
+can recompute those bundle checks from explicit local artifacts, and
+`tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py`
+can render that verifier report as path-free reviewer context. The route-stage
+handoff bundle chain remains local and context-only: it keeps
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`,
+`runtime_controls_added=false`, and `network_access_performed=false`.
+
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager

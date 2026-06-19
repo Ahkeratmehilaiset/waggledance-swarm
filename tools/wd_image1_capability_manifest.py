@@ -8077,6 +8077,19 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof["chain_final_summary"] = _render_chain_final_summary(
         hex_upgrade_proof
     )
+    # Path-free cross-consistency digest: confirms the three already-stored
+    # measurement views (reviewer_summary, shadow_only_invariant, chain_final_summary)
+    # AGREE - each re-derived clean from its own components. Content-safe by
+    # construction (only derived booleans); measurement-only, so it is NOT folded into
+    # hex_upgrade_proof["ok"] below and NEVER upgrades any claim. It reads the three
+    # view keys populated on hex_upgrade_proof above.
+    from tools.run_hex_upgrade_cross_consistency_digest import (  # noqa: E402
+        build_cross_consistency_digest as _build_cross_consistency_digest,
+    )
+
+    hex_upgrade_proof["cross_consistency_digest"] = _build_cross_consistency_digest(
+        hex_upgrade_proof
+    )
     hex_upgrade_proof["ok"] = bool(
         hex_upgrade_proof.get("ok") is True
         and hex_upgrade_runtime_smoke.get("ok") is True

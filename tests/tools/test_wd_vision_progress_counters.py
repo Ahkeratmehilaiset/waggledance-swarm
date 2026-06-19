@@ -1471,3 +1471,145 @@ def test_hex_chain_claim_safe_hardcoded_false_even_when_clean():
     # claim_safe is HARDCODED False on the emitted milestone regardless of cleanliness.
     block, _ = _chain_counters(_good_chain_final_summary())
     assert block["claim_safe"] is False
+
+
+# --- hex cross-consistency digest counter (#1278 digest wiring) ---
+def _good_cross_consistency_digest():
+    # Mirrors build_cross_consistency_digest output the manifest stores under
+    # hex_upgrade_proof["cross_consistency_digest"].
+    return {
+        "report_version": "wd.hex_upgrade_cross_consistency_digest.v1",
+        "reviewer_summary_present": True,
+        "shadow_only_invariant_present": True,
+        "chain_final_summary_present": True,
+        "all_views_present": True,
+        "reviewer_clean": True,
+        "shadow_only_clean": True,
+        "chain_summary_clean": True,
+        "cross_consistent": True,
+        "path_free_verified": True,
+        "claim_safe": False,
+    }
+
+
+def _manifest_with_hex_xcons(digest, *, hex_proof_extra=None):
+    proof = {
+        "ok": True,
+        "no_runtime_mutation": True,
+        "runtime_authority_changed": False,
+    }
+    if digest is not None:
+        proof["cross_consistency_digest"] = digest
+    if hex_proof_extra:
+        proof.update(hex_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "hexagonal_upgrades", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _xcons_counters(digest, **kw):
+    mc = build_vision_progress_counters(_manifest_with_hex_xcons(digest, **kw))[
+        "milestone_counters"
+    ]
+    return mc["hex_subdivision_cross_consistency_digest"], mc[
+        "shadow_to_candidate_subdivision_transitions_total"
+    ]
+
+
+def test_hex_xcons_available_with_clean_digest():
+    block, _ = _xcons_counters(_good_cross_consistency_digest())
+    assert block["digest_available"] is True
+    assert block["cross_consistent"] is True
+    assert block["path_free_verified"] is True
+    assert block["all_views_present"] is True
+    assert block["measurement_basis"] == "v1_hex_upgrade_cross_consistency_digest"
+    assert block["claim_safe"] is False
+
+
+def test_hex_xcons_unavailable_when_absent():
+    block, _ = _xcons_counters(None)
+    assert block["digest_available"] is False
+    assert block["cross_consistent"] is False
+    assert block["measurement_basis"] == "manifest_hex_upgrade_flags"
+    assert block["claim_safe"] is False
+
+
+_XCONS_COMPONENT_FIELDS = [
+    "path_free_verified",
+    "all_views_present",
+    "reviewer_clean",
+    "shadow_only_clean",
+    "chain_summary_clean",
+]
+
+
+@pytest.mark.parametrize("field", _XCONS_COMPONENT_FIELDS)
+def test_hex_xcons_consumer_rederives_fail_closed(field):
+    # Consumer RE-DERIVES cross_consistent from the COMPONENT booleans fail-closed.
+    d = _good_cross_consistency_digest()
+    d[field] = False
+    block, _ = _xcons_counters(d)
+    if field == "path_free_verified":
+        assert block["digest_available"] is False
+    assert block["cross_consistent"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("field", [
+    "all_views_present", "reviewer_clean", "shadow_only_clean", "chain_summary_clean",
+])
+def test_hex_xcons_inconsistent_aggregate_fails_closed(field):
+    # #1274: a component False but the digest's own cross_consistent True must still
+    # render cross_consistent=False (consumer never trusts the aggregate composite).
+    d = _good_cross_consistency_digest()
+    d[field] = False
+    d["cross_consistent"] = True  # lying aggregate composite
+    block, _ = _xcons_counters(d)
+    assert block["cross_consistent"] is False, field
+
+
+def test_hex_xcons_self_claim_safe_refuses_to_certify():
+    # A digest self-declaring claim_safe True must fail closed (measurement-only never
+    # upgrades a claim) - mirrors the chain_final_summary self_claim_safe guard.
+    d = _good_cross_consistency_digest()
+    d["claim_safe"] = True
+    block, _ = _xcons_counters(d)
+    assert block["digest_available"] is False
+    assert block["cross_consistent"] is False
+
+
+def test_hex_xcons_does_not_touch_shadow_to_candidate():
+    _, s2c_with = _xcons_counters(_good_cross_consistency_digest())
+    _, s2c_without = _xcons_counters(None)
+    assert s2c_with == s2c_without
+    assert s2c_with["satisfied"] is False
+    assert s2c_with["current_value"] == 0
+
+
+@pytest.mark.parametrize("bare_key", [
+    "no_runtime_mutation", "runtime_authority_changed",
+])
+def test_hex_xcons_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271: a bare authority/mutation key nested in the measurement-only
+    # cross_consistency_digest subtree must NOT reach the recursive _nested_flag scan.
+    d = _good_cross_consistency_digest()
+    d["forged_nested"] = {
+        bare_key: (False if bare_key == "no_runtime_mutation" else True)
+    }
+    counters = build_vision_progress_counters(_manifest_with_hex_xcons(d))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["hexagonal_upgrades"]["milestones"]
+    assert milestones["no_runtime_mutation"] is True, bare_key
+    assert milestones["runtime_authority_changed"] is False, bare_key
+
+
+def test_hex_xcons_claim_safe_hardcoded_false_even_when_clean():
+    block, _ = _xcons_counters(_good_cross_consistency_digest())
+    assert block["claim_safe"] is False

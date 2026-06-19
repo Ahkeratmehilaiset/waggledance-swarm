@@ -2821,3 +2821,36 @@ def test_manifest_chain_final_summary_not_folded_into_ok() -> None:
     src = inspect.getsource(mod._capabilities)
     ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
     assert "chain_final_summary" not in ok_assign
+
+
+def test_manifest_stores_cross_consistency_digest_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )
+    digest = hex_cap["proof"].get("cross_consistency_digest")
+    assert isinstance(digest, dict)
+    # content-safe by construction: only the version string + derived booleans
+    for key, value in digest.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert digest["cross_consistent"] is True
+    assert digest["all_views_present"] is True
+    assert digest["path_free_verified"] is True
+    assert digest["claim_safe"] is False
+    # no raw repo path leaked into the stored digest
+    assert str(ROOT) not in json.dumps(digest)
+
+
+def test_manifest_cross_consistency_digest_not_folded_into_ok() -> None:
+    # The cross-consistency digest is measurement-only: hex_upgrade proof ok must not
+    # depend on it (the ok computation does not reference cross_consistency_digest).
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert "cross_consistency_digest" not in ok_assign

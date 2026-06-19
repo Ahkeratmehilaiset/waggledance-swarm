@@ -32,6 +32,22 @@ function Read-EventCount {
     return @((Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction SilentlyContinue)).Count
 }
 
+function Convert-ClaimTimestampUtc {
+    param([Parameter(Mandatory)] [object] $Value)
+
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    return [DateTime]::Parse(
+        [string]$Value,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        $styles
+    ).ToUniversalTime()
+}
+
 try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $tempRoot
     $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED = '1'
@@ -48,8 +64,8 @@ try {
     & $heartbeat -Agent codex -RuntimeRoot $tempRoot -IntervalMs 50 -MaxIterations 1 | Out-Null
     $after = Read-Claim -RuntimeRoot $tempRoot -TaskId $taskId
 
-    $beforeTs = [DateTime]::Parse([string]$before.last_heartbeat_utc).ToUniversalTime()
-    $afterTs = [DateTime]::Parse([string]$after.last_heartbeat_utc).ToUniversalTime()
+    $beforeTs = Convert-ClaimTimestampUtc $before.last_heartbeat_utc
+    $afterTs = Convert-ClaimTimestampUtc $after.last_heartbeat_utc
     $passed = ($afterTs -gt $beforeTs)
 
     if (-not $passed) {

@@ -76,6 +76,8 @@ CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
         "concurrence",
         "resolved",
         "cleared",
+        "retracted",
+        "withdrawn",
     }
 )
 

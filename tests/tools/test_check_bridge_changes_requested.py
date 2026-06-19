@@ -293,7 +293,7 @@ def test_concurrence_changes_requested_status_does_not_block() -> None:
     assert result["latest_blocking_event"] is None
 
 
-def test_changes_requested_resolved_and_cleared_are_non_blocking() -> None:
+def test_changes_requested_resolution_statuses_are_non_blocking() -> None:
     events = [
         _event(
             "2026-06-19T03:00:00Z",
@@ -306,6 +306,20 @@ def test_changes_requested_resolved_and_cleared_are_non_blocking() -> None:
             "codex",
             "decision",
             "rco_changes_requested_cleared",
+            task_id="T",
+        ),
+        _event(
+            "2026-06-19T03:02:00Z",
+            "codex",
+            "decision",
+            "changes_requested_retracted",
+            task_id="T",
+        ),
+        _event(
+            "2026-06-19T03:03:00Z",
+            "codex",
+            "decision",
+            "rco_changes_requested_withdrawn",
             task_id="T",
         ),
     ]

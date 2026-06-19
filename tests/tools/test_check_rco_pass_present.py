@@ -255,7 +255,11 @@ def test_changes_requested_after_pass_refuses() -> None:
         "changes_requested_concurrence",
         "changes_requested_resolved",
         "changes_requested_cleared",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
         "rco_changes_requested_cleared",
+        "rco_changes_requested_retracted",
+        "rco_changes_requested_withdrawn",
     ],
 )
 def test_neutral_changes_requested_status_after_pass_does_not_veto(

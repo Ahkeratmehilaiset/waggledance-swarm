@@ -46,6 +46,7 @@ param(
     [int] $PollSeconds = 60,
     [int] $DurationMinutes = 10,
     [int] $MaxIterations = 0,
+    [int] $CodexTimeoutSeconds = 600,
     [int] $HeartbeatIntervalSeconds = 60,
     [int] $HeartbeatMaxIdleWithoutClaimIterations = 10,
     [switch] $Forever,
@@ -203,8 +204,70 @@ function Stop-ConsumerHeartbeatJob {
     }
 }
 
+function Invoke-CodexTick {
+    param(
+        [Parameter(Mandatory)] [string] $Command,
+        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter(Mandatory)] [string] $PromptText,
+        [Parameter(Mandatory)] [string] $LogPath,
+        [int] $TimeoutSeconds
+    )
+
+    $timedOut = $false
+    $exitCode = $null
+    $errorText = ''
+    $job = $null
+
+    try {
+        $job = Start-Job -ScriptBlock {
+            param($commandArg, $argumentsArg, $promptArg, $logPathArg)
+            $promptArg | & $commandArg @argumentsArg *> $logPathArg
+            if ($null -ne $LASTEXITCODE) {
+                $LASTEXITCODE
+            } elseif ($?) {
+                0
+            } else {
+                1
+            }
+        } -ArgumentList $Command, @($Arguments), $PromptText, $LogPath
+
+        $completed = Wait-Job -Job $job -Timeout $TimeoutSeconds
+        if ($null -eq $completed) {
+            $timedOut = $true
+            $exitCode = 124
+            $errorText = "codex exec timed out after $TimeoutSeconds seconds"
+            Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        } else {
+            $jobOutput = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            $lastExit = @($jobOutput | Select-Object -Last 1)[0]
+            if ($null -eq $lastExit) {
+                $exitCode = 0
+            } else {
+                $exitCode = [int]$lastExit
+            }
+        }
+    } catch {
+        $exitCode = 1
+        $errorText = $_.Exception.Message
+    } finally {
+        if ($errorText) {
+            $errorText | Out-File -LiteralPath $LogPath -Encoding UTF8 -Append
+        }
+        if ($null -ne $job) {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+
+    [pscustomobject]@{
+        exit_code = $exitCode
+        timed_out = $timedOut
+        error = $errorText
+    }
+}
+
 if ($PollSeconds -lt 0) { throw 'PollSeconds must be >= 0' }
 if ($DurationMinutes -lt 0) { throw 'DurationMinutes must be >= 0' }
+if ($CodexTimeoutSeconds -lt 1) { throw 'CodexTimeoutSeconds must be >= 1' }
 if ($HeartbeatIntervalSeconds -lt 1) { throw 'HeartbeatIntervalSeconds must be >= 1' }
 if ($HeartbeatMaxIdleWithoutClaimIterations -lt 1) {
     throw 'HeartbeatMaxIdleWithoutClaimIterations must be >= 1'
@@ -330,6 +393,7 @@ while ($true) {
     $logPath = Join-Path $logFull ("{0}-{1:000}-{2}.log" -f $Agent, $iteration, $stamp)
     $exitCode = $null
     $errorText = ''
+    $timedOut = $false
     $heartbeatJob = $null
     $heartbeatError = ''
 
@@ -347,8 +411,15 @@ while ($true) {
                     -MaxIdleWithoutClaimIterations $HeartbeatMaxIdleWithoutClaimIterations `
                     -Iteration $iteration
             }
-            $Prompt | & $codexCommandResolved @codexArgs *> $logPath
-            $exitCode = $LASTEXITCODE
+            $codexResult = Invoke-CodexTick `
+                -Command $codexCommandResolved `
+                -Arguments @($codexArgs) `
+                -PromptText $Prompt `
+                -LogPath $logPath `
+                -TimeoutSeconds $CodexTimeoutSeconds
+            $exitCode = $codexResult.exit_code
+            $timedOut = [bool]$codexResult.timed_out
+            $errorText = [string]$codexResult.error
         } catch {
             $exitCode = 1
             $errorText = $_.Exception.Message
@@ -374,6 +445,8 @@ while ($true) {
         ran_codex         = ($shouldRun -and -not $DryRun)
         codex_command     = $codexCommandResolved
         codex_args        = @($codexArgs)
+        codex_timeout_seconds = $CodexTimeoutSeconds
+        codex_timed_out  = $timedOut
         log_path          = $logPath
         exit_code         = $exitCode
         error             = $errorText

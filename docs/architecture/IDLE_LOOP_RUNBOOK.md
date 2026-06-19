@@ -231,6 +231,10 @@ consumer resolves `codex.cmd` before the PowerShell `codex.ps1` shim, because
 the shim exits the host process unhelpfully inside long-running automation.
 Real Codex ticks start `Start-BridgeHeartbeat.ps1` for the tick duration, so a
 claim opened inside `codex exec` does not stale-release during long tests.
+Each tick is still bounded by `-CodexTimeoutSeconds` (default 600). A timed-out
+tick is terminated, logs exit code `124`, and the next poll can try again or
+surface bridge evidence instead of letting one long `codex exec` block wake
+delivery indefinitely.
 The source defaults are conservative: `-Sandbox workspace-write` and
 `-ApprovalPolicy on-request`. Trusted operator-run loops that need cross-repo
 bridge writes must pass broader authority explicitly, for example

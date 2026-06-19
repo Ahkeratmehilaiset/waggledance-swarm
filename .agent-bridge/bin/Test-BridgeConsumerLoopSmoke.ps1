@@ -20,6 +20,7 @@ $runtimeRoot = Join-Path $tmpRoot '.agent-bridge'
 $worktree = Join-Path $tmpRoot 'codex-tools-1-worktree'
 $wakePath = Join-Path $runtimeRoot 'wake_codex-tools-1'
 $fakeCodex = Join-Path $tmpRoot 'fake-codex.ps1'
+$slowCodex = Join-Path $tmpRoot 'slow-codex.ps1'
 
 try {
     [void](New-Item -ItemType Directory -Path $runtimeRoot -Force -ErrorAction Stop)
@@ -47,6 +48,10 @@ $claim | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $claimPath -Encoding
 Start-Sleep -Milliseconds 2200
 exit 0
 '@ | Set-Content -LiteralPath $fakeCodex -Encoding UTF8
+    @'
+Start-Sleep -Seconds 5
+exit 0
+'@ | Set-Content -LiteralPath $slowCodex -Encoding UTF8
 
     $script = Join-Path $PSScriptRoot 'Start-AgentBridgeConsumerLoop.ps1'
     $result = @(& $script `
@@ -112,11 +117,30 @@ exit 0
     Assert-True (@($liveRun).Count -eq 1) 'expected one live fake-codex iteration'
     Assert-True ([bool]$liveRun[0].ran_codex) 'fake codex should have run'
     Assert-True ($liveRun[0].exit_code -eq 0) 'fake codex should exit 0'
+    Assert-True (-not [bool]$liveRun[0].codex_timed_out) 'fake codex should not time out'
+    Assert-True ($liveRun[0].codex_timeout_seconds -eq 600) 'default codex timeout should be 600 seconds'
     Assert-True ([string]$liveRun[0].heartbeat_job_id -ne '') 'real codex tick should start heartbeat job'
 
     $claimPath = Join-Path $runtimeRoot 'work_queue\claims\consumer-heartbeat-smoke.json'
     $claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
     Assert-True ([string]$claim.last_heartbeat_utc -ne '2000-01-01T00:00:00Z') 'heartbeat did not refresh claim lease during codex tick'
+
+    [System.IO.File]::WriteAllText($wakePath, 'wake')
+    $timeoutRun = @(& $script `
+        -Agent codex-tools-1 `
+        -RuntimeRoot $runtimeRoot `
+        -Worktree $worktree `
+        -CodexCommand $slowCodex `
+        -CodexTimeoutSeconds 1 `
+        -SkipHeartbeatDuringCodex `
+        -MaxIterations 1 `
+        -DurationMinutes 0 `
+        -PollSeconds 0)
+    Assert-True (@($timeoutRun).Count -eq 1) 'expected one timeout fake-codex iteration'
+    Assert-True ([bool]$timeoutRun[0].ran_codex) 'slow fake codex should have run'
+    Assert-True ([bool]$timeoutRun[0].codex_timed_out) 'slow fake codex should time out'
+    Assert-True ($timeoutRun[0].exit_code -eq 124) 'timeout should use exit code 124'
+    Assert-True ((Get-Content -Raw -LiteralPath $timeoutRun[0].log_path) -match 'timed out after 1 seconds') 'timeout log missing evidence'
 
     'Bridge consumer loop smoke passed.'
 } finally {

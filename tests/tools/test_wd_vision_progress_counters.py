@@ -1909,6 +1909,36 @@ def test_low_risk_reviewer_subtree_excluded_from_recursive_scan(bare_key):
     assert milestones["external_writes_applied"] is False, bare_key
 
 
+@pytest.mark.parametrize("authority_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_low_risk_reviewer_subtree_exclusion_positive_control(authority_key):
+    # #1286 review: the recursive authority scan must keep its TEETH outside the
+    # excluded reviewer-summary subtree. The SAME nested authority key (an exact scanned
+    # field) trips the milestone when placed OUTSIDE repeat_window_trend_reviewer_summary
+    # but must NOT trip when nested INSIDE it -> the exclusion is surgical, not a blanket
+    # authority-scan disable.
+    def _milestones(manifest):
+        counters = build_vision_progress_counters(manifest)
+        by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+        return by_id["low_risk_autonomy_loop"]["milestones"]
+
+    # INSIDE the excluded subtree -> excluded, not tripped
+    inside_summary = _good_repeat_window_reviewer_summary()
+    inside_summary["forged_nested"] = {authority_key: True}
+    inside_ms = _milestones(_manifest_with_low_risk_reviewer(inside_summary))
+    assert inside_ms[authority_key] is False, f"inside:{authority_key}"
+
+    # OUTSIDE the excluded subtree (elsewhere in the low-risk proof) -> teeth intact
+    outside_ms = _milestones(
+        _manifest_with_low_risk_reviewer(
+            _good_repeat_window_reviewer_summary(),
+            low_risk_proof_extra={"forged_outside": {authority_key: True}},
+        )
+    )
+    assert outside_ms[authority_key] is True, f"outside:{authority_key}"
+
+
 def test_low_risk_reviewer_claim_safe_hardcoded_false_even_when_clean():
     block = _reviewer_counters(_good_repeat_window_reviewer_summary())
     assert block["claim_safe"] is False

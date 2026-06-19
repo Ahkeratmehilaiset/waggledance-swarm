@@ -8248,18 +8248,6 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     repeat_window_trend = build_repeat_window_trend_aggregate()
     if repeat_window_trend is not None:
         low_risk_autonomy_proof["repeat_window_trend"] = repeat_window_trend
-    # Path-free reviewer summary of the repeat-window trend (merged #1284 renderer).
-    # Content-safe by construction (the renderer's allowlist emits only derived
-    # booleans/strict ints), so stored raw; measurement-only, so it is NOT folded into
-    # low_risk_autonomy_proof["ok"] (already computed) and NEVER flips the low-risk
-    # claim. A None/opted-out trend renders a fail-closed (not-clean) summary.
-    from tools.render_low_risk_repeat_window_trend_reviewer_summary import (  # noqa: E402
-        render_repeat_window_trend_reviewer_summary as _render_repeat_window_reviewer_summary,
-    )
-
-    low_risk_autonomy_proof["repeat_window_trend_reviewer_summary"] = (
-        _render_repeat_window_reviewer_summary(repeat_window_trend)
-    )
     low_risk_autonomy_proof["operator_metrics_smoke"] = low_risk_operator_metrics_smoke
     low_risk_autonomy_proof["alert_runbook_smoke"] = low_risk_alert_runbook_smoke
     low_risk_autonomy_proof["ops_alert_state_smoke"] = low_risk_ops_alert_state_smoke
@@ -8305,6 +8293,20 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             "ok"
         )
         is True
+    )
+    # Path-free reviewer summary of the repeat-window trend (merged #1284 renderer),
+    # enriched AFTER low_risk_autonomy_proof["ok"] is recomputed above so it is
+    # structurally impossible for the ok expression to reference it (decoupled by
+    # construction, not just by convention). Content-safe by construction (the
+    # renderer's allowlist emits only derived booleans/strict ints), so stored raw;
+    # measurement-only — NOT folded into ok and NEVER flips the low-risk claim. A
+    # None/opted-out trend renders a fail-closed (not-clean) summary.
+    from tools.render_low_risk_repeat_window_trend_reviewer_summary import (  # noqa: E402
+        render_repeat_window_trend_reviewer_summary as _render_repeat_window_reviewer_summary,
+    )
+
+    low_risk_autonomy_proof["repeat_window_trend_reviewer_summary"] = (
+        _render_repeat_window_reviewer_summary(repeat_window_trend)
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     # Optional local opt-in authoritative-first-hop coverage measurement (OFF by
@@ -8621,10 +8623,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "events, enqueueing scheduler work, or granting authority.",
             ),
             next_smallest_pr=(
-                "Render the now-default repeat-window trend into a path-free, "
-                "measurement-only reviewer summary (derived booleans/strict ints "
-                "only) without production writes, provider calls, bridge appends, "
-                "or scheduler authority."
+                "Add a path-free, measurement-only low-risk cross-consistency "
+                "digest confirming the real-loop dry-run proof, repeat-window "
+                "trend, and reviewer summary are each re-derived clean from "
+                "component scalars and mutually coherent (derived booleans/strict "
+                "ints only), without production writes, provider calls, bridge "
+                "appends, scheduler authority, or claim_safe upgrade."
             ),
             proof=low_risk_autonomy_proof,
         ),

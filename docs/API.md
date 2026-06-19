@@ -455,6 +455,18 @@ guardrail status. The summary is context only: it keeps
 `approval_granted=false`, `release_decision_made=false`,
 `runtime_controls_added=false`, and `network_access_performed=false`.
 
+`tools/build_hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary.py`
+can render a local hex shadow-subdivision verifier-summary bridge-event
+template index-entry verifier report as path-free reviewer context. It carries
+digest, size, schema, source-contract, rebuilt-index-entry, bridge-event-schema,
+blocker, and warning status while keeping
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`, and
+`runtime_subdivision_authority_granted=false`. It does not append bridge events,
+transport artifacts, include payloads, record local paths, or activate runtime
+subdivision authority.
+
 The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager

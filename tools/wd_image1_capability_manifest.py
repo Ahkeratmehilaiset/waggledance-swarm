@@ -8572,6 +8572,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/hex_shadow_subdivision_replay.py",
                 "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, template index-entry builder, index-entry verifier, index-entry verifier summary renderer, index-entry verifier summary bridge-event template builder, and verification-summary template index-entry verifier.",
             ),
+            (
+                "tools/build_hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary.py",
+                "Standalone path-free reviewer summary renderer for the hex shadow replay verifier-summary bridge-event template index-entry verifier.",
+            ),
+            (
+                "tests/tools/test_hex_shadow_subdivision_replay_verifier_summary_bridge_event_template_index_entry_verification_summary.py",
+                "Focused CLI tests prove path-free output, duplicate-key fail-closed behavior, and no runtime subdivision authority.",
+            ),
         ),
     )
     future_evidence = _evidence(

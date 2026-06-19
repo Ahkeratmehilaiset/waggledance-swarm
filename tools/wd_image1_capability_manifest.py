@@ -856,6 +856,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "tests/tools/test_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
         "tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
         "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py",
     )
     metric_names = (
         "waggledance_route_stage_observations_total",
@@ -984,6 +986,14 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     drill_template_index_entry_verifier_summary_template_index_entry_verifier_tests_text = (
         repo_root
         / "tests/tools/test_verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py"
+    ).read_text(encoding="utf-8")
+    drill_reviewer_handoff_summary_text = (
+        repo_root
+        / "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py"
+    ).read_text(encoding="utf-8")
+    drill_reviewer_handoff_summary_tests_text = (
+        repo_root
+        / "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py"
     ).read_text(encoding="utf-8")
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     runbook_text = (
@@ -1456,6 +1466,30 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             ).get("ok")
             is True
         ),
+        "ops_latency_feed_drill_evidence_reviewer_handoff_summary_present": all(
+            token
+            in "\n".join(
+                (
+                    drill_reviewer_handoff_summary_text,
+                    drill_reviewer_handoff_summary_tests_text,
+                )
+            )
+            for token in (
+                "SUMMARY_VERSION",
+                "route_stage_feed_health_drill_evidence_reviewer_handoff_summary.v1",
+                "build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary",
+                "validated_verifier_chain",
+                "direct_bridge_write_performed",
+                "artifact_payloads_included",
+                "test_route_stage_feed_health_reviewer_handoff_summary_renders_final_verifier_without_authority",
+            )
+        )
+        and (
+            drill_verifier_smoke.get("reviewer_handoff_summary_smoke", {}).get(
+                "ok"
+            )
+            is True
+        ),
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
@@ -1541,6 +1575,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_supported": checks[
             "ops_latency_feed_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_present"
         ],
+        "latency_feed_drill_evidence_reviewer_handoff_summary_supported": checks[
+            "ops_latency_feed_drill_evidence_reviewer_handoff_summary_present"
+        ],
         "drill_evidence_verifier_smoke": drill_verifier_smoke,
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
@@ -1559,6 +1596,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "index entry, path-free verifier summary renderer, template-only "
             "bridge-event renderer for that summary, and local index entry "
             "for that renderer plus a local verifier for that index entry "
+            "and a path-free reviewer handoff summary for the verifier chain "
             "without storing raw query, profile, language, context, full "
             "route trace payloads, local paths, or appending bridge events."
         ),
@@ -1605,6 +1643,10 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         from tools.verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry import (
             VERIFICATION_VERSION as DRILL_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_INDEX_ENTRY_VERIFICATION_VERSION,
             verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry,
+        )
+        from tools.build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary import (
+            SUMMARY_VERSION as DRILL_REVIEWER_HANDOFF_SUMMARY_VERSION,
+            build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary,
         )
     except Exception as exc:  # pragma: no cover - defensive manifest guard.
         return {
@@ -1655,6 +1697,12 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
                 "ok": False,
                 "blocked_reason": f"index_entry_verification_summary_bridge_event_template_index_entry_verification_import_failed:{exc.__class__.__name__}",
                 "verification_version": None,
+                "direct_bridge_write_performed": False,
+            },
+            "reviewer_handoff_summary_smoke": {
+                "ok": False,
+                "blocked_reason": f"reviewer_handoff_summary_import_failed:{exc.__class__.__name__}",
+                "summary_version": None,
                 "direct_bridge_write_performed": False,
             },
             "network_access_performed": False,
@@ -1826,6 +1874,13 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         summary_bridge_event_template_bytes=(
             template_index_entry_verification_summary_template_bytes
         ),
+    )
+    reviewer_handoff_summary = build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary(
+        verification_report=(
+            template_index_entry_verification_summary_template_index_entry_verification
+        ),
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-health-drill-reviewer-handoff",
     )
     template_event = template_report.get("bridge_event_template")
     template_payload = (
@@ -2253,6 +2308,64 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             [],
         ),
     }
+    reviewer_handoff_chain = reviewer_handoff_summary.get(
+        "validated_verifier_chain",
+        {},
+    )
+    reviewer_handoff_boundary = reviewer_handoff_summary.get(
+        "operator_boundary",
+        {},
+    )
+    reviewer_handoff_summary_smoke = {
+        "ok": (
+            reviewer_handoff_summary.get("ok") is True
+            and reviewer_handoff_summary.get("summary_version")
+            == DRILL_REVIEWER_HANDOFF_SUMMARY_VERSION
+            and reviewer_handoff_chain.get("verification_ok") is True
+            and reviewer_handoff_chain.get("source_contract_check") == "match"
+            and reviewer_handoff_chain.get("rebuilt_index_entry_check") == "match"
+            and reviewer_handoff_chain.get("bridge_event_schema_check") == "match"
+            and reviewer_handoff_boundary.get("verification_report_boundary_ok")
+            is True
+            and reviewer_handoff_summary.get("manual_review_required") is True
+            and reviewer_handoff_summary.get("approval_granted") is False
+            and reviewer_handoff_summary.get("direct_bridge_write_performed")
+            is False
+            and reviewer_handoff_summary.get("transport_added") is False
+            and reviewer_handoff_summary.get("artifact_payloads_included") is False
+            and reviewer_handoff_summary.get("local_paths_recorded") is False
+            and reviewer_handoff_summary.get("network_access_performed") is False
+        ),
+        "summary_version": reviewer_handoff_summary.get("summary_version"),
+        "verification_ok": reviewer_handoff_chain.get("verification_ok"),
+        "source_contract_check": reviewer_handoff_chain.get(
+            "source_contract_check"
+        ),
+        "rebuilt_index_entry_check": reviewer_handoff_chain.get(
+            "rebuilt_index_entry_check"
+        ),
+        "bridge_event_schema_check": reviewer_handoff_chain.get(
+            "bridge_event_schema_check"
+        ),
+        "verification_report_boundary_ok": reviewer_handoff_boundary.get(
+            "verification_report_boundary_ok"
+        ),
+        "manual_review_required": reviewer_handoff_summary.get(
+            "manual_review_required"
+        ),
+        "approval_granted": reviewer_handoff_summary.get("approval_granted"),
+        "direct_bridge_write_performed": reviewer_handoff_summary.get(
+            "direct_bridge_write_performed"
+        ),
+        "artifact_payloads_included": reviewer_handoff_summary.get(
+            "artifact_payloads_included"
+        ),
+        "local_paths_recorded": reviewer_handoff_summary.get("local_paths_recorded"),
+        "network_access_performed": reviewer_handoff_summary.get(
+            "network_access_performed"
+        ),
+        "blockers": reviewer_handoff_summary.get("blockers", []),
+    }
     tampered = deepcopy(package)
     tampered["api_ops"]["route_stage_latency"]["feed_state"]["feed_health"][
         "runtime_authority_granted"
@@ -2283,6 +2396,7 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
                 "ok"
             ]
             is True
+            and reviewer_handoff_summary_smoke["ok"] is True
         ),
         "package_schema_version": PACKAGE_SCHEMA_VERSION,
         "verification_schema_version": VERIFICATION_SCHEMA_VERSION,
@@ -2307,6 +2421,7 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_smoke": (
             template_index_entry_verification_summary_bridge_event_template_index_entry_verification_smoke
         ),
+        "reviewer_handoff_summary_smoke": reviewer_handoff_summary_smoke,
         "valid_report_blockers": valid_report.get("blockers", []),
         "tampered_report_blockers": tampered_report.get("blockers", []),
         "network_access_performed": valid_report.get("network_access_performed"),
@@ -7596,6 +7711,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
                 "Local verifier for the route-stage feed-health verifier-summary bridge-event template index entry.",
             ),
+            (
+                "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_summary.py",
+                "Path-free reviewer handoff summary for the route-stage feed-health verifier chain.",
+            ),
         ),
     )
     solver_evidence = _evidence(
@@ -8435,7 +8554,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "verifier plus path-free verifier summary renderer for that "
                 "index entry, a template-only bridge-event renderer for the "
                 "verifier summary, a local index entry for that renderer, "
-                "and a local verifier for that index entry; exact runtime "
+                "a local verifier for that index entry, and a path-free "
+                "reviewer handoff summary for the verifier chain; exact runtime "
                 "entry order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
@@ -8448,9 +8568,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Run an operator-owned route-stage feed-health drill evidence "
-                "bundle through the local verifier chain and render the "
-                "path-free reviewer handoff without appending it."
+                "Bind the route-stage feed-health reviewer handoff summary "
+                "into a local handoff bundle index and verifier without "
+                "appending it."
             ),
             proof=hex_entry_proof,
         ),

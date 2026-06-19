@@ -249,6 +249,11 @@ def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_r
             "bundle_verification_summary_approval_granted_not_false",
         ),
         (
+            "top_level_blocker",
+            lambda summary: summary.__setitem__("blockers", ["real_blocker"]),
+            "bundle_verification_summary_blockers_nonempty",
+        ),
+        (
             "source_contract_mismatch",
             lambda summary: summary[ROUTE_STAGE_BUNDLE_VERIFICATION_KEY].__setitem__(
                 "source_contract_check",
@@ -271,6 +276,14 @@ def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_r
                 1,
             ),
             "bundle_verification_blocker_count_nonzero",
+        ),
+        (
+            "warning_count_mismatch",
+            lambda summary: summary[ROUTE_STAGE_BUNDLE_VERIFICATION_KEY].__setitem__(
+                "warning_count",
+                1,
+            ),
+            "bundle_verification_warning_count_mismatch",
         ),
         (
             "boundary_not_ok",

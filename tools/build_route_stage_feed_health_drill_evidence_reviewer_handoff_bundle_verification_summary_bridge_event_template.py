@@ -386,7 +386,7 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         if summary.get(field) is not False:
             blockers.append(f"bundle_verification_summary_{field}_not_false")
     if _safe_token_list(summary.get("blockers")):
-        blockers.append("bundle_verification_summary_blockers_present")
+        blockers.append("bundle_verification_summary_blockers_nonempty")
 
     reviewer = _mapping(summary.get("reviewer_ownership"))
     if reviewer.get("manual_review_required") is not True:
@@ -424,6 +424,9 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         blockers.append("bundle_verification_blocker_count_nonzero")
     if _safe_token_list(verification.get("blockers")):
         blockers.append("bundle_verification_blockers_present")
+    verification_warnings = _safe_token_list(verification.get("warnings"))
+    if verification.get("warning_count") != len(verification_warnings):
+        blockers.append("bundle_verification_warning_count_mismatch")
     blockers.extend(
         _token_list_schema_blockers(
             verification,

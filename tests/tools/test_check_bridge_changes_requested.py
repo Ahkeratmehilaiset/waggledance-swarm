@@ -330,6 +330,75 @@ def test_changes_requested_resolution_statuses_are_non_blocking() -> None:
     assert result["latest_blocking_event"] is None
 
 
+def test_no_changes_requested_supersedes_same_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T08:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-06-19T08:01:00Z",
+            "claude-rco-1",
+            "decision",
+            "no_changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-tools-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+
+
+def test_changes_requested_clear_status_supersedes_same_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T08:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-06-19T08:01:00Z",
+            "claude-rco-1",
+            "decision",
+            "rco_changes_requested_cleared",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-tools-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+
+
+def test_clear_status_does_not_supersede_other_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T08:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-06-19T08:01:00Z",
+            "claude-rco-2",
+            "decision",
+            "no_changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-tools-1"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-1"
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+
+
 def test_changes_requested_clear_status_still_blocks() -> None:
     events = [
         _event(

@@ -223,8 +223,8 @@ def check_bridge_clear_to_merge(
 
     A peer is any agent != merging_agent. We scan events for the task_id and
     optional PR number, then record the most recent decision event whose status
-    is in BLOCKING_STATUSES or APPROVAL_STATUSES. If the most recent peer
-    decision is blocking, we refuse. Otherwise we permit.
+    is blocking, approving, or explicitly clears a prior block. If the most
+    recent peer signal is blocking, we refuse. Otherwise we permit.
     """
     try:
         registry = (
@@ -276,6 +276,9 @@ def check_bridge_clear_to_merge(
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
             continue
         if event_type not in {"decision", "rco_review", "finding", "done"}:
+            continue
+        if _is_clear_status(status):
+            peer_signals.pop(agent, None)
             continue
         if _is_approval_status(status):
             peer_signals[agent] = (index, "approval", event)
@@ -350,6 +353,20 @@ def _is_no_changes_requested_status(status: str) -> bool:
 def _is_no_block_status(status: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     return normalized in NO_BLOCK_CLEAR_STATUSES
+
+
+def _is_clear_status(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if normalized == "no_changes_requested":
+        return True
+    if normalized in NO_BLOCK_CLEAR_STATUSES:
+        return True
+    for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
+        if not normalized.startswith(prefix + "_"):
+            continue
+        suffix = normalized[len(prefix) + 1 :]
+        return suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES
+    return False
 
 
 def _is_blocking_status(status: str) -> bool:

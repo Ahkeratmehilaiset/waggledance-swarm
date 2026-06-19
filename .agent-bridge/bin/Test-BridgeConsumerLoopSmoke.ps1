@@ -21,6 +21,7 @@ $worktree = Join-Path $tmpRoot 'codex-tools-1-worktree'
 $wakePath = Join-Path $runtimeRoot 'wake_codex-tools-1'
 $fakeCodex = Join-Path $tmpRoot 'fake-codex.ps1'
 $slowCodex = Join-Path $tmpRoot 'slow-codex.ps1'
+$slowChildPid = Join-Path $tmpRoot 'slow-child.pid'
 
 try {
     [void](New-Item -ItemType Directory -Path $runtimeRoot -Force -ErrorAction Stop)
@@ -49,9 +50,15 @@ Start-Sleep -Milliseconds 2200
 exit 0
 '@ | Set-Content -LiteralPath $fakeCodex -Encoding UTF8
     @'
-Start-Sleep -Seconds 5
+$pidPath = [string]$env:BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH
+$child = Start-Process -FilePath powershell -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru
+if ($pidPath) {
+    [System.IO.File]::WriteAllText($pidPath, [string]$child.Id)
+}
+Wait-Process -Id $child.Id
 exit 0
 '@ | Set-Content -LiteralPath $slowCodex -Encoding UTF8
+    $env:BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH = $slowChildPid
 
     $script = Join-Path $PSScriptRoot 'Start-AgentBridgeConsumerLoop.ps1'
     $result = @(& $script `
@@ -119,11 +126,16 @@ exit 0
     Assert-True ($liveRun[0].exit_code -eq 0) 'fake codex should exit 0'
     Assert-True (-not [bool]$liveRun[0].codex_timed_out) 'fake codex should not time out'
     Assert-True ($liveRun[0].codex_timeout_seconds -eq 600) 'default codex timeout should be 600 seconds'
+    Assert-True (-not [string]$liveRun[0].status_event_error) 'status event write should succeed'
     Assert-True ([string]$liveRun[0].heartbeat_job_id -ne '') 'real codex tick should start heartbeat job'
 
     $claimPath = Join-Path $runtimeRoot 'work_queue\claims\consumer-heartbeat-smoke.json'
     $claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
     Assert-True ([string]$claim.last_heartbeat_utc -ne '2000-01-01T00:00:00Z') 'heartbeat did not refresh claim lease during codex tick'
+    $eventsPath = Join-Path $runtimeRoot 'shared\events.jsonl'
+    $events = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
+    Assert-True (@($events | Where-Object { $_.status -eq 'consumer_tick_started' }).Count -ge 1) 'tick start status event missing'
+    Assert-True (@($events | Where-Object { $_.status -eq 'consumer_tick_finished' }).Count -ge 1) 'tick finish status event missing'
 
     [System.IO.File]::WriteAllText($wakePath, 'wake')
     $timeoutRun = @(& $script `
@@ -140,10 +152,18 @@ exit 0
     Assert-True ([bool]$timeoutRun[0].ran_codex) 'slow fake codex should have run'
     Assert-True ([bool]$timeoutRun[0].codex_timed_out) 'slow fake codex should time out'
     Assert-True ($timeoutRun[0].exit_code -eq 124) 'timeout should use exit code 124'
+    Assert-True (-not [string]$timeoutRun[0].status_event_error) 'timeout status event write should succeed'
     Assert-True ((Get-Content -Raw -LiteralPath $timeoutRun[0].log_path) -match 'timed out after 1 seconds') 'timeout log missing evidence'
+    Assert-True (Test-Path -LiteralPath $slowChildPid -PathType Leaf) 'slow fake codex did not record child pid'
+    $childPid = [int](Get-Content -Raw -LiteralPath $slowChildPid -Encoding UTF8)
+    Start-Sleep -Milliseconds 500
+    Assert-True (-not (Get-Process -Id $childPid -ErrorAction SilentlyContinue)) 'timeout did not clean slow child process'
+    $events = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
+    Assert-True (@($events | Where-Object { $_.status -eq 'consumer_tick_timed_out' }).Count -ge 1) 'tick timeout status event missing'
 
     'Bridge consumer loop smoke passed.'
 } finally {
+    Remove-Item Env:\BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH -ErrorAction SilentlyContinue
     $tmpFull = [System.IO.Path]::GetFullPath($tmpRoot)
     $auditFull = [System.IO.Path]::GetFullPath($auditRoot)
     if ($tmpFull.StartsWith($auditFull, [System.StringComparison]::OrdinalIgnoreCase) -and

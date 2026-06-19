@@ -204,6 +204,46 @@ function Stop-ConsumerHeartbeatJob {
     }
 }
 
+function Stop-ProcessTree {
+    param([int] $ProcessId)
+
+    if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return }
+
+    $children = @()
+    try {
+        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction Stop)
+    } catch {
+        $children = @()
+    }
+    foreach ($child in @($children)) {
+        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    }
+
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($process) {
+            Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Best-effort cleanup; the caller still records the timeout.
+    }
+}
+
+function Resolve-PowerShellHostCommand {
+    try {
+        $currentProcess = Get-Process -Id $PID -ErrorAction Stop
+        if ($currentProcess.Path) {
+            return $currentProcess.Path
+        }
+    } catch {
+    }
+
+    $candidate = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
+    $resolved = Get-Command $candidate -ErrorAction SilentlyContinue
+    if ($resolved) { return $resolved.Source }
+    return $candidate
+}
+
 function Invoke-CodexTick {
     param(
         [Parameter(Mandatory)] [string] $Command,
@@ -216,46 +256,88 @@ function Invoke-CodexTick {
     $timedOut = $false
     $exitCode = $null
     $errorText = ''
-    $job = $null
+    $process = $null
+    $specPath = "$LogPath.invoke.json"
+    $wrapperStdout = ''
+    $wrapperStderr = ''
 
     try {
-        $job = Start-Job -ScriptBlock {
-            param($commandArg, $argumentsArg, $promptArg, $logPathArg)
-            $promptArg | & $commandArg @argumentsArg *> $logPathArg
-            if ($null -ne $LASTEXITCODE) {
-                $LASTEXITCODE
-            } elseif ($?) {
-                0
-            } else {
-                1
-            }
-        } -ArgumentList $Command, @($Arguments), $PromptText, $LogPath
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $spec = [ordered]@{
+            command = $Command
+            arguments = @($Arguments)
+            log_path = $LogPath
+        }
+        [System.IO.File]::WriteAllText($specPath, ($spec | ConvertTo-Json -Depth 8), $encoding)
 
-        $completed = Wait-Job -Job $job -Timeout $TimeoutSeconds
-        if ($null -eq $completed) {
+        $wrapperCommand = @'
+$ErrorActionPreference = 'Stop'
+$specPath = [Environment]::GetEnvironmentVariable('BRIDGE_CONSUMER_SPEC', 'Process')
+if (-not $specPath) { throw 'missing BRIDGE_CONSUMER_SPEC' }
+$spec = Get-Content -Raw -LiteralPath $specPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+$command = [string]$spec.command
+$arguments = @()
+if ($null -ne $spec.arguments) {
+    $arguments = @($spec.arguments) | ForEach-Object { [string]$_ }
+}
+$logPath = [string]$spec.log_path
+$prompt = [Console]::In.ReadToEnd()
+$prompt | & $command @arguments *> $logPath
+if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
+if ($?) { exit 0 }
+exit 1
+'@
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapperCommand))
+        $hostCommand = Resolve-PowerShellHostCommand
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $hostCommand
+        $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        $startInfo.WorkingDirectory = (Get-Location).Path
+        $startInfo.EnvironmentVariables['BRIDGE_CONSUMER_SPEC'] = $specPath
+
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        $process.StandardInput.Write($PromptText)
+        $process.StandardInput.Close()
+
+        $completed = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $completed) {
             $timedOut = $true
             $exitCode = 124
             $errorText = "codex exec timed out after $TimeoutSeconds seconds"
-            Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
-        } else {
-            $jobOutput = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
-            $lastExit = @($jobOutput | Select-Object -Last 1)[0]
-            if ($null -eq $lastExit) {
-                $exitCode = 0
-            } else {
-                $exitCode = [int]$lastExit
+            Stop-ProcessTree -ProcessId $process.Id
+            if (-not $process.HasExited) {
+                try { $process.Kill() } catch {}
+                try { [void]$process.WaitForExit(5000) } catch {}
             }
+        } else {
+            $exitCode = [int]$process.ExitCode
+        }
+        if ($process.HasExited) {
+            $wrapperStdout = $process.StandardOutput.ReadToEnd()
+            $wrapperStderr = $process.StandardError.ReadToEnd()
         }
     } catch {
         $exitCode = 1
         $errorText = $_.Exception.Message
     } finally {
+        if ($wrapperStdout.Trim()) {
+            $wrapperStdout | Out-File -LiteralPath $LogPath -Encoding UTF8 -Append
+        }
+        if ($wrapperStderr.Trim()) {
+            $wrapperStderr | Out-File -LiteralPath $LogPath -Encoding UTF8 -Append
+        }
         if ($errorText) {
             $errorText | Out-File -LiteralPath $LogPath -Encoding UTF8 -Append
         }
-        if ($null -ne $job) {
-            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+        if ($null -ne $process) {
+            $process.Dispose()
         }
+        Remove-Item -LiteralPath $specPath -Force -ErrorAction SilentlyContinue
     }
 
     [pscustomobject]@{
@@ -263,6 +345,61 @@ function Invoke-CodexTick {
         timed_out = $timedOut
         error = $errorText
     }
+}
+
+function Write-ConsumerStatusEvent {
+    param(
+        [Parameter(Mandatory)] [string] $AgentName,
+        [Parameter(Mandatory)] [string] $Status,
+        [Parameter(Mandatory)] [string] $Message,
+        [int] $Iteration,
+        [bool] $WakeConsumed,
+        [bool] $HeartbeatEnabled,
+        [string] $LogPath,
+        [int] $TimeoutSeconds,
+        [AllowNull()] $ExitCode,
+        [bool] $TimedOut,
+        [string] $ErrorText,
+        [string] $RoleName,
+        [string] $AgentUuidValue,
+        [string[]] $CapabilityValues
+    )
+
+    $writer = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
+    if (-not (Test-Path -LiteralPath $writer -PathType Leaf)) {
+        return "missing bridge event writer: $writer"
+    }
+
+    $payload = [ordered]@{
+        schema = 'bridge.consumer_tick_status.v1'
+        iteration = $Iteration
+        wake_consumed = $WakeConsumed
+        heartbeat_enabled = $HeartbeatEnabled
+        log_path = $LogPath
+        codex_timeout_seconds = $TimeoutSeconds
+        exit_code = $ExitCode
+        codex_timed_out = $TimedOut
+    }
+    if ($ErrorText) {
+        $payload['error'] = $ErrorText
+    }
+
+    try {
+        & $writer `
+            -Agent $AgentName `
+            -Type status `
+            -TaskId "$AgentName/bridge-consumer-loop" `
+            -Status $Status `
+            -Message $Message `
+            -Paths @('.agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1') `
+            -Role $RoleName `
+            -AgentUuid $AgentUuidValue `
+            -Capabilities $CapabilityValues `
+            -PayloadJson ($payload | ConvertTo-Json -Depth 8 -Compress) | Out-Null
+    } catch {
+        return $_.Exception.Message
+    }
+    return ''
 }
 
 if ($PollSeconds -lt 0) { throw 'PollSeconds must be >= 0' }
@@ -396,9 +533,25 @@ while ($true) {
     $timedOut = $false
     $heartbeatJob = $null
     $heartbeatError = ''
+    $statusEventError = ''
 
     if ($shouldRun -and -not $DryRun) {
         try {
+            $statusEventError = Write-ConsumerStatusEvent `
+                -AgentName $Agent `
+                -Status 'consumer_tick_started' `
+                -Message "Bridge consumer tick $iteration started for $Agent." `
+                -Iteration $iteration `
+                -WakeConsumed $wakeConsumed `
+                -HeartbeatEnabled $heartbeatDuringCodex `
+                -LogPath $logPath `
+                -TimeoutSeconds $CodexTimeoutSeconds `
+                -ExitCode $null `
+                -TimedOut $false `
+                -ErrorText '' `
+                -RoleName $Role `
+                -AgentUuidValue $AgentUuid `
+                -CapabilityValues $Capabilities
             if ($heartbeatDuringCodex) {
                 $heartbeatJob = Start-ConsumerHeartbeatJob `
                     -ScriptPath $heartbeatScript `
@@ -429,6 +582,31 @@ while ($true) {
             $errorText | Out-File -LiteralPath $logPath -Encoding UTF8 -Append
         } finally {
             Stop-ConsumerHeartbeatJob -Job $heartbeatJob -LogPath $logPath
+            $finishStatus = if ($timedOut) {
+                'consumer_tick_timed_out'
+            } elseif ($exitCode -eq 0) {
+                'consumer_tick_finished'
+            } else {
+                'consumer_tick_failed'
+            }
+            $finishError = Write-ConsumerStatusEvent `
+                -AgentName $Agent `
+                -Status $finishStatus `
+                -Message "Bridge consumer tick $iteration finished for $Agent with exit_code=$exitCode." `
+                -Iteration $iteration `
+                -WakeConsumed $wakeConsumed `
+                -HeartbeatEnabled $heartbeatDuringCodex `
+                -LogPath $logPath `
+                -TimeoutSeconds $CodexTimeoutSeconds `
+                -ExitCode $exitCode `
+                -TimedOut $timedOut `
+                -ErrorText $errorText `
+                -RoleName $Role `
+                -AgentUuidValue $AgentUuid `
+                -CapabilityValues $Capabilities
+            if ($finishError) {
+                $statusEventError = (@($statusEventError, $finishError) | Where-Object { $_ }) -join '; '
+            }
         }
     }
 
@@ -453,6 +631,7 @@ while ($true) {
         heartbeat_enabled = [bool]$heartbeatDuringCodex
         heartbeat_job_id  = if ($null -ne $heartbeatJob) { [string]$heartbeatJob.Id } else { '' }
         heartbeat_error   = $heartbeatError
+        status_event_error = $statusEventError
     }
 
     if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }

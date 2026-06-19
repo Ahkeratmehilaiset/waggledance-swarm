@@ -65,6 +65,13 @@ BLOCKING_STATUSES = frozenset(
 )
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
+NON_BLOCKING_BLOCK_PHRASES = frozenset(
+    {
+        "not_blocked",
+        "not_blocking",
+        "not_a_blocker",
+    }
+)
 NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
     {
         "no_changes_requested",
@@ -355,6 +362,18 @@ def _is_no_block_status(status: str) -> bool:
     return normalized in NO_BLOCK_CLEAR_STATUSES
 
 
+def _has_non_blocking_block_phrase(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if (
+        normalized.startswith(("block_", "blocked_", "rco_block"))
+        or "block_requested" in normalized
+        or "changes_requested" in normalized
+    ):
+        return False
+    bounded = f"_{normalized}_"
+    return any(f"_{phrase}_" in bounded for phrase in NON_BLOCKING_BLOCK_PHRASES)
+
+
 def _is_clear_status(status: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     if normalized == "no_changes_requested":
@@ -386,6 +405,8 @@ def _is_blocking_status(status: str) -> bool:
         if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
             return False
         return True
+    if _has_non_blocking_block_phrase(status):
+        return False
     tokens = _status_tokens(status)
     if {"changes", "requested"}.issubset(tokens):
         return True

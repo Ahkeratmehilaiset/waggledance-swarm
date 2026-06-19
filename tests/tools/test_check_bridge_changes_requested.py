@@ -655,6 +655,28 @@ def test_no_block_reemit_required_status_does_not_block() -> None:
     assert result["latest_approval_event"]["status"] == "rco_pass"
 
 
+def test_not_blocked_clarification_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T09:57:38Z",
+            "claude-rco-1",
+            "message",
+            "rco1_clarify_1283_not_blocked_on_rco2",
+            task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        merging_agent="codex-lead-1",
+        pr_number=1283,
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
 def test_no_block_text_does_not_downgrade_real_blocking_status() -> None:
     for status in [
         "changes_requested_no_block",

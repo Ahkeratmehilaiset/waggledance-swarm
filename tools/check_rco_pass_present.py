@@ -16,9 +16,8 @@ Fail-closed rules (per spec):
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
    AND message contains the exact --head (40-char SHA) string or
    payload.exact_head equals it.
-3. If the MOST RECENT event from any recognized RCO on task_id is a veto
-   (changes_requested / finding / blocked / rco_block* etc), REFUSE
-   regardless of any earlier pass.
+3. If a recognized RCO veto supersedes the satisfying RCO_PASS
+   (changes_requested / finding / blocked / rco_block* etc), REFUSE.
 4. If NO qualifying RCO_PASS-at-exact-head exists, REFUSE. Silence/absence
    must REFUSE; never default-allow.
 5. Exit 0 ONLY when a valid head-bound RCO_PASS is present and not
@@ -66,7 +65,6 @@ BLOCKING_STATUSES = frozenset(
         "block_requested",
     }
 )
-BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
 CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES = (
     "changes_requested",
     "rco_changes_requested",
@@ -78,6 +76,13 @@ CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
         "cleared",
         "retracted",
         "withdrawn",
+    }
+)
+NON_BLOCKING_BLOCK_PHRASES = frozenset(
+    {
+        "not_blocked",
+        "not_blocking",
+        "not_a_blocker",
     }
 )
 
@@ -340,7 +345,7 @@ def check_rco_pass_present(
     """Return whether a valid RCO_PASS at exact head exists for the RCO set on task_id.
 
     Fail-closed: absence, wrong identity, wrong head, missing author, self-review,
-    or later veto from any recognized RCO -> not ok.
+    or later veto from any recognized RCO after the satisfying pass -> not ok.
     Latest is determined by append order in events list (index), not wallclock ts.
     """
     task_id = (task_id or "").strip()
@@ -543,29 +548,27 @@ def check_rco_pass_present(
     base["satisfying_rco_agent"] = str(latest_pass_ev.get("agent", ""))
     base["has_qualifying_rco_pass_at_head"] = True
 
-    # Check for any standing veto from any recognized RCO. A later pass from the
-    # same RCO clears that RCO's earlier veto; another RCO's unretracted veto
-    # remains absolute and cannot be out-voted.
+    # Check for vetoes that supersede the satisfying pass. An older veto from a
+    # different RCO belongs to the peer-veto preflight; this tool verifies the
+    # exact-head RCO slot and later RCO vetoes that outrank that slot.
     blocking_agents: list[str] = []
     for agent, (latest_agent_idx, latest_agent_ev) in latest_by_agent.items():
-        latest_agent_veto = _is_rco_veto_event(latest_agent_ev)
         latest_agent_pass_idx = max(
             (idx for idx, ev in qualifying if str(ev.get("agent", "")) == agent),
             default=-1,
         )
-        has_later_veto = any(
-            idx > latest_agent_pass_idx
+        comparison_idx = (
+            latest_agent_pass_idx if latest_agent_pass_idx >= 0 else latest_pass_idx
+        )
+        has_superseding_veto = any(
+            idx > comparison_idx
             and str(ev.get("agent", "")) == agent
             and _is_rco_veto_event(ev)
             for idx, ev in rco_events
         )
-        if (
-            latest_agent_veto
-            or has_later_veto
-            or (
-                latest_agent_idx > latest_pass_idx
-                and _is_rco_veto_event(latest_agent_ev)
-            )
+        if has_superseding_veto or (
+            latest_agent_idx > comparison_idx
+            and _is_rco_veto_event(latest_agent_ev)
         ):
             blocking_agents.append(agent)
     base["blocking_rco_agents"] = sorted(set(blocking_agents))
@@ -840,15 +843,27 @@ def _has_blocking_shape(status: str) -> bool:
         if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
             return False
         return True
+    if _has_non_blocking_block_phrase(status):
+        return False
     tokens = _status_tokens(status)
     has_shape = (
         {"changes", "requested"}.issubset(tokens)
         or any(token.startswith("block") for token in tokens)
         or "finding" in tokens  # treat "finding" status shape as potential veto signal
     )
-    if not has_shape:
+    return has_shape
+
+
+def _has_non_blocking_block_phrase(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if (
+        normalized.startswith(("block_", "blocked_", "rco_block"))
+        or "block_requested" in normalized
+        or "changes_requested" in normalized
+    ):
         return False
-    return not tokens.intersection(BLOCKING_NEGATION_TOKENS)
+    bounded = f"_{normalized}_"
+    return any(f"_{phrase}_" in bounded for phrase in NON_BLOCKING_BLOCK_PHRASES)
 
 
 def _is_blocking_status(status: str) -> bool:

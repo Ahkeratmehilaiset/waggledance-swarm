@@ -7949,6 +7949,66 @@ def _low_risk_cross_consistency_bridge_event_template_summary(
     return summary
 
 
+def _hex_upgrade_cross_consistency_bridge_event_template_summary(
+    digest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Content-safe SUMMARY (derived booleans only) of the hex cross-consistency
+    digest bridge-event template. Renders the template from the digest and surfaces
+    ONLY safe-scalar verdicts re-derived from the build result - NEVER the raw
+    event/message (which carries message strings / ts_utc). A not-ok /
+    self-approving / path-tainted template yields a fail-closed (not-available)
+    summary. Measurement-only: claim_safe hardcoded False; consumers re-derive
+    template_clean from these components."""
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template as _build_xcons_tpl,
+    )
+    from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
+
+    result = _build_xcons_tpl(
+        digest=digest if isinstance(digest, Mapping) else {},
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-xcons-digest-bridge-event-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+    )
+    result = result if isinstance(result, Mapping) else {}
+    event = result.get("bridge_event_template")
+    payload = event.get("payload") if isinstance(event, Mapping) else {}
+    payload = payload if isinstance(payload, Mapping) else {}
+    cross = payload.get("cross_consistency")
+    cross = cross if isinstance(cross, Mapping) else {}
+    summary: dict[str, Any] = {
+        "report_version": (
+            "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_summary.v1"
+        ),
+        # template build verdicts (strict bool, fail-closed when absent/error).
+        "template_available": result.get("ok") is True,
+        "template_only": result.get("template_only") is True,
+        # authority/approval axes must each be strictly False (no-authority assertions).
+        "no_runtime_authority_granted": result.get("runtime_authority_granted") is False,
+        "no_runtime_subdivision_authority_granted": (
+            result.get("runtime_subdivision_authority_granted") is False
+        ),
+        "no_direct_bridge_write": result.get("direct_bridge_write_performed") is False,
+        "no_bridge_event_written": result.get("bridge_event_written") is False,
+        "no_approval_granted": result.get("approval_granted") is False,
+        # cross-consistency verdicts the template carries (re-derived, never a composite).
+        "cross_consistent": cross.get("cross_consistent") is True,
+        "all_views_present": cross.get("all_views_present") is True,
+        "reviewer_clean": cross.get("reviewer_clean") is True,
+        "shadow_only_clean": cross.get("shadow_only_clean") is True,
+        "chain_summary_clean": cross.get("chain_summary_clean") is True,
+        # measurement-only: never upgrades the hex-upgrade claim.
+        "claim_safe": False,
+    }
+    # DERIVE path_free over the stored summary (it holds only bools + the version string,
+    # so True - but verified, not hardcoded) AND require the template itself path-verified.
+    summary["path_free_verified"] = (
+        result.get("path_free_verified") is True and not _contains_path_marker(summary)
+    )
+    return summary
+
+
 _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
     "wd.low_risk_autogrowth_real_loop_proof.v1"
 )
@@ -8519,6 +8579,18 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/hex_shadow_subdivision_replay.py",
                 "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, template index-entry builder, index-entry verifier, index-entry verifier summary renderer, index-entry verifier summary bridge-event template builder, and verification-summary template index-entry verifier.",
             ),
+            (
+                "tools/run_hex_upgrade_cross_consistency_digest.py",
+                "Path-free measurement-only cross-consistency digest for reviewer summary, shadow-only invariant, and chain final summary views.",
+            ),
+            (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template.py",
+                "Template-only bridge-event renderer for the hex-upgrade cross-consistency digest; no append, payload inclusion, path recording, transport, claim upgrade, or runtime subdivision authority.",
+            ),
+            (
+                "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template.py",
+                "Renderer tests prove schema-valid handoff JSON, no-authority axes, path-free output, safe scalar allowlist, and fail-closed unsafe input handling.",
+            ),
         ),
     )
     future_evidence = _evidence(
@@ -8785,6 +8857,19 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             "ok"
         )
         is True
+    )
+    # Path-free bridge-event TEMPLATE summary: renders the hex cross-consistency digest
+    # into a schema-valid reviewer-handoff bridge-event template and stores ONLY a
+    # CURATED content-safe SUMMARY of derived booleans (template availability + the
+    # template's no-authority/template-only/path-free flags + the cross-consistency
+    # verdicts it carries) - NEVER the raw event/message. Enriched AFTER the hex ok
+    # recompute above so the ok expression cannot reference it; measurement-only - NOT
+    # folded into ok, claim_safe stays False. A not-ok template yields a fail-closed
+    # (not-available) summary.
+    hex_upgrade_proof["cross_consistency_digest_bridge_event_template"] = (
+        _hex_upgrade_cross_consistency_bridge_event_template_summary(
+            hex_upgrade_proof["cross_consistency_digest"]
+        )
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_real_loop_dry_run = build_low_risk_autogrowth_chain_dry_run()
@@ -9333,7 +9418,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "rebuilt-entry, and bridge-event schema checks while keeping "
                 "payload inclusion, local path recording, bridge writes, "
                 "transport, runtime controls, and runtime subdivision "
-                "authority false."
+                "authority false. A path-free cross-consistency digest "
+                "confirms the reviewer summary, shadow-only invariant, and "
+                "chain final summary agree using derived booleans only, and "
+                "a template-only bridge-event renderer can turn that digest "
+                "into schema-valid handoff JSON without appending it, "
+                "including payloads, recording paths, transporting artifacts, "
+                "upgrading any claim, or granting runtime subdivision "
+                "authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -9347,11 +9439,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free, measurement-only cross-consistency digest that "
-                "confirms the already-wired reviewer summary, shadow-only invariant, "
-                "and chain final summary agree (derived booleans/strict ints only), "
-                "without appending it, including payloads/paths, upgrading any claim, "
-                "or activating runtime subdivision authority."
+                "Add a path-free, measurement-only local index entry for the "
+                "hex-upgrade cross-consistency digest bridge-event template "
+                "(derived booleans/strict refs only), without appending it, "
+                "including payloads/paths, transporting artifacts, upgrading "
+                "any claim, or granting runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

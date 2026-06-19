@@ -3065,6 +3065,109 @@ def test_manifest_cross_consistency_digest_not_folded_into_ok() -> None:
     assert "cross_consistency_digest" not in ok_assign
 
 
+def _hex_proof_for_reviewer():
+    manifest = build_manifest()
+    return next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )["proof"]
+
+
+def test_manifest_stores_hex_xcons_template_summary_content_safe() -> None:
+    summary = _hex_proof_for_reviewer().get(
+        "cross_consistency_digest_bridge_event_template"
+    )
+    assert isinstance(summary, dict)
+    # content-safe by construction: only the version string + derived booleans - NEVER
+    # the raw bridge-event (no message text, ts_utc, agent, payload).
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["template_available"] is True
+    assert summary["template_only"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_runtime_subdivision_authority_granted"] is True
+    assert summary["no_approval_granted"] is True
+    assert summary["cross_consistent"] is True
+    assert summary["all_views_present"] is True
+    assert summary["reviewer_clean"] is True
+    assert summary["shadow_only_clean"] is True
+    assert summary["chain_summary_clean"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
+def test_manifest_hex_xcons_template_measurement_only() -> None:
+    # Enriched AFTER the hex ok recompute, so the ok expression cannot reference it.
+    proof = _hex_proof_for_reviewer()
+    assert isinstance(proof.get("cross_consistency_digest_bridge_event_template"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_assign = cap_src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(
+        ")", 1
+    )[0]
+    assert "cross_consistency_digest_bridge_event_template" not in ok_assign
+    ok_idx = cap_src.index('hex_upgrade_proof["ok"] = bool(')
+    tpl_idx = cap_src.index(
+        'hex_upgrade_proof["cross_consistency_digest_bridge_event_template"]'
+    )
+    assert tpl_idx > ok_idx, (
+        "template summary must be enriched after the hex ok recomputation"
+    )
+
+
+def test_manifest_hex_xcons_template_cannot_flip_ok(monkeypatch) -> None:
+    # A forged "lying" template summary (self-claim_safe True, every clean flag False)
+    # must leave the hex proof ok byte-identical and be stored as-is (decoupled).
+    baseline_ok = _hex_proof_for_reviewer().get("ok")
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "template_available": False,
+        "template_only": False,
+        "no_runtime_authority_granted": False,
+        "no_runtime_subdivision_authority_granted": False,
+        "no_approval_granted": False,
+        "cross_consistent": False,
+        "all_views_present": False,
+        "reviewer_clean": False,
+        "shadow_only_clean": False,
+        "chain_summary_clean": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_hex_upgrade_cross_consistency_bridge_event_template_summary",
+        lambda *_a, **_k: dict(forged),
+    )
+    proof = _hex_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert proof.get("cross_consistency_digest_bridge_event_template") == forged
+
+
+def test_manifest_hex_next_smallest_pr_advanced_beyond_xcons_template() -> None:
+    manifest = build_manifest()
+    cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )
+    nsp = cap["next_smallest_pr"].lower()
+    assert "cross-consistency digest that confirms" not in nsp
+    assert "index entry" in nsp
+    assert "bridge-event template" in nsp
+
+
 def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:
     manifest = build_manifest()
     hex_cap = next(

@@ -24,6 +24,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    load_bridge_identity_registry,
+)
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
@@ -1375,6 +1378,7 @@ def _production_liveness_report(
         return {}
 
     suppressed_lookup = dict(suppressed_agents or {})
+    identity_registry = _load_liveness_identity_registry()
     states: dict[str, dict[str, Any]] = {}
     for event in events:
         event_ts = _parse_utc(_event_ts(event))
@@ -1382,6 +1386,8 @@ def _production_liveness_report(
             continue
         event_agent = _event_agent(event)
         if event_agent in PRODUCTION_LIVENESS_IGNORED_AGENTS:
+            continue
+        if _event_has_registered_identity_mismatch(event, identity_registry):
             continue
         state = states.setdefault(
             event_agent,
@@ -1493,6 +1499,37 @@ def _production_liveness_report(
     if wake_delivery:
         report["wake_delivery"] = wake_delivery
     return report
+
+
+def _load_liveness_identity_registry() -> dict[str, str]:
+    try:
+        return load_bridge_identity_registry(allow_missing=True)
+    except ValueError as exc:
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": [str(exc)],
+            }
+        ) from exc
+
+
+def _event_has_registered_identity_mismatch(
+    event: Mapping[str, Any], registry: Mapping[str, str]
+) -> bool:
+    if not registry:
+        return False
+    event_agent = _event_agent(event)
+    expected_uuid = registry.get(event_agent)
+    event_uuid = str(event.get("agent_uuid", "") or "").lower()
+    if expected_uuid:
+        return bool(event_uuid and event_uuid != expected_uuid.lower())
+    if not event_uuid:
+        return False
+    for registered_agent, registered_uuid in registry.items():
+        if registered_agent != event_agent and event_uuid == registered_uuid.lower():
+            return True
+    return False
 
 
 def _wake_delivery_liveness_summary(

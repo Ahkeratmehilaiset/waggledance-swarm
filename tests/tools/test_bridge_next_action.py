@@ -2068,6 +2068,30 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
     assert "production_liveness" not in report
 
 
+def test_registered_uuid_alias_does_not_create_phantom_liveness_lane() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-18T20:09:07Z",
+            "agent": "gpt",
+            "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+            "type": "done",
+            "task_id": "test-task-id",
+            "status": "done",
+            "message": "Dry-run claim used for validation only.",
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 18, 20, 30, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in report
+
+
 def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
     tmp_path: Path,
 ) -> None:

@@ -2155,3 +2155,163 @@ def test_low_risk_xcons_subtree_exclusion_positive_control(authority_key):
         )
     )
     assert outside_ms[authority_key] is True, f"outside:{authority_key}"
+
+
+# ---------------- #1291 cross-consistency digest bridge-event TEMPLATE summary wiring
+
+def _good_low_risk_xcons_template_summary():
+    # Mirrors the curated content-safe summary the manifest stores under
+    # low_risk_autonomy_proof["cross_consistency_digest_bridge_event_template"].
+    return {
+        "report_version": (
+            "wd.low_risk_cross_consistency_digest_bridge_event_template_summary.v1"
+        ),
+        "template_available": True,
+        "template_only": True,
+        "no_runtime_authority_granted": True,
+        "no_direct_bridge_write": True,
+        "no_bridge_event_written": True,
+        "no_approval_granted": True,
+        "cross_consistent": True,
+        "all_views_present": True,
+        "real_loop_clean": True,
+        "trend_clean": True,
+        "reviewer_clean": True,
+        "reviewer_matches_trend": True,
+        "path_free_verified": True,
+        "claim_safe": False,
+    }
+
+
+def _manifest_with_low_risk_xcons_template(summary, *, low_risk_proof_extra=None):
+    proof = {"ok": True, "no_runtime_mutation": True, "runtime_authority_changed": False}
+    if summary is not None:
+        proof["cross_consistency_digest_bridge_event_template"] = summary
+    if low_risk_proof_extra:
+        proof.update(low_risk_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {"capability_count": 1, "status_counts": {"partial": 1},
+                    "all_literal_claims_safe": False},
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop", "status": "partial",
+            "claim_safe": False, "evidence": [], "gaps": [], "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _lr_xcons_tpl_counters(summary, **kw):
+    mc = build_vision_progress_counters(
+        _manifest_with_low_risk_xcons_template(summary, **kw)
+    )["milestone_counters"]
+    return mc["low_risk_cross_consistency_digest_bridge_event_template"]
+
+
+_XCONS_TPL_CLEAN_FIELDS = [
+    "template_available", "template_only", "no_runtime_authority_granted",
+    "no_direct_bridge_write", "no_bridge_event_written", "no_approval_granted",
+    "cross_consistent", "all_views_present",
+]
+
+
+def test_low_risk_xcons_template_available_with_clean_summary():
+    block = _lr_xcons_tpl_counters(_good_low_risk_xcons_template_summary())
+    assert block["template_available"] is True
+    assert block["template_clean"] is True
+    assert block["cross_consistent"] is True
+    assert block["path_free_verified"] is True
+    assert block["measurement_basis"] == (
+        "v1_low_risk_cross_consistency_digest_bridge_event_template"
+    )
+    assert block["claim_safe"] is False
+
+
+def test_low_risk_xcons_template_unavailable_when_absent():
+    block = _lr_xcons_tpl_counters(None)
+    assert block["template_available"] is False
+    assert block["template_clean"] is False
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bad", [[], "x", 7, 0])
+def test_low_risk_xcons_template_non_mapping_not_available(bad):
+    block = _lr_xcons_tpl_counters(bad)
+    assert block["template_available"] is False
+    assert block["template_clean"] is False
+
+
+@pytest.mark.parametrize("field", _XCONS_TPL_CLEAN_FIELDS)
+def test_low_risk_xcons_template_consumer_rederives_fail_closed(field):
+    s = _good_low_risk_xcons_template_summary()
+    s[field] = False
+    block = _lr_xcons_tpl_counters(s)
+    assert block["template_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+def test_low_risk_xcons_template_self_claim_safe_refuses_to_certify():
+    s = _good_low_risk_xcons_template_summary()
+    s["claim_safe"] = True
+    block = _lr_xcons_tpl_counters(s)
+    assert block["template_available"] is False
+    assert block["template_clean"] is False
+
+
+def test_low_risk_xcons_template_self_approval_refuses_to_certify():
+    # a template self-declaring approval (no_approval_granted False) must not certify.
+    s = _good_low_risk_xcons_template_summary()
+    s["no_approval_granted"] = False
+    assert _lr_xcons_tpl_counters(s)["template_clean"] is False
+
+
+def test_low_risk_xcons_template_path_free_false_refuses_to_certify():
+    s = _good_low_risk_xcons_template_summary()
+    s["path_free_verified"] = False
+    block = _lr_xcons_tpl_counters(s)
+    assert block["template_available"] is False
+    assert block["template_clean"] is False
+
+
+def test_low_risk_xcons_template_claim_safe_hardcoded_false_even_when_clean():
+    assert _lr_xcons_tpl_counters(
+        _good_low_risk_xcons_template_summary()
+    )["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_low_risk_xcons_template_subtree_excluded_from_recursive_scan(bare_key):
+    # #1271: a bare authority key nested in the measurement-only template-summary subtree
+    # must NOT reach the recursive _nested_flag scan feeding the real low-risk panel flags.
+    s = _good_low_risk_xcons_template_summary()
+    s["forged_nested"] = {bare_key: True}
+    counters = build_vision_progress_counters(_manifest_with_low_risk_xcons_template(s))
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["low_risk_autonomy_loop"]["milestones"]
+    assert milestones["runtime_authority_granted"] is False, bare_key
+    assert milestones["external_writes_applied"] is False, bare_key
+
+
+@pytest.mark.parametrize("authority_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_low_risk_xcons_template_subtree_exclusion_positive_control(authority_key):
+    # exclusion is surgical: same key trips OUTSIDE the template subtree, not INSIDE it.
+    def _milestones(manifest):
+        counters = build_vision_progress_counters(manifest)
+        by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+        return by_id["low_risk_autonomy_loop"]["milestones"]
+
+    inside = _good_low_risk_xcons_template_summary()
+    inside["forged_nested"] = {authority_key: True}
+    assert _milestones(_manifest_with_low_risk_xcons_template(inside))[authority_key] is False
+
+    outside_ms = _milestones(
+        _manifest_with_low_risk_xcons_template(
+            _good_low_risk_xcons_template_summary(),
+            low_risk_proof_extra={"forged_outside": {authority_key: True}},
+        )
+    )
+    assert outside_ms[authority_key] is True, authority_key

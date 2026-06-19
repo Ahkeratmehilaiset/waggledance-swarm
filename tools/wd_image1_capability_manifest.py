@@ -23,7 +23,8 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from typing import Iterable, Sequence
+from collections.abc import Mapping
+from typing import Any, Iterable, Sequence
 
 import yaml
 
@@ -7639,6 +7640,63 @@ def build_repeat_window_trend_aggregate(*, force: bool | None = None) -> dict | 
     return _safe_repeat_window_trend_aggregate(build_repeat_window_trend_proof())
 
 
+def _low_risk_cross_consistency_bridge_event_template_summary(
+    digest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Content-safe SUMMARY (derived booleans only) of the #1291 cross-consistency
+    digest bridge-event template. Renders the template from the digest and surfaces ONLY
+    safe-scalar verdicts re-derived from the build result - NEVER the raw event/message
+    (which carries message strings / ts_utc). A not-ok / self-approving / path-tainted
+    template yields a fail-closed (not-available) summary. Measurement-only: claim_safe
+    hardcoded False; the consumer re-derives template_clean from these components."""
+    from tools.build_low_risk_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+        build_low_risk_cross_consistency_digest_bridge_event_template as _build_xcons_tpl,
+    )
+    from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
+
+    result = _build_xcons_tpl(
+        digest=digest if isinstance(digest, Mapping) else {},
+        agent_id="codex-lead-1",
+        task_id="wd-image1-low-risk-xcons-digest-bridge-event-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+    )
+    result = result if isinstance(result, Mapping) else {}
+    event = result.get("bridge_event_template")
+    payload = event.get("payload") if isinstance(event, Mapping) else {}
+    payload = payload if isinstance(payload, Mapping) else {}
+    cross = payload.get("cross_consistency")
+    cross = cross if isinstance(cross, Mapping) else {}
+    summary: dict[str, Any] = {
+        "report_version": (
+            "wd.low_risk_cross_consistency_digest_bridge_event_template_summary.v1"
+        ),
+        # template build verdicts (strict bool, fail-closed when absent/error).
+        "template_available": result.get("ok") is True,
+        "template_only": result.get("template_only") is True,
+        # authority/approval axes must each be strictly False (no-authority assertions).
+        "no_runtime_authority_granted": result.get("runtime_authority_granted") is False,
+        "no_direct_bridge_write": result.get("direct_bridge_write_performed") is False,
+        "no_bridge_event_written": result.get("bridge_event_written") is False,
+        "no_approval_granted": result.get("approval_granted") is False,
+        # cross-consistency verdicts the template carries (re-derived, never a composite).
+        "cross_consistent": cross.get("cross_consistent") is True,
+        "all_views_present": cross.get("all_views_present") is True,
+        "real_loop_clean": cross.get("real_loop_clean") is True,
+        "trend_clean": cross.get("trend_clean") is True,
+        "reviewer_clean": cross.get("reviewer_clean") is True,
+        "reviewer_matches_trend": cross.get("reviewer_matches_trend") is True,
+        # measurement-only: never upgrades the low-risk claim.
+        "claim_safe": False,
+    }
+    # DERIVE path_free over the stored summary (it holds only bools + the version string,
+    # so True - but verified, not hardcoded) AND require the template itself path-verified.
+    summary["path_free_verified"] = (
+        result.get("path_free_verified") is True and not _contains_path_marker(summary)
+    )
+    return summary
+
+
 def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_evidence = _evidence(
         root,
@@ -8509,6 +8567,19 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     low_risk_autonomy_proof["cross_consistency_digest"] = (
         _build_low_risk_xcons_digest(low_risk_autonomy_proof)
     )
+    # Path-free bridge-event TEMPLATE summary (#1291): renders the cross-consistency
+    # digest into a schema-valid reviewer-handoff bridge-event template and stores ONLY a
+    # CURATED content-safe SUMMARY of derived booleans (template availability + the
+    # template's no-authority/template-only/path-free flags + the cross-consistency
+    # verdicts it carries) - NEVER the raw event/message. Enriched AFTER the low-risk ok
+    # recompute above (and after the digest store) so the ok expression cannot reference
+    # it; measurement-only - NOT folded into ok, claim_safe stays False. A not-ok template
+    # yields a fail-closed (not-available) summary.
+    low_risk_autonomy_proof["cross_consistency_digest_bridge_event_template"] = (
+        _low_risk_cross_consistency_bridge_event_template_summary(
+            low_risk_autonomy_proof["cross_consistency_digest"]
+        )
+    )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     # Optional local opt-in authoritative-first-hop coverage measurement (OFF by
     # default). Only safe scalar fields are aggregated; it is measurement-only
@@ -8827,11 +8898,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "events, enqueueing scheduler work, or granting authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free, template-only bridge-event renderer for the "
-                "low-risk cross-consistency digest that turns it into schema-valid "
-                "reviewer-handoff JSON (derived booleans/strict ints only), without "
-                "appending it, including payloads/paths, transporting, enqueueing "
-                "scheduler work, upgrading any claim, or granting runtime authority."
+                "Add a path-free, measurement-only local index entry for the low-risk "
+                "cross-consistency digest bridge-event template (derived booleans/strict "
+                "ints only), without appending it, including payloads/paths, "
+                "transporting, enqueueing scheduler work, upgrading any claim, or "
+                "granting runtime authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

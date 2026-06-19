@@ -156,6 +156,9 @@ EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
 PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
 TERMINAL_RECEIPT_AGENT_KEY = "terminal-receipt"
+STANDARD_SESSION_ID_PATTERN = re.compile(
+    r"^(?P<agent>[a-z][a-z0-9_-]{1,32})-\d{8}T\d{6}Z$"
+)
 
 
 class BridgeNextActionError(ValueError):
@@ -1357,13 +1360,31 @@ def _latest_agent_metadata(
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    agent_id = agent.lower()
     for event in reversed(events):
-        if _event_agent(event) != agent:
+        if _event_agent(event) != agent_id:
             continue
         metadata = _event_metadata(event)
-        if metadata:
+        if metadata and _metadata_session_matches_agent(
+            agent=agent_id,
+            metadata=metadata,
+        ):
             return metadata
     return {}
+
+
+def _metadata_session_matches_agent(
+    *,
+    agent: str,
+    metadata: Mapping[str, Any],
+) -> bool:
+    session_id = str(metadata.get("session_id") or "").strip()
+    if not session_id:
+        return True
+    match = STANDARD_SESSION_ID_PATTERN.fullmatch(session_id)
+    if match is None:
+        return True
+    return match.group("agent").lower() == agent.lower()
 
 
 def _production_liveness_report(

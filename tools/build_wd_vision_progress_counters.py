@@ -441,6 +441,17 @@ def _extract_milestone_values(
             "xcons_template_all_views_present": (
                 cross_tpl.get("all_views_present") is True
             ),
+            # the per-view component verdicts the template carries - required in
+            # template_clean so a forged composite (cross_consistent True while a view
+            # verdict is False) fails closed (#1274 inconsistent-aggregate).
+            "xcons_template_real_loop_clean": (
+                cross_tpl.get("real_loop_clean") is True
+            ),
+            "xcons_template_trend_clean": cross_tpl.get("trend_clean") is True,
+            "xcons_template_reviewer_clean": cross_tpl.get("reviewer_clean") is True,
+            "xcons_template_reviewer_matches_trend": (
+                cross_tpl.get("reviewer_matches_trend") is True
+            ),
             "xcons_template_path_free_verified": (
                 cross_tpl.get("path_free_verified") is True
             ),
@@ -882,6 +893,10 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and low_risk.get("xcons_template_no_approval_granted") is True
         and low_risk.get("xcons_template_cross_consistent") is True
         and low_risk.get("xcons_template_all_views_present") is True
+        and low_risk.get("xcons_template_real_loop_clean") is True
+        and low_risk.get("xcons_template_trend_clean") is True
+        and low_risk.get("xcons_template_reviewer_clean") is True
+        and low_risk.get("xcons_template_reviewer_matches_trend") is True
     )
     # Hex-subdivision reviewer summary: a path-free measurement-only surface from
     # the merged renderer. Consumer re-derives each field fail-closed (does NOT

@@ -2212,6 +2212,9 @@ _XCONS_TPL_CLEAN_FIELDS = [
     "template_available", "template_only", "no_runtime_authority_granted",
     "no_direct_bridge_write", "no_bridge_event_written", "no_approval_granted",
     "cross_consistent", "all_views_present",
+    # the per-view component verdicts the template carries (#1274: a forged composite
+    # cross_consistent=True with a view verdict False must still fail closed - tools #1294).
+    "real_loop_clean", "trend_clean", "reviewer_clean", "reviewer_matches_trend",
 ]
 
 
@@ -2248,6 +2251,21 @@ def test_low_risk_xcons_template_consumer_rederives_fail_closed(field):
     block = _lr_xcons_tpl_counters(s)
     assert block["template_clean"] is False, field
     assert block["claim_safe"] is False, field
+
+
+@pytest.mark.parametrize("view", [
+    "real_loop_clean", "trend_clean", "reviewer_clean", "reviewer_matches_trend",
+])
+def test_low_risk_xcons_template_inconsistent_composite_fails_closed(view):
+    # tools #1294 forge: a per-view verdict False while the composite cross_consistent and
+    # all_views_present stay True (a lying/inconsistent template) must NOT certify - the
+    # consumer requires the underlying view verdicts, not just the composite (#1274).
+    s = _good_low_risk_xcons_template_summary()
+    s[view] = False
+    s["cross_consistent"] = True
+    s["all_views_present"] = True
+    block = _lr_xcons_tpl_counters(s)
+    assert block["template_clean"] is False, view
 
 
 def test_low_risk_xcons_template_self_claim_safe_refuses_to_certify():

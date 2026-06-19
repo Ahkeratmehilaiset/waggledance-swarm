@@ -2968,3 +2968,101 @@ def test_manifest_hex_proof_excludes_raw_ring_forbidden_vocabulary() -> None:
     blob = json.dumps(hex_cap["proof"])
     for term in ("conscious", "sentient", "self-aware", "explosive intelligence"):
         assert term not in blob, term
+
+
+def _low_risk_proof_for_reviewer():
+    manifest = build_manifest()
+    return next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "low_risk_autonomy_loop"
+    )["proof"]
+
+
+def test_manifest_stores_repeat_window_reviewer_summary_content_safe() -> None:
+    summary = _low_risk_proof_for_reviewer().get("repeat_window_trend_reviewer_summary")
+    assert isinstance(summary, dict)
+    # content-safe by construction: version string + derived bools + strict ints/None
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        elif key in (
+            "window_size", "promoted_solver_count_min", "promoted_solver_count_max",
+        ):
+            assert value is None or (
+                isinstance(value, int) and not isinstance(value, bool)
+            )
+        else:
+            assert isinstance(value, bool), key
+    assert summary["trend_review_clean"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    assert str(ROOT) not in json.dumps(summary)
+
+
+def test_manifest_repeat_window_reviewer_summary_measurement_only() -> None:
+    # Measurement-only: the reviewer summary is enriched AFTER the low-risk proof ok is
+    # recomputed, so the ok expression cannot reference it. We assert this against the
+    # REAL _capabilities ok recomputation (#1286 review: the prior test inspected
+    # build_low_risk_autonomy_proof, but the actual insertion + ok block live in
+    # _capabilities).
+    proof = _low_risk_proof_for_reviewer()
+    assert isinstance(proof.get("repeat_window_trend_reviewer_summary"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod)
+    parts = src.split("def build_low_risk_autonomy_proof", 1)
+    if len(parts) > 1:
+        body = parts[1].split("\ndef ", 1)[0]
+        assert "repeat_window_trend_reviewer_summary" not in body
+
+    # The real _capabilities ok recomputation must precede the summary insertion, so the
+    # summary is provably outside the ok expression (decoupled by construction).
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_idx = cap_src.index('low_risk_autonomy_proof["ok"] = bool(')
+    summary_idx = cap_src.index(
+        'low_risk_autonomy_proof["repeat_window_trend_reviewer_summary"]'
+    )
+    assert summary_idx > ok_idx, (
+        "reviewer summary must be enriched after the low-risk ok recomputation"
+    )
+
+
+def test_manifest_reviewer_summary_cannot_flip_low_risk_ok(monkeypatch) -> None:
+    # Runtime proof of decoupling at the real _capabilities level: a forged "lying"
+    # reviewer summary (self-claim_safe True, every clean flag False) must leave the
+    # low-risk proof ok byte-identical to the clean baseline, and the forged summary is
+    # still stored raw (measurement-only, never folded into ok).
+    baseline_ok = _low_risk_proof_for_reviewer().get("ok")
+    import tools.render_low_risk_repeat_window_trend_reviewer_summary as rmod
+
+    forged = {
+        "report_version": "forged",
+        "trend_review_clean": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+        "all_runs_ok": False,
+    }
+    monkeypatch.setattr(
+        rmod, "render_repeat_window_trend_reviewer_summary", lambda *_a, **_k: dict(forged)
+    )
+    proof = _low_risk_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert proof.get("repeat_window_trend_reviewer_summary") == forged
+
+
+def test_manifest_low_risk_next_smallest_pr_advanced_beyond_reviewer_summary() -> None:
+    # #1286 review: the wiring slice must advance next_smallest_pr beyond the
+    # now-completed reviewer-summary render/wire work to the next honest smallest step.
+    manifest = build_manifest()
+    cap = next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "low_risk_autonomy_loop"
+    )
+    nsp = cap["next_smallest_pr"].lower()
+    # no longer the just-completed "render ... reviewer summary" slice
+    assert "render the now-default repeat-window trend" not in nsp
+    # advanced to the next measurement-only step (low-risk cross-consistency digest)
+    assert "cross-consistency digest" in nsp
+    assert "measurement-only" in nsp

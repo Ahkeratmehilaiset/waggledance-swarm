@@ -228,14 +228,21 @@ def _extract_milestone_values(
         # scalar fields; the trend counter derives availability fail-closed and
         # NEVER upgrades the low-risk claim from these.
         trend = _mapping(proof.get("repeat_window_trend"))
-        # The recursive _nested_flag root authority scan MUST exclude the
-        # measurement-only trend subtree: otherwise a bare authority key nested
-        # anywhere under repeat_window_trend (e.g. a forged per-window
-        # authority_boundary) would flip the real low-risk gate (#1271 tools forge:
-        # the renamed surfaced field was not enough - the whole subtree must be out
-        # of scope of the recursive scan).
+        # Path-free reviewer summary of the trend (merged #1284 renderer), present only
+        # when the manifest stored it. Measurement-only safe scalars; consumer re-derives.
+        trend_reviewer = _mapping(proof.get("repeat_window_trend_reviewer_summary"))
+        # The recursive _nested_flag root authority scan MUST exclude the measurement-only
+        # trend AND trend-reviewer-summary subtrees: otherwise a bare authority key nested
+        # anywhere under them (e.g. a forged per-window authority_boundary) would flip the
+        # real low-risk gate (#1271 tools forge: the renamed surfaced field was not enough
+        # - the whole subtree must be out of scope of the recursive scan).
         proof_for_authority = (
-            {k: v for k, v in proof.items() if k != "repeat_window_trend"}
+            {
+                k: v
+                for k, v in proof.items()
+                if k
+                not in ("repeat_window_trend", "repeat_window_trend_reviewer_summary")
+            }
             if isinstance(proof, Mapping)
             else proof
         )
@@ -305,6 +312,60 @@ def _extract_milestone_values(
             "repeat_window_trend_window_size": trend.get("window_size"),
             "repeat_window_trend_promotion_count_min": trend.get(
                 "promoted_solver_count_min"
+            ),
+            # Reviewer summary (#1284 renderer) COMPONENT scalars (strict is True) so the
+            # consumer can RE-DERIVE its clean flag - never the summary's own
+            # trend_review_clean composite (#1274). The summary is the CONSUMED aggregate
+            # here, so its OWN components are surfaced (a forged summary inconsistent with
+            # the trend must fail closed).
+            "repeat_window_reviewer_summary_present": bool(
+                proof.get("repeat_window_trend_reviewer_summary")
+            ),
+            "repeat_window_reviewer_summary_path_free_verified": (
+                trend_reviewer.get("path_free_verified") is True
+            ),
+            "repeat_window_reviewer_summary_trend_present": (
+                trend_reviewer.get("trend_present") is True
+            ),
+            "repeat_window_reviewer_summary_all_runs_ok": (
+                trend_reviewer.get("all_runs_ok") is True
+            ),
+            "repeat_window_reviewer_summary_deterministic": (
+                trend_reviewer.get("deterministic") is True
+            ),
+            "repeat_window_reviewer_summary_promotion_count_stable": (
+                trend_reviewer.get("promotion_count_stable") is True
+            ),
+            "repeat_window_reviewer_summary_evidence_present": (
+                trend_reviewer.get("evidence_present") is True
+            ),
+            "repeat_window_reviewer_summary_no_guardrail_tripped": (
+                trend_reviewer.get("no_guardrail_tripped") is True
+            ),
+            "repeat_window_reviewer_summary_no_runtime_authority_granted": (
+                trend_reviewer.get("no_runtime_authority_granted") is True
+            ),
+            "repeat_window_reviewer_summary_no_external_writes": (
+                trend_reviewer.get("no_external_writes") is True
+            ),
+            "repeat_window_reviewer_summary_window_size_valid": (
+                trend_reviewer.get("window_size_valid") is True
+            ),
+            "repeat_window_reviewer_summary_promotion_count_positive": (
+                trend_reviewer.get("promotion_count_positive") is True
+            ),
+            "repeat_window_reviewer_summary_window_size": trend_reviewer.get(
+                "window_size"
+            ),
+            "repeat_window_reviewer_summary_promotion_count_min": (
+                trend_reviewer.get("promoted_solver_count_min")
+            ),
+            "repeat_window_reviewer_summary_promotion_count_max": (
+                trend_reviewer.get("promoted_solver_count_max")
+            ),
+            # Refuse-to-certify if the summary self-declares claim_safe True.
+            "repeat_window_reviewer_summary_self_claim_safe": (
+                trend_reviewer.get("claim_safe") is True
             ),
         }
     if capability_id == "hexagonal_upgrades":
@@ -639,6 +700,60 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             and not isinstance(trend_promotion_min, bool))
         else None
     )
+    # Repeat-window trend REVIEWER SUMMARY (merged #1284 renderer, now manifest-stored).
+    # The consumer RE-DERIVES its clean flag from the summary's COMPONENT booleans -
+    # never the summary's own trend_review_clean composite (#1274). Refuse-to-certify on
+    # a self-declared claim_safe. Measurement-only: NEVER upgrades the low-risk claim.
+    rw_reviewer_present = (
+        low_risk.get("repeat_window_reviewer_summary_present") is True
+    )
+    rw_reviewer_path_free = (
+        low_risk.get("repeat_window_reviewer_summary_path_free_verified") is True
+    )
+    rw_reviewer_self_claim_safe = (
+        low_risk.get("repeat_window_reviewer_summary_self_claim_safe") is True
+    )
+    rw_reviewer_available = (
+        rw_reviewer_present and rw_reviewer_path_free and not rw_reviewer_self_claim_safe
+    )
+    rw_reviewer_window_size = low_risk.get("repeat_window_reviewer_summary_window_size")
+    rw_reviewer_count_min = low_risk.get(
+        "repeat_window_reviewer_summary_promotion_count_min"
+    )
+    rw_reviewer_count_max = low_risk.get(
+        "repeat_window_reviewer_summary_promotion_count_max"
+    )
+    rw_reviewer_window_valid = (
+        isinstance(rw_reviewer_window_size, int)
+        and not isinstance(rw_reviewer_window_size, bool)
+        and 2 <= rw_reviewer_window_size <= _trend_max_window
+    )
+    rw_reviewer_count_valid = (
+        isinstance(rw_reviewer_count_min, int)
+        and not isinstance(rw_reviewer_count_min, bool)
+        and isinstance(rw_reviewer_count_max, int)
+        and not isinstance(rw_reviewer_count_max, bool)
+        and 1 <= rw_reviewer_count_min <= rw_reviewer_count_max
+    )
+    rw_reviewer_clean = bool(
+        rw_reviewer_available
+        and low_risk.get("repeat_window_reviewer_summary_trend_present") is True
+        and low_risk.get("repeat_window_reviewer_summary_all_runs_ok") is True
+        and low_risk.get("repeat_window_reviewer_summary_deterministic") is True
+        and low_risk.get("repeat_window_reviewer_summary_promotion_count_stable") is True
+        and low_risk.get("repeat_window_reviewer_summary_evidence_present") is True
+        and low_risk.get("repeat_window_reviewer_summary_no_guardrail_tripped") is True
+        and low_risk.get(
+            "repeat_window_reviewer_summary_no_runtime_authority_granted"
+        ) is True
+        and low_risk.get("repeat_window_reviewer_summary_no_external_writes") is True
+        and low_risk.get("repeat_window_reviewer_summary_window_size_valid") is True
+        and rw_reviewer_window_valid
+        and low_risk.get(
+            "repeat_window_reviewer_summary_promotion_count_positive"
+        ) is True
+        and rw_reviewer_count_valid
+    )
     # Hex-subdivision reviewer summary: a path-free measurement-only surface from
     # the merged renderer. Consumer re-derives each field fail-closed (does NOT
     # blindly trust the manifest aggregate); it NEVER upgrades the hexagonal
@@ -887,6 +1002,25 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_low_risk_real_loop_repeat_window"
                 if repeat_window_trend_available
+                else "manifest_real_loop_flags"
+            ),
+            "claim_safe": False,
+        },
+        "low_risk_repeat_window_trend_reviewer_summary": {
+            # Measurement-only path-free reviewer summary of the repeat-window trend
+            # (merged #1284 renderer, now manifest-stored). DERIVED fail-closed and fully
+            # decoupled - it NEVER upgrades any low-risk claim. review_clean is RE-DERIVED
+            # from the summary's COMPONENT booleans, never its own trend_review_clean.
+            "reviewer_summary_available": rw_reviewer_available,
+            "review_clean": rw_reviewer_clean,
+            "path_free_verified": bool(
+                rw_reviewer_present
+                and low_risk.get("repeat_window_reviewer_summary_path_free_verified")
+                is True
+            ),
+            "measurement_basis": (
+                "v1_low_risk_repeat_window_trend_reviewer_summary"
+                if rw_reviewer_available
                 else "manifest_real_loop_flags"
             ),
             "claim_safe": False,

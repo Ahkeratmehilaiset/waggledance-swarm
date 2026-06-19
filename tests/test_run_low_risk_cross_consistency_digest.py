@@ -21,14 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _good_real_loop() -> dict:
+    # carries the FULL authority_boundary the live dry-run emits (all axes False), so the
+    # boundary all-False / forged-extra-key checks have a true baseline.
     return {
         "report_version": "wd.low_risk_autogrowth_chain_dry_run.v1",
         "ok": True,
         "local_artifacts_written": False,
-        "authority_boundary": {
-            "external_writes_applied": False,
-            "runtime_authority_granted": False,
-        },
+        "authority_boundary": {f: False for f in mod._REAL_LOOP_BOUNDARY_FALSE_FIELDS},
     }
 
 
@@ -175,6 +174,33 @@ def test_real_loop_violation_fails(mutate):
     d = _digest(p)
     assert d["real_loop_clean"] is False
     assert d["cross_consistent"] is False
+
+
+@pytest.mark.parametrize("field", list(mod._REAL_LOOP_BOUNDARY_FALSE_FIELDS))
+def test_real_loop_boundary_axis_true_fails(field):
+    # every authority_boundary axis (incl. control-plane / scheduler / provider /
+    # builder / gate-skip) must re-derive False; any True -> not clean (RCO-2 pt1).
+    p = _good_proof()
+    p["real_loop_dry_run"]["authority_boundary"][field] = True
+    d = _digest(p)
+    assert d["real_loop_clean"] is False, field
+    assert d["cross_consistent"] is False
+
+
+@pytest.mark.parametrize("field", list(mod._REAL_LOOP_BOUNDARY_FALSE_FIELDS))
+def test_real_loop_boundary_axis_missing_fails(field):
+    # a required authority axis absent (get -> None, not False) fails closed.
+    p = _good_proof()
+    del p["real_loop_dry_run"]["authority_boundary"][field]
+    assert _digest(p)["real_loop_clean"] is False, field
+
+
+@pytest.mark.parametrize("bad", [True, "yes", 1, {}])
+def test_real_loop_forged_extra_boundary_key_fails(bad):
+    # a forged EXTRA boundary key that is not False must fail closed (#1271-style).
+    p = _good_proof()
+    p["real_loop_dry_run"]["authority_boundary"]["forged_secret_authority"] = bad
+    assert _digest(p)["real_loop_clean"] is False, bad
 
 
 # --------------------------------------------------------- trend re-derivation

@@ -101,6 +101,21 @@ _TREND_FALSE_FIELDS = (
     "trend_runtime_authority_granted",
     "trend_external_writes_applied",
 )
+# real_loop_dry_run authority_boundary axes - ALL must be strictly False (no runtime /
+# control-plane / scheduler / provider / builder / gate-skip authority crossed). The
+# full set is required present-and-False, and any EXTRA boundary key that is not False
+# also fails closed (a forged authority axis cannot ride in - #1271-style).
+_REAL_LOOP_BOUNDARY_FALSE_FIELDS = (
+    "external_writes_applied",
+    "production_control_plane_touched",
+    "production_scheduler_enqueue",
+    "provider_jobs_created",
+    "builder_jobs_created",
+    "gate_skip_authority",
+    "operator_gate_bypassed",
+    "runtime_authority_granted",
+    "fast_track_priority",
+)
 # reviewer_summary (#1284/#1286) component booleans that must each be strictly True
 # (its OWN trend_review_clean aggregate is deliberately NOT consulted - #1274).
 _REVIEWER_TRUE_FIELDS = (
@@ -147,13 +162,16 @@ def _real_loop_clean(view: Any) -> bool:
     # refuse-to-certify if the measurement-only view self-declares claim_safe.
     if view.get("claim_safe") is True:
         return False
-    boundary = _mapping(view.get("authority_boundary"))
-    return bool(
-        view.get("ok") is True
-        and view.get("local_artifacts_written") is False
-        and boundary.get("external_writes_applied") is False
-        and boundary.get("runtime_authority_granted") is False
-    )
+    if view.get("ok") is not True or view.get("local_artifacts_written") is not False:
+        return False
+    boundary = view.get("authority_boundary")
+    if not isinstance(boundary, Mapping):
+        return False
+    # every expected authority axis present-and-False, AND no extra boundary key that
+    # is anything other than False (a forged authority axis fails closed).
+    if not all(boundary.get(field) is False for field in _REAL_LOOP_BOUNDARY_FALSE_FIELDS):
+        return False
+    return all(value is False for value in boundary.values())
 
 
 def _trend_clean(view: Any) -> bool:

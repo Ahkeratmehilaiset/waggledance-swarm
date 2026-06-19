@@ -69,6 +69,9 @@ NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
     {
         "no_changes_requested",
         "no_changes_requested_approved",
+        "changes_requested_resolved",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
     }
 )
 NO_BLOCK_CLEAR_STATUSES = frozenset(

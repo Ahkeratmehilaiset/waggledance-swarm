@@ -117,6 +117,26 @@ def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_v
     )
 
 
+def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_accepts_namespaced_task_id() -> None:
+    task_id = "codex-lead-1/route-stage-bundle-verification-summary-bridge-template-20260619"
+    report = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template(
+        summary=_bundle_verification_summary(),
+        agent_id="codex-lead-1",
+        task_id=task_id,
+        to="operator,claude-rco-1",
+        run_id="codex-lead-1-20260619T070000Z",
+        session_id="codex-lead-1-20260619T070000Z",
+        now_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is True
+    event = report["bridge_event_template"]
+    validate_event(event)
+    assert event["task_id"] == task_id
+    assert event["payload"]["template_only"] is True
+    assert event["payload"]["runtime_authority_granted"] is False
+
+
 def test_route_stage_handoff_bundle_verification_summary_bridge_event_template_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

@@ -54,6 +54,7 @@ ROUTE_STAGE_VERIFICATION_KEY = (
 )
 _ARTIFACT_IDS = (SUMMARY_ARTIFACT_ID, TEMPLATE_ARTIFACT_ID)
 _AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,179}$")
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$")
 _WARNING_FILENAME_TOKEN_RE = re.compile(
@@ -566,7 +567,7 @@ def _bridge_template_input_error(
 ) -> str | None:
     if not _valid_agent_id(agent_id):
         return "agent_unsafe"
-    if not isinstance(task_id, str) or not _SAFE_REF_RE.fullmatch(task_id):
+    if not _safe_task_id(task_id):
         return "task_id_unsafe"
     _, target_error = _validate_targets(to)
     if target_error is not None:
@@ -596,6 +597,18 @@ def _validate_targets(raw_targets: Any) -> tuple[str, str | None]:
 
 def _valid_agent_id(value: Any) -> bool:
     return isinstance(value, str) and _AGENT_ID_RE.fullmatch(value) is not None
+
+
+def _safe_task_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and _TASK_ID_RE.fullmatch(value) is not None
+        and "\\" not in value
+        and ".." not in value
+        and "//" not in value
+        and not value.endswith("/")
+        and not _forbidden_output_markers(value)
+    )
 
 
 def _match_checks(value: Any) -> dict[str, str]:

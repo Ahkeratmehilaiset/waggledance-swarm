@@ -27,6 +27,7 @@ from tools.build_route_stage_feed_health_drill_evidence_verification_summary_bri
     SUMMARY_ARTIFACT_ID,
     TEMPLATE_ARTIFACT_ID,
     TemplateIndexEntryError,
+    _contains_path_marker,
     build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry,
 )
 
@@ -545,7 +546,7 @@ def _assert_no_forbidden_input(artifact_id: str, value: Mapping[str, Any]) -> No
         raise TemplateIndexEntryVerificationError(
             f"{artifact_id}_non_finite_json_value"
         ) from exc
-    if _forbidden_output_markers(serialized):
+    if _contains_path_marker(value) or _forbidden_output_markers(serialized):
         raise TemplateIndexEntryVerificationError(f"{artifact_id}_forbidden_marker")
 
 

@@ -1109,6 +1109,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
         "tests/tools/test_verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1777,6 +1779,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_supported"
+        ]
+        is True
+    )
     verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
         "drill_evidence_verifier_smoke"
     ]
@@ -2043,6 +2051,49 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_smoke"
+    ]
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke["ok"]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "source_contract_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "rebuilt_template_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2064,9 +2115,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "local verifier for that index entry" in capability["safe_statement"]
     assert "reviewer handoff summary" in capability["safe_statement"]
     assert "handoff bundle index" in capability["safe_statement"]
+    assert "verifier-summary bridge-event template" in capability["safe_statement"]
     assert "handoff bundle" in capability["next_smallest_pr"]
-    assert "verification" in capability["next_smallest_pr"]
-    assert "reviewer summary" in capability["next_smallest_pr"]
+    assert "verifier-summary bridge-event template index entry" in (
+        capability["next_smallest_pr"]
+    )
+    assert "local verifier" in capability["next_smallest_pr"]
     assert "without including payloads" in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 

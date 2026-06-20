@@ -521,13 +521,13 @@ class AutonomyRuntime:
             else False
         )
         receipt_count = 0
-        if isinstance(verifier_report, dict):
-            receipt_count = _runtime_receipt_nonnegative_int(
-                verifier_report.get("receipt_count")
-            )
-        if receipt_count == 0 and isinstance(receipt, dict):
+        if isinstance(receipt, dict) and "receipt_count" in receipt:
             receipt_count = _runtime_receipt_nonnegative_int(
                 receipt.get("receipt_count")
+            )
+        elif isinstance(verifier_report, dict):
+            receipt_count = _runtime_receipt_nonnegative_int(
+                verifier_report.get("receipt_count")
             )
         self._runtime_receipt_last_verifier_ok = verifier_ok
         self._runtime_receipt_last_receipt_count = receipt_count

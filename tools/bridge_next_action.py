@@ -1276,16 +1276,67 @@ def _event_agent(event: Mapping[str, Any]) -> str:
     return str(event.get("agent") or event.get("author") or "unknown").lower()
 
 
-def _event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
+def _event_metadata(
+    event: Mapping[str, Any],
+    *,
+    known_agents: Sequence[str] = (),
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     for key in ("role", "agent_uuid", "session_id"):
         value = str(event.get(key) or "").strip()
         if value:
+            if key == "session_id" and _session_id_conflicts_with_other_agent(
+                session_id=value,
+                event_agent=_event_agent(event),
+                known_agents=known_agents,
+            ):
+                continue
             metadata[key] = value
     capabilities = _string_list(event.get("capabilities"))
     if capabilities:
         metadata["capabilities"] = capabilities
     return metadata
+
+
+def _known_event_agents(events: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    agents: set[str] = set()
+    for event in events:
+        agent = _event_agent(event)
+        if agent and agent != "unknown":
+            agents.add(agent)
+    return tuple(sorted(agents))
+
+
+def _session_id_conflicts_with_other_agent(
+    *,
+    session_id: str,
+    event_agent: str,
+    known_agents: Sequence[str],
+) -> bool:
+    normalized_event_agent = event_agent.lower()
+    owner = _session_id_owner_agent(
+        session_id=session_id,
+        known_agents=known_agents,
+    )
+    return owner is not None and owner != normalized_event_agent
+
+
+def _session_id_owner_agent(
+    *,
+    session_id: str,
+    known_agents: Sequence[str],
+) -> str | None:
+    normalized_session_id = session_id.lower()
+    matches: list[str] = []
+    for known_agent in known_agents:
+        candidate = str(known_agent or "").strip().lower()
+        if not candidate or candidate == "unknown":
+            continue
+        if normalized_session_id.startswith(f"{candidate}-"):
+            matches.append(candidate)
+    if not matches:
+        return None
+    return max(matches, key=len)
 
 
 def _event_status(event: Mapping[str, Any]) -> str:
@@ -1356,11 +1407,12 @@ def _latest_agent_metadata(
     *,
     agent: str,
     events: Sequence[Mapping[str, Any]],
+    known_agents: Sequence[str] = (),
 ) -> dict[str, Any]:
     for event in reversed(events):
         if _event_agent(event) != agent:
             continue
-        metadata = _event_metadata(event)
+        metadata = _event_metadata(event, known_agents=known_agents)
         if metadata:
             return metadata
     return {}
@@ -2050,7 +2102,12 @@ def _report(
         payload["open_incoming_duplicate_count"] = (
             open_request_event_count - len(open_requests)
         )
-    agent_profile = _latest_agent_metadata(agent=agent, events=events)
+    known_agents = _known_event_agents(events)
+    agent_profile = _latest_agent_metadata(
+        agent=agent,
+        events=events,
+        known_agents=known_agents,
+    )
     if agent_profile:
         payload["agent_profile"] = agent_profile
     claim_snapshot = _claim_snapshot(
@@ -2098,7 +2155,7 @@ def _report(
             "ts_utc": _event_ts(request),
             "message": _message(request),
         }
-        incoming.update(_event_metadata(request))
+        incoming.update(_event_metadata(request, known_agents=known_agents))
         payload["incoming"] = incoming
     _assert_no_private_markers(payload)
     return payload

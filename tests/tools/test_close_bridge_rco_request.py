@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from tools.close_bridge_rco_request import (  # noqa: E402
     CloseRcoError,
     close_bridge_rco_request,
+    _read_events,
 )
 from tools.idle_check import evaluate_idle_state  # noqa: E402
 
@@ -45,6 +46,20 @@ def _seed_bridge_raw(tmp_path: Path, lines: list[str]) -> Path:
     claims.mkdir(parents=True)
     (shared / "events.jsonl").write_text("".join(lines), encoding="utf-8")
     return bridge_root
+
+
+def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge_raw(
+        tmp_path,
+        [
+            "null\n",
+            json.dumps(_opening_handoff("task-1", "2026-05-20T18:00:00Z")) + "\n",
+        ],
+    )
+
+    assert _read_events(bridge_root / "shared" / "events.jsonl") == [
+        _opening_handoff("task-1", "2026-05-20T18:00:00Z")
+    ]
 
 
 def _opening_handoff(task_id: str, ts: str, agent: str = "claude") -> dict:

@@ -212,6 +212,33 @@ def test_task_scoped_event_with_task_id_writes_valid_event(tmp_path: Path) -> No
     validate_event_line(line)
 
 
+def test_null_payload_json_writes_empty_object_payload(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "status",
+        "-Status",
+        "payload-null-smoke",
+        "-Message",
+        "payload null should normalize",
+        "-PayloadJson",
+        "null",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    events_path = runtime_root / "shared" / "events.jsonl"
+    line = events_path.read_text(encoding="utf-8").strip()
+    event = json.loads(line)
+    assert event["payload"] == {}
+    validate_event_line(line)
+
+
 def test_wake_request_requires_to_before_runtime_write(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"

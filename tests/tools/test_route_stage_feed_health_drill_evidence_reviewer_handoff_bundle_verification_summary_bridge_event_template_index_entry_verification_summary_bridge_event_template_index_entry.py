@@ -109,6 +109,29 @@ def test_route_stage_reviewer_handoff_bundle_verifier_summary_bridge_template_in
     assert not any(marker in json.dumps(entry, sort_keys=True) for marker in PRIVATE_MARKERS)
 
 
+def test_route_stage_reviewer_handoff_bundle_verifier_summary_bridge_template_index_entry_blocks_filename_warning_tokens() -> None:
+    artifacts = _artifact_set()
+    artifacts["summary"] = copy.deepcopy(artifacts["summary"])
+    artifacts["template"] = copy.deepcopy(artifacts["template"])
+    artifacts["summary"]["warnings"] = ["evidence.json", "safe_summary_warning"]
+    artifacts["template"]["warnings"] = ["route_stage.py", "safe_template_warning"]
+    raw = _artifact_bytes(artifacts)
+
+    entry = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry(
+        index_entry_verification_summary=artifacts["summary"],
+        summary_bridge_event_template_report=artifacts["template"],
+        index_entry_verification_summary_bytes=raw["summary"],
+        summary_bridge_event_template_bytes=raw["template"],
+        now_utc=FIXED_NOW,
+    )
+
+    serialized = json.dumps(entry, sort_keys=True)
+    assert "evidence.json" not in serialized
+    assert "route_stage.py" not in serialized
+    assert entry["verification_summary"]["warning_count"] == 1
+    assert entry["warnings"] == ["safe_summary_warning", "safe_template_warning"]
+
+
 def test_route_stage_reviewer_handoff_bundle_verifier_summary_bridge_template_index_entry_cli_json_is_path_free(
     tmp_path: Path,
 ) -> None:

@@ -267,7 +267,9 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
             "handoff_ref": _safe_ref_or_invalid(reviewer.get("handoff_ref")),
             "blocker_count": 0,
             "warning_count": len(
-                _safe_token_list(index_entry_verification_summary.get("warnings"))
+                _safe_warning_token_list(
+                    index_entry_verification_summary.get("warnings")
+                )
             ),
         },
         "consistency": {
@@ -302,8 +304,12 @@ def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verific
         "artifact_payloads_included": False,
         "local_paths_recorded": False,
         "blockers": [],
-        "warnings": _safe_token_list(index_entry_verification_summary.get("warnings"))
-        + _safe_token_list(summary_bridge_event_template_report.get("warnings")),
+        "warnings": _safe_warning_token_list(
+            index_entry_verification_summary.get("warnings")
+        )
+        + _safe_warning_token_list(
+            summary_bridge_event_template_report.get("warnings")
+        ),
     }
     _assert_no_forbidden_output(json.dumps(entry, allow_nan=False, sort_keys=True))
     return entry
@@ -716,6 +722,16 @@ def _safe_token_list(value: Any) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
     return [_safe_token(item) for item in value if isinstance(item, str)]
+
+
+def _safe_warning_token_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [
+        _safe_token(item, "unsafe_warning_redacted")
+        for item in value
+        if isinstance(item, str) and _FILENAME_TOKEN_RE.fullmatch(item) is None
+    ]
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

@@ -2141,6 +2141,69 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
     assert "production_liveness" not in report
 
 
+@pytest.mark.parametrize("activity_type", ["decision", "finding"])
+def test_recent_decision_or_finding_self_activity_clears_liveness_noise(
+    activity_type: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "claude-rco-1",
+            "type": "status",
+            "task_id": "rco-loop",
+            "status": "working",
+            "message": "initially active",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "handoff",
+            "task_id": "old-handoff",
+            "status": "open",
+            "message": "older handoff noise",
+        },
+        {
+            "ts_utc": "2026-06-06T10:02:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:04:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:10:00Z",
+            "agent": "claude-rco-1",
+            "type": activity_type,
+            "task_id": "rco-needed",
+            "status": (
+                "rco_pass" if activity_type == "decision" else "evidence_finding"
+            ),
+            "message": "target self activity after the latest wake",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in report
+
+
 def test_registered_uuid_alias_does_not_create_phantom_liveness_lane() -> None:
     events = [
         {

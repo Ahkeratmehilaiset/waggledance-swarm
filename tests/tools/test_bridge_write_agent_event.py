@@ -239,6 +239,54 @@ def test_null_payload_json_writes_empty_object_payload(tmp_path: Path) -> None:
     validate_event_line(line)
 
 
+def test_empty_payload_json_fails_before_runtime_write(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "status",
+        "-Status",
+        "payload-empty-smoke",
+        "-Message",
+        "payload empty should fail",
+        "-PayloadJson",
+        "",
+    )
+
+    assert completed.returncode != 0
+    assert "payload must be valid JSON" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_whitespace_payload_json_fails_before_runtime_write(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "status",
+        "-Status",
+        "payload-whitespace-smoke",
+        "-Message",
+        "payload whitespace should fail",
+        "-PayloadJson",
+        "   ",
+    )
+
+    assert completed.returncode != 0
+    assert "payload must be valid JSON" in completed.stderr
+    assert not runtime_root.exists()
+
+
 def test_wake_request_requires_to_before_runtime_write(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"

@@ -28,7 +28,14 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any, Iterable, Mapping, Sequence
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 # Gate-decision statuses whose task_id is expected to be a PR headRefName.
 # Coordination statuses are intentionally excluded (they legitimately use
@@ -147,7 +154,21 @@ def build_parser() -> argparse.ArgumentParser:
             "mis-post pattern). WARN-only; never blocks (always exits 0)."
         )
     )
-    parser.add_argument("--events", default=str(DEFAULT_EVENTS_PATH))
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="Bridge events JSONL path. Defaults to <bridge-root>/shared/events.jsonl.",
+    )
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to .agent-bridge directory (default: "
+            "AGENT_BRIDGE_RUNTIME_ROOT/AGENT_BRIDGE_ROOT or repo-local)."
+        ),
+    )
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument(
         "--headref",
@@ -170,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    events = _read_events(Path(args.events))
+    events_path = _resolve_events_path(args.events, args.bridge_root)
+    events = _read_events(events_path)
     if args.tail and args.tail > 0:
         events = events[-args.tail :]
     headrefs = list(args.headref) or _pr_headrefs(args.repo)
@@ -202,6 +224,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     # WARN-only: never a hard block.
     return 0
+
+
+def _resolve_events_path(events_path: Path | None, bridge_root: Path | None) -> Path:
+    if events_path is not None:
+        return events_path
+    return resolve_bridge_root(bridge_root) / "shared" / "events.jsonl"
 
 
 if __name__ == "__main__":

@@ -123,3 +123,26 @@ def test_main_is_warn_only_exit_zero(tmp_path: Path, capsys) -> None:
     out = json.loads(capsys.readouterr().out)
     assert out["warning_count"] == 1
     assert out["warnings"][0]["task_id"] == REANCHOR
+
+
+def test_main_defaults_to_runtime_bridge_root(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    runtime_bridge = tmp_path / "runtime-bridge"
+    shared = runtime_bridge / "shared"
+    shared.mkdir(parents=True)
+    (shared / "events.jsonl").write_text(
+        json.dumps(_event("claude-rco-1", "decision", "rco_pass", REANCHOR)) + "\n",
+        encoding="utf-8",
+    )
+    shadow_repo = tmp_path / "shadow-repo"
+    shadow_repo.mkdir()
+    monkeypatch.chdir(shadow_repo)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+
+    rc = main(["--headref", CANONICAL, "--json"])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["warning_count"] == 1
+    assert out["warnings"][0]["task_id"] == REANCHOR

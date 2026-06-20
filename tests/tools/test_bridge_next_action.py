@@ -1943,6 +1943,79 @@ def test_report_surfaces_agent_profile_and_claim_role_metadata() -> None:
     assert foreign["claim_lease_expires_utc"] == "2026-05-23T15:20:00Z"
 
 
+def test_agent_profile_omits_session_id_from_known_peer_agent() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-19T20:20:00Z",
+            "agent": "codex-tools-1",
+            "type": "heartbeat",
+            "task_id": "tools-heartbeat",
+            "status": "active",
+            "session_id": "codex-tools-1-20260616T040417Z",
+        },
+        {
+            "ts_utc": "2026-06-19T20:33:12Z",
+            "agent": "codex-lead-1",
+            "type": "message",
+            "task_id": "lead-status",
+            "status": "answered",
+            "role": "lead_impl",
+            "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+            "session_id": "codex-tools-1-20260616T040417Z",
+            "capabilities": ["implementation", "work_queue"],
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["agent_profile"] == {
+        "role": "lead_impl",
+        "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+        "capabilities": ["implementation", "work_queue"],
+    }
+
+
+def test_agent_profile_keeps_session_id_for_longest_matching_agent_prefix() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-19T20:19:00Z",
+            "agent": "codex",
+            "type": "heartbeat",
+            "task_id": "legacy-codex-heartbeat",
+            "status": "active",
+            "session_id": "codex-legacy-session",
+        },
+        {
+            "ts_utc": "2026-06-19T20:20:00Z",
+            "agent": "codex-tools-1",
+            "type": "heartbeat",
+            "task_id": "tools-heartbeat",
+            "status": "active",
+            "role": "tools-tests",
+            "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+            "session_id": "codex-tools-1-20260616T040417Z",
+            "capabilities": ["tools", "work_queue"],
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["agent_profile"] == {
+        "role": "tools-tests",
+        "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+        "session_id": "codex-tools-1-20260616T040417Z",
+        "capabilities": ["tools", "work_queue"],
+    }
+
+
 def test_incoming_report_surfaces_requester_role_metadata() -> None:
     events = [
         {
@@ -2062,6 +2135,69 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
         events=events,
         claims=[],
         now_utc=datetime(2026, 6, 6, 10, 14, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in report
+
+
+@pytest.mark.parametrize("activity_type", ["decision", "finding"])
+def test_recent_decision_or_finding_self_activity_clears_liveness_noise(
+    activity_type: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "claude-rco-1",
+            "type": "status",
+            "task_id": "rco-loop",
+            "status": "working",
+            "message": "initially active",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "handoff",
+            "task_id": "old-handoff",
+            "status": "open",
+            "message": "older handoff noise",
+        },
+        {
+            "ts_utc": "2026-06-06T10:02:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:04:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:10:00Z",
+            "agent": "claude-rco-1",
+            "type": activity_type,
+            "task_id": "rco-needed",
+            "status": (
+                "rco_pass" if activity_type == "decision" else "evidence_finding"
+            ),
+            "message": "target self activity after the latest wake",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
         production_idle_warn_minutes=12.0,
     )
 
@@ -2632,6 +2768,21 @@ def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) ->
         assert "JSON object" in exc.report["errors"][0]
     else:
         raise AssertionError("non-object selected bridge event should fail closed")
+
+
+def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            [
+                "null",
+                json.dumps({"task_id": "one"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_events(events_path, tail=2) == [{"task_id": "one"}]
 
 
 def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:

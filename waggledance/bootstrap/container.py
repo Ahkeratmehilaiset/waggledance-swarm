@@ -1,8 +1,12 @@
 """Dependency injection container -- wires everything together."""
 
+import hashlib
 import logging
+from datetime import datetime, timezone
 from functools import cached_property
+from itertools import count
 from pathlib import Path
+from threading import Lock
 
 log = logging.getLogger(__name__)
 
@@ -13,6 +17,25 @@ log = logging.getLogger(__name__)
 # that matches every agent and is accepted at runtime but should not
 # be selected as the active profile.
 KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
+DEFAULT_RUNTIME_RECEIPT_OUT_DIR = "data/runtime/runtime_summary_receipts"
+
+
+def _public_runtime_receipt_verifier_errors(errors) -> list[str]:
+    public_errors: list[str] = []
+    for error in errors or []:
+        digest = hashlib.sha256(
+            str(error).encode("utf-8", errors="replace")
+        ).hexdigest()[:16]
+        public_errors.append(f"verifier_error:{digest}")
+    return public_errors
+
+
+def _settings_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 class Container:
@@ -238,6 +261,92 @@ class Container:
                 UnavailableAutogrowthAlertFeed,
             )
             return UnavailableAutogrowthAlertFeed()
+
+    @cached_property
+    def runtime_receipt_sink(self):
+        """Optional local MAGMA receipt sink for AutonomyRuntime query summaries.
+
+        Disabled by default. When explicitly enabled, the sink writes sanitized
+        receipt bundles to a configured local directory but returns only
+        path-free verifier metadata to the runtime result.
+        """
+        if not _settings_bool(self._settings.get("runtime_receipts.enabled", False)):
+            return None
+
+        out_dir = Path(
+            str(
+                self._settings.get(
+                    "runtime_receipts.out_dir",
+                    DEFAULT_RUNTIME_RECEIPT_OUT_DIR,
+                )
+            )
+        )
+        evaluation_version = str(
+            self._settings.get(
+                "runtime_receipts.evaluation_version",
+                "magma.evaluation_result.v0",
+            )
+        )
+        sequence = count(1)
+        sequence_lock = Lock()
+
+        def sink(summary: dict):
+            from tools.verify_magma_receipt import verify_manifest
+            from waggledance.core.magma.runtime_summary_receipt import (
+                write_runtime_summary_receipt_bundle,
+            )
+
+            now_utc = datetime.now(timezone.utc)
+            with sequence_lock:
+                ordinal = next(sequence)
+            leaf = f"{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}-{ordinal:06d}"
+            verifier_report: dict = {}
+
+            def public_verify_manifest(manifest_path: Path) -> dict:
+                nonlocal verifier_report
+                verifier_report = verify_manifest(manifest_path)
+                return verifier_report
+
+            try:
+                report = write_runtime_summary_receipt_bundle(
+                    out_dir=out_dir / leaf,
+                    summary_payload=summary,
+                    now_utc=now_utc,
+                    verify_manifest=public_verify_manifest,
+                    evaluation_version=evaluation_version,
+                )
+            except ValueError as exc:
+                if not str(exc).startswith("receipt bundle verification failed:"):
+                    raise
+                report = {
+                    "receipt_count": 0,
+                    "verifier_report": verifier_report
+                    or {
+                        "ok": False,
+                        "receipt_count": 0,
+                        "errors": [str(exc)],
+                    },
+                }
+            verifier_report = report.get("verifier_report", {})
+            return {
+                "receipt_count": int(report.get("receipt_count", 0) or 0),
+                "verifier_report": {
+                    "ok": bool(verifier_report.get("ok", False)),
+                    "receipt_count": int(
+                        verifier_report.get("receipt_count", 0) or 0
+                    ),
+                    "errors": _public_runtime_receipt_verifier_errors(
+                        verifier_report.get("errors", [])
+                    ),
+                },
+                "sink": "configured_local_runtime_summary_receipts",
+                "paths_returned": False,
+                "payloads_returned": False,
+                "default_runtime_receipt_emission_changed": False,
+                "runtime_authority_changed": False,
+            }
+
+        return sink
 
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
@@ -527,7 +636,11 @@ class Container:
         )
         resource_kernel.resource_guard = self.resource_guard
 
-        runtime = AutonomyRuntime(profile=profile, resource_kernel=resource_kernel)
+        runtime = AutonomyRuntime(
+            profile=profile,
+            resource_kernel=resource_kernel,
+            runtime_receipt_sink=self.runtime_receipt_sink,
+        )
         lifecycle = AutonomyLifecycle(
             primary=self._settings.runtime_primary,
             compatibility_mode=self._settings.compatibility_mode,

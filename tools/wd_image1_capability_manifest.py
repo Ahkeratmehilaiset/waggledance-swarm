@@ -862,6 +862,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py",
+        "tests/tools/test_build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py",
     )
     metric_names = (
         "waggledance_route_stage_observations_total",
@@ -1010,6 +1014,14 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     drill_reviewer_handoff_bundle_index_verifier_text = (
         repo_root
         / "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py"
+    ).read_text(encoding="utf-8")
+    drill_reviewer_handoff_bundle_verification_summary_template_text = (
+        repo_root
+        / "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py"
+    ).read_text(encoding="utf-8")
+    drill_reviewer_handoff_bundle_verification_summary_template_tests_text = (
+        repo_root
+        / "tests/tools/test_build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py"
     ).read_text(encoding="utf-8")
     docs_text = (repo_root / "docs/API.md").read_text(encoding="utf-8")
     runbook_text = (
@@ -1557,6 +1569,32 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             ).get("ok")
             is True
         ),
+        "ops_latency_feed_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_present": all(
+            token
+            in "\n".join(
+                (
+                    drill_reviewer_handoff_bundle_verification_summary_template_text,
+                    drill_reviewer_handoff_bundle_verification_summary_template_tests_text,
+                )
+            )
+            for token in (
+                "TEMPLATE_VERSION",
+                "handoff_bundle_verification_summary_bridge_event_template.v1",
+                "build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template",
+                "template_not_emitted",
+                "verification_report_boundary_ok",
+                "artifact_payloads_included",
+                "local_paths_recorded",
+                "test_route_stage_handoff_bundle_verification_summary_bridge_event_template_validates_schema",
+            )
+        )
+        and (
+            drill_verifier_smoke.get(
+                "reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke",
+                {},
+            ).get("ok")
+            is True
+        ),
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
@@ -1651,6 +1689,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "latency_feed_drill_evidence_reviewer_handoff_bundle_index_verifier_supported": checks[
             "ops_latency_feed_drill_evidence_reviewer_handoff_bundle_index_verifier_present"
         ],
+        "latency_feed_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_supported": checks[
+            "ops_latency_feed_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_present"
+        ],
         "drill_evidence_verifier_smoke": drill_verifier_smoke,
         "latency_feed_state_visible": ok,
         "alert_thresholds_documented": ok,
@@ -1670,9 +1711,11 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "bridge-event renderer for that summary, and local index entry "
             "for that renderer plus a local verifier for that index entry "
             "and a path-free reviewer handoff summary plus local bundle index "
-            "and verifier for the verifier chain without storing raw query, "
-            "profile, language, context, full route trace payloads, local "
-            "paths, or appending bridge events."
+            "and verifier for the verifier chain, a path-free bundle "
+            "verification summary, and a template-only bridge-event renderer "
+            "for that bundle summary without storing raw query, profile, "
+            "language, context, full route trace payloads, local paths, or "
+            "appending bridge events."
         ),
     }
 
@@ -1729,6 +1772,15 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         from tools.verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index import (
             VERIFICATION_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_INDEX_VERIFICATION_VERSION,
             verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index,
+        )
+        from tools.build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary import (
+            ROUTE_STAGE_BUNDLE_VERIFICATION_KEY as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_KEY,
+            SUMMARY_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION,
+            build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary,
+        )
+        from tools.build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template import (
+            TEMPLATE_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION,
+            build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template,
         )
     except Exception as exc:  # pragma: no cover - defensive manifest guard.
         return {
@@ -1797,6 +1849,18 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
                 "ok": False,
                 "blocked_reason": f"reviewer_handoff_bundle_index_verification_import_failed:{exc.__class__.__name__}",
                 "verification_version": None,
+                "direct_bridge_write_performed": False,
+            },
+            "reviewer_handoff_bundle_verification_summary_smoke": {
+                "ok": False,
+                "blocked_reason": f"reviewer_handoff_bundle_verification_summary_import_failed:{exc.__class__.__name__}",
+                "summary_version": None,
+                "direct_bridge_write_performed": False,
+            },
+            "reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke": {
+                "ok": False,
+                "blocked_reason": f"reviewer_handoff_bundle_verification_summary_bridge_event_template_import_failed:{exc.__class__.__name__}",
+                "template_version": None,
                 "direct_bridge_write_performed": False,
             },
             "network_access_performed": False,
@@ -2004,6 +2068,18 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         reviewer_handoff_summary=reviewer_handoff_summary,
         verification_report_bytes=final_verification_bytes,
         reviewer_handoff_summary_bytes=reviewer_handoff_summary_bytes,
+    )
+    reviewer_handoff_bundle_verification_summary = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary(
+        verification_report=reviewer_handoff_bundle_index_verification,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-health-bundle-verification",
+    )
+    reviewer_handoff_bundle_verification_summary_template = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template(
+        summary=reviewer_handoff_bundle_verification_summary,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-route-stage-bundle-summary-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
     )
     template_event = template_report.get("bridge_event_template")
     template_payload = (
@@ -2613,6 +2689,250 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         ),
         "blockers": reviewer_handoff_bundle_index_verification.get("blockers", []),
     }
+    reviewer_handoff_bundle_verification_summary_payload = (
+        reviewer_handoff_bundle_verification_summary.get(
+            DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_KEY,
+            {},
+        )
+    )
+    reviewer_handoff_bundle_verification_summary_boundary = (
+        reviewer_handoff_bundle_verification_summary.get("operator_boundary", {})
+    )
+    reviewer_handoff_bundle_verification_summary_smoke = {
+        "ok": (
+            reviewer_handoff_bundle_verification_summary.get("ok") is True
+            and reviewer_handoff_bundle_verification_summary.get("summary_version")
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "verification_ok"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "verification_version"
+            )
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_INDEX_VERIFICATION_VERSION
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "source_contract_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "rebuilt_bundle_index_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "reviewer_handoff_summary_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "artifact_count_checked"
+            )
+            == 2
+            and set(
+                reviewer_handoff_bundle_verification_summary_payload.get(
+                    "digest_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and set(
+                reviewer_handoff_bundle_verification_summary_payload.get(
+                    "size_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and set(
+                reviewer_handoff_bundle_verification_summary_payload.get(
+                    "schema_version_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and reviewer_handoff_bundle_verification_summary_boundary.get(
+                "verification_report_boundary_ok"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary.get(
+                "manual_review_required"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary.get("approval_granted")
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "direct_bridge_write_performed"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get("transport_added")
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "artifact_payloads_included"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "local_paths_recorded"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "network_access_performed"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "runtime_authority_granted"
+            )
+            is False
+        ),
+        "summary_version": reviewer_handoff_bundle_verification_summary.get(
+            "summary_version"
+        ),
+        "verification_ok": reviewer_handoff_bundle_verification_summary_payload.get(
+            "verification_ok"
+        ),
+        "verification_version": reviewer_handoff_bundle_verification_summary_payload.get(
+            "verification_version"
+        ),
+        "artifact_count_checked": reviewer_handoff_bundle_verification_summary_payload.get(
+            "artifact_count_checked"
+        ),
+        "source_contract_check": reviewer_handoff_bundle_verification_summary_payload.get(
+            "source_contract_check"
+        ),
+        "rebuilt_bundle_index_check": reviewer_handoff_bundle_verification_summary_payload.get(
+            "rebuilt_bundle_index_check"
+        ),
+        "reviewer_handoff_summary_check": reviewer_handoff_bundle_verification_summary_payload.get(
+            "reviewer_handoff_summary_check"
+        ),
+        "digest_checks": reviewer_handoff_bundle_verification_summary_payload.get(
+            "digest_checks",
+            {},
+        ),
+        "verification_report_boundary_ok": reviewer_handoff_bundle_verification_summary_boundary.get(
+            "verification_report_boundary_ok"
+        ),
+        "manual_review_required": reviewer_handoff_bundle_verification_summary.get(
+            "manual_review_required"
+        ),
+        "approval_granted": reviewer_handoff_bundle_verification_summary.get(
+            "approval_granted"
+        ),
+        "direct_bridge_write_performed": reviewer_handoff_bundle_verification_summary.get(
+            "direct_bridge_write_performed"
+        ),
+        "artifact_payloads_included": reviewer_handoff_bundle_verification_summary.get(
+            "artifact_payloads_included"
+        ),
+        "local_paths_recorded": reviewer_handoff_bundle_verification_summary.get(
+            "local_paths_recorded"
+        ),
+        "network_access_performed": reviewer_handoff_bundle_verification_summary.get(
+            "network_access_performed"
+        ),
+        "blockers": reviewer_handoff_bundle_verification_summary.get("blockers", []),
+    }
+    reviewer_handoff_bundle_verification_summary_template_event = (
+        reviewer_handoff_bundle_verification_summary_template.get(
+            "bridge_event_template",
+            {},
+        )
+    )
+    reviewer_handoff_bundle_verification_summary_template_payload = (
+        reviewer_handoff_bundle_verification_summary_template_event.get("payload")
+        if isinstance(
+            reviewer_handoff_bundle_verification_summary_template_event,
+            dict,
+        )
+        else {}
+    )
+    reviewer_handoff_bundle_verification_summary_template_boundary = (
+        reviewer_handoff_bundle_verification_summary_template_payload.get(
+            "operator_boundary"
+        )
+        if isinstance(
+            reviewer_handoff_bundle_verification_summary_template_payload,
+            dict,
+        )
+        else {}
+    )
+    reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke = {
+        "ok": (
+            reviewer_handoff_bundle_verification_summary_template.get("ok") is True
+            and reviewer_handoff_bundle_verification_summary_template.get(
+                "template_version"
+            )
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_BRIDGE_EVENT_TEMPLATE_VERSION
+            and isinstance(
+                reviewer_handoff_bundle_verification_summary_template_event,
+                dict,
+            )
+            and reviewer_handoff_bundle_verification_summary_template_event.get(
+                "cwd"
+            )
+            == "template_not_emitted"
+            and reviewer_handoff_bundle_verification_summary_template_event.get(
+                "paths"
+            )
+            == []
+            and reviewer_handoff_bundle_verification_summary_template_event.get(
+                "write_scope"
+            )
+            == []
+            and reviewer_handoff_bundle_verification_summary_template_payload.get(
+                "template_only"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary_template_boundary.get(
+                "manual_review_required"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary_template_boundary.get(
+                "verification_report_boundary_ok"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary_template_boundary.get(
+                "direct_bridge_write_performed"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary_template_boundary.get(
+                "artifact_payloads_included"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary_template_boundary.get(
+                "local_paths_recorded"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary_template_boundary.get(
+                "network_access_performed"
+            )
+            is False
+        ),
+        "template_version": (
+            reviewer_handoff_bundle_verification_summary_template.get(
+                "template_version"
+            )
+        ),
+        "template_only": reviewer_handoff_bundle_verification_summary_template.get(
+            "template_only"
+        ),
+        "manual_review_required": reviewer_handoff_bundle_verification_summary_template.get(
+            "manual_review_required"
+        ),
+        "direct_bridge_write_performed": reviewer_handoff_bundle_verification_summary_template.get(
+            "direct_bridge_write_performed"
+        ),
+        "artifact_payloads_included": reviewer_handoff_bundle_verification_summary_template.get(
+            "artifact_payloads_included"
+        ),
+        "local_paths_recorded": reviewer_handoff_bundle_verification_summary_template.get(
+            "local_paths_recorded"
+        ),
+        "network_access_performed": reviewer_handoff_bundle_verification_summary_template.get(
+            "network_access_performed"
+        ),
+        "blockers": reviewer_handoff_bundle_verification_summary_template.get(
+            "blockers",
+            [],
+        ),
+    }
     tampered = deepcopy(package)
     tampered["api_ops"]["route_stage_latency"]["feed_state"]["feed_health"][
         "runtime_authority_granted"
@@ -2646,6 +2966,11 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             and reviewer_handoff_summary_smoke["ok"] is True
             and reviewer_handoff_bundle_index_smoke["ok"] is True
             and reviewer_handoff_bundle_index_verification_smoke["ok"] is True
+            and reviewer_handoff_bundle_verification_summary_smoke["ok"] is True
+            and reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke[
+                "ok"
+            ]
+            is True
         ),
         "package_schema_version": PACKAGE_SCHEMA_VERSION,
         "verification_schema_version": VERIFICATION_SCHEMA_VERSION,
@@ -2674,6 +2999,12 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "reviewer_handoff_bundle_index_smoke": reviewer_handoff_bundle_index_smoke,
         "reviewer_handoff_bundle_index_verification_smoke": (
             reviewer_handoff_bundle_index_verification_smoke
+        ),
+        "reviewer_handoff_bundle_verification_summary_smoke": (
+            reviewer_handoff_bundle_verification_summary_smoke
+        ),
+        "reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke": (
+            reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke
         ),
         "valid_report_blockers": valid_report.get("blockers", []),
         "tampered_report_blockers": tampered_report.get("blockers", []),
@@ -3074,6 +3405,386 @@ def build_solver_trace_magma_receipt_proof(root: Path | str = ROOT) -> dict:
     }
 
 
+def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
+    """Smoke the default-off runtime receipt coverage counters and metric names."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/core/autonomy/runtime.py",
+        "waggledance/adapters/http/routes/metrics.py",
+    )
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
+    metric_names = [
+        "waggledance_runtime_receipt_metrics_up",
+        "waggledance_runtime_receipt_sink_configured",
+        "waggledance_runtime_receipt_coverage_ratio",
+        "waggledance_runtime_receipt_solver_trace_presence_ratio",
+        "waggledance_runtime_receipt_handle_query_finalized_total",
+        "waggledance_runtime_receipt_solver_trace_present_total",
+        "waggledance_runtime_receipt_sink_not_configured_total",
+        "waggledance_runtime_receipt_attempt_total",
+        "waggledance_runtime_receipt_success_total",
+        "waggledance_runtime_receipt_failure_total",
+        "waggledance_runtime_receipt_verifier_ok_total",
+        "waggledance_runtime_receipt_verifier_not_ok_total",
+        "waggledance_runtime_receipt_receipt_count_total",
+        "waggledance_runtime_receipt_last_verifier_ok",
+        "waggledance_runtime_receipt_last_receipt_count",
+        "waggledance_runtime_receipt_verifier_ok_ratio",
+        "waggledance_runtime_receipt_default_emission_changed",
+        "waggledance_runtime_receipt_runtime_authority_changed",
+    ]
+    if missing:
+        return {
+            "proof_id": "runtime_receipt_metrics_smoke_v1",
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing,
+            "metric_names": metric_names,
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "payloads_exported_by_metrics": False,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            "proof_id": "runtime_receipt_metrics_smoke_v1",
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "metric_names": metric_names,
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "payloads_exported_by_metrics": False,
+        }
+
+    from waggledance.core.autonomy.runtime import AutonomyRuntime
+    from waggledance.core.capabilities.registry import CapabilityRegistry
+    from waggledance.core.domain.autonomy import (
+        CapabilityCategory,
+        CapabilityContract,
+    )
+
+    class _Selection:
+        def __init__(self, capability: CapabilityContract) -> None:
+            self.selected = [capability]
+
+    class _RouteResult:
+        def __init__(self, capability: CapabilityContract) -> None:
+            self.selection = _Selection(capability)
+            self.quality_path = "gold"
+            self.autonomy_consult = None
+            self.autonomy_served = False
+            self.solver_call_trace = [
+                {
+                    "stage": "solver_call",
+                    "status": "selected",
+                    "intent": "solve",
+                    "capability_id": capability.capability_id,
+                    "selected_index": 0,
+                    "quality_path": "gold",
+                    "execution_boundary": "safe_action_bus",
+                }
+            ]
+
+    def _runtime(runtime_receipt_sink):
+        registry = CapabilityRegistry(load_builtins=False)
+        capability = CapabilityContract(
+            capability_id="solve.receipt_metrics_fixture",
+            category=CapabilityCategory.SOLVE,
+            description="Runtime receipt metrics fixture",
+            success_criteria=["success"],
+        )
+        registry.register(capability)
+        runtime = AutonomyRuntime(
+            capability_registry=registry,
+            enable_persistence=False,
+            runtime_receipt_sink=runtime_receipt_sink,
+        )
+        runtime.solver_router.route = (
+            lambda _intent, _query, _context: _RouteResult(capability)
+        )
+        runtime.action_bus.register_executor(
+            capability.capability_id,
+            lambda _action: {"success": True},
+        )
+        return runtime
+
+    def _sink(summary: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
+            "receipt_summary_key_count": len(summary.keys()),
+            "solver_call_trace_count": summary.get("solver_call_trace_count"),
+            "paths_returned": False,
+            "payloads_returned": False,
+        }
+
+    configured_runtime = _runtime(_sink)
+    configured_result = configured_runtime.handle_query(
+        "private runtime receipt metrics query DO_NOT_LEAK",
+        context={"operator_note": "context secret DO_NOT_LEAK"},
+    )
+    configured_snapshot = configured_runtime.runtime_receipt_metrics_snapshot()
+
+    default_runtime = _runtime(None)
+    default_result = default_runtime.handle_query("runtime receipt default off")
+    default_snapshot = default_runtime.runtime_receipt_metrics_snapshot()
+
+    metrics_source = (
+        repo_root / "waggledance/adapters/http/routes/metrics.py"
+    ).read_text(encoding="utf-8")
+    metric_names_defined = all(name in metrics_source for name in metric_names)
+    configured_ok = (
+        configured_result.get("runtime_receipt") is not None
+        and configured_snapshot.get("sink_configured") is True
+        and configured_snapshot.get("handle_query_total") == 1
+        and configured_snapshot.get("solver_trace_present_total") == 1
+        and configured_snapshot.get("attempt_total") == 1
+        and configured_snapshot.get("success_total") == 1
+        and configured_snapshot.get("failure_total") == 0
+        and configured_snapshot.get("verifier_ok_total") == 1
+        and configured_snapshot.get("verifier_not_ok_total") == 0
+        and configured_snapshot.get("receipt_count_total") == 1
+        and configured_snapshot.get("last_verifier_ok") is True
+        and configured_snapshot.get("last_receipt_count") == 1
+        and configured_snapshot.get("coverage_ratio") == 1.0
+        and configured_snapshot.get("solver_trace_presence_ratio") == 1.0
+        and configured_snapshot.get("verifier_ok_ratio") == 1.0
+    )
+    default_ok = (
+        "runtime_receipt" not in default_result
+        and default_snapshot.get("sink_configured") is False
+        and default_snapshot.get("sink_not_configured_total") == 1
+        and default_snapshot.get("attempt_total") == 0
+        and default_snapshot.get("success_total") == 0
+        and default_snapshot.get("verifier_ok_total") == 0
+        and default_snapshot.get("verifier_not_ok_total") == 0
+        and default_snapshot.get("receipt_count_total") == 0
+    )
+    ok = configured_ok and default_ok and metric_names_defined
+    return {
+        "proof_id": "runtime_receipt_metrics_smoke_v1",
+        "ok": ok,
+        "metric_names": metric_names,
+        "metric_names_defined": metric_names_defined,
+        "configured_sink_snapshot": configured_snapshot,
+        "default_sink_snapshot": default_snapshot,
+        "configured_sink_success": configured_ok,
+        "default_off_preserved": default_ok,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+        "payloads_exported_by_metrics": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "AutonomyRuntime now exposes payload-free receipt coverage, "
+            "verifier outcome, and receipt-count counters for configured sinks "
+            "and preserves the default-off no-sink path; /metrics declares only "
+            "aggregate counters/gauges."
+        ),
+    }
+
+
+def build_runtime_receipt_settings_sink_smoke(root: Path | str = ROOT) -> dict:
+    """Smoke the default-off settings-to-AutonomyRuntime receipt sink wiring."""
+
+    repo_root = Path(root)
+    required = (
+        "configs/settings.yaml",
+        "waggledance/bootstrap/container.py",
+        "waggledance/core/magma/runtime_summary_receipt.py",
+        "tools/verify_magma_receipt.py",
+    )
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
+    if missing:
+        return {
+            "proof_id": "runtime_receipt_settings_sink_smoke_v1",
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing,
+            "settings_default_enabled": False,
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "paths_returned": False,
+            "payloads_returned": False,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            "proof_id": "runtime_receipt_settings_sink_smoke_v1",
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+            "settings_default_enabled": False,
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "paths_returned": False,
+            "payloads_returned": False,
+        }
+
+    settings_yaml = _load_yaml_mapping(repo_root / "configs/settings.yaml")
+    runtime_receipts_cfg = settings_yaml.get("runtime_receipts")
+    if not isinstance(runtime_receipts_cfg, Mapping):
+        runtime_receipts_cfg = {}
+    settings_default_enabled = runtime_receipts_cfg.get("enabled") is True
+    settings_out_dir = str(
+        runtime_receipts_cfg.get("out_dir") or "data/runtime/runtime_summary_receipts"
+    )
+    settings_evaluation_version = str(
+        runtime_receipts_cfg.get("evaluation_version")
+        or "magma.evaluation_result.v0"
+    )
+
+    from waggledance.adapters.config.settings_loader import WaggleSettings
+    from waggledance.bootstrap.container import Container
+    from waggledance.core.magma.runtime_summary_receipt import (
+        build_handle_query_runtime_summary,
+    )
+
+    default_container = Container(
+        settings=WaggleSettings(profile="TEST", _extras={"runtime_receipts": {}}),
+        stub=True,
+    )
+    default_off_preserved = default_container.runtime_receipt_sink is None
+
+    temp_root = None
+    result: dict[str, Any] = {}
+    configured_sink_callable = False
+    local_receipt_bundle_written = False
+    emitted_text = ""
+    with tempfile.TemporaryDirectory(prefix="wd-image1-runtime-receipt-sink-") as tmp:
+        temp_root = Path(tmp)
+        receipt_root = temp_root / "runtime-receipts"
+        container = Container(
+            settings=WaggleSettings(
+                profile="TEST",
+                _extras={
+                    "runtime_receipts": {
+                        "enabled": True,
+                        "out_dir": str(receipt_root),
+                        "evaluation_version": settings_evaluation_version,
+                    }
+                },
+            ),
+            stub=True,
+        )
+        sink = container.runtime_receipt_sink
+        configured_sink_callable = callable(sink)
+        if configured_sink_callable:
+            summary = build_handle_query_runtime_summary(
+                query="private runtime query DO_NOT_LEAK",
+                context={"operator_note": "context secret DO_NOT_LEAK"},
+                profile="TEST",
+                intent="detect",
+                quality_path="gold",
+                capability_id="detect.fixture",
+                action_id="action:wd-image1-runtime-receipt-settings-sink:001",
+                approved=True,
+                executed=True,
+                needs_approval=False,
+                decision_reason="private decision DO_NOT_LEAK",
+                elapsed_ms=12.34,
+                snapshot_id="snapshot:wd-image1-runtime-receipt-settings-sink:001",
+                case_id="case:wd-image1-runtime-receipt-settings-sink:001",
+                verifier_passed=True,
+                verifier_confidence=0.91,
+                result_keys=["success", "value"],
+                solver_call_trace=[
+                    {
+                        "stage": "solver_call",
+                        "status": "selected",
+                        "intent": "detect",
+                        "capability_id": "detect.fixture",
+                        "selected_index": 0,
+                        "quality_path": "gold",
+                        "execution_boundary": "safe_action_bus",
+                    }
+                ],
+            )
+            result = sink(summary)
+            local_receipt_bundle_written = (
+                receipt_root.exists() and len(list(receipt_root.iterdir())) == 1
+            )
+            emitted_text = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(receipt_root.rglob("*.json"))
+            )
+    temp_artifacts_removed = temp_root is not None and not temp_root.exists()
+
+    result_text = json.dumps(result, sort_keys=True, default=str)
+    result_path_free = (
+        "out_dir" not in result
+        and "manifest" not in result
+        and result.get("paths_returned") is False
+    )
+    result_payload_free = (
+        "DO_NOT_LEAK" not in result_text
+        and "private runtime query" not in result_text
+        and "context secret" not in result_text
+        and "private decision" not in result_text
+        and result.get("payloads_returned") is False
+    )
+    emitted_payload_safe = (
+        "DO_NOT_LEAK" not in emitted_text
+        and "private runtime query" not in emitted_text
+        and "context secret" not in emitted_text
+        and "private decision" not in emitted_text
+    )
+    ok = (
+        settings_default_enabled is False
+        and bool(settings_out_dir)
+        and settings_evaluation_version == "magma.evaluation_result.v0"
+        and default_off_preserved
+        and configured_sink_callable
+        and result.get("receipt_count") == 1
+        and isinstance(result.get("verifier_report"), Mapping)
+        and result["verifier_report"].get("ok") is True
+        and result_path_free
+        and result_payload_free
+        and local_receipt_bundle_written
+        and emitted_payload_safe
+        and temp_artifacts_removed
+    )
+    return {
+        "proof_id": "runtime_receipt_settings_sink_smoke_v1",
+        "ok": ok,
+        "settings_default_enabled": settings_default_enabled,
+        "settings_out_dir": settings_out_dir,
+        "settings_evaluation_version": settings_evaluation_version,
+        "default_off_preserved": default_off_preserved,
+        "configured_sink_callable": configured_sink_callable,
+        "configured_sink_receipt_count": result.get("receipt_count"),
+        "configured_sink_verifier_ok": (
+            isinstance(result.get("verifier_report"), Mapping)
+            and result["verifier_report"].get("ok") is True
+        ),
+        "configured_sink_result_path_free": result_path_free,
+        "configured_sink_result_payload_free": result_payload_free,
+        "local_receipt_bundle_written": local_receipt_bundle_written,
+        "emitted_receipt_payload_safe": emitted_payload_safe,
+        "temp_artifacts_removed": temp_artifacts_removed,
+        "paths_returned": False,
+        "payloads_returned": False,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "configs/settings.yaml keeps runtime receipt emission disabled by "
+            "default, while an explicit operator setting can wire a local "
+            "sanitized MAGMA runtime-summary receipt sink into AutonomyRuntime. "
+            "The configured sink returns path-free verifier metadata only."
+        ),
+    }
+
+
 def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     """Prove SolverRouter emits a privacy-safe selected-solver trace."""
 
@@ -3112,6 +3823,8 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     ]
     query_text_recorded = sample_query in trace_json or '"query"' in trace_json
     receipt_proof = build_solver_trace_magma_receipt_proof(root)
+    receipt_metrics_smoke = build_runtime_receipt_metrics_smoke(root)
+    receipt_settings_sink_smoke = build_runtime_receipt_settings_sink_smoke(root)
     ok = (
         result.quality_path == "gold"
         and result.selection.fallback_used is False
@@ -3120,6 +3833,8 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         and not query_text_recorded
         and all(item.get("execution_boundary") == "safe_action_bus" for item in trace)
         and receipt_proof.get("ok") is True
+        and receipt_metrics_smoke.get("ok") is True
+        and receipt_settings_sink_smoke.get("ok") is True
     )
     return {
         "proof_id": "deterministic_solver_trace_v1",
@@ -3135,19 +3850,33 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         "magma_execution_receipt_claimed": receipt_proof.get("ok") is True,
         "magma_execution_receipt_scope": receipt_proof.get("receipt_scope"),
         "magma_execution_receipt_proof": receipt_proof,
+        "runtime_receipt_metrics_claimed": (
+            receipt_metrics_smoke.get("ok") is True
+        ),
+        "runtime_receipt_metrics_smoke": receipt_metrics_smoke,
+        "runtime_receipt_settings_sink_claimed": (
+            receipt_settings_sink_smoke.get("ok") is True
+        ),
+        "runtime_receipt_settings_sink_smoke": receipt_settings_sink_smoke,
         "receipt_metrics": {
             "receipt_count": receipt_proof.get("receipt_count"),
             "solver_call_trace_count": receipt_proof.get("solver_call_trace_count"),
             "solver_call_trace_receipt_bound": receipt_proof.get(
                 "solver_call_trace_receipt_bound"
             ),
+            "runtime_metric_names": receipt_metrics_smoke.get("metric_names", []),
+            "settings_sink_result_path_free": receipt_settings_sink_smoke.get(
+                "configured_sink_result_path_free"
+            ),
         },
         "external_writes_applied": False,
         "safe_conclusion": (
             "SolverRouter now emits a privacy-safe selected-solver trace "
             "before SafeActionBus execution, and an opt-in MAGMA runtime "
-            "summary receipt can bind that trace. Default receipt emission "
-            "for every runtime path remains a separate proof boundary."
+            "summary receipt can bind that trace. Runtime counters, "
+            "Prometheus metrics, and settings-wired default-off sink wiring "
+            "can measure configured sink coverage while preserving the "
+            "default no-emission path."
         ),
     }
 
@@ -4714,6 +5443,7 @@ def _blocked_magma_handoff_metrics_alertmanager_adapter_smoke(
         "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present": False,
         "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_contract_present": False,
         "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_contract_present": False,
+        "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present": False,
         "guardrails_present": False,
         "runtime_authority_changed": False,
         "operator_gate_required": False,
@@ -4768,6 +5498,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_rel = "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_rel = "tools/verify_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_rel = "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_rel = "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py"
     settings_rel = "configs/settings.yaml"
     tests_rel = "tests/test_legacy_consolidation.py"
     metrics_tests_rel = "tests/test_metrics_endpoint.py"
@@ -4801,6 +5532,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry.py"
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verifier.py"
     decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py"
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_tests_rel = "tests/tools/test_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py"
     docs_rel = "docs/API.md"
     manifest_rel = "docs/architecture/WD_IMAGE1_FUNCTIONALITY_MANIFEST.md"
     runbook_rel = "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md"
@@ -4830,6 +5562,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_rel,
         decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_rel,
         decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_rel,
+        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_rel,
         settings_rel,
         tests_rel,
         metrics_tests_rel,
@@ -4853,6 +5586,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_rel,
         decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_rel,
         decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_tests_rel,
+        decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_tests_rel,
         docs_rel,
         manifest_rel,
         runbook_rel,
@@ -4933,6 +5667,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_rel
     ).read_text(encoding="utf-8")
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_text = (
+        repo_root
+        / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_rel
+    ).read_text(encoding="utf-8")
     settings_text = (repo_root / settings_rel).read_text(encoding="utf-8")
     tests_text = (repo_root / tests_rel).read_text(encoding="utf-8")
     metrics_tests_text = (repo_root / metrics_tests_rel).read_text(encoding="utf-8")
@@ -5010,6 +5748,10 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         repo_root
         / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_tests_rel
     ).read_text(encoding="utf-8")
+    decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_tests_text = (
+        repo_root
+        / decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_tests_rel
+    ).read_text(encoding="utf-8")
     docs_text = (repo_root / docs_rel).read_text(encoding="utf-8")
     manifest_text = (repo_root / manifest_rel).read_text(encoding="utf-8")
     runbook_text = (repo_root / runbook_rel).read_text(encoding="utf-8")
@@ -5039,6 +5781,8 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_text,
             decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_text,
             decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_text,
             settings_text,
             metrics_tests_text,
             package_tests_text,
@@ -5060,6 +5804,8 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_tests_text,
             decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_tests_text,
             decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verifier_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_tests_text,
+            decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_tests_text,
             docs_text,
             manifest_text,
             runbook_text,
@@ -5776,6 +6522,38 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "verifier-summary bridge-event template renderer tools for operator-owned release review",
         )
     )
+    reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present = all(
+        token
+        in "\n".join(
+            (
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_text,
+                decision_reference_review_bundle_verification_bridge_template_index_entry_summary_bridge_template_index_entry_verification_summary_bridge_template_index_entry_tests_text,
+                docs_text,
+                manifest_text,
+                runbook_text,
+            )
+        )
+        for token in (
+            "magma_alert_feed_reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.v1",
+            "build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry",
+            "operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template",
+            "template_index_entry",
+            "bridge_event_schema_validated",
+            "source_contract_check",
+            "rebuilt_template_check",
+            "template_only",
+            "artifact_payloads_included",
+            "local_paths_recorded",
+            "transport_added",
+            "direct_bridge_write_performed",
+            "approval_granted",
+            "release_decision_made",
+            "runtime_controls_added",
+            "test_operator_decision_reference_review_verifier_summary_bridge_event_template_index_entry_ties_digests_without_authority",
+            "test_operator_decision_reference_review_verifier_summary_bridge_event_template_index_entry_cli_json_is_path_free",
+            "local index entry for the operator decision-reference review bundle verification bridge-event template index-entry verifier-summary bridge-event template",
+        )
+    )
     guardrails_present = all(
         token in adapter_text
         for token in (
@@ -5837,6 +6615,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         and reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present
         and reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verifier_contract_present
         and reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_contract_present
+        and reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present
         and guardrails_present
         and not forbidden_control_tokens_found
     )
@@ -5917,6 +6696,9 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         ),
         "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_contract_present": (
             reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_contract_present
+        ),
+        "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present": (
+            reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present
         ),
         "guardrails_present": guardrails_present,
         "forbidden_controls_absent": not forbidden_control_tokens_found,
@@ -7949,6 +8731,58 @@ def _low_risk_cross_consistency_bridge_event_template_summary(
     return summary
 
 
+def _hex_cross_consistency_bridge_event_template_summary(
+    digest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Content-safe summary of the hex cross-consistency bridge-event template."""
+
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template as _build_xcons_tpl,
+    )
+    from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
+
+    result = _build_xcons_tpl(
+        digest=digest if isinstance(digest, Mapping) else {},
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-xcons-digest-bridge-event-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+    )
+    result = result if isinstance(result, Mapping) else {}
+    event = result.get("bridge_event_template")
+    payload = event.get("payload") if isinstance(event, Mapping) else {}
+    payload = payload if isinstance(payload, Mapping) else {}
+    cross = payload.get("cross_consistency")
+    cross = cross if isinstance(cross, Mapping) else {}
+    summary: dict[str, Any] = {
+        "report_version": (
+            "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_summary.v1"
+        ),
+        "template_available": result.get("ok") is True,
+        "template_only": result.get("template_only") is True,
+        "no_runtime_authority_granted": result.get("runtime_authority_granted")
+        is False,
+        "no_runtime_subdivision_authority_granted": result.get(
+            "runtime_subdivision_authority_granted"
+        )
+        is False,
+        "no_direct_bridge_write": result.get("direct_bridge_write_performed")
+        is False,
+        "no_bridge_event_written": result.get("bridge_event_written") is False,
+        "no_approval_granted": result.get("approval_granted") is False,
+        "cross_consistent": cross.get("cross_consistent") is True,
+        "all_views_present": cross.get("all_views_present") is True,
+        "reviewer_clean": cross.get("reviewer_clean") is True,
+        "shadow_only_clean": cross.get("shadow_only_clean") is True,
+        "chain_summary_clean": cross.get("chain_summary_clean") is True,
+        "claim_safe": False,
+    }
+    summary["path_free_verified"] = (
+        result.get("path_free_verified") is True and not _contains_path_marker(summary)
+    )
+    return summary
+
+
 _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
     "wd.low_risk_autogrowth_real_loop_proof.v1"
 )
@@ -8135,6 +8969,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
                 "Local verifier for the route-stage feed-health reviewer handoff bundle index.",
             ),
+            (
+                "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+                "Path-free reviewer summary renderer for the route-stage feed-health reviewer handoff bundle verifier.",
+            ),
+            (
+                "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py",
+                "Template-only bridge-event renderer for the route-stage feed-health reviewer handoff bundle verification summary.",
+            ),
         ),
     )
     solver_evidence = _evidence(
@@ -8151,6 +8993,18 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
                 "Architecture doc records solver-first and current gaps.",
+            ),
+            (
+                "waggledance/bootstrap/container.py",
+                "Container wires the default-off runtime receipt sink from settings.",
+            ),
+            (
+                "configs/settings.yaml",
+                "Runtime receipt sink configuration is present and disabled by default.",
+            ),
+            (
+                "tests/autonomy/test_runtime_receipt_container_wiring.py",
+                "Regression tests pin default-off and path-free configured sink behavior.",
             ),
         ),
     )
@@ -8264,6 +9118,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
                 "Explicit CLI renders a local bridge-event template for the operator decision-reference review bundle verification bridge-event template index-entry verification summary bridge-event template index-entry verifier summary without appending it or granting approval.",
+            ),
+            (
+                "tools/build_magma_decision_review_verification_template_index_entry_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
+                "Explicit CLI builds a local operator decision-reference review bundle verification bridge-event template index-entry verifier-summary bridge-event template index entry without appending it or granting approval.",
             ),
             (
                 "waggledance/adapters/http/routes/compat_dashboard.py",
@@ -8519,6 +9377,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/hex_shadow_subdivision_replay.py",
                 "Read-only shadow subdivision replay artifact builder, verifier, reviewer summary renderer, bridge-event template builder, template index-entry builder, index-entry verifier, index-entry verifier summary renderer, index-entry verifier summary bridge-event template builder, and verification-summary template index-entry verifier.",
             ),
+            (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template.py",
+                "Template-only bridge-event renderer for the hex-upgrade cross-consistency digest.",
+            ),
         ),
     )
     future_evidence = _evidence(
@@ -8707,6 +9569,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
 
     hex_upgrade_proof["cross_consistency_digest"] = _build_cross_consistency_digest(
         hex_upgrade_proof
+    )
+    # Template-only bridge-event TEMPLATE summary for the hex cross-consistency digest.
+    # Stored as content-safe derived booleans only, never the raw event/message/payload.
+    # Measurement-only: not folded into hex_upgrade_proof["ok"] and never upgrades a
+    # claim or grants runtime subdivision authority.
+    hex_upgrade_proof["cross_consistency_digest_bridge_event_template"] = (
+        _hex_cross_consistency_bridge_event_template_summary(
+            hex_upgrade_proof["cross_consistency_digest"]
+        )
     )
     # Ring-messaging + parent-child hierarchy proof (merged
     # tools/run_ring_messaging_hierarchy_proof.py). The RAW proof embeds a
@@ -9022,7 +9893,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "verifier summary, a local index entry for that renderer, "
                 "a local verifier for that index entry, and a path-free "
                 "reviewer handoff summary for the verifier chain plus a local "
-                "handoff bundle index and verifier for that summary; exact "
+                "handoff bundle index, verifier, and path-free verification "
+                "summary plus a template-only bridge-event renderer for that "
+                "bundle summary; exact "
                 "runtime entry order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
@@ -9035,10 +9908,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Render the route-stage feed-health reviewer handoff bundle "
-                "verification into a path-free local reviewer summary without "
-                "including payloads, recording paths, appending it, or granting "
-                "runtime authority."
+                "Add a local index entry for the route-stage feed-health "
+                "reviewer handoff bundle verification-summary bridge-event "
+                "template without including payloads, recording paths, "
+                "appending it, or granting runtime authority."
             ),
             proof=hex_entry_proof,
         ),
@@ -9052,21 +9925,26 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "Solver-first routing surfaces exist, SolverRouter emits "
                 "a privacy-safe selected-solver trace, and an opt-in MAGMA "
-                "runtime summary receipt can bind that trace; default full "
-                "coverage remains a next boundary."
+                "runtime summary receipt can bind that trace. Runtime "
+                "receipt coverage counters, Prometheus metrics, and an "
+                "operator-configured local sink now expose configured "
+                "sink coverage while preserving default-off receipt "
+                "emission and returning only path-free verifier metadata."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
             evidence=solver_evidence,
             gaps=(
-                "Solver trace receipt binding is currently opt-in through a "
+                "Solver trace receipt binding is still configured through a "
                 "runtime receipt sink, not default for every runtime path.",
                 "The image's 'full MAGMA provenance' wording should wait for "
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Promote the solver trace receipt sink from opt-in proof to "
-                "configured runtime coverage and exposed metrics."
+                "Render a path-free reviewer handoff summary for the "
+                "configured runtime receipt sink proof without including "
+                "payloads or local paths, without changing default receipt "
+                "emission, or granting runtime authority."
             ),
             proof=solver_trace_proof,
         ),
@@ -9197,13 +10075,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local index entry for the operator "
-                "decision-reference "
+                "Add a local verifier for the operator decision-reference "
                 "review bundle verification bridge-event template "
-                "index-entry verification summary bridge-event template "
-                "index-entry verifier-summary bridge-event template without "
-                "including payloads, recording paths, appending it, or "
-                "granting approval."
+                "index-entry verifier-summary bridge-event template index "
+                "entry without including payloads, recording paths, "
+                "appending it, or granting approval."
             ),
             proof=magma_audit_proof,
         ),
@@ -9333,7 +10209,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "rebuilt-entry, and bridge-event schema checks while keeping "
                 "payload inclusion, local path recording, bridge writes, "
                 "transport, runtime controls, and runtime subdivision "
-                "authority false."
+                "authority false. A measurement-only cross-consistency digest "
+                "checks the reviewer summary, shadow-only invariant, and chain "
+                "final summary agree; a template-only bridge-event renderer can "
+                "turn that digest into schema-valid handoff JSON without "
+                "appending it, including payloads/paths, upgrading any claim, "
+                "or activating runtime subdivision authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -9347,11 +10228,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free, measurement-only cross-consistency digest that "
-                "confirms the already-wired reviewer summary, shadow-only invariant, "
-                "and chain final summary agree (derived booleans/strict ints only), "
-                "without appending it, including payloads/paths, upgrading any claim, "
-                "or activating runtime subdivision authority."
+                "Add a local index entry for the hex-upgrade cross-consistency "
+                "digest bridge-event template without including payloads, "
+                "recording paths, appending it, upgrading any claim, or "
+                "activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

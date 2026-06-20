@@ -136,6 +136,23 @@ exception text, `controls_present=true`, `runtime_authority_granted=true`, and
 `external_writes_applied=true`. Its JSON report redacts local input/output paths
 and keeps `network_access_performed=false`.
 
+## Reviewer handoff bundle
+
+After the local verifier-chain result is available, the route-stage handoff can
+stay fully local by rendering a reviewer handoff summary, binding that summary
+and the final verifier result with
+`tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py`,
+verifying the bundle with
+`tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py`,
+and rendering the verifier result with
+`tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py`.
+
+The bundle summary is reviewer context only. It keeps
+`artifact_payloads_included=false`, `local_paths_recorded=false`,
+`transport_added=false`, `direct_bridge_write_performed=false`,
+`approval_granted=false`, `release_decision_made=false`,
+`runtime_controls_added=false`, and `network_access_performed=false`.
+
 ## Optional feed provider
 
 `configs/settings.yaml` includes a disabled-by-default

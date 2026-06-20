@@ -104,7 +104,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             task_id=args.task_id,
             summary=args.summary,
             mode=args.mode,
-            write_scope=args.write_scope,
+            write_scope=_normalize_write_scope(args.write_scope),
             run_id=args.run_id,
             lease_seconds=args.lease_seconds,
             bridge_root=bridge_root,
@@ -156,11 +156,23 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 _to_jsonable(claim)
                 for claim in check_scope_overlap(
                     bridge_root=bridge_root,
-                    write_scope=args.write_scope,
+                    write_scope=_normalize_write_scope(args.write_scope),
                 )
             ],
         }
     raise WorkQueueError(f"unsupported command: {args.command}")
+
+
+def _normalize_write_scope(values: Sequence[str]) -> list[str]:
+    scope: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in str(value).split(","):
+            normalized = item.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                scope.append(normalized)
+    return scope
 
 
 def _to_jsonable(value: object) -> Any:

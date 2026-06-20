@@ -190,6 +190,59 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 
 Claude uses the same command with `-Agent claude`.
 
+### Bridge Wake Consumer
+
+`Watch-Bridge.ps1` and `Monitor-AgentBridge.ps1` do not execute agent work.
+The watcher only creates `wake_<agent>` sentinels and the monitor only tails
+bridge events. A live Codex lane that should react to wake requests must run the
+consumer loop:
+
+```powershell
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
+$env:AGENT_BRIDGE_AGENT_UUID = '7a8af68d-20bc-4598-9953-23c5dd98b102'
+$env:AGENT_BRIDGE_ROLE = 'tools-tests'
+$env:AGENT_BRIDGE_CAPABILITIES = 'tools,tests,bridge_loop,rival_checks,docs,bridge_event,work_queue'
+
+$dir = (
+  Get-ChildItem 'C:\Python\waggledance-agent-worktrees' -Directory -Filter 'codex-tools-1-*session*' |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+).FullName
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\.agent-bridge\bin\Start-AgentBridgeConsumerLoop.ps1 `
+  -Agent codex-tools-1 `
+  -AgentUuid $env:AGENT_BRIDGE_AGENT_UUID `
+  -Role $env:AGENT_BRIDGE_ROLE `
+  -Capabilities $env:AGENT_BRIDGE_CAPABILITIES `
+  -Worktree $dir `
+  -Forever `
+  -PollSeconds 60
+```
+
+By default the consumer also runs a bounded bridge tick on every poll, even
+when no wake file exists, so open work can continue moving. Add `-WakeOnly`
+only for diagnostics that must execute strictly on targeted wake events. Use
+`-DryRun -MaxIterations 1` to verify the resolved worktree and Codex argument
+array without invoking the model. The consumer intentionally omits `--model`
+unless `-Model` or `AGENT_BRIDGE_CODEX_MODEL` is set, so it follows the current
+Codex config default instead of pinning a stale limited model. On Windows the
+consumer resolves `codex.cmd` before the PowerShell `codex.ps1` shim, because
+the shim exits the host process unhelpfully inside long-running automation.
+Real Codex ticks start `Start-BridgeHeartbeat.ps1` for the tick duration, so a
+claim opened inside `codex exec` does not stale-release during long tests.
+Each tick is still bounded by `-CodexTimeoutSeconds` (default 600). A timed-out
+tick is terminated, logs exit code `124`, and the next poll can try again or
+surface bridge evidence instead of letting one long `codex exec` block wake
+delivery indefinitely. Real Codex ticks also emit bridge `status` events at
+start and terminal finish/failure/timeout with the log path and timeout
+metadata, so liveness scouts can distinguish an active tick from a stuck
+consumer wrapper.
+The source defaults are conservative: `-Sandbox workspace-write` and
+`-ApprovalPolicy on-request`. Trusted operator-run loops that need cross-repo
+bridge writes must pass broader authority explicitly, for example
+`-Sandbox danger-full-access -ApprovalPolicy never`.
+
 ## Self-pacing tick (`tools/bridge_loop_tick.py`)
 
 For a session that self-paces via wakeups (no fixed external cron), the FIRST

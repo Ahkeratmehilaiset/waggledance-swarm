@@ -86,7 +86,11 @@ CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
     {
         "concurrence",
         "resolved",
+        "resolved_ci_green",
+        "resolved_ci_pending",
         "cleared",
+        "cleared_ci_green",
+        "cleared_ci_pending",
         "retracted",
         "withdrawn",
     }
@@ -101,7 +105,15 @@ APPROVAL_STATUSES = frozenset(
     {
         "rco_pass",
         "rco_pass_pending_ci",
-        "rco_pass_operator_merge_required",
+        # rco_pass_operator_merge_required is RETIRED (2026-06-20): RCO status is
+        # pass/block ONLY; the merge PATH is set by charter (allowlist =
+        # autonomous-ok; denylist/off-allowlist = operator-sign), never by an RCO
+        # status variant. RCOs post plain rco_pass and convey operator-merge in
+        # the message. Dropping it here is the retirement signal; behaviour stays
+        # safe either way -- _is_approval_status's generic {rco,pass} token
+        # fallback still treats a stray variant as a block-clearing approval, and
+        # check_rco_pass_present intentionally does NOT recognize it as a
+        # qualifying pass, so a stray variant fails toward STUCK, never open.
         "build_consensus_pass",
         "approved",
         "approved_ci_green",
@@ -277,6 +289,12 @@ def check_bridge_clear_to_merge(
         # register regardless of the event type used, so a block posted as
         # e.g. type=blocked cannot be silently dropped by the type filter and
         # let a stale approval stand. Approvals stay type-restricted.
+        if _is_clear_status(status):
+            if event_type in {"decision", "rco_review", "finding", "done", "test"}:
+                existing = peer_signals.get(agent)
+                if existing is None or existing[1] != "approval":
+                    peer_signals[agent] = (index, "clear", event)
+            continue
         if _is_blocking_status(status):
             peer_signals[agent] = (index, "block", event)
             continue
@@ -376,7 +394,7 @@ def _has_non_blocking_block_phrase(status: str) -> bool:
 
 def _is_clear_status(status: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    if normalized == "no_changes_requested":
+    if normalized in NO_CHANGES_REQUESTED_CLEAR_STATUSES:
         return True
     if normalized in NO_BLOCK_CLEAR_STATUSES:
         return True
@@ -391,7 +409,7 @@ def _is_clear_status(status: str) -> bool:
 def _is_blocking_status(status: str) -> bool:
     if status in BLOCKING_STATUSES:
         return True
-    if _is_no_changes_requested_status(status) or _is_no_block_status(status):
+    if _is_clear_status(status):
         return False
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
@@ -443,7 +461,7 @@ def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
 def _read_events(events_path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line_number, line in enumerate(
-        events_path.read_text(encoding="utf-8").splitlines(), start=1
+        events_path.read_text(encoding="utf-8-sig").splitlines(), start=1
     ):
         if not line.strip():
             continue
@@ -453,6 +471,8 @@ def _read_events(events_path: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"invalid JSON in bridge events at line {line_number}: {exc.msg}"
             ) from exc
+        if event is None:
+            continue
         if not isinstance(event, dict):
             raise ValueError(
                 f"invalid bridge event at line {line_number}: event must be a JSON object"

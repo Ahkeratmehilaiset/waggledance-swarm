@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
+    _read_events,
 )
 import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
 
@@ -37,6 +38,17 @@ def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
         for event in events:
             fh.write(json.dumps(event) + "\n")
     return bridge_root
+
+
+def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    event = _event("2026-06-20T13:12:00Z", "codex-lead-1", "message", "seen")
+    events_path.write_text(
+        "\n".join(["null", json.dumps(event)]),
+        encoding="utf-8",
+    )
+
+    assert _read_events(events_path) == [event]
 
 
 def _event(ts_utc: str, agent: str, type_: str, status: str, task_id: str = "T") -> dict:
@@ -461,6 +473,40 @@ def test_no_changes_requested_approved_status_does_not_block() -> None:
     assert result["latest_approval_event"]["status"] == "build_consensus_pass"
 
 
+def test_changes_requested_resolution_status_clears_prior_block_without_approval() -> None:
+    for status in [
+        "changes_requested_resolved",
+        "changes_requested_resolved_ci_green",
+        "changes_requested_resolved_ci_pending",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
+        "changes_requested_cleared",
+        "changes_requested_cleared_ci_green",
+        "changes_requested_cleared_ci_pending",
+    ]:
+        events = [
+            _event(
+                "2026-06-07T17:38:40Z",
+                "codex-tools-1",
+                "decision",
+                "changes_requested",
+            ),
+            _event(
+                "2026-06-07T17:39:47Z",
+                "codex-tools-1",
+                "done",
+                status,
+            ),
+        ]
+        result = check_bridge_clear_to_merge(
+            events=events, task_id="T", merging_agent="codex-lead-1"
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+        assert result["latest_approval_event"] is None
+
+
 def test_no_changes_requested_text_does_not_downgrade_real_blocking_status() -> None:
     for status in [
         "no_changes_requested_but_blocked",
@@ -791,6 +837,43 @@ def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["clear_to_merge"] is True
+
+
+def test_cli_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [
+            _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+            _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        ],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.write_bytes(
+        b"\xef\xbb\xbf" + events_path.read_bytes()
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "blocked"
+    assert payload["latest_blocking_event"]["status"] == "changes_requested"
 
 
 def test_cli_defaults_to_runtime_bridge_root_env(tmp_path: Path) -> None:

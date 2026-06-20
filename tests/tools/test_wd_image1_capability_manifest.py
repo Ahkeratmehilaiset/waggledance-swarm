@@ -39,6 +39,10 @@ from tools.wd_image1_capability_manifest import (
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
+from tools.wd_image1_capability_manifest import build_runtime_receipt_metrics_smoke
+from tools.wd_image1_capability_manifest import (
+    build_runtime_receipt_settings_sink_smoke,
+)
 from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_runtime_smoke,
 )
@@ -358,6 +362,43 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
         "opt_in_handle_query_runtime_summary"
     )
     assert proof["magma_execution_receipt_proof"]["ok"] is True
+    assert proof["runtime_receipt_metrics_claimed"] is True
+    assert proof["runtime_receipt_metrics_smoke"]["ok"] is True
+    assert proof["runtime_receipt_settings_sink_claimed"] is True
+    assert proof["runtime_receipt_settings_sink_smoke"]["ok"] is True
+    assert (
+        proof["runtime_receipt_metrics_smoke"][
+            "default_runtime_receipt_emission_changed"
+        ]
+        is False
+    )
+    assert (
+        proof["runtime_receipt_settings_sink_smoke"][
+            "configured_sink_result_path_free"
+        ]
+        is True
+    )
+    assert proof["runtime_receipt_metrics_smoke"]["runtime_authority_changed"] is False
+    assert (
+        "waggledance_runtime_receipt_coverage_ratio"
+        in proof["runtime_receipt_metrics_smoke"]["metric_names"]
+    )
+    assert (
+        "waggledance_runtime_receipt_verifier_ok_total"
+        in proof["runtime_receipt_metrics_smoke"]["metric_names"]
+    )
+    assert (
+        proof["runtime_receipt_metrics_smoke"]["configured_sink_snapshot"][
+            "verifier_ok_total"
+        ]
+        == 1
+    )
+    assert (
+        proof["runtime_receipt_metrics_smoke"]["configured_sink_snapshot"][
+            "receipt_count_total"
+        ]
+        == 1
+    )
     assert (
         proof["magma_execution_receipt_proof"]["solver_call_trace_receipt_bound"]
         is True
@@ -365,12 +406,59 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
     assert (
         proof["magma_execution_receipt_proof"]["solver_call_trace_privacy_safe"] is True
     )
-    assert proof["receipt_metrics"] == {
-        "receipt_count": 1,
-        "solver_call_trace_count": 1,
-        "solver_call_trace_receipt_bound": True,
-    }
+    assert proof["receipt_metrics"]["receipt_count"] == 1
+    assert proof["receipt_metrics"]["solver_call_trace_count"] == 1
+    assert proof["receipt_metrics"]["solver_call_trace_receipt_bound"] is True
+    assert (
+        "waggledance_runtime_receipt_success_total"
+        in proof["receipt_metrics"]["runtime_metric_names"]
+    )
+    assert proof["receipt_metrics"]["settings_sink_result_path_free"] is True
     assert proof["external_writes_applied"] is False
+
+
+def test_runtime_receipt_metrics_smoke_preserves_default_off_boundary() -> None:
+    smoke = build_runtime_receipt_metrics_smoke(ROOT)
+
+    assert smoke["ok"] is True
+    assert smoke["metric_names_defined"] is True
+    assert smoke["configured_sink_success"] is True
+    assert smoke["default_off_preserved"] is True
+    assert smoke["configured_sink_snapshot"]["sink_configured"] is True
+    assert smoke["configured_sink_snapshot"]["success_total"] == 1
+    assert smoke["configured_sink_snapshot"]["verifier_ok_total"] == 1
+    assert smoke["configured_sink_snapshot"]["verifier_not_ok_total"] == 0
+    assert smoke["configured_sink_snapshot"]["receipt_count_total"] == 1
+    assert smoke["configured_sink_snapshot"]["last_verifier_ok"] is True
+    assert smoke["configured_sink_snapshot"]["last_receipt_count"] == 1
+    assert smoke["configured_sink_snapshot"]["verifier_ok_ratio"] == 1.0
+    assert smoke["default_sink_snapshot"]["sink_configured"] is False
+    assert smoke["default_sink_snapshot"]["sink_not_configured_total"] == 1
+    assert smoke["default_sink_snapshot"]["verifier_ok_total"] == 0
+    assert smoke["default_sink_snapshot"]["verifier_not_ok_total"] == 0
+    assert smoke["default_runtime_receipt_emission_changed"] is False
+    assert smoke["runtime_authority_changed"] is False
+    assert smoke["payloads_exported_by_metrics"] is False
+
+
+def test_runtime_receipt_settings_sink_smoke_preserves_default_off_boundary() -> None:
+    smoke = build_runtime_receipt_settings_sink_smoke(ROOT)
+
+    assert smoke["ok"] is True
+    assert smoke["settings_default_enabled"] is False
+    assert smoke["default_off_preserved"] is True
+    assert smoke["configured_sink_callable"] is True
+    assert smoke["configured_sink_receipt_count"] == 1
+    assert smoke["configured_sink_verifier_ok"] is True
+    assert smoke["configured_sink_result_path_free"] is True
+    assert smoke["configured_sink_result_payload_free"] is True
+    assert smoke["local_receipt_bundle_written"] is True
+    assert smoke["emitted_receipt_payload_safe"] is True
+    assert smoke["temp_artifacts_removed"] is True
+    assert smoke["default_runtime_receipt_emission_changed"] is False
+    assert smoke["runtime_authority_changed"] is False
+    assert smoke["paths_returned"] is False
+    assert smoke["payloads_returned"] is False
 
 
 def test_deterministic_solver_trace_proof_blocks_foreign_root(
@@ -1098,6 +1186,10 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py",
+        "tests/tools/test_build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1447,10 +1539,13 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert "verification summary bridge-event template digest" in (
         capability["safe_statement"]
     )
-    # next_smallest_pr advanced beyond the now-merged chain-final-summary renderer to
-    # the next honest measurement-only step (the cross-consistency digest).
+    assert "cross-consistency digest" in capability["safe_statement"]
+    assert "schema-valid handoff JSON" in capability["safe_statement"]
+    # next_smallest_pr advanced beyond the now-wired cross-consistency digest
+    # bridge-event renderer to the next honest step: a local index entry.
     assert "cross-consistency digest" in capability["next_smallest_pr"]
-    assert "chain final summary" in capability["next_smallest_pr"]
+    assert "bridge-event template" in capability["next_smallest_pr"]
+    assert "index entry" in capability["next_smallest_pr"]
     assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
@@ -1766,6 +1861,24 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_index_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_index_verifier_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_supported"
+        ]
+        is True
+    )
     verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
         "drill_evidence_verifier_smoke"
     ]
@@ -2032,6 +2145,122 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    reviewer_handoff_bundle_verification_summary_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verification_summary_smoke"
+    ]
+    assert reviewer_handoff_bundle_verification_summary_smoke["ok"] is True
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke["verification_ok"]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "source_contract_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "rebuilt_bundle_index_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "reviewer_handoff_summary_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "artifact_count_checked"
+        ]
+        == 2
+    )
+    assert (
+        set(
+            reviewer_handoff_bundle_verification_summary_smoke[
+                "digest_checks"
+            ].values()
+        )
+        == {"match"}
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "verification_report_boundary_ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "manual_review_required"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke["approval_granted"]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke["local_paths_recorded"]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
+    reviewer_handoff_bundle_verification_summary_template_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verification_summary_bridge_event_template_smoke"
+    ]
+    assert reviewer_handoff_bundle_verification_summary_template_smoke["ok"] is True
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_smoke["template_only"]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_smoke[
+            "manual_review_required"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2053,10 +2282,17 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "local verifier for that index entry" in capability["safe_statement"]
     assert "reviewer handoff summary" in capability["safe_statement"]
     assert "handoff bundle index" in capability["safe_statement"]
+    assert "path-free verification summary" in capability["safe_statement"]
+    assert "template-only bridge-event renderer for that bundle summary" in (
+        capability["safe_statement"]
+    )
     assert "handoff bundle" in capability["next_smallest_pr"]
-    assert "verification" in capability["next_smallest_pr"]
-    assert "reviewer summary" in capability["next_smallest_pr"]
+    assert "local index entry" in capability["next_smallest_pr"]
+    assert "verification-summary bridge-event template" in (
+        capability["next_smallest_pr"]
+    )
     assert "without including payloads" in capability["next_smallest_pr"]
+    assert "reviewer summary" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 
@@ -2069,7 +2305,15 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["ok"] is True
     assert capability["proof"]["selected_solver_ids"] == ["solve.math"]
     assert capability["proof"]["magma_execution_receipt_claimed"] is True
+    assert capability["proof"]["runtime_receipt_metrics_claimed"] is True
+    assert capability["proof"]["runtime_receipt_settings_sink_claimed"] is True
     assert "opt-in MAGMA" in capability["safe_statement"]
+    assert "Prometheus metrics" in capability["safe_statement"]
+    assert "default-off" in capability["safe_statement"]
+    assert "path-free reviewer handoff summary" in capability["next_smallest_pr"]
+    assert "without changing default receipt emission" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 
@@ -2204,11 +2448,18 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         is True
     )
     assert (
+        capability["proof"]["metrics_alertmanager_adapter_smoke"][
+            "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present"
+        ]
+        is True
+    )
+    assert (
         capability["proof"]["metrics_alertmanager_adapter_smoke"]["guardrails_present"]
         is True
     )
     assert "hard append-only" in capability["safe_statement"]
-    assert "local index entry" in capability["next_smallest_pr"]
+    assert "local verifier" in capability["next_smallest_pr"]
+    assert "index entry" in capability["next_smallest_pr"]
     assert "bridge-event template" in capability["next_smallest_pr"]
     assert "verifier-summary" in capability["next_smallest_pr"]
     assert "bridge-event template renderer" not in capability["next_smallest_pr"]
@@ -3063,6 +3314,100 @@ def test_manifest_cross_consistency_digest_not_folded_into_ok() -> None:
     src = inspect.getsource(mod._capabilities)
     ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
     assert "cross_consistency_digest" not in ok_assign
+
+
+def test_manifest_stores_hex_xcons_template_summary_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        capability
+        for capability in manifest["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    summary = hex_cap["proof"].get("cross_consistency_digest_bridge_event_template")
+    assert isinstance(summary, dict)
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["template_available"] is True
+    assert summary["template_only"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_runtime_subdivision_authority_granted"] is True
+    assert summary["no_direct_bridge_write"] is True
+    assert summary["no_bridge_event_written"] is True
+    assert summary["no_approval_granted"] is True
+    assert summary["cross_consistent"] is True
+    assert summary["all_views_present"] is True
+    assert summary["reviewer_clean"] is True
+    assert summary["shadow_only_clean"] is True
+    assert summary["chain_summary_clean"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
+def test_manifest_hex_xcons_template_measurement_only() -> None:
+    proof = next(
+        capability["proof"]
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    assert isinstance(proof.get("cross_consistency_digest_bridge_event_template"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert "cross_consistency_digest_bridge_event_template" not in ok_assign
+    digest_idx = src.index('hex_upgrade_proof["cross_consistency_digest"]')
+    tpl_idx = src.index(
+        'hex_upgrade_proof["cross_consistency_digest_bridge_event_template"]'
+    )
+    assert tpl_idx > digest_idx
+
+
+def test_manifest_hex_xcons_template_cannot_flip_ok(monkeypatch) -> None:
+    baseline_ok = next(
+        capability["proof"].get("ok")
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "template_available": False,
+        "template_only": False,
+        "no_runtime_authority_granted": False,
+        "no_runtime_subdivision_authority_granted": False,
+        "no_direct_bridge_write": False,
+        "no_bridge_event_written": False,
+        "no_approval_granted": False,
+        "cross_consistent": False,
+        "all_views_present": False,
+        "reviewer_clean": False,
+        "shadow_only_clean": False,
+        "chain_summary_clean": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_hex_cross_consistency_bridge_event_template_summary",
+        lambda *_a, **_k: dict(forged),
+    )
+    proof = next(
+        capability["proof"]
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    assert proof.get("ok") == baseline_ok
+    assert proof.get("cross_consistency_digest_bridge_event_template") == forged
 
 
 def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:

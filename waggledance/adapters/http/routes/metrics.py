@@ -267,6 +267,7 @@ class _WaggleCollector:
         yield from self._collect_hex_topology_boundary_metrics(container)
         yield from self._collect_route_stage_metrics(container)
         yield from self._collect_route_stage_runtime_metrics(container)
+        yield from self._collect_runtime_receipt_metrics(container)
         yield from self._collect_route_stage_latency_feed_metrics(container)
         yield from self._collect_autogrowth_metrics(container)
         yield from self._collect_counterfactual_replay_metrics(container)
@@ -565,6 +566,169 @@ class _WaggleCollector:
         yield observed
         yield latency
         yield latency_histogram
+
+    def _collect_runtime_receipt_metrics(
+        self,
+        container: Any,
+    ) -> Iterable[Any]:
+        up = GaugeMetricFamily(
+            "waggledance_runtime_receipt_metrics_up",
+            (
+                "1 if the metrics collector could read runtime receipt "
+                "coverage counters this scrape"
+            ),
+            value=0.0,
+        )
+        service = _safe_getattr(container, "autonomy_service")
+        runtime = _safe_getattr(service, "_runtime") if service is not None else None
+        snapshot_fn = _safe_getattr(runtime, "runtime_receipt_metrics_snapshot")
+        if not callable(snapshot_fn):
+            yield up
+            return
+        try:
+            snapshot = snapshot_fn()
+        except Exception as exc:
+            logger.warning(
+                "metrics: runtime_receipt_metrics_snapshot() raised: %s",
+                exc,
+            )
+            yield up
+            return
+        if not isinstance(snapshot, dict):
+            yield up
+            return
+
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_metrics_up",
+            (
+                "1 if the metrics collector could read runtime receipt "
+                "coverage counters this scrape"
+            ),
+            value=1.0,
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_sink_configured",
+            (
+                "1 if AutonomyRuntime has a configured runtime receipt sink; "
+                "default remains off when this is 0"
+            ),
+            value=_as_bool_float(snapshot.get("sink_configured")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_coverage_ratio",
+            (
+                "Runtime receipt success ratio over finalized handle_query "
+                "paths in this process"
+            ),
+            value=_as_finite_float(snapshot.get("coverage_ratio")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_solver_trace_presence_ratio",
+            (
+                "Ratio of finalized handle_query paths with a solver-call "
+                "trace in this process"
+            ),
+            value=_as_finite_float(snapshot.get("solver_trace_presence_ratio")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_last_solver_trace_count",
+            (
+                "Sanitized solver-call trace count from the last finalized "
+                "handle_query path"
+            ),
+            value=_as_nonnegative_float(snapshot.get("last_solver_trace_count")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_last_result_present",
+            "1 if the last receipt sink attempt returned a result object.",
+            value=_as_bool_float(snapshot.get("last_result_present")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_last_verifier_ok",
+            "1 if the last receipt sink result reported verifier_report.ok=true.",
+            value=_as_bool_float(snapshot.get("last_verifier_ok")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_last_receipt_count",
+            "Receipt count reported by the last receipt sink result.",
+            value=_as_nonnegative_float(snapshot.get("last_receipt_count")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_verifier_ok_ratio",
+            (
+                "Ratio of successful receipt sink results whose verifier "
+                "report was ok."
+            ),
+            value=_as_finite_float(snapshot.get("verifier_ok_ratio")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_default_emission_changed",
+            (
+                "1 if this metrics path changed default runtime receipt "
+                "emission semantics; must remain 0"
+            ),
+            value=_as_bool_float(
+                snapshot.get("default_runtime_receipt_emission_changed")
+            ),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_runtime_authority_changed",
+            "1 if this metrics path changed runtime authority; must remain 0",
+            value=_as_bool_float(snapshot.get("runtime_authority_changed")),
+        )
+
+        for key, metric_name, description in (
+            (
+                "handle_query_total",
+                "waggledance_runtime_receipt_handle_query_finalized_total",
+                "Finalized handle_query paths observed by runtime receipt metrics.",
+            ),
+            (
+                "solver_trace_present_total",
+                "waggledance_runtime_receipt_solver_trace_present_total",
+                "Finalized handle_query paths with a solver-call trace.",
+            ),
+            (
+                "sink_not_configured_total",
+                "waggledance_runtime_receipt_sink_not_configured_total",
+                "Finalized handle_query paths where no receipt sink was configured.",
+            ),
+            (
+                "attempt_total",
+                "waggledance_runtime_receipt_attempt_total",
+                "Runtime receipt sink attempts.",
+            ),
+            (
+                "success_total",
+                "waggledance_runtime_receipt_success_total",
+                "Runtime receipt sink attempts that returned without raising.",
+            ),
+            (
+                "failure_total",
+                "waggledance_runtime_receipt_failure_total",
+                "Runtime receipt sink attempts that raised.",
+            ),
+            (
+                "verifier_ok_total",
+                "waggledance_runtime_receipt_verifier_ok_total",
+                "Runtime receipt sink results with verifier_report.ok=true.",
+            ),
+            (
+                "verifier_not_ok_total",
+                "waggledance_runtime_receipt_verifier_not_ok_total",
+                "Runtime receipt sink results without verifier_report.ok=true.",
+            ),
+            (
+                "receipt_count_total",
+                "waggledance_runtime_receipt_receipt_count_total",
+                "Total receipts reported by runtime receipt sink results.",
+            ),
+        ):
+            yield CounterMetricFamily(
+                metric_name[:-6],
+                description,
+                value=_as_nonnegative_float(snapshot.get(key)),
+            )
 
     def _collect_route_stage_latency_feed_metrics(
         self,

@@ -8156,6 +8156,9 @@ def _hex_cross_consistency_bridge_event_template_index_entry_verification_summar
     from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry import (  # noqa: E402
         build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry as _build_index_entry,
     )
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary as _build_verification_summary,
+    )
     from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
     from tools.verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry import (  # noqa: E402
         verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry as _verify_index_entry,
@@ -8196,10 +8199,25 @@ def _hex_cross_consistency_bridge_event_template_index_entry_verification_summar
             digest_bytes=digest_bytes,
             bridge_event_template_bytes=template_bytes,
         )
+        verification_summary = _build_verification_summary(
+            verification_report=verification,
+            reviewer_agent_id="codex-tools-1",
+            handoff_ref="wd-image1-hex-xcons-index-entry-verification-summary",
+        )
     except Exception:
         verification = {}
+        verification_summary = {}
 
     verification = verification if isinstance(verification, Mapping) else {}
+    verification_summary = (
+        verification_summary if isinstance(verification_summary, Mapping) else {}
+    )
+    summary_verification = verification_summary.get(
+        "hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification"
+    )
+    summary_verification = (
+        summary_verification if isinstance(summary_verification, Mapping) else {}
+    )
     digest_checks = verification.get("digest_checks")
     digest_checks = digest_checks if isinstance(digest_checks, Mapping) else {}
     size_checks = verification.get("size_checks")
@@ -8210,17 +8228,18 @@ def _hex_cross_consistency_bridge_event_template_index_entry_verification_summar
         "report_version": (
             "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary.v1"
         ),
-        "verification_available": verification.get("ok") is True,
-        "template_only": verification.get("template_only") is True,
-        "source_contract_match": verification.get("source_contract_check")
+        "verification_available": verification_summary.get("ok") is True,
+        "template_only": verification_summary.get("template_only") is True,
+        "source_contract_match": summary_verification.get("source_contract_check")
         == "match",
         "rebuilt_index_entry_match": (
-            verification.get("rebuilt_index_entry_check") == "match"
+            summary_verification.get("rebuilt_index_entry_check") == "match"
         ),
         "bridge_event_schema_match": (
-            verification.get("bridge_event_schema_check") == "match"
+            summary_verification.get("bridge_event_schema_check") == "match"
         ),
-        "digest_ref_match": verification.get("digest_ref_check") == "match",
+        "digest_ref_match": summary_verification.get("digest_ref_check")
+        == "match",
         "all_digest_checks_match": bool(digest_checks)
         and all(item == "match" for item in digest_checks.values()),
         "all_size_checks_match": bool(size_checks)
@@ -8228,20 +8247,25 @@ def _hex_cross_consistency_bridge_event_template_index_entry_verification_summar
         "all_schema_version_checks_match": bool(schema_checks)
         and all(item == "match" for item in schema_checks.values()),
         "no_runtime_authority_granted": (
-            verification.get("runtime_authority_granted") is False
+            verification_summary.get("runtime_authority_granted") is False
         ),
         "no_runtime_subdivision_authority_granted": (
-            verification.get("runtime_subdivision_authority_granted") is False
+            verification_summary.get("runtime_subdivision_authority_granted")
+            is False
         ),
         "no_direct_bridge_write": (
-            verification.get("direct_bridge_write_performed") is False
+            verification_summary.get("direct_bridge_write_performed") is False
         ),
-        "no_bridge_event_written": verification.get("bridge_event_written") is False,
+        "no_bridge_event_written": (
+            verification_summary.get("bridge_event_written") is False
+        ),
         "no_payloads_included": (
-            verification.get("digest_payloads_included") is False
-            and verification.get("artifact_payloads_included") is False
+            verification_summary.get("digest_payloads_included") is False
+            and verification_summary.get("artifact_payloads_included") is False
         ),
-        "no_local_paths_recorded": verification.get("local_paths_recorded") is False,
+        "no_local_paths_recorded": (
+            verification_summary.get("local_paths_recorded") is False
+        ),
         "cross_consistent": source_digest.get("cross_consistent") is True,
         "all_views_present": source_digest.get("all_views_present") is True,
         "reviewer_clean": source_digest.get("reviewer_clean") is True,
@@ -8250,7 +8274,7 @@ def _hex_cross_consistency_bridge_event_template_index_entry_verification_summar
         "claim_safe": False,
     }
     summary["path_free_verified"] = (
-        verification.get("ok") is True and not _contains_path_marker(summary)
+        verification_summary.get("ok") is True and not _contains_path_marker(summary)
     )
     return summary
 
@@ -8842,12 +8866,20 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Local verifier for the hex-upgrade cross-consistency digest bridge-event template index entry; recomputes digest, size, schema, source-contract, rebuilt-entry, and no-authority checks.",
             ),
             (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary.py",
+                "Path-free reviewer summary renderer for the hex-upgrade cross-consistency digest bridge-event template index-entry verifier result; no payload/path inclusion, bridge append, claim upgrade, or runtime subdivision authority.",
+            ),
+            (
                 "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
                 "Index-entry tests prove digest/template binding, path-free CLI output, drift rejection, and no runtime subdivision authority.",
             ),
             (
                 "tests/test_verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
                 "Verifier tests prove digest recomputation, path-free CLI output, drift rejection, and no runtime subdivision authority.",
+            ),
+            (
+                "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary.py",
+                "Verifier-summary tests prove context-only rendering, path-free CLI/markdown output, and no runtime subdivision authority.",
             ),
         ),
     )
@@ -9705,7 +9737,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "bridge-event-schema checks while keeping payload inclusion, "
                 "local path recording, bridge writes, transport, runtime "
                 "controls, claim upgrades, and runtime subdivision authority "
-                "false."
+                "false. A path-free reviewer summary renderer turns that "
+                "verifier result into context-only handoff material while "
+                "preserving the same no-payload, no-path, no-append, "
+                "no-transport, no-claim-upgrade, and no-runtime-subdivision "
+                "authority boundary."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -9719,17 +9755,17 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
                 "The cross-consistency digest bridge-event template index "
                 "entry and its verifier are local reviewer context only; "
-                "they record/recompute digest and schema refs without "
-                "transporting payloads, appending bridge events, recording "
-                "local paths, upgrading claims, or granting runtime "
+                "the verifier-summary renderer adds reviewer context, and "
+                "none of them transport payloads, append bridge events, "
+                "record local paths, upgrade claims, or grant runtime "
                 "subdivision authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free reviewer summary renderer for the "
+                "Add a template-only bridge-event renderer for the "
                 "hex-upgrade cross-consistency digest bridge-event template "
-                "index entry verifier result without including payloads, "
-                "recording paths, appending it, upgrading any claim, or "
-                "granting runtime subdivision authority."
+                "index entry verifier-summary result without including "
+                "payloads, recording paths, appending it, upgrading any "
+                "claim, or granting runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

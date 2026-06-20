@@ -1449,14 +1449,16 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     )
     assert "cross-consistency digest" in capability["safe_statement"]
     assert "schema-valid handoff JSON" in capability["safe_statement"]
+    assert "verifier result" in capability["safe_statement"]
     # next_smallest_pr advanced beyond the now-wired cross-consistency digest
-    # bridge-event template index-entry verifier to the next honest step: a
-    # path-free reviewer summary renderer.
+    # bridge-event template index-entry verifier-summary renderer to the next
+    # honest step: a template-only bridge-event renderer for that summary.
     assert "cross-consistency digest" in capability["next_smallest_pr"]
     assert "bridge-event template" in capability["next_smallest_pr"]
     assert "index entry" in capability["next_smallest_pr"]
-    assert "verifier result" in capability["next_smallest_pr"]
-    assert "reviewer summary renderer" in capability["next_smallest_pr"]
+    assert "verifier-summary result" in capability["next_smallest_pr"]
+    assert "bridge-event renderer" in capability["next_smallest_pr"]
+    assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

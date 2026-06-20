@@ -165,6 +165,9 @@ try {
 } catch {
     throw "Bridge event payload must be valid JSON before writing"
 }
+if ($null -eq $payload) {
+    $payload = [pscustomobject]@{}
+}
 Assert-NoPrivateMarker -Label 'payload' -Value ($payload | ConvertTo-Json -Depth 12 -Compress)
 
 function Test-BridgeObject {

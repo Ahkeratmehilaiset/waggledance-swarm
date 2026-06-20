@@ -858,6 +858,32 @@ def test_invalid_payload_json_fails_before_runtime_write(tmp_path: Path) -> None
     assert not runtime_root.exists()
 
 
+def test_null_payload_json_normalizes_to_empty_object(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "null payload json",
+        "-PayloadJson",
+        "null",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(
+        encoding="utf-8"
+    ).strip()
+    event = json.loads(line)
+    assert event["payload"] == {}
+    validate_event_line(line)
+
+
 def test_grok_response_rejects_self_declared_pr_head_worktree_freshness(
     tmp_path: Path,
 ) -> None:

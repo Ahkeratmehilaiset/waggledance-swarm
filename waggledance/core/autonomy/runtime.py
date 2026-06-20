@@ -73,6 +73,14 @@ def _run_maybe_async(result):
     return _ASYNC_POOL.submit(asyncio.run, result).result()
 
 
+def _runtime_receipt_nonnegative_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
+
+
 def _make_adapter_executor(adapter):
     """Bridge adapter.execute(...) to ActionBus Executor(action) protocol.
 
@@ -132,8 +140,13 @@ class AutonomyRuntime:
         self._runtime_receipt_attempt_total = 0
         self._runtime_receipt_success_total = 0
         self._runtime_receipt_failure_total = 0
+        self._runtime_receipt_verifier_ok_total = 0
+        self._runtime_receipt_verifier_not_ok_total = 0
+        self._runtime_receipt_receipt_count_total = 0
         self._runtime_receipt_last_solver_trace_count = 0
         self._runtime_receipt_last_result_present = False
+        self._runtime_receipt_last_verifier_ok = False
+        self._runtime_receipt_last_receipt_count = 0
 
         # Core components — let WorldModel use _UNSET sentinel for proper
         # CognitiveGraph lazy-init when persistence is enabled. Dry-run-safe
@@ -457,6 +470,8 @@ class AutonomyRuntime:
         if self.runtime_receipt_sink is None:
             self._runtime_receipt_sink_not_configured_total += 1
             self._runtime_receipt_last_result_present = False
+            self._runtime_receipt_last_verifier_ok = False
+            self._runtime_receipt_last_receipt_count = 0
             return None
         from waggledance.core.magma.runtime_summary_receipt import (
             build_handle_query_runtime_summary,
@@ -492,9 +507,35 @@ class AutonomyRuntime:
         except Exception:
             self._runtime_receipt_failure_total += 1
             self._runtime_receipt_last_result_present = False
+            self._runtime_receipt_last_verifier_ok = False
+            self._runtime_receipt_last_receipt_count = 0
             raise
         self._runtime_receipt_success_total += 1
         self._runtime_receipt_last_result_present = receipt is not None
+        verifier_report = (
+            receipt.get("verifier_report", {}) if isinstance(receipt, dict) else {}
+        )
+        verifier_ok = (
+            bool(verifier_report.get("ok", False))
+            if isinstance(verifier_report, dict)
+            else False
+        )
+        receipt_count = 0
+        if isinstance(verifier_report, dict):
+            receipt_count = _runtime_receipt_nonnegative_int(
+                verifier_report.get("receipt_count")
+            )
+        if receipt_count == 0 and isinstance(receipt, dict):
+            receipt_count = _runtime_receipt_nonnegative_int(
+                receipt.get("receipt_count")
+            )
+        self._runtime_receipt_last_verifier_ok = verifier_ok
+        self._runtime_receipt_last_receipt_count = receipt_count
+        self._runtime_receipt_receipt_count_total += receipt_count
+        if verifier_ok:
+            self._runtime_receipt_verifier_ok_total += 1
+        else:
+            self._runtime_receipt_verifier_not_ok_total += 1
         return receipt
 
     def runtime_receipt_metrics_snapshot(self) -> Dict[str, Any]:
@@ -502,6 +543,10 @@ class AutonomyRuntime:
         total = self._runtime_receipt_handle_query_total
         solver_trace_total = self._runtime_receipt_solver_trace_present_total
         success_total = self._runtime_receipt_success_total
+        verifier_ok_total = self._runtime_receipt_verifier_ok_total
+        verifier_attempt_total = (
+            verifier_ok_total + self._runtime_receipt_verifier_not_ok_total
+        )
         return {
             "sink_configured": self.runtime_receipt_sink is not None,
             "handle_query_total": total,
@@ -510,11 +555,21 @@ class AutonomyRuntime:
             "attempt_total": self._runtime_receipt_attempt_total,
             "success_total": success_total,
             "failure_total": self._runtime_receipt_failure_total,
+            "verifier_ok_total": verifier_ok_total,
+            "verifier_not_ok_total": self._runtime_receipt_verifier_not_ok_total,
+            "receipt_count_total": self._runtime_receipt_receipt_count_total,
             "last_solver_trace_count": self._runtime_receipt_last_solver_trace_count,
             "last_result_present": self._runtime_receipt_last_result_present,
+            "last_verifier_ok": self._runtime_receipt_last_verifier_ok,
+            "last_receipt_count": self._runtime_receipt_last_receipt_count,
             "coverage_ratio": (success_total / total) if total else 0.0,
             "solver_trace_presence_ratio": (
                 solver_trace_total / total if total else 0.0
+            ),
+            "verifier_ok_ratio": (
+                verifier_ok_total / verifier_attempt_total
+                if verifier_attempt_total
+                else 0.0
             ),
             "default_runtime_receipt_emission_changed": False,
             "runtime_authority_changed": False,

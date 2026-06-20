@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 from tools.check_rco_pass_present import (  # noqa: E402
     check_rco_pass_present as _check_rco_pass_present,
     DEFAULT_EVENTS_PATH,
+    _read_events,
 )
 import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
@@ -48,6 +49,17 @@ def _seed_events(tmp_path: Path, events: list[dict]) -> Path:
         for ev in events:
             fh.write(json.dumps(ev, sort_keys=True) + "\n")
     return events_path
+
+
+def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    event = _rco_event()
+    events_path.write_text(
+        "\n".join(["null", json.dumps(event, sort_keys=True)]),
+        encoding="utf-8",
+    )
+
+    assert _read_events(events_path) == [event]
 
 
 def _rco_event(

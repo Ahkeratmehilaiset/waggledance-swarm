@@ -390,6 +390,8 @@ def _read_events(events_path: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"invalid JSON in bridge events at line {line_number}: {exc.msg}"
             ) from exc
+        if event is None:
+            continue
         if not isinstance(event, dict):
             raise ValueError(
                 f"invalid bridge event at line {line_number}: event must be a JSON object"

@@ -331,6 +331,8 @@ def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
                     ],
                 }
             ) from exc
+        if event is None:
+            continue
         if not isinstance(event, dict):
             raise BridgeNextActionError(
                 {

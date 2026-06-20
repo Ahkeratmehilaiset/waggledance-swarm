@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
+    _read_events,
 )
 import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
 
@@ -37,6 +38,17 @@ def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
         for event in events:
             fh.write(json.dumps(event) + "\n")
     return bridge_root
+
+
+def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    event = _event("2026-06-20T13:12:00Z", "codex-lead-1", "message", "seen")
+    events_path.write_text(
+        "\n".join(["null", json.dumps(event)]),
+        encoding="utf-8",
+    )
+
+    assert _read_events(events_path) == [event]
 
 
 def _event(ts_utc: str, agent: str, type_: str, status: str, task_id: str = "T") -> dict:

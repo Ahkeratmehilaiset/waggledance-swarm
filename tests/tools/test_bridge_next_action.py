@@ -2770,6 +2770,21 @@ def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) ->
         raise AssertionError("non-object selected bridge event should fail closed")
 
 
+def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            [
+                "null",
+                json.dumps({"task_id": "one"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_events(events_path, tail=2) == [{"task_id": "one"}]
+
+
 def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(

@@ -1,0 +1,301 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Read-only ADVISORY: flag open PRs whose base is ORPHANED or whose head would
+CONFLICT when merged into current main.
+
+Rationale (wd/ops/stacked-pr-freeze-guard-advisory, RCO-1 stacked-chain-safety):
+``report_open_pr_stale_base_queue.py`` already flags ``baseRefOid != current
+main SHA`` (stale base). But "stale" conflates two very different states:
+
+  * BEHIND-but-mergeable: the base SHA is still an ANCESTOR of current main
+    (the PR just needs main merged in / a routine rebase), and
+  * ORPHANED: the base SHA is NOT an ancestor of current main -- e.g. the base
+    branch was squash-merged (#1306 -> ca81aff0), so the base commit no longer
+    exists in main's history. Such a PR is NOT safely mergeable as-is; it must
+    be retargeted/rebased onto current main first (the #1307 hazard).
+
+This tool adds that distinction (an is-ancestor check the stale-base report does
+not do), plus a merge-tree CONFLICT check for base-on-main PRs. It is a
+STANDALONE, READ-ONLY, ADVISORY/WARN-only diagnostic: it never blocks (always
+exits 0), is NOT wired into the denylist gate-checkers, and authorizes nothing.
+
+Scope-widening (a PR's diff growing beyond its declared scope) is intentionally
+NOT covered here -- it needs a structured declared-scope source (PR-body or
+manifest convention) that does not exist yet; see the bridge handoff for that
+deferred gap.
+
+The core ``classify_open_pr_base_hazards`` is offline/deterministic and pure:
+git ancestry / merge-tree are injected as callables, so it is fully unit-tested
+without a network or repo. The CLI supplies real git/gh implementations.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import subprocess
+from typing import Any, Callable, Iterable, Mapping, Sequence
+
+DEFAULT_REPO = "Ahkeratmehilaiset/waggledance-swarm"
+
+# Injected git predicates (so the core stays pure/offline-testable).
+# IsAncestor(ancestor_sha, descendant_sha) -> True if ancestor is in descendant's history.
+IsAncestor = Callable[[str, str], bool]
+# MergeTreeConflict(base_sha, head_sha) -> True (real conflict) / False (clean) /
+# None (could not determine -- e.g. unfetched/invalid SHA or lookup error).
+# Tristate so a lookup/input error is never mis-reported as a conflict.
+MergeTreeConflict = Callable[[str, str], "bool | None"]
+
+
+def classify_open_pr_base_hazards(
+    prs: Iterable[Mapping[str, Any]],
+    main_sha: str,
+    is_ancestor: IsAncestor,
+    merge_tree_conflict: MergeTreeConflict | None = None,
+) -> list[dict[str, Any]]:
+    """Return one advisory per open PR with a base/merge hazard.
+
+    Read-only/advisory: never raises on a hazard, never blocks. Per PR:
+      * base on current main (baseRefName == 'main' or baseRefOid == main_sha):
+        optionally checked for a merge-tree conflict vs main.
+      * base NOT on main (stacked): ORPHANED if its baseRefOid is not an ancestor
+        of main (base branch squash-merged / rewritten) -> must retarget.
+    """
+    main_sha = str(main_sha or "").strip()
+    advisories: list[dict[str, Any]] = []
+    for pr in prs:
+        if not isinstance(pr, Mapping):
+            continue
+        number = pr.get("number")
+        head_ref = str(pr.get("headRefName", "") or "")
+        head_oid = str(pr.get("headRefOid", "") or "").strip()
+        base_ref = str(pr.get("baseRefName", "") or "")
+        base_oid = str(pr.get("baseRefOid", "") or "").strip()
+        base_on_main = base_ref == "main" or (
+            bool(main_sha) and base_oid == main_sha
+        )
+        hazards: list[str] = []
+        if not base_on_main:
+            # Stacked / non-main base: orphaned if base SHA not in main history.
+            if base_oid and main_sha and not is_ancestor(base_oid, main_sha):
+                hazards.append("orphaned_base")
+        elif merge_tree_conflict is not None and head_oid and main_sha:
+            # Base on main but possibly behind: would the head conflict on merge?
+            # Tristate: True = real conflict, False = clean, None = could-not-
+            # determine (e.g. unfetched head / lookup error). A lookup error is
+            # surfaced as UNKNOWN -- never a false conflict, never a silent clean.
+            mt = merge_tree_conflict(main_sha, head_oid)
+            if mt is True:
+                hazards.append("merge_tree_conflict_vs_main")
+            elif mt is None:
+                hazards.append("merge_tree_check_unknown")
+        if not hazards:
+            continue
+        advisories.append(
+            {
+                "number": number,
+                "headRefName": head_ref,
+                "baseRefName": base_ref,
+                "baseRefOid": base_oid,
+                "hazards": hazards,
+                "advice": (
+                    "retarget/rebase onto current main before merge"
+                    if "orphaned_base" in hazards
+                    else "fetch the head and re-run; merge-tree could not be computed"
+                    if "merge_tree_check_unknown" in hazards
+                    else "rebase onto current main to resolve conflict before merge"
+                ),
+                "severity": "advisory",
+            }
+        )
+    return advisories
+
+
+def _git_is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
+    """True if ancestor_sha is an ancestor of descendant_sha (read-only git)."""
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        # Unknown -> fail toward FLAGGING (treat as not-ancestor = orphaned) so a
+        # missing/un-fetched base is surfaced for review, never silently cleared.
+        return False
+    return result.returncode == 0
+
+
+def _commit_exists(sha: str) -> bool:
+    """True if sha resolves to a commit in the local repo (read-only)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _git_merge_tree_conflict(base_sha: str, head_sha: str) -> bool | None:
+    """Tristate: True (real conflict) / False (clean) / None (could not determine).
+
+    A LOOKUP/INPUT error (unfetched or invalid SHA, fatal git error) must NOT be
+    reported as a conflict -- it returns None so the caller surfaces it as an
+    UNKNOWN advisory, never a false ``merge_tree_conflict_vs_main``.
+    """
+    # Validate inputs first: an unresolvable SHA is a lookup error, not a conflict.
+    if not _commit_exists(base_sha) or not _commit_exists(head_sha):
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "merge-tree", "--write-tree", base_sha, head_sha],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return False  # clean merge, no conflict
+    if result.returncode == 1:
+        return True  # git's dedicated "merge conflicts" exit code
+    # Any other non-zero (e.g. 128 fatal) is an error, not a conflict.
+    return None
+
+
+def _open_prs(repo: str) -> list[dict[str, Any]] | None:
+    """Return open PRs, or None if DISCOVERY failed.
+
+    None (gh error / malformed output) is distinct from [] (gh succeeded, zero
+    open PRs) so the caller never reports a discovery failure as a clean scan.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "open",
+                "--json",
+                "number,headRefName,headRefOid,baseRefName,baseRefOid",
+                "--limit",
+                "200",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout or "[]")
+        return [dict(item) for item in data] if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+def _current_main_sha(repo: str) -> str:
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/commits/main",
+                "--jq",
+                ".sha",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return (result.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read-only ADVISORY: flag open PRs with an ORPHANED base (base SHA "
+            "not an ancestor of current main, e.g. base branch squash-merged) "
+            "or a merge-tree conflict vs main. WARN-only; never blocks "
+            "(always exits 0)."
+        )
+    )
+    parser.add_argument("--repo", default=DEFAULT_REPO)
+    parser.add_argument(
+        "--main-sha",
+        default=None,
+        help="Current main SHA. If omitted, fetched via gh.",
+    )
+    parser.add_argument(
+        "--no-merge-tree",
+        action="store_true",
+        help="Skip the (heavier) merge-tree conflict check for base-on-main PRs.",
+    )
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    discovery_errors: list[str] = []
+    main_sha = (args.main_sha or "").strip() or _current_main_sha(args.repo)
+    if not main_sha:
+        discovery_errors.append("could not resolve current main SHA (gh api failure)")
+    prs = _open_prs(args.repo)
+    if prs is None:
+        discovery_errors.append("could not list open PRs (gh failure)")
+        prs = []
+    merge_tree = None if args.no_merge_tree else _git_merge_tree_conflict
+    # Only classify when discovery SUCCEEDED. A discovery failure must NEVER be
+    # reported as a clean scan -- it saw no evidence, not "no hazards".
+    advisories = (
+        []
+        if discovery_errors
+        else classify_open_pr_base_hazards(
+            prs, main_sha, _git_is_ancestor, merge_tree
+        )
+    )
+    decision = "discovery_failed" if discovery_errors else "scanned"
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "decision": decision,
+                    "discovery_errors": discovery_errors,
+                    "main_sha": main_sha,
+                    "open_pr_count": len(prs),
+                    "advisories": advisories,
+                    "advisory_count": len(advisories),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    elif discovery_errors:
+        print(
+            "DISCOVERY FAILED (cannot certify clean; not a scan result): "
+            + "; ".join(discovery_errors)
+        )
+    elif not advisories:
+        print("OK: no open PRs with orphaned base / merge-tree conflict vs main.")
+    else:
+        print(
+            f"ADVISORY: {len(advisories)} open PR(s) with a base/merge hazard "
+            "(read-only; not a block):"
+        )
+        for adv in advisories:
+            print(
+                f"  #{adv['number']} {adv['headRefName']} "
+                f"{','.join(adv['hazards'])} (base={adv['baseRefName']}) "
+                f"-> {adv['advice']}"
+            )
+    # Advisory/WARN-only: never a hard block.
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

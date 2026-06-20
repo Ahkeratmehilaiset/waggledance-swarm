@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Build a route-stage verifier-summary bridge-event template."""
+"""Build a route-stage handoff-bundle summary bridge-event template."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import re
 import sys
 from typing import Any
 
@@ -18,49 +17,57 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry import (  # noqa: E402
-    AUTHORITY_FALSE_FIELDS,
-    FORBIDDEN_OUTPUT_MARKERS,
-    INDEX_ENTRY_VERSION,
-    SUMMARY_ARTIFACT_ID,
-    TEMPLATE_ARTIFACT_ID,
+from tools.build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index import (  # noqa: E402
+    BUNDLE_INDEX_VERSION,
+    FINAL_VERIFICATION_ARTIFACT_ID,
+    REVIEWER_HANDOFF_SUMMARY_ARTIFACT_ID,
 )
-from tools.build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary import (  # noqa: E402
+from tools.build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary import (  # noqa: E402
+    PROOF_ID as SOURCE_PROOF_ID,
+    ROUTE_STAGE_BUNDLE_VERIFICATION_KEY,
     SUMMARY_VERSION as SOURCE_SUMMARY_VERSION,
 )
-from tools.verify_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry import (  # noqa: E402
+from tools.build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry import (  # noqa: E402
+    AUTHORITY_FALSE_FIELDS,
+)
+from tools.build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template import (  # noqa: E402
+    SafeInputError,
+    _as_nonnegative_int,
+    _assert_no_forbidden_input,
+    _assert_no_forbidden_output,
+    _bridge_template_input_error,
+    _mapping,
+    _parse_utc,
+    _safe_ref_or_invalid,
+    _safe_token,
+    _safe_token_list,
+    _safe_warning_token_list,
+    _token_list_schema_blockers,
+    _utc_iso,
+    _validate_targets,
+)
+from tools.verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index import (  # noqa: E402
     VERIFICATION_VERSION,
 )
 from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
 
 
 TEMPLATE_VERSION = (
-    "waggledance.route_stage_feed_health_drill_evidence_verification_summary_"
-    "bridge_event_template_index_entry_verification_summary_"
-    "bridge_event_template.v1"
+    "waggledance.route_stage_feed_health_drill_evidence_reviewer_"
+    "handoff_bundle_verification_summary_bridge_event_template.v1"
 )
 PROOF_ID = (
-    "route_stage_feed_health_drill_evidence_verification_summary_"
-    "bridge_event_template_index_entry_verification_summary_"
-    "bridge_event_template_v1"
+    "route_stage_feed_health_drill_evidence_reviewer_"
+    "handoff_bundle_verification_summary_bridge_event_template_v1"
 )
 EVENT_STATUS = (
-    "route_stage_feed_health_drill_evidence_verification_summary_"
-    "bridge_event_template_index_entry_verification_summary_ready"
+    "route_stage_feed_health_drill_evidence_reviewer_"
+    "handoff_bundle_verification_summary_ready"
 )
-ROUTE_STAGE_VERIFICATION_KEY = (
-    "route_stage_feed_health_drill_evidence_verification_summary_"
-    "bridge_event_template_index_entry_verification"
+_ARTIFACT_IDS = (
+    FINAL_VERIFICATION_ARTIFACT_ID,
+    REVIEWER_HANDOFF_SUMMARY_ARTIFACT_ID,
 )
-_ARTIFACT_IDS = (SUMMARY_ARTIFACT_ID, TEMPLATE_ARTIFACT_ID)
-_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
-_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
-_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$")
-_WARNING_FILENAME_TOKEN_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{1,8}$"
-)
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-_WINDOWS_DRIVE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {
         "payload",
@@ -99,21 +106,13 @@ _FORBIDDEN_PATH_KEYS = frozenset(
 )
 
 
-class SafeInputError(ValueError):
-    """Raised when local JSON or bridge template inputs are unsafe."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--index-entry-verification-summary-json",
+        "--bundle-verification-summary-json",
         "--verification-summary-json",
         "--summary-json",
-        dest="index_entry_verification_summary_json",
+        dest="bundle_verification_summary_json",
         required=True,
         type=Path,
     )
@@ -135,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--now",
         default=None,
-        help="Optional UTC timestamp override such as 2026-06-06T06:00:00Z.",
+        help="Optional UTC timestamp override such as 2026-06-19T07:00:00Z.",
     )
     parser.add_argument("--json", action="store_true")
     return parser
@@ -144,8 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        summary = _load_json_report(args.index_entry_verification_summary_json)
-        report = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+        summary = _load_json_report(args.bundle_verification_summary_json)
+        report = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template(
             summary=summary,
             agent_id=args.agent,
             task_id=args.task_id,
@@ -160,9 +159,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = _failure_report(exc.code)
     except ValueError:
         report = _failure_report(
-            "route_stage_feed_health_drill_evidence_verification_summary_"
-            "bridge_event_template_index_entry_verification_summary_"
-            "bridge_event_template_invalid"
+            "route_stage_feed_health_drill_evidence_reviewer_"
+            "handoff_bundle_verification_summary_bridge_event_template_invalid"
         )
 
     encoded = json.dumps(report, indent=2, sort_keys=True, allow_nan=False)
@@ -179,15 +177,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(
-            "route-stage feed-health verifier-summary bridge-event template "
-            "FAILED: "
+            "route-stage feed-health handoff-bundle verification summary "
+            "bridge-event template FAILED: "
             + ", ".join(report["blockers"]),
             file=sys.stderr,
         )
     return 0 if report["ok"] else 1
 
 
-def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
+def build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template(
     *,
     summary: Mapping[str, Any],
     agent_id: str,
@@ -202,9 +200,9 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
     """Return a valid bridge-event template without appending it."""
 
     if not isinstance(summary, Mapping):
-        return _failure_report("index_entry_verification_summary_not_mapping")
+        return _failure_report("bundle_verification_summary_not_mapping")
     try:
-        _assert_no_forbidden_input("index_entry_verification_summary", summary)
+        _assert_no_forbidden_input("bundle_verification_summary", summary)
     except SafeInputError as exc:
         return _failure_report(exc.code)
 
@@ -225,9 +223,8 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
     if contract_blockers:
         return _failure_report(contract_blockers[0])
 
-    verification = _mapping(summary.get(ROUTE_STAGE_VERIFICATION_KEY))
+    verification = _mapping(summary.get(ROUTE_STAGE_BUNDLE_VERIFICATION_KEY))
     reviewer = _mapping(summary.get("reviewer_ownership"))
-    warnings = _safe_warning_token_list(summary.get("warnings"))
     payload = {
         "schema_version": TEMPLATE_VERSION,
         "summary_version": SOURCE_SUMMARY_VERSION,
@@ -242,10 +239,10 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
             "release_decision_made": False,
             "automatic_release_decision": False,
         },
-        ROUTE_STAGE_VERIFICATION_KEY: {
+        ROUTE_STAGE_BUNDLE_VERIFICATION_KEY: {
             "verification_ok": True,
             "verification_version": VERIFICATION_VERSION,
-            "index_entry_version": INDEX_ENTRY_VERSION,
+            "bundle_index_version": BUNDLE_INDEX_VERSION,
             "artifact_count_checked": len(_ARTIFACT_IDS),
             "digest_checks": _match_checks(verification.get("digest_checks")),
             "size_checks": _match_checks(verification.get("size_checks")),
@@ -253,8 +250,8 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
                 verification.get("schema_version_checks")
             ),
             "source_contract_check": "match",
-            "rebuilt_index_entry_check": "match",
-            "bridge_event_schema_check": "match",
+            "rebuilt_bundle_index_check": "match",
+            "reviewer_handoff_summary_check": "match",
             "template_only": True,
             "blocker_count": 0,
             "warning_count": _as_nonnegative_int(verification.get("warning_count")),
@@ -278,8 +275,8 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
             "local_paths_recorded": False,
         },
         "reviewer_next_actions": [
-            "review_route_stage_feed_health_bridge_template_index_entry_verification_summary_bridge_event_template",
-            "compare_bridge_event_template_to_verifier_summary_contract",
+            "review_route_stage_feed_health_handoff_bundle_verification_summary_bridge_event_template",
+            "compare_bridge_event_template_to_handoff_bundle_summary_contract",
             "append_bridge_event_separately_only_after_manual_review",
         ],
         "template_only": True,
@@ -307,7 +304,7 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
         "severity": severity,
         "to": targets,
         "message": (
-            "Route-stage feed-health bridge-template index-entry verification "
+            "Route-stage feed-health reviewer handoff-bundle verification "
             "summary bridge-event template ready; manual_review_required=true; "
             "approval_granted=false; release_decision_made=false; "
             "automatic_release_decision=false; template_only=true; no bridge "
@@ -355,7 +352,7 @@ def build_route_stage_feed_health_drill_evidence_verification_summary_bridge_eve
         "artifact_payloads_included": False,
         "local_paths_recorded": False,
         "blockers": [],
-        "warnings": warnings,
+        "warnings": _safe_warning_token_list(summary.get("warnings")),
     }
 
 
@@ -366,29 +363,31 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         _token_list_schema_blockers(
             summary,
             "blockers",
-            prefix="index_entry_verification_summary",
+            prefix="bundle_verification_summary",
         )
     )
     blockers.extend(
         _token_list_schema_blockers(
             summary,
             "warnings",
-            prefix="index_entry_verification_summary",
+            prefix="bundle_verification_summary",
         )
     )
     if summary.get("ok") is not True:
-        blockers.append("index_entry_verification_summary_not_ok")
+        blockers.append("bundle_verification_summary_not_ok")
     if summary.get("summary_version") != SOURCE_SUMMARY_VERSION:
-        blockers.append("index_entry_verification_summary_version_mismatch")
+        blockers.append("bundle_verification_summary_version_mismatch")
+    if summary.get("proof_id") != SOURCE_PROOF_ID:
+        blockers.append("bundle_verification_summary_proof_id_mismatch")
     if summary.get("template_only") is not True:
-        blockers.append("index_entry_verification_summary_template_only_not_true")
+        blockers.append("bundle_verification_summary_template_only_not_true")
     if summary.get("manual_review_required") is not True:
-        blockers.append("index_entry_verification_summary_manual_review_not_true")
+        blockers.append("bundle_verification_summary_manual_review_not_true")
     for field in AUTHORITY_FALSE_FIELDS:
         if summary.get(field) is not False:
-            blockers.append(f"index_entry_verification_summary_{field}_not_false")
+            blockers.append(f"bundle_verification_summary_{field}_not_false")
     if _safe_token_list(summary.get("blockers")):
-        blockers.append("index_entry_verification_summary_blockers_present")
+        blockers.append("bundle_verification_summary_blockers_nonempty")
 
     reviewer = _mapping(summary.get("reviewer_ownership"))
     if reviewer.get("manual_review_required") is not True:
@@ -405,39 +404,42 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         if reviewer.get(field) is not False:
             blockers.append(f"reviewer_ownership_{field}_not_false")
 
-    verification = _mapping(summary.get(ROUTE_STAGE_VERIFICATION_KEY))
+    verification = _mapping(summary.get(ROUTE_STAGE_BUNDLE_VERIFICATION_KEY))
     if verification.get("verification_ok") is not True:
-        blockers.append("index_entry_verification_not_ok")
+        blockers.append("bundle_verification_not_ok")
     if verification.get("verification_version") != VERIFICATION_VERSION:
-        blockers.append("index_entry_verification_version_mismatch")
-    if verification.get("index_entry_version") != INDEX_ENTRY_VERSION:
-        blockers.append("index_entry_verification_index_entry_version_mismatch")
+        blockers.append("bundle_verification_version_mismatch")
+    if verification.get("bundle_index_version") != BUNDLE_INDEX_VERSION:
+        blockers.append("bundle_verification_bundle_index_version_mismatch")
     if verification.get("artifact_count_checked") != len(_ARTIFACT_IDS):
-        blockers.append("index_entry_verification_artifact_count_mismatch")
+        blockers.append("bundle_verification_artifact_count_mismatch")
     if verification.get("source_contract_check") != "match":
-        blockers.append("index_entry_verification_source_contract_not_match")
-    if verification.get("rebuilt_index_entry_check") != "match":
-        blockers.append("index_entry_verification_rebuilt_index_entry_not_match")
-    if verification.get("bridge_event_schema_check") != "match":
-        blockers.append("index_entry_verification_bridge_event_schema_not_match")
+        blockers.append("bundle_verification_source_contract_not_match")
+    if verification.get("rebuilt_bundle_index_check") != "match":
+        blockers.append("bundle_verification_rebuilt_bundle_index_not_match")
+    if verification.get("reviewer_handoff_summary_check") != "match":
+        blockers.append("bundle_verification_reviewer_handoff_summary_not_match")
     if verification.get("template_only") is not True:
-        blockers.append("index_entry_verification_template_only_not_true")
+        blockers.append("bundle_verification_template_only_not_true")
     if verification.get("blocker_count") != 0:
-        blockers.append("index_entry_verification_blocker_count_nonzero")
+        blockers.append("bundle_verification_blocker_count_nonzero")
     if _safe_token_list(verification.get("blockers")):
-        blockers.append("index_entry_verification_blockers_present")
+        blockers.append("bundle_verification_blockers_present")
+    verification_warnings = _safe_warning_token_list(verification.get("warnings"))
+    if verification.get("warning_count") != len(verification_warnings):
+        blockers.append("bundle_verification_warning_count_mismatch")
     blockers.extend(
         _token_list_schema_blockers(
             verification,
             "blockers",
-            prefix="index_entry_verification",
+            prefix="bundle_verification",
         )
     )
     blockers.extend(
         _token_list_schema_blockers(
             verification,
             "warnings",
-            prefix="index_entry_verification",
+            prefix="bundle_verification",
         )
     )
     for check_name in ("digest_checks", "size_checks", "schema_version_checks"):
@@ -445,7 +447,7 @@ def _summary_contract_blockers(summary: Mapping[str, Any]) -> list[str]:
         for artifact_id in _ARTIFACT_IDS:
             if checks.get(artifact_id) != "match":
                 blockers.append(
-                    f"index_entry_verification_{check_name}_{artifact_id}_not_match"
+                    f"bundle_verification_{check_name}_{artifact_id}_not_match"
                 )
 
     boundary = _mapping(summary.get("operator_boundary"))
@@ -474,15 +476,15 @@ def _recursive_contract_blockers(value: Any) -> list[str]:
         for raw_key, child in value.items():
             key = raw_key if isinstance(raw_key, str) else "invalid_key"
             if key in _FORBIDDEN_PAYLOAD_KEYS or key.endswith("_payload"):
-                blockers.append(f"index_entry_verification_summary_payload_key:{key}")
+                blockers.append(f"bundle_verification_summary_payload_key:{key}")
             if (
                 key in _FORBIDDEN_PATH_KEYS
                 or key.endswith("_path")
                 or key.endswith("_paths")
             ):
-                blockers.append(f"index_entry_verification_summary_path_key:{key}")
+                blockers.append(f"bundle_verification_summary_path_key:{key}")
             if key in AUTHORITY_FALSE_FIELDS and child is not False:
-                blockers.append(f"index_entry_verification_summary_{key}_not_false")
+                blockers.append(f"bundle_verification_summary_{key}_not_false")
             blockers.extend(_recursive_contract_blockers(child))
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for child in value:
@@ -494,7 +496,7 @@ def _load_json_report(path: Path) -> Mapping[str, Any]:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        raise SafeInputError("index_entry_verification_summary_unreadable") from exc
+        raise SafeInputError("bundle_verification_summary_unreadable") from exc
 
     def reject_constant(_value: str) -> None:
         raise ValueError("non_finite_json_constant")
@@ -506,13 +508,13 @@ def _load_json_report(path: Path) -> Mapping[str, Any]:
             parse_constant=reject_constant,
         )
     except UnicodeDecodeError as exc:
-        raise SafeInputError("index_entry_verification_summary_decode_error") from exc
+        raise SafeInputError("bundle_verification_summary_decode_error") from exc
     except json.JSONDecodeError as exc:
-        raise SafeInputError("index_entry_verification_summary_json_error") from exc
+        raise SafeInputError("bundle_verification_summary_json_error") from exc
     except ValueError as exc:
-        raise SafeInputError("index_entry_verification_summary_json_error") from exc
+        raise SafeInputError("bundle_verification_summary_json_error") from exc
     if not isinstance(parsed, Mapping):
-        raise SafeInputError("index_entry_verification_summary_not_mapping")
+        raise SafeInputError("bundle_verification_summary_not_mapping")
     return parsed
 
 
@@ -546,56 +548,12 @@ def _failure_report(reason: str) -> dict[str, Any]:
         "artifact_payloads_included": False,
         "local_paths_recorded": False,
         "blockers": [
-            "route_stage_feed_health_drill_evidence_verification_summary_"
-            "bridge_event_template_index_entry_verification_summary_"
-            f"bridge_event_template_failed:{_safe_token(reason)}"
+            "route_stage_feed_health_drill_evidence_reviewer_"
+            "handoff_bundle_verification_summary_bridge_event_template_failed:"
+            f"{_safe_token(reason)}"
         ],
         "warnings": [],
     }
-
-
-def _bridge_template_input_error(
-    *,
-    agent_id: str,
-    task_id: str,
-    to: str,
-    severity: str,
-    role: str,
-    run_id: str,
-    session_id: str,
-) -> str | None:
-    if not _valid_agent_id(agent_id):
-        return "agent_unsafe"
-    if not isinstance(task_id, str) or not _SAFE_REF_RE.fullmatch(task_id):
-        return "task_id_unsafe"
-    _, target_error = _validate_targets(to)
-    if target_error is not None:
-        return target_error
-    if severity not in {"", "low", "medium", "high"}:
-        return "severity_unsafe"
-    if role and not _valid_agent_id(role):
-        return "role_unsafe"
-    if run_id and not _safe_ref(run_id):
-        return "run_id_unsafe"
-    if session_id and not _SESSION_ID_RE.fullmatch(session_id):
-        return "session_id_unsafe"
-    return None
-
-
-def _validate_targets(raw_targets: Any) -> tuple[str, str | None]:
-    if not isinstance(raw_targets, str):
-        return "", "to_unsafe"
-    targets = [item.strip() for item in raw_targets.split(",") if item.strip()]
-    if not targets:
-        return "", "to_unsafe"
-    for target in targets:
-        if not _valid_agent_id(target):
-            return "", "to_unsafe"
-    return ",".join(targets), None
-
-
-def _valid_agent_id(value: Any) -> bool:
-    return isinstance(value, str) and _AGENT_ID_RE.fullmatch(value) is not None
 
 
 def _match_checks(value: Any) -> dict[str, str]:
@@ -604,153 +562,6 @@ def _match_checks(value: Any) -> dict[str, str]:
         artifact_id: "match" if raw.get(artifact_id) == "match" else "unknown"
         for artifact_id in _ARTIFACT_IDS
     }
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _token_list_schema_blockers(
-    report: Mapping[str, Any],
-    field: str,
-    *,
-    prefix: str,
-) -> list[str]:
-    value = report.get(field)
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return [f"{prefix}_{field}_not_list"]
-    blockers: list[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            blockers.append(f"{prefix}_{field}_item_not_string")
-        elif field == "warnings" and _safe_warning_token(item) == (
-            "invalid_warning_token"
-        ):
-            blockers.append(f"{prefix}_{field}_item_unsafe")
-        elif field != "warnings" and _safe_token(item) == "invalid_token":
-            blockers.append(f"{prefix}_{field}_item_unsafe")
-    return sorted(set(blockers))
-
-
-def _safe_token(value: Any) -> str:
-    return (
-        value
-        if isinstance(value, str)
-        and _SAFE_TOKEN_RE.fullmatch(value)
-        and not _forbidden_output_markers(value)
-        else "invalid_token"
-    )
-
-
-def _safe_token_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return []
-    return [_safe_token(item) for item in value if isinstance(item, str)]
-
-
-def _safe_warning_token(value: Any) -> str:
-    token = _safe_token(value)
-    if token == "invalid_token" or _looks_like_warning_filename_token(token):
-        return "invalid_warning_token"
-    return token
-
-
-def _safe_warning_token_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return []
-    return [_safe_warning_token(item) for item in value if isinstance(item, str)]
-
-
-def _looks_like_warning_filename_token(value: str) -> bool:
-    candidate = value.rsplit(":", 1)[-1]
-    return _WARNING_FILENAME_TOKEN_RE.fullmatch(candidate) is not None
-
-
-def _safe_ref(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and _SAFE_REF_RE.fullmatch(value) is not None
-        and not _forbidden_output_markers(value)
-    )
-
-
-def _safe_ref_or_invalid(value: Any) -> str:
-    return value if _safe_ref(value) else "invalid_ref"
-
-
-def _as_nonnegative_int(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return 0
-    return value if value >= 0 else 0
-
-
-def _assert_no_forbidden_input(label: str, value: Mapping[str, Any]) -> None:
-    try:
-        serialized = json.dumps(value, allow_nan=False, sort_keys=True)
-    except (TypeError, ValueError) as exc:
-        raise SafeInputError(f"{label}_non_finite_json_value") from exc
-    if _contains_path_marker(value) or _forbidden_output_markers(serialized):
-        raise SafeInputError(f"{label}_forbidden_marker")
-
-
-def _contains_path_marker(value: Any) -> bool:
-    if isinstance(value, str):
-        normalized = value.replace("\\", "/").lower()
-        return (
-            _WINDOWS_DRIVE_PATH_RE.search(value) is not None
-            or normalized.startswith("//")
-            or "/home/" in normalized
-            or "/users/" in normalized
-            or "/tmp/" in normalized
-            or "waggledance-agent-worktrees" in normalized
-        )
-    if isinstance(value, Mapping):
-        return any(
-            _contains_path_marker(key) or _contains_path_marker(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return any(_contains_path_marker(item) for item in value)
-    return False
-
-
-def _forbidden_output_markers(text: str) -> list[str]:
-    lower_text = text.lower()
-    return sorted(
-        marker
-        for marker in FORBIDDEN_OUTPUT_MARKERS
-        if marker.lower() in lower_text
-    )
-
-
-def _assert_no_forbidden_output(text: str) -> None:
-    if _forbidden_output_markers(text):
-        raise ValueError(
-            "route-stage verifier-summary bridge-event template contains "
-            "forbidden markers"
-        )
-
-
-def _parse_utc(raw: str) -> datetime:
-    if not raw.endswith("Z"):
-        raise SafeInputError("now_utc_unsafe")
-    try:
-        parsed = datetime.fromisoformat(raw[:-1] + "+00:00")
-    except ValueError as exc:
-        raise SafeInputError("now_utc_unsafe") from exc
-    if (
-        parsed.tzinfo is None
-        or parsed.utcoffset() != timezone.utc.utcoffset(parsed)
-    ):
-        raise SafeInputError("now_utc_unsafe")
-    return parsed.astimezone(timezone.utc)
-
-
-def _utc_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00",
-        "Z",
-    )
 
 
 if __name__ == "__main__":

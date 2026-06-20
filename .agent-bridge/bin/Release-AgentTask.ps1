@@ -34,14 +34,49 @@ function ConvertTo-SafeName {
     return (($Name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
 }
 
+function Resolve-ClaimPathForTask {
+    param(
+        [Parameter(Mandatory)] [string] $ClaimsDirectory,
+        [Parameter(Mandatory)] [string] $TaskId,
+        [Parameter(Mandatory)] [string] $PreferredPath
+    )
+    if (Test-Path -LiteralPath $ClaimsDirectory -PathType Container) {
+        $claimFiles = @(
+            Get-ChildItem `
+                -LiteralPath $ClaimsDirectory `
+                -Filter '*.json' `
+                -File `
+                -ErrorAction SilentlyContinue
+        )
+        foreach ($file in @($claimFiles | Sort-Object -Property Name)) {
+            try {
+                $candidate = Get-Content -Raw -LiteralPath $file.FullName -Encoding UTF8 | ConvertFrom-Json
+            } catch {
+                continue
+            }
+            if ([string]$candidate.task_id -eq $TaskId) {
+                return [string]$file.FullName
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $PreferredPath -PathType Leaf) {
+        return [string]$PreferredPath
+    }
+    return ''
+}
+
 $safeTask = ConvertTo-SafeName $TaskId
-$claimPath = Join-Path $claimsDir ($safeTask + '.json')
-if (-not (Test-Path -LiteralPath $claimPath)) {
+$preferredClaimPath = Join-Path $claimsDir ($safeTask + '.json')
+$claimPath = Resolve-ClaimPathForTask `
+    -ClaimsDirectory $claimsDir `
+    -TaskId $TaskId `
+    -PreferredPath $preferredClaimPath
+if (-not $claimPath) {
     Write-Error ("no active claim found for task: {0}" -f $TaskId)
     exit 2
 }
 
-$claim = Get-Content -Raw -Path $claimPath -Encoding UTF8 | ConvertFrom-Json
+$claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 | ConvertFrom-Json
 if ([string]$claim.agent -ne $Agent) {
     Write-Error ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent)
     exit 3

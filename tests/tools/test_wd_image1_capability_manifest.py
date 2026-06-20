@@ -1224,6 +1224,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary.py",
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
+        "tools/build_route_stage_handoff_verifier_summary_bridge_template_index_entry.py",
+        "tests/tools/test_route_stage_handoff_verifier_summary_bridge_template_index_entry.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2718,6 +2720,47 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke = (
+        verifier_smoke[
+            "reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_smoke"
+        ]
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke[
+            "ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke[
+            "template_only"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_template_index_entry_verification_summary_template_index_entry_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2762,9 +2805,14 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "template-only bridge-event renderer for that verifier verification summary" in (
         capability["safe_statement"]
     )
+    assert (
+        "verifier verification summary and a local index entry for that renderer"
+        in capability["safe_statement"]
+    )
     assert "handoff bundle" in capability["next_smallest_pr"]
-    assert "local index entry" in capability["next_smallest_pr"]
-    assert "verifier verification summary bridge-event template" in (
+    assert "local verifier" in capability["next_smallest_pr"]
+    assert "index entry" in capability["next_smallest_pr"]
+    assert "verifier verification summary bridge-event template index entry" in (
         capability["next_smallest_pr"]
     )
     assert "bridge-event template index entry verifier verification summary" in (
@@ -2774,11 +2822,11 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "Add a template-only bridge-event renderer" not in (
         capability["next_smallest_pr"]
     )
-    assert "Add a local verifier" not in capability["next_smallest_pr"]
+    assert "Add a local verifier" in capability["next_smallest_pr"]
     assert "Add a path-free verification summary renderer" not in (
         capability["next_smallest_pr"]
     )
-    assert "Add a local index entry" in (
+    assert "Add a local index entry" not in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

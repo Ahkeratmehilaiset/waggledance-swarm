@@ -862,6 +862,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
     )
     metric_names = (
         "waggledance_route_stage_observations_total",
@@ -1730,6 +1732,11 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             VERIFICATION_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_INDEX_VERIFICATION_VERSION,
             verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index,
         )
+        from tools.build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary import (
+            ROUTE_STAGE_BUNDLE_VERIFICATION_KEY as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_KEY,
+            SUMMARY_VERSION as DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION,
+            build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary,
+        )
     except Exception as exc:  # pragma: no cover - defensive manifest guard.
         return {
             "ok": False,
@@ -1797,6 +1804,12 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
                 "ok": False,
                 "blocked_reason": f"reviewer_handoff_bundle_index_verification_import_failed:{exc.__class__.__name__}",
                 "verification_version": None,
+                "direct_bridge_write_performed": False,
+            },
+            "reviewer_handoff_bundle_verification_summary_smoke": {
+                "ok": False,
+                "blocked_reason": f"reviewer_handoff_bundle_verification_summary_import_failed:{exc.__class__.__name__}",
+                "summary_version": None,
                 "direct_bridge_write_performed": False,
             },
             "network_access_performed": False,
@@ -2004,6 +2017,11 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         reviewer_handoff_summary=reviewer_handoff_summary,
         verification_report_bytes=final_verification_bytes,
         reviewer_handoff_summary_bytes=reviewer_handoff_summary_bytes,
+    )
+    reviewer_handoff_bundle_verification_summary = build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary(
+        verification_report=reviewer_handoff_bundle_index_verification,
+        reviewer_agent_id="claude-rco-1",
+        handoff_ref="bridge:handoff:route-stage-feed-health-bundle-verification",
     )
     template_event = template_report.get("bridge_event_template")
     template_payload = (
@@ -2613,6 +2631,146 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         ),
         "blockers": reviewer_handoff_bundle_index_verification.get("blockers", []),
     }
+    reviewer_handoff_bundle_verification_summary_payload = (
+        reviewer_handoff_bundle_verification_summary.get(
+            DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_KEY,
+            {},
+        )
+    )
+    reviewer_handoff_bundle_verification_summary_boundary = (
+        reviewer_handoff_bundle_verification_summary.get("operator_boundary", {})
+    )
+    reviewer_handoff_bundle_verification_summary_smoke = {
+        "ok": (
+            reviewer_handoff_bundle_verification_summary.get("ok") is True
+            and reviewer_handoff_bundle_verification_summary.get("summary_version")
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_VERIFICATION_SUMMARY_VERSION
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "verification_ok"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "verification_version"
+            )
+            == DRILL_REVIEWER_HANDOFF_BUNDLE_INDEX_VERIFICATION_VERSION
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "source_contract_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "rebuilt_bundle_index_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "reviewer_handoff_summary_check"
+            )
+            == "match"
+            and reviewer_handoff_bundle_verification_summary_payload.get(
+                "artifact_count_checked"
+            )
+            == 2
+            and set(
+                reviewer_handoff_bundle_verification_summary_payload.get(
+                    "digest_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and set(
+                reviewer_handoff_bundle_verification_summary_payload.get(
+                    "size_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and set(
+                reviewer_handoff_bundle_verification_summary_payload.get(
+                    "schema_version_checks",
+                    {},
+                ).values()
+            )
+            == {"match"}
+            and reviewer_handoff_bundle_verification_summary_boundary.get(
+                "verification_report_boundary_ok"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary.get(
+                "manual_review_required"
+            )
+            is True
+            and reviewer_handoff_bundle_verification_summary.get("approval_granted")
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "direct_bridge_write_performed"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get("transport_added")
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "artifact_payloads_included"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "local_paths_recorded"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "network_access_performed"
+            )
+            is False
+            and reviewer_handoff_bundle_verification_summary.get(
+                "runtime_authority_granted"
+            )
+            is False
+        ),
+        "summary_version": reviewer_handoff_bundle_verification_summary.get(
+            "summary_version"
+        ),
+        "verification_ok": reviewer_handoff_bundle_verification_summary_payload.get(
+            "verification_ok"
+        ),
+        "verification_version": reviewer_handoff_bundle_verification_summary_payload.get(
+            "verification_version"
+        ),
+        "artifact_count_checked": reviewer_handoff_bundle_verification_summary_payload.get(
+            "artifact_count_checked"
+        ),
+        "source_contract_check": reviewer_handoff_bundle_verification_summary_payload.get(
+            "source_contract_check"
+        ),
+        "rebuilt_bundle_index_check": reviewer_handoff_bundle_verification_summary_payload.get(
+            "rebuilt_bundle_index_check"
+        ),
+        "reviewer_handoff_summary_check": reviewer_handoff_bundle_verification_summary_payload.get(
+            "reviewer_handoff_summary_check"
+        ),
+        "digest_checks": reviewer_handoff_bundle_verification_summary_payload.get(
+            "digest_checks",
+            {},
+        ),
+        "verification_report_boundary_ok": reviewer_handoff_bundle_verification_summary_boundary.get(
+            "verification_report_boundary_ok"
+        ),
+        "manual_review_required": reviewer_handoff_bundle_verification_summary.get(
+            "manual_review_required"
+        ),
+        "approval_granted": reviewer_handoff_bundle_verification_summary.get(
+            "approval_granted"
+        ),
+        "direct_bridge_write_performed": reviewer_handoff_bundle_verification_summary.get(
+            "direct_bridge_write_performed"
+        ),
+        "artifact_payloads_included": reviewer_handoff_bundle_verification_summary.get(
+            "artifact_payloads_included"
+        ),
+        "local_paths_recorded": reviewer_handoff_bundle_verification_summary.get(
+            "local_paths_recorded"
+        ),
+        "network_access_performed": reviewer_handoff_bundle_verification_summary.get(
+            "network_access_performed"
+        ),
+        "blockers": reviewer_handoff_bundle_verification_summary.get("blockers", []),
+    }
     tampered = deepcopy(package)
     tampered["api_ops"]["route_stage_latency"]["feed_state"]["feed_health"][
         "runtime_authority_granted"
@@ -2646,6 +2804,7 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
             and reviewer_handoff_summary_smoke["ok"] is True
             and reviewer_handoff_bundle_index_smoke["ok"] is True
             and reviewer_handoff_bundle_index_verification_smoke["ok"] is True
+            and reviewer_handoff_bundle_verification_summary_smoke["ok"] is True
         ),
         "package_schema_version": PACKAGE_SCHEMA_VERSION,
         "verification_schema_version": VERIFICATION_SCHEMA_VERSION,
@@ -2674,6 +2833,9 @@ def _build_route_stage_feed_health_drill_evidence_verifier_smoke() -> dict:
         "reviewer_handoff_bundle_index_smoke": reviewer_handoff_bundle_index_smoke,
         "reviewer_handoff_bundle_index_verification_smoke": (
             reviewer_handoff_bundle_index_verification_smoke
+        ),
+        "reviewer_handoff_bundle_verification_summary_smoke": (
+            reviewer_handoff_bundle_verification_summary_smoke
         ),
         "valid_report_blockers": valid_report.get("blockers", []),
         "tampered_report_blockers": tampered_report.get("blockers", []),
@@ -8188,6 +8350,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_index.py",
                 "Local verifier for the route-stage feed-health reviewer handoff bundle index.",
             ),
+            (
+                "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary.py",
+                "Path-free reviewer summary renderer for the route-stage feed-health reviewer handoff bundle verifier.",
+            ),
         ),
     )
     solver_evidence = _evidence(
@@ -9079,7 +9245,8 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "verifier summary, a local index entry for that renderer, "
                 "a local verifier for that index entry, and a path-free "
                 "reviewer handoff summary for the verifier chain plus a local "
-                "handoff bundle index and verifier for that summary; exact "
+                "handoff bundle index, verifier, and path-free verification "
+                "summary for that bundle; exact "
                 "runtime entry order depends on flags and call path."
             ),
             status=_status_for(hex_evidence),
@@ -9093,9 +9260,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             ),
             next_smallest_pr=(
                 "Render the route-stage feed-health reviewer handoff bundle "
-                "verification into a path-free local reviewer summary without "
-                "including payloads, recording paths, appending it, or granting "
-                "runtime authority."
+                "verification summary into a template-only bridge-event JSON "
+                "without including payloads, recording paths, appending it, or "
+                "granting runtime authority."
             ),
             proof=hex_entry_proof,
         ),

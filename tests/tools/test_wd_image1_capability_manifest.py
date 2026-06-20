@@ -1194,6 +1194,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
         "tools/verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
         "tests/tools/test_verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1895,6 +1897,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is True
     )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_supported"
+        ]
+        is True
+    )
     verifier_smoke = capability["proof"]["route_stage_runtime_metrics_smoke"][
         "drill_evidence_verifier_smoke"
     ]
@@ -2394,6 +2402,53 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke = (
+        verifier_smoke[
+            "reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_smoke"
+        ]
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "template_only"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "manual_review_required"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verification_summary_template_index_entry_verification_summary_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2423,13 +2478,18 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "local verifier for that bridge-event template index entry" in (
         capability["safe_statement"]
     )
+    assert "path-free verification summary renderer for that verifier" in (
+        capability["safe_statement"]
+    )
     assert "handoff bundle" in capability["next_smallest_pr"]
-    assert "verification summary renderer" in capability["next_smallest_pr"]
-    assert "index-entry verifier" in (
+    assert "template-only bridge-event renderer" in (
+        capability["next_smallest_pr"]
+    )
+    assert "verifier verification summary" in (
         capability["next_smallest_pr"]
     )
     assert "without including payloads" in capability["next_smallest_pr"]
-    assert "Add a local verifier for the route-stage feed-health reviewer" not in (
+    assert "Add a path-free verification summary renderer" not in (
         capability["next_smallest_pr"]
     )
     assert report["summary"]["proofs_ok"] is True

@@ -68,6 +68,25 @@ BLOCKING_STATUSES = frozenset(
 )
 BLOCKING_NEGATION_TOKENS = frozenset({"no", "not", "non", "none", "without"})
 
+# Unambiguously INFORMATIONAL finding statuses. A recognized-RCO ``type=finding``
+# carrying one of these statuses is an advisory/diagnostic note, NOT a veto, so it
+# must not phantom-block a prior exact-head ``rco_pass`` (the ``finding/info``
+# vetoed_after_pass bug). This set is intentionally TIGHT and fail-closed: any
+# finding status NOT in this set (and not an explicit approval) still counts as a
+# veto, so real vetoes (``changes_requested``/``blocked``/``confirmed_*``) and
+# ambiguous statuses (``operator_review_required``/``open``/empty) never silently
+# bypass the gate. Expand deliberately if a specific advisory status should also
+# stop vetoing.
+INFORMATIONAL_FINDING_STATUSES = frozenset(
+    {
+        "info",
+        "informational",
+        "fyi",
+        "note",
+        "advisory",
+    }
+)
+
 # Claim gates per hard rule: all must be false in emitted artifacts.
 CLAIM_GATES: tuple[str, ...] = (
     "claim_gate_satisfied",
@@ -805,6 +824,12 @@ def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
         # If the status is explicitly an approval, do not treat as veto (rare)
         if status in RCO_PASS_STATUSES or _is_approval_status(status):
             return False
+        # A type=finding carrying an unambiguously INFORMATIONAL status (info,
+        # fyi, advisory, ...) is an advisory/diagnostic note, not a veto, so it
+        # must not phantom-block a prior exact-head rco_pass. type=blocked is
+        # semantically a block and never gets this exemption.
+        if typ == "finding" and _is_informational_finding_status(status):
+            return False
         return True
 
     # Any status that lexically signals block (e.g. "rco_changes_requested_xxx")
@@ -841,6 +866,18 @@ def _is_approval_status(status: str) -> bool:
         or "approved" in tokens
         or "acknowledged" in tokens
     )
+
+
+def _is_informational_finding_status(status: str) -> bool:
+    """True for unambiguously-informational finding statuses (info/fyi/advisory...).
+
+    Normalizes punctuation to underscores then exact-matches the tight
+    INFORMATIONAL_FINDING_STATUSES allowlist, so only explicitly-informational
+    statuses are exempted from veto detection; unknown, ambiguous, or blocking
+    statuses are never treated as informational (fail-closed).
+    """
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    return normalized in INFORMATIONAL_FINDING_STATUSES
 
 
 def _status_tokens(status: str) -> set[str]:

@@ -54,7 +54,7 @@ ROUTE_STAGE_VERIFICATION_KEY = (
 )
 _ARTIFACT_IDS = (SUMMARY_ARTIFACT_ID, TEMPLATE_ARTIFACT_ID)
 _AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
-_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
+_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,191}$")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")

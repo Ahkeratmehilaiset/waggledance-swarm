@@ -75,7 +75,7 @@ def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_t
     report = build_route_stage_feed_health_drill_evidence_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template(
         summary=_index_entry_verification_summary(),
         agent_id="codex-lead-1",
-        task_id="wd-image1-route-stage-verifier-summary-template",
+        task_id="codex-lead-1/route-stage-bundle-verification-summary-bridge-template-20260619",
         to="operator,claude-rco-1",
         run_id="codex-lead-1-20260606T060000Z",
         session_id="codex-lead-1-20260606T060000Z",
@@ -91,6 +91,10 @@ def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_t
     assert report["artifact_payloads_included"] is False
     assert report["local_paths_recorded"] is False
     assert event["type"] == "handoff"
+    assert (
+        event["task_id"]
+        == "codex-lead-1/route-stage-bundle-verification-summary-bridge-template-20260619"
+    )
     assert event["status"] == EVENT_STATUS
     assert event["paths"] == []
     assert event["write_scope"] == []
@@ -153,7 +157,7 @@ def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_t
             "--agent",
             "codex-lead-1",
             "--task-id",
-            "wd-image1-route-stage-verifier-summary-template",
+            "codex-lead-1/route-stage-bundle-verification-summary-bridge-template-20260619",
             "--to",
             "operator,claude-rco-1",
             "--run-id",
@@ -174,6 +178,10 @@ def test_route_stage_feed_health_index_entry_verification_summary_bridge_event_t
     payload = json.loads(result.stdout)
     event = payload["bridge_event_template"]
     validate_event(event)
+    assert (
+        event["task_id"]
+        == "codex-lead-1/route-stage-bundle-verification-summary-bridge-template-20260619"
+    )
     assert payload["direct_bridge_write_performed"] is False
     assert payload["approval_granted"] is False
     assert payload["release_decision_made"] is False

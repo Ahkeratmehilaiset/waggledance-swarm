@@ -62,7 +62,7 @@ _SOURCE_VERIFICATION_ARTIFACT_IDS = (
     SOURCE_VERIFICATION_SUMMARY_ARTIFACT_ID,
     SOURCE_BRIDGE_EVENT_TEMPLATE_ARTIFACT_ID,
 )
-_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$")
+_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,191}$")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/])")
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {

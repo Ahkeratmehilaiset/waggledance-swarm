@@ -671,4 +671,3 @@ def _utc_iso(value: datetime) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

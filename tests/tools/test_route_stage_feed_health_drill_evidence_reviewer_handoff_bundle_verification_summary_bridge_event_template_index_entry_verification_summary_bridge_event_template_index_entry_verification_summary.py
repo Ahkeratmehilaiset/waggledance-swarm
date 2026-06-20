@@ -435,4 +435,3 @@ def _index_entry_verification_report() -> dict:
         index_entry_verification_summary_bytes=raw["summary"],
         summary_bridge_event_template_bytes=raw["template"],
     )
-

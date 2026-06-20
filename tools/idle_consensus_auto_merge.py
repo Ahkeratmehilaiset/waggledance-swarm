@@ -115,6 +115,11 @@ CONSENSUS_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
         "changes_requested_resolved_ci_pending",
         "changes_requested_retracted",
         "changes_requested_withdrawn",
+        # Mirror check_bridge_changes_requested: "cleared" is a natural veto-lift
+        # suffix; without it changes_requested_cleared false-blocks the gate.
+        "changes_requested_cleared",
+        "changes_requested_cleared_ci_green",
+        "changes_requested_cleared_ci_pending",
     }
 )
 LEAD_STALL_FAILOVER_THRESHOLD_SECONDS = 90 * 60

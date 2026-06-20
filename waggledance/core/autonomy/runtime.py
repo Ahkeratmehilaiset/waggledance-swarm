@@ -529,6 +529,8 @@ class AutonomyRuntime:
             receipt_count = _runtime_receipt_nonnegative_int(
                 verifier_report.get("receipt_count")
             )
+        if not verifier_ok:
+            receipt_count = 0
         self._runtime_receipt_last_verifier_ok = verifier_ok
         self._runtime_receipt_last_receipt_count = receipt_count
         self._runtime_receipt_receipt_count_total += receipt_count

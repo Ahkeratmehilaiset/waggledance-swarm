@@ -3425,6 +3425,12 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
         "waggledance_runtime_receipt_attempt_total",
         "waggledance_runtime_receipt_success_total",
         "waggledance_runtime_receipt_failure_total",
+        "waggledance_runtime_receipt_verifier_ok_total",
+        "waggledance_runtime_receipt_verifier_not_ok_total",
+        "waggledance_runtime_receipt_receipt_count_total",
+        "waggledance_runtime_receipt_last_verifier_ok",
+        "waggledance_runtime_receipt_last_receipt_count",
+        "waggledance_runtime_receipt_verifier_ok_ratio",
         "waggledance_runtime_receipt_default_emission_changed",
         "waggledance_runtime_receipt_runtime_authority_changed",
     ]
@@ -3510,8 +3516,12 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
 
     def _sink(summary: Mapping[str, Any]) -> dict[str, Any]:
         return {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
             "receipt_summary_key_count": len(summary.keys()),
             "solver_call_trace_count": summary.get("solver_call_trace_count"),
+            "paths_returned": False,
+            "payloads_returned": False,
         }
 
     configured_runtime = _runtime(_sink)
@@ -3537,8 +3547,14 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
         and configured_snapshot.get("attempt_total") == 1
         and configured_snapshot.get("success_total") == 1
         and configured_snapshot.get("failure_total") == 0
+        and configured_snapshot.get("verifier_ok_total") == 1
+        and configured_snapshot.get("verifier_not_ok_total") == 0
+        and configured_snapshot.get("receipt_count_total") == 1
+        and configured_snapshot.get("last_verifier_ok") is True
+        and configured_snapshot.get("last_receipt_count") == 1
         and configured_snapshot.get("coverage_ratio") == 1.0
         and configured_snapshot.get("solver_trace_presence_ratio") == 1.0
+        and configured_snapshot.get("verifier_ok_ratio") == 1.0
     )
     default_ok = (
         "runtime_receipt" not in default_result
@@ -3546,6 +3562,9 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
         and default_snapshot.get("sink_not_configured_total") == 1
         and default_snapshot.get("attempt_total") == 0
         and default_snapshot.get("success_total") == 0
+        and default_snapshot.get("verifier_ok_total") == 0
+        and default_snapshot.get("verifier_not_ok_total") == 0
+        and default_snapshot.get("receipt_count_total") == 0
     )
     ok = configured_ok and default_ok and metric_names_defined
     return {
@@ -3562,9 +3581,10 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
         "payloads_exported_by_metrics": False,
         "external_writes_applied": False,
         "safe_conclusion": (
-            "AutonomyRuntime now exposes payload-free receipt coverage counters "
-            "for configured sinks and preserves the default-off no-sink path; "
-            "/metrics declares only aggregate counters/gauges."
+            "AutonomyRuntime now exposes payload-free receipt coverage, "
+            "verifier outcome, and receipt-count counters for configured sinks "
+            "and preserves the default-off no-sink path; /metrics declares only "
+            "aggregate counters/gauges."
         ),
     }
 

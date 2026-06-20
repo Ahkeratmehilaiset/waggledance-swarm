@@ -384,6 +384,22 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
         in proof["runtime_receipt_metrics_smoke"]["metric_names"]
     )
     assert (
+        "waggledance_runtime_receipt_verifier_ok_total"
+        in proof["runtime_receipt_metrics_smoke"]["metric_names"]
+    )
+    assert (
+        proof["runtime_receipt_metrics_smoke"]["configured_sink_snapshot"][
+            "verifier_ok_total"
+        ]
+        == 1
+    )
+    assert (
+        proof["runtime_receipt_metrics_smoke"]["configured_sink_snapshot"][
+            "receipt_count_total"
+        ]
+        == 1
+    )
+    assert (
         proof["magma_execution_receipt_proof"]["solver_call_trace_receipt_bound"]
         is True
     )
@@ -410,8 +426,16 @@ def test_runtime_receipt_metrics_smoke_preserves_default_off_boundary() -> None:
     assert smoke["default_off_preserved"] is True
     assert smoke["configured_sink_snapshot"]["sink_configured"] is True
     assert smoke["configured_sink_snapshot"]["success_total"] == 1
+    assert smoke["configured_sink_snapshot"]["verifier_ok_total"] == 1
+    assert smoke["configured_sink_snapshot"]["verifier_not_ok_total"] == 0
+    assert smoke["configured_sink_snapshot"]["receipt_count_total"] == 1
+    assert smoke["configured_sink_snapshot"]["last_verifier_ok"] is True
+    assert smoke["configured_sink_snapshot"]["last_receipt_count"] == 1
+    assert smoke["configured_sink_snapshot"]["verifier_ok_ratio"] == 1.0
     assert smoke["default_sink_snapshot"]["sink_configured"] is False
     assert smoke["default_sink_snapshot"]["sink_not_configured_total"] == 1
+    assert smoke["default_sink_snapshot"]["verifier_ok_total"] == 0
+    assert smoke["default_sink_snapshot"]["verifier_not_ok_total"] == 0
     assert smoke["default_runtime_receipt_emission_changed"] is False
     assert smoke["runtime_authority_changed"] is False
     assert smoke["payloads_exported_by_metrics"] is False

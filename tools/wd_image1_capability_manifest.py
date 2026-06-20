@@ -11066,26 +11066,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "traces plus p95/p99 PromQL latency panel templates and "
                 "an optional sanitized read-only Prometheus/Alertmanager "
                 "feed provider with timeout, TTL cache, bounded failure "
-                "backoff, credential, private-host guardrails, and read-only "
-                "operator SLO/drill evidence templates plus a local offline "
-                "drill evidence verifier and verification-summary "
-                "bridge-event template with a local template index entry and "
-                "verifier plus path-free verifier summary renderer for that "
-                "index entry, a template-only bridge-event renderer for the "
-                "verifier summary, a local index entry for that renderer, "
-                "a local verifier for that index entry, and a path-free "
-                "reviewer handoff summary for the verifier chain plus a local "
-                "handoff bundle index, verifier, and path-free verification "
-                "summary plus a template-only bridge-event renderer for that "
-                "bundle summary, a local index entry for that renderer, and "
-                "a local verifier for that bridge-event template index entry "
-                "plus a path-free verification summary renderer for that "
-                "verifier and a template-only bridge-event renderer for that "
-                "verifier summary plus a local index entry and verifier for "
-                "that renderer plus a path-free verification summary renderer "
-                "for that verifier plus a template-only bridge-event renderer "
-                "for that verifier verification summary; exact runtime entry "
-                "order depends on flags and call path."
+                "backoff, credential, and private-host guardrails; read-only "
+                "operator SLO/drill evidence templates, a local offline "
+                "drill evidence verifier, verification-summary bridge-event "
+                "templates, and path-free reviewer-handoff summaries are also "
+                "available; exact runtime entry order depends on flags "
+                "and call path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -11097,12 +11083,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "and deterministic solver stages before hex-backed stages.",
             ),
             next_smallest_pr=(
-                "Add a local index entry for the "
-                "route-stage feed-health reviewer handoff bundle "
-                "verification-summary bridge-event template index entry "
-                "verifier verification summary bridge-event template "
-                "without including payloads, recording paths, appending it, "
-                "or granting runtime authority."
+                "Add a read-only runtime coverage counter that records how "
+                "often the hex-backed route stages (8-cell solver-retrieval "
+                "and 7-cell agent-routing) are actually entered versus "
+                "disabled across sanitized route-stage traces, exposing only "
+                "path-free counts, without changing routing behavior, "
+                "enabling disabled hex paths, or granting runtime authority."
             ),
             proof=hex_entry_proof,
         ),

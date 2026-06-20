@@ -285,6 +285,12 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
         ]
         is True
     )
+    assert (
+        smoke[
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verifier_supported"
+        ]
+        is True
+    )
     assert smoke["latency_feed_state_visible"] is True
     assert smoke["alert_thresholds_documented"] is True
     assert smoke["runbook_path"] == ("docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md")
@@ -1795,6 +1801,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     )
     assert (
         capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verifier_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
             "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_supported"
         ]
         is True
@@ -2104,6 +2116,65 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     )
     assert (
         reviewer_handoff_bundle_verifier_summary_template_index_entry_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
+    reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verification_smoke"
+    ]
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "source_contract_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "rebuilt_index_entry_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "bridge_event_schema_check"
+        ]
+        == "match"
+    )
+    assert (
+        set(
+            reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+                "digest_checks"
+            ].values()
+        )
+        == {"match"}
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_smoke[
             "network_access_performed"
         ]
         is False

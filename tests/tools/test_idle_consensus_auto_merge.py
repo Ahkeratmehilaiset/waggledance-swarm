@@ -508,6 +508,10 @@ def test_rco_gate_not_checked_defaults_fail_closed_report() -> None:
 def test_operator_merge_required_rco_status_does_not_satisfy_merge_gate(
     tmp_path: Path,
 ) -> None:
+    # rco_pass_operator_merge_required is RETIRED (RCOs post plain rco_pass and
+    # convey operator-merge in the message). This regression is deliberately kept
+    # to verify a stray variant fails toward STUCK -- does not satisfy the merge
+    # gate -- never fail-open.
     rco = _bridge_event(
         agent="claude-rco-1",
         type_="decision",
@@ -569,6 +573,9 @@ def test_pending_ci_rco_status_with_non_green_ci_refuses_merge_gate(
 def test_consensus_rejects_operator_merge_required_rco_status(
     tmp_path: Path,
 ) -> None:
+    # rco_pass_operator_merge_required is RETIRED; this regression is kept to
+    # verify the retired variant is rejected as a qualifying RCO pass
+    # (fail-toward-stuck-safe), never silently accepted by consensus.
     events = [
         _bridge_event(agent="codex-lead-1", type_="decision", status="approved")
         | {"payload": {"head": HEAD}},

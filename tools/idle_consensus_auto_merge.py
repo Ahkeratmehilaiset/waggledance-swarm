@@ -108,6 +108,15 @@ CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
         "no_changes_requested_approved",
     }
 )
+CONSENSUS_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
+    {
+        "changes_requested_resolved",
+        "changes_requested_resolved_ci_green",
+        "changes_requested_resolved_ci_pending",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
+    }
+)
 LEAD_STALL_FAILOVER_THRESHOLD_SECONDS = 90 * 60
 LEAD_STALL_NON_SUBSTANTIVE_TYPES = frozenset({"heartbeat", "liveness"})
 LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
@@ -1033,6 +1042,20 @@ def verify_bridge_consensus(
         # DECISION_EVENT_TYPES filter first, a veto posted as e.g.
         # type=blocked/status=blocked would be silently dropped and a stale
         # earlier approval would stand -- the exact fail-open T0b prevents.
+        if _is_consensus_clear(status):
+            if not _consensus_block_scope_match(
+                event,
+                task_id=task_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                canonical_scope=scoped,
+            ):
+                continue
+            if agent in recognized_rco_agents:
+                latest_rco_block.pop(agent, None)
+            else:
+                latest_build_block.pop(agent, None)
+            continue
         if _is_consensus_block(status):
             if not _consensus_block_scope_match(
                 event,
@@ -1675,7 +1698,7 @@ def _is_consensus_block(status: str) -> bool:
     if status in CONSENSUS_BLOCKING_STATUSES:
         return True
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    if normalized in CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES:
+    if _is_consensus_clear(status):
         return False
     tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
     if {"changes", "requested"}.issubset(tokens):
@@ -1685,6 +1708,14 @@ def _is_consensus_block(status: str) -> bool:
     if "preflight" in tokens and tokens.intersection(CONSENSUS_BLOCKING_CLEAR_TOKENS):
         return False
     return True
+
+
+def _is_consensus_clear(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    return (
+        normalized in CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES
+        or normalized in CONSENSUS_CHANGES_REQUESTED_CLEAR_STATUSES
+    )
 
 
 def _bridge_peer_gate(

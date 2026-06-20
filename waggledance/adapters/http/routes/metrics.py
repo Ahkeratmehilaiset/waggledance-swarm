@@ -644,6 +644,24 @@ class _WaggleCollector:
             value=_as_bool_float(snapshot.get("last_result_present")),
         )
         yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_last_verifier_ok",
+            "1 if the last receipt sink result reported verifier_report.ok=true.",
+            value=_as_bool_float(snapshot.get("last_verifier_ok")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_last_receipt_count",
+            "Receipt count reported by the last receipt sink result.",
+            value=_as_nonnegative_float(snapshot.get("last_receipt_count")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_verifier_ok_ratio",
+            (
+                "Ratio of successful receipt sink results whose verifier "
+                "report was ok."
+            ),
+            value=_as_finite_float(snapshot.get("verifier_ok_ratio")),
+        )
+        yield GaugeMetricFamily(
             "waggledance_runtime_receipt_default_emission_changed",
             (
                 "1 if this metrics path changed default runtime receipt "
@@ -689,6 +707,21 @@ class _WaggleCollector:
                 "failure_total",
                 "waggledance_runtime_receipt_failure_total",
                 "Runtime receipt sink attempts that raised.",
+            ),
+            (
+                "verifier_ok_total",
+                "waggledance_runtime_receipt_verifier_ok_total",
+                "Runtime receipt sink results with verifier_report.ok=true.",
+            ),
+            (
+                "verifier_not_ok_total",
+                "waggledance_runtime_receipt_verifier_not_ok_total",
+                "Runtime receipt sink results without verifier_report.ok=true.",
+            ),
+            (
+                "receipt_count_total",
+                "waggledance_runtime_receipt_receipt_count_total",
+                "Total receipts reported by runtime receipt sink results.",
             ),
         ):
             yield CounterMetricFamily(

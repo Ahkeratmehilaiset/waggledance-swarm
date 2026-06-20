@@ -261,6 +261,100 @@ def test_changes_requested_after_pass_refuses() -> None:
     )  # pass existed but superseded
 
 
+def test_finding_info_after_pass_does_not_veto() -> None:
+    # finding/info is an advisory note, not a veto: a prior exact-head rco_pass
+    # must stand (the finding/info vetoed_after_pass bug).
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="info",
+            type_="finding",
+            message="advisory governance note after pass; not a veto",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["latest_rco_is_veto"] is False
+    assert result["has_qualifying_rco_pass_at_head"] is True
+
+
+def test_finding_changes_requested_after_pass_still_vetoes() -> None:
+    # Positive control: a real veto-finding (type=finding/changes_requested)
+    # STILL blocks -- the informational exemption must not fail-open.
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="changes_requested",
+            type_="finding",
+            message="real veto raised after review",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
+def test_finding_ambiguous_status_after_pass_still_vetoes_fail_closed() -> None:
+    # Fail-closed control: an ambiguous/unknown finding status (NOT in the tight
+    # informational allowlist, not an approval, not lexically blocking) still
+    # vetoes -- only explicitly-informational statuses are exempted.
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="operator_review_required",
+            type_="finding",
+            message="ambiguous status must remain a veto (fail-closed)",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
+def test_type_blocked_with_info_status_still_vetoes() -> None:
+    # The informational exemption is type=finding only; type=blocked is
+    # semantically a block and vetoes regardless of its status.
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="info",
+            type_="blocked",
+            message="type=blocked is a block regardless of status",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
 def test_pass_present_no_later_veto_ok() -> None:
     events = [
         _rco_event(

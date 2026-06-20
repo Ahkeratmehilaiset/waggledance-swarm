@@ -1084,6 +1084,53 @@ def test_bridge_consensus_resolved_status_resets_prior_same_agent_block(
     assert build_tools["block_index"] is None
 
 
+def test_bridge_consensus_cleared_status_resets_prior_same_agent_block(
+    tmp_path: Path,
+) -> None:
+    # Mirror of the resolved-status reset test for changes_requested_cleared:
+    # "cleared" is a natural veto-lift suffix and must reset the prior same-agent
+    # build/RCO block in the consensus loop (without granting an approval).
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="changes_requested",
+            ts="2026-06-07T17:38:40Z",
+        ),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="done",
+            status="changes_requested_cleared",
+            ts="2026-06-07T17:39:47Z",
+        ),
+        _rco_pass(),
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    build_tools = report["bridge_consensus"]["identities"]["build_tools"]
+
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True
+    assert report["bridge_peer_gate"]["latest_blocking_event"] is None
+    # cleared resets the prior block but is NOT an approval.
+    assert build_tools["block_index"] is None
+    assert build_tools["approved"] is False
+
+
 def test_bridge_consensus_no_changes_requested_text_does_not_clear_real_block(
     tmp_path: Path,
 ) -> None:

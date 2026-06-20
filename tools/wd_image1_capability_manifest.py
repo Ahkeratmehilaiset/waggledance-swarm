@@ -3569,6 +3569,202 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
     }
 
 
+def build_runtime_receipt_settings_sink_smoke(root: Path | str = ROOT) -> dict:
+    """Smoke the default-off settings-to-AutonomyRuntime receipt sink wiring."""
+
+    repo_root = Path(root)
+    required = (
+        "configs/settings.yaml",
+        "waggledance/bootstrap/container.py",
+        "waggledance/core/magma/runtime_summary_receipt.py",
+        "tools/verify_magma_receipt.py",
+    )
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
+    if missing:
+        return {
+            "proof_id": "runtime_receipt_settings_sink_smoke_v1",
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing,
+            "settings_default_enabled": False,
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "paths_returned": False,
+            "payloads_returned": False,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            "proof_id": "runtime_receipt_settings_sink_smoke_v1",
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+            "settings_default_enabled": False,
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "paths_returned": False,
+            "payloads_returned": False,
+        }
+
+    settings_yaml = _load_yaml_mapping(repo_root / "configs/settings.yaml")
+    runtime_receipts_cfg = settings_yaml.get("runtime_receipts")
+    if not isinstance(runtime_receipts_cfg, Mapping):
+        runtime_receipts_cfg = {}
+    settings_default_enabled = runtime_receipts_cfg.get("enabled") is True
+    settings_out_dir = str(
+        runtime_receipts_cfg.get("out_dir") or "data/runtime/runtime_summary_receipts"
+    )
+    settings_evaluation_version = str(
+        runtime_receipts_cfg.get("evaluation_version")
+        or "magma.evaluation_result.v0"
+    )
+
+    from waggledance.adapters.config.settings_loader import WaggleSettings
+    from waggledance.bootstrap.container import Container
+    from waggledance.core.magma.runtime_summary_receipt import (
+        build_handle_query_runtime_summary,
+    )
+
+    default_container = Container(
+        settings=WaggleSettings(profile="TEST", _extras={"runtime_receipts": {}}),
+        stub=True,
+    )
+    default_off_preserved = default_container.runtime_receipt_sink is None
+
+    temp_root = None
+    result: dict[str, Any] = {}
+    configured_sink_callable = False
+    local_receipt_bundle_written = False
+    emitted_text = ""
+    with tempfile.TemporaryDirectory(prefix="wd-image1-runtime-receipt-sink-") as tmp:
+        temp_root = Path(tmp)
+        receipt_root = temp_root / "runtime-receipts"
+        container = Container(
+            settings=WaggleSettings(
+                profile="TEST",
+                _extras={
+                    "runtime_receipts": {
+                        "enabled": True,
+                        "out_dir": str(receipt_root),
+                        "evaluation_version": settings_evaluation_version,
+                    }
+                },
+            ),
+            stub=True,
+        )
+        sink = container.runtime_receipt_sink
+        configured_sink_callable = callable(sink)
+        if configured_sink_callable:
+            summary = build_handle_query_runtime_summary(
+                query="private runtime query DO_NOT_LEAK",
+                context={"operator_note": "context secret DO_NOT_LEAK"},
+                profile="TEST",
+                intent="detect",
+                quality_path="gold",
+                capability_id="detect.fixture",
+                action_id="action:wd-image1-runtime-receipt-settings-sink:001",
+                approved=True,
+                executed=True,
+                needs_approval=False,
+                decision_reason="private decision DO_NOT_LEAK",
+                elapsed_ms=12.34,
+                snapshot_id="snapshot:wd-image1-runtime-receipt-settings-sink:001",
+                case_id="case:wd-image1-runtime-receipt-settings-sink:001",
+                verifier_passed=True,
+                verifier_confidence=0.91,
+                result_keys=["success", "value"],
+                solver_call_trace=[
+                    {
+                        "stage": "solver_call",
+                        "status": "selected",
+                        "intent": "detect",
+                        "capability_id": "detect.fixture",
+                        "selected_index": 0,
+                        "quality_path": "gold",
+                        "execution_boundary": "safe_action_bus",
+                    }
+                ],
+            )
+            result = sink(summary)
+            local_receipt_bundle_written = (
+                receipt_root.exists() and len(list(receipt_root.iterdir())) == 1
+            )
+            emitted_text = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(receipt_root.rglob("*.json"))
+            )
+    temp_artifacts_removed = temp_root is not None and not temp_root.exists()
+
+    result_text = json.dumps(result, sort_keys=True, default=str)
+    result_path_free = (
+        "out_dir" not in result
+        and "manifest" not in result
+        and result.get("paths_returned") is False
+    )
+    result_payload_free = (
+        "DO_NOT_LEAK" not in result_text
+        and "private runtime query" not in result_text
+        and "context secret" not in result_text
+        and "private decision" not in result_text
+        and result.get("payloads_returned") is False
+    )
+    emitted_payload_safe = (
+        "DO_NOT_LEAK" not in emitted_text
+        and "private runtime query" not in emitted_text
+        and "context secret" not in emitted_text
+        and "private decision" not in emitted_text
+    )
+    ok = (
+        settings_default_enabled is False
+        and bool(settings_out_dir)
+        and settings_evaluation_version == "magma.evaluation_result.v0"
+        and default_off_preserved
+        and configured_sink_callable
+        and result.get("receipt_count") == 1
+        and isinstance(result.get("verifier_report"), Mapping)
+        and result["verifier_report"].get("ok") is True
+        and result_path_free
+        and result_payload_free
+        and local_receipt_bundle_written
+        and emitted_payload_safe
+        and temp_artifacts_removed
+    )
+    return {
+        "proof_id": "runtime_receipt_settings_sink_smoke_v1",
+        "ok": ok,
+        "settings_default_enabled": settings_default_enabled,
+        "settings_out_dir": settings_out_dir,
+        "settings_evaluation_version": settings_evaluation_version,
+        "default_off_preserved": default_off_preserved,
+        "configured_sink_callable": configured_sink_callable,
+        "configured_sink_receipt_count": result.get("receipt_count"),
+        "configured_sink_verifier_ok": (
+            isinstance(result.get("verifier_report"), Mapping)
+            and result["verifier_report"].get("ok") is True
+        ),
+        "configured_sink_result_path_free": result_path_free,
+        "configured_sink_result_payload_free": result_payload_free,
+        "local_receipt_bundle_written": local_receipt_bundle_written,
+        "emitted_receipt_payload_safe": emitted_payload_safe,
+        "temp_artifacts_removed": temp_artifacts_removed,
+        "paths_returned": False,
+        "payloads_returned": False,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "configs/settings.yaml keeps runtime receipt emission disabled by "
+            "default, while an explicit operator setting can wire a local "
+            "sanitized MAGMA runtime-summary receipt sink into AutonomyRuntime. "
+            "The configured sink returns path-free verifier metadata only."
+        ),
+    }
+
+
 def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     """Prove SolverRouter emits a privacy-safe selected-solver trace."""
 
@@ -3608,6 +3804,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     query_text_recorded = sample_query in trace_json or '"query"' in trace_json
     receipt_proof = build_solver_trace_magma_receipt_proof(root)
     receipt_metrics_smoke = build_runtime_receipt_metrics_smoke(root)
+    receipt_settings_sink_smoke = build_runtime_receipt_settings_sink_smoke(root)
     ok = (
         result.quality_path == "gold"
         and result.selection.fallback_used is False
@@ -3617,6 +3814,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         and all(item.get("execution_boundary") == "safe_action_bus" for item in trace)
         and receipt_proof.get("ok") is True
         and receipt_metrics_smoke.get("ok") is True
+        and receipt_settings_sink_smoke.get("ok") is True
     )
     return {
         "proof_id": "deterministic_solver_trace_v1",
@@ -3636,6 +3834,10 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             receipt_metrics_smoke.get("ok") is True
         ),
         "runtime_receipt_metrics_smoke": receipt_metrics_smoke,
+        "runtime_receipt_settings_sink_claimed": (
+            receipt_settings_sink_smoke.get("ok") is True
+        ),
+        "runtime_receipt_settings_sink_smoke": receipt_settings_sink_smoke,
         "receipt_metrics": {
             "receipt_count": receipt_proof.get("receipt_count"),
             "solver_call_trace_count": receipt_proof.get("solver_call_trace_count"),
@@ -3643,14 +3845,18 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
                 "solver_call_trace_receipt_bound"
             ),
             "runtime_metric_names": receipt_metrics_smoke.get("metric_names", []),
+            "settings_sink_result_path_free": receipt_settings_sink_smoke.get(
+                "configured_sink_result_path_free"
+            ),
         },
         "external_writes_applied": False,
         "safe_conclusion": (
             "SolverRouter now emits a privacy-safe selected-solver trace "
             "before SafeActionBus execution, and an opt-in MAGMA runtime "
-            "summary receipt can bind that trace. Runtime counters and "
-            "Prometheus metrics can measure configured sink coverage while "
-            "default receipt emission remains a separate proof boundary."
+            "summary receipt can bind that trace. Runtime counters, "
+            "Prometheus metrics, and settings-wired default-off sink wiring "
+            "can measure configured sink coverage while preserving the "
+            "default no-emission path."
         ),
     }
 
@@ -8716,6 +8922,18 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "docs/architecture/HONEYCOMB_SOLVER_SCALING.md",
                 "Architecture doc records solver-first and current gaps.",
             ),
+            (
+                "waggledance/bootstrap/container.py",
+                "Container wires the default-off runtime receipt sink from settings.",
+            ),
+            (
+                "configs/settings.yaml",
+                "Runtime receipt sink configuration is present and disabled by default.",
+            ),
+            (
+                "tests/autonomy/test_runtime_receipt_container_wiring.py",
+                "Regression tests pin default-off and path-free configured sink behavior.",
+            ),
         ),
     )
     magma_evidence = _evidence(
@@ -9623,9 +9841,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Solver-first routing surfaces exist, SolverRouter emits "
                 "a privacy-safe selected-solver trace, and an opt-in MAGMA "
                 "runtime summary receipt can bind that trace. Runtime "
-                "receipt coverage counters and Prometheus metrics now expose "
-                "configured sink coverage while preserving default-off "
-                "receipt emission."
+                "receipt coverage counters, Prometheus metrics, and an "
+                "operator-configured local sink now expose configured "
+                "sink coverage while preserving default-off receipt "
+                "emission and returning only path-free verifier metadata."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
@@ -9637,9 +9856,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Wire a default-off operator-configured runtime summary "
-                "receipt sink from settings into AutonomyRuntime without "
-                "changing default receipt emission."
+                "Render a path-free reviewer handoff summary for the "
+                "configured runtime receipt sink proof without including "
+                "payloads or local paths, without changing default receipt "
+                "emission, or granting runtime authority."
             ),
             proof=solver_trace_proof,
         ),

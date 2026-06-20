@@ -2068,6 +2068,70 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
     assert "production_liveness" not in report
 
 
+@pytest.mark.parametrize(
+    ("activity_type", "activity_status"),
+    [("decision", "reviewed_pending_ci"), ("finding", "info")],
+)
+def test_recent_decision_or_finding_activity_suppresses_liveness_gap_despite_old_requests(
+    activity_type: str,
+    activity_status: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T09:58:00Z",
+            "agent": "operator",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "old-wake-noise",
+            "status": "open",
+            "message": "please wake",
+        },
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-2",
+            "type": "handoff",
+            "task_id": "old-handoff-noise",
+            "status": "review_requested",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-06T10:10:00Z",
+            "agent": "claude-rco-2",
+            "to": "codex-lead-1,codex-tools-1,operator",
+            "type": activity_type,
+            "task_id": "active-rco-work",
+            "status": activity_status,
+            "message": "recent RCO activity",
+        },
+    ]
+
+    recent_report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 15, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+    stale_report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 23, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in recent_report
+    liveness = stale_report["production_liveness"]
+    assert liveness["stalled_agent_count"] == 1
+    stalled = liveness["stalled_agents"][0]
+    assert stalled["agent"] == "claude-rco-2"
+    assert stalled["last_activity_type"] == activity_type
+    assert stalled["last_activity_status"] == activity_status
+    assert stalled["last_activity_task_id"] == "active-rco-work"
+    assert stalled["idle_minutes"] == 13.0
+
+
 def test_registered_uuid_alias_does_not_create_phantom_liveness_lane() -> None:
     events = [
         {

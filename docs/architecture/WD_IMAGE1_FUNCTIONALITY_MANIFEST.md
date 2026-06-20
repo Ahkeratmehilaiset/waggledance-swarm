@@ -291,15 +291,15 @@ the temp artifacts. It does not prove default receipt emission for every
 solver path. The runtime also exposes aggregate receipt coverage counters and
 Prometheus gauges/counters for configured sinks: finalized handle-query paths,
 solver-trace presence, sink-not-configured counts, attempts, successes,
-failures, coverage ratios, and explicit `default_emission_changed=0` /
-`runtime_authority_changed=0` guardrails. These metrics do not export payloads,
-raw queries, local receipt paths, or receipt contents. `Container` now also
-wires a default-off `runtime_receipts` setting into `AutonomyRuntime`: when an
-operator explicitly enables it, the runtime writes sanitized local MAGMA
-runtime-summary receipt bundles and returns only path-free verifier metadata
-to the query result. The repository default remains disabled, and the
-configured sink does not grant runtime authority or make every path receipt
-emitting.
+failures, verifier-ok/not-ok outcomes, receipt counts, coverage ratios, and
+explicit `default_emission_changed=0` / `runtime_authority_changed=0`
+guardrails. These metrics do not export payloads, raw queries, local receipt
+paths, or receipt contents. `Container` now also wires a default-off
+`runtime_receipts` setting into `AutonomyRuntime`: when an operator explicitly
+enables it, the runtime writes sanitized local MAGMA runtime-summary receipt
+bundles and returns only path-free verifier metadata to the query result. The
+repository default remains disabled, and the configured sink does not grant
+runtime authority or make every path receipt emitting.
 
 `magma.share_manifest.v0` is a contract-first cross-instance sharing boundary,
 not default runtime export. It requires `runtime_export_enabled=false`,

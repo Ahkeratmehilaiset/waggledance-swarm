@@ -3236,6 +3236,170 @@ def build_solver_trace_magma_receipt_proof(root: Path | str = ROOT) -> dict:
     }
 
 
+def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
+    """Smoke the default-off runtime receipt coverage counters and metric names."""
+
+    repo_root = Path(root)
+    required = (
+        "waggledance/core/autonomy/runtime.py",
+        "waggledance/adapters/http/routes/metrics.py",
+    )
+    missing = [rel_path for rel_path in required if not (repo_root / rel_path).exists()]
+    metric_names = [
+        "waggledance_runtime_receipt_metrics_up",
+        "waggledance_runtime_receipt_sink_configured",
+        "waggledance_runtime_receipt_coverage_ratio",
+        "waggledance_runtime_receipt_solver_trace_presence_ratio",
+        "waggledance_runtime_receipt_handle_query_finalized_total",
+        "waggledance_runtime_receipt_solver_trace_present_total",
+        "waggledance_runtime_receipt_sink_not_configured_total",
+        "waggledance_runtime_receipt_attempt_total",
+        "waggledance_runtime_receipt_success_total",
+        "waggledance_runtime_receipt_failure_total",
+        "waggledance_runtime_receipt_default_emission_changed",
+        "waggledance_runtime_receipt_runtime_authority_changed",
+    ]
+    if missing:
+        return {
+            "proof_id": "runtime_receipt_metrics_smoke_v1",
+            "ok": False,
+            "blocked_reason": "missing_required_inputs",
+            "missing_inputs": missing,
+            "metric_names": metric_names,
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "payloads_exported_by_metrics": False,
+        }
+
+    resolved_repo_root = repo_root.resolve()
+    resolved_import_root = ROOT.resolve()
+    if resolved_repo_root != resolved_import_root:
+        return {
+            "proof_id": "runtime_receipt_metrics_smoke_v1",
+            "ok": False,
+            "blocked_reason": "non_current_import_root",
+            "missing_inputs": [],
+            "metric_names": metric_names,
+            "inspected_root": str(resolved_repo_root),
+            "import_root": str(resolved_import_root),
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "payloads_exported_by_metrics": False,
+        }
+
+    from waggledance.core.autonomy.runtime import AutonomyRuntime
+    from waggledance.core.capabilities.registry import CapabilityRegistry
+    from waggledance.core.domain.autonomy import (
+        CapabilityCategory,
+        CapabilityContract,
+    )
+
+    class _Selection:
+        def __init__(self, capability: CapabilityContract) -> None:
+            self.selected = [capability]
+
+    class _RouteResult:
+        def __init__(self, capability: CapabilityContract) -> None:
+            self.selection = _Selection(capability)
+            self.quality_path = "gold"
+            self.autonomy_consult = None
+            self.autonomy_served = False
+            self.solver_call_trace = [
+                {
+                    "stage": "solver_call",
+                    "status": "selected",
+                    "intent": "solve",
+                    "capability_id": capability.capability_id,
+                    "selected_index": 0,
+                    "quality_path": "gold",
+                    "execution_boundary": "safe_action_bus",
+                }
+            ]
+
+    def _runtime(runtime_receipt_sink):
+        registry = CapabilityRegistry(load_builtins=False)
+        capability = CapabilityContract(
+            capability_id="solve.receipt_metrics_fixture",
+            category=CapabilityCategory.SOLVE,
+            description="Runtime receipt metrics fixture",
+            success_criteria=["success"],
+        )
+        registry.register(capability)
+        runtime = AutonomyRuntime(
+            capability_registry=registry,
+            enable_persistence=False,
+            runtime_receipt_sink=runtime_receipt_sink,
+        )
+        runtime.solver_router.route = (
+            lambda _intent, _query, _context: _RouteResult(capability)
+        )
+        runtime.action_bus.register_executor(
+            capability.capability_id,
+            lambda _action: {"success": True},
+        )
+        return runtime
+
+    def _sink(summary: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "receipt_summary_key_count": len(summary.keys()),
+            "solver_call_trace_count": summary.get("solver_call_trace_count"),
+        }
+
+    configured_runtime = _runtime(_sink)
+    configured_result = configured_runtime.handle_query(
+        "private runtime receipt metrics query DO_NOT_LEAK",
+        context={"operator_note": "context secret DO_NOT_LEAK"},
+    )
+    configured_snapshot = configured_runtime.runtime_receipt_metrics_snapshot()
+
+    default_runtime = _runtime(None)
+    default_result = default_runtime.handle_query("runtime receipt default off")
+    default_snapshot = default_runtime.runtime_receipt_metrics_snapshot()
+
+    metrics_source = (
+        repo_root / "waggledance/adapters/http/routes/metrics.py"
+    ).read_text(encoding="utf-8")
+    metric_names_defined = all(name in metrics_source for name in metric_names)
+    configured_ok = (
+        configured_result.get("runtime_receipt") is not None
+        and configured_snapshot.get("sink_configured") is True
+        and configured_snapshot.get("handle_query_total") == 1
+        and configured_snapshot.get("solver_trace_present_total") == 1
+        and configured_snapshot.get("attempt_total") == 1
+        and configured_snapshot.get("success_total") == 1
+        and configured_snapshot.get("failure_total") == 0
+        and configured_snapshot.get("coverage_ratio") == 1.0
+        and configured_snapshot.get("solver_trace_presence_ratio") == 1.0
+    )
+    default_ok = (
+        "runtime_receipt" not in default_result
+        and default_snapshot.get("sink_configured") is False
+        and default_snapshot.get("sink_not_configured_total") == 1
+        and default_snapshot.get("attempt_total") == 0
+        and default_snapshot.get("success_total") == 0
+    )
+    ok = configured_ok and default_ok and metric_names_defined
+    return {
+        "proof_id": "runtime_receipt_metrics_smoke_v1",
+        "ok": ok,
+        "metric_names": metric_names,
+        "metric_names_defined": metric_names_defined,
+        "configured_sink_snapshot": configured_snapshot,
+        "default_sink_snapshot": default_snapshot,
+        "configured_sink_success": configured_ok,
+        "default_off_preserved": default_ok,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+        "payloads_exported_by_metrics": False,
+        "external_writes_applied": False,
+        "safe_conclusion": (
+            "AutonomyRuntime now exposes payload-free receipt coverage counters "
+            "for configured sinks and preserves the default-off no-sink path; "
+            "/metrics declares only aggregate counters/gauges."
+        ),
+    }
+
+
 def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     """Prove SolverRouter emits a privacy-safe selected-solver trace."""
 
@@ -3274,6 +3438,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     ]
     query_text_recorded = sample_query in trace_json or '"query"' in trace_json
     receipt_proof = build_solver_trace_magma_receipt_proof(root)
+    receipt_metrics_smoke = build_runtime_receipt_metrics_smoke(root)
     ok = (
         result.quality_path == "gold"
         and result.selection.fallback_used is False
@@ -3282,6 +3447,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         and not query_text_recorded
         and all(item.get("execution_boundary") == "safe_action_bus" for item in trace)
         and receipt_proof.get("ok") is True
+        and receipt_metrics_smoke.get("ok") is True
     )
     return {
         "proof_id": "deterministic_solver_trace_v1",
@@ -3297,19 +3463,25 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         "magma_execution_receipt_claimed": receipt_proof.get("ok") is True,
         "magma_execution_receipt_scope": receipt_proof.get("receipt_scope"),
         "magma_execution_receipt_proof": receipt_proof,
+        "runtime_receipt_metrics_claimed": (
+            receipt_metrics_smoke.get("ok") is True
+        ),
+        "runtime_receipt_metrics_smoke": receipt_metrics_smoke,
         "receipt_metrics": {
             "receipt_count": receipt_proof.get("receipt_count"),
             "solver_call_trace_count": receipt_proof.get("solver_call_trace_count"),
             "solver_call_trace_receipt_bound": receipt_proof.get(
                 "solver_call_trace_receipt_bound"
             ),
+            "runtime_metric_names": receipt_metrics_smoke.get("metric_names", []),
         },
         "external_writes_applied": False,
         "safe_conclusion": (
             "SolverRouter now emits a privacy-safe selected-solver trace "
             "before SafeActionBus execution, and an opt-in MAGMA runtime "
-            "summary receipt can bind that trace. Default receipt emission "
-            "for every runtime path remains a separate proof boundary."
+            "summary receipt can bind that trace. Runtime counters and "
+            "Prometheus metrics can measure configured sink coverage while "
+            "default receipt emission remains a separate proof boundary."
         ),
     }
 
@@ -9276,21 +9448,24 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             safe_statement=(
                 "Solver-first routing surfaces exist, SolverRouter emits "
                 "a privacy-safe selected-solver trace, and an opt-in MAGMA "
-                "runtime summary receipt can bind that trace; default full "
-                "coverage remains a next boundary."
+                "runtime summary receipt can bind that trace. Runtime "
+                "receipt coverage counters and Prometheus metrics now expose "
+                "configured sink coverage while preserving default-off "
+                "receipt emission."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
             evidence=solver_evidence,
             gaps=(
-                "Solver trace receipt binding is currently opt-in through a "
+                "Solver trace receipt binding is still configured through a "
                 "runtime receipt sink, not default for every runtime path.",
                 "The image's 'full MAGMA provenance' wording should wait for "
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Promote the solver trace receipt sink from opt-in proof to "
-                "configured runtime coverage and exposed metrics."
+                "Wire a default-off operator-configured runtime summary "
+                "receipt sink from settings into AutonomyRuntime without "
+                "changing default receipt emission."
             ),
             proof=solver_trace_proof,
         ),

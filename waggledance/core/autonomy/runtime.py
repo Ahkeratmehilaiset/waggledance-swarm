@@ -126,6 +126,14 @@ class AutonomyRuntime:
     ):
         self.profile = profile
         self.runtime_receipt_sink = runtime_receipt_sink
+        self._runtime_receipt_handle_query_total = 0
+        self._runtime_receipt_solver_trace_present_total = 0
+        self._runtime_receipt_sink_not_configured_total = 0
+        self._runtime_receipt_attempt_total = 0
+        self._runtime_receipt_success_total = 0
+        self._runtime_receipt_failure_total = 0
+        self._runtime_receipt_last_solver_trace_count = 0
+        self._runtime_receipt_last_result_present = False
 
         # Core components — let WorldModel use _UNSET sentinel for proper
         # CognitiveGraph lazy-init when persistence is enabled. Dry-run-safe
@@ -440,7 +448,15 @@ class AutonomyRuntime:
         solver_call_trace: list[dict[str, Any]] | None = None,
     ):
         """Emit an opt-in sanitized runtime summary receipt."""
+        self._runtime_receipt_handle_query_total += 1
+        solver_trace_count = len(solver_call_trace or [])
+        self._runtime_receipt_last_solver_trace_count = solver_trace_count
+        if solver_trace_count > 0:
+            self._runtime_receipt_solver_trace_present_total += 1
+
         if self.runtime_receipt_sink is None:
+            self._runtime_receipt_sink_not_configured_total += 1
+            self._runtime_receipt_last_result_present = False
             return None
         from waggledance.core.magma.runtime_summary_receipt import (
             build_handle_query_runtime_summary,
@@ -470,7 +486,40 @@ class AutonomyRuntime:
             result_keys=result_keys,
             solver_call_trace=solver_call_trace,
         )
-        return self.runtime_receipt_sink(summary)
+        self._runtime_receipt_attempt_total += 1
+        try:
+            receipt = self.runtime_receipt_sink(summary)
+        except Exception:
+            self._runtime_receipt_failure_total += 1
+            self._runtime_receipt_last_result_present = False
+            raise
+        self._runtime_receipt_success_total += 1
+        self._runtime_receipt_last_result_present = receipt is not None
+        return receipt
+
+    def runtime_receipt_metrics_snapshot(self) -> Dict[str, Any]:
+        """Return aggregate, payload-free runtime receipt coverage counters."""
+        total = self._runtime_receipt_handle_query_total
+        solver_trace_total = self._runtime_receipt_solver_trace_present_total
+        success_total = self._runtime_receipt_success_total
+        return {
+            "sink_configured": self.runtime_receipt_sink is not None,
+            "handle_query_total": total,
+            "solver_trace_present_total": solver_trace_total,
+            "sink_not_configured_total": self._runtime_receipt_sink_not_configured_total,
+            "attempt_total": self._runtime_receipt_attempt_total,
+            "success_total": success_total,
+            "failure_total": self._runtime_receipt_failure_total,
+            "last_solver_trace_count": self._runtime_receipt_last_solver_trace_count,
+            "last_result_present": self._runtime_receipt_last_result_present,
+            "coverage_ratio": (success_total / total) if total else 0.0,
+            "solver_trace_presence_ratio": (
+                solver_trace_total / total if total else 0.0
+            ),
+            "default_runtime_receipt_emission_changed": False,
+            "runtime_authority_changed": False,
+            "payloads_exported_by_metrics": False,
+        }
 
     def _record_mission_lifecycle_audit(self, event: dict[str, Any]) -> None:
         """Project a mission-queue lifecycle event into MAGMA audit."""

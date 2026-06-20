@@ -62,6 +62,7 @@ class _FakeContainer:
         route_stage_runtime_metrics=None,
         hex_topology_registry=None,
         counterfactual_replay_status=None,
+        autonomy_service=None,
     ) -> None:
         self.hex_neighbor_assist = hex_neighbor_assist
         self.autogrowth_background_ticker = autogrowth_background_ticker
@@ -69,6 +70,20 @@ class _FakeContainer:
         self.route_stage_runtime_metrics = route_stage_runtime_metrics
         self.hex_topology_registry = hex_topology_registry
         self.counterfactual_replay_status = counterfactual_replay_status
+        self.autonomy_service = autonomy_service
+
+
+class _FakeAutonomyService:
+    def __init__(self, runtime) -> None:
+        self._runtime = runtime
+
+
+class _FakeRuntimeReceiptRuntime:
+    def __init__(self, snapshot: dict) -> None:
+        self._snapshot = dict(snapshot)
+
+    def runtime_receipt_metrics_snapshot(self) -> dict:
+        return dict(self._snapshot)
 
 
 class _FakeHexCell:
@@ -214,6 +229,54 @@ def test_metrics_body_contains_hex_mesh_enabled_gauge():
     body = client.get("/metrics").text
 
     assert "waggledance_hex_mesh_enabled 1.0" in body
+
+
+def test_metrics_body_contains_runtime_receipt_coverage_metrics():
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": True}),
+        autonomy_service=_FakeAutonomyService(
+            _FakeRuntimeReceiptRuntime(
+                {
+                    "sink_configured": True,
+                    "handle_query_total": 4,
+                    "solver_trace_present_total": 3,
+                    "sink_not_configured_total": 1,
+                    "attempt_total": 3,
+                    "success_total": 2,
+                    "failure_total": 1,
+                    "last_solver_trace_count": 1,
+                    "last_result_present": True,
+                    "coverage_ratio": 0.5,
+                    "solver_trace_presence_ratio": 0.75,
+                    "default_runtime_receipt_emission_changed": False,
+                    "runtime_authority_changed": False,
+                    "payloads_exported_by_metrics": False,
+                    "private_query": "DO_NOT_LEAK",
+                }
+            )
+        ),
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "waggledance_runtime_receipt_metrics_up 1.0" in body
+    assert "waggledance_runtime_receipt_sink_configured 1.0" in body
+    assert "waggledance_runtime_receipt_coverage_ratio 0.5" in body
+    assert (
+        "waggledance_runtime_receipt_solver_trace_presence_ratio 0.75"
+        in body
+    )
+    assert "waggledance_runtime_receipt_handle_query_finalized_total 4.0" in body
+    assert "waggledance_runtime_receipt_solver_trace_present_total 3.0" in body
+    assert "waggledance_runtime_receipt_sink_not_configured_total 1.0" in body
+    assert "waggledance_runtime_receipt_attempt_total 3.0" in body
+    assert "waggledance_runtime_receipt_success_total 2.0" in body
+    assert "waggledance_runtime_receipt_failure_total 1.0" in body
+    assert "waggledance_runtime_receipt_default_emission_changed 0.0" in body
+    assert "waggledance_runtime_receipt_runtime_authority_changed 0.0" in body
+    assert "DO_NOT_LEAK" not in body
+    assert "private_query" not in body
 
 
 def test_metrics_body_contains_counter_values():

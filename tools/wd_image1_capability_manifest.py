@@ -9147,6 +9147,41 @@ def _hex_upgrade_cross_consistency_bridge_event_template_summary(
     return summary
 
 
+def _hex_upgrade_cross_consistency_bridge_event_template_index_entry(
+    digest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the local index entry for the hex cross-consistency template.
+
+    The builder returns a path-free index entry containing digests, schema refs,
+    and no-authority booleans only. This helper intentionally rebuilds the
+    template from the digest and passes deterministic bytes to the indexer so
+    the manifest never stores the raw bridge-event template itself.
+    """
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template as _build_xcons_tpl,
+    )
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry as _build_xcons_tpl_index,
+    )
+
+    template_report = _build_xcons_tpl(
+        digest=digest if isinstance(digest, Mapping) else {},
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-xcons-digest-bridge-event-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+    )
+    template_bytes = json.dumps(
+        template_report,
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return _build_xcons_tpl_index(
+        bridge_event_template_report=template_report,
+        bridge_event_template_bytes=template_bytes,
+    )
+
+
 _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
     "wd.low_risk_autogrowth_real_loop_proof.v1"
 )
@@ -9738,8 +9773,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Template-only bridge-event renderer for the hex-upgrade cross-consistency digest; no append, payload inclusion, path recording, transport, claim upgrade, or runtime subdivision authority.",
             ),
             (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
+                "Local index entry for the hex-upgrade cross-consistency digest bridge-event template; digest binding only, no payload transport, bridge append, claim upgrade, or runtime subdivision authority.",
+            ),
+            (
                 "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template.py",
                 "Renderer tests prove schema-valid handoff JSON, no-authority axes, path-free output, safe scalar allowlist, and fail-closed unsafe input handling.",
+            ),
+            (
+                "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
+                "Index-entry tests prove digest binding, path-free CLI output, no-authority axes, and fail-closed tamper handling.",
             ),
         ),
     )
@@ -10020,6 +10063,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         _hex_upgrade_cross_consistency_bridge_event_template_summary(
             hex_upgrade_proof["cross_consistency_digest"]
         )
+    )
+    # Path-free local template INDEX ENTRY: binds the cross-consistency digest
+    # bridge-event template to local digests/schema checks only. Built AFTER the hex
+    # ok recompute and NOT folded into ok; measurement-only, no payloads/paths,
+    # bridge writes, transport, claim upgrade, or runtime subdivision authority.
+    hex_upgrade_proof[
+        "cross_consistency_digest_bridge_event_template_index_entry"
+    ] = _hex_upgrade_cross_consistency_bridge_event_template_index_entry(
+        hex_upgrade_proof["cross_consistency_digest"]
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
     low_risk_real_loop_dry_run = build_low_risk_autogrowth_chain_dry_run()
@@ -10581,6 +10633,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "into schema-valid handoff JSON without appending it, "
                 "including payloads, recording paths, transporting artifacts, "
                 "upgrading any claim, or granting runtime subdivision "
+                "authority. A local index entry binds that digest template's "
+                "digests and schema checks without including payloads, "
+                "recording paths, appending bridge events, transporting "
+                "artifacts, upgrading claims, or granting runtime subdivision "
                 "authority."
             ),
             status=_status_for(hex_upgrade_evidence),
@@ -10595,11 +10651,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free, measurement-only local index entry for the "
-                "hex-upgrade cross-consistency digest bridge-event template "
-                "(derived booleans/strict refs only), without appending it, "
-                "including payloads/paths, transporting artifacts, upgrading "
-                "any claim, or granting runtime subdivision authority."
+                "Add a local verifier for the hex-upgrade cross-consistency "
+                "digest bridge-event template index entry without including "
+                "payloads, recording paths, appending bridge events, "
+                "transporting artifacts, upgrading claims, or granting "
+                "runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

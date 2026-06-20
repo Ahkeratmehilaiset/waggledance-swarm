@@ -646,6 +646,43 @@ def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
     assert payload["clear_to_merge"] is True
 
 
+def test_cli_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [
+            _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+            _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        ],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    events_path.write_bytes(
+        b"\xef\xbb\xbf" + events_path.read_bytes()
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "blocked"
+    assert payload["latest_blocking_event"]["status"] == "changes_requested"
+
+
 def test_cli_defaults_to_runtime_bridge_root_env(tmp_path: Path) -> None:
     runtime_bridge = _seed_bridge(
         tmp_path / "runtime",

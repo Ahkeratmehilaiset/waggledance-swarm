@@ -261,6 +261,48 @@ def test_changes_requested_after_pass_refuses() -> None:
     )  # pass existed but superseded
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "changes_requested_concurrence",
+        "changes_requested_resolved",
+        "changes_requested_resolved_ci_green",
+        "changes_requested_resolved_ci_pending",
+        "changes_requested_cleared",
+        "changes_requested_cleared_ci_green",
+        "changes_requested_cleared_ci_pending",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
+        "rco_changes_requested_cleared",
+        "rco_changes_requested_retracted",
+        "rco_changes_requested_withdrawn",
+    ],
+)
+def test_neutral_changes_requested_status_after_pass_does_not_veto(
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status=status,
+            type_="message",
+            message="neutral follow-up; not a veto",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["latest_rco_is_veto"] is False
+
+
 def test_finding_info_after_pass_does_not_veto() -> None:
     # finding/info is an advisory note, not a veto: a prior exact-head rco_pass
     # must stand (the finding/info vetoed_after_pass bug).
@@ -283,6 +325,38 @@ def test_finding_info_after_pass_does_not_veto() -> None:
     assert result["decision"] == "rco_pass_present"
     assert result["latest_rco_is_veto"] is False
     assert result["has_qualifying_rco_pass_at_head"] is True
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "changes_requested_NOT_resolved",
+        "rco_changes_requested_not_cleared",
+    ],
+)
+def test_negated_changes_requested_status_after_pass_still_vetoes(
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status=status,
+            type_="message",
+            message="still blocked; not resolved",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
 
 
 def test_finding_changes_requested_after_pass_still_vetoes() -> None:
@@ -308,6 +382,29 @@ def test_finding_changes_requested_after_pass_still_vetoes() -> None:
     assert result["latest_rco_is_veto"] is True
 
 
+def test_not_blocked_clarification_status_after_pass_does_not_veto() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="rco1_clarify_1283_not_blocked_on_rco2",
+            type_="message",
+            message="clarifying that another RCO is not a hard blocker",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["latest_rco_is_veto"] is False
+
+
 def test_finding_ambiguous_status_after_pass_still_vetoes_fail_closed() -> None:
     # Fail-closed control: an ambiguous/unknown finding status (NOT in the tight
     # informational allowlist, not an approval, not lexically blocking) still
@@ -327,6 +424,32 @@ def test_finding_ambiguous_status_after_pass_still_vetoes_fail_closed() -> None:
         ),
     ]
     result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
+@pytest.mark.parametrize("status", ["blocked_no_fix_yet", "block_without_fix"])
+def test_block_status_with_negation_context_after_pass_still_vetoes(
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status=status,
+            type_="message",
+            message="still blocked",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
     assert result["ok"] is False
     assert result["decision"] == "vetoed_after_pass"
     assert result["latest_rco_is_veto"] is True
@@ -510,6 +633,40 @@ def test_veto_from_other_recognized_rco_blocks_backup_set() -> None:
     assert result["ok"] is False
     assert result["decision"] == "vetoed_after_pass"
     assert result["blocking_rco_agents"] == ["claude-rco-2"]
+
+
+def test_stale_other_rco_veto_before_fresh_pass_does_not_block_rco_slot() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T09:00:00Z",
+            agent="claude-rco-2",
+            status="open",
+            type_="finding",
+            message="initial finding before the current reviewed head",
+        ),
+        _rco_event(
+            ts="2026-06-03T09:10:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at stale head {OTHER_HEAD}",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            agent="claude-rco-1",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["satisfying_rco_agent"] == "claude-rco-1"
+    assert result["blocking_rco_agents"] == []
+    assert result["has_stale_rco_pass_at_other_head"] is True
 
 
 def test_veto_then_fresh_pass_at_head_allows() -> None:

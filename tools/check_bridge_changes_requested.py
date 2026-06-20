@@ -65,25 +65,34 @@ BLOCKING_STATUSES = frozenset(
 )
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
+NON_BLOCKING_BLOCK_PHRASES = frozenset(
+    {
+        "not_blocked",
+        "not_blocking",
+        "not_a_blocker",
+    }
+)
 NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
     {
         "no_changes_requested",
         "no_changes_requested_approved",
     }
 )
-CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
+CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES = (
+    "changes_requested",
+    "rco_changes_requested",
+)
+CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
     {
-        "changes_requested_resolved",
-        "changes_requested_resolved_ci_green",
-        "changes_requested_resolved_ci_pending",
-        "changes_requested_retracted",
-        "changes_requested_withdrawn",
-        # "cleared" is a natural veto-lift suffix alongside resolved/retracted/
-        # withdrawn; without it a peer emitting changes_requested_cleared
-        # false-blocks (the changes+requested token-subset test fires).
-        "changes_requested_cleared",
-        "changes_requested_cleared_ci_green",
-        "changes_requested_cleared_ci_pending",
+        "concurrence",
+        "resolved",
+        "resolved_ci_green",
+        "resolved_ci_pending",
+        "cleared",
+        "cleared_ci_green",
+        "cleared_ci_pending",
+        "retracted",
+        "withdrawn",
     }
 )
 NO_BLOCK_CLEAR_STATUSES = frozenset(
@@ -233,8 +242,8 @@ def check_bridge_clear_to_merge(
 
     A peer is any agent != merging_agent. We scan events for the task_id and
     optional PR number, then record the most recent decision event whose status
-    is in BLOCKING_STATUSES or APPROVAL_STATUSES. If the most recent peer
-    decision is blocking, we refuse. Otherwise we permit.
+    is blocking, approving, or explicitly clears a prior block. If the most
+    recent peer signal is blocking, we refuse. Otherwise we permit.
     """
     try:
         registry = (
@@ -292,6 +301,9 @@ def check_bridge_clear_to_merge(
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
             continue
         if event_type not in {"decision", "rco_review", "finding", "done"}:
+            continue
+        if _is_clear_status(status):
+            peer_signals.pop(agent, None)
             continue
         if _is_approval_status(status):
             peer_signals[agent] = (index, "approval", event)
@@ -368,19 +380,50 @@ def _is_no_block_status(status: str) -> bool:
     return normalized in NO_BLOCK_CLEAR_STATUSES
 
 
+def _has_non_blocking_block_phrase(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if (
+        normalized.startswith(("block_", "blocked_", "rco_block"))
+        or "block_requested" in normalized
+        or "changes_requested" in normalized
+    ):
+        return False
+    bounded = f"_{normalized}_"
+    return any(f"_{phrase}_" in bounded for phrase in NON_BLOCKING_BLOCK_PHRASES)
+
+
 def _is_clear_status(status: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    return (
-        normalized in NO_CHANGES_REQUESTED_CLEAR_STATUSES
-        or normalized in CHANGES_REQUESTED_CLEAR_STATUSES
-        or normalized in NO_BLOCK_CLEAR_STATUSES
-    )
+    if normalized in NO_CHANGES_REQUESTED_CLEAR_STATUSES:
+        return True
+    if normalized in NO_BLOCK_CLEAR_STATUSES:
+        return True
+    for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
+        if not normalized.startswith(prefix + "_"):
+            continue
+        suffix = normalized[len(prefix) + 1 :]
+        return suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES
+    return False
 
 
 def _is_blocking_status(status: str) -> bool:
     if status in BLOCKING_STATUSES:
         return True
     if _is_clear_status(status):
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
+        if normalized == prefix:
+            return True
+        if not normalized.startswith(prefix + "_"):
+            continue
+        suffix = normalized[len(prefix) + 1 :]
+        if not suffix:
+            return True
+        if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
+            return False
+        return True
+    if _has_non_blocking_block_phrase(status):
         return False
     tokens = _status_tokens(status)
     if {"changes", "requested"}.issubset(tokens):

@@ -286,6 +286,131 @@ def test_prefixed_changes_requested_status_blocks() -> None:
     assert result["latest_blocking_event"]["status"] == "rco_changes_requested_pr530"
 
 
+def test_concurrence_changes_requested_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T03:00:00Z",
+            "codex",
+            "finding",
+            "changes_requested_concurrence",
+            task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        merging_agent="codex-tools-1",
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
+def test_changes_requested_resolution_statuses_are_non_blocking() -> None:
+    events = [
+        _event(
+            "2026-06-19T03:00:00Z",
+            "codex",
+            "decision",
+            "changes_requested_resolved",
+        ),
+        _event(
+            "2026-06-19T03:01:00Z",
+            "codex",
+            "decision",
+            "rco_changes_requested_cleared",
+            task_id="T",
+        ),
+        _event(
+            "2026-06-19T03:02:00Z",
+            "codex",
+            "decision",
+            "changes_requested_retracted",
+            task_id="T",
+        ),
+        _event(
+            "2026-06-19T03:03:00Z",
+            "codex",
+            "decision",
+            "rco_changes_requested_withdrawn",
+            task_id="T",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
+def test_no_changes_requested_supersedes_same_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T08:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-06-19T08:01:00Z",
+            "claude-rco-1",
+            "decision",
+            "no_changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-tools-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+
+
+def test_changes_requested_clear_status_supersedes_same_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T08:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-06-19T08:01:00Z",
+            "claude-rco-1",
+            "decision",
+            "rco_changes_requested_cleared",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-tools-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+
+
+def test_clear_status_does_not_supersede_other_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T08:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-06-19T08:01:00Z",
+            "claude-rco-2",
+            "decision",
+            "no_changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-tools-1"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-1"
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+
+
 def test_changes_requested_clear_status_still_blocks() -> None:
     events = [
         _event(
@@ -574,6 +699,28 @@ def test_no_block_reemit_required_status_does_not_block() -> None:
     assert result["clear_to_merge"] is True
     assert result["latest_blocking_event"] is None
     assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
+def test_not_blocked_clarification_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-19T09:57:38Z",
+            "claude-rco-1",
+            "message",
+            "rco1_clarify_1283_not_blocked_on_rco2",
+            task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="wd/security/bridge-changes-requested-freetext-classifier-20260619",
+        merging_agent="codex-lead-1",
+        pr_number=1283,
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
 
 
 def test_no_block_text_does_not_downgrade_real_blocking_status() -> None:

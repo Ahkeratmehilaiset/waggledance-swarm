@@ -316,6 +316,10 @@ runtime:
   compatibility_mode: false
   shadow_mode: true
   canary_enabled: true
+runtime_receipts:
+  enabled: false
+  out_dir: data/runtime/runtime_summary_receipts
+  evaluation_version: magma.evaluation_result.v0
 continuity:
   heartbeat_seconds: 120
   continuity_floor_enabled: true

@@ -209,6 +209,28 @@ def test_runtime_receipt_metrics_prefer_top_level_receipt_count(
     assert metrics["verifier_ok_ratio"] == 0.0
 
 
+def test_runtime_receipt_metrics_do_not_count_unverified_fallback_receipts(
+    tmp_path: Path,
+) -> None:
+    runtime, _reports = _runtime_with_receipt_sink(tmp_path)
+
+    runtime.runtime_receipt_sink = lambda _summary: {
+        "verifier_report": {"ok": False, "receipt_count": 1},
+    }
+
+    result = runtime.handle_query("unverified fallback receipt count")
+
+    assert result["runtime_receipt"]["verifier_report"]["ok"] is False
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["success_total"] == 1
+    assert metrics["verifier_ok_total"] == 0
+    assert metrics["verifier_not_ok_total"] == 1
+    assert metrics["receipt_count_total"] == 0
+    assert metrics["last_verifier_ok"] is False
+    assert metrics["last_receipt_count"] == 0
+    assert metrics["verifier_ok_ratio"] == 0.0
+
+
 def test_handle_query_without_runtime_receipt_sink_records_default_off_metrics() -> None:
     registry = CapabilityRegistry(load_builtins=False)
     capability = CapabilityContract(

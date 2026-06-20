@@ -153,6 +153,35 @@ def test_write_claim_requires_scope_and_returns_error(tmp_path: Path, capsys) ->
     assert "write claims require" in report["errors"][0]
 
 
+def test_claim_splits_comma_separated_write_scope(tmp_path: Path, capsys) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "task-001",
+        "--summary",
+        "edit files",
+        "--mode",
+        "write",
+        "--write-scope",
+        "tools/foo.py, tests/bar.py,, tools/foo.py",
+        "--write-scope",
+        "docs/readme.md",
+    )
+
+    assert exit_code == 0
+    assert report["claim"]["write_scope"] == [
+        "tools/foo.py",
+        "tests/bar.py",
+        "docs/readme.md",
+    ]
+
+
 def test_check_overlap_reports_conflicting_write_claim(tmp_path: Path, capsys) -> None:
     bridge = tmp_path / ".agent-bridge"
     _run(
@@ -183,6 +212,85 @@ def test_check_overlap_reports_conflicting_write_claim(tmp_path: Path, capsys) -
     assert report["decision"] == "scope_overlap"
     assert len(report["claims"]) == 1
     assert report["claims"][0]["task_id"] == "task-001"
+
+
+def test_check_overlap_splits_comma_separated_write_scope(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "task-001",
+        "--summary",
+        "edit tools tree",
+        "--mode",
+        "write",
+        "--write-scope",
+        "docs/readme.md, tools/foo.py",
+    )
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "check-overlap",
+        "--write-scope",
+        "tests/bar.py, tools/foo.py",
+    )
+
+    assert exit_code == 0
+    assert report["decision"] == "scope_overlap"
+    assert len(report["claims"]) == 1
+    assert report["claims"][0]["task_id"] == "task-001"
+
+
+def test_check_overlap_normalizes_legacy_literal_comma_claim_scope(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    (claims_dir / "legacy-task.json").write_text(
+        json.dumps(
+            {
+                "agent": "codex-1",
+                "task_id": "legacy-task",
+                "summary": "legacy literal comma scope",
+                "mode": "write",
+                "write_scope": ["tools/foo.py, tests/bar.py"],
+                "run_id": "legacy-run",
+                "claimed_at_utc": "2026-06-19T20:00:00Z",
+                "last_heartbeat_utc": "2026-06-19T20:00:00Z",
+                "lease_seconds": 900,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code, report = _run(capsys, "--bridge-root", str(bridge), "list")
+    assert exit_code == 0
+    assert report["claims"][0]["write_scope"] == ["tools/foo.py", "tests/bar.py"]
+
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "check-overlap",
+        "--write-scope",
+        "tests/bar.py",
+    )
+
+    assert exit_code == 0
+    assert report["decision"] == "scope_overlap"
+    assert len(report["claims"]) == 1
+    assert report["claims"][0]["task_id"] == "legacy-task"
 
 
 def test_heartbeat_refreshes_claim(tmp_path: Path, capsys) -> None:

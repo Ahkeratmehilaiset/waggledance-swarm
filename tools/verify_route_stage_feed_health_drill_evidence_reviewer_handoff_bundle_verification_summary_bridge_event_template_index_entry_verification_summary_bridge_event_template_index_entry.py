@@ -574,4 +574,3 @@ def _assert_no_forbidden_output(text: str) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

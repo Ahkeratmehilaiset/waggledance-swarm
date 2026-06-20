@@ -71,6 +71,15 @@ NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
         "no_changes_requested_approved",
     }
 )
+CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
+    {
+        "changes_requested_resolved",
+        "changes_requested_resolved_ci_green",
+        "changes_requested_resolved_ci_pending",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
+    }
+)
 NO_BLOCK_CLEAR_STATUSES = frozenset(
     {
         "lead_no_blocker_rco_pending",
@@ -257,6 +266,12 @@ def check_bridge_clear_to_merge(
         # register regardless of the event type used, so a block posted as
         # e.g. type=blocked cannot be silently dropped by the type filter and
         # let a stale approval stand. Approvals stay type-restricted.
+        if _is_clear_status(status):
+            if event_type in {"decision", "rco_review", "finding", "done", "test"}:
+                existing = peer_signals.get(agent)
+                if existing is None or existing[1] != "approval":
+                    peer_signals[agent] = (index, "clear", event)
+            continue
         if _is_blocking_status(status):
             peer_signals[agent] = (index, "block", event)
             continue
@@ -339,10 +354,19 @@ def _is_no_block_status(status: str) -> bool:
     return normalized in NO_BLOCK_CLEAR_STATUSES
 
 
+def _is_clear_status(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    return (
+        normalized in NO_CHANGES_REQUESTED_CLEAR_STATUSES
+        or normalized in CHANGES_REQUESTED_CLEAR_STATUSES
+        or normalized in NO_BLOCK_CLEAR_STATUSES
+    )
+
+
 def _is_blocking_status(status: str) -> bool:
     if status in BLOCKING_STATUSES:
         return True
-    if _is_no_changes_requested_status(status) or _is_no_block_status(status):
+    if _is_clear_status(status):
         return False
     tokens = _status_tokens(status)
     if {"changes", "requested"}.issubset(tokens):
@@ -380,7 +404,7 @@ def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
 def _read_events(events_path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line_number, line in enumerate(
-        events_path.read_text(encoding="utf-8").splitlines(), start=1
+        events_path.read_text(encoding="utf-8-sig").splitlines(), start=1
     ):
         if not line.strip():
             continue
@@ -390,6 +414,8 @@ def _read_events(events_path: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"invalid JSON in bridge events at line {line_number}: {exc.msg}"
             ) from exc
+        if event is None:
+            continue
         if not isinstance(event, dict):
             raise ValueError(
                 f"invalid bridge event at line {line_number}: event must be a JSON object"

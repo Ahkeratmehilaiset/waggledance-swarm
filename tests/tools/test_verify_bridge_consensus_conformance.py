@@ -9,8 +9,9 @@ refuse_case and allow_case using keyword args (events=, task_id=, head_sha=).
 - For every allow_case: asserts result['ok'] is True and result['decision'] == "bridge_consensus_verified".
 
 The corpus enumerates the exact REFUSE set (2-of-3 missing any identity; duplicate/self-approving;
-lead/tools not head-bound via absent sha in message; stale/different head; wrong agent identity;
-rco veto changes_requested/finding/blocked from claude-rco-1; build status not in BUILD_CONSENSUS_STATUSES)
+author-as-own-reviewer by lead/tools/RCO; lead/tools not head-bound via absent sha in message;
+stale/different head; wrong agent identity; rco veto changes_requested/finding/blocked from claude-rco-1;
+build status not in BUILD_CONSENSUS_STATUSES)
 and ALLOW set (three distinct, head-bound via message, correct statuses, correct identities, no later veto).
 
 This locks the autonomy safety property of the 3-identity head-bound bridge-consensus (CLAUDE.md Rule 9a)
@@ -64,6 +65,8 @@ REQUIRED_REFUSE_CASE_NAMES = {
     "rco_veto_changes_requested_after_pass",
     "rco_veto_blocked_type_after_pass",
     "build_status_not_in_BUILD_CONSENSUS_STATUSES",
+    "author_lead_self_build_rejected",
+    "author_tools_self_build_rejected",
     "author_rco_self_pass_rejected",
     "other_recognized_rco_veto_blocks_pass",
 }
@@ -141,7 +144,7 @@ def test_refuse_case_is_refused_by_verify(case: dict):
     events = _events_with_agent_uuids(case["events"])
     task_id = case["task_id"]
     head_sha = case["head"]
-    author_agent = case.get("author_agent", "codex-lead-1")
+    author_agent = case.get("author_agent", "fable-5")
     expected = case["expected"]
 
     # Drive the REAL verify_bridge_consensus with keyword args only (no FS, no network, deterministic)
@@ -162,7 +165,7 @@ def test_allow_case_is_allowed_by_verify(case: dict):
     events = _events_with_agent_uuids(case["events"])
     task_id = case["task_id"]
     head_sha = case["head"]
-    author_agent = case.get("author_agent", "codex-lead-1")
+    author_agent = case.get("author_agent", "fable-5")
     expected = case["expected"]
 
     # Drive the REAL verify_bridge_consensus with keyword args only

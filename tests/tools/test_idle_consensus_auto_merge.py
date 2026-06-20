@@ -33,7 +33,7 @@ def _status(**overrides) -> dict:
         "base_sha": BASE,
         "title": "Idle consensus follow-up",
         "mergeable": "clean",
-        "author_agent": "codex-lead-1",
+        "author_agent": "claude-rco-2",
         "operator_approved": False,
         "receipt_verified": True,
         "changed_paths": ["tools/idle_daily_summary.py"],
@@ -166,6 +166,32 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
     assert report["decision"] == "auto_merged"
     assert report["external_effect"] is True
     assert report["auto_merge_event_payload"]["auto_merged"] is True
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
+
+
+def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    events_path = _events_path(tmp_path, [_rco_pass()])
+    events_path.write_bytes(b"\xef\xbb\xbf" + events_path.read_bytes())
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="abcdef\n")
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=events_path,
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert len(calls) == 1
+    assert report["decision"] == "auto_merged"
     assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
 
 
@@ -615,6 +641,63 @@ def test_bridge_consensus_accepts_exact_head_payload_alias(tmp_path: Path) -> No
     assert report["bridge_consensus"]["rco_pass_ref"]["agent"] == "claude-rco-1"
 
 
+@pytest.mark.parametrize(
+    ("author_agent", "role"),
+    [
+        ("codex-lead-1", "build_lead"),
+        ("codex-tools-1", "build_tools"),
+    ],
+)
+def test_bridge_consensus_rejects_build_author_self_review(
+    tmp_path: Path,
+    author_agent: str,
+    role: str,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="decision",
+            status="rco_pass",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {"payload": {"pr": 477, "exact_head": HEAD}},
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(author_agent=author_agent),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    identity = report["bridge_consensus"]["identities"][role]
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_consensus"]["ok"] is False
+    assert identity["eligible"] is False
+    assert identity["approved"] is False
+    assert identity["self_approval_ignored"] is True
+    assert any(
+        "author_agent cannot satisfy its own reviewer slot" in reason
+        for reason in report["bridge_consensus"]["reasons"]
+    )
+
+
 def test_bridge_consensus_accepts_exact_head_alias_with_stale_legacy_head_key(
     tmp_path: Path,
 ) -> None:
@@ -912,6 +995,93 @@ def test_bridge_consensus_allows_no_changes_requested_approved_status(
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["bridge_peer_gate"]["clear_to_merge"] is True
     assert report["bridge_consensus"]["ok"] is True
+
+
+def test_bridge_consensus_allows_changes_requested_resolved_status(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="done",
+            status="changes_requested_resolved_ci_pending",
+            ts="2026-06-07T17:39:47Z",
+        ),
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True
+    assert report["bridge_consensus"]["ok"] is True
+
+
+def test_bridge_consensus_resolved_status_resets_prior_same_agent_block(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="changes_requested",
+            ts="2026-06-07T17:38:40Z",
+        ),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="done",
+            status="changes_requested_resolved_ci_pending",
+            ts="2026-06-07T17:39:47Z",
+        ),
+        _rco_pass(),
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    build_tools = report["bridge_consensus"]["identities"]["build_tools"]
+
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True
+    assert report["bridge_peer_gate"]["latest_blocking_event"] is None
+    assert report["bridge_consensus"]["ok"] is False
+    assert build_tools["approved"] is False
+    assert build_tools["approval_index"] is None
+    assert build_tools["block_index"] is None
 
 
 def test_bridge_consensus_no_changes_requested_text_does_not_clear_real_block(

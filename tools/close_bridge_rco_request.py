@@ -322,6 +322,8 @@ def _read_events(events_path: Path) -> list[dict[str, Any]]:
                 ),
                 "invalid_events_file",
             ) from exc
+        if event is None:
+            continue
         if not isinstance(event, dict):
             raise CloseRcoError(
                 (

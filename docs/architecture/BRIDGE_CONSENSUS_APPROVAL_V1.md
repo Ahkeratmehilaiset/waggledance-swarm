@@ -32,7 +32,11 @@ missing, duplicated, forged, or stale signal fails closed to
 
 1. **Build consensus** — two distinct verified identities, the lead
    (`codex-lead-1`) and the tools/impl peer (`codex-tools-1`), both concur on
-   the change. **Identity matching is head-bound, not label-bound (2026-06-05):**
+   the change. The concurring build identity **must not be the PR author**:
+   a lead-authored PR cannot satisfy the build-lead slot with the lead's own
+   event, and a tools-authored PR cannot satisfy the build-tools slot with the
+   tools agent's own event. **Identity matching is head-bound, not label-bound
+   (2026-06-05):**
    a `build_consensus_pass` event counts for a PR when its canonical PR scope
    matches and the event still binds the PR's exact head SHA, or when a
    descriptive `task_id` carries a structured head field (`payload.head`,

@@ -149,7 +149,8 @@ def claim_task(
         raise WorkQueueError("summary required")
     if mode not in ALLOWED_MODES:
         raise WorkQueueError(f"mode must be one of {ALLOWED_MODES}, got {mode!r}")
-    if mode == "write" and not write_scope:
+    normalized_write_scope = _normalize_write_scope_entries(write_scope)
+    if mode == "write" and not normalized_write_scope:
         raise WorkQueueError("write claims require at least one write_scope path")
     if lease_seconds <= 0:
         raise WorkQueueError("lease_seconds must be positive")
@@ -175,7 +176,7 @@ def claim_task(
             claim
             for claim in check_scope_overlap(
                 bridge_root=bridge,
-                write_scope=write_scope,
+                write_scope=normalized_write_scope,
             )
             if claim.task_id != task_id
         ]
@@ -194,7 +195,7 @@ def claim_task(
         task_id=task_id,
         summary=summary.strip(),
         mode=mode,
-        write_scope=tuple(write_scope),
+        write_scope=normalized_write_scope,
         run_id=run_id,
         claimed_at_utc=timestamp,
         last_heartbeat_utc=timestamp,
@@ -451,16 +452,21 @@ def check_scope_overlap(
     write_scope: Sequence[str] = (),
 ) -> list[Claim]:
     """Return active write-mode claims that overlap with the given write_scope."""
-    if not write_scope:
+    normalized_scope = _normalize_write_scope_entries(write_scope)
+    if not normalized_scope:
         return []
-    normalized_request = {_normalize_scope_entry(s) for s in write_scope if s}
+    normalized_request = {_normalize_scope_entry(s) for s in normalized_scope if s}
     if not normalized_request:
         return []
     overlapping: list[Claim] = []
     for claim in list_claims(bridge_root=bridge_root):
         if claim.mode != "write":
             continue
-        existing_scope = {_normalize_scope_entry(s) for s in claim.write_scope if s}
+        existing_scope = {
+            _normalize_scope_entry(s)
+            for s in _normalize_write_scope_entries(claim.write_scope)
+            if s
+        }
         if any(
             _scope_entries_overlap(existing, requested)
             for existing in existing_scope
@@ -511,6 +517,20 @@ def _normalize_scope_entry(scope: str) -> str:
     return scope.replace("\\", "/").strip("/").lower()
 
 
+def _normalize_write_scope_entries(values: Sequence[object]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    source = (values,) if isinstance(values, str) else values
+    for value in source:
+        for item in str(value).split(","):
+            scope = item.strip()
+            if not scope or scope in seen:
+                continue
+            seen.add(scope)
+            normalized.append(scope)
+    return tuple(normalized)
+
+
 def _scope_entries_overlap(left: str, right: str) -> bool:
     if not left or not right:
         return False
@@ -533,7 +553,7 @@ def _read_claim_file(path: Path) -> Claim:
         task_id=str(data.get("task_id", "")),
         summary=str(data.get("summary", "")),
         mode=str(data.get("mode", "read-only")),
-        write_scope=tuple(str(s) for s in data.get("write_scope", []) if s),
+        write_scope=_normalize_write_scope_entries(data.get("write_scope", [])),
         run_id=str(data.get("run_id", "")),
         claimed_at_utc=str(data.get("claimed_at_utc", "")),
         last_heartbeat_utc=str(data.get("last_heartbeat_utc", "")),

@@ -39,6 +39,7 @@ from tools.wd_image1_capability_manifest import (
 from tools.wd_image1_capability_manifest import build_deterministic_solver_trace_proof
 from tools.wd_image1_capability_manifest import build_future_scale_axis_scorecard
 from tools.wd_image1_capability_manifest import build_hexagonal_upgrade_proof
+from tools.wd_image1_capability_manifest import build_runtime_receipt_metrics_smoke
 from tools.wd_image1_capability_manifest import (
     build_hexagonal_upgrade_runtime_smoke,
 )
@@ -358,6 +359,19 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
         "opt_in_handle_query_runtime_summary"
     )
     assert proof["magma_execution_receipt_proof"]["ok"] is True
+    assert proof["runtime_receipt_metrics_claimed"] is True
+    assert proof["runtime_receipt_metrics_smoke"]["ok"] is True
+    assert (
+        proof["runtime_receipt_metrics_smoke"][
+            "default_runtime_receipt_emission_changed"
+        ]
+        is False
+    )
+    assert proof["runtime_receipt_metrics_smoke"]["runtime_authority_changed"] is False
+    assert (
+        "waggledance_runtime_receipt_coverage_ratio"
+        in proof["runtime_receipt_metrics_smoke"]["metric_names"]
+    )
     assert (
         proof["magma_execution_receipt_proof"]["solver_call_trace_receipt_bound"]
         is True
@@ -365,12 +379,30 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
     assert (
         proof["magma_execution_receipt_proof"]["solver_call_trace_privacy_safe"] is True
     )
-    assert proof["receipt_metrics"] == {
-        "receipt_count": 1,
-        "solver_call_trace_count": 1,
-        "solver_call_trace_receipt_bound": True,
-    }
+    assert proof["receipt_metrics"]["receipt_count"] == 1
+    assert proof["receipt_metrics"]["solver_call_trace_count"] == 1
+    assert proof["receipt_metrics"]["solver_call_trace_receipt_bound"] is True
+    assert (
+        "waggledance_runtime_receipt_success_total"
+        in proof["receipt_metrics"]["runtime_metric_names"]
+    )
     assert proof["external_writes_applied"] is False
+
+
+def test_runtime_receipt_metrics_smoke_preserves_default_off_boundary() -> None:
+    smoke = build_runtime_receipt_metrics_smoke(ROOT)
+
+    assert smoke["ok"] is True
+    assert smoke["metric_names_defined"] is True
+    assert smoke["configured_sink_success"] is True
+    assert smoke["default_off_preserved"] is True
+    assert smoke["configured_sink_snapshot"]["sink_configured"] is True
+    assert smoke["configured_sink_snapshot"]["success_total"] == 1
+    assert smoke["default_sink_snapshot"]["sink_configured"] is False
+    assert smoke["default_sink_snapshot"]["sink_not_configured_total"] == 1
+    assert smoke["default_runtime_receipt_emission_changed"] is False
+    assert smoke["runtime_authority_changed"] is False
+    assert smoke["payloads_exported_by_metrics"] is False
 
 
 def test_deterministic_solver_trace_proof_blocks_foreign_root(
@@ -2282,7 +2314,14 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["ok"] is True
     assert capability["proof"]["selected_solver_ids"] == ["solve.math"]
     assert capability["proof"]["magma_execution_receipt_claimed"] is True
+    assert capability["proof"]["runtime_receipt_metrics_claimed"] is True
     assert "opt-in MAGMA" in capability["safe_statement"]
+    assert "Prometheus metrics" in capability["safe_statement"]
+    assert "default-off" in capability["safe_statement"]
+    assert "operator-configured" in capability["next_smallest_pr"]
+    assert "without changing default receipt emission" in (
+        capability["next_smallest_pr"]
+    )
     assert report["summary"]["proofs_ok"] is True
 
 

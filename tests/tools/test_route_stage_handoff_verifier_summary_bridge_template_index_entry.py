@@ -25,6 +25,7 @@ from tools.build_route_stage_handoff_verifier_summary_bridge_template_index_entr
     TEMPLATE_ARTIFACT_ID,
     TemplateIndexEntryError,
     build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry,
+    _safe_warning_token_list,
 )
 
 
@@ -327,6 +328,14 @@ def test_route_stage_handoff_bundle_verifier_summary_bridge_event_template_index
     for path in paths.values():
         assert path.name not in combined
     assert not any(marker in combined for marker in FORBIDDEN_OUTPUT_SNIPPETS)
+
+
+def test_route_stage_handoff_bundle_verifier_summary_bridge_event_template_index_entry_redacts_bare_warning_filename() -> None:
+    warnings = _safe_warning_token_list(["evidence.json", "warning_code"])
+    serialized = json.dumps({"warnings": warnings}, sort_keys=True)
+
+    assert warnings == ["invalid_warning_token", "warning_code"]
+    assert "evidence.json" not in serialized
 
 
 def _artifact_set() -> dict[str, dict]:

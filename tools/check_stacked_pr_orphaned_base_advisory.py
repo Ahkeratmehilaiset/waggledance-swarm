@@ -132,7 +132,12 @@ def _git_merge_tree_conflict(base_sha: str, head_sha: str) -> bool:
     return "<<<<<<<" in (result.stdout or "")
 
 
-def _open_prs(repo: str) -> list[dict[str, Any]]:
+def _open_prs(repo: str) -> list[dict[str, Any]] | None:
+    """Return open PRs, or None if DISCOVERY failed.
+
+    None (gh error / malformed output) is distinct from [] (gh succeeded, zero
+    open PRs) so the caller never reports a discovery failure as a clean scan.
+    """
     try:
         result = subprocess.run(
             [
@@ -153,9 +158,9 @@ def _open_prs(repo: str) -> list[dict[str, Any]]:
             check=True,
         )
         data = json.loads(result.stdout or "[]")
-        return [dict(item) for item in data] if isinstance(data, list) else []
+        return [dict(item) for item in data] if isinstance(data, list) else None
     except Exception:
-        return []
+        return None
 
 
 def _current_main_sha(repo: str) -> str:
@@ -203,16 +208,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    discovery_errors: list[str] = []
     main_sha = (args.main_sha or "").strip() or _current_main_sha(args.repo)
+    if not main_sha:
+        discovery_errors.append("could not resolve current main SHA (gh api failure)")
     prs = _open_prs(args.repo)
+    if prs is None:
+        discovery_errors.append("could not list open PRs (gh failure)")
+        prs = []
     merge_tree = None if args.no_merge_tree else _git_merge_tree_conflict
-    advisories = classify_open_pr_base_hazards(
-        prs, main_sha, _git_is_ancestor, merge_tree
+    # Only classify when discovery SUCCEEDED. A discovery failure must NEVER be
+    # reported as a clean scan -- it saw no evidence, not "no hazards".
+    advisories = (
+        []
+        if discovery_errors
+        else classify_open_pr_base_hazards(
+            prs, main_sha, _git_is_ancestor, merge_tree
+        )
     )
+    decision = "discovery_failed" if discovery_errors else "scanned"
     if args.json:
         print(
             json.dumps(
                 {
+                    "decision": decision,
+                    "discovery_errors": discovery_errors,
                     "main_sha": main_sha,
                     "open_pr_count": len(prs),
                     "advisories": advisories,
@@ -221,6 +241,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 indent=2,
                 sort_keys=True,
             )
+        )
+    elif discovery_errors:
+        print(
+            "DISCOVERY FAILED (cannot certify clean; not a scan result): "
+            + "; ".join(discovery_errors)
         )
     elif not advisories:
         print("OK: no open PRs with orphaned base / merge-tree conflict vs main.")

@@ -121,3 +121,47 @@ def test_main_cli_is_advisory_exit_zero(tmp_path, monkeypatch, capsys) -> None:
     assert out["advisory_count"] == 1
     assert out["advisories"][0]["number"] == 1307
     assert "orphaned_base" in out["advisories"][0]["hazards"]
+
+
+def test_main_discovery_failed_main_sha_surfaced(monkeypatch, capsys) -> None:
+    # main SHA discovery fails (gh api returns empty) -> surfaced as
+    # discovery_failed, NOT a clean scan.
+    import tools.check_stacked_pr_orphaned_base_advisory as mod
+
+    monkeypatch.setattr(mod, "_current_main_sha", lambda repo: "")
+    monkeypatch.setattr(mod, "_open_prs", lambda repo: [])
+    rc = main(["--json"])
+    assert rc == 0  # warn-only
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == "discovery_failed"
+    assert any("main SHA" in e for e in out["discovery_errors"])
+    assert out["advisory_count"] == 0  # but NOT presented as a clean scan
+
+
+def test_main_discovery_failed_open_prs_surfaced(monkeypatch, capsys) -> None:
+    # gh pr list fails (None, distinct from []) -> surfaced as discovery_failed.
+    import tools.check_stacked_pr_orphaned_base_advisory as mod
+
+    monkeypatch.setattr(mod, "_current_main_sha", lambda repo: MAIN)
+    monkeypatch.setattr(mod, "_open_prs", lambda repo: None)
+    rc = main(["--json", "--no-merge-tree"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == "discovery_failed"
+    assert any("open PRs" in e for e in out["discovery_errors"])
+
+
+def test_main_clean_scan_is_decision_scanned(monkeypatch, capsys) -> None:
+    # Discovery OK + no hazards -> decision 'scanned' (distinct from discovery_failed).
+    import tools.check_stacked_pr_orphaned_base_advisory as mod
+
+    monkeypatch.setattr(mod, "_current_main_sha", lambda repo: MAIN)
+    monkeypatch.setattr(
+        mod, "_open_prs", lambda repo: [_pr(70, "feat/clean", "main", MAIN)]
+    )
+    rc = main(["--json", "--no-merge-tree"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == "scanned"
+    assert out["discovery_errors"] == []
+    assert out["advisory_count"] == 0

@@ -279,6 +279,12 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
         smoke["latency_feed_drill_evidence_reviewer_handoff_summary_supported"]
         is True
     )
+    assert (
+        smoke[
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_supported"
+        ]
+        is True
+    )
     assert smoke["latency_feed_state_visible"] is True
     assert smoke["alert_thresholds_documented"] is True
     assert smoke["runbook_path"] == ("docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md")
@@ -1111,6 +1117,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "tests/tools/test_verify_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry.py",
         "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
         "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry.py",
+        "tools/build_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
+        "tests/tools/test_route_stage_feed_health_drill_evidence_reviewer_handoff_bundle_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
     ):
         path = tmp_path / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1463,7 +1471,7 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     # next_smallest_pr advanced beyond the now-merged chain-final-summary renderer to
     # the next honest measurement-only step (the cross-consistency digest).
     assert "cross-consistency digest" in capability["next_smallest_pr"]
-    assert "chain final summary" in capability["next_smallest_pr"]
+    assert "local index entry" in capability["next_smallest_pr"]
     assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
@@ -1782,6 +1790,12 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert (
         capability["proof"]["route_stage_runtime_metrics_smoke"][
             "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "latency_feed_drill_evidence_reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_supported"
         ]
         is True
     )
@@ -2141,6 +2155,51 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     )
     assert (
         reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
+    reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_smoke"
+    ]
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
+            "ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
+            "template_only"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
+            "manual_review_required"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_bridge_event_template_smoke[
             "network_access_performed"
         ]
         is False

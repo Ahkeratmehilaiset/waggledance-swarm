@@ -152,6 +152,14 @@
       "reason": "pre-guard historical wake_request emitted without to on 2026-06-04; append-only bridge history is not rewritten",
       "created_at_utc": "2026-06-04T14:47:00Z",
       "ticket_ref": "bridge-wake-request-to-guard-hygiene-20260604"
+    },
+    {
+      "line_no": 58284,
+      "raw_line_sha256": "sha256:f0c774074327f16cc8bb84bb35188bf05896261be65a0f16c9dc4e29d62a84da",
+      "error": "line 58284: ts_utc: Value error, ts_utc must be ISO-8601",
+      "reason": "2026-06-20 codex-tools-1 health-smoke event used locale-formatted time separators; append-only bridge history is corrected by a later event and not rewritten",
+      "created_at_utc": "2026-06-20T20:36:00Z",
+      "ticket_ref": "bridge-health-smoke-timestamp-waiver-20260620"
     }
   ]
 }

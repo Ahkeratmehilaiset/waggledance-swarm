@@ -169,6 +169,32 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
     assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
 
 
+def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    events_path = _events_path(tmp_path, [_rco_pass()])
+    events_path.write_bytes(b"\xef\xbb\xbf" + events_path.read_bytes())
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="abcdef\n")
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=events_path,
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert len(calls) == 1
+    assert report["decision"] == "auto_merged"
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
+
+
 def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> None:
     calls: list[str] = []
 

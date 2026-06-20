@@ -1896,7 +1896,7 @@ def _read_bridge_events(events_path: Path) -> list[dict[str, Any]]:
         raise _invalid("missing_events", f"missing bridge events file: {events_path}")
     events: list[dict[str, Any]] = []
     for line_no, line in enumerate(
-        events_path.read_text(encoding="utf-8").splitlines(), 1
+        events_path.read_text(encoding="utf-8-sig").splitlines(), 1
     ):
         if not line.strip():
             continue

@@ -1451,13 +1451,14 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert "schema-valid handoff JSON" in capability["safe_statement"]
     assert "verifier result" in capability["safe_statement"]
     # next_smallest_pr advanced beyond the now-wired cross-consistency digest
-    # bridge-event template index-entry verifier-summary renderer to the next
-    # honest step: a template-only bridge-event renderer for that summary.
+    # bridge-event template index-entry verifier-summary bridge-event renderer to
+    # the next honest step: a local index entry for that summary template.
     assert "cross-consistency digest" in capability["next_smallest_pr"]
     assert "bridge-event template" in capability["next_smallest_pr"]
     assert "index entry" in capability["next_smallest_pr"]
-    assert "verifier-summary result" in capability["next_smallest_pr"]
-    assert "bridge-event renderer" in capability["next_smallest_pr"]
+    assert "verifier-summary bridge-event template" in capability["next_smallest_pr"]
+    assert "local index entry" in capability["next_smallest_pr"]
+    assert "bridge-event renderer" not in capability["next_smallest_pr"]
     assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
@@ -3420,6 +3421,138 @@ def test_manifest_hex_xcons_template_index_entry_verification_cannot_flip_ok(
         )
         == forged
     )
+
+
+def test_manifest_stores_hex_xcons_template_index_entry_verification_summary_bridge_event_template_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        capability
+        for capability in manifest["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    summary = hex_cap["proof"].get(
+        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template"
+    )
+    assert isinstance(summary, dict)
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["template_available"] is True
+    assert summary["template_only"] is True
+    assert summary["bridge_event_schema_validated"] is True
+    assert summary["summary_version_match"] is True
+    assert summary["verification_summary_available"] is True
+    assert summary["source_contract_match"] is True
+    assert summary["rebuilt_index_entry_match"] is True
+    assert summary["bridge_event_schema_match"] is True
+    assert summary["digest_ref_match"] is True
+    assert summary["all_digest_checks_match"] is True
+    assert summary["all_size_checks_match"] is True
+    assert summary["all_schema_version_checks_match"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_runtime_subdivision_authority_granted"] is True
+    assert summary["no_direct_bridge_write"] is True
+    assert summary["no_bridge_event_written"] is True
+    assert summary["no_payloads_included"] is True
+    assert summary["no_local_paths_recorded"] is True
+    assert summary["cross_consistent"] is True
+    assert summary["all_views_present"] is True
+    assert summary["reviewer_clean"] is True
+    assert summary["shadow_only_clean"] is True
+    assert summary["chain_summary_clean"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
+def test_manifest_hex_xcons_template_index_entry_verification_summary_bridge_event_template_measurement_only() -> None:
+    proof = next(
+        capability["proof"]
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    summary_key = (
+        "cross_consistency_digest_bridge_event_template_index_entry_"
+        "verification_summary_bridge_event_template"
+    )
+    assert isinstance(proof.get(summary_key), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert summary_key not in ok_assign
+    verification_idx = src.index(
+        'hex_upgrade_proof[\n'
+        '        "cross_consistency_digest_bridge_event_template_index_entry_verification"'
+    )
+    summary_template_idx = src.index(
+        'hex_upgrade_proof[\n'
+        '        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template"'
+    )
+    assert summary_template_idx > verification_idx
+
+
+def test_manifest_hex_xcons_template_index_entry_verification_summary_bridge_event_template_cannot_flip_ok(
+    monkeypatch,
+) -> None:
+    baseline_ok = next(
+        capability["proof"].get("ok")
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "template_available": False,
+        "template_only": False,
+        "bridge_event_schema_validated": False,
+        "summary_version_match": False,
+        "verification_summary_available": False,
+        "source_contract_match": False,
+        "rebuilt_index_entry_match": False,
+        "bridge_event_schema_match": False,
+        "digest_ref_match": False,
+        "all_digest_checks_match": False,
+        "all_size_checks_match": False,
+        "all_schema_version_checks_match": False,
+        "no_runtime_authority_granted": False,
+        "no_runtime_subdivision_authority_granted": False,
+        "no_direct_bridge_write": False,
+        "no_bridge_event_written": False,
+        "no_payloads_included": False,
+        "no_local_paths_recorded": False,
+        "cross_consistent": False,
+        "all_views_present": False,
+        "reviewer_clean": False,
+        "shadow_only_clean": False,
+        "chain_summary_clean": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_hex_cross_consistency_bridge_event_template_index_entry_verification_summary_bridge_event_template_summary",
+        lambda *_a, **_k: dict(forged),
+    )
+    proof = next(
+        capability["proof"]
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    summary_key = (
+        "cross_consistency_digest_bridge_event_template_index_entry_"
+        "verification_summary_bridge_event_template"
+    )
+    assert proof.get("ok") == baseline_ok
+    assert proof.get(summary_key) == forged
 
 
 def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:

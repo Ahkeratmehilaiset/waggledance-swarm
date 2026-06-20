@@ -8279,6 +8279,161 @@ def _hex_cross_consistency_bridge_event_template_index_entry_verification_summar
     return summary
 
 
+def _hex_cross_consistency_bridge_event_template_index_entry_verification_summary_bridge_event_template_summary(
+    digest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Content-safe summary of the hex cross-consistency summary template."""
+
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template as _build_xcons_tpl,
+    )
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry as _build_index_entry,
+    )
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary import (  # noqa: E402
+        SUMMARY_VERSION as _source_summary_version,
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary as _build_verification_summary,
+    )
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template import (  # noqa: E402
+        HEX_VERIFICATION_KEY as _hex_verification_key,
+        TEMPLATE_VERSION as _summary_template_version,
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template as _build_verification_summary_template,
+    )
+    from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
+    from tools.verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry import (  # noqa: E402
+        verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry as _verify_index_entry,
+    )
+
+    source_digest: Mapping[str, Any] = digest if isinstance(digest, Mapping) else {}
+    template = _build_xcons_tpl(
+        digest=source_digest,
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-xcons-template-index-entry-verification-summary-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+    )
+    template = template if isinstance(template, Mapping) else {}
+    try:
+        digest_bytes = json.dumps(
+            source_digest,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        template_bytes = json.dumps(
+            template,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        index_entry = _build_index_entry(
+            digest=source_digest,
+            bridge_event_template_report=template,
+            digest_bytes=digest_bytes,
+            bridge_event_template_bytes=template_bytes,
+        )
+        verification = _verify_index_entry(
+            index_entry=index_entry,
+            digest=source_digest,
+            bridge_event_template_report=template,
+            digest_bytes=digest_bytes,
+            bridge_event_template_bytes=template_bytes,
+        )
+        verification_summary = _build_verification_summary(
+            verification_report=verification,
+            reviewer_agent_id="codex-tools-1",
+            handoff_ref="wd-image1-hex-xcons-index-entry-verification-summary",
+        )
+        summary_template = _build_verification_summary_template(
+            summary=verification_summary,
+            agent_id="codex-lead-1",
+            task_id="wd-image1-hex-xcons-index-entry-verification-summary-template",
+            to="operator,claude-rco-1,codex-tools-1",
+            role="lead-impl",
+        )
+    except Exception:
+        verification_summary = {}
+        summary_template = {}
+
+    verification_summary = (
+        verification_summary if isinstance(verification_summary, Mapping) else {}
+    )
+    summary_template = summary_template if isinstance(summary_template, Mapping) else {}
+    event = summary_template.get("bridge_event_template")
+    event = event if isinstance(event, Mapping) else {}
+    payload = event.get("payload")
+    payload = payload if isinstance(payload, Mapping) else {}
+    summary_verification = payload.get(_hex_verification_key)
+    summary_verification = (
+        summary_verification if isinstance(summary_verification, Mapping) else {}
+    )
+    digest_checks = summary_verification.get("digest_checks")
+    digest_checks = digest_checks if isinstance(digest_checks, Mapping) else {}
+    size_checks = summary_verification.get("size_checks")
+    size_checks = size_checks if isinstance(size_checks, Mapping) else {}
+    schema_checks = summary_verification.get("schema_version_checks")
+    schema_checks = schema_checks if isinstance(schema_checks, Mapping) else {}
+    summary: dict[str, Any] = {
+        "report_version": (
+            "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_"
+            "verification_summary_bridge_event_template_summary.v1"
+        ),
+        "template_available": summary_template.get("ok") is True,
+        "template_only": summary_template.get("template_only") is True,
+        "bridge_event_schema_validated": (
+            summary_template.get("ok") is True
+            and payload.get("schema_version") == _summary_template_version
+        ),
+        "summary_version_match": (
+            payload.get("summary_version") == _source_summary_version
+        ),
+        "verification_summary_available": verification_summary.get("ok") is True,
+        "source_contract_match": (
+            summary_verification.get("source_contract_check") == "match"
+        ),
+        "rebuilt_index_entry_match": (
+            summary_verification.get("rebuilt_index_entry_check") == "match"
+        ),
+        "bridge_event_schema_match": (
+            summary_verification.get("bridge_event_schema_check") == "match"
+        ),
+        "digest_ref_match": summary_verification.get("digest_ref_check") == "match",
+        "all_digest_checks_match": bool(digest_checks)
+        and all(item == "match" for item in digest_checks.values()),
+        "all_size_checks_match": bool(size_checks)
+        and all(item == "match" for item in size_checks.values()),
+        "all_schema_version_checks_match": bool(schema_checks)
+        and all(item == "match" for item in schema_checks.values()),
+        "no_runtime_authority_granted": (
+            summary_template.get("runtime_authority_granted") is False
+        ),
+        "no_runtime_subdivision_authority_granted": (
+            summary_template.get("runtime_subdivision_authority_granted") is False
+        ),
+        "no_direct_bridge_write": (
+            summary_template.get("direct_bridge_write_performed") is False
+        ),
+        "no_bridge_event_written": summary_template.get("bridge_event_written")
+        is False,
+        "no_payloads_included": (
+            summary_template.get("digest_payloads_included") is False
+            and summary_template.get("artifact_payloads_included") is False
+        ),
+        "no_local_paths_recorded": summary_template.get("local_paths_recorded")
+        is False,
+        "cross_consistent": source_digest.get("cross_consistent") is True,
+        "all_views_present": source_digest.get("all_views_present") is True,
+        "reviewer_clean": source_digest.get("reviewer_clean") is True,
+        "shadow_only_clean": source_digest.get("shadow_only_clean") is True,
+        "chain_summary_clean": source_digest.get("chain_summary_clean") is True,
+        "claim_safe": False,
+    }
+    summary["path_free_verified"] = (
+        summary_template.get("ok") is True and not _contains_path_marker(summary)
+    )
+    return summary
+
+
 _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
     "wd.low_risk_autogrowth_real_loop_proof.v1"
 )
@@ -8870,6 +9025,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Path-free reviewer summary renderer for the hex-upgrade cross-consistency digest bridge-event template index-entry verifier result; no payload/path inclusion, bridge append, claim upgrade, or runtime subdivision authority.",
             ),
             (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
+                "Template-only bridge-event renderer for the hex-upgrade cross-consistency digest bridge-event template index-entry verifier summary; no payload/path inclusion, bridge append, claim upgrade, or runtime subdivision authority.",
+            ),
+            (
                 "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
                 "Index-entry tests prove digest/template binding, path-free CLI output, drift rejection, and no runtime subdivision authority.",
             ),
@@ -8880,6 +9039,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary.py",
                 "Verifier-summary tests prove context-only rendering, path-free CLI/markdown output, and no runtime subdivision authority.",
+            ),
+            (
+                "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template.py",
+                "Verifier-summary bridge-event template tests prove schema-valid template-only handoff JSON, path-free CLI output, contract rejection, and no runtime subdivision authority.",
             ),
         ),
     )
@@ -9095,6 +9258,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof[
         "cross_consistency_digest_bridge_event_template_index_entry_verification"
     ] = _hex_cross_consistency_bridge_event_template_index_entry_verification_summary(
+        hex_upgrade_proof["cross_consistency_digest"]
+    )
+    # Template-only bridge-event renderer summary for that cross-consistency
+    # verifier-summary result. Stored as derived booleans only. Measurement-only:
+    # not folded into hex_upgrade_proof["ok"] and never appends bridge events,
+    # upgrades claims, transports payloads, or grants runtime subdivision authority.
+    hex_upgrade_proof[
+        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary_bridge_event_template"
+    ] = _hex_cross_consistency_bridge_event_template_index_entry_verification_summary_bridge_event_template_summary(
         hex_upgrade_proof["cross_consistency_digest"]
     )
     # Ring-messaging + parent-child hierarchy proof (merged
@@ -9741,6 +9913,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "verifier result into context-only handoff material while "
                 "preserving the same no-payload, no-path, no-append, "
                 "no-transport, no-claim-upgrade, and no-runtime-subdivision "
+                "authority boundary. A template-only bridge-event renderer "
+                "turns that verifier summary into schema-valid handoff JSON "
+                "while preserving the same no-payload, no-path, no-append, "
+                "no-transport, no-claim-upgrade, and no-runtime-subdivision "
                 "authority boundary."
             ),
             status=_status_for(hex_upgrade_evidence),
@@ -9755,15 +9931,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
                 "The cross-consistency digest bridge-event template index "
                 "entry and its verifier are local reviewer context only; "
-                "the verifier-summary renderer adds reviewer context, and "
-                "none of them transport payloads, append bridge events, "
-                "record local paths, upgrade claims, or grant runtime "
-                "subdivision authority.",
+                "the verifier-summary renderer and verifier-summary "
+                "bridge-event template add reviewer context, and none of "
+                "them transport payloads, append bridge events, record local "
+                "paths, upgrade claims, or grant runtime subdivision "
+                "authority.",
             ),
             next_smallest_pr=(
-                "Add a template-only bridge-event renderer for the "
-                "hex-upgrade cross-consistency digest bridge-event template "
-                "index entry verifier-summary result without including "
+                "Add a local index entry for the hex-upgrade "
+                "cross-consistency digest bridge-event template index entry "
+                "verifier-summary bridge-event template without including "
                 "payloads, recording paths, appending it, upgrading any "
                 "claim, or granting runtime subdivision authority."
             ),

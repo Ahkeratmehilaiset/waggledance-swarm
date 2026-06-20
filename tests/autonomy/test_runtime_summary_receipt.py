@@ -186,6 +186,29 @@ def test_handle_query_runtime_receipt_verifier_not_ok_metrics() -> None:
     assert metrics["verifier_ok_ratio"] == 0.0
 
 
+def test_runtime_receipt_metrics_prefer_top_level_receipt_count(
+    tmp_path: Path,
+) -> None:
+    runtime, _reports = _runtime_with_receipt_sink(tmp_path)
+
+    runtime.runtime_receipt_sink = lambda _summary: {
+        "receipt_count": 0,
+        "verifier_report": {"ok": False, "receipt_count": 1},
+    }
+
+    result = runtime.handle_query("receipt count disagreement path")
+
+    assert result["runtime_receipt"]["receipt_count"] == 0
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["success_total"] == 1
+    assert metrics["verifier_ok_total"] == 0
+    assert metrics["verifier_not_ok_total"] == 1
+    assert metrics["receipt_count_total"] == 0
+    assert metrics["last_verifier_ok"] is False
+    assert metrics["last_receipt_count"] == 0
+    assert metrics["verifier_ok_ratio"] == 0.0
+
+
 def test_handle_query_without_runtime_receipt_sink_records_default_off_metrics() -> None:
     registry = CapabilityRegistry(load_builtins=False)
     capability = CapabilityContract(

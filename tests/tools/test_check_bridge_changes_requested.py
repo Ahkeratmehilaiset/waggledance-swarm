@@ -353,6 +353,7 @@ def test_changes_requested_resolution_status_clears_prior_block_without_approval
         "changes_requested_resolved",
         "changes_requested_resolved_ci_green",
         "changes_requested_resolved_ci_pending",
+        "changes_requested_cleared",
         "changes_requested_retracted",
         "changes_requested_withdrawn",
     ]:

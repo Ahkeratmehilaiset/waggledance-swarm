@@ -76,6 +76,7 @@ CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
         "changes_requested_resolved",
         "changes_requested_resolved_ci_green",
         "changes_requested_resolved_ci_pending",
+        "changes_requested_cleared",
         "changes_requested_retracted",
         "changes_requested_withdrawn",
     }

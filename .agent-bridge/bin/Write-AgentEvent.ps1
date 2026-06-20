@@ -159,11 +159,22 @@ if (($Type -eq 'wake_request') -and [string]::IsNullOrWhiteSpace($To)) {
     throw "Bridge event type=wake_request requires non-empty -To before writing"
 }
 
+$payloadText = [string]$PayloadJson
+if ([string]::IsNullOrWhiteSpace($payloadText)) {
+    throw "Bridge event payload must be valid JSON before writing"
+}
+
 $payload = $null
 try {
-    $payload = $PayloadJson | ConvertFrom-Json -ErrorAction Stop
+    $payload = $payloadText | ConvertFrom-Json -ErrorAction Stop
 } catch {
     throw "Bridge event payload must be valid JSON before writing"
+}
+if ($null -eq $payload) {
+    if ($payloadText.Trim() -cne 'null') {
+        throw "Bridge event payload must be valid JSON before writing"
+    }
+    $payload = [pscustomobject]@{}
 }
 Assert-NoPrivateMarker -Label 'payload' -Value ($payload | ConvertTo-Json -Depth 12 -Compress)
 

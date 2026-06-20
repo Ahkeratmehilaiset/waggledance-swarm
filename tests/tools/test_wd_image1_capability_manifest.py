@@ -2094,6 +2094,57 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke = verifier_smoke[
+        "reviewer_handoff_bundle_verifier_summary_bridge_event_template_index_entry_verification_summary_smoke"
+    ]
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "ok"
+        ]
+        is True
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "source_contract_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "rebuilt_index_entry_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "bridge_event_schema_check"
+        ]
+        == "match"
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "direct_bridge_write_performed"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "artifact_payloads_included"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "local_paths_recorded"
+        ]
+        is False
+    )
+    assert (
+        reviewer_handoff_bundle_verifier_summary_template_index_entry_verification_summary_smoke[
+            "network_access_performed"
+        ]
+        is False
+    )
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2116,6 +2167,9 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "reviewer handoff summary" in capability["safe_statement"]
     assert "handoff bundle index" in capability["safe_statement"]
     assert "verifier-summary bridge-event template" in capability["safe_statement"]
+    assert "verifier-summary renderer for that template index entry" in (
+        capability["safe_statement"]
+    )
     assert "handoff bundle" in capability["next_smallest_pr"]
     assert "verifier-summary bridge-event template index entry" in (
         capability["next_smallest_pr"]

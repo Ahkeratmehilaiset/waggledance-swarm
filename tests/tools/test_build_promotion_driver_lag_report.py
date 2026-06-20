@@ -84,7 +84,7 @@ def _report(*, status: dict | None = None, events: list[dict] | None = None) -> 
         task_id=TASK,
         head=HEAD,
         origin_main_sha=BASE,
-        author_agent="codex-lead-1",
+        author_agent="fable-5",
     )
 
 
@@ -196,7 +196,7 @@ def test_cli_outputs_json_report_without_writing(tmp_path: Path) -> None:
             "--origin-main-sha",
             BASE,
             "--author-agent",
-            "codex-lead-1",
+            "fable-5",
             "--json",
         ],
         check=False,
@@ -245,7 +245,7 @@ def test_cli_default_events_uses_runtime_bridge_root_env_from_other_cwd(
             "--origin-main-sha",
             BASE,
             "--author-agent",
-            "codex-lead-1",
+            "fable-5",
             "--json",
         ],
         cwd=str(other_cwd),

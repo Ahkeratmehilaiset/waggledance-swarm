@@ -26,7 +26,7 @@ LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
 RCO2 = "claude-rco-2"
-AUTHOR = "codex-lead-1"
+AUTHOR = "fable-5"
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
@@ -449,6 +449,42 @@ def test_author_rco_self_pass_does_not_satisfy_rco_slot() -> None:
     assert any("recognized non-author RCO" in reason for reason in result["reasons"])
 
 
+def test_author_lead_self_pass_does_not_satisfy_build_slot() -> None:
+    result = verify_bridge_consensus(
+        events=_full_consensus(),
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent=LEAD,
+    )
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["eligible"] is False
+    assert result["identities"]["build_lead"]["approved"] is False
+    assert result["identities"]["build_lead"]["self_approval_ignored"] is True
+    assert any(
+        "author_agent cannot satisfy its own reviewer slot" in reason
+        for reason in result["reasons"]
+    )
+
+
+def test_author_tools_self_pass_does_not_satisfy_build_slot() -> None:
+    result = verify_bridge_consensus(
+        events=_full_consensus(),
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent=TOOLS,
+    )
+
+    assert result["ok"] is False
+    assert result["identities"]["build_tools"]["eligible"] is False
+    assert result["identities"]["build_tools"]["approved"] is False
+    assert result["identities"]["build_tools"]["self_approval_ignored"] is True
+    assert any(
+        "author_agent cannot satisfy its own reviewer slot" in reason
+        for reason in result["reasons"]
+    )
+
+
 def test_veto_from_either_recognized_rco_blocks_consensus() -> None:
     events = [
         _approval(LEAD, "build_consensus", ts="2026-05-29T13:00:00Z"),
@@ -596,7 +632,7 @@ def _status(**overrides) -> dict:
         "title": "T0b consensus approver",
         "mergeable": "clean",
         "receipt_verified": True,
-        "author_agent": AUTHOR,
+        "author_agent": RCO2,
         # An allowlisted, non-denylisted path: the gate itself is now
         # self-modification-denylisted (T0a), so it cannot be the changed path.
         "changed_paths": ["tools/idle_daily_summary.py"],

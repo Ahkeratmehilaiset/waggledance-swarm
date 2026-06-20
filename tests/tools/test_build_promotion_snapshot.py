@@ -118,7 +118,7 @@ def _events(
     if include_claim:
         events.append(
             _event(
-                "codex-tools-1",
+                "fable-5",
                 "active",
                 type_="claim",
                 ts="2026-06-05T05:29:00Z",
@@ -178,7 +178,7 @@ def test_builds_eligible_dry_run_snapshot_from_gh_and_bridge_claim(
 
     assert report["eligible"] is True
     assert report["decision"] == "promotion_eligible"
-    assert report["author_agent"] == "codex-tools-1"
+    assert report["author_agent"] == "fable-5"
     assert report["pr_status"]["head_sha"] == HEAD
     assert report["pr_status"]["base_sha"] == BASE
     assert report["pr_status"]["changed_paths"] == PATHS

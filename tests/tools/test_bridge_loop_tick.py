@@ -196,7 +196,7 @@ def _green_snapshot(pr: int, head: str = HEAD) -> dict:
         "pr_number": pr,
         "head_sha": head,
         "mergeable": "MERGEABLE",
-        "author_agent": "codex-lead-1",
+        "author_agent": "claude-rco-2",
         "checks": [
             {
                 "name": "test",

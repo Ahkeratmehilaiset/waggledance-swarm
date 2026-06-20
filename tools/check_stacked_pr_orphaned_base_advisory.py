@@ -41,8 +41,10 @@ DEFAULT_REPO = "Ahkeratmehilaiset/waggledance-swarm"
 # Injected git predicates (so the core stays pure/offline-testable).
 # IsAncestor(ancestor_sha, descendant_sha) -> True if ancestor is in descendant's history.
 IsAncestor = Callable[[str, str], bool]
-# MergeTreeConflict(base_sha, head_sha) -> True if merging head into base conflicts.
-MergeTreeConflict = Callable[[str, str], bool]
+# MergeTreeConflict(base_sha, head_sha) -> True (real conflict) / False (clean) /
+# None (could not determine -- e.g. unfetched/invalid SHA or lookup error).
+# Tristate so a lookup/input error is never mis-reported as a conflict.
+MergeTreeConflict = Callable[[str, str], "bool | None"]
 
 
 def classify_open_pr_base_hazards(
@@ -79,8 +81,14 @@ def classify_open_pr_base_hazards(
                 hazards.append("orphaned_base")
         elif merge_tree_conflict is not None and head_oid and main_sha:
             # Base on main but possibly behind: would the head conflict on merge?
-            if merge_tree_conflict(main_sha, head_oid):
+            # Tristate: True = real conflict, False = clean, None = could-not-
+            # determine (e.g. unfetched head / lookup error). A lookup error is
+            # surfaced as UNKNOWN -- never a false conflict, never a silent clean.
+            mt = merge_tree_conflict(main_sha, head_oid)
+            if mt is True:
                 hazards.append("merge_tree_conflict_vs_main")
+            elif mt is None:
+                hazards.append("merge_tree_check_unknown")
         if not hazards:
             continue
         advisories.append(
@@ -93,6 +101,8 @@ def classify_open_pr_base_hazards(
                 "advice": (
                     "retarget/rebase onto current main before merge"
                     if "orphaned_base" in hazards
+                    else "fetch the head and re-run; merge-tree could not be computed"
+                    if "merge_tree_check_unknown" in hazards
                     else "rebase onto current main to resolve conflict before merge"
                 ),
                 "severity": "advisory",
@@ -116,8 +126,29 @@ def _git_is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
     return result.returncode == 0
 
 
-def _git_merge_tree_conflict(base_sha: str, head_sha: str) -> bool:
-    """True if merging head_sha into base_sha conflicts (read-only git merge-tree)."""
+def _commit_exists(sha: str) -> bool:
+    """True if sha resolves to a commit in the local repo (read-only)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _git_merge_tree_conflict(base_sha: str, head_sha: str) -> bool | None:
+    """Tristate: True (real conflict) / False (clean) / None (could not determine).
+
+    A LOOKUP/INPUT error (unfetched or invalid SHA, fatal git error) must NOT be
+    reported as a conflict -- it returns None so the caller surfaces it as an
+    UNKNOWN advisory, never a false ``merge_tree_conflict_vs_main``.
+    """
+    # Validate inputs first: an unresolvable SHA is a lookup error, not a conflict.
+    if not _commit_exists(base_sha) or not _commit_exists(head_sha):
+        return None
     try:
         result = subprocess.run(
             ["git", "merge-tree", "--write-tree", base_sha, head_sha],
@@ -125,11 +156,13 @@ def _git_merge_tree_conflict(base_sha: str, head_sha: str) -> bool:
             text=True,
         )
     except Exception:
-        return False  # unknown -> do not assert a conflict (advisory only)
-    # git merge-tree --write-tree exits non-zero on conflict (and prints markers).
-    if result.returncode != 0:
-        return True
-    return "<<<<<<<" in (result.stdout or "")
+        return None
+    if result.returncode == 0:
+        return False  # clean merge, no conflict
+    if result.returncode == 1:
+        return True  # git's dedicated "merge conflicts" exit code
+    # Any other non-zero (e.g. 128 fatal) is an error, not a conflict.
+    return None
 
 
 def _open_prs(repo: str) -> list[dict[str, Any]] | None:

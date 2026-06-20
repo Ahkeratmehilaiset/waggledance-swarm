@@ -165,3 +165,45 @@ def test_main_clean_scan_is_decision_scanned(monkeypatch, capsys) -> None:
     assert out["decision"] == "scanned"
     assert out["discovery_errors"] == []
     assert out["advisory_count"] == 0
+
+
+def test_base_on_main_merge_tree_unknown_surfaced_not_conflict() -> None:
+    # merge_tree_conflict returns None (lookup error / unfetched head) -> surfaced
+    # as merge_tree_check_unknown, NOT a false merge_tree_conflict_vs_main.
+    prs = [_pr(62, "feat/u", "main", MAIN, head_oid=HEAD)]
+    unknown = lambda base, head: None  # noqa: E731
+    out = classify_open_pr_base_hazards(prs, MAIN, _ancestor_set(), unknown)
+    assert len(out) == 1
+    assert out[0]["hazards"] == ["merge_tree_check_unknown"]
+    assert "merge_tree_conflict_vs_main" not in out[0]["hazards"]
+    assert "fetch" in out[0]["advice"]
+
+
+def test_git_merge_tree_conflict_missing_sha_returns_none(monkeypatch) -> None:
+    # The lead's exact repro: merge-tree on a missing head must be None (unknown),
+    # NOT True (a false conflict).
+    import tools.check_stacked_pr_orphaned_base_advisory as mod
+
+    monkeypatch.setattr(mod, "_commit_exists", lambda sha: False)
+    assert mod._git_merge_tree_conflict(MAIN, "1" * 40) is None
+
+
+def test_git_merge_tree_conflict_exit_codes(monkeypatch) -> None:
+    # With valid SHAs: exit 0 = clean (False), exit 1 = conflict (True), other
+    # non-zero (e.g. 128 fatal) = unknown (None), never a false conflict.
+    import tools.check_stacked_pr_orphaned_base_advisory as mod
+
+    monkeypatch.setattr(mod, "_commit_exists", lambda sha: True)
+
+    class _R:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = ""
+            self.stderr = ""
+
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _R(0))
+    assert mod._git_merge_tree_conflict(MAIN, HEAD) is False
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _R(1))
+    assert mod._git_merge_tree_conflict(MAIN, HEAD) is True
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _R(128))
+    assert mod._git_merge_tree_conflict(MAIN, HEAD) is None

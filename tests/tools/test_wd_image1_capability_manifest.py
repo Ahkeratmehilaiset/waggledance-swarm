@@ -1474,11 +1474,12 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert "verification summary bridge-event template digest" in (
         capability["safe_statement"]
     )
-    # next_smallest_pr advanced beyond the local index-entry slice to the verifier.
+    # next_smallest_pr advanced beyond the local verifier slice to its summary renderer.
     assert "cross-consistency digest" in capability["next_smallest_pr"]
-    assert "local verifier" in capability["next_smallest_pr"]
-    assert "index entry" in capability["next_smallest_pr"]
-    assert "reviewer summary renderer" not in capability["next_smallest_pr"]
+    assert "verifier result" in capability["next_smallest_pr"]
+    assert "index-entry" in capability["next_smallest_pr"]
+    assert "reviewer summary renderer" in capability["next_smallest_pr"]
+    assert "Add a local verifier" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 
@@ -3454,10 +3455,57 @@ def test_manifest_stores_hex_xcons_template_index_entry_without_authority() -> N
     assert "template ready" not in blob.lower()
 
 
+def test_manifest_stores_hex_xcons_template_index_entry_verification_without_authority() -> None:
+    verification = _hex_proof_for_reviewer().get(
+        "cross_consistency_digest_bridge_event_template_index_entry_verification"
+    )
+    assert isinstance(verification, dict)
+    assert verification["ok"] is True
+    assert (
+        verification["verification_version"]
+        == "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_"
+        "index_entry_verification.v1"
+    )
+    assert (
+        verification["index_entry_version"]
+        == "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.v1"
+    )
+    assert verification["source_contract_check"] == "match"
+    assert verification["rebuilt_index_entry_check"] == "match"
+    assert verification["bridge_event_schema_check"] == "match"
+    assert verification["digest_checks"] == {
+        "hex_upgrade_cross_consistency_digest_bridge_event_template": "match",
+    }
+    assert verification["size_checks"] == {
+        "hex_upgrade_cross_consistency_digest_bridge_event_template": "match",
+    }
+    assert verification["schema_version_checks"] == {
+        "hex_upgrade_cross_consistency_digest_bridge_event_template": "match",
+    }
+    assert verification["template_only"] is True
+    assert verification["manual_review_required"] is True
+    assert verification["runtime_subdivision_authority_granted"] is False
+    assert verification["direct_bridge_write_performed"] is False
+    assert verification["bridge_event_written"] is False
+    assert verification["artifact_payloads_included"] is False
+    assert verification["local_paths_recorded"] is False
+    assert verification["path_free_verified"] is True
+    blob = json.dumps(verification)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
 def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
     proof = _hex_proof_for_reviewer()
     assert isinstance(
         proof.get("cross_consistency_digest_bridge_event_template_index_entry"),
+        dict,
+    )
+    assert isinstance(
+        proof.get(
+            "cross_consistency_digest_bridge_event_template_index_entry_verification"
+        ),
         dict,
     )
     assert proof.get("ok") is True
@@ -3472,12 +3520,22 @@ def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
     assert "cross_consistency_digest_bridge_event_template_index_entry" not in (
         ok_assign
     )
+    assert (
+        "cross_consistency_digest_bridge_event_template_index_entry_verification"
+        not in ok_assign
+    )
     ok_idx = cap_src.index('hex_upgrade_proof["ok"] = bool(')
     index_idx = cap_src.index(
         'hex_upgrade_proof[\n        "cross_consistency_digest_bridge_event_template_index_entry"'
     )
+    verification_idx = cap_src.index(
+        'hex_upgrade_proof[\n        "cross_consistency_digest_bridge_event_template_index_entry_verification"'
+    )
     assert index_idx > ok_idx, (
         "template index entry must be enriched after the hex ok recomputation"
+    )
+    assert verification_idx > ok_idx, (
+        "template index-entry verification must be enriched after the hex ok recomputation"
     )
 
 
@@ -3491,16 +3549,28 @@ def test_manifest_hex_xcons_template_index_entry_cannot_flip_ok(monkeypatch) -> 
         "claim_safe": True,
         "runtime_subdivision_authority_granted": True,
     }
+    forged_verification = {
+        "verification_version": "forged",
+        "ok": False,
+        "claim_safe": True,
+        "runtime_subdivision_authority_granted": True,
+    }
     monkeypatch.setattr(
         mod,
-        "_hex_upgrade_cross_consistency_bridge_event_template_index_entry",
-        lambda *_a, **_k: dict(forged),
+        "_hex_upgrade_cross_consistency_bridge_event_template_index_entry_bundle",
+        lambda *_a, **_k: (dict(forged), dict(forged_verification)),
     )
     proof = _hex_proof_for_reviewer()
     assert proof.get("ok") == baseline_ok
     assert (
         proof.get("cross_consistency_digest_bridge_event_template_index_entry")
         == forged
+    )
+    assert (
+        proof.get(
+            "cross_consistency_digest_bridge_event_template_index_entry_verification"
+        )
+        == forged_verification
     )
 
 
@@ -3512,9 +3582,11 @@ def test_manifest_hex_next_smallest_pr_advanced_beyond_xcons_template() -> None:
     )
     nsp = cap["next_smallest_pr"].lower()
     assert "cross-consistency digest that confirms" not in nsp
-    assert "local verifier" in nsp
-    assert "index entry" in nsp
+    assert "reviewer summary" in nsp
+    assert "verifier result" in nsp
+    assert "index-entry" in nsp
     assert "bridge-event template" in nsp
+    assert "add a local verifier" not in nsp
 
 
 def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:

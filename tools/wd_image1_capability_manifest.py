@@ -9202,6 +9202,22 @@ def _hex_upgrade_cross_consistency_bridge_event_template_index_entry_bundle(
     return index_entry, verification
 
 
+def _hex_upgrade_cross_consistency_bridge_event_template_index_entry_verification_summary(
+    verification: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Render local reviewer context for the hex xcons template index verifier."""
+
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary as _build_summary,
+    )
+
+    return _build_summary(
+        verification_report=verification if isinstance(verification, Mapping) else {},
+        reviewer_agent_id="codex-lead-1",
+        handoff_ref="bridge:handoff:hex-xcons-template-index-verification",
+    )
+
+
 _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
     "wd.low_risk_autogrowth_real_loop_proof.v1"
 )
@@ -9801,6 +9817,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Local verifier for the hex-upgrade cross-consistency digest bridge-event template index entry; recomputes digest, size, schema, rebuilt-entry, and bridge-event-schema checks without payload transport, bridge append, claim upgrade, or runtime subdivision authority.",
             ),
             (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary.py",
+                "Path-free reviewer summary renderer for the hex-upgrade cross-consistency digest bridge-event template index-entry verifier result; no payload inclusion, path recording, bridge append, transport, claim upgrade, or runtime subdivision authority.",
+            ),
+            (
                 "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template.py",
                 "Renderer tests prove schema-valid handoff JSON, no-authority axes, path-free output, safe scalar allowlist, and fail-closed unsafe input handling.",
             ),
@@ -9811,6 +9831,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
             (
                 "tests/test_verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
                 "Verifier tests prove recomputed digest/size/schema checks, rebuilt-entry matching, no-authority axes, path-free CLI output, and fail-closed unsafe input handling.",
+            ),
+            (
+                "tests/test_build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification_summary.py",
+                "Verifier-summary tests prove path-free reviewer context, no-authority axes, no payload/path echo, and fail-closed drift handling.",
             ),
         ),
     )
@@ -10111,6 +10135,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     hex_upgrade_proof[
         "cross_consistency_digest_bridge_event_template_index_entry_verification"
     ] = (
+        hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification
+    )
+    # Path-free local reviewer summary for the digest template INDEX ENTRY verifier
+    # result. Built AFTER the hex ok recompute and NOT folded into ok;
+    # measurement-only, no payloads/paths, bridge writes, transport, claim upgrade,
+    # or runtime subdivision authority.
+    hex_upgrade_proof[
+        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary"
+    ] = _hex_upgrade_cross_consistency_bridge_event_template_index_entry_verification_summary(
         hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification
     )
     low_risk_autonomy_proof = build_low_risk_autonomy_proof()
@@ -10682,7 +10715,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "rebuilt-entry, and bridge-event schema checks while keeping "
                 "payload inclusion, local path recording, bridge writes, "
                 "transport, claim upgrades, and runtime subdivision authority "
-                "false."
+                "false. A path-free reviewer summary renderer can turn that "
+                "verifier result into local reviewer context without including "
+                "payloads, recording paths, appending bridge events, "
+                "transporting artifacts, upgrading claims, or granting runtime "
+                "subdivision authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -10696,12 +10733,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free reviewer summary renderer for the "
+                "Add a template-only bridge-event renderer for the "
                 "hex-upgrade cross-consistency digest bridge-event template "
-                "index-entry verifier result without including payloads, "
-                "recording paths, appending bridge events, transporting "
-                "artifacts, upgrading claims, or granting runtime subdivision "
-                "authority."
+                "index-entry verification summary without appending it, "
+                "including payloads/paths, transporting artifacts, upgrading "
+                "claims, or granting runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

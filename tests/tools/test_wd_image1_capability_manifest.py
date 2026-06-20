@@ -3496,6 +3496,55 @@ def test_manifest_stores_hex_xcons_template_index_entry_verification_without_aut
     assert "template ready" not in blob.lower()
 
 
+def test_manifest_stores_hex_xcons_template_index_entry_verification_summary_without_authority() -> None:
+    summary = _hex_proof_for_reviewer().get(
+        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary"
+    )
+    assert isinstance(summary, dict)
+    assert summary["ok"] is True
+    assert (
+        summary["summary_version"]
+        == "waggledance.hex_upgrade_cross_consistency_digest_bridge_event_template_"
+        "index_entry_verification_summary.v1"
+    )
+    verification = summary[
+        "hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_verification"
+    ]
+    assert verification["verification_ok"] is True
+    assert (
+        verification["verification_version"]
+        == "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_"
+        "index_entry_verification.v1"
+    )
+    assert (
+        verification["index_entry_version"]
+        == "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.v1"
+    )
+    assert verification["artifact_count_checked"] == 1
+    assert verification["source_contract_check"] == "match"
+    assert verification["rebuilt_index_entry_check"] == "match"
+    assert verification["bridge_event_schema_check"] == "match"
+    assert verification["runtime_subdivision_authority_granted"] is False
+    assert verification["claim_safe"] is False
+    assert summary["operator_boundary"]["verification_report_boundary_ok"] is True
+    assert summary["manual_review_required"] is True
+    assert summary["approval_granted"] is False
+    assert summary["release_decision_made"] is False
+    assert summary["automatic_release_decision"] is False
+    assert summary["claim_safe"] is False
+    assert summary["direct_bridge_write_performed"] is False
+    assert summary["transport_added"] is False
+    assert summary["runtime_subdivision_authority_granted"] is False
+    assert summary["bridge_event_written"] is False
+    assert summary["artifact_payloads_included"] is False
+    assert summary["local_paths_recorded"] is False
+    assert summary["path_free_verified"] is True
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
 def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
     proof = _hex_proof_for_reviewer()
     assert isinstance(
@@ -3505,6 +3554,12 @@ def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
     assert isinstance(
         proof.get(
             "cross_consistency_digest_bridge_event_template_index_entry_verification"
+        ),
+        dict,
+    )
+    assert isinstance(
+        proof.get(
+            "cross_consistency_digest_bridge_event_template_index_entry_verification_summary"
         ),
         dict,
     )
@@ -3524,6 +3579,10 @@ def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
         "cross_consistency_digest_bridge_event_template_index_entry_verification"
         not in ok_assign
     )
+    assert (
+        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary"
+        not in ok_assign
+    )
     ok_idx = cap_src.index('hex_upgrade_proof["ok"] = bool(')
     index_idx = cap_src.index(
         'hex_upgrade_proof[\n        "cross_consistency_digest_bridge_event_template_index_entry"'
@@ -3531,11 +3590,18 @@ def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
     verification_idx = cap_src.index(
         'hex_upgrade_proof[\n        "cross_consistency_digest_bridge_event_template_index_entry_verification"'
     )
+    summary_idx = cap_src.index(
+        'hex_upgrade_proof[\n        "cross_consistency_digest_bridge_event_template_index_entry_verification_summary"'
+    )
     assert index_idx > ok_idx, (
         "template index entry must be enriched after the hex ok recomputation"
     )
     assert verification_idx > ok_idx, (
         "template index-entry verification must be enriched after the hex ok recomputation"
+    )
+    assert summary_idx > ok_idx, (
+        "template index-entry verification summary must be enriched after "
+        "the hex ok recomputation"
     )
 
 
@@ -3555,10 +3621,21 @@ def test_manifest_hex_xcons_template_index_entry_cannot_flip_ok(monkeypatch) -> 
         "claim_safe": True,
         "runtime_subdivision_authority_granted": True,
     }
+    forged_summary = {
+        "summary_version": "forged",
+        "ok": False,
+        "claim_safe": True,
+        "runtime_subdivision_authority_granted": True,
+    }
     monkeypatch.setattr(
         mod,
         "_hex_upgrade_cross_consistency_bridge_event_template_index_entry_bundle",
         lambda *_a, **_k: (dict(forged), dict(forged_verification)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_hex_upgrade_cross_consistency_bridge_event_template_index_entry_verification_summary",
+        lambda *_a, **_k: dict(forged_summary),
     )
     proof = _hex_proof_for_reviewer()
     assert proof.get("ok") == baseline_ok
@@ -3572,6 +3649,12 @@ def test_manifest_hex_xcons_template_index_entry_cannot_flip_ok(monkeypatch) -> 
         )
         == forged_verification
     )
+    assert (
+        proof.get(
+            "cross_consistency_digest_bridge_event_template_index_entry_verification_summary"
+        )
+        == forged_summary
+    )
 
 
 def test_manifest_hex_next_smallest_pr_advanced_beyond_xcons_template() -> None:
@@ -3582,10 +3665,10 @@ def test_manifest_hex_next_smallest_pr_advanced_beyond_xcons_template() -> None:
     )
     nsp = cap["next_smallest_pr"].lower()
     assert "cross-consistency digest that confirms" not in nsp
-    assert "reviewer summary" in nsp
-    assert "verifier result" in nsp
+    assert "verification summary" in nsp
     assert "index-entry" in nsp
-    assert "bridge-event template" in nsp
+    assert "bridge-event renderer" in nsp
+    assert "reviewer summary renderer" not in nsp
     assert "add a local verifier" not in nsp
 
 

@@ -2204,11 +2204,18 @@ def test_manifest_embeds_magma_receipt_proof_without_upgrading_claim() -> None:
         is True
     )
     assert (
+        capability["proof"]["metrics_alertmanager_adapter_smoke"][
+            "reviewer_handoff_bundle_operator_decision_reference_review_bundle_verification_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_verification_summary_bridge_event_template_index_entry_contract_present"
+        ]
+        is True
+    )
+    assert (
         capability["proof"]["metrics_alertmanager_adapter_smoke"]["guardrails_present"]
         is True
     )
     assert "hard append-only" in capability["safe_statement"]
-    assert "local index entry" in capability["next_smallest_pr"]
+    assert "local verifier" in capability["next_smallest_pr"]
+    assert "index entry" in capability["next_smallest_pr"]
     assert "bridge-event template" in capability["next_smallest_pr"]
     assert "verifier-summary" in capability["next_smallest_pr"]
     assert "bridge-event template renderer" not in capability["next_smallest_pr"]

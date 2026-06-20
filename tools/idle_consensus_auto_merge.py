@@ -962,6 +962,9 @@ def verify_bridge_consensus(
             "decision": "bridge_consensus_incomplete",
             "reasons": ["no recognized RCO remains eligible after author exclusion"],
         }
+    eligible_build_agents = {
+        agent: agent != author_agent for agent in build_expected
+    }
     if not SHA_RE.fullmatch(head_sha or ""):
         return {
             **base,
@@ -1090,13 +1093,16 @@ def verify_bridge_consensus(
     ):
         approval = latest_build_approval.get(agent)
         block_index = latest_build_block.get(agent)
-        approved = approval is not None and (
+        eligible = bool(eligible_build_agents.get(agent, False))
+        approved = eligible and approval is not None and (
             block_index is None or approval[0] > block_index
         )
         identities[role] = {
             "agent": agent,
+            "eligible": eligible,
             "approved": approved,
             "direct_approval": approved,
+            "self_approval_ignored": bool(not eligible and approval is not None),
             "failover_engaged": False,
             "approval_index": approval[0] if approval is not None else None,
             "block_index": block_index,
@@ -1104,7 +1110,12 @@ def verify_bridge_consensus(
             "shape_mismatch": latest_build_shape_mismatch.get(agent),
         }
         if not approved:
-            if approval is None:
+            if not eligible:
+                build_identity_reasons[role] = (
+                    f"{role} ({agent}): author_agent cannot satisfy its own "
+                    "reviewer slot"
+                )
+            elif approval is None:
                 mismatch = latest_build_task_mismatch.get(agent)
                 shape_mismatch = latest_build_shape_mismatch.get(agent)
                 if shape_mismatch is not None:

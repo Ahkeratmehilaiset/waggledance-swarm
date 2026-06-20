@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.check_promotion_eligible import (
     _find_private_marker,
     evaluate_promotion_eligibility,
@@ -112,7 +114,7 @@ def _evaluate(
     origin_main_sha: str = BASE,
     prior_approved_head: str = "",
     prior_approved_diff_text: str | None = None,
-    author_agent: str = "codex-lead-1",
+    author_agent: str = "fable-5",
 ) -> dict:
     return evaluate_promotion_eligibility(
         pr_status=status or _status(),
@@ -269,6 +271,29 @@ def test_author_rco_self_pass_does_not_count() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("author_agent", "role"),
+    [
+        ("codex-lead-1", "build_lead"),
+        ("codex-tools-1", "build_tools"),
+    ],
+)
+def test_author_build_self_pass_does_not_count(
+    author_agent: str,
+    role: str,
+) -> None:
+    report = _evaluate(author_agent=author_agent)
+
+    identity = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]["identities"][role]
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
+    assert identity["eligible"] is False
+    assert identity["approved"] is False
+    assert identity["self_approval_ignored"] is True
+
+
 def test_missing_author_agent_fails_closed() -> None:
     report = _evaluate(author_agent="")
 
@@ -385,7 +410,7 @@ def test_lead_cosign_waiver_receipt_does_not_replace_lead_build_consensus() -> N
         ),
     ]
 
-    report = _evaluate(events=events, author_agent="codex-tools-1")
+    report = _evaluate(events=events, author_agent="fable-5")
 
     assert report["eligible"] is False
     assert report["gate_results"]["rco_pass"]["ok"] is True
@@ -532,7 +557,7 @@ def test_cli_returns_zero_only_when_eligible(tmp_path: Path) -> None:
             "--origin-main-sha",
             BASE,
             "--author-agent",
-            "codex-lead-1",
+            "fable-5",
             "--json",
         ],
         check=False,
@@ -577,7 +602,7 @@ def test_cli_default_events_uses_runtime_bridge_root_env_from_other_cwd(
             "--origin-main-sha",
             BASE,
             "--author-agent",
-            "codex-lead-1",
+            "fable-5",
             "--json",
         ],
         cwd=str(other_cwd),

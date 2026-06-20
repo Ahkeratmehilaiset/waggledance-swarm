@@ -96,7 +96,7 @@ def _pr_status() -> dict:
         "state": "OPEN",
         "mergeable": "MERGEABLE",
         "receipt_verified": True,
-        "author_agent": "codex-lead-1",
+        "author_agent": "claude-rco-2",
         "changed_paths": ["tools/agent_next_task.py"],
         "diff_text": "+ diagnostic_commands = []\n",
         "checks": [

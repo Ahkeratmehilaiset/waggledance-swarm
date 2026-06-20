@@ -9,6 +9,7 @@ TASK = "codex-tools-1/operator-gate-regression-20260606"
 LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
+AUTHOR = "claude-rco-2"
 AGENT_UUIDS = {
     LEAD: "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     TOOLS: "7a8af68d-20bc-4598-9953-23c5dd98b102",
@@ -53,7 +54,7 @@ def _status(**overrides) -> dict:
         "title": "[codex] add operator feedback scheduler preflight",
         "mergeable": "clean",
         "receipt_verified": True,
-        "author_agent": LEAD,
+        "author_agent": AUTHOR,
         "changed_paths": ["tests/tools/test_operator_gate_regression.py"],
         "diff_text": "+ def regression():\n+     return True\n",
         "checks": [

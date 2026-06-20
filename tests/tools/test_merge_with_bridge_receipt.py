@@ -14,10 +14,12 @@ HEAD = "1234567890abcdef1234567890abcdef12345678"
 OTHER_HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BASE = "fedcba0987654321fedcba0987654321fedcba09"
 OTHER_BASE = "1111111111111111111111111111111111111111"
-TASK = "codex-lead-1/bridge-consensus-receipt-test"
+AUTHOR = "claude-rco-2"
+TASK = f"{AUTHOR}/bridge-consensus-receipt-test"
 NOW = datetime(2026, 6, 14, 6, 20, tzinfo=timezone.utc)
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "0f0388a0-0d09-4669-b11c-f40711e0b080",
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }

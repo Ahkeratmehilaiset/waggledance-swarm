@@ -59,7 +59,7 @@ def _evaluate(events: list[dict]) -> dict:
         task_id=TASK,
         head=HEAD,
         origin_main_sha=BASE,
-        author_agent="codex-lead-1",
+        author_agent="fable-5",
     )
 
 

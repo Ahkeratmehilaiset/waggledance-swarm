@@ -731,6 +731,47 @@ def test_cli_exit_0_when_pass_at_head_present(tmp_path: Path) -> None:
     assert "RCO_PASS present at exact head" in res.stdout
 
 
+def test_cli_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
+    events_path = _seed_events(
+        tmp_path,
+        [
+            _rco_event(
+                status="rco_pass",
+                type_="decision",
+                message=f"RCO_PASS present at exact head {HEAD}",
+            ),
+        ],
+    )
+    events_path.write_bytes(b"\xef\xbb\xbf" + events_path.read_bytes())
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            TASK,
+            "--head",
+            HEAD,
+            "--events",
+            str(events_path),
+            "--rco-agent",
+            "claude-rco-1",
+            "--author-agent",
+            AUTHOR,
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert res.returncode == 0, f"stderr={res.stderr} stdout={res.stdout}"
+    payload = json.loads(res.stdout)
+    assert payload["ok"] is True
+    assert payload["decision"] == "rco_pass_present"
+
+
 def test_cli_default_events_uses_runtime_bridge_root_env_from_other_cwd(
     tmp_path: Path,
 ) -> None:

@@ -862,7 +862,7 @@ def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 def _read_events(events_path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    text = events_path.read_text(encoding="utf-8")
+    text = events_path.read_text(encoding="utf-8-sig")
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue

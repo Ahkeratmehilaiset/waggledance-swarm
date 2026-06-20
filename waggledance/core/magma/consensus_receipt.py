@@ -24,6 +24,12 @@ from typing import Any, Mapping, Sequence
 from waggledance.core.magma.canonical import sha256_digest
 
 CONSENSUS_RECEIPT_SCHEMA = "magma.bridge_consensus_receipt.v0"
+# rco_pass_operator_merge_required is RETIRED for emission (2026-06-20; RCOs now
+# post plain rco_pass and convey operator-merge in the message), but it is kept
+# here intentionally for BACKWARD-COMPAT: historical receipts may have recorded
+# the variant, and the receipt verifier must still re-derive their verdict.
+# Recognizing an old pass-variant for audit does not affect merge-path policy
+# (that is charter-driven), so keeping it is safe.
 RCO_PASS_STATUSES = frozenset(
     {"rco_pass", "rco_pass_operator_merge_required", "rco_pass_pending_ci"}
 )

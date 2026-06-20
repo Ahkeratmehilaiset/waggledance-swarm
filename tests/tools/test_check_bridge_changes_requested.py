@@ -348,6 +348,37 @@ def test_no_changes_requested_approved_status_does_not_block() -> None:
     assert result["latest_approval_event"]["status"] == "build_consensus_pass"
 
 
+def test_changes_requested_resolution_status_clears_prior_block_without_approval() -> None:
+    for status in [
+        "changes_requested_resolved",
+        "changes_requested_resolved_ci_green",
+        "changes_requested_resolved_ci_pending",
+        "changes_requested_retracted",
+        "changes_requested_withdrawn",
+    ]:
+        events = [
+            _event(
+                "2026-06-07T17:38:40Z",
+                "codex-tools-1",
+                "decision",
+                "changes_requested",
+            ),
+            _event(
+                "2026-06-07T17:39:47Z",
+                "codex-tools-1",
+                "done",
+                status,
+            ),
+        ]
+        result = check_bridge_clear_to_merge(
+            events=events, task_id="T", merging_agent="codex-lead-1"
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+        assert result["latest_approval_event"] is None
+
+
 def test_no_changes_requested_text_does_not_downgrade_real_blocking_status() -> None:
     for status in [
         "no_changes_requested_but_blocked",

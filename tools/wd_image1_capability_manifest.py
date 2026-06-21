@@ -9937,6 +9937,111 @@ def _hex_cross_consistency_bridge_event_template_summary(
     return summary
 
 
+def _hex_cross_consistency_bridge_event_template_index_entry_summary(
+    digest: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Content-safe summary of the hex cross-consistency template index entry."""
+
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template as _build_xcons_tpl,
+    )
+    from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry import (  # noqa: E402
+        build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry as _build_xcons_index,
+    )
+    from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
+
+    template_report = _build_xcons_tpl(
+        digest=digest if isinstance(digest, Mapping) else {},
+        agent_id="codex-lead-1",
+        task_id="wd-image1-hex-xcons-digest-bridge-event-template",
+        to="operator,claude-rco-1,codex-tools-1",
+        role="lead-impl",
+    )
+    template_report = template_report if isinstance(template_report, Mapping) else {}
+    template_bytes = json.dumps(
+        template_report,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    index_entry = _build_xcons_index(
+        bridge_event_template_report=template_report,
+        bridge_event_template_bytes=template_bytes,
+    )
+    index_entry = index_entry if isinstance(index_entry, Mapping) else {}
+    tie = index_entry.get("template_index_entry")
+    tie = tie if isinstance(tie, Mapping) else {}
+    consistency = index_entry.get("consistency")
+    consistency = consistency if isinstance(consistency, Mapping) else {}
+    artifacts = index_entry.get("artifacts")
+    artifact = artifacts[0] if isinstance(artifacts, list) and artifacts else {}
+    artifact = artifact if isinstance(artifact, Mapping) else {}
+    summary: dict[str, Any] = {
+        "report_version": (
+            "wd.hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry_summary.v1"
+        ),
+        "index_entry_available": index_entry.get("ok") is True,
+        "template_only": index_entry.get("template_only") is True,
+        "manual_review_required": index_entry.get("manual_review_required") is True,
+        "artifact_count_one": index_entry.get("artifact_count") == 1,
+        "bridge_event_schema_validated": (
+            tie.get("bridge_event_schema_validated") is True
+            and consistency.get("bridge_event_schema_validated") is True
+        ),
+        "template_report_validator_pass": (
+            consistency.get("template_report_validator") == "pass"
+        ),
+        "all_artifact_digests_recorded": (
+            consistency.get("all_artifact_digests_recorded") is True
+        ),
+        "cross_consistency_digest_ref_recorded": (
+            consistency.get("cross_consistency_digest_ref_recorded") is True
+        ),
+        "no_runtime_authority_granted": (
+            index_entry.get("runtime_authority_granted") is False
+            and tie.get("runtime_authority_granted") is False
+        ),
+        "no_runtime_subdivision_authority_granted": (
+            index_entry.get("runtime_subdivision_authority_granted") is False
+            and tie.get("runtime_subdivision_authority_granted") is False
+        ),
+        "no_direct_bridge_write": (
+            index_entry.get("direct_bridge_write_performed") is False
+            and tie.get("direct_bridge_write_performed") is False
+        ),
+        "no_bridge_event_written": (
+            index_entry.get("bridge_event_written") is False
+            and tie.get("bridge_event_written") is False
+        ),
+        "no_approval_granted": (
+            index_entry.get("approval_granted") is False
+            and tie.get("approval_granted") is False
+        ),
+        "no_payloads_included": (
+            index_entry.get("digest_payloads_included") is False
+            and tie.get("digest_payloads_included") is False
+            and consistency.get("artifact_payloads_included") is False
+            and artifact.get("raw_artifact_payload_included") is False
+        ),
+        "no_local_paths_recorded": (
+            index_entry.get("local_paths_recorded") is False
+            and tie.get("local_paths_recorded") is False
+            and consistency.get("local_paths_recorded") is False
+            and artifact.get("local_path_recorded") is False
+        ),
+        "cross_consistent": tie.get("cross_consistent") is True,
+        "all_views_present": tie.get("all_views_present") is True,
+        "reviewer_clean": tie.get("reviewer_clean") is True,
+        "shadow_only_clean": tie.get("shadow_only_clean") is True,
+        "chain_summary_clean": tie.get("chain_summary_clean") is True,
+        "claim_safe": False,
+    }
+    summary["path_free_verified"] = (
+        index_entry.get("ok") is True and not _contains_path_marker(summary)
+    )
+    return summary
+
+
 _REAL_LOOP_MANIFEST_CONTRIBUTION_REPORT_VERSION = (
     "wd.low_risk_autogrowth_real_loop_proof.v1"
 )
@@ -10563,6 +10668,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template.py",
                 "Template-only bridge-event renderer for the hex-upgrade cross-consistency digest.",
             ),
+            (
+                "tools/build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry.py",
+                "Local index entry for the hex-upgrade cross-consistency digest bridge-event template.",
+            ),
         ),
     )
     future_evidence = _evidence(
@@ -10760,6 +10869,15 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         _hex_cross_consistency_bridge_event_template_summary(
             hex_upgrade_proof["cross_consistency_digest"]
         )
+    )
+    # Local index-entry summary for the hex cross-consistency digest bridge-event
+    # template. Stored as derived booleans only, never the raw event, payload, path, or
+    # digest values. Measurement-only: not folded into hex_upgrade_proof["ok"] and
+    # never upgrades any claim or grants runtime subdivision authority.
+    hex_upgrade_proof[
+        "cross_consistency_digest_bridge_event_template_index_entry"
+    ] = _hex_cross_consistency_bridge_event_template_index_entry_summary(
+        hex_upgrade_proof["cross_consistency_digest"]
     )
     # Ring-messaging + parent-child hierarchy proof (merged
     # tools/run_ring_messaging_hierarchy_proof.py). The RAW proof embeds a
@@ -11391,7 +11509,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "final summary agree; a template-only bridge-event renderer can "
                 "turn that digest into schema-valid handoff JSON without "
                 "appending it, including payloads/paths, upgrading any claim, "
-                "or activating runtime subdivision authority."
+                "or activating runtime subdivision authority. A local index "
+                "entry can bind that bridge-event template digest and schema "
+                "without including payloads, recording paths, appending it, "
+                "upgrading any claim, or activating runtime subdivision "
+                "authority."
             ),
             status=_status_for(hex_upgrade_evidence),
             claim_safe=False,
@@ -11405,10 +11527,11 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "authority.",
             ),
             next_smallest_pr=(
-                "Add a local index entry for the hex-upgrade cross-consistency "
-                "digest bridge-event template without including payloads, "
-                "recording paths, appending it, upgrading any claim, or "
-                "activating runtime subdivision authority."
+                "Add a local verifier for the hex-upgrade cross-consistency "
+                "digest bridge-event template index entry that recomputes "
+                "digests, schema, and source-contract checks without including "
+                "payloads, recording paths, appending it, upgrading any claim, "
+                "or activating runtime subdivision authority."
             ),
             proof=hex_upgrade_proof,
         ),

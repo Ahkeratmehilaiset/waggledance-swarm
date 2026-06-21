@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.build_hex_upgrade_cross_consistency_digest_bridge_event_template import (  # noqa: E402
+    DIGEST_REPORT_VERSION as SOURCE_DIGEST_REPORT_VERSION,
     EVENT_STATUS as SOURCE_EVENT_STATUS,
     FORBIDDEN_OUTPUT_MARKERS,
     TEMPLATE_VERSION as SOURCE_TEMPLATE_VERSION,
@@ -257,6 +258,8 @@ def validate_hex_upgrade_cross_consistency_digest_bridge_event_template_index_en
             errors.append("template_index_entry_template_version_mismatch")
         if tie.get("event_status") != SOURCE_EVENT_STATUS:
             errors.append("template_index_entry_event_status_mismatch")
+        if tie.get("digest_schema_version") != SOURCE_DIGEST_REPORT_VERSION:
+            errors.append("template_index_entry_digest_schema_version_mismatch")
         if tie.get("bridge_event_schema_validated") is not True:
             errors.append("template_index_entry_schema_validated_not_true")
         if not _is_sha256_ref(tie.get("cross_consistency_digest_ref")):
@@ -327,8 +330,8 @@ def _assert_template_contract(template_report: Mapping[str, Any]) -> Mapping[str
             raise IndexEntryError(f"bridge_event_template_boundary_{field}_not_false")
 
     cross = _mapping(payload.get("cross_consistency"))
-    if cross.get("digest_schema_version") is None:
-        raise IndexEntryError("bridge_event_template_cross_consistency_missing")
+    if cross.get("digest_schema_version") != SOURCE_DIGEST_REPORT_VERSION:
+        raise IndexEntryError("bridge_event_template_digest_schema_version_mismatch")
     if not _is_sha256_ref(cross.get("digest_ref")):
         raise IndexEntryError("bridge_event_template_digest_ref_invalid")
     for field in _DIGEST_VERDICT_FIELDS:

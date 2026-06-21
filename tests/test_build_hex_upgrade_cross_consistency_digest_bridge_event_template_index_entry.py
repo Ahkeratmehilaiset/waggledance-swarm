@@ -63,6 +63,7 @@ def test_real_template_index_entry_ok() -> None:
     tie = entry["template_index_entry"]
     assert tie["artifact_id"] == mod.TEMPLATE_ARTIFACT_ID
     assert tie["bridge_event_schema_validated"] is True
+    assert tie["digest_schema_version"] == mod.SOURCE_DIGEST_REPORT_VERSION
     assert tie["cross_consistent"] is True
     assert tie["cross_consistency_digest_ref"].startswith("sha256:")
     assert entry["template_only"] is True
@@ -221,6 +222,25 @@ def test_template_bad_digest_ref_fails() -> None:
         "digest_ref"
     ] = "not-a-ref"
     assert _index_entry(report)["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "digest_schema_version",
+    [
+        {"version": "wd.hex_upgrade_cross_consistency_digest.v1"},
+        1,
+        "wd.other.v1",
+        None,
+    ],
+)
+def test_template_digest_schema_version_mismatch_fails(digest_schema_version) -> None:
+    report = _good_template_report()
+    report["bridge_event_template"]["payload"]["cross_consistency"][
+        "digest_schema_version"
+    ] = digest_schema_version
+    entry = _index_entry(report)
+    assert entry["ok"] is False
+    assert "digest_schema_version_mismatch" in entry["blockers"][0]
 
 
 def test_template_blockers_present_fails() -> None:

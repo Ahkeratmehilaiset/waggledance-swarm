@@ -684,6 +684,46 @@ class _WaggleCollector:
             value=_as_finite_float(snapshot.get("verifier_ok_ratio")),
         )
         yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_deterministic_selected_ratio",
+            (
+                "Ratio of handle_query route attempts with a selected "
+                "deterministic route in this process."
+            ),
+            value=_as_finite_float(snapshot.get("deterministic_selected_ratio")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_deterministic_builtin_success_ratio",
+            (
+                "Ratio of handle_query route attempts with verified non-fallback "
+                "built-in solver success in this process."
+            ),
+            value=_as_finite_float(
+                snapshot.get("deterministic_builtin_success_ratio")
+            ),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_deterministic_last_selected_count",
+            "Selected capability count from the last handle_query route attempt.",
+            value=_as_nonnegative_float(
+                snapshot.get("deterministic_last_selected_count")
+            ),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_deterministic_last_fallback_used",
+            "1 if the last handle_query route attempt used fallback selection.",
+            value=_as_bool_float(snapshot.get("deterministic_last_fallback_used")),
+        )
+        yield GaugeMetricFamily(
+            "waggledance_runtime_receipt_deterministic_last_builtin_solver_succeeded",
+            (
+                "1 if the last handle_query route attempt produced verified "
+                "non-fallback built-in solver success."
+            ),
+            value=_as_bool_float(
+                snapshot.get("deterministic_last_builtin_solver_succeeded")
+            ),
+        )
+        yield GaugeMetricFamily(
             "waggledance_runtime_receipt_default_emission_changed",
             (
                 "1 if this metrics path changed default runtime receipt "
@@ -744,6 +784,43 @@ class _WaggleCollector:
                 "receipt_count_total",
                 "waggledance_runtime_receipt_receipt_count_total",
                 "Total receipts reported by runtime receipt sink results.",
+            ),
+            (
+                "deterministic_route_attempt_total",
+                "waggledance_runtime_receipt_deterministic_route_attempt_total",
+                "Handle_query route attempts observed by deterministic metrics.",
+            ),
+            (
+                "deterministic_route_selected_total",
+                "waggledance_runtime_receipt_deterministic_route_selected_total",
+                "Handle_query route attempts that selected a capability.",
+            ),
+            (
+                "deterministic_route_fallback_total",
+                "waggledance_runtime_receipt_deterministic_route_fallback_total",
+                "Handle_query route attempts that used fallback selection.",
+            ),
+            (
+                "deterministic_builtin_verified_success_total",
+                (
+                    "waggledance_runtime_receipt_"
+                    "deterministic_builtin_verified_success_total"
+                ),
+                (
+                    "Verified non-fallback built-in solver successes observed "
+                    "by deterministic metrics."
+                ),
+            ),
+            (
+                "deterministic_hint_skipped_builtin_precedence_total",
+                (
+                    "waggledance_runtime_receipt_"
+                    "deterministic_hint_skipped_builtin_precedence_total"
+                ),
+                (
+                    "Low-risk autonomy hint skips caused by built-in solver "
+                    "precedence."
+                ),
             ),
         ):
             yield CounterMetricFamily(

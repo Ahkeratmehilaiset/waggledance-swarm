@@ -19,27 +19,46 @@ from waggledance.core.magma.runtime_summary_receipt import (
 
 
 class _Selection:
-    def __init__(self, capability: CapabilityContract) -> None:
-        self.selected = [capability]
+    def __init__(
+        self,
+        capabilities: list[CapabilityContract],
+        *,
+        fallback_used: bool = False,
+    ) -> None:
+        self.selected = capabilities
+        self.fallback_used = fallback_used
 
 
 class _RouteResult:
-    def __init__(self, capability: CapabilityContract) -> None:
-        self.selection = _Selection(capability)
+    def __init__(
+        self,
+        capability: CapabilityContract | None = None,
+        *,
+        selected: list[CapabilityContract] | None = None,
+        fallback_used: bool = False,
+    ) -> None:
+        capabilities = (
+            selected
+            if selected is not None
+            else ([capability] if capability is not None else [])
+        )
+        self.selection = _Selection(capabilities, fallback_used=fallback_used)
         self.quality_path = "gold"
         self.autonomy_consult = None
         self.autonomy_served = False
-        self.solver_call_trace = [
-            {
-                "stage": "solver_call",
-                "status": "selected",
-                "intent": "detect",
-                "capability_id": capability.capability_id,
-                "selected_index": 0,
-                "quality_path": "gold",
-                "execution_boundary": "safe_action_bus",
-            }
-        ]
+        self.solver_call_trace = []
+        if capabilities:
+            self.solver_call_trace = [
+                {
+                    "stage": "solver_call",
+                    "status": "selected",
+                    "intent": "detect",
+                    "capability_id": capabilities[0].capability_id,
+                    "selected_index": 0,
+                    "quality_path": "gold",
+                    "execution_boundary": "safe_action_bus",
+                }
+            ]
 
 
 class _Executor:
@@ -132,6 +151,16 @@ def test_handle_query_emits_opt_in_runtime_summary_receipt(tmp_path: Path) -> No
     assert metrics["coverage_ratio"] == 1.0
     assert metrics["solver_trace_presence_ratio"] == 1.0
     assert metrics["verifier_ok_ratio"] == 1.0
+    assert metrics["deterministic_route_attempt_total"] == 1
+    assert metrics["deterministic_route_selected_total"] == 1
+    assert metrics["deterministic_route_fallback_total"] == 0
+    assert metrics["deterministic_builtin_verified_success_total"] == 1
+    assert metrics["deterministic_hint_skipped_builtin_precedence_total"] == 1
+    assert metrics["deterministic_last_selected_count"] == 1
+    assert metrics["deterministic_last_fallback_used"] is False
+    assert metrics["deterministic_last_builtin_solver_succeeded"] is True
+    assert metrics["deterministic_selected_ratio"] == 1.0
+    assert metrics["deterministic_builtin_success_ratio"] == 1.0
     assert metrics["default_runtime_receipt_emission_changed"] is False
     assert metrics["runtime_authority_changed"] is False
 
@@ -273,6 +302,47 @@ def test_handle_query_without_runtime_receipt_sink_records_default_off_metrics()
     assert metrics["coverage_ratio"] == 0.0
     assert metrics["solver_trace_presence_ratio"] == 1.0
     assert metrics["verifier_ok_ratio"] == 0.0
+    assert metrics["deterministic_route_attempt_total"] == 1
+    assert metrics["deterministic_route_selected_total"] == 1
+    assert metrics["deterministic_route_fallback_total"] == 0
+    assert metrics["deterministic_builtin_verified_success_total"] == 1
+    assert metrics["deterministic_hint_skipped_builtin_precedence_total"] == 1
+    assert metrics["deterministic_last_selected_count"] == 1
+    assert metrics["deterministic_last_fallback_used"] is False
+    assert metrics["deterministic_last_builtin_solver_succeeded"] is True
+    assert metrics["deterministic_selected_ratio"] == 1.0
+    assert metrics["deterministic_builtin_success_ratio"] == 1.0
+
+
+def test_handle_query_records_fallback_route_without_selected_capability() -> None:
+    registry = CapabilityRegistry(load_builtins=False)
+    runtime = AutonomyRuntime(
+        capability_registry=registry,
+        enable_persistence=False,
+        runtime_receipt_sink=None,
+    )
+    runtime.solver_router.route = (
+        lambda _intent, _query, _context: _RouteResult(
+            selected=[],
+            fallback_used=True,
+        )
+    )
+
+    result = runtime.handle_query("receipt metrics no selected route")
+
+    assert result["error"] == "No capabilities available"
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["handle_query_total"] == 0
+    assert metrics["deterministic_route_attempt_total"] == 1
+    assert metrics["deterministic_route_selected_total"] == 0
+    assert metrics["deterministic_route_fallback_total"] == 1
+    assert metrics["deterministic_builtin_verified_success_total"] == 0
+    assert metrics["deterministic_hint_skipped_builtin_precedence_total"] == 0
+    assert metrics["deterministic_last_selected_count"] == 0
+    assert metrics["deterministic_last_fallback_used"] is True
+    assert metrics["deterministic_last_builtin_solver_succeeded"] is False
+    assert metrics["deterministic_selected_ratio"] == 0.0
+    assert metrics["deterministic_builtin_success_ratio"] == 0.0
 
 
 def test_handle_query_runtime_receipt_sink_failure_blocks_opt_in_path(

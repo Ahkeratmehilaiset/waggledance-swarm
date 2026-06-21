@@ -335,6 +335,29 @@ def test_non_decision_exact_blocking_status_still_blocks() -> None:
     assert result["latest_blocking_event"]["status"] == "changes_requested"
 
 
+def test_non_decision_strong_block_status_variants_still_block() -> None:
+    for event_type, status in [
+        ("message", "rco_block_critical"),
+        ("handoff", "blocked_no_fix_yet"),
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T03:25:56Z",
+                    "codex-lead-1",
+                    event_type,
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="claude-rco-1",
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["type"] == event_type
+        assert result["latest_blocking_event"]["status"] == status
+
+
 def test_no_changes_requested_status_does_not_block() -> None:
     events = [
         _event(

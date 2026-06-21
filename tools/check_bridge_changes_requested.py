@@ -66,6 +66,7 @@ BLOCKING_STATUSES = frozenset(
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
 BLOCKING_FUZZY_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
+TYPE_AGNOSTIC_BLOCK_PREFIX_TOKENS = frozenset({"block", "blocked"})
 NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
     {
         "no_changes_requested",
@@ -347,13 +348,16 @@ def _is_no_block_status(status: str) -> bool:
 def _is_blocking_status(status: str, *, allow_fuzzy: bool = True) -> bool:
     if status in BLOCKING_STATUSES:
         return True
-    if not allow_fuzzy:
-        return False
     if _is_no_changes_requested_status(status) or _is_no_block_status(status):
         return False
     tokens = _status_tokens(status)
-    if {"changes", "requested"}.issubset(tokens):
+    if allow_fuzzy and {"changes", "requested"}.issubset(tokens):
         return True
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    first_token = normalized.split("_", 1)[0] if normalized else ""
+    if not allow_fuzzy and "rco" not in tokens:
+        if first_token not in TYPE_AGNOSTIC_BLOCK_PREFIX_TOKENS:
+            return False
     if not tokens.intersection(BLOCKING_WORD_TOKENS):
         return False
     if "preflight" in tokens and tokens.intersection(BLOCKING_CLEAR_TOKENS):

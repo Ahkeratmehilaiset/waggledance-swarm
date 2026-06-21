@@ -267,3 +267,30 @@ def test_handle_query_does_not_pass_low_risk_autonomy_query_when_skipped(
     runtime.handle_query("hello", context=ctx)
     assert "low_risk_autonomy_query" not in ctx
     assert ctx["low_risk_autonomy_hint_kind"] == "skipped"
+
+
+def test_handle_query_builtin_precedence_skips_hint_even_with_structured_request(
+    cp: ControlPlaneDB,
+) -> None:
+    """Direct runtime callers must not consult low-risk autonomy after
+    an authoritative built-in solver has already succeeded."""
+
+    _seed_promoted(cp)
+    runtime = _build_runtime_with_consult(cp)
+    before = cp.count_runtime_gap_signals()
+    ctx = {
+        "builtin_solver_succeeded": True,
+        "structured_request": {
+            "unit_conversion": {"x": 0.0, "from": "C", "to": "K"},
+            "cell_coord": "thermal",
+            "intent_seed": "celsius_to_kelvin",
+        },
+    }
+
+    result = runtime.handle_query("convert 0 C to K", context=ctx)
+
+    assert ctx["low_risk_autonomy_hint_kind"] == "skipped_builtin_precedence"
+    assert "low_risk_autonomy_query" not in ctx
+    assert result.get("quality_path") != "autonomy_consult"
+    assert not (result.get("autonomy_consult") or {}).get("served", False)
+    assert cp.count_runtime_gap_signals() == before

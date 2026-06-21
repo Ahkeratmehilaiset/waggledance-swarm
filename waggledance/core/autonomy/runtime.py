@@ -725,12 +725,18 @@ class AutonomyRuntime:
         # without the consult lane see no behaviour change.
         # Failures here MUST NOT break the production path.
         try:
-            hint_result = derive_low_risk_autonomy_hint(query, context)
-            if hint_result.kind == RESULT_DERIVED and hint_result.hint is not None:
-                context["low_risk_autonomy_query"] = dict(hint_result.hint)
-                context["low_risk_autonomy_hint_kind"] = "derived"
+            if bool(context.get("builtin_solver_succeeded")):
+                context.pop("low_risk_autonomy_query", None)
+                context["low_risk_autonomy_hint_kind"] = (
+                    "skipped_builtin_precedence"
+                )
             else:
-                context["low_risk_autonomy_hint_kind"] = hint_result.kind
+                hint_result = derive_low_risk_autonomy_hint(query, context)
+                if hint_result.kind == RESULT_DERIVED and hint_result.hint is not None:
+                    context["low_risk_autonomy_query"] = dict(hint_result.hint)
+                    context["low_risk_autonomy_hint_kind"] = "derived"
+                else:
+                    context["low_risk_autonomy_hint_kind"] = hint_result.kind
         except Exception as exc:  # noqa: BLE001 — never break runtime
             log.debug("hint extractor raised; ignored: %r", exc)
             context["low_risk_autonomy_hint_kind"] = "extractor_error"

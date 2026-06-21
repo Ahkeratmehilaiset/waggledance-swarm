@@ -2718,6 +2718,10 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         ]
         is False
     )
+    # Salvage (#1321-#1328 closed): the safe_statement is de-recursed. The
+    # genuinely-true capabilities remain; the recursive nesting enumeration is
+    # removed. The proof smokes above are unchanged (no proof removed).
+    assert "two independent" in capability["safe_statement"]
     assert "route-stage labels" in capability["safe_statement"]
     assert "route-stage operator metrics" in capability["safe_statement"]
     assert "runtime rate/latency counters" in capability["safe_statement"]
@@ -2730,57 +2734,31 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert "verification-summary bridge-event template" in (
         capability["safe_statement"]
     )
-    assert "local template index entry" in capability["safe_statement"]
-    assert "verifier summary renderer" in capability["safe_statement"]
-    assert "bridge-event renderer for the verifier summary" in (
-        capability["safe_statement"]
+    assert "path-free reviewer-handoff summaries" in capability["safe_statement"]
+    assert "flags" in capability["safe_statement"]
+    # The recursive-tail phrases must NOT reappear in the condensed statement.
+    assert (
+        "local index entry for that renderer" not in capability["safe_statement"]
     )
-    assert "local index entry for that renderer" in capability["safe_statement"]
-    assert "local verifier for that index entry" in capability["safe_statement"]
-    assert "reviewer handoff summary" in capability["safe_statement"]
-    assert "handoff bundle index" in capability["safe_statement"]
-    assert "path-free verification summary" in capability["safe_statement"]
-    assert "template-only bridge-event renderer for that bundle summary" in (
-        capability["safe_statement"]
+    assert (
+        "local verifier for that index entry" not in capability["safe_statement"]
     )
-    assert "local index entry for that renderer" in capability["safe_statement"]
-    assert "local verifier for that bridge-event template index entry" in (
-        capability["safe_statement"]
+    assert (
+        "template-only bridge-event renderer for that verifier summary"
+        not in capability["safe_statement"]
     )
-    assert "path-free verification summary renderer for that verifier" in (
-        capability["safe_statement"]
+    assert (
+        "path-free verification summary renderer for that verifier"
+        not in capability["safe_statement"]
     )
-    assert "template-only bridge-event renderer for that verifier summary" in (
-        capability["safe_statement"]
-    )
-    assert "verifier summary plus a local index entry and verifier" in (
-        capability["safe_statement"]
-    )
-    assert "path-free verification summary renderer for that verifier" in (
-        capability["safe_statement"]
-    )
-    assert "template-only bridge-event renderer for that verifier verification summary" in (
-        capability["safe_statement"]
-    )
-    assert "handoff bundle" in capability["next_smallest_pr"]
-    assert "local index entry" in capability["next_smallest_pr"]
-    assert "verifier verification summary bridge-event template" in (
-        capability["next_smallest_pr"]
-    )
-    assert "bridge-event template index entry verifier verification summary" in (
-        capability["next_smallest_pr"]
-    )
-    assert "without including payloads" in capability["next_smallest_pr"]
-    assert "Add a template-only bridge-event renderer" not in (
-        capability["next_smallest_pr"]
-    )
-    assert "Add a local verifier" not in capability["next_smallest_pr"]
-    assert "Add a path-free verification summary renderer" not in (
-        capability["next_smallest_pr"]
-    )
-    assert "Add a local index entry" in (
-        capability["next_smallest_pr"]
-    )
+    # next_smallest_pr is repointed OFF the route-stage recursion onto a
+    # measurement-first runtime hex-stage coverage counter.
+    assert "runtime coverage counter" in capability["next_smallest_pr"]
+    assert "hex-backed route stages" in capability["next_smallest_pr"]
+    assert "path-free counts" in capability["next_smallest_pr"]
+    assert "granting runtime authority" in capability["next_smallest_pr"]
+    assert "index entry" not in capability["next_smallest_pr"]
+    assert "bridge-event template" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
 

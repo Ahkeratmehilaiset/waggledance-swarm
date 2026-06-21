@@ -187,6 +187,50 @@ def test_summary_version_mismatch_is_rejected() -> None:
     assert any("summary_version_mismatch" in b for b in report["blockers"])
 
 
+def _assert_rejected(summary: dict[str, object], blocker_substr: str) -> None:
+    report = build_magma_share_import_replay_sanitization_bridge_event_template(
+        replay_sanitization_summary=summary,
+        agent_id="codex-tools-1",
+        task_id="magma-share-replay-sanitization",
+        to="codex-lead-1",
+    )
+    assert report["ok"] is False
+    assert any(blocker_substr in b for b in report["blockers"])
+
+
+def test_malformed_required_check_names_member_is_rejected() -> None:
+    # RCO2 forge: an object inside required_check_names must fail closed,
+    # not be accepted as ok=True and counted.
+    summary = _ready_summary()
+    summary["required_check_names"] = ["context_match", {"nested": "object"}]
+    summary["required_check_count"] = 2
+    _assert_rejected(summary, "required_check_names_unsafe")
+
+
+def test_malformed_redaction_inventory_member_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["redaction_inventory"] = ["raw_material", {"nested": "object"}]
+    _assert_rejected(summary, "redaction_inventory_unsafe")
+
+
+def test_unsafe_report_invariants_key_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["report_invariants"] = {"unsafe key!": False}
+    _assert_rejected(summary, "report_invariants_unsafe")
+
+
+def test_non_bool_report_invariants_value_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["report_invariants"] = {"transport_enabled": "false"}
+    _assert_rejected(summary, "report_invariants_unsafe")
+
+
+def test_required_check_count_mismatch_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["required_check_count"] = 99  # != len(required_check_names) == 2
+    _assert_rejected(summary, "required_check_count_mismatch")
+
+
 def test_cli_json_is_path_free(tmp_path: Path) -> None:
     summary = _ready_summary()
     summary_path = tmp_path / "summary.json"

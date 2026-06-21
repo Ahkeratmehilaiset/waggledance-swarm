@@ -208,23 +208,30 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
     for key in ("status", "blocker_class", "sanitization_contract", "scope"):
         if not _safe_token(summary.get(key)):
             return None, f"{key}_unsafe"
-    # blockers are echoed as a count but are short class tokens; keep strict.
-    blockers = summary.get("blockers")
-    if not isinstance(blockers, list) or not all(
-        _safe_token(item) for item in blockers
-    ):
-        return None, "blockers_unsafe"
-    # required_check_names / redaction_inventory are only COUNTED (never echoed),
-    # so a list type plus the global forbidden-marker scan above is sufficient;
-    # this keeps the builder robust against the real summary's exact contents.
-    for key in ("required_check_names", "redaction_inventory"):
-        if not isinstance(summary.get(key), list):
+    # Every collected list member and mapping key/value is shape-validated:
+    # list members must be safe tokens, mapping keys safe tokens, mapping values
+    # bool. Malformed members fail closed (RCO2 forge criterion) even though only
+    # their counts are echoed -- a list/mapping carrying an object or unsafe key
+    # must NOT be silently accepted and counted.
+    for key in ("blockers", "required_check_names", "redaction_inventory"):
+        items = summary.get(key)
+        if not isinstance(items, list) or not all(
+            _safe_token(item) for item in items
+        ):
             return None, f"{key}_unsafe"
     invariants = summary.get("report_invariants")
     if not isinstance(invariants, Mapping) or not all(
-        isinstance(v, bool) for v in invariants.values()
+        _safe_token(k) and isinstance(v, bool) for k, v in invariants.items()
     ):
         return None, "report_invariants_unsafe"
+    # The echoed required_check_count must equal the validated name list length.
+    required_check_count = summary.get("required_check_count")
+    if (
+        isinstance(required_check_count, bool)
+        or not isinstance(required_check_count, int)
+        or required_check_count != len(summary["required_check_names"])
+    ):
+        return None, "required_check_count_mismatch"
     for key in TRUE_FLAGS:
         if summary.get(key) is not True:
             return None, f"{key}_not_true"

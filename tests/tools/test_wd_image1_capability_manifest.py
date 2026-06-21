@@ -114,7 +114,10 @@ def test_manifest_keeps_literal_image_overclaims_unsafe() -> None:
     assert capabilities["hex_mesh_entry"]["status"] == "partial"
     assert capabilities["hex_mesh_entry"]["claim_safe"] is False
     assert "two independent" in capabilities["hex_mesh_entry"]["safe_statement"]
-    assert "enabled hex_neighbor_assist" in (
+    assert "hex_neighbor_assist is enabled" in (
+        capabilities["hex_mesh_entry"]["safe_statement"]
+    )
+    assert "earlier stages do not answer" in (
         capabilities["hex_mesh_entry"]["safe_statement"]
     )
     assert capabilities["hex_mesh_entry"]["proof"]["literal_claim_safe"] is False

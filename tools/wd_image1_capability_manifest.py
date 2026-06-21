@@ -11326,9 +11326,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "drill evidence verifier, verification-summary bridge-event "
                 "templates, and path-free reviewer-handoff summaries are also "
                 "available; executable ChatService invariants pin the honest "
-                "scoped route truth: enabled hex_neighbor_assist is consulted "
-                "before generic orchestrator_llm_fallback, while hex is not "
-                "the first resolution stage and is disabled by default. "
+                "scoped route truth: when hex_neighbor_assist is enabled and "
+                "earlier stages do not answer, it is consulted before generic "
+                "orchestrator_llm_fallback, while hex is not the first "
+                "resolution stage and is disabled by default. "
                 "Broader first-entry wording still depends on flags and call "
                 "path."
             ),

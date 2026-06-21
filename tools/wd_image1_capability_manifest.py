@@ -5011,6 +5011,18 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     receipt_proof = build_solver_trace_magma_receipt_proof(root)
     receipt_metrics_smoke = build_runtime_receipt_metrics_smoke(root)
     receipt_settings_sink_smoke = build_runtime_receipt_settings_sink_smoke(root)
+    from tools.build_runtime_receipt_settings_sink_reviewer_handoff_summary import (  # noqa: E402
+        build_runtime_receipt_settings_sink_reviewer_handoff_summary,
+    )
+
+    receipt_settings_sink_reviewer_summary = (
+        build_runtime_receipt_settings_sink_reviewer_handoff_summary(
+            sink_proof=receipt_settings_sink_smoke,
+            reviewer_agent_id="codex-lead-1",
+            handoff_ref="wd-image1-deterministic-solver-runtime-receipt-sink",
+            now_utc=datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc),
+        )
+    )
     ok = (
         result.quality_path == "gold"
         and result.selection.fallback_used is False
@@ -5021,6 +5033,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         and receipt_proof.get("ok") is True
         and receipt_metrics_smoke.get("ok") is True
         and receipt_settings_sink_smoke.get("ok") is True
+        and receipt_settings_sink_reviewer_summary.get("ok") is True
     )
     return {
         "proof_id": "deterministic_solver_trace_v1",
@@ -5044,6 +5057,12 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             receipt_settings_sink_smoke.get("ok") is True
         ),
         "runtime_receipt_settings_sink_smoke": receipt_settings_sink_smoke,
+        "runtime_receipt_settings_sink_reviewer_summary_claimed": (
+            receipt_settings_sink_reviewer_summary.get("ok") is True
+        ),
+        "runtime_receipt_settings_sink_reviewer_summary": (
+            receipt_settings_sink_reviewer_summary
+        ),
         "receipt_metrics": {
             "receipt_count": receipt_proof.get("receipt_count"),
             "solver_call_trace_count": receipt_proof.get("solver_call_trace_count"),
@@ -5054,6 +5073,9 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             "settings_sink_result_path_free": receipt_settings_sink_smoke.get(
                 "configured_sink_result_path_free"
             ),
+            "settings_sink_reviewer_summary_ok": (
+                receipt_settings_sink_reviewer_summary.get("ok") is True
+            ),
         },
         "external_writes_applied": False,
         "safe_conclusion": (
@@ -5062,7 +5084,9 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             "summary receipt can bind that trace. Runtime counters, "
             "Prometheus metrics, and settings-wired default-off sink wiring "
             "can measure configured sink coverage while preserving the "
-            "default no-emission path."
+            "default no-emission path; a path-free reviewer handoff summary "
+            "renders those sink proof booleans as measurement-only review "
+            "context."
         ),
     }
 
@@ -10326,6 +10350,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tests/autonomy/test_runtime_receipt_container_wiring.py",
                 "Regression tests pin default-off and path-free configured sink behavior.",
             ),
+            (
+                "tools/build_runtime_receipt_settings_sink_reviewer_handoff_summary.py",
+                "Path-free reviewer handoff summary for the configured runtime receipt sink proof.",
+            ),
+            (
+                "tests/tools/test_build_runtime_receipt_settings_sink_reviewer_handoff_summary.py",
+                "Regression tests pin strict-bool, path-free, no-authority reviewer summary behavior.",
+            ),
         ),
     )
     magma_evidence = _evidence(
@@ -11277,7 +11309,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "receipt coverage counters, Prometheus metrics, and an "
                 "operator-configured local sink now expose configured "
                 "sink coverage while preserving default-off receipt "
-                "emission and returning only path-free verifier metadata."
+                "emission and returning only path-free verifier metadata; "
+                "a path-free reviewer handoff summary renders that sink "
+                "proof as measurement-only review context."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
@@ -11289,10 +11323,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Render a path-free reviewer handoff summary for the "
-                "configured runtime receipt sink proof without including "
-                "payloads or local paths, without changing default receipt "
-                "emission, or granting runtime authority."
+                "Add a local reviewer-handoff bundle index tying the "
+                "configured runtime receipt sink proof to its path-free "
+                "reviewer summary, verifying source/summary digests without "
+                "including payloads or local paths, appending bridge events, "
+                "changing default receipt emission, upgrading claim_safe, or "
+                "granting runtime authority."
             ),
             proof=solver_trace_proof,
         ),

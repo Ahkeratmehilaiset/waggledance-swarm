@@ -8,9 +8,11 @@ index -> this verifier. It RE-DERIVES the bundle index from the source sink
 proof + reviewer summary (and their bytes) using the canonical builder, asserts
 the recorded bundle index matches the re-derivation (so a tampered digest /
 version / boundary flag fails closed), and independently re-checks the
-measurement-only invariants. It never appends bridge events, transports
-artifacts, performs network/file I/O, grants runtime authority, changes default
-receipt emission, or upgrades any capability claim_safe.
+measurement-only invariants. The CLI reads only the explicit local JSON input
+files passed to it (read-only); beyond that the verification performs no network
+or transport, no bridge writes, no output file writes, grants no runtime
+authority, changes no default receipt emission, and upgrades no capability
+claim_safe.
 """
 from __future__ import annotations
 

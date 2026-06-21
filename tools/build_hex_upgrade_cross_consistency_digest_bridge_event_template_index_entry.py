@@ -196,7 +196,7 @@ def build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry
             "template_only": True,
             "manual_review_required": True,
             "blockers": [],
-            "warnings": _safe_string_list(bridge_event_template_report.get("warnings")),
+            "warnings": [],
         }
         for field in AUTHORITY_FALSE_FIELDS:
             entry[field] = False
@@ -290,6 +290,9 @@ def _assert_template_contract(template_report: Mapping[str, Any]) -> Mapping[str
         raise IndexEntryError("bridge_event_template_path_free_not_true")
     _expect_empty_items(
         template_report.get("blockers"), "bridge_event_template_blockers_present"
+    )
+    _expect_empty_items(
+        template_report.get("warnings"), "bridge_event_template_warnings_present"
     )
     for field in _TEMPLATE_REPORT_FALSE_FIELDS:
         if template_report.get(field) is not False:
@@ -508,16 +511,6 @@ def _safe_sha256_ref(value: Any) -> str:
     if _is_sha256_ref(value):
         return str(value)
     return "sha256:" + ("0" * 64)
-
-
-def _safe_string_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [
-        _safe_reason(item)
-        for item in value
-        if isinstance(item, str) and not _contains_forbidden_marker(item)
-    ]
 
 
 def _utc_iso(value: datetime) -> str:

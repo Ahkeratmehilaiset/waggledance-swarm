@@ -276,6 +276,24 @@ def test_forbidden_marker_case_variants_fail_closed(warning: str) -> None:
     assert "warnings" not in entry or warning not in entry["warnings"]
 
 
+def test_source_warnings_fail_closed_without_raw_event_leak() -> None:
+    report = _good_template_report()
+    source_event = report["bridge_event_template"]
+    report["warnings"] = [
+        source_event["message"],
+        source_event["agent"],
+        source_event["ts_utc"],
+    ]
+
+    entry = _index_entry(report)
+    blob = json.dumps(entry)
+
+    assert entry["ok"] is False
+    assert "bridge_event_template_warnings_present" in entry["blockers"][0]
+    for raw in (source_event["message"], source_event["agent"], source_event["ts_utc"]):
+        assert raw not in blob
+
+
 def test_validate_rejects_authority_true() -> None:
     entry = _index_entry(_good_template_report())
     bad = copy.deepcopy(entry)

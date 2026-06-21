@@ -277,6 +277,33 @@ def test_empty_report_invariants_on_ready_is_rejected() -> None:
     _assert_rejected(summary, "report_invariants_empty")
 
 
+def test_ready_identity_scalars_are_rejected_without_defaulting() -> None:
+    # tools forge: ready identity scalars must not silently default in payload.
+    for key in (
+        "source",
+        "severity",
+        "manifest_version",
+        "admission_contract_version",
+        "share_id",
+        "purpose",
+    ):
+        summary = _ready_summary()
+        summary[key] = {"nested": "object"}
+        _assert_rejected(summary, f"{key}_unsafe")
+
+
+def test_ready_context_booleans_are_strict() -> None:
+    cases = (
+        ("context_verified", False, "context_verified_not_true"),
+        ("context_drift_detected", True, "context_drift_detected_not_false"),
+        ("controls_present", "false", "controls_present_not_bool"),
+    )
+    for key, value, blocker in cases:
+        summary = _ready_summary()
+        summary[key] = value
+        _assert_rejected(summary, blocker)
+
+
 def test_cli_json_is_path_free(tmp_path: Path) -> None:
     summary = _ready_summary()
     summary_path = tmp_path / "summary.json"

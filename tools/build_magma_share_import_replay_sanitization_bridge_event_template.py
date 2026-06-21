@@ -256,6 +256,22 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
     # per-report digests, so these are only required when ok is True.
     if summary["ok"] is True:
         for key in (
+            "source",
+            "severity",
+            "manifest_version",
+            "admission_contract_version",
+            "share_id",
+            "purpose",
+        ):
+            if not _safe_token(summary.get(key)):
+                return None, f"{key}_unsafe"
+        if summary.get("context_verified") is not True:
+            return None, "context_verified_not_true"
+        if summary.get("context_drift_detected") is not False:
+            return None, "context_drift_detected_not_false"
+        if not isinstance(summary.get("controls_present"), bool):
+            return None, "controls_present_not_bool"
+        for key in (
             "report_digest",
             "replay_plan_digest",
             "share_manifest_digest",

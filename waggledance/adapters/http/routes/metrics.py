@@ -45,7 +45,10 @@ from prometheus_client.core import (
     HistogramMetricFamily,
 )
 
-from waggledance.adapters.http.routes.chat import CHAT_ROUTE_STAGE_ORDER
+from waggledance.adapters.http.routes.chat import (
+    CHAT_ROUTE_STAGE_ORDER,
+    FIRST_SERVED_HOP_STAGES,
+)
 from waggledance.adapters.http.routes.compat_dashboard import (
     _autogrowth_section,
     _magma_share_import_handoff_section,
@@ -527,6 +530,9 @@ class _WaggleCollector:
         hex_coverage = snapshot.get("hex_stage_coverage_total")
         if not isinstance(hex_coverage, dict):
             hex_coverage = {}
+        first_served_hop = snapshot.get("first_served_hop_total")
+        if not isinstance(first_served_hop, dict):
+            first_served_hop = {}
 
         observed = CounterMetricFamily(
             "waggledance_route_stage_observations_total",
@@ -584,10 +590,26 @@ class _WaggleCollector:
                     [stage, state],
                     _as_float(stage_counts.get(state)) or 0.0,
                 )
+        first_served_hop_metric = CounterMetricFamily(
+            "waggledance_route_stage_first_served_hop_total",
+            (
+                "Total sanitized chat requests by the FIRST route stage that "
+                "served the query (first answering hop). Pre-processing stages "
+                "cannot serve and are excluded. The hex_neighbor_assist_7_cell "
+                "label is the honeycomb-first-served signal; measurement only."
+            ),
+            labels=["first_served_hop"],
+        )
+        for stage in FIRST_SERVED_HOP_STAGES:
+            first_served_hop_metric.add_metric(
+                [stage],
+                _as_float(first_served_hop.get(stage)) or 0.0,
+            )
         yield observed
         yield latency
         yield latency_histogram
         yield hex_coverage_metric
+        yield first_served_hop_metric
 
     def _collect_runtime_receipt_metrics(
         self,

@@ -10664,6 +10664,26 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tests/tools/test_verify_runtime_gap_scheduler_candidate_bridge_event_template_index_entry.py",
                 "Verifier tests prove digest recomputation, path-free CLI output, source-contract failure, and no scheduler/runtime authority.",
             ),
+            (
+                "tools/run_low_risk_cross_consistency_digest.py",
+                "Path-free measurement digest confirms low-risk real-loop, trend, and reviewer-summary views agree without upgrading claim safety.",
+            ),
+            (
+                "tools/build_low_risk_cross_consistency_digest_bridge_event_template.py",
+                "Template-only bridge-event renderer for the low-risk cross-consistency digest; no append, transport, scheduler enqueue, or runtime authority.",
+            ),
+            (
+                "tools/build_low_risk_cross_consistency_digest_bridge_event_template_index_entry.py",
+                "Local index entry for the low-risk cross-consistency bridge-event template; digest binding only, no payload transport or bridge append.",
+            ),
+            (
+                "tools/verify_low_risk_cross_consistency_digest_bridge_event_template_index_entry.py",
+                "Local verifier for low-risk cross-consistency bridge-event template index entries; recomputes digest, size, source-contract, rebuilt-entry, and no-authority checks.",
+            ),
+            (
+                "tests/test_verify_low_risk_cross_consistency_digest_bridge_event_template_index_entry.py",
+                "Verifier tests prove matching rebuilds, tamper detection, source-contract failure, path-safe failure output, and no scheduler/runtime authority.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -11434,8 +11454,10 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "path-free scheduler-candidate preview artifact plus a "
                 "template-only bridge-event renderer for that preview, plus "
                 "a local index entry for that renderer and a local verifier "
-                "for that index entry; unrestricted runtime authority is not "
-                "claimed."
+                "for that index entry, plus a measurement-only low-risk "
+                "cross-consistency digest with a template-only bridge-event "
+                "renderer, local index entry, and local verifier; "
+                "unrestricted runtime authority is not claimed."
             ),
             status=_status_for(autogrowth_evidence),
             claim_safe=False,
@@ -11484,13 +11506,17 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "source-contract, rebuilt-entry, and bridge-event-schema "
                 "checks without transporting payloads, appending bridge "
                 "events, enqueueing scheduler work, or granting authority.",
+                "The low-risk cross-consistency digest/template/index/verifier "
+                "chain is reviewer context only; it does not append bridge "
+                "events, transport payloads, enqueue scheduler work, upgrade "
+                "claim safety, or grant runtime authority.",
             ),
             next_smallest_pr=(
-                "Add a path-free, measurement-only local index entry for the low-risk "
-                "cross-consistency digest bridge-event template (derived booleans/strict "
-                "ints only), without appending it, including payloads/paths, "
-                "transporting, enqueueing scheduler work, upgrading any claim, or "
-                "granting runtime authority."
+                "Add a path-free verification-summary renderer for the "
+                "low-risk cross-consistency digest bridge-event template "
+                "index entry verifier without including payloads or local "
+                "paths, appending bridge events, enqueueing scheduler work, "
+                "upgrading any claim, or granting runtime authority."
             ),
             proof=low_risk_autonomy_proof,
         ),

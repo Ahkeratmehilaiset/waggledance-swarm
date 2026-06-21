@@ -173,6 +173,22 @@ def test_verifier_rejects_template_bytes_mismatch() -> None:
     assert "template_report_sha256_mismatch" in verification["blockers"]
 
 
+def test_verifier_rejects_empty_index_entry_bytes() -> None:
+    report = _template_report()
+    entry = _index_entry(report)
+
+    verification = mod.verify_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry(
+        index_entry=entry,
+        bridge_event_template_report=report,
+        index_entry_bytes=b"",
+        bridge_event_template_bytes=_template_bytes(report),
+    )
+
+    assert verification["ok"] is False
+    assert verification["size_checks"]["index_entry_bytes_present"] == "failed"
+    assert "index_entry_bytes_missing" in verification["blockers"]
+
+
 @pytest.mark.parametrize(
     "bad_value",
     [

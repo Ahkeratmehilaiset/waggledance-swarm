@@ -282,8 +282,13 @@ def _size_checks(
 ) -> dict[str, str]:
     artifacts = _artifact_records(index_entry, blockers)
     artifact = artifacts.get(TEMPLATE_ARTIFACT_ID, {})
+    index_entry_bytes_present = len(index_entry_bytes) > 0
+    if not index_entry_bytes_present:
+        blockers.append("index_entry_bytes_missing")
     return {
-        "index_entry_bytes_present": "match" if len(index_entry_bytes) > 0 else "failed",
+        "index_entry_bytes_present": (
+            "match" if index_entry_bytes_present else "failed"
+        ),
         "artifact_byte_count": _check_equal(
             artifact.get("byte_count"),
             len(bridge_event_template_bytes),

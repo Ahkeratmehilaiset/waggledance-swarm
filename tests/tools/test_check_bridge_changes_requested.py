@@ -517,6 +517,8 @@ def test_message_decorated_veto_statuses_still_block() -> None:
         ("message", "block_without_fix"),
         ("handoff", "changes_requested_do_not_merge"),
         ("handoff", "rco_block_critical"),
+        ("handoff", "blocked_no_fix_yet"),
+        ("handoff", "block_without_fix"),
     ]:
         result = check_bridge_clear_to_merge(
             events=[

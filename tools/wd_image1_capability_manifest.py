@@ -887,6 +887,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "waggledance_route_stage_observations_total",
         "waggledance_route_stage_request_latency_ms_total",
         "waggledance_route_stage_request_latency_histogram_ms",
+        "waggledance_route_stage_hex_coverage_total",
     )
     missing_inputs = [
         rel_path for rel_path in required_paths if not (repo_root / rel_path).exists()
@@ -1142,13 +1143,22 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "route_stage_trace": "WD_IMAGE1_PRIVATE_TRACE_MARKER",
             },
             {
+                "stage": "hybrid_retrieval_8_cell",
+                "answered": False,
+                "cell_secret": "WD_IMAGE1_PRIVATE_CELL_MARKER",
+            },
+            {
                 "stage": "orchestrator_llm_fallback",
                 "source": "llm",
             },
         ]
         sanitized_trace = _sanitize_route_stage_trace(raw_trace)
         runtime_metrics = RouteStageRuntimeMetrics()
-        runtime_metrics.record(sanitized_trace, 12.5)
+        runtime_metrics.record(
+            sanitized_trace,
+            12.5,
+            ["hex_neighbor_assist_7_cell"],
+        )
         runtime_metrics.record(
             [{"stage": "language_detection"}, {"stage": "hot_cache"}],
             7.5,
@@ -1168,6 +1178,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             "WD_IMAGE1_PRIVATE_PROFILE_MARKER",
             "WD_IMAGE1_PRIVATE_LANGUAGE_MARKER",
             "WD_IMAGE1_PRIVATE_TRACE_MARKER",
+            "WD_IMAGE1_PRIVATE_CELL_MARKER",
             "query=",
             "profile=",
             "language=",
@@ -1191,6 +1202,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             'stage="language_detection"} 2.0',
             "waggledance_route_stage_request_latency_histogram_ms_sum{"
             'stage="language_detection"} 20.0',
+            "waggledance_route_stage_hex_coverage_total{"
+            'stage="hybrid_retrieval_8_cell",state="entered"} 1.0',
+            "waggledance_route_stage_hex_coverage_total{"
+            'stage="hex_neighbor_assist_7_cell",state="disabled"} 1.0',
         }
         runtime_contract = {
             "ok": (
@@ -1239,6 +1254,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             and "observations_total" in chat_text
             and "request_latency_ms_total" in chat_text
             and "request_latency_ms_buckets" in chat_text
+            and "HEX_BACKED_ROUTE_STAGE_NAMES" in chat_text
+            and "hex_stage_coverage_total" in chat_text
+            and "disabled_route_stages" in chat_text
         ),
         "metrics_export_counters_present": all(
             token in metrics_text
@@ -1247,6 +1265,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "waggledance_route_stage_observations_total",
                 "waggledance_route_stage_request_latency_ms_total",
                 "waggledance_route_stage_request_latency_histogram_ms",
+                "waggledance_route_stage_hex_coverage_total",
+                "_HEX_STAGE_COVERAGE_STATES",
                 "HistogramMetricFamily",
                 "CHAT_ROUTE_STAGE_ORDER",
             )
@@ -1258,9 +1278,11 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             token in metrics_tests_text
             for token in (
                 "test_metrics_body_contains_route_stage_runtime_counters",
+                "test_metrics_body_contains_route_stage_hex_coverage_counters",
                 "test_metrics_route_stage_runtime_counters_default_to_zero",
                 "WD_IMAGE1_PRIVATE_QUERY_MARKER",
                 "not_an_allowed_stage",
+                "waggledance_route_stage_hex_coverage_total",
                 "request_latency_histogram_ms_bucket",
                 "request_latency_histogram_ms_count",
             )
@@ -1271,6 +1293,8 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
                 "test_chat_request_updates_privacy_safe_route_stage_runtime_metrics",
                 "waggledance_route_stage_observations_total",
                 "waggledance_route_stage_request_latency_histogram_ms_bucket",
+                "waggledance_route_stage_hex_coverage_total",
+                "hex_neighbor_assist_7_cell",
                 "PRIVATE_QUERY_MARKER_METRICS",
             )
         ),
@@ -1914,11 +1938,15 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
             )
         ),
         "api_docs_present": (
-            "route-stage runtime observation/latency counters" in docs_text
+            "route-stage runtime observation/latency/hex-coverage counters"
+            in docs_text
             and "waggledance_route_stage_observations_total" in docs_text
             and "waggledance_route_stage_request_latency_ms_total" in docs_text
             and "waggledance_route_stage_request_latency_histogram_ms_bucket"
             in docs_text
+            and "waggledance_route_stage_hex_coverage_total" in docs_text
+            and "entered" in docs_text
+            and "disabled" in docs_text
             and "ROUTE_STAGE_LATENCY_RUNBOOK.md" in docs_text
             and "It is not an internal span timer" in docs_text
             and "route_stage_latency_feed" in docs_text
@@ -1938,6 +1966,10 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "operator_visible_metrics": ok,
         "rate_query_supported": ok,
         "histogram_quantile_supported": ok,
+        "hex_stage_coverage_counter_supported": checks[
+            "metrics_export_counters_present"
+        ],
+        "hex_stage_coverage_contract_visible": runtime_contract["ok"] is True,
         "latency_panel_templates_visible": ok,
         "prometheus_alertmanager_feed_supported": ok,
         "prometheus_alertmanager_feed_provider_configured": ok,
@@ -9052,6 +9084,7 @@ def _build_future_scale_runtime_evidence(
         "waggledance_route_stage_observations_total",
         "waggledance_route_stage_request_latency_ms_total",
         "waggledance_route_stage_request_latency_histogram_ms",
+        "waggledance_route_stage_hex_coverage_total",
     ]
     latency_metric_names = [
         "waggledance_route_stage_request_latency_histogram_ms_bucket",

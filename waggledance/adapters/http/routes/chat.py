@@ -55,6 +55,11 @@ CHAT_ROUTE_STAGE_ORDER = (
     "hex_neighbor_assist_7_cell",
     "orchestrator_llm_fallback",
 )
+HEX_BACKED_ROUTE_STAGE_NAMES = (
+    "hybrid_retrieval_8_cell",
+    "hex_neighbor_assist_7_cell",
+)
+HEX_STAGE_COVERAGE_STATES = ("entered", "disabled")
 OPTIONAL_ROUTE_STAGE_COMPONENTS = {
     "hybrid_retrieval_8_cell": "_hybrid_retrieval",
     "hex_neighbor_assist_7_cell": "_hex_neighbor_assist",
@@ -128,12 +133,17 @@ class RouteStageRuntimeMetrics:
             stage: {label: 0 for label in ROUTE_STAGE_LATENCY_BUCKET_LABELS}
             for stage in self._stage_order
         }
+        self._hex_stage_coverage_total = {
+            stage: {state: 0 for state in HEX_STAGE_COVERAGE_STATES}
+            for stage in HEX_BACKED_ROUTE_STAGE_NAMES
+        }
         self._lock = Lock()
 
     def record(
         self,
         trace: list[dict[str, Any]] | None,
         request_latency_ms: float,
+        disabled_route_stages: list[str] | None = None,
     ) -> None:
         """Record one sanitized route trace without storing payload fields."""
 
@@ -162,6 +172,12 @@ class RouteStageRuntimeMetrics:
 
         if not observed:
             return
+        disabled_hex_stages = {
+            stage
+            for stage in disabled_route_stages or []
+            if isinstance(stage, str) and stage in HEX_BACKED_ROUTE_STAGE_NAMES
+        }
+        observed_set = set(observed)
         with self._lock:
             for stage in observed:
                 self._observations_total[stage] += 1
@@ -174,6 +190,11 @@ class RouteStageRuntimeMetrics:
                     if latency_ms <= upper_bound:
                         self._request_latency_ms_buckets[stage][label] += 1
                 self._request_latency_ms_buckets[stage]["+Inf"] += 1
+            for stage in HEX_BACKED_ROUTE_STAGE_NAMES:
+                if stage in observed_set:
+                    self._hex_stage_coverage_total[stage]["entered"] += 1
+                elif stage in disabled_hex_stages:
+                    self._hex_stage_coverage_total[stage]["disabled"] += 1
 
     def snapshot(self) -> dict[str, dict[str, float] | list[str]]:
         with self._lock:
@@ -195,6 +216,13 @@ class RouteStageRuntimeMetrics:
                         for label, value in buckets.items()
                     }
                     for stage, buckets in self._request_latency_ms_buckets.items()
+                },
+                "hex_stage_coverage_total": {
+                    stage: {
+                        state: float(value)
+                        for state, value in counts.items()
+                    }
+                    for stage, counts in self._hex_stage_coverage_total.items()
                 },
             }
 
@@ -318,10 +346,11 @@ def _record_route_stage_runtime_metrics(
     container: Any,
     trace: list[dict[str, Any]] | None,
     request_latency_ms: float,
+    disabled_route_stages: list[str] | None = None,
 ) -> None:
     try:
         metrics = _route_stage_runtime_metrics(container)
-        metrics.record(trace, request_latency_ms)
+        metrics.record(trace, request_latency_ms, disabled_route_stages)
     except Exception:
         pass
 
@@ -420,10 +449,15 @@ async def chat_endpoint(
     """Handle a chat request.  No business logic here -- delegates entirely."""
     result = await chat_service.handle(request.to_dto())
     resp = ChatHttpResponse.from_result(result)
+    route_stage_labels = _route_stage_labels(resp.route_stage_trace, chat_service)
+    disabled_route_stages = [
+        item["stage"] for item in route_stage_labels if item["status"] == "disabled"
+    ]
     _record_route_stage_runtime_metrics(
         getattr(http_request.app.state, "container", None),
         resp.route_stage_trace,
         resp.latency_ms,
+        disabled_route_stages,
     )
 
     # Broadcast chat_route event to WS clients (fire-and-forget)

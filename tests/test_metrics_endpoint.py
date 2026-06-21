@@ -468,6 +468,64 @@ def test_metrics_body_contains_route_stage_runtime_counters():
     assert "query=" not in body
 
 
+def test_metrics_body_contains_route_stage_hex_coverage_counters():
+    runtime_metrics = RouteStageRuntimeMetrics()
+    runtime_metrics.record(
+        [
+            {"stage": "language_detection"},
+            {
+                "stage": "hybrid_retrieval_8_cell",
+                "cell_id": "WD_IMAGE1_PRIVATE_CELL_MARKER",
+            },
+            {"stage": "not_an_allowed_stage"},
+        ],
+        12.5,
+        disabled_route_stages=[
+            "hex_neighbor_assist_7_cell",
+            "not_an_allowed_stage",
+        ],
+    )
+    runtime_metrics.record(
+        [
+            {
+                "stage": "hex_neighbor_assist_7_cell",
+                "source": "WD_IMAGE1_PRIVATE_HEX_SOURCE",
+            },
+        ],
+        20.0,
+    )
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": False}),
+        hybrid_retrieval=types.SimpleNamespace(enabled=True),
+        route_stage_runtime_metrics=runtime_metrics,
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "# HELP waggledance_route_stage_hex_coverage_total" in body
+    assert (
+        'waggledance_route_stage_hex_coverage_total{'
+        'stage="hybrid_retrieval_8_cell",state="entered"} 1.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_hex_coverage_total{'
+        'stage="hybrid_retrieval_8_cell",state="disabled"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_hex_coverage_total{'
+        'stage="hex_neighbor_assist_7_cell",state="entered"} 1.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_hex_coverage_total{'
+        'stage="hex_neighbor_assist_7_cell",state="disabled"} 1.0'
+    ) in body
+    assert "WD_IMAGE1_PRIVATE_CELL_MARKER" not in body
+    assert "WD_IMAGE1_PRIVATE_HEX_SOURCE" not in body
+    assert "not_an_allowed_stage" not in body
+    assert "route_stage_trace" not in body
+
+
 def test_metrics_route_stage_runtime_counters_default_to_zero():
     container = _FakeContainer(_FakeHexAssist({"enabled": True}))
     client = TestClient(_make_app(container))
@@ -489,6 +547,14 @@ def test_metrics_route_stage_runtime_counters_default_to_zero():
     assert (
         'waggledance_route_stage_request_latency_histogram_ms_count{'
         'stage="language_detection"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_hex_coverage_total{'
+        'stage="hybrid_retrieval_8_cell",state="entered"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_hex_coverage_total{'
+        'stage="hex_neighbor_assist_7_cell",state="disabled"} 0.0'
     ) in body
 
 

@@ -262,6 +262,7 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
         "waggledance_route_stage_observations_total",
         "waggledance_route_stage_request_latency_ms_total",
         "waggledance_route_stage_request_latency_histogram_ms",
+        "waggledance_route_stage_hex_coverage_total",
     ]
     assert all(smoke["checks"].values())
     assert smoke["runtime_contract"]["ok"] is True
@@ -270,6 +271,8 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_reports_counters() -> None:
     assert smoke["operator_visible_metrics"] is True
     assert smoke["rate_query_supported"] is True
     assert smoke["histogram_quantile_supported"] is True
+    assert smoke["hex_stage_coverage_counter_supported"] is True
+    assert smoke["hex_stage_coverage_contract_visible"] is True
     assert smoke["latency_panel_templates_visible"] is True
     assert smoke["prometheus_alertmanager_feed_supported"] is True
     assert smoke["prometheus_alertmanager_feed_provider_configured"] is True
@@ -1822,6 +1825,18 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
     assert (
         capability["proof"]["route_stage_runtime_metrics_smoke"][
             "histogram_quantile_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "hex_stage_coverage_counter_supported"
+        ]
+        is True
+    )
+    assert (
+        capability["proof"]["route_stage_runtime_metrics_smoke"][
+            "hex_stage_coverage_contract_visible"
         ]
         is True
     )

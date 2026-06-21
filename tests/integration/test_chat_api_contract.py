@@ -157,6 +157,7 @@ def test_chat_request_updates_privacy_safe_route_stage_runtime_metrics():
         "# HELP waggledance_route_stage_request_latency_histogram_ms"
         in body
     )
+    assert "# HELP waggledance_route_stage_hex_coverage_total" in body
     assert re.search(
         r'waggledance_route_stage_observations_total\{'
         r'stage="language_detection"\} [1-9]\d*\.0',
@@ -170,6 +171,11 @@ def test_chat_request_updates_privacy_safe_route_stage_runtime_metrics():
     assert re.search(
         r'waggledance_route_stage_request_latency_histogram_ms_bucket\{'
         r'le="\+Inf",stage="language_detection"\} [1-9]\d*\.0',
+        body,
+    )
+    assert re.search(
+        r'waggledance_route_stage_hex_coverage_total\{'
+        r'stage="hex_neighbor_assist_7_cell",state="disabled"\} [1-9]\d*\.0',
         body,
     )
     assert raw_query not in body

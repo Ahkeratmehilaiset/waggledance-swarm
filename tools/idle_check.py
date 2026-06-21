@@ -7,7 +7,9 @@ emit bridge events, query GitHub, or start the protocol by itself.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -18,12 +20,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN
+from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN, validate_event_line
 from waggledance.core.work_queue import resolve_bridge_root
 
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_CLAIMS_DIR = Path(".agent-bridge") / "work_queue" / "claims"
+DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
+
+
+@dataclass(frozen=True)
+class EventReadResult:
+    events: list[dict[str, Any]]
+    invalid_lines: int
+    waived_invalid_lines: int
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +66,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--now", default=None)
     parser.add_argument("--operator-last-activity-utc", default=None)
     parser.add_argument("--open-request-max-age-hours", type=float, default=12.0)
+    parser.add_argument(
+        "--waivers",
+        type=Path,
+        default=DEFAULT_WAIVERS_PATH,
+        help="Known-invalid historical event waivers JSON.",
+    )
+    parser.add_argument(
+        "--no-waivers",
+        action="store_true",
+        help="Disable known-invalid historical event waivers.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -73,6 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             idle_minutes=args.idle_minutes,
             pending_ci_count=args.pending_ci_count,
             open_request_max_age_hours=args.open_request_max_age_hours,
+            waivers_path=None if args.no_waivers else args.waivers,
             operator_last_activity_utc=(
                 _parse_utc(args.operator_last_activity_utc)
                 if args.operator_last_activity_utc
@@ -100,6 +122,7 @@ def evaluate_idle_state(
     idle_minutes: int,
     pending_ci_count: int,
     open_request_max_age_hours: float,
+    waivers_path: Path | None = DEFAULT_WAIVERS_PATH,
     operator_last_activity_utc: datetime | None = None,
 ) -> dict[str, Any]:
     if idle_minutes <= 0:
@@ -111,7 +134,8 @@ def evaluate_idle_state(
     if not events_path.exists():
         raise ValueError(f"missing bridge events file: {events_path}")
 
-    events, invalid_lines = _read_events(events_path)
+    read_result = _read_events(events_path, waivers_path=waivers_path)
+    events = read_result.events
     if not events:
         raise ValueError(f"empty bridge events file: {events_path}")
 
@@ -144,7 +168,11 @@ def evaluate_idle_state(
             cutoff,
         ),
         "recent_operator_activity": _quiet(latest_operator, cutoff),
-        "invalid_events": {"ok": invalid_lines == 0, "invalid_lines": invalid_lines},
+        "invalid_events": {
+            "ok": read_result.invalid_lines == 0,
+            "invalid_lines": read_result.invalid_lines,
+            "waived_invalid_lines": read_result.waived_invalid_lines,
+        },
         "stale_open_requests_ignored": {
             "ok": True,
             "task_ids": [request["task_id"] for request in stale_requests],
@@ -165,21 +193,101 @@ def evaluate_idle_state(
     }
 
 
-def _read_events(path: Path) -> tuple[list[dict[str, Any]], int]:
+def _read_events(path: Path, *, waivers_path: Path | None) -> EventReadResult:
+    waiver_hashes, waiver_errors = (
+        ({}, {}) if waivers_path is None else _load_waivers(waivers_path)
+    )
     events: list[dict[str, Any]] = []
-    invalid = 0
+    invalid_lines = 0
+    waived_invalid_lines = 0
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
-            event = json.loads(line)
-            event["_line_no"] = line_no
-            event["_ts"] = _parse_utc(str(event["ts_utc"]))
-            events.append(event)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            invalid += 1
+            validate_event_line(line, line_no=line_no)
+        except ValueError as exc:
+            error = str(exc)
+            raw_sha256 = _line_sha256(line)
+            if (
+                waiver_hashes.get(line_no) == raw_sha256
+                and waiver_errors.get(line_no) == error
+            ):
+                waived_invalid_lines += 1
+            else:
+                invalid_lines += 1
+            try:
+                events.append(_decode_idle_event(line, line_no=line_no))
+            except ValueError:
+                continue
+            continue
+        events.append(_decode_idle_event(line, line_no=line_no))
     events.sort(key=lambda event: (event["_ts"], event["_line_no"]))
-    return events, invalid
+    return EventReadResult(
+        events=events,
+        invalid_lines=invalid_lines,
+        waived_invalid_lines=waived_invalid_lines,
+    )
+
+
+def _decode_idle_event(line: str, *, line_no: int) -> dict[str, Any]:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid JSON") from exc
+    if not isinstance(event, dict):
+        raise ValueError("event must be a JSON object")
+    try:
+        event["_ts"] = _parse_utc(str(event["ts_utc"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("event must have parseable ts_utc") from exc
+    event["_line_no"] = line_no
+    return event
+
+
+def _load_waivers(path: Path) -> tuple[dict[int, str], dict[int, str]]:
+    if not path.exists():
+        return {}, {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc.msg}") from exc
+    entries = payload.get("waivers") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: expected object with waivers list")
+    waiver_hashes: dict[int, str] = {}
+    waiver_errors: dict[int, str] = {}
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: waiver {index} must be an object")
+        line_no = entry.get("line_no")
+        raw_sha256 = entry.get("raw_line_sha256")
+        error = entry.get("error")
+        reason = entry.get("reason")
+        if not isinstance(line_no, int) or line_no <= 0:
+            raise ValueError(
+                f"{path}: waiver {index} line_no must be a positive integer"
+            )
+        if not isinstance(raw_sha256, str) or not _is_sha256_digest(raw_sha256):
+            raise ValueError(
+                f"{path}: waiver {index} raw_line_sha256 must be sha256:<64 hex>"
+            )
+        if not isinstance(error, str) or not error.strip():
+            raise ValueError(f"{path}: waiver {index} error must be non-empty")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"{path}: waiver {index} reason must be non-empty")
+        waiver_hashes[line_no] = raw_sha256
+        waiver_errors[line_no] = error
+    return waiver_hashes, waiver_errors
+
+
+def _line_sha256(line: str) -> str:
+    return "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest()
+
+
+def _is_sha256_digest(value: str) -> bool:
+    if not value.startswith("sha256:") or len(value) != len("sha256:") + 64:
+        return False
+    return all(char in "0123456789abcdef" for char in value.removeprefix("sha256:"))
 
 
 def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -49,6 +50,10 @@ def _write_events(path: Path, events: list[dict[str, object]]) -> None:
         "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
         encoding="utf-8",
     )
+
+
+def _line_sha256(line: str) -> str:
+    return "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest()
 
 
 def _base_idle_events() -> list[dict[str, object]]:
@@ -376,6 +381,109 @@ def test_stale_unclosed_request_is_reported_but_does_not_block_idle(
     assert payload["criteria"]["stale_open_requests_ignored"]["task_ids"] == [
         "claude-scout-stale-historical-record"
     ]
+
+
+def test_unwaived_invalid_event_line_blocks_idle(tmp_path: Path) -> None:
+    mod = importlib.import_module("tools.idle_check")
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    claims_dir.mkdir()
+    invalid_event = _event(
+        ts_utc="2026-05-17T10.33.00Z",
+        type="test",
+        status="passed_with_timestamp_typo",
+        message="Historical bridge event with a malformed timestamp.",
+    )
+    lines = [
+        *(json.dumps(event, sort_keys=True) for event in _base_idle_events()),
+        json.dumps(invalid_event, sort_keys=True),
+    ]
+    events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        rc = mod.main(
+            [
+                "--events",
+                str(events_path),
+                "--claims-dir",
+                str(claims_dir),
+                "--now",
+                NOW,
+                "--json",
+            ]
+        )
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["decision"] == "active"
+    assert "invalid_events" in payload["blockers"]
+    assert payload["criteria"]["invalid_events"]["invalid_lines"] == 1
+    assert payload["criteria"]["invalid_events"]["waived_invalid_lines"] == 0
+
+
+def test_waived_invalid_event_line_does_not_block_idle(tmp_path: Path) -> None:
+    mod = importlib.import_module("tools.idle_check")
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    waiver_path = tmp_path / "waivers.json"
+    claims_dir.mkdir()
+    invalid_event = _event(
+        ts_utc="2026-05-17T10.33.00Z",
+        type="test",
+        status="passed_with_timestamp_typo",
+        message="Historical bridge event with a malformed timestamp.",
+    )
+    valid_lines = [json.dumps(event, sort_keys=True) for event in _base_idle_events()]
+    invalid_line = json.dumps(invalid_event, sort_keys=True)
+    invalid_line_no = len(valid_lines) + 1
+    events_path.write_text(
+        "\n".join([*valid_lines, invalid_line]) + "\n",
+        encoding="utf-8",
+    )
+    waiver_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agent-bridge-event-waivers.v1",
+                "waivers": [
+                    {
+                        "line_no": invalid_line_no,
+                        "raw_line_sha256": _line_sha256(invalid_line),
+                        "error": (
+                            f"line {invalid_line_no}: ts_utc: Value error, "
+                            "ts_utc must be ISO-8601"
+                        ),
+                        "reason": "test fixture for append-only historical event typo",
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        rc = mod.main(
+            [
+                "--events",
+                str(events_path),
+                "--claims-dir",
+                str(claims_dir),
+                "--waivers",
+                str(waiver_path),
+                "--now",
+                NOW,
+                "--json",
+            ]
+        )
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["decision"] == "idle"
+    assert "invalid_events" not in payload["blockers"]
+    assert payload["criteria"]["invalid_events"]["invalid_lines"] == 0
+    assert payload["criteria"]["invalid_events"]["waived_invalid_lines"] == 1
 
 
 def test_short_cron_poll_is_ignored_but_recent_substantive_message_is_active(

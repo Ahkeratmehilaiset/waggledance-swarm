@@ -124,6 +124,32 @@ def test_main_exit0(tmp_path, capsys) -> None:
     )
 
 
+def test_semantically_same_template_bytes_are_accepted() -> None:
+    report = _good_template_report()
+    entry = (
+        mod.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry(
+            bridge_event_template_report=report,
+            bridge_event_template_bytes=json.dumps(report, indent=2).encode(),
+            now_utc=_FIXED,
+        )
+    )
+
+    assert entry["ok"] is True
+
+
+def test_template_bytes_mismatch_fails_closed() -> None:
+    entry = (
+        mod.build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry(
+            bridge_event_template_report=_good_template_report(),
+            bridge_event_template_bytes=b'{"different":true}',
+            now_utc=_FIXED,
+        )
+    )
+
+    assert entry["ok"] is False
+    assert "bridge_event_template_bytes_mismatch" in entry["blockers"][0]
+
+
 @pytest.mark.parametrize("proof", [None, "nope", 7, [], {}])
 def test_non_mapping_template_fails(proof) -> None:
     if proof is None:

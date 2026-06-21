@@ -118,6 +118,13 @@ def build_hex_upgrade_cross_consistency_digest_bridge_event_template_index_entry
 
     try:
         _assert_mapping(TEMPLATE_ARTIFACT_ID, bridge_event_template_report)
+        bytes_report = _decode_json_artifact_bytes(
+            bridge_event_template_bytes, TEMPLATE_ARTIFACT_ID
+        )
+        if _plain_json_object(bytes_report) != _plain_json_object(
+            bridge_event_template_report
+        ):
+            raise IndexEntryError("bridge_event_template_bytes_mismatch")
         _assert_no_forbidden_input(TEMPLATE_ARTIFACT_ID, bridge_event_template_report)
         cross = _assert_template_contract(bridge_event_template_report)
 
@@ -398,7 +405,10 @@ def _load_json_artifact(path: Path, label: str) -> tuple[bytes, Mapping[str, Any
         raw = path.read_bytes()
     except OSError as exc:
         raise IndexEntryError(f"{label}_unreadable") from exc
+    return raw, _decode_json_artifact_bytes(raw, label)
 
+
+def _decode_json_artifact_bytes(raw: bytes, label: str) -> Mapping[str, Any]:
     def reject_constant(value: str) -> None:
         raise ValueError(f"non_finite_json_constant:{value}")
 
@@ -414,7 +424,7 @@ def _load_json_artifact(path: Path, label: str) -> tuple[bytes, Mapping[str, Any
         raise IndexEntryError(f"{label}_json_error") from exc
     if not isinstance(parsed, Mapping):
         raise IndexEntryError(f"{label}_not_object")
-    return raw, parsed
+    return parsed
 
 
 def _reject_duplicate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

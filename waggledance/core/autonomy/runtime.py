@@ -872,7 +872,7 @@ class AutonomyRuntime:
 
         verified_ok = verifier_result.passed if verifier_result else False
         if (
-            not route_result.selection.fallback_used
+            not getattr(route_result.selection, "fallback_used", False)
             and action_result.executed
             and verified_ok
         ):

@@ -26,6 +26,8 @@ if str(ROOT) not in sys.path:
 
 from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
+    _is_blocking_status as _bridge_is_blocking_status,
+    _is_clear_status as _bridge_is_clear_status,
     check_bridge_clear_to_merge,
 )
 from tools.check_rco_pass_present import (  # noqa: E402
@@ -87,41 +89,7 @@ RCO_PASS_STATUSES = frozenset(
         "rco_pass",
     }
 )
-# Mirrors tools/check_bridge_changes_requested.BLOCKING_STATUSES so the
-# consensus approver and the veto preflight agree on what a block looks like.
-CONSENSUS_BLOCKING_STATUSES = frozenset(
-    {
-        "changes_requested",
-        "rco_block",
-        "blocked",
-        "rco_blocked",
-        "block_requested",
-    }
-)
-CONSENSUS_BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
-CONSENSUS_BLOCKING_WORD_TOKENS = frozenset(
-    {"block", "blocked", "blocks", "blocking"}
-)
-CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
-    {
-        "no_changes_requested",
-        "no_changes_requested_approved",
-    }
-)
-CONSENSUS_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
-    {
-        "changes_requested_resolved",
-        "changes_requested_resolved_ci_green",
-        "changes_requested_resolved_ci_pending",
-        "changes_requested_retracted",
-        "changes_requested_withdrawn",
-        # Mirror check_bridge_changes_requested: "cleared" is a natural veto-lift
-        # suffix; without it changes_requested_cleared false-blocks the gate.
-        "changes_requested_cleared",
-        "changes_requested_cleared_ci_green",
-        "changes_requested_cleared_ci_pending",
-    }
-)
+CONSENSUS_CLEAR_EVENT_TYPES = DECISION_EVENT_TYPES | frozenset({"done", "test"})
 LEAD_STALL_FAILOVER_THRESHOLD_SECONDS = 90 * 60
 LEAD_STALL_NON_SUBSTANTIVE_TYPES = frozenset({"heartbeat", "liveness"})
 LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
@@ -1041,13 +1009,10 @@ def verify_bridge_consensus(
             task_id=task_id,
             pr_number=pr_number,
         )
-        # Block detection is TYPE-AGNOSTIC (fail-closed): a veto from an
-        # on-scope expected identity must invalidate consensus regardless of
-        # the event type the vetoer used. If this honoured the
-        # DECISION_EVENT_TYPES filter first, a veto posted as e.g.
-        # type=blocked/status=blocked would be silently dropped and a stale
-        # earlier approval would stand -- the exact fail-open T0b prevents.
-        if _is_consensus_clear(status):
+        # Block detection intentionally shares the peer-gate status classifier:
+        # authoritative veto types invalidate consensus, but diagnostic
+        # bridge chatter must not create a phantom block.
+        if _is_consensus_clear(status, event_type=event_type):
             if not _consensus_block_scope_match(
                 event,
                 task_id=task_id,
@@ -1061,7 +1026,7 @@ def verify_bridge_consensus(
             else:
                 latest_build_block.pop(agent, None)
             continue
-        if _is_consensus_block(status):
+        if _is_consensus_block(status, event_type=event_type):
             if not _consensus_block_scope_match(
                 event,
                 task_id=task_id,
@@ -1699,28 +1664,15 @@ def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
     return False
 
 
-def _is_consensus_block(status: str) -> bool:
-    if status in CONSENSUS_BLOCKING_STATUSES:
-        return True
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    if _is_consensus_clear(status):
-        return False
-    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
-    if {"changes", "requested"}.issubset(tokens):
-        return True
-    if not tokens.intersection(CONSENSUS_BLOCKING_WORD_TOKENS):
-        return False
-    if "preflight" in tokens and tokens.intersection(CONSENSUS_BLOCKING_CLEAR_TOKENS):
-        return False
-    return True
+def _is_consensus_block(status: str, *, event_type: str = "") -> bool:
+    return _bridge_is_blocking_status(status, event_type=event_type)
 
 
-def _is_consensus_clear(status: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    return (
-        normalized in CONSENSUS_NO_CHANGES_REQUESTED_CLEAR_STATUSES
-        or normalized in CONSENSUS_CHANGES_REQUESTED_CLEAR_STATUSES
-    )
+def _is_consensus_clear(status: str, *, event_type: str = "") -> bool:
+    normalized_event_type = re.sub(r"[^a-z0-9]+", "_", event_type.lower()).strip("_")
+    if normalized_event_type and normalized_event_type not in CONSENSUS_CLEAR_EVENT_TYPES:
+        return False
+    return _bridge_is_clear_status(status)
 
 
 def _bridge_peer_gate(

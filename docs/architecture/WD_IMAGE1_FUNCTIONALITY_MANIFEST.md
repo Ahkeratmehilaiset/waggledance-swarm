@@ -129,6 +129,12 @@ endpoints, grant approval, or add runtime controls.
 Current settings have `hybrid_retrieval.enabled=true` in `candidate` mode and
 `hex_mesh.enabled=false`, so the literal "every query first enters the mesh"
 wording remains unsafe.
+PR #1363 adds executable ChatService invariants for the scoped statement that
+is safe to use today: when `hex_neighbor_assist` is enabled and earlier stages
+do not answer, the 7-cell hex mesh is consulted before the generic
+`orchestrator_llm_fallback`. The same tests intentionally pin the blockers for
+the literal image wording: cache / deterministic / hybrid stages precede hex,
+and the 7-cell hex mesh is disabled by default.
 
 The `hexagonal_upgrades` proof is intentionally pure. It builds a temporary
 topology in memory, applies a shadow subdivision plan, verifies parent/child

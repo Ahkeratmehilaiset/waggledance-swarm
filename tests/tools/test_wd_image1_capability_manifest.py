@@ -114,7 +114,14 @@ def test_manifest_keeps_literal_image_overclaims_unsafe() -> None:
     assert capabilities["hex_mesh_entry"]["status"] == "partial"
     assert capabilities["hex_mesh_entry"]["claim_safe"] is False
     assert "two independent" in capabilities["hex_mesh_entry"]["safe_statement"]
+    assert "enabled hex_neighbor_assist" in (
+        capabilities["hex_mesh_entry"]["safe_statement"]
+    )
     assert capabilities["hex_mesh_entry"]["proof"]["literal_claim_safe"] is False
+    assert (
+        capabilities["hex_mesh_entry"]["proof"]["scoped_statement_supported"]
+        is True
+    )
 
     assert capabilities["magma_audit_log"]["status"] == "partial"
     assert capabilities["magma_audit_log"]["claim_safe"] is False
@@ -195,6 +202,11 @@ def test_hex_mesh_entry_proof_reports_current_route_order_and_flags() -> None:
     assert (
         proof["route_stage_runtime_metrics_smoke"]["operator_visible_metrics"] is True
     )
+    assert proof["scoped_statement_supported"] is True
+    assert "before the generic orchestrator_llm_fallback" in (
+        proof["scoped_statement"]
+    )
+    assert "not the first resolution stage" in proof["scoped_statement"]
     assert "do not literally enter a hex mesh first" in proof["safe_conclusion"]
 
 
@@ -2768,12 +2780,13 @@ def test_manifest_embeds_hex_entry_proof_without_upgrading_claim() -> None:
         "path-free verification summary renderer for that verifier"
         not in capability["safe_statement"]
     )
-    # next_smallest_pr is repointed OFF the route-stage recursion onto a
-    # measurement-first runtime hex-stage coverage counter.
-    assert "runtime coverage counter" in capability["next_smallest_pr"]
-    assert "hex-backed route stages" in capability["next_smallest_pr"]
-    assert "path-free counts" in capability["next_smallest_pr"]
-    assert "granting runtime authority" in capability["next_smallest_pr"]
+    # next_smallest_pr is repointed OFF the route-stage recursion onto the
+    # real product/runtime decision: keep scoped copy or build a gated canary
+    # that would make the literal first-hop claim true for one route family.
+    assert "operator-gated" in capability["next_smallest_pr"]
+    assert "default-off hex-first canary" in capability["next_smallest_pr"]
+    assert "allowlisted route family" in capability["next_smallest_pr"]
+    assert "keep user-facing copy" in capability["next_smallest_pr"]
     assert "index entry" not in capability["next_smallest_pr"]
     assert "bridge-event template" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True

@@ -67,6 +67,22 @@ BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_RESOLUTION_TOKENS = frozenset(
     {"clear", "cleared", "resolved", "retracted", "withdrawn"}
 )
+BLOCKING_RESOLUTION_NEGATION_TOKENS = frozenset(
+    {
+        "denied",
+        "never",
+        "no",
+        "not",
+        "refused",
+        "rejected",
+        "uncleared",
+        "unresolved",
+        "unretracted",
+        "unwithdrawn",
+        "without",
+        "yet",
+    }
+)
 BLOCKING_CLEAR_COORDINATION_TOKENS = frozenset(
     {"needed", "required", "request", "requested", "supersede", "superseded"}
 )
@@ -460,6 +476,8 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
     if "rco" in tokens:
         return True
     if tokens.intersection(BLOCKING_RESOLUTION_TOKENS):
+        if tokens.intersection(BLOCKING_RESOLUTION_NEGATION_TOKENS):
+            return True
         return False
     if "preflight" in tokens and tokens.intersection(BLOCKING_CLEAR_TOKENS):
         return False

@@ -192,6 +192,51 @@ def test_clear_preflight_status_with_block_context_does_not_override_approval() 
     assert result["latest_approval_event"]["status"] == "build_consensus_pass"
 
 
+def test_coordination_block_clear_request_does_not_override_approval() -> None:
+    events = [
+        _event(
+            "2026-06-21T18:24:35Z",
+            "codex-lead-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-21T18:26:22Z",
+            "codex-lead-1",
+            "wake_request",
+            "tools_peer_block_clear_needed_after_reattribution",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        pr_number=1364,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
+def test_classifier_artifact_no_real_veto_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-21T18:28:55Z",
+            "claude-rco-1",
+            "message",
+            "peer_block_is_g4_classifier_artifact_no_real_veto",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        pr_number=1364,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
 def test_build_consensus_pass_typo_does_not_clear_same_peer_block() -> None:
     events = [
         _event("2026-06-07T03:30:00Z", "codex-tools-1", "finding", "changes_requested"),

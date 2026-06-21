@@ -64,6 +64,9 @@ BLOCKING_STATUSES = frozenset(
     }
 )
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
+BLOCKING_CLEAR_COORDINATION_TOKENS = frozenset(
+    {"needed", "required", "request", "requested", "supersede", "superseded"}
+)
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
 NON_BLOCKING_BLOCK_PHRASES = frozenset(
     {
@@ -447,7 +450,19 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
         return True
     if not tokens.intersection(BLOCKING_WORD_TOKENS):
         return False
+    if "rco" in tokens:
+        return True
     if "preflight" in tokens and tokens.intersection(BLOCKING_CLEAR_TOKENS):
+        return False
+    if tokens.intersection(BLOCKING_CLEAR_TOKENS) and tokens.intersection(
+        BLOCKING_CLEAR_COORDINATION_TOKENS
+    ):
+        return False
+    if (
+        {"classifier", "artifact"}.issubset(tokens)
+        and "veto" in tokens
+        and tokens.intersection({"no", "false"})
+    ):
         return False
     return True
 

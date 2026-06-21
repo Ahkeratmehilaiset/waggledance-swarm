@@ -361,6 +361,8 @@ def test_summarize_ring_delivery_batch_aggregates_health():
         "delivered": 0, "blocked": 1}
     assert summary["blocked_by_category"] == {
         rm.RING_BLOCK_NOT_NEIGHBOR: 1, rm.RING_BLOCK_NOT_PARENT: 1}
+    # both topology categories roll up into the topology_boundary class
+    assert summary["blocked_by_class"] == {rm.RING_BLOCK_CLASS_TOPOLOGY: 2}
     assert summary["transport_applied"] is False
 
 
@@ -372,6 +374,55 @@ def test_summarize_ring_delivery_batch_empty():
     assert summary["delivery_success_ratio"] == 0.0
     assert summary["by_message_kind"] == {}
     assert summary["blocked_by_category"] == {}
+    assert summary["blocked_by_class"] == {}
+
+
+def test_summarize_ring_delivery_batch_groups_blocks_by_boundary_class():
+    # A delivered message + two TOPOLOGY-boundary blocks (not_neighbor,
+    # not_child) + one SCHEMA-invalid block: blocked_by_class must group the
+    # topology categories separately from schema_invalid, so a topology-
+    # fragmenting ring is distinguishable from malformed input at a glance.
+    msg = cmc.make_message(from_cell_id="a", to_cell_id="b", kind="ring_request")
+    deliveries = [
+        rm.RingDelivery(message_id_seq=0, delivered=True,
+                        blocked_reason=None, msg=msg, blocked_category=None),
+        rm.RingDelivery(message_id_seq=1, delivered=False,
+                        blocked_reason="not a neighbor", msg=msg,
+                        blocked_category=rm.RING_BLOCK_NOT_NEIGHBOR),
+        rm.RingDelivery(message_id_seq=2, delivered=False,
+                        blocked_reason="not a child", msg=msg,
+                        blocked_category=rm.RING_BLOCK_NOT_CHILD),
+        rm.RingDelivery(message_id_seq=3, delivered=False,
+                        blocked_reason="bad schema", msg=msg,
+                        blocked_category=rm.RING_BLOCK_SCHEMA_INVALID),
+    ]
+    summary = rm.summarize_ring_delivery_batch(deliveries)
+    assert summary["schema_version"] == rm.RING_DELIVERY_OBSERVABILITY_SCHEMA
+    assert summary["blocked_count"] == 3
+    assert summary["blocked_by_class"] == {
+        rm.RING_BLOCK_CLASS_TOPOLOGY: 2,
+        rm.RING_BLOCK_CLASS_SCHEMA: 1,
+    }
+    # the category histogram still distinguishes the two topology categories
+    assert summary["blocked_by_category"] == {
+        rm.RING_BLOCK_NOT_NEIGHBOR: 1,
+        rm.RING_BLOCK_NOT_CHILD: 1,
+        rm.RING_BLOCK_SCHEMA_INVALID: 1,
+    }
+
+
+def test_summarize_ring_delivery_batch_unknown_category_is_unspecified_class():
+    # A block carrying no/unknown category must fall into the unspecified
+    # class (fail-safe: never silently dropped from the boundary view).
+    msg = cmc.make_message(from_cell_id="a", to_cell_id="b", kind="ring_request")
+    deliveries = [
+        rm.RingDelivery(message_id_seq=0, delivered=False,
+                        blocked_reason="mystery", msg=msg,
+                        blocked_category=None),
+    ]
+    summary = rm.summarize_ring_delivery_batch(deliveries)
+    assert summary["blocked_by_class"] == {rm.RING_BLOCK_CLASS_UNSPECIFIED: 1}
+    assert summary["blocked_by_category"] == {"unspecified": 1}
 
 
 # ═══════════════════ subdivision_operator ═════════════════════════

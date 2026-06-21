@@ -254,6 +254,16 @@ def test_metrics_body_contains_runtime_receipt_coverage_metrics():
                     "coverage_ratio": 0.5,
                     "solver_trace_presence_ratio": 0.75,
                     "verifier_ok_ratio": 0.5,
+                    "deterministic_route_attempt_total": 4,
+                    "deterministic_route_selected_total": 3,
+                    "deterministic_route_fallback_total": 1,
+                    "deterministic_builtin_verified_success_total": 2,
+                    "deterministic_hint_skipped_builtin_precedence_total": 2,
+                    "deterministic_last_selected_count": 1,
+                    "deterministic_last_fallback_used": False,
+                    "deterministic_last_builtin_solver_succeeded": True,
+                    "deterministic_selected_ratio": 0.75,
+                    "deterministic_builtin_success_ratio": 0.5,
                     "default_runtime_receipt_emission_changed": False,
                     "runtime_authority_changed": False,
                     "payloads_exported_by_metrics": False,
@@ -285,6 +295,46 @@ def test_metrics_body_contains_runtime_receipt_coverage_metrics():
     assert "waggledance_runtime_receipt_last_verifier_ok 1.0" in body
     assert "waggledance_runtime_receipt_last_receipt_count 1.0" in body
     assert "waggledance_runtime_receipt_verifier_ok_ratio 0.5" in body
+    assert (
+        "waggledance_runtime_receipt_deterministic_selected_ratio 0.75"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_builtin_success_ratio 0.5"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_last_selected_count 1.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_last_fallback_used 0.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_last_builtin_solver_succeeded 1.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_route_attempt_total 4.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_route_selected_total 3.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_route_fallback_total 1.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_builtin_verified_success_total 2.0"
+        in body
+    )
+    assert (
+        "waggledance_runtime_receipt_deterministic_hint_skipped_builtin_precedence_total 2.0"
+        in body
+    )
     assert "waggledance_runtime_receipt_default_emission_changed 0.0" in body
     assert "waggledance_runtime_receipt_runtime_authority_changed 0.0" in body
     assert "DO_NOT_LEAK" not in body

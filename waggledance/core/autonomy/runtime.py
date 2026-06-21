@@ -147,6 +147,14 @@ class AutonomyRuntime:
         self._runtime_receipt_last_result_present = False
         self._runtime_receipt_last_verifier_ok = False
         self._runtime_receipt_last_receipt_count = 0
+        self._deterministic_route_attempt_total = 0
+        self._deterministic_route_selected_total = 0
+        self._deterministic_route_fallback_total = 0
+        self._deterministic_builtin_verified_success_total = 0
+        self._deterministic_hint_skipped_builtin_precedence_total = 0
+        self._deterministic_last_selected_count = 0
+        self._deterministic_last_fallback_used = False
+        self._deterministic_last_builtin_solver_succeeded = False
 
         # Core components — let WorldModel use _UNSET sentinel for proper
         # CognitiveGraph lazy-init when persistence is enabled. Dry-run-safe
@@ -549,6 +557,9 @@ class AutonomyRuntime:
         verifier_attempt_total = (
             verifier_ok_total + self._runtime_receipt_verifier_not_ok_total
         )
+        route_attempt_total = self._deterministic_route_attempt_total
+        route_selected_total = self._deterministic_route_selected_total
+        builtin_success_total = self._deterministic_builtin_verified_success_total
         return {
             "sink_configured": self.runtime_receipt_sink is not None,
             "handle_query_total": total,
@@ -571,6 +582,34 @@ class AutonomyRuntime:
             "verifier_ok_ratio": (
                 verifier_ok_total / verifier_attempt_total
                 if verifier_attempt_total
+                else 0.0
+            ),
+            "deterministic_route_attempt_total": route_attempt_total,
+            "deterministic_route_selected_total": route_selected_total,
+            "deterministic_route_fallback_total": (
+                self._deterministic_route_fallback_total
+            ),
+            "deterministic_builtin_verified_success_total": builtin_success_total,
+            "deterministic_hint_skipped_builtin_precedence_total": (
+                self._deterministic_hint_skipped_builtin_precedence_total
+            ),
+            "deterministic_last_selected_count": (
+                self._deterministic_last_selected_count
+            ),
+            "deterministic_last_fallback_used": (
+                self._deterministic_last_fallback_used
+            ),
+            "deterministic_last_builtin_solver_succeeded": (
+                self._deterministic_last_builtin_solver_succeeded
+            ),
+            "deterministic_selected_ratio": (
+                route_selected_total / route_attempt_total
+                if route_attempt_total
+                else 0.0
+            ),
+            "deterministic_builtin_success_ratio": (
+                builtin_success_total / route_attempt_total
+                if route_attempt_total
                 else 0.0
             ),
             "default_runtime_receipt_emission_changed": False,
@@ -730,6 +769,7 @@ class AutonomyRuntime:
                 context["low_risk_autonomy_hint_kind"] = (
                     "skipped_builtin_precedence"
                 )
+                self._deterministic_hint_skipped_builtin_precedence_total += 1
             else:
                 hint_result = derive_low_risk_autonomy_hint(query, context)
                 if hint_result.kind == RESULT_DERIVED and hint_result.hint is not None:
@@ -743,6 +783,16 @@ class AutonomyRuntime:
 
         # 3. Capability selection
         route_result = self.solver_router.route(intent, query, context)
+        selected_caps = list(route_result.selection.selected or [])
+        fallback_used = bool(getattr(route_result.selection, "fallback_used", False))
+        self._deterministic_route_attempt_total += 1
+        self._deterministic_last_selected_count = len(selected_caps)
+        self._deterministic_last_fallback_used = fallback_used
+        self._deterministic_last_builtin_solver_succeeded = False
+        if selected_caps:
+            self._deterministic_route_selected_total += 1
+        if fallback_used:
+            self._deterministic_route_fallback_total += 1
 
         # MAGMA: record capability selection
         if self.audit and AuditEntry is not None:
@@ -872,15 +922,23 @@ class AutonomyRuntime:
 
         verified_ok = verifier_result.passed if verifier_result else False
         if (
-            not getattr(route_result.selection, "fallback_used", False)
+            not fallback_used
             and action_result.executed
             and verified_ok
         ):
+            already_skipped_builtin_precedence = (
+                context.get("low_risk_autonomy_hint_kind")
+                == "skipped_builtin_precedence"
+            )
             context["builtin_solver_succeeded"] = True
             context.pop("low_risk_autonomy_query", None)
             context["low_risk_autonomy_hint_kind"] = (
                 "skipped_builtin_precedence"
             )
+            self._deterministic_builtin_verified_success_total += 1
+            self._deterministic_last_builtin_solver_succeeded = True
+            if not already_skipped_builtin_precedence:
+                self._deterministic_hint_skipped_builtin_precedence_total += 1
 
         # 6b. Record prediction error + update capability confidence
         if action_result.executed:

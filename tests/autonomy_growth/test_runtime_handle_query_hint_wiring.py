@@ -315,6 +315,9 @@ def test_handle_query_builtin_precedence_skips_hint_even_with_structured_request
     assert result.get("quality_path") != "autonomy_consult"
     assert not (result.get("autonomy_consult") or {}).get("served", False)
     assert cp.count_runtime_gap_signals() == before
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["deterministic_hint_skipped_builtin_precedence_total"] == 1
+    assert metrics["deterministic_last_builtin_solver_succeeded"] is False
 
 
 def test_handle_query_real_builtin_success_sets_precedence_flag(
@@ -346,3 +349,7 @@ def test_handle_query_real_builtin_success_sets_precedence_flag(
     assert ctx["low_risk_autonomy_hint_kind"] == "skipped_builtin_precedence"
     assert "low_risk_autonomy_query" not in ctx
     assert not (result.get("autonomy_consult") or {}).get("served", False)
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["deterministic_builtin_verified_success_total"] == 1
+    assert metrics["deterministic_hint_skipped_builtin_precedence_total"] == 1
+    assert metrics["deterministic_last_builtin_solver_succeeded"] is True

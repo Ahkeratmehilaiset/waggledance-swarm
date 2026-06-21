@@ -72,6 +72,16 @@ NON_BLOCKING_BLOCK_PHRASES = frozenset(
         "not_a_blocker",
     }
 )
+NON_BLOCKING_STATUS_TOKEN_EVENT_TYPES = frozenset(
+    {
+        "claim",
+        "handoff",
+        "intent",
+        "message",
+        "status",
+        "wake_request",
+    }
+)
 NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
     {
         "no_changes_requested",
@@ -285,17 +295,17 @@ def check_bridge_clear_to_merge(
             continue
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
-        # Block detection is TYPE-AGNOSTIC (fail-closed): a peer veto must
-        # register regardless of the event type used, so a block posted as
-        # e.g. type=blocked cannot be silently dropped by the type filter and
-        # let a stale approval stand. Approvals stay type-restricted.
+        # Exact block statuses are type-agnostic (fail-closed), while fuzzy
+        # status-token matches are ignored for traffic-only event types such as
+        # message/status/handoff so correction notes do not become vetoes.
+        # Approvals stay type-restricted.
         if _is_clear_status(status):
             if event_type in {"decision", "rco_review", "finding", "done", "test"}:
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
             continue
-        if _is_blocking_status(status):
+        if _is_blocking_status(status, event_type=event_type):
             peer_signals[agent] = (index, "block", event)
             continue
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
@@ -406,10 +416,12 @@ def _is_clear_status(status: str) -> bool:
     return False
 
 
-def _is_blocking_status(status: str) -> bool:
+def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
     if status in BLOCKING_STATUSES:
         return True
     if _is_clear_status(status):
+        return False
+    if event_type in NON_BLOCKING_STATUS_TOKEN_EVENT_TYPES:
         return False
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:

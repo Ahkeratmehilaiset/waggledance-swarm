@@ -387,6 +387,13 @@ def build_hex_mesh_entry_proof(root: Path | str = ROOT) -> dict:
         },
         "chat_route_order": route_order,
         "pre_hex_steps": pre_hex_steps,
+        "scoped_statement_supported": True,
+        "scoped_statement": (
+            "When hex_neighbor_assist is enabled and earlier stages do not "
+            "answer, the 7-cell hex mesh is consulted before the generic "
+            "orchestrator_llm_fallback; it is not the first resolution stage "
+            "and it is disabled by default."
+        ),
         "solver_retrieval_samples": solver_assignments,
         "agent_routing_samples": agent_assignments,
         "safe_conclusion": (
@@ -10253,6 +10260,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "Privacy-safe HTTP/WS route-stage trace boundary.",
             ),
             (
+                "tests/unit_app/test_chat_service.py",
+                "Live ChatService invariants pin that enabled hex precedes "
+                "the generic LLM fallback, but is not first and is disabled "
+                "by default.",
+            ),
+            (
                 "waggledance/adapters/http/routes/metrics.py",
                 "Prometheus route-stage counters and latency histogram.",
             ),
@@ -11312,8 +11325,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "operator SLO/drill evidence templates, a local offline "
                 "drill evidence verifier, verification-summary bridge-event "
                 "templates, and path-free reviewer-handoff summaries are also "
-                "available; exact runtime entry order depends on flags "
-                "and call path."
+                "available; executable ChatService invariants pin the honest "
+                "scoped route truth: when hex_neighbor_assist is enabled and "
+                "earlier stages do not answer, it is consulted before generic "
+                "orchestrator_llm_fallback, while hex is not the first "
+                "resolution stage and is disabled by default. "
+                "Broader first-entry wording still depends on flags and call "
+                "path."
             ),
             status=_status_for(hex_evidence),
             claim_safe=False,
@@ -11323,14 +11341,16 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "The 7-cell hex_mesh path can be disabled by runtime config.",
                 "The route-order proof shows cache, memory, route selection, "
                 "and deterministic solver stages before hex-backed stages.",
+                "PR #1363 proves the scoped enabled-before-LLM statement, "
+                "but also proves the literal honeycomb-first claim remains "
+                "unsafe.",
             ),
             next_smallest_pr=(
-                "Add a read-only runtime coverage counter that records how "
-                "often the hex-backed route stages (8-cell solver-retrieval "
-                "and 7-cell agent-routing) are actually entered versus "
-                "disabled across sanitized route-stage traces, exposing only "
-                "path-free counts, without changing routing behavior, "
-                "enabling disabled hex paths, or granting runtime authority."
+                "If the product needs the literal honeycomb-first claim, add "
+                "an operator-gated, default-off hex-first canary for one "
+                "allowlisted route family with fallback, kill switch, and "
+                "route-stage regression tests; otherwise keep user-facing copy "
+                "on the scoped enabled-before-LLM statement."
             ),
             proof=hex_entry_proof,
         ),

@@ -725,12 +725,18 @@ class AutonomyRuntime:
         # without the consult lane see no behaviour change.
         # Failures here MUST NOT break the production path.
         try:
-            hint_result = derive_low_risk_autonomy_hint(query, context)
-            if hint_result.kind == RESULT_DERIVED and hint_result.hint is not None:
-                context["low_risk_autonomy_query"] = dict(hint_result.hint)
-                context["low_risk_autonomy_hint_kind"] = "derived"
+            if context.get("builtin_solver_succeeded") is True:
+                context.pop("low_risk_autonomy_query", None)
+                context["low_risk_autonomy_hint_kind"] = (
+                    "skipped_builtin_precedence"
+                )
             else:
-                context["low_risk_autonomy_hint_kind"] = hint_result.kind
+                hint_result = derive_low_risk_autonomy_hint(query, context)
+                if hint_result.kind == RESULT_DERIVED and hint_result.hint is not None:
+                    context["low_risk_autonomy_query"] = dict(hint_result.hint)
+                    context["low_risk_autonomy_hint_kind"] = "derived"
+                else:
+                    context["low_risk_autonomy_hint_kind"] = hint_result.kind
         except Exception as exc:  # noqa: BLE001 — never break runtime
             log.debug("hint extractor raised; ignored: %r", exc)
             context["low_risk_autonomy_hint_kind"] = "extractor_error"
@@ -864,9 +870,20 @@ class AutonomyRuntime:
                 action_id=action.action_id,
                 capability_id=primary_cap.capability_id)
 
+        verified_ok = verifier_result.passed if verifier_result else False
+        if (
+            not getattr(route_result.selection, "fallback_used", False)
+            and action_result.executed
+            and verified_ok
+        ):
+            context["builtin_solver_succeeded"] = True
+            context.pop("low_risk_autonomy_query", None)
+            context["low_risk_autonomy_hint_kind"] = (
+                "skipped_builtin_precedence"
+            )
+
         # 6b. Record prediction error + update capability confidence
         if action_result.executed:
-            verified_ok = verifier_result.passed if verifier_result else False
             v_confidence = verifier_result.confidence if verifier_result else 0.0
             if self.prediction_ledger:
                 self._persist_safe("ledger.record",
@@ -915,7 +932,6 @@ class AutonomyRuntime:
             self._magma_safe("event_log.case", self.event_log.log_case_trajectory,
                 case.trajectory_id, case.quality_grade.value,
                 intent=intent, capability=primary_cap.capability_id)
-        verified_ok = verifier_result.passed if verifier_result else False
         if self.trust:
             self._magma_safe("trust.capability", self.trust.record_observation,
                 "capability", primary_cap.capability_id,

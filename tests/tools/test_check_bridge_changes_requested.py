@@ -507,6 +507,28 @@ def test_non_decision_exact_changes_requested_status_still_blocks() -> None:
     assert result["latest_blocking_event"]["status"] == "changes_requested"
 
 
+def test_message_decorated_veto_statuses_still_block() -> None:
+    for status in [
+        "rco_changes_requested_pr530",
+        "changes_requested_do_not_merge",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T01:57:31Z",
+                    "codex-lead-1",
+                    "message",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-tools-1",
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
+
+
 def test_finding_descriptive_changes_requested_status_still_blocks() -> None:
     events = [
         _event(

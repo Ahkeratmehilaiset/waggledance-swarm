@@ -95,6 +95,7 @@ CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES = (
 CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
     {
         "concurrence",
+        "payload_corrected",
         "resolved",
         "resolved_ci_green",
         "resolved_ci_pending",
@@ -419,10 +420,6 @@ def _is_clear_status(status: str) -> bool:
 def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
     if status in BLOCKING_STATUSES:
         return True
-    if _is_clear_status(status):
-        return False
-    if event_type in NON_BLOCKING_STATUS_TOKEN_EVENT_TYPES:
-        return False
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
         if normalized == prefix:
@@ -435,6 +432,10 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
         if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
             return False
         return True
+    if _is_clear_status(status):
+        return False
+    if event_type in NON_BLOCKING_STATUS_TOKEN_EVENT_TYPES:
+        return False
     if _has_non_blocking_block_phrase(status):
         return False
     tokens = _status_tokens(status)

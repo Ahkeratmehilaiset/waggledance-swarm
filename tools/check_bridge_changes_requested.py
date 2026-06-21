@@ -85,6 +85,8 @@ CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES = (
 CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
     {
         "concurrence",
+        "payload_corrected",
+        "addressed_exact_head_ci_pending",
         "resolved",
         "resolved_ci_green",
         "resolved_ci_pending",
@@ -94,6 +96,19 @@ CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
         "retracted",
         "withdrawn",
     }
+)
+NON_BLOCKING_CONTEXT_STATUS_PREFIXES = (
+    "ack_",
+    "acknowledged_",
+    "answered_",
+    "received_",
+)
+NON_BLOCKING_CONTEXT_STATUS_SEGMENTS = (
+    "_advisory_",
+    "_corrected_",
+    "_correction_",
+    "_forwarded_",
+    "_resolves_",
 )
 NO_BLOCK_CLEAR_STATUSES = frozenset(
     {
@@ -285,17 +300,17 @@ def check_bridge_clear_to_merge(
             continue
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
-        # Block detection is TYPE-AGNOSTIC (fail-closed): a peer veto must
-        # register regardless of the event type used, so a block posted as
-        # e.g. type=blocked cannot be silently dropped by the type filter and
-        # let a stale approval stand. Approvals stay type-restricted.
+        # Block statuses are type-agnostic (fail-closed). Only explicit
+        # correction/ack/advisory context statuses are exempted so traffic
+        # events can still carry decorated peer vetoes.
+        # Approvals stay type-restricted.
         if _is_clear_status(status):
             if event_type in {"decision", "rco_review", "finding", "done", "test"}:
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
             continue
-        if _is_blocking_status(status):
+        if _is_blocking_status(status, event_type=event_type):
             peer_signals[agent] = (index, "block", event)
             continue
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
@@ -406,11 +421,9 @@ def _is_clear_status(status: str) -> bool:
     return False
 
 
-def _is_blocking_status(status: str) -> bool:
+def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
     if status in BLOCKING_STATUSES:
         return True
-    if _is_clear_status(status):
-        return False
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
         if normalized == prefix:
@@ -423,6 +436,10 @@ def _is_blocking_status(status: str) -> bool:
         if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
             return False
         return True
+    if _is_clear_status(status):
+        return False
+    if _has_non_blocking_context_status(status):
+        return False
     if _has_non_blocking_block_phrase(status):
         return False
     tokens = _status_tokens(status)
@@ -433,6 +450,14 @@ def _is_blocking_status(status: str) -> bool:
     if "preflight" in tokens and tokens.intersection(BLOCKING_CLEAR_TOKENS):
         return False
     return True
+
+
+def _has_non_blocking_context_status(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if normalized.startswith(NON_BLOCKING_CONTEXT_STATUS_PREFIXES):
+        return True
+    bounded = f"_{normalized}_"
+    return any(segment in bounded for segment in NON_BLOCKING_CONTEXT_STATUS_SEGMENTS)
 
 
 def _is_approval_status(status: str) -> bool:

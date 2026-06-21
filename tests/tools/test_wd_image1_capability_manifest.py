@@ -2790,13 +2790,40 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
     assert capability["proof"]["magma_execution_receipt_claimed"] is True
     assert capability["proof"]["runtime_receipt_metrics_claimed"] is True
     assert capability["proof"]["runtime_receipt_settings_sink_claimed"] is True
+    assert (
+        capability["proof"]["runtime_receipt_settings_sink_reviewer_summary_claimed"]
+        is True
+    )
     assert "opt-in MAGMA" in capability["safe_statement"]
     assert "Prometheus metrics" in capability["safe_statement"]
     assert "default-off" in capability["safe_statement"]
-    assert "path-free reviewer handoff summary" in capability["next_smallest_pr"]
-    assert "without changing default receipt emission" in (
-        capability["next_smallest_pr"]
+    assert "path-free reviewer handoff summary" in capability["safe_statement"]
+    assert "local reviewer-handoff bundle index" in capability["next_smallest_pr"]
+    assert "without including payloads or local paths" in capability["next_smallest_pr"]
+    assert "granting runtime authority" in capability["next_smallest_pr"]
+    evidence_paths = {entry["path"] for entry in capability["evidence"]}
+    assert (
+        "tools/build_runtime_receipt_settings_sink_reviewer_handoff_summary.py"
+        in evidence_paths
     )
+    assert (
+        "tests/tools/test_build_runtime_receipt_settings_sink_reviewer_handoff_summary.py"
+        in evidence_paths
+    )
+    summary = capability["proof"]["runtime_receipt_settings_sink_reviewer_summary"]
+    assert summary["ok"] is True
+    assert summary["manual_review_required"] is True
+    assert summary["claim_safe_unchanged"] is True
+    assert summary["approval_granted"] is False
+    assert summary["runtime_authority_granted"] is False
+    assert summary["default_runtime_receipt_emission_changed"] is False
+    assert (
+        capability["proof"]["receipt_metrics"]["settings_sink_reviewer_summary_ok"]
+        is True
+    )
+    serialized = json.dumps(summary, sort_keys=True)
+    assert "settings_out_dir" not in serialized
+    assert "configured runtime receipt sink coverage verified ok" not in serialized
     assert report["summary"]["proofs_ok"] is True
 
 

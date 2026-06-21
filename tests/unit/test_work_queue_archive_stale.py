@@ -80,6 +80,36 @@ def test_apply_archives_stale_claim_and_unlinks_original(tmp_path: Path) -> None
     assert not (bridge / "work_queue" / "claims" / "task-stale-2.json").exists()
 
 
+def test_apply_archives_legacy_powershell_namespaced_claim_file(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "codex-tools-1/legacy-stale-claim"
+    claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="legacy archive",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    preferred_path = next(claims_dir.glob("*.json"))
+    legacy_path = claims_dir / "codex-tools-1_legacy-stale-claim.json"
+    preferred_path.rename(legacy_path)
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_stale_now(),
+        max_age_seconds=60,
+        apply=True,
+    )
+
+    assert len(archived) == 1
+    assert archived[0].claim.task_id == task_id
+    assert archived[0].archived_path.exists()
+    assert not legacy_path.exists()
+    assert list_claims(bridge_root=bridge) == []
+
+
 def test_fresh_heartbeat_is_not_archived(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(

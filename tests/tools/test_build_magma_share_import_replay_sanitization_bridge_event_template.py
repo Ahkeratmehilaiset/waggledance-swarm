@@ -231,6 +231,52 @@ def test_required_check_count_mismatch_is_rejected() -> None:
     _assert_rejected(summary, "required_check_count_mismatch")
 
 
+def test_malformed_entry_count_is_rejected() -> None:
+    # tools forge: entry_count='3' must NOT silently default to 0 / ok=True.
+    summary = _ready_summary()
+    summary["entry_count"] = "3"
+    _assert_rejected(summary, "entry_count_unsafe")
+
+
+def test_malformed_rejection_mode_count_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["rejection_mode_count"] = "2"
+    _assert_rejected(summary, "rejection_mode_count_unsafe")
+
+
+def test_malformed_report_digest_is_rejected() -> None:
+    # tools forge: report_digest='not-a-digest' must NOT default to '' / ok=True.
+    summary = _ready_summary()
+    summary["report_digest"] = "not-a-digest"
+    _assert_rejected(summary, "report_digest_unsafe")
+
+
+def test_malformed_admission_contract_digest_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["admission_contract_digest"] = "nope"
+    _assert_rejected(summary, "admission_contract_digest_unsafe")
+
+
+def test_empty_required_check_names_on_ready_is_rejected() -> None:
+    # tools forge: a ready summary with empty required checks must fail closed.
+    summary = _ready_summary()
+    summary["required_check_names"] = []
+    summary["required_check_count"] = 0
+    _assert_rejected(summary, "required_check_names_empty")
+
+
+def test_empty_redaction_inventory_on_ready_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["redaction_inventory"] = []
+    _assert_rejected(summary, "redaction_inventory_empty")
+
+
+def test_empty_report_invariants_on_ready_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["report_invariants"] = {}
+    _assert_rejected(summary, "report_invariants_empty")
+
+
 def test_cli_json_is_path_free(tmp_path: Path) -> None:
     summary = _ready_summary()
     summary_path = tmp_path / "summary.json"

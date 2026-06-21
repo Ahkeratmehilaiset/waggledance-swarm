@@ -242,6 +242,33 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
         return None, "payload_files_imported_not_zero"
     if summary.get("payload_files_exported") != 0:
         return None, "payload_files_exported_not_zero"
+    # Echoed scalar/count fields must be strict non-bool ints: a string/float
+    # count must NOT silently default to 0. admission_contract_digest must be a
+    # real sha256 in every summary (it is present in both ready and rejected).
+    for key in ("entry_count", "rejection_mode_count"):
+        if not _is_uint(summary.get(key)):
+            return None, f"{key}_unsafe"
+    if not _is_sha(summary.get("admission_contract_digest")):
+        return None, "admission_contract_digest_unsafe"
+    # A READY (ok=True) summary must carry COMPLETE, valid evidence -- a silently
+    # defaulted empty digest or an empty required-check/redaction/invariant set
+    # must NOT publish a ready handoff. Rejected summaries legitimately omit the
+    # per-report digests, so these are only required when ok is True.
+    if summary["ok"] is True:
+        for key in (
+            "report_digest",
+            "replay_plan_digest",
+            "share_manifest_digest",
+            "source_manifest_digest",
+        ):
+            if not _is_sha(summary.get(key)):
+                return None, f"{key}_unsafe"
+        if not summary["required_check_names"]:
+            return None, "required_check_names_empty"
+        if not summary["redaction_inventory"]:
+            return None, "redaction_inventory_empty"
+        if not summary["report_invariants"]:
+            return None, "report_invariants_empty"
     return summary, ""
 
 
@@ -360,6 +387,14 @@ def _safe_string(value: Any, *, default: str = "unknown") -> str:
 
 def _digest(value: Any) -> str:
     return value if isinstance(value, str) and SHA_RE.fullmatch(value) else ""
+
+
+def _is_sha(value: Any) -> bool:
+    return isinstance(value, str) and bool(SHA_RE.fullmatch(value))
+
+
+def _is_uint(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _int(value: Any) -> int:

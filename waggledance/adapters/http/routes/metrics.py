@@ -102,6 +102,7 @@ _HEX_BACKED_ROUTE_STAGE_NAMES: tuple[str, ...] = (
     "hybrid_retrieval_8_cell",
     "hex_neighbor_assist_7_cell",
 )
+_HEX_STAGE_COVERAGE_STATES: tuple[str, ...] = ("entered", "disabled")
 _ROUTE_STAGE_COMPONENT_ATTRS: dict[str, str] = {
     "hybrid_retrieval_8_cell": "hybrid_retrieval",
     "hex_neighbor_assist_7_cell": "hex_neighbor_assist",
@@ -523,6 +524,9 @@ class _WaggleCollector:
         buckets_by_stage = snapshot.get("request_latency_ms_buckets")
         if not isinstance(buckets_by_stage, dict):
             buckets_by_stage = {}
+        hex_coverage = snapshot.get("hex_stage_coverage_total")
+        if not isinstance(hex_coverage, dict):
+            hex_coverage = {}
 
         observed = CounterMetricFamily(
             "waggledance_route_stage_observations_total",
@@ -563,9 +567,27 @@ class _WaggleCollector:
                 ],
                 sum_value=latency_sum,
             )
+        hex_coverage_metric = CounterMetricFamily(
+            "waggledance_route_stage_hex_coverage_total",
+            (
+                "Total sanitized chat requests where a hex-backed route stage "
+                "was entered or known disabled."
+            ),
+            labels=["stage", "state"],
+        )
+        for stage in _HEX_BACKED_ROUTE_STAGE_NAMES:
+            stage_counts = hex_coverage.get(stage)
+            if not isinstance(stage_counts, dict):
+                stage_counts = {}
+            for state in _HEX_STAGE_COVERAGE_STATES:
+                hex_coverage_metric.add_metric(
+                    [stage, state],
+                    _as_float(stage_counts.get(state)) or 0.0,
+                )
         yield observed
         yield latency
         yield latency_histogram
+        yield hex_coverage_metric
 
     def _collect_runtime_receipt_metrics(
         self,

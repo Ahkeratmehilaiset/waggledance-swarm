@@ -44,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency counters, read-only hex topology boundary gauges, low-risk autogrowth ticker boundary metrics, read-only counterfactual replay observability gauges, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges), privacy-safe route-stage count gauges, route-stage runtime observation/latency/hex-coverage counters, read-only hex topology boundary gauges, low-risk autogrowth ticker boundary metrics, read-only counterfactual replay observability gauges, read-only MAGMA handoff provider-health/freshness gauges, plus source health gauges. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -108,6 +108,10 @@ waggledance_route_stage_request_latency_histogram_ms_bucket{le="250",stage="lang
 waggledance_route_stage_request_latency_histogram_ms_bucket{le="+Inf",stage="language_detection"} 12.0
 waggledance_route_stage_request_latency_histogram_ms_count{stage="language_detection"} 12.0
 waggledance_route_stage_request_latency_histogram_ms_sum{stage="language_detection"} 320.5
+# HELP waggledance_route_stage_hex_coverage_total Total sanitized chat requests where a hex-backed route stage was entered or known disabled.
+# TYPE waggledance_route_stage_hex_coverage_total counter
+waggledance_route_stage_hex_coverage_total{stage="hybrid_retrieval_8_cell",state="entered"} 4.0
+waggledance_route_stage_hex_coverage_total{stage="hex_neighbor_assist_7_cell",state="disabled"} 8.0
 # HELP waggledance_magma_handoff_provider_up 1 if the metrics collector could build MAGMA handoff provider health this scrape.
 # TYPE waggledance_magma_handoff_provider_up gauge
 waggledance_magma_handoff_provider_up 1.0
@@ -137,6 +141,12 @@ latency for requests where a stage was observed; divide it by
 `observations_total` for stage-correlated request latency. The
 `waggledance_route_stage_request_latency_histogram_ms` histogram supports p95/p99
 Prometheus panels with `histogram_quantile(...)`. It is not an internal span timer and does not store raw queries, profiles, language hints, context, or full trace payloads.
+`waggledance_route_stage_hex_coverage_total` records only fixed
+stage/state counts for `hybrid_retrieval_8_cell` and
+`hex_neighbor_assist_7_cell`: `entered` when the sanitized trace observed the
+hex-backed stage, and `disabled` when the sanitized route labels marked that
+stage disabled. It does not export trace payloads, enable disabled paths,
+change routing, or grant claim-safe authority.
 
 Route-stage latency panel and alert templates are documented in
 `docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md`. The initial operator rules

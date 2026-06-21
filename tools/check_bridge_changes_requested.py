@@ -69,16 +69,28 @@ BLOCKING_RESOLUTION_TOKENS = frozenset(
 )
 BLOCKING_RESOLUTION_NEGATION_TOKENS = frozenset(
     {
+        "arent",
+        "cannot",
+        "cant",
         "denied",
+        "failed",
+        "failing",
+        "fails",
+        "isnt",
         "never",
         "no",
         "not",
+        "open",
+        "ongoing",
+        "outstanding",
         "refused",
         "rejected",
+        "still",
         "uncleared",
         "unresolved",
         "unretracted",
         "unwithdrawn",
+        "wont",
         "without",
         "yet",
     }

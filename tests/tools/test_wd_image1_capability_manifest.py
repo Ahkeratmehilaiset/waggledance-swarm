@@ -1575,11 +1575,13 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     )
     assert "cross-consistency digest" in capability["safe_statement"]
     assert "schema-valid handoff JSON" in capability["safe_statement"]
-    # next_smallest_pr advanced beyond the now-wired cross-consistency digest
-    # bridge-event renderer to the next honest step: a local index entry.
+    assert "bind that bridge-event template digest" in capability["safe_statement"]
+    # next_smallest_pr advanced beyond the now-wired index entry to the next honest
+    # step: a local verifier for that index entry.
     assert "cross-consistency digest" in capability["next_smallest_pr"]
     assert "bridge-event template" in capability["next_smallest_pr"]
     assert "index entry" in capability["next_smallest_pr"]
+    assert "local verifier" in capability["next_smallest_pr"]
     assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
@@ -3874,6 +3876,126 @@ def test_manifest_hex_xcons_template_cannot_flip_ok(monkeypatch) -> None:
     )
     assert proof.get("ok") == baseline_ok
     assert proof.get("cross_consistency_digest_bridge_event_template") == forged
+
+
+def test_manifest_stores_hex_xcons_template_index_entry_summary_content_safe() -> None:
+    manifest = build_manifest()
+    hex_cap = next(
+        capability
+        for capability in manifest["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    summary = hex_cap["proof"].get(
+        "cross_consistency_digest_bridge_event_template_index_entry"
+    )
+    assert isinstance(summary, dict)
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["index_entry_available"] is True
+    assert summary["template_only"] is True
+    assert summary["manual_review_required"] is True
+    assert summary["artifact_count_one"] is True
+    assert summary["bridge_event_schema_validated"] is True
+    assert summary["template_report_validator_pass"] is True
+    assert summary["all_artifact_digests_recorded"] is True
+    assert summary["cross_consistency_digest_ref_recorded"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_runtime_subdivision_authority_granted"] is True
+    assert summary["no_direct_bridge_write"] is True
+    assert summary["no_bridge_event_written"] is True
+    assert summary["no_approval_granted"] is True
+    assert summary["no_payloads_included"] is True
+    assert summary["no_local_paths_recorded"] is True
+    assert summary["cross_consistent"] is True
+    assert summary["all_views_present"] is True
+    assert summary["reviewer_clean"] is True
+    assert summary["shadow_only_clean"] is True
+    assert summary["chain_summary_clean"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+    assert "sha256:" not in blob
+
+
+def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
+    proof = next(
+        capability["proof"]
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    assert isinstance(
+        proof.get("cross_consistency_digest_bridge_event_template_index_entry"), dict
+    )
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    src = inspect.getsource(mod._capabilities)
+    ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
+    assert "cross_consistency_digest_bridge_event_template_index_entry" not in ok_assign
+    tpl_idx = src.index(
+        'hex_upgrade_proof["cross_consistency_digest_bridge_event_template"]'
+    )
+    idx_entry_idx = src.index(
+        'hex_upgrade_proof[\n        "cross_consistency_digest_bridge_event_template_index_entry"'
+    )
+    assert idx_entry_idx > tpl_idx
+
+
+def test_manifest_hex_xcons_template_index_entry_cannot_flip_ok(monkeypatch) -> None:
+    baseline_ok = next(
+        capability["proof"].get("ok")
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "index_entry_available": False,
+        "template_only": False,
+        "manual_review_required": False,
+        "artifact_count_one": False,
+        "bridge_event_schema_validated": False,
+        "template_report_validator_pass": False,
+        "all_artifact_digests_recorded": False,
+        "cross_consistency_digest_ref_recorded": False,
+        "no_runtime_authority_granted": False,
+        "no_runtime_subdivision_authority_granted": False,
+        "no_direct_bridge_write": False,
+        "no_bridge_event_written": False,
+        "no_approval_granted": False,
+        "no_payloads_included": False,
+        "no_local_paths_recorded": False,
+        "cross_consistent": False,
+        "all_views_present": False,
+        "reviewer_clean": False,
+        "shadow_only_clean": False,
+        "chain_summary_clean": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_hex_cross_consistency_bridge_event_template_index_entry_summary",
+        lambda *_a, **_k: dict(forged),
+    )
+    proof = next(
+        capability["proof"]
+        for capability in build_manifest()["capabilities"]
+        if capability["capability_id"] == "hexagonal_upgrades"
+    )
+    assert proof.get("ok") == baseline_ok
+    assert (
+        proof.get("cross_consistency_digest_bridge_event_template_index_entry")
+        == forged
+    )
 
 
 def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -24,6 +25,7 @@ from waggledance.core.work_queue import resolve_bridge_root
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_CLAIMS_DIR = Path(".agent-bridge") / "work_queue" / "claims"
+DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +58,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--now", default=None)
     parser.add_argument("--operator-last-activity-utc", default=None)
     parser.add_argument("--open-request-max-age-hours", type=float, default=12.0)
+    parser.add_argument(
+        "--waivers",
+        type=Path,
+        default=DEFAULT_WAIVERS_PATH,
+        help="Known-invalid historical event waivers JSON.",
+    )
+    parser.add_argument(
+        "--no-waivers",
+        action="store_true",
+        help="Disable known-invalid historical event waivers.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -66,6 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     events_path = args.events or bridge_root / "shared" / "events.jsonl"
     claims_dir = args.claims_dir or bridge_root / "work_queue" / "claims"
     try:
+        waiver_hashes = {} if args.no_waivers else _load_waivers(args.waivers)
         report = evaluate_idle_state(
             events_path=events_path,
             claims_dir=claims_dir,
@@ -73,6 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             idle_minutes=args.idle_minutes,
             pending_ci_count=args.pending_ci_count,
             open_request_max_age_hours=args.open_request_max_age_hours,
+            waived_line_sha256=waiver_hashes,
             operator_last_activity_utc=(
                 _parse_utc(args.operator_last_activity_utc)
                 if args.operator_last_activity_utc
@@ -100,6 +115,7 @@ def evaluate_idle_state(
     idle_minutes: int,
     pending_ci_count: int,
     open_request_max_age_hours: float,
+    waived_line_sha256: Mapping[int, str] | None = None,
     operator_last_activity_utc: datetime | None = None,
 ) -> dict[str, Any]:
     if idle_minutes <= 0:
@@ -110,8 +126,13 @@ def evaluate_idle_state(
         raise ValueError("--open-request-max-age-hours must be positive")
     if not events_path.exists():
         raise ValueError(f"missing bridge events file: {events_path}")
+    if waived_line_sha256 is None:
+        waived_line_sha256 = _load_waivers(DEFAULT_WAIVERS_PATH)
 
-    events, invalid_lines = _read_events(events_path)
+    events, invalid_lines = _read_events(
+        events_path,
+        waived_line_sha256=waived_line_sha256,
+    )
     if not events:
         raise ValueError(f"empty bridge events file: {events_path}")
 
@@ -165,9 +186,14 @@ def evaluate_idle_state(
     }
 
 
-def _read_events(path: Path) -> tuple[list[dict[str, Any]], int]:
+def _read_events(
+    path: Path,
+    *,
+    waived_line_sha256: Mapping[int, str] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
     events: list[dict[str, Any]] = []
     invalid = 0
+    waivers = dict(waived_line_sha256 or {})
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
@@ -177,9 +203,48 @@ def _read_events(path: Path) -> tuple[list[dict[str, Any]], int]:
             event["_ts"] = _parse_utc(str(event["ts_utc"]))
             events.append(event)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            if waivers.get(line_no) == _line_sha256(line):
+                continue
             invalid += 1
     events.sort(key=lambda event: (event["_ts"], event["_line_no"]))
     return events, invalid
+
+
+def _load_waivers(path: Path) -> dict[int, str]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc.msg}") from exc
+    entries = payload.get("waivers") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: expected object with waivers list")
+
+    waiver_hashes: dict[int, str] = {}
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: waiver {index} must be an object")
+        line_no = entry.get("line_no")
+        raw_sha256 = entry.get("raw_line_sha256")
+        if not isinstance(line_no, int) or line_no <= 0:
+            raise ValueError(f"{path}: waiver {index} line_no must be a positive integer")
+        if not isinstance(raw_sha256, str) or not _is_sha256_digest(raw_sha256):
+            raise ValueError(
+                f"{path}: waiver {index} raw_line_sha256 must be sha256:<64 hex>"
+            )
+        waiver_hashes[line_no] = raw_sha256
+    return waiver_hashes
+
+
+def _is_sha256_digest(value: str) -> bool:
+    if not value.startswith("sha256:") or len(value) != len("sha256:") + 64:
+        return False
+    return all(char in "0123456789abcdef" for char in value.removeprefix("sha256:"))
+
+
+def _line_sha256(line: str) -> str:
+    return "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest()
 
 
 def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -376,6 +377,118 @@ def test_stale_unclosed_request_is_reported_but_does_not_block_idle(
     assert payload["criteria"]["stale_open_requests_ignored"]["task_ids"] == [
         "claude-scout-stale-historical-record"
     ]
+
+
+def test_waived_invalid_timestamp_line_does_not_block_idle(tmp_path: Path) -> None:
+    mod = importlib.import_module("tools.idle_check")
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    claims_dir.mkdir()
+    valid_events = _base_idle_events()
+    bad_event = _event(
+        ts_utc="2026-06-20T20.34.44.2307986Z",
+        status="passed_with_hygiene_warning",
+        message="Historical bad timestamp event covered by an append-only waiver.",
+    )
+    bad_line = json.dumps(bad_event, sort_keys=True)
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps(valid_events[0], sort_keys=True),
+                bad_line,
+                json.dumps(valid_events[1], sort_keys=True),
+                json.dumps(valid_events[2], sort_keys=True),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    waivers_path = tmp_path / "waivers.json"
+    waivers_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agent-bridge-event-waivers.v1",
+                "waivers": [
+                    {
+                        "line_no": 2,
+                        "raw_line_sha256": "sha256:"
+                        + hashlib.sha256(bad_line.encode("utf-8")).hexdigest(),
+                        "error": "line 2: ts_utc: Value error, ts_utc must be ISO-8601",
+                        "reason": "append-only historical event is covered by waiver",
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        rc = mod.main(
+            [
+                "--events",
+                str(events_path),
+                "--claims-dir",
+                str(claims_dir),
+                "--now",
+                NOW,
+                "--waivers",
+                str(waivers_path),
+                "--json",
+            ]
+        )
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["decision"] == "idle"
+    assert payload["criteria"]["invalid_events"] == {"ok": True, "invalid_lines": 0}
+
+
+def test_unwaived_invalid_timestamp_line_blocks_idle(tmp_path: Path) -> None:
+    mod = importlib.import_module("tools.idle_check")
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    claims_dir.mkdir()
+    valid_events = _base_idle_events()
+    bad_event = _event(
+        ts_utc="2026-06-20T20.34.44.2307986Z",
+        status="passed_with_hygiene_warning",
+        message="Historical bad timestamp event without a matching waiver.",
+    )
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps(valid_events[0], sort_keys=True),
+                json.dumps(bad_event, sort_keys=True),
+                json.dumps(valid_events[1], sort_keys=True),
+                json.dumps(valid_events[2], sort_keys=True),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        rc = mod.main(
+            [
+                "--events",
+                str(events_path),
+                "--claims-dir",
+                str(claims_dir),
+                "--now",
+                NOW,
+                "--no-waivers",
+                "--json",
+            ]
+        )
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["decision"] == "active"
+    assert "invalid_events" in payload["blockers"]
+    assert payload["criteria"]["invalid_events"] == {"ok": False, "invalid_lines": 1}
 
 
 def test_short_cron_poll_is_ignored_but_recent_substantive_message_is_active(

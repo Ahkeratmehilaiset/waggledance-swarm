@@ -279,7 +279,7 @@ def test_changes_requested_clear_status_still_blocks() -> None:
         _event(
             "2026-06-07T17:39:47Z",
             "codex-tools-1",
-            "test",
+            "decision",
             "changes_requested_clear_preflight",
         ),
     ]
@@ -288,6 +288,51 @@ def test_changes_requested_clear_status_still_blocks() -> None:
     )
     assert result["clear_to_merge"] is False
     assert result["latest_blocking_event"]["status"] == "changes_requested_clear_preflight"
+
+
+def test_non_decision_changes_requested_status_label_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-21T02:30:06Z",
+            "codex-tools-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-21T02:31:21Z",
+            "codex-lead-1",
+            "message",
+            "changes_requested_payload_corrected",
+        )
+        | {"payload": {"pr": 1343}},
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="claude-rco-1",
+        pr_number=1343,
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
+def test_non_decision_exact_blocking_status_still_blocks() -> None:
+    events = [
+        _event(
+            "2026-06-21T02:31:21Z",
+            "codex-lead-1",
+            "message",
+            "changes_requested",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude-rco-1"
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
 
 
 def test_no_changes_requested_status_does_not_block() -> None:
@@ -348,7 +393,7 @@ def test_no_changes_requested_text_does_not_downgrade_real_blocking_status() -> 
                 _event(
                     "2026-06-07T17:39:47Z",
                     "codex-tools-1",
-                    "test",
+                    "finding",
                     status,
                 )
             ],
@@ -372,7 +417,7 @@ def test_veto_statuses_with_negation_words_still_block() -> None:
                 _event(
                     "2026-06-07T17:39:47Z",
                     "codex-tools-1",
-                    "test",
+                    "finding",
                     status,
                 )
             ],

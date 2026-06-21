@@ -65,6 +65,7 @@ BLOCKING_STATUSES = frozenset(
 )
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
+BLOCKING_FUZZY_EVENT_TYPES = frozenset({"decision", "rco_review", "finding"})
 NO_CHANGES_REQUESTED_CLEAR_STATUSES = frozenset(
     {
         "no_changes_requested",
@@ -253,11 +254,15 @@ def check_bridge_clear_to_merge(
             continue
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
-        # Block detection is TYPE-AGNOSTIC (fail-closed): a peer veto must
-        # register regardless of the event type used, so a block posted as
-        # e.g. type=blocked cannot be silently dropped by the type filter and
-        # let a stale approval stand. Approvals stay type-restricted.
-        if _is_blocking_status(status):
+        # Canonical block statuses stay type-agnostic (fail-closed), so a
+        # block posted as e.g. type=blocked/status=blocked cannot be silently
+        # dropped. Fuzzy status-token matching is narrower: bridge status names
+        # on messages/tests often describe bookkeeping and must not become
+        # phantom vetoes just because they contain "changes_requested".
+        if _is_blocking_status(
+            status,
+            allow_fuzzy=event_type in BLOCKING_FUZZY_EVENT_TYPES,
+        ):
             peer_signals[agent] = (index, "block", event)
             continue
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
@@ -339,9 +344,11 @@ def _is_no_block_status(status: str) -> bool:
     return normalized in NO_BLOCK_CLEAR_STATUSES
 
 
-def _is_blocking_status(status: str) -> bool:
+def _is_blocking_status(status: str, *, allow_fuzzy: bool = True) -> bool:
     if status in BLOCKING_STATUSES:
         return True
+    if not allow_fuzzy:
+        return False
     if _is_no_changes_requested_status(status) or _is_no_block_status(status):
         return False
     tokens = _status_tokens(status)

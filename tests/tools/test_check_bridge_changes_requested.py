@@ -512,7 +512,11 @@ def test_message_decorated_veto_statuses_still_block() -> None:
         ("message", "rco_changes_requested_pr530"),
         ("message", "changes_requested_do_not_merge"),
         ("message", "changes_requested_critical"),
+        ("message", "rco_block_critical"),
+        ("message", "blocked_no_fix_yet"),
+        ("message", "block_without_fix"),
         ("handoff", "changes_requested_do_not_merge"),
+        ("handoff", "rco_block_critical"),
     ]:
         result = check_bridge_clear_to_merge(
             events=[
@@ -553,6 +557,28 @@ def test_nonblocking_context_statuses_do_not_create_phantom_blocks() -> None:
 
         assert result["clear_to_merge"] is True
         assert result["latest_blocking_event"] is None
+
+
+def test_negated_context_words_in_changes_requested_status_still_block() -> None:
+    for status in [
+        "changes_requested_not_yet_addressed",
+        "changes_requested_acknowledged_still_critical",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T01:57:31Z",
+                    "claude-rco-1",
+                    "message",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
 
 
 def test_finding_descriptive_changes_requested_status_still_blocks() -> None:

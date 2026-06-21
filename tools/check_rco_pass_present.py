@@ -49,46 +49,17 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
+from tools.check_bridge_changes_requested import (  # noqa: E402
+    _is_blocking_status as _bridge_is_blocking_status,
+    _is_clear_status as _bridge_is_clear_status,
+)
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 DECISION_TYPES_FOR_PASS = frozenset({"decision", "rco_review"})
 DEFAULT_RCO_AGENTS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
 
-# Veto detection (fail-closed, mirrors blocking logic from sibling gate)
-BLOCKING_STATUSES = frozenset(
-    {
-        "changes_requested",
-        "rco_block",
-        "blocked",
-        "rco_blocked",
-        "block_requested",
-    }
-)
-CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES = (
-    "changes_requested",
-    "rco_changes_requested",
-)
-CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
-    {
-        "concurrence",
-        "resolved",
-        "resolved_ci_green",
-        "resolved_ci_pending",
-        "cleared",
-        "cleared_ci_green",
-        "cleared_ci_pending",
-        "retracted",
-        "withdrawn",
-    }
-)
-NON_BLOCKING_BLOCK_PHRASES = frozenset(
-    {
-        "not_blocked",
-        "not_blocking",
-        "not_a_blocker",
-    }
-)
+BRIDGE_BLOCK_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
 
 # Unambiguously INFORMATIONAL finding statuses. A recognized-RCO ``type=finding``
 # carrying one of these statuses is an advisory/diagnostic note, NOT a veto, so it
@@ -829,76 +800,51 @@ def _event_head_candidates(event: Mapping[str, Any]) -> list[str]:
 def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
     """Fail-closed veto detection for RCO signals.
 
-    Treats status-based blocks (changes_requested etc) and type=finding/blocked
-    as vetoes per the "changes_requested/finding/blocked (a veto)" rule.
-    Type-agnostic for blocks to avoid silent bypass via non-decision types.
+    Uses the same status taxonomy as the peer gate for explicit veto names,
+    while keeping unknown ``type=finding`` statuses fail-closed. Plain message
+    chatter does not veto.
     """
     status = str(event.get("status", "") or "").lower()
     typ = str(event.get("type", "") or "").lower()
 
-    if _is_blocking_status(status):
+    if _is_blocking_status(status, event_type=typ):
         return True
 
-    # Explicitly mentioned in spec: finding / blocked count as veto indicators
-    if typ in {"finding", "blocked"}:
-        # If the status is explicitly an approval, do not treat as veto (rare)
+    if typ == "blocked":
+        return not _is_approval_status(status)
+
+    if typ == "finding":
         if status in RCO_PASS_STATUSES or _is_approval_status(status):
             return False
-        # A type=finding carrying an unambiguously INFORMATIONAL status (info,
-        # fyi, advisory, ...) is an advisory/diagnostic note, not a veto, so it
-        # must not phantom-block a prior exact-head rco_pass. type=blocked is
-        # semantically a block and never gets this exemption.
-        if typ == "finding" and _is_informational_finding_status(status):
+        if _is_informational_finding_status(status):
             return False
-        return True
-
-    # Any status that lexically signals block (e.g. "rco_changes_requested_xxx")
-    if _has_blocking_shape(status):
+        if _is_known_bridge_non_veto_status(status):
+            return False
         return True
 
     return False
 
 
-def _has_blocking_shape(status: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
-        if normalized == prefix:
-            return True
-        if not normalized.startswith(prefix + "_"):
-            continue
-        suffix = normalized[len(prefix) + 1 :]
-        if not suffix:
-            return True
-        if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
-            return False
+def _is_known_bridge_non_veto_status(status: str) -> bool:
+    if _bridge_is_clear_status(status):
         return True
-    if _has_non_blocking_block_phrase(status):
-        return False
-    tokens = _status_tokens(status)
-    has_shape = (
-        {"changes", "requested"}.issubset(tokens)
-        or any(token.startswith("block") for token in tokens)
-        or "finding" in tokens  # treat "finding" status shape as potential veto signal
+    return _has_bridge_veto_words(status) and not _bridge_is_blocking_status(
+        status,
+        event_type="finding",
     )
-    return has_shape
 
 
-def _has_non_blocking_block_phrase(status: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    if (
-        normalized.startswith(("block_", "blocked_", "rco_block"))
-        or "block_requested" in normalized
-        or "changes_requested" in normalized
-    ):
-        return False
-    bounded = f"_{normalized}_"
-    return any(f"_{phrase}_" in bounded for phrase in NON_BLOCKING_BLOCK_PHRASES)
+def _has_bridge_veto_words(status: str) -> bool:
+    tokens = _status_tokens(status)
+    return (
+        {"changes", "requested"}.issubset(tokens)
+        or bool(tokens.intersection(BRIDGE_BLOCK_WORD_TOKENS))
+        or any(token.startswith("block") for token in tokens)
+    )
 
 
-def _is_blocking_status(status: str) -> bool:
-    if status in BLOCKING_STATUSES:
-        return True
-    return _has_blocking_shape(status)
+def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
+    return _bridge_is_blocking_status(status, event_type=event_type)
 
 
 def _is_approval_status(status: str) -> bool:

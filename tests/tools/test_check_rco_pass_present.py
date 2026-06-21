@@ -23,7 +23,14 @@ sys.path.insert(0, str(ROOT))
 from tools.check_rco_pass_present import (  # noqa: E402
     check_rco_pass_present as _check_rco_pass_present,
     DEFAULT_EVENTS_PATH,
+    _is_blocking_status as _rco_gate_is_blocking_status,
     _read_events,
+)
+from tools.check_bridge_changes_requested import (  # noqa: E402
+    _is_blocking_status as _peer_gate_is_blocking_status,
+)
+from tools.idle_consensus_auto_merge import (  # noqa: E402
+    _is_consensus_block as _consensus_is_blocking_status,
 )
 import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
@@ -261,6 +268,28 @@ def test_changes_requested_after_pass_refuses() -> None:
     )  # pass existed but superseded
 
 
+def test_message_changes_requested_after_pass_does_not_veto() -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status="changes_requested",
+            type_="message",
+            message="bridge conversation mention, not an authoritative veto",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["latest_rco_is_veto"] is False
+
+
 @pytest.mark.parametrize(
     "status",
     [
@@ -330,6 +359,44 @@ def test_finding_info_after_pass_does_not_veto() -> None:
 @pytest.mark.parametrize(
     "status",
     [
+        "tools_peer_block_clear_needed_after_reattribution",
+        "peer_block_is_g4_classifier_artifact_no_real_veto",
+        "approved_waiver_block_cleared",
+        "fable_1368_failclosed_endorse_verify_block_cleared_coverage",
+        "block_cleared",
+        "block_resolved",
+        "block_cleared_no_remaining_issues",
+        "block_resolved_still_monitoring",
+        "block_cleared_open_followup",
+    ],
+)
+def test_bridge_non_veto_finding_status_after_pass_does_not_veto(
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            status=status,
+            type_="finding",
+            message="diagnostic bridge status, not a veto",
+        ),
+    ]
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["latest_rco_is_veto"] is False
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
         "changes_requested_NOT_resolved",
         "rco_changes_requested_not_cleared",
     ],
@@ -347,7 +414,7 @@ def test_negated_changes_requested_status_after_pass_still_vetoes(
         _rco_event(
             ts="2026-06-03T10:05:00Z",
             status=status,
-            type_="message",
+            type_="finding",
             message="still blocked; not resolved",
         ),
     ]
@@ -443,7 +510,7 @@ def test_block_status_with_negation_context_after_pass_still_vetoes(
         _rco_event(
             ts="2026-06-03T10:05:00Z",
             status=status,
-            type_="message",
+            type_="finding",
             message="still blocked",
         ),
     ]
@@ -453,6 +520,38 @@ def test_block_status_with_negation_context_after_pass_still_vetoes(
     assert result["ok"] is False
     assert result["decision"] == "vetoed_after_pass"
     assert result["latest_rco_is_veto"] is True
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status", "expected"),
+    [
+        ("finding", "tools_peer_block_clear_needed_after_reattribution", False),
+        ("finding", "peer_block_is_g4_classifier_artifact_no_real_veto", False),
+        ("finding", "approved_waiver_block_cleared", False),
+        (
+            "finding",
+            "fable_1368_failclosed_endorse_verify_block_cleared_coverage",
+            False,
+        ),
+        ("finding", "block_cleared", False),
+        ("finding", "block_resolved", False),
+        ("finding", "block_cleared_no_remaining_issues", False),
+        ("finding", "changes_requested", True),
+        ("finding", "rco_changes_requested_not_cleared", True),
+        ("finding", "block_not_resolved", True),
+        ("finding", "block_incomplete_clear", True),
+        ("message", "changes_requested", False),
+        ("blocked", "blocked", True),
+    ],
+)
+def test_bridge_veto_classifiers_share_status_taxonomy(
+    event_type: str,
+    status: str,
+    expected: bool,
+) -> None:
+    assert _peer_gate_is_blocking_status(status, event_type=event_type) is expected
+    assert _consensus_is_blocking_status(status, event_type=event_type) is expected
+    assert _rco_gate_is_blocking_status(status, event_type=event_type) is expected
 
 
 def test_type_blocked_with_info_status_still_vetoes() -> None:

@@ -184,6 +184,29 @@ def test_bundle_index_rejects_summary_authority_flip() -> None:
     ]
 
 
+def test_bundle_index_rejects_bytes_that_do_not_match_validated_mapping() -> None:
+    source = _ready_sink_proof()
+    summary = _summary(source)
+    tampered_source_for_digest = copy.deepcopy(source)
+    tampered_source_for_digest["configured_sink_receipt_count"] = 7
+
+    index = build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index(
+        sink_proof=source,
+        reviewer_summary=summary,
+        sink_proof_bytes=_json_bytes(tampered_source_for_digest),
+        summary_bytes=_json_bytes(summary),
+        now_utc=FIXED_NOW,
+    )
+
+    assert index["ok"] is False
+    assert index["blockers"] == [
+        "runtime_receipt_sink_reviewer_bundle_index_failed:"
+        "source_sink_proof_bytes_mismatch"
+    ]
+    assert index["artifact_payloads_included"] is False
+    assert index["local_paths_recorded"] is False
+
+
 def test_missing_input_failure_does_not_echo_path(tmp_path: Path) -> None:
     source = _ready_sink_proof()
     summary = _summary(source)

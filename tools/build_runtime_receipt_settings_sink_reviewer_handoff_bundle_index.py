@@ -118,6 +118,8 @@ def build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index(
     try:
         source = _safe_mapping("source_sink_proof", sink_proof)
         summary = _safe_mapping("reviewer_handoff_summary", reviewer_summary)
+        _assert_bytes_match_mapping("source_sink_proof", sink_proof_bytes, source)
+        _assert_bytes_match_mapping("reviewer_handoff_summary", summary_bytes, summary)
         _assert_source_proof_contract(source)
         _assert_summary_contract(source, summary)
 
@@ -251,6 +253,30 @@ def _assert_summary_contract(
     for field in COVERAGE_BOOL_FIELDS:
         if configured_sink.get(field) is not source.get(field):
             raise BundleIndexError(f"summary_{field}_mismatch")
+
+
+def _assert_bytes_match_mapping(
+    artifact_id: str,
+    raw_bytes: bytes,
+    expected: Mapping[str, Any],
+) -> None:
+    if not isinstance(raw_bytes, bytes) or len(raw_bytes) == 0:
+        raise BundleIndexError(f"{artifact_id}_bytes_missing")
+    try:
+        parsed = json.loads(raw_bytes.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise BundleIndexError(f"{artifact_id}_bytes_decode_error") from exc
+    except json.JSONDecodeError as exc:
+        raise BundleIndexError(f"{artifact_id}_bytes_json_error") from exc
+    if not isinstance(parsed, Mapping):
+        raise BundleIndexError(f"{artifact_id}_bytes_not_object")
+    try:
+        normalized = json.loads(json.dumps(parsed, sort_keys=True, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise BundleIndexError(f"{artifact_id}_bytes_not_json") from exc
+    _assert_no_forbidden_input(json.dumps(normalized, sort_keys=True, allow_nan=False))
+    if normalized != dict(expected):
+        raise BundleIndexError(f"{artifact_id}_bytes_mismatch")
 
 
 def _artifact_record(

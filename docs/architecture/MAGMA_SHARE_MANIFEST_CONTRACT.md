@@ -143,6 +143,19 @@ per-entry receipt/EvaluationResult digests, local paths, payload material,
 transport, and runtime authority. Rejected imports still exit nonzero and emit
 the same path-free no-authority flags plus a blocker class.
 
+`tools/build_magma_share_import_replay_sanitization_bridge_event_template.py`
+turns that replay-sanitization summary into a bridge-event template for
+reviewers, the sibling of the admission-status template. It is template-only: it
+does not append to the bridge, enable transport, import payload files, export the
+replay plan or entry ids, record local paths, or grant runtime authority. Ready
+summaries render as a `handoff` template; rejected or blocked summaries render as
+a `finding` template with a blocker class. The template echoes only digests,
+counts (entry, required-check, rejection-mode, redaction-inventory, and
+report-invariant), the sanitization contract/scope, and the same
+no-authority/privacy flags -- never the required-check names, redaction-inventory
+entries, replay plan, or per-entry ids. It is a bounded first layer with no
+`_index_entry` / `_verification_summary` recursion.
+
 When `--json` is set and admission is rejected, the importer still exits
 nonzero and writes the human failure line to stderr, but stdout contains a
 sanitized admission-status JSON object. `--admission-status-json` uses the same

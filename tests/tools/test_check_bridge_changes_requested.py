@@ -433,6 +433,29 @@ def test_changes_requested_clear_status_supersedes_same_agent_block() -> None:
     assert result["latest_approval_event"] is None
 
 
+def test_approved_waiver_block_cleared_supersedes_same_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-21T18:00:00Z",
+            "codex-tools-1",
+            "blocked",
+            "merge_blocked_operator_or_driver_waiver_required",
+        ),
+        _event(
+            "2026-06-21T18:01:00Z",
+            "codex-tools-1",
+            "decision",
+            "approved_waiver_block_cleared",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+
+
 def test_clear_status_does_not_supersede_other_agent_block() -> None:
     events = [
         _event(
@@ -708,6 +731,7 @@ def test_veto_statuses_with_negation_words_still_block() -> None:
         "changes_requested_do_not_merge",
         "blocked_no_fix_yet",
         "block_without_fix",
+        "merge_blocked_operator_or_driver_waiver_required",
         "rco_block_cleared",
     ]:
         result = check_bridge_clear_to_merge(

@@ -115,6 +115,7 @@ NON_BLOCKING_CONTEXT_STATUS_SEGMENTS = (
 )
 NO_BLOCK_CLEAR_STATUSES = frozenset(
     {
+        "approved_waiver_block_cleared",
         "lead_no_blocker_rco_pending",
         "producer_no_block_reemit_required",
     }

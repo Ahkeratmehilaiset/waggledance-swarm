@@ -167,6 +167,26 @@ operator review/escalation and still write nothing.
 
 ## Deferred
 
-- Production two-agent activation loop.
-- Automatic payload generation.
-- Auto-conversion from consensus to implementation work.
+- Production two-agent activation loop: partially lifted to
+  read-only scheduler-ready status. `tools/idle_loop_once.py`,
+  `tools/agent_next_task.py`, `tools/bridge_loop_tick.py`, and
+  `IDLE_LOOP_RUNBOOK.md` can now report the next safe wakeup action, but
+  they do not own peer activation bridge writes. The remaining deferred
+  work is an opt-in peer-activation handoff that proves identity binding,
+  open-request handling, and stale-claim suppression without giving the
+  scheduler authority to emit substantive idle payloads.
+- Automatic payload generation: still deferred. Payload composition remains
+  outside tooling until peer-reviewed templates and quality gates can prove
+  the WD artifact or decision target before any bridge event is printed or
+  emitted.
+- Auto-conversion from consensus to implementation work: report-only
+  partial. `tools/idle_consensus_artifact.py`,
+  `tools/idle_consensus_to_pr.py`, and
+  `tools/idle_consensus_draft_pr.py` can package review evidence and PR
+  scaffolding, but implementer agents still create scoped diffs and claims
+  separately. Consensus must not become a work-queue task without an explicit
+  bridge claim and the normal operator/PR gates.
+
+A deferred item may move out of this list only when its promoted slice names
+the implementation surface, the authority it still lacks, and the smallest
+next gate that would catch overreach before a bridge write or source change.

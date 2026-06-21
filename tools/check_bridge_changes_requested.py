@@ -106,6 +106,22 @@ CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
         "withdrawn",
     }
 )
+NON_BLOCKING_CONTEXT_TOKENS = frozenset(
+    {
+        "ack",
+        "acknowledged",
+        "addressed",
+        "advisory",
+        "answered",
+        "concurrence",
+        "corrected",
+        "correction",
+        "forwarded",
+        "received",
+        "resolved",
+        "resolves",
+    }
+)
 NO_BLOCK_CLEAR_STATUSES = frozenset(
     {
         "lead_no_blocker_rco_pending",
@@ -431,10 +447,14 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
             return True
         if suffix in CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES:
             return False
+        if _has_non_blocking_context_token(suffix):
+            return False
         return True
     if _is_clear_status(status):
         return False
     if event_type in NON_BLOCKING_STATUS_TOKEN_EVENT_TYPES:
+        return False
+    if _has_non_blocking_context_token(status):
         return False
     if _has_non_blocking_block_phrase(status):
         return False
@@ -446,6 +466,10 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
     if "preflight" in tokens and tokens.intersection(BLOCKING_CLEAR_TOKENS):
         return False
     return True
+
+
+def _has_non_blocking_context_token(status: str) -> bool:
+    return bool(_status_tokens(status).intersection(NON_BLOCKING_CONTEXT_TOKENS))
 
 
 def _is_approval_status(status: str) -> bool:

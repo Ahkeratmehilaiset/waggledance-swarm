@@ -430,7 +430,10 @@ def archive_stale_claims(
             if claim.capabilities:
                 payload["capabilities"] = list(claim.capabilities)
             _write_json_file(archive_path, payload, create_new=True)
-            claim_file = bridge / "work_queue" / "claims" / f"{safe_task}.json"
+            claim_file = _claim_path_for_task(
+                bridge / "work_queue" / "claims",
+                claim.task_id,
+            )
             try:
                 claim_file.unlink()
             except FileNotFoundError:

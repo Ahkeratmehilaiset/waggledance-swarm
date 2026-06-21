@@ -82,6 +82,27 @@ def _build_runtime_with_consult(
     )
 
 
+def _build_runtime_with_real_selector_and_consult(
+    cp: ControlPlaneDB,
+) -> AutonomyRuntime:
+    detector = RuntimeGapDetector(cp)
+    hot_path = HotPathCache(control_plane=cp, detector=detector)
+    runtime_router = RuntimeQueryRouter(
+        cp, detector=detector, hot_path=hot_path,
+        min_signal_interval_seconds=0.0,
+    )
+    consult = build_autonomy_consult(runtime_router)
+    registry = CapabilityRegistry()
+    sr = SolverRouter(registry=registry, autonomy_consult=consult)
+    return AutonomyRuntime(
+        profile="VALIDATION",
+        capability_registry=registry,
+        solver_router=sr,
+        enable_magma=False,
+        enable_persistence=False,
+    )
+
+
 @pytest.fixture()
 def cp(tmp_path):
     db = ControlPlaneDB(tmp_path / "cp.sqlite")
@@ -294,3 +315,34 @@ def test_handle_query_builtin_precedence_skips_hint_even_with_structured_request
     assert result.get("quality_path") != "autonomy_consult"
     assert not (result.get("autonomy_consult") or {}).get("served", False)
     assert cp.count_runtime_gap_signals() == before
+
+
+def test_handle_query_real_builtin_success_sets_precedence_flag(
+    cp: ControlPlaneDB,
+) -> None:
+    """The production built-in solver success path must actively mark
+    builtin precedence and clear stale advisory autonomy hints."""
+
+    runtime = _build_runtime_with_real_selector_and_consult(cp)
+    ctx = {
+        "structured_request": {
+            "unit_conversion": {"x": 0.0, "from": "C", "to": "K"},
+            "cell_coord": "thermal",
+            "intent_seed": "celsius_to_kelvin",
+        },
+    }
+
+    runtime.start()
+    try:
+        result = runtime.handle_query("2+2", context=ctx)
+    finally:
+        runtime.stop()
+
+    assert result["capability"] == "solve.math"
+    assert result["quality_path"] == "gold"
+    assert result["executed"] is True
+    assert result["result"]["success"] is True
+    assert ctx["builtin_solver_succeeded"] is True
+    assert ctx["low_risk_autonomy_hint_kind"] == "skipped_builtin_precedence"
+    assert "low_risk_autonomy_query" not in ctx
+    assert not (result.get("autonomy_consult") or {}).get("served", False)

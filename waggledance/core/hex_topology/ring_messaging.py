@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from .cell_message_contract import CellMessage, validate
 from .parent_child_relations import neighbors_of
 
-RING_DELIVERY_OBSERVABILITY_SCHEMA = "hex.ring_delivery_observability.v0"
+RING_DELIVERY_OBSERVABILITY_SCHEMA = "hex.ring_delivery_observability.v1"
 
 # Stable, structural categories for a blocked delivery. Set at the block site
 # (where the cause is known), NOT by parsing the free-text blocked_reason —
@@ -21,6 +21,22 @@ RING_BLOCK_SCHEMA_INVALID = "schema_invalid"
 RING_BLOCK_NOT_NEIGHBOR = "not_neighbor"
 RING_BLOCK_NOT_PARENT = "not_parent"
 RING_BLOCK_NOT_CHILD = "not_child"
+
+# Higher-level boundary CLASSES grouping the stable categories above, so a ring
+# fragmenting on TOPOLOGY (well-formed messages routed across an adjacency /
+# hierarchy boundary they do not have) is distinguishable at a glance from one
+# fragmenting on malformed input. Classification is by the stable category
+# constant, never by parsing the free-text ``blocked_reason``.
+RING_BLOCK_CLASS_TOPOLOGY = "topology_boundary"
+RING_BLOCK_CLASS_SCHEMA = "schema_invalid"
+RING_BLOCK_CLASS_UNSPECIFIED = "unspecified"
+
+_RING_BLOCK_CATEGORY_CLASS: dict[str, str] = {
+    RING_BLOCK_SCHEMA_INVALID: RING_BLOCK_CLASS_SCHEMA,
+    RING_BLOCK_NOT_NEIGHBOR: RING_BLOCK_CLASS_TOPOLOGY,
+    RING_BLOCK_NOT_PARENT: RING_BLOCK_CLASS_TOPOLOGY,
+    RING_BLOCK_NOT_CHILD: RING_BLOCK_CLASS_TOPOLOGY,
+}
 
 
 @dataclass(frozen=True)
@@ -109,9 +125,13 @@ def summarize_ring_delivery_batch(
 
     Pure read-only view over already-computed ``RingDelivery`` results: the
     overall delivery success ratio, delivered/blocked counts per message kind,
-    and a histogram of blocked deliveries by their stable ``blocked_category``
+    a histogram of blocked deliveries by their stable ``blocked_category``
     (so a fragmenting ring — many ``not_neighbor`` / ``not_parent`` blocks —
-    is visible at a glance). It changes NO delivery decision and performs NO
+    is visible at a glance), and the same blocked deliveries grouped by their
+    higher-level ``blocked_by_class`` (``topology_boundary`` vs
+    ``schema_invalid``) so a topology-fragmenting ring is distinguishable from
+    one fragmenting on malformed input. It changes NO delivery decision and
+    performs NO
     transport; it only reads what ``deliver_one`` already decided, and is
     re-derivable from the delivery list. This is the multi-instance
     coordination readiness signal, not a network layer.
@@ -121,6 +141,7 @@ def summarize_ring_delivery_batch(
     blocked_count = 0
     by_message_kind: dict[str, dict[str, int]] = {}
     blocked_by_category: dict[str, int] = {}
+    blocked_by_class: dict[str, int] = {}
     for delivery in deliveries:
         total += 1
         kind = delivery.msg.kind
@@ -137,6 +158,12 @@ def summarize_ring_delivery_batch(
             blocked_by_category[category] = (
                 blocked_by_category.get(category, 0) + 1
             )
+            block_class = _RING_BLOCK_CATEGORY_CLASS.get(
+                delivery.blocked_category, RING_BLOCK_CLASS_UNSPECIFIED
+            )
+            blocked_by_class[block_class] = (
+                blocked_by_class.get(block_class, 0) + 1
+            )
     success_ratio = (delivered_count / total) if total else 0.0
     return {
         "schema_version": RING_DELIVERY_OBSERVABILITY_SCHEMA,
@@ -148,5 +175,6 @@ def summarize_ring_delivery_batch(
             kind: by_message_kind[kind] for kind in sorted(by_message_kind)
         },
         "blocked_by_category": dict(sorted(blocked_by_category.items())),
+        "blocked_by_class": dict(sorted(blocked_by_class.items())),
         "transport_applied": False,
     }

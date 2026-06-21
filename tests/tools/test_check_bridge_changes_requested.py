@@ -702,6 +702,33 @@ def test_changes_requested_resolution_status_clears_prior_block_without_approval
         assert result["latest_approval_event"] is None
 
 
+def test_block_resolution_diagnostics_do_not_create_phantom_blocks() -> None:
+    for status in [
+        "block_cleared",
+        "peer_block_cleared",
+        "waiver_block_cleared",
+        "block_resolved",
+        "block_clear",
+        "changes_requested_block_resolved",
+        "fable_1368_failclosed_endorse_verify_block_cleared_coverage",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T18:47:13Z",
+                    "fable-5",
+                    "message",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+
+
 def test_no_changes_requested_text_does_not_downgrade_real_blocking_status() -> None:
     for status in [
         "no_changes_requested_but_blocked",
@@ -731,6 +758,8 @@ def test_veto_statuses_with_negation_words_still_block() -> None:
         "changes_requested_do_not_merge",
         "blocked_no_fix_yet",
         "block_without_fix",
+        "block_requested",
+        "changes_requested_block_clear_required",
         "merge_blocked_operator_or_driver_waiver_required",
         "rco_block_cleared",
     ]:

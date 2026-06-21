@@ -25,6 +25,7 @@ from tools.bridge_loop_tick import (
     emit_peer_activation_event,
     evaluate_merge_ready,
     main,
+    materialize_peer_activation_event,
     my_unmerged_rco_passes,
     peer_activation_recommendation,
     peer_has_active_pr_producing_claim,
@@ -342,6 +343,46 @@ def test_cli_emit_peer_activation_uses_runtime_bridge_root_env(
     assert events[-1]["agent"] == "codex-tools-1"
     assert events[-1]["to"] == "codex-lead-1"
     assert events[-1]["status"] == "scout_requested"
+
+
+def test_cli_peer_activation_default_is_report_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    now = datetime.now(timezone.utc)
+    events_path = _events_file(
+        runtime_bridge,
+        [
+            _finding("codex-lead-1", _format_z(now - timedelta(minutes=40))),
+            _heartbeat("codex-lead-1", _format_z(now - timedelta(minutes=5))),
+        ],
+    )
+    original_events = events_path.read_text(encoding="utf-8")
+    inbox = tmp_path / "operator_inbox"
+    inbox.mkdir()
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
+    monkeypatch.delenv("AGENT_BRIDGE_ROOT", raising=False)
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex-tools-1",
+            "--inbox-dir",
+            str(inbox),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["peer_activation"]["needed"] is True
+    assert "emitted" not in report["peer_activation"]
+    assert events_path.read_text(encoding="utf-8") == original_events
+    assert not (runtime_bridge / "outbox" / "codex-tools-1").exists()
+    assert not (runtime_bridge / "shared" / "last_codex-tools-1.json").exists()
 
 
 def test_pr_status_snapshot_fn_prefers_explicit_expected_base_sha():
@@ -927,6 +968,37 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
         json.loads((tmp_path / "shared" / "last_codex.json").read_text())["task_id"]
         == event["task_id"]
     )
+
+
+def test_peer_activation_event_is_handoff_only_without_authority():
+    events = [_heartbeat("claude", "2026-05-22T13:55:00Z")]
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    event = materialize_peer_activation_event(
+        agent="codex",
+        event_spec=rec["bridge_event"],
+        now_utc=NOW,
+    )
+
+    assert event["type"] == "handoff"
+    assert event["status"] == "scout_requested"
+    assert event["paths"] == []
+    assert event["write_scope"] == []
+    assert event["run_id"] == ""
+    assert event["payload"] == {
+        "summary": rec["bridge_event"]["summary"],
+        "source": "bridge_loop_tick.peer_activation",
+    }
+    assert "operator_gate_required" not in event
+    assert "auto_execute" not in event
+    assert "claim" not in event
+    assert "merge" not in event
 
 
 def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):

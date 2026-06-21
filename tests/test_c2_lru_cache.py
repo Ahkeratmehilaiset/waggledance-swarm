@@ -37,20 +37,20 @@ def test_lru_eviction_in_cached_embed():
 
     # Manually populate cache (bypass _raw_embed)
     for i in range(3):
-        key = hashlib.md5(f"text_{i}".encode()).hexdigest()
+        key = hashlib.md5(f"text_{i}".encode(), usedforsecurity=False).hexdigest()
         ee._cache[key] = [0.1] * 10  # fake embedding
 
     assert len(ee._cache) == 3
 
     # Simulate adding a 4th entry via cache logic
-    key4 = hashlib.md5("text_3".encode()).hexdigest()
+    key4 = hashlib.md5("text_3".encode(), usedforsecurity=False).hexdigest()
     ee._cache[key4] = [0.2] * 10
     while len(ee._cache) > ee._cache_max:
         ee._cache.popitem(last=False)
 
     assert len(ee._cache) == 3
     # First entry should be evicted
-    key0 = hashlib.md5("text_0".encode()).hexdigest()
+    key0 = hashlib.md5("text_0".encode(), usedforsecurity=False).hexdigest()
     assert key0 not in ee._cache
     print("  [PASS] LRU evicts oldest entry")
 
@@ -62,7 +62,7 @@ def test_lru_refresh_on_hit():
 
     keys = []
     for i in range(3):
-        key = hashlib.md5(f"text_{i}".encode()).hexdigest()
+        key = hashlib.md5(f"text_{i}".encode(), usedforsecurity=False).hexdigest()
         ee._cache[key] = [0.1] * 10
         keys.append(key)
 
@@ -70,7 +70,7 @@ def test_lru_refresh_on_hit():
     ee._cache.move_to_end(keys[0])
 
     # Add 4th -> should evict keys[1] (now oldest)
-    key4 = hashlib.md5("text_3".encode()).hexdigest()
+    key4 = hashlib.md5("text_3".encode(), usedforsecurity=False).hexdigest()
     ee._cache[key4] = [0.2] * 10
     while len(ee._cache) > ee._cache_max:
         ee._cache.popitem(last=False)
@@ -86,7 +86,7 @@ def test_memory_bounded():
     ee = EmbeddingEngine(cache_size=10)
 
     for i in range(100):
-        key = hashlib.md5(f"text_{i}".encode()).hexdigest()
+        key = hashlib.md5(f"text_{i}".encode(), usedforsecurity=False).hexdigest()
         ee._cache[key] = [0.1] * 768
         while len(ee._cache) > ee._cache_max:
             ee._cache.popitem(last=False)

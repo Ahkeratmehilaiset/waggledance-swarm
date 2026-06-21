@@ -365,7 +365,7 @@ Sama teksti = sama vektori. Ei tarvitse laskea uudelleen.
     cache = {}  # key=md5(text), value=vector
     
     def cached_embed(text, engine):
-        key = hashlib.md5(text.encode()).hexdigest()
+        key = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
         if key in cache:
             return cache[key]  # 0ms
         vec = engine.embed(text)  # 10ms

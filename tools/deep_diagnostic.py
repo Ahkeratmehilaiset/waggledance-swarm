@@ -292,7 +292,7 @@ for e in curated:
     for m in msgs:
         if m.get("role") == "assistant":
             text = m.get("content", "").strip()[:200]
-            h = md5(text.encode()).hexdigest()[:8]
+            h = md5(text.encode(), usedforsecurity=False).hexdigest()[:8]
             content_hashes[h] += 1
 
 duplicates = sum(c - 1 for c in content_hashes.values() if c > 1)
@@ -310,7 +310,7 @@ for h, c in content_hashes.most_common(5):
             for m in e.get("messages", []):
                 if m.get("role") == "assistant":
                     text = m.get("content", "").strip()[:200]
-                    if md5(text.encode()).hexdigest()[:8] == h:
+                    if md5(text.encode(), usedforsecurity=False).hexdigest()[:8] == h:
                         print(f"    [{c}x] {text[:80]}...")
                         break
             else:

@@ -288,7 +288,13 @@ def generate_synthetic_events(spec: SyntheticSpec) -> list[MamaCandidateEvent]:
 
     session_idx = 0
     for i in range(spec.num_events):
-        h = int(hashlib.sha1(f"{spec.seed}|{i}".encode()).hexdigest()[:8], 16)
+        h = int(
+            hashlib.sha1(
+                f"{spec.seed}|{i}".encode(),
+                usedforsecurity=False,
+            ).hexdigest()[:8],
+            16,
+        )
         utterance_text, event_type = utterance_pool[h % len(utterance_pool)]
         caregiver = caregivers[(h >> 8) % len(caregivers)]
 

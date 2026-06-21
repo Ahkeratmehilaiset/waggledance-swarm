@@ -123,6 +123,22 @@ def test_verifier_rejects_digest_tamper() -> None:
     assert "rebuilt_index_entry_mismatch" in verification["blockers"]
 
 
+def test_verifier_rejects_index_entry_version_tamper() -> None:
+    report = _template_report()
+    entry = _index_entry(report)
+    tampered = copy.deepcopy(entry)
+    tampered["index_entry_version"] = "wd.low_risk_cross_consistency_digest_bridge_event_template_index_entry.v0"
+
+    verification = _verify(tampered, report)
+
+    assert verification["ok"] is False
+    assert (
+        "index_entry_contract:index_entry_version_mismatch"
+        in verification["blockers"]
+    )
+    assert "rebuilt_index_entry_mismatch" in verification["blockers"]
+
+
 def test_verifier_rejects_authority_tamper() -> None:
     report = _template_report()
     entry = _index_entry(report)

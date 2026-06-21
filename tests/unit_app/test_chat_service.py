@@ -365,6 +365,91 @@ class TestChatService:
 
         asyncio.run(_run())
 
+    # ── deterministic_solver_first "deterministic-first" runtime invariants ──
+    # Executable evidence (T2 Phase A) toward the deterministic_solver_first
+    # capability claim_safe decision (manifest flip owned by the lead). These
+    # pin the honest, scoped truth on the live route_stage_trace: the
+    # deterministic solver is ATTEMPTED before the generic LLM fallback and
+    # before the 8-cell hybrid retrieval — i.e. deterministic-first among the
+    # answering paths — without asserting the broader (unproven) full-provenance
+    # claim.
+
+    def test_deterministic_solver_precedes_orchestrator_llm_fallback(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """The deterministic solver stage is attempted BEFORE the generic
+        orchestrator_llm_fallback in the live trace. Evidence for the honest
+        scoped claim 'the deterministic solver is attempted before the LLM
+        fallback' (not the broader full-MAGMA-provenance claim)."""
+        async def _run():
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            result = await svc.handle(ChatRequest(
+                query="statistics summary for hive sensor readings",
+            ))
+            stages = [event["stage"] for event in result.route_stage_trace]
+            assert "deterministic_solver" in stages, stages
+            assert "orchestrator_llm_fallback" in stages, stages
+            assert (
+                stages.index("deterministic_solver")
+                < stages.index("orchestrator_llm_fallback")
+            ), stages
+
+        asyncio.run(_run())
+
+    def test_deterministic_solver_precedes_hybrid_retrieval(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """The deterministic solver is attempted BEFORE the 8-cell hybrid
+        retrieval stage — the deterministic attempt precedes the retrieval
+        path, not after it."""
+        async def _run():
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = False
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:candidate",
+                route_source="cell:math+global",
+                answered_by_layer="llm",
+                cell_id="math",
+                llm_fallback=True,
+            ))
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+            result = await svc.handle(ChatRequest(
+                query="statistics summary for hive sensor readings",
+            ))
+            stages = [event["stage"] for event in result.route_stage_trace]
+            assert "deterministic_solver" in stages, stages
+            assert "hybrid_retrieval_8_cell" in stages, stages
+            assert (
+                stages.index("deterministic_solver")
+                < stages.index("hybrid_retrieval_8_cell")
+            ), stages
+
+        asyncio.run(_run())
+
     def test_language_detection_fi(self, chat_service):
         async def _run():
             req = ChatRequest(query="Miten hoidetaan varroa-häätö?")

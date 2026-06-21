@@ -261,6 +261,21 @@ def test_path_tainted_template_fails() -> None:
     assert _index_entry(report)["ok"] is False
 
 
+def test_template_warnings_fail_closed_without_raw_warning_leak() -> None:
+    report = _good_template_report()
+    report["warnings"] = [
+        "raw bridge event message=template ready agent=fable-5 ts_utc=2026-06-21T04:30:00Z"
+    ]
+
+    entry = _index_entry(report)
+    blob = json.dumps(entry)
+
+    assert entry["ok"] is False
+    assert "bridge_event_template_warnings_present" in entry["blockers"][0]
+    for raw in ("template ready", "fable-5", "2026-06-21T04:30:00Z", "ts_utc"):
+        assert raw not in blob, raw
+
+
 @pytest.mark.parametrize(
     "warning",
     [

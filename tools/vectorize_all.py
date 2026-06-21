@@ -298,7 +298,10 @@ def vectorize_training(registry: FaissRegistry) -> int:
 
             # Use first 600 chars for embedding
             text = asst[:600].strip()
-            h = hashlib.md5(text.lower().encode()).hexdigest()[:16]
+            h = hashlib.md5(
+                text.lower().encode(),
+                usedforsecurity=False,
+            ).hexdigest()[:16]
             if h in seen_hashes:
                 continue
             seen_hashes.add(h)

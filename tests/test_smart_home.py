@@ -105,7 +105,10 @@ def test_mqtt_hub_dedup():
 
     import hashlib
     payload = "test_message"
-    msg_hash = hashlib.md5(f"test/topic:{payload}".encode()).hexdigest()
+    msg_hash = hashlib.md5(
+        f"test/topic:{payload}".encode(),
+        usedforsecurity=False,
+    ).hexdigest()
 
     # First message passes
     hub._seen[msg_hash] = time.monotonic()

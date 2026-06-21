@@ -67,7 +67,10 @@ def main():
         for msg in messages:
             if msg.get("role") in ("user", "assistant"):
                 key_parts.append(msg.get("content", "").lower().strip())
-        content_hash = hashlib.md5("|".join(key_parts).encode()).hexdigest()
+        content_hash = hashlib.md5(
+            "|".join(key_parts).encode(),
+            usedforsecurity=False,
+        ).hexdigest()
         if content_hash in seen_hashes:
             dupes_removed += 1
             continue

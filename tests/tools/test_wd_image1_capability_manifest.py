@@ -2794,11 +2794,17 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
         capability["proof"]["runtime_receipt_settings_sink_reviewer_summary_claimed"]
         is True
     )
+    assert (
+        capability["proof"]["runtime_receipt_settings_sink_reviewer_bundle_index_claimed"]
+        is True
+    )
     assert "opt-in MAGMA" in capability["safe_statement"]
     assert "Prometheus metrics" in capability["safe_statement"]
     assert "default-off" in capability["safe_statement"]
     assert "path-free reviewer handoff summary" in capability["safe_statement"]
-    assert "local reviewer-handoff bundle index" in capability["next_smallest_pr"]
+    assert "local reviewer-handoff bundle index" in capability["safe_statement"]
+    assert "local verifier" in capability["next_smallest_pr"]
+    assert "reviewer-handoff bundle index" in capability["next_smallest_pr"]
     assert "without including payloads or local paths" in capability["next_smallest_pr"]
     assert "granting runtime authority" in capability["next_smallest_pr"]
     evidence_paths = {entry["path"] for entry in capability["evidence"]}
@@ -2808,6 +2814,14 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
     )
     assert (
         "tests/tools/test_build_runtime_receipt_settings_sink_reviewer_handoff_summary.py"
+        in evidence_paths
+    )
+    assert (
+        "tools/build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index.py"
+        in evidence_paths
+    )
+    assert (
+        "tests/tools/test_build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index.py"
         in evidence_paths
     )
     summary = capability["proof"]["runtime_receipt_settings_sink_reviewer_summary"]
@@ -2821,9 +2835,34 @@ def test_manifest_embeds_solver_trace_proof_without_upgrading_claim() -> None:
         capability["proof"]["receipt_metrics"]["settings_sink_reviewer_summary_ok"]
         is True
     )
+    bundle_index = capability["proof"][
+        "runtime_receipt_settings_sink_reviewer_bundle_index"
+    ]
+    assert bundle_index["ok"] is True
+    assert bundle_index["artifact_count"] == 2
+    assert bundle_index["consistency"]["source_summary_binding"] is True
+    assert bundle_index["consistency"]["artifact_payloads_included"] is False
+    assert bundle_index["consistency"]["local_paths_recorded"] is False
+    assert bundle_index["operator_boundary"]["claim_safe_unchanged"] is True
+    assert bundle_index["operator_boundary"]["runtime_authority_granted"] is False
+    assert (
+        bundle_index["operator_boundary"][
+            "default_runtime_receipt_emission_changed"
+        ]
+        is False
+    )
+    assert (
+        capability["proof"]["receipt_metrics"][
+            "settings_sink_reviewer_bundle_index_ok"
+        ]
+        is True
+    )
     serialized = json.dumps(summary, sort_keys=True)
     assert "settings_out_dir" not in serialized
     assert "configured runtime receipt sink coverage verified ok" not in serialized
+    serialized_bundle = json.dumps(bundle_index, sort_keys=True)
+    assert "settings_out_dir" not in serialized_bundle
+    assert "configured runtime receipt sink coverage verified ok" not in serialized_bundle
     assert report["summary"]["proofs_ok"] is True
 
 

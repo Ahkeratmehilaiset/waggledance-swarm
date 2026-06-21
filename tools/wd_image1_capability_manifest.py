@@ -5014,6 +5014,9 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
     from tools.build_runtime_receipt_settings_sink_reviewer_handoff_summary import (  # noqa: E402
         build_runtime_receipt_settings_sink_reviewer_handoff_summary,
     )
+    from tools.build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index import (  # noqa: E402
+        build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index,
+    )
 
     receipt_settings_sink_reviewer_summary = (
         build_runtime_receipt_settings_sink_reviewer_handoff_summary(
@@ -5021,6 +5024,23 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             reviewer_agent_id="codex-lead-1",
             handoff_ref="wd-image1-deterministic-solver-runtime-receipt-sink",
             now_utc=datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc),
+        )
+    )
+    receipt_settings_sink_reviewer_bundle_index = (
+        build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index(
+            sink_proof=receipt_settings_sink_smoke,
+            reviewer_summary=receipt_settings_sink_reviewer_summary,
+            sink_proof_bytes=json.dumps(
+                receipt_settings_sink_smoke,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8"),
+            summary_bytes=json.dumps(
+                receipt_settings_sink_reviewer_summary,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8"),
+            now_utc=datetime(2026, 6, 21, 13, 20, tzinfo=timezone.utc),
         )
     )
     ok = (
@@ -5034,6 +5054,7 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         and receipt_metrics_smoke.get("ok") is True
         and receipt_settings_sink_smoke.get("ok") is True
         and receipt_settings_sink_reviewer_summary.get("ok") is True
+        and receipt_settings_sink_reviewer_bundle_index.get("ok") is True
     )
     return {
         "proof_id": "deterministic_solver_trace_v1",
@@ -5063,6 +5084,12 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
         "runtime_receipt_settings_sink_reviewer_summary": (
             receipt_settings_sink_reviewer_summary
         ),
+        "runtime_receipt_settings_sink_reviewer_bundle_index_claimed": (
+            receipt_settings_sink_reviewer_bundle_index.get("ok") is True
+        ),
+        "runtime_receipt_settings_sink_reviewer_bundle_index": (
+            receipt_settings_sink_reviewer_bundle_index
+        ),
         "receipt_metrics": {
             "receipt_count": receipt_proof.get("receipt_count"),
             "solver_call_trace_count": receipt_proof.get("solver_call_trace_count"),
@@ -5076,6 +5103,9 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             "settings_sink_reviewer_summary_ok": (
                 receipt_settings_sink_reviewer_summary.get("ok") is True
             ),
+            "settings_sink_reviewer_bundle_index_ok": (
+                receipt_settings_sink_reviewer_bundle_index.get("ok") is True
+            ),
         },
         "external_writes_applied": False,
         "safe_conclusion": (
@@ -5086,7 +5116,8 @@ def build_deterministic_solver_trace_proof(root: Path | str = ROOT) -> dict:
             "can measure configured sink coverage while preserving the "
             "default no-emission path; a path-free reviewer handoff summary "
             "renders those sink proof booleans as measurement-only review "
-            "context."
+            "context, and a local reviewer-handoff bundle index binds the "
+            "source proof and summary digests without payloads or local paths."
         ),
     }
 
@@ -10358,6 +10389,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tests/tools/test_build_runtime_receipt_settings_sink_reviewer_handoff_summary.py",
                 "Regression tests pin strict-bool, path-free, no-authority reviewer summary behavior.",
             ),
+            (
+                "tools/build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index.py",
+                "Local reviewer handoff bundle index ties the configured runtime receipt sink proof to its path-free reviewer summary by digest.",
+            ),
+            (
+                "tests/tools/test_build_runtime_receipt_settings_sink_reviewer_handoff_bundle_index.py",
+                "Regression tests pin digest binding, path-free output, and no-authority reviewer bundle index behavior.",
+            ),
         ),
     )
     magma_evidence = _evidence(
@@ -11311,7 +11350,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "sink coverage while preserving default-off receipt "
                 "emission and returning only path-free verifier metadata; "
                 "a path-free reviewer handoff summary renders that sink "
-                "proof as measurement-only review context."
+                "proof as measurement-only review context, and a local "
+                "reviewer-handoff bundle index binds the source proof and "
+                "summary digests without payloads or local paths."
             ),
             status=_status_for(solver_evidence),
             claim_safe=False,
@@ -11323,12 +11364,12 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "trace-completeness evidence.",
             ),
             next_smallest_pr=(
-                "Add a local reviewer-handoff bundle index tying the "
-                "configured runtime receipt sink proof to its path-free "
-                "reviewer summary, verifying source/summary digests without "
-                "including payloads or local paths, appending bridge events, "
-                "changing default receipt emission, upgrading claim_safe, or "
-                "granting runtime authority."
+                "Add a local verifier for the configured runtime receipt "
+                "sink reviewer-handoff bundle index that recomputes "
+                "source/summary digests and binding checks without including "
+                "payloads or local paths, appending bridge events, changing "
+                "default receipt emission, upgrading claim_safe, or granting "
+                "runtime authority."
             ),
             proof=solver_trace_proof,
         ),

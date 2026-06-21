@@ -507,6 +507,23 @@ def test_non_decision_exact_changes_requested_status_still_blocks() -> None:
     assert result["latest_blocking_event"]["status"] == "changes_requested"
 
 
+def test_finding_descriptive_changes_requested_status_still_blocks() -> None:
+    events = [
+        _event(
+            "2026-06-21T01:57:31Z",
+            "claude-rco-1",
+            "finding",
+            "changes_requested_shape_validation",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested_shape_validation"
+
+
 def test_changes_requested_resolution_status_clears_prior_block_without_approval() -> None:
     for status in [
         "changes_requested_resolved",

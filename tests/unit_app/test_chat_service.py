@@ -215,6 +215,156 @@ class TestChatService:
 
         asyncio.run(_run())
 
+    # ── hex_mesh_entry "honeycomb-first" runtime invariants ──────────────
+    # Executable evidence toward the hex_mesh_entry capability claim_safe
+    # decision (manifest flip owned by the lead). These pin the ACTUAL live
+    # route_stage_trace ordering so the honest, scoped truth is machine-checked
+    # rather than asserted in prose: a query does NOT literally enter the hex
+    # honeycomb first (cache/solver/hybrid precede it, and hex is default-off),
+    # but when hex IS enabled it precedes the generic LLM fallback.
+
+    def test_honeycomb_not_first_cache_solver_hybrid_precede_hex(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """hex is NOT the first resolution stage: hot_cache,
+        deterministic_solver and hybrid_retrieval_8_cell all precede
+        hex_neighbor_assist_7_cell in the live trace. Regression guard for the
+        manifest's documented 'hex is not entered first' gap — while this
+        ordering holds, hex_mesh_entry.claim_safe cannot honestly be True for an
+        unconditional 'every query enters the honeycomb first' statement."""
+        class HexAssist:
+            enabled = True
+
+            async def resolve(self, *, query, intent, context):
+                return {
+                    "response": "hex answer",
+                    "source": "hex_mesh",
+                    "confidence": 0.88,
+                    "trace": {"cell_count": 7, "answered": True},
+                }
+
+        async def _run():
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = False
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:candidate",
+                route_source="cell:math+global",
+                answered_by_layer="llm",
+                cell_id="math",
+                llm_fallback=True,
+            ))
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+                hex_neighbor_assist=HexAssist(),
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+
+            result = await svc.handle(ChatRequest(
+                query="statistics summary for hive sensor readings",
+            ))
+            stages = [event["stage"] for event in result.route_stage_trace]
+            assert "hex_neighbor_assist_7_cell" in stages, stages
+            hex_idx = stages.index("hex_neighbor_assist_7_cell")
+            # every earlier resolution stage strictly precedes hex
+            for earlier in (
+                "hot_cache",
+                "deterministic_solver",
+                "hybrid_retrieval_8_cell",
+            ):
+                assert earlier in stages, (earlier, stages)
+                assert stages.index(earlier) < hex_idx, (earlier, stages)
+            # hex is therefore not the first stage in the trace
+            assert stages[0] != "hex_neighbor_assist_7_cell", stages
+            assert hex_idx >= 1, stages
+
+        asyncio.run(_run())
+
+    def test_hex_precedes_orchestrator_llm_when_enabled(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """The honest CONDITIONAL that DOES hold: when hex is enabled and does
+        not itself answer (low confidence), hex_neighbor_assist_7_cell is
+        consulted BEFORE the generic orchestrator_llm_fallback. This is the
+        defensible part of the hex claim (hex precedes the LLM), distinct from
+        the false unconditional 'enters honeycomb first'."""
+        class HexAssist:
+            enabled = True
+
+            async def resolve(self, *, query, intent, context):
+                return {
+                    "response": "low-confidence hex",
+                    "source": "hex_mesh",
+                    "confidence": 0.10,
+                    "trace": {"cell_count": 7, "answered": False},
+                }
+
+        async def _run():
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hex_neighbor_assist=HexAssist(),
+            )
+            result = await svc.handle(ChatRequest(query="tell me about hive layout"))
+            stages = [event["stage"] for event in result.route_stage_trace]
+            assert "hex_neighbor_assist_7_cell" in stages, stages
+            assert "orchestrator_llm_fallback" in stages, stages
+            assert (
+                stages.index("hex_neighbor_assist_7_cell")
+                < stages.index("orchestrator_llm_fallback")
+            ), stages
+
+        asyncio.run(_run())
+
+    def test_hex_not_entered_when_disabled(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """Default-off blocker: when hex is not enabled the honeycomb is never
+        entered — hex_neighbor_assist_7_cell is absent from the trace and the
+        disabled assist is never consulted. So 'every query enters the
+        honeycomb' cannot hold on the default configuration."""
+        class HexAssist:
+            enabled = False
+
+            async def resolve(self, *, query, intent, context):
+                raise AssertionError("disabled hex must not be consulted")
+
+        async def _run():
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hex_neighbor_assist=HexAssist(),
+            )
+            result = await svc.handle(ChatRequest(query="tell me about hive layout"))
+            stages = [event["stage"] for event in result.route_stage_trace]
+            assert "hex_neighbor_assist_7_cell" not in stages, stages
+
+        asyncio.run(_run())
+
     def test_language_detection_fi(self, chat_service):
         async def _run():
             req = ChatRequest(query="Miten hoidetaan varroa-häätö?")

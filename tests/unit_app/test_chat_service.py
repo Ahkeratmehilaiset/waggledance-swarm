@@ -450,6 +450,168 @@ class TestChatService:
 
         asyncio.run(_run())
 
+    # ── future_waggledance_swarm "bounded route-depth telemetry" invariants ──
+    # Executable evidence (T6 Phase A) toward the future_waggledance_swarm
+    # capability claim_safe decision (manifest flip owned by the lead). The
+    # literal "infinite/unbounded scalability" claim is not provable; these pin
+    # the honest, measurable truth on the live route_stage_trace: route depth is
+    # BOUNDED by a fixed finite pipeline, and the telemetry is SANITIZED (safe
+    # stage labels, no raw query/payload export) — supporting an honest rescope
+    # to "bounded measured route-depth telemetry".
+
+    def test_route_depth_is_bounded_by_fixed_pipeline(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """Route depth is BOUNDED: across diverse query paths, every
+        route_stage_trace draws its stages from a fixed finite allowlist, no
+        stage repeats, and depth never exceeds the pipeline size. Refutes any
+        'unbounded/infinite' reading; supports bounded measured route-depth."""
+        KNOWN_PIPELINE_STAGES = {
+            "language_detection",
+            "hot_cache",
+            "memory_context",
+            "route_selection",
+            "deterministic_solver",
+            "hybrid_retrieval_8_cell",
+            "hex_neighbor_assist_7_cell",
+            "orchestrator_llm_fallback",
+        }
+
+        class HexAssist:
+            enabled = True
+
+            async def resolve(self, *, query, intent, context):
+                return {
+                    "response": "hex answer",
+                    "source": "hex_mesh",
+                    "confidence": 0.88,
+                    "trace": {"cell_count": 7, "answered": True},
+                }
+
+        async def _stages(svc, query):
+            result = await svc.handle(ChatRequest(query=query))
+            return [event["stage"] for event in result.route_stage_trace]
+
+        async def _run():
+            # cache-hit path (shortest)
+            mock_hot_cache.get.return_value = "Cached answer"
+            cache_svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            cache_stages = await _stages(cache_svc, "What is varroa?")
+            mock_hot_cache.get.return_value = None
+
+            # solver + hybrid + llm path (deepest non-hex)
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = False
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:candidate",
+                route_source="cell:math+global",
+                answered_by_layer="llm",
+                cell_id="math",
+                llm_fallback=True,
+            ))
+            hybrid_svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+            )
+            hybrid_svc._hybrid_observer = MagicMock()
+            hybrid_svc._hybrid_observer.record_candidate = AsyncMock()
+            hybrid_stages = await _stages(
+                hybrid_svc, "statistics summary for hive sensor readings"
+            )
+
+            # hex path
+            hex_svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hex_neighbor_assist=HexAssist(),
+            )
+            hex_stages = await _stages(hex_svc, "tell me about hive layout")
+
+            for stages in (cache_stages, hybrid_stages, hex_stages):
+                assert stages, stages
+                # every stage from the fixed finite pipeline allowlist
+                assert set(stages) <= KNOWN_PIPELINE_STAGES, stages
+                # no stage repeats -> depth bounded by the fixed pipeline
+                assert len(stages) == len(set(stages)), stages
+                # depth never exceeds the fixed pipeline size
+                assert len(stages) <= len(KNOWN_PIPELINE_STAGES), stages
+
+        asyncio.run(_run())
+
+    def test_route_stage_trace_is_sanitized_no_raw_query_or_payload(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """The route-depth telemetry is SANITIZED: stage labels are safe
+        snake_case identifiers and the serialized trace never exports the raw
+        query, language, or profile. Supports bounded route-depth telemetry as
+        privacy-safe (no raw payload export)."""
+        import re
+
+        raw_query = "secret hive plan PRIVATE_QUERY_MARKER"
+        raw_lang = "PRIVATE_LANGUAGE_MARKER"
+        raw_profile = "PRIVATE_PROFILE_MARKER"
+        safe_label = re.compile(r"^[a-z][a-z0-9_]*$")
+
+        class HexAssist:
+            enabled = True
+
+            async def resolve(self, *, query, intent, context):
+                return {
+                    "response": "hex answer",
+                    "source": "hex_mesh",
+                    "confidence": 0.88,
+                    "trace": {"cell_count": 7, "answered": True},
+                }
+
+        async def _run():
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hex_neighbor_assist=HexAssist(),
+            )
+            result = await svc.handle(ChatRequest(
+                query=raw_query,
+                language=raw_lang,
+                profile=raw_profile,
+            ))
+            trace_json = json.dumps(result.route_stage_trace)
+            for marker in (
+                raw_query,
+                raw_lang,
+                raw_profile,
+                "PRIVATE_QUERY_MARKER",
+            ):
+                assert marker not in trace_json, marker
+            for event in result.route_stage_trace:
+                assert safe_label.fullmatch(event["stage"]), event["stage"]
+
+        asyncio.run(_run())
+
     def test_language_detection_fi(self, chat_service):
         async def _run():
             req = ChatRequest(query="Miten hoidetaan varroa-häätö?")

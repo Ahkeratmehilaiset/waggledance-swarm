@@ -282,10 +282,16 @@ if ($null -ne $spec.arguments) {
 }
 $logPath = [string]$spec.log_path
 $prompt = [Console]::In.ReadToEnd()
-$prompt | & $command @arguments *> $logPath
-if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
-if ($?) { exit 0 }
-exit 1
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $prompt | & $command @arguments *> $logPath
+    if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
+    if ($?) { exit 0 }
+    exit 1
+} finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
 '@
         $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapperCommand))
         $hostCommand = Resolve-PowerShellHostCommand

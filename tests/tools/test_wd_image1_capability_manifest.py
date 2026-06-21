@@ -1537,10 +1537,11 @@ def test_manifest_embeds_hexagonal_upgrade_proof_without_upgrading_claim() -> No
     assert "verification summary bridge-event template digest" in (
         capability["safe_statement"]
     )
-    # next_smallest_pr advanced beyond the now-merged chain-final-summary renderer to
-    # the next honest measurement-only step (the cross-consistency digest).
+    # next_smallest_pr advanced beyond the completed cross-consistency digest/index
+    # entry slice to the next honest measurement-only verifier step.
+    assert "local verifier" in capability["next_smallest_pr"]
     assert "cross-consistency digest" in capability["next_smallest_pr"]
-    assert "chain final summary" in capability["next_smallest_pr"]
+    assert "template index entry" in capability["next_smallest_pr"]
     assert "reviewer summary renderer" not in capability["next_smallest_pr"]
     assert report["summary"]["proofs_ok"] is True
 
@@ -3248,6 +3249,93 @@ def test_manifest_cross_consistency_digest_not_folded_into_ok() -> None:
     src = inspect.getsource(mod._capabilities)
     ok_assign = src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(")", 1)[0]
     assert "cross_consistency_digest" not in ok_assign
+
+
+def _hex_upgrade_proof_for_reviewer():
+    manifest = build_manifest()
+    return next(
+        c for c in manifest["capabilities"]
+        if c["capability_id"] == "hexagonal_upgrades"
+    )["proof"]
+
+
+def test_manifest_stores_hex_xcons_template_index_entry_summary_content_safe() -> None:
+    summary = _hex_upgrade_proof_for_reviewer().get(
+        "cross_consistency_digest_bridge_event_template_index_entry"
+    )
+    assert isinstance(summary, dict)
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["index_entry_available"] is True
+    assert summary["template_only"] is True
+    assert summary["bridge_event_schema_validated"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_runtime_subdivision_authority_granted"] is True
+    assert summary["no_approval_granted"] is True
+    assert summary["cross_consistent"] is True
+    assert summary["all_views_present"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "template ready" not in blob.lower()
+
+
+def test_manifest_hex_xcons_template_index_entry_measurement_only() -> None:
+    proof = _hex_upgrade_proof_for_reviewer()
+    assert isinstance(
+        proof.get("cross_consistency_digest_bridge_event_template_index_entry"),
+        dict,
+    )
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_assign = cap_src.split('hex_upgrade_proof["ok"] = bool(', 1)[1].split(
+        ")", 1
+    )[0]
+    assert "cross_consistency_digest_bridge_event_template_index_entry" not in ok_assign
+    ok_idx = cap_src.index('hex_upgrade_proof["ok"] = bool(')
+    summary_idx = cap_src.index(
+        '"cross_consistency_digest_bridge_event_template_index_entry"',
+        ok_idx,
+    )
+    assert summary_idx > ok_idx
+
+
+def test_manifest_hex_xcons_template_index_entry_cannot_flip_ok(monkeypatch) -> None:
+    baseline_ok = _hex_upgrade_proof_for_reviewer().get("ok")
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "index_entry_available": False,
+        "template_only": False,
+        "bridge_event_schema_validated": False,
+        "no_runtime_authority_granted": False,
+        "no_runtime_subdivision_authority_granted": False,
+        "no_approval_granted": False,
+        "cross_consistent": False,
+        "all_views_present": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_hex_upgrade_cross_consistency_bridge_event_template_index_entry_summary",
+        lambda *_a, **_k: dict(forged),
+    )
+    proof = _hex_upgrade_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert (
+        proof.get("cross_consistency_digest_bridge_event_template_index_entry")
+        == forged
+    )
 
 
 def test_manifest_stores_ring_hierarchy_summary_content_safe() -> None:

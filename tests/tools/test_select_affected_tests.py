@@ -86,6 +86,29 @@ def test_one_orphan_among_mappable_forces_full(tmp_path):
     assert r["full_suite"] is True
 
 
+def test_unreadable_candidate_forces_full(tmp_path, monkeypatch):
+    # An unreadable test candidate could import the changed module → the selector
+    # must fail-safe to the full suite rather than silently drop it (RFC contract).
+    _mkrepo(tmp_path)
+    real_read_text = Path.read_text
+
+    def boom(self, *a, **k):
+        if self.name == "test_alpha.py":
+            raise OSError("simulated unreadable candidate")
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    # alpha2.py has no name-convention test and its only importing candidate
+    # (test_alpha.py, which imports the alpha package) is now unreadable.
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "from waggledance.x import alpha2\n\n\ndef test_a2():\n    assert alpha2\n",
+        encoding="utf-8",
+    )
+    r = select_affected_tests(["waggledance/x/alpha2.py"], tmp_path)
+    assert r["full_suite"] is True
+    assert "unreadable" in r["reason"]
+
+
 # --- correct narrowing -------------------------------------------------------
 
 def test_changed_test_file_selects_itself(tmp_path):

@@ -13,6 +13,16 @@ broad-impact file changed, a changed source file maps to no test, an unknown
 file type, or empty input) it returns ``full_suite=True`` so nothing is ever
 silently under-run. It only ever NARROWS when the mapping is unambiguous.
 
+LIMITATION — import-grep detects only DIRECT imports (and the ``test_<stem>`` name
+convention); it does NOT detect transitive/indirect imports (``importlib`` /
+``__import__`` / re-exports / conftest-fixture-mediated coverage), so a
+transitively-affected test may not be selected for a LOCAL run. This is safe ONLY
+because CI stays the authoritative full suite.
+
+GUARDRAIL — this selector must NEVER replace the full suite in CI. If it is ever
+wired into CI it must be ADDITIVE (the full suite still runs); it may gate only
+LOCAL iteration.
+
 Read-only: it inspects the repo tree and runs no tests and mutates nothing.
 
 Usage:
@@ -85,13 +95,20 @@ def _module_dotted(path: str) -> str:
     return p[:-3].replace("/", ".") if p.endswith(".py") else p.replace("/", ".")
 
 
-def _tests_importing(source_path: str, repo_root: Path) -> set[str]:
-    """Test files that import the changed module (by dotted path or test_<stem>)."""
+def _tests_importing(
+    source_path: str, repo_root: Path
+) -> tuple[set[str], bool]:
+    """Return (affected tests, read_error).
+
+    ``read_error`` is True if any candidate test file could not be read — the
+    caller must then fail-safe to the full suite, since it cannot rule out that
+    the unreadable candidate imports the changed module.
+    """
     dotted = _module_dotted(source_path)
     stem = Path(_norm(source_path)).stem
     tests_dir = repo_root / "tests"
     if not tests_dir.is_dir():
-        return set()
+        return set(), False
     import_pat = _IMPORT_RE_CACHE.get(dotted)
     if import_pat is None:
         # Match `import a.b.c` / `from a.b.c import ...` / `from a.b import c`.
@@ -104,6 +121,7 @@ def _tests_importing(source_path: str, repo_root: Path) -> set[str]:
         )
         _IMPORT_RE_CACHE[dotted] = import_pat
     affected: set[str] = set()
+    read_error = False
     for test_file in tests_dir.rglob("test_*.py"):
         rel = test_file.relative_to(repo_root).as_posix()
         # Name convention: tests/.../test_<stem>.py is affected by <stem>.py.
@@ -113,11 +131,13 @@ def _tests_importing(source_path: str, repo_root: Path) -> set[str]:
         try:
             text = test_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            # Cannot read a candidate → be conservative at the caller (no add here).
+            # An unreadable candidate could import the changed module → signal
+            # uncertainty so the caller fail-safes to the full suite (contract).
+            read_error = True
             continue
         if import_pat.search(text):
             affected.add(rel)
-    return affected
+    return affected, read_error
 
 
 def _full(reason: str) -> dict:
@@ -140,7 +160,9 @@ def select_affected_tests(
             tests.add(f)
             continue
         if _is_source_file(f):
-            mapped = _tests_importing(f, root)
+            mapped, read_error = _tests_importing(f, root)
+            if read_error:
+                return _full(f"unreadable test candidate while mapping: {f}")
             if not mapped:
                 return _full(f"no affected test found for source: {f}")
             tests |= mapped

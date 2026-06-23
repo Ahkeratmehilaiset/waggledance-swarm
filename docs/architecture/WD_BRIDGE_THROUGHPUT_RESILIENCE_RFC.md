@@ -2,8 +2,8 @@
 
 **Status:** Draft (for operator + swarm review)
 **Author:** fable-5 (producer), synthesizing FOUR independent analyses:
-fable-5, claude-rco-1, claude-rco-2 (structural) + fable-5 & claude-rco-2 empirical
-worktree scans. *(claude-rco-1 empirical worktree scan requested; fold in on arrival.)*
+fable-5, claude-rco-1, claude-rco-2 (structural) + fable-5, claude-rco-2 & claude-rco-1
+empirical worktree scans (all five folded in 2026-06-23).
 **Date:** 2026-06-23
 
 > Method note: each agent answered the same prompt independently, un-steered (no
@@ -80,16 +80,44 @@ The abstract diagnosis named the burn "generically"; the scans found the concret
 - **EF7 — a second auto-spawn loop:** scheduled task `WaggleDanceIdleLoopOnce` fires
   **every 30 min** (`WaggleDanceIdleDispatcher.ps1` → `tools/idle_loop_once.py`),
   independent of EF1's consumer loop — a second idle engine with no burn-budget gate.
-- **EF8 — cross-pool capacity is BUILT but DISABLED.** Scheduled tasks `WD-GrokDispatcher`,
-  `WD-GrokScout-Daily`, `WD-GrokRedteam`, `WD-GrokResearch`, `WD-GrokWatchdog`
-  (`Invoke-Grok*.ps1`) all exist and are **Disabled**. The non-codex pool that D1/P0 needs
-  partly **already exists** — it is just turned off. *(grok superheavy is also slated to join 2026-07-01)*
-- **EF9 — the merge-driver scheduled task is dead AND mis-configured.** `WD-BridgeMergeDriver`
-  last ran 2026-06-16 (`lastResult=0xFFFFFFFF`, empty `NextRunTime` → no auto-restart), and
-  its action is `Invoke-BridgeMergeDriver.ps1 -Loop -PollSeconds 120` **without `-Apply` or
-  `-LeadCosignWaiver`** → even if it ran it would dry-run and could not merge lead-authored
-  charter-clean PRs. Two launch paths (dead scheduled task + a separately-launched live loop)
-  = fragile, no liveness/auto-restart.
+- **EF8 — a non-codex pool exists but is DISABLED — *though it is NOT yet a build signer*.**
+  Scheduled tasks `WD-GrokDispatcher`, `WD-GrokScout-Daily`, `WD-GrokRedteam`,
+  `WD-GrokResearch`, `WD-GrokWatchdog` (`Invoke-Grok*.ps1`) all exist and are **Disabled**.
+  **Correction (rco-1):** these are *auxiliary* scout/research/redteam roles — **none is wired
+  as a gate `build_consensus` signer.** So enabling them provides non-codex *capacity* but does
+  **NOT** by itself make Grok fill the tools build slot; the build-slot fix is re-backing the
+  tools *builder identity* with a non-codex model (see §5 P0). *(grok superheavy also slated to join 2026-07-01)*
+- **EF9 — the merge-driver: LIVE loop is fine; only the SCHEDULED copy is broken (latent, not active-wedge).**
+  **Correction (rco-1):** the LIVE driver loop is a separately-launched PID-resident process
+  running `Invoke-BridgeMergeDriver.ps1 -Loop -PollSeconds 120 -Apply -MaxMergesPerRun 1 -ExcludePrs 1261`
+  — it IS applying (it merged today's PRs). The *scheduled* `WD-BridgeMergeDriver` (last ran
+  2026-06-16, `lastResult=0xFFFFFFFF`, empty `NextRunTime`, action **without `-Apply`/`-LeadCosignWaiver`**)
+  is a stale **duplicate** that either no-ops or RACES the shared `_wd_tools_current` worktree.
+  So EF9 is **latent fragility** (no auto-restart/liveness, two launch paths, scheduled copy can't
+  merge) — **NOT** the active-wedge cause. The active wedge is purely pool-exhaustion (no build
+  signer can post). Prioritize P0 (pool decorrelation) over driver repair.
+
+**claude-rco-1 (the burn is by-design fixed-cadence, and the fix is one flag):**
+- **EF10 (highest-ROI — the dominant, demand-independent drain):** both codex consumer loops
+  run `-Forever -PollSeconds 60` with **NO `-WakeOnly`** → a FULL codex `exec` tick **every
+  ~60s forever, regardless of demand** (~1,440/agent/day, ~2,880/day combined). The loop is
+  NOT event-driven even though the script supports it. And the per-tick prompt ("claim the
+  highest-value task / do one bounded slice") means that when there is no real work the agent
+  **manufactures** it (template/proof/scout) — so this single cadence is the empirical engine
+  of **both** pool-exhaustion **and** the self-referential recursion. Fix: launch the loops
+  with **`-WakeOnly`** (already supported; `Watch-Bridge.ps1` writes the wake sentinel on real
+  targeted traffic) or idle backoff. **Must sequence ALONGSIDE P0, not after** — a 60s-forever
+  cadence drains whatever pool backs it, so `-WakeOnly` is needed even after pool-decouple.
+- **EF11 (delta-A — tick stacking, worse than one-waste-per-minute):** the tools loop sets
+  `-CodexTimeoutSeconds 900` (15 min) with `-PollSeconds 60`, so a tick can run up to 15× the
+  poll interval while new ticks keep firing → ticks **overlap and stack concurrent codex
+  invocations** (matches `consumer_tick_timed_out` events). Fix: the EF1 exit-code backoff +
+  a **single-in-flight guard** (one tick at a time).
+- *EF12–EF14 corroborate EF6/EF9/EF4:* local repro double-executes what CI runs on the codex
+  pool (scope local repro to the minimal failing case; let CI prove the matrix); the live
+  `-Apply` driver confirms EF9's reframe; and the tools loop runs from a *bridge-monitor*
+  worktree launched from yet another *consumer-loop-source* worktree → which worktree is
+  canonical is ambiguous (config-drift on top of EF4 sprawl).
 
 ## 4. The one decision for the operator (a genuine peer divergence)
 **How to decorrelate the build pair (fix D1):**
@@ -112,26 +140,40 @@ The abstract diagnosis named the burn "generically"; the scans found the concret
 ## 5. Unified plan (priority order; each preserves fail-closed)
 
 ### P0 — Decorrelate the build pair onto different pools *(today; unblocks the wedge)*
-Re-back `codex-tools-1` with a non-codex model (rco-1 P0). Fastest enabler: **enable the
-already-built but Disabled Grok tasks (EF8)** as the non-codex backer. Build stays
+**Stand up a non-codex builder identity in the tools slot:** re-back the `codex-tools-1`
+*builder identity* with a non-codex model (Grok-superheavy / separate-quota Claude), exactly
+as the 2026-06-09 lead→Claude-4.8 swap did, leaving lead on codex. Build stays
 `lead(codex) + tools(non-codex)` — two distinct identities in two distinct pools.
+**Correction (rco-1):** enabling the Disabled Grok *aux* tasks (EF8) is a SEPARATE capacity
+item — none of them is a `build_consensus` signer, so it does NOT by itself fill the build slot.
 *Fail-closed:* slot count, independence, author≠reviewer, the absolute RCO veto, and the
-denylist/off-allowlist → operator escalation are ALL unchanged; only *what backs* a slot
-changes. Trial on a low-risk PR with both RCOs cross-checking the new tools build before
-trusting it on gate-critical.
+denylist/off-allowlist → operator escalation are ALL unchanged; only *what backs* a slot changes.
+**Mandatory trial (rco-2 caveat):** the gate checks only identity+head+status, so it cannot tell
+a genuine build review from a rubber-stamp — the residual P0 risk is review QUALITY, not identity.
+Therefore **both RCOs MUST cross-check the first several re-backed build passes** (verify the
+re-backed builder actually ran the affected tests + inspected the diff at the exact head) before
+that backer is trusted on gate-critical / denylisted PRs.
 
-### P0b — Pool-aware liveness + cross-pool failover + fix the driver *(today/this week)*
-- Generalize the dormant `lead_stall_failover` (#1089) from `lead→tools` (intra-codex,
-  useless for whole-pool exhaustion) to **codex→Claude** cross-pool; detect whole-pool
-  exhaustion and emit **one** "pool X exhausted until <reset>; cross-pool failover engaged"
-  status instead of silent wedging. *(rco-2 P6)*
-- **Fix EF1 first — the live bleed:** make `Start-AgentBridgeConsumerLoop.ps1` inspect the
-  tick exit code; on the usage-limit signature, **back off until the reset timestamp the
-  error itself names** ("try again at <ts>") and emit ONE status, not a failed tick every
-  ~64s. *(rco-2 EF1 — pure scheduling/backoff, touches no gate; also ends the 1555-event
-  log-spam)*
-- Repair EF9: one authoritative driver launcher with `-Apply -LeadCosignWaiver` + an
-  auto-restart/liveness trigger (no empty `NextRunTime`); retire the duplicate launch path.
+### P0b — Stop the live bleed + cross-pool failover *(today; sequence ALONGSIDE P0)*
+- **#1, highest-ROI, one flag — switch the consumer loops to `-WakeOnly` (rco-1 EF10):** the
+  script already supports it and `Watch-Bridge.ps1` writes the wake sentinel on real targeted
+  traffic, so the loop wakes on demand instead of a full codex tick every ~60s forever. This
+  attacks pool-exhaustion AND the manufactured-work recursion at once, and **must run alongside
+  P0** (a 60s-forever cadence drains whatever pool backs it). Add a **single-in-flight guard**
+  so a long (≤900s) tick can't stack concurrent codex runs (EF11). *(pure reduction of
+  speculative runs; sentinel-driven traffic still wakes codex; no gate change)*
+- **Backoff safety net (rco-2 EF1):** make `Start-AgentBridgeConsumerLoop.ps1` inspect the tick
+  exit code; on the usage-limit signature, **back off until the reset timestamp the error names**
+  ("try again at <ts>") and emit ONE status, not a failed tick every ~64s (also ends the
+  ~1555-event log-spam).
+- **Cross-pool failover (rco-2 P6):** generalize the dormant `lead_stall_failover` (#1089) from
+  `lead→tools` (intra-codex, useless for whole-pool exhaustion) to **codex→Claude**; detect
+  whole-pool exhaustion and emit ONE "pool X exhausted until <reset>; cross-pool failover
+  engaged" status instead of silent wedging.
+- **Driver hygiene (EF9, latent — NOT the wedge):** the live `-Apply` driver is fine; retire/
+  realign the stale scheduled no-Apply duplicate, add `-LeadCosignWaiver` to the live driver
+  (operator standing-auth exists), and add an auto-restart/liveness trigger. Lower priority than
+  P0/`-WakeOnly` since it is not the active-wedge cause.
 
 ### P1 — Asymmetric operator-reduction: per-POLICY sign for a proven-safe class *(this week)*
 Define a **mechanically-verifiable zero-blast-radius class** (read-only metrics emission;
@@ -213,7 +255,11 @@ decorrelating + parallelizing across idle capacity, not from cutting review. Cri
 pursued **asymmetrically**: automate the safe long tail aggressively, keep Rule-10/gate-logic
 manual.
 
-## 8. Open items
-- **claude-rco-1 empirical worktree scan** — requested (`operator-lead-tools-worktree-empirical-scan-20260623`); fold its findings into §3 on arrival.
-- Per-item owner assignment + the P0 re-back-vs-widen decision (§4) are for the operator.
-- This RFC touches no runtime/gate code; it is `docs/architecture/` only (charter-clean).
+## 8. Status & open items
+- **All five analyses are folded in** (3 structural + 3 empirical: fable-5, claude-rco-2,
+  claude-rco-1). Both RCOs content+safety-reviewed this RFC → PASS (rco-2 + rco-1, each
+  independently); formal `rco_pass` pending CI-green + a live merge path (the very wedge this
+  RFC addresses).
+- **For the operator:** the §4 re-back-vs-widen decision + per-item owner assignment.
+- This RFC touches no runtime/gate code; it is `docs/architecture/` only (charter-clean) and
+  PARKS for consensus/operator while the codex pool is exhausted.

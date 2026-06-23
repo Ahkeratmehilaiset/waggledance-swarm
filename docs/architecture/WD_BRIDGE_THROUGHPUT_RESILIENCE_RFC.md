@@ -139,13 +139,19 @@ The abstract diagnosis named the burn "generically"; the scans found the concret
 
 ## 5. Unified plan (priority order; each preserves fail-closed)
 
-### P0 — Decorrelate the build pair onto different pools *(today; unblocks the wedge)*
-**Stand up a non-codex builder identity in the tools slot:** re-back the `codex-tools-1`
-*builder identity* with a non-codex model (Grok-superheavy / separate-quota Claude), exactly
-as the 2026-06-09 lead→Claude-4.8 swap did, leaving lead on codex. Build stays
-`lead(codex) + tools(non-codex)` — two distinct identities in two distinct pools.
-**Correction (rco-1):** enabling the Disabled Grok *aux* tasks (EF8) is a SEPARATE capacity
-item — none of them is a `build_consensus` signer, so it does NOT by itself fill the build slot.
+### P0 — Decorrelate the build pair onto a strong-license pool *(today; unblocks the wedge)*
+**Stand up a separate-quota Claude builder identity in the tools slot:** re-back the
+`codex-tools-1` *builder identity* with a **separate-quota Claude** model (strong license,
+the only pool with current headroom), exactly as the 2026-06-09 lead→Claude-4.8 swap did.
+**Pool-strategy correction (operator):** the non-codex backer must be **Claude, NOT Grok** —
+Grok has *small* limits, weaker licenses, and is itself exhausted until 2026-07-01; it is a
+scarce **decision-augmentation** resource (see P-Grok below), never a high-volume build/loop
+backer. Enabling the Disabled Grok *aux* tasks (EF8) is unrelated to the build slot.
+**Immediate-unblock note (both codex AND Grok are exhausted now):** Claude is the only LIVE
+pool, so to unblock *before* the 25-Jun codex reset, re-back the build signer(s) to Claude
+now (precedent: the 6/9 lead swap); after reset, restore **one** signer to codex so the pair
+is **cross-pool** (one codex + one Claude) — never two of the same pool (that just relocates
+the SPOF).
 *Fail-closed:* slot count, independence, author≠reviewer, the absolute RCO veto, and the
 denylist/off-allowlist → operator escalation are ALL unchanged; only *what backs* a slot changes.
 **Mandatory trial (rco-2 caveat):** the gate checks only identity+head+status, so it cannot tell
@@ -229,6 +235,23 @@ Build the **auto-rollback + post-merge canary + matured synthetic adversarial co
 prevention-first to **fast-recovery-first (optimize MTTR, not MTBF)** and is the key that
 eventually lets even off-allowlist changes flow autonomously with a rollback safety net.
 *(fable)*
+
+### P-Grok — Treat Grok as a rationed decision-augmentation oracle, NOT a worker *(policy, operator)*
+Grok has *small* limits + weaker licenses and is itself exhausted until 2026-07-01. It must
+**NEVER** back a high-volume role (build slot, consumer loop, producer lane) — that would
+exhaust it instantly and re-create the SPOF on an even scarcer pool. Reserve it for **limited,
+high-value decision-augmentation**: invoked **only by the pool's most important agent (the
+lead)**, sparingly, for an extra independent dimension on genuinely hard decisions, behind its
+own tiny per-day budget governor (refuse when near the cap). *Fail-closed:* Grok input is
+advisory only — it holds no gate slot and no veto; the gate is unaffected whether Grok answers
+or not.
+
+### Pool-strategy summary (operator)
+- **Claude = the workhorse** (strong license, current headroom): build-signing + the producer
+  lane + review. Shift load here.
+- **GPT/codex = strong, but currently the SPOF + exhausted**: keep as exactly ONE builder for
+  cross-pool independence (restore after the 25-Jun reset).
+- **Grok = scarce oracle**: lead-only, rationed, advisory — never a worker (P-Grok).
 
 ## 6. Safety invariants — NON-loosening (kept across ALL of the above)
 - Three distinct independent **verified** identities; **author ≠ reviewer**;

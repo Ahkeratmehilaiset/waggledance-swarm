@@ -81,7 +81,14 @@ METRIC_CTORS = frozenset({"Counter", "Gauge", "Histogram", "Summary"})
 
 
 def _norm(path: str) -> str:
-    return path.replace("\\", "/").strip().lstrip("./")
+    # Strip ONLY a leading "./" relative-marker — NOT all leading "."/"/" chars.
+    # `.lstrip("./")` wrongly stripped the leading dot from dot-dirs
+    # (".agent-bridge/" -> "agent-bridge/"), making the F-substring fence miss
+    # them (tools #1384). Preserve dotfiles/dotdirs.
+    p = path.replace("\\", "/").strip()
+    while p.startswith("./"):
+        p = p[2:]
+    return p
 
 
 def _is_f_excluded(path: str) -> str | None:

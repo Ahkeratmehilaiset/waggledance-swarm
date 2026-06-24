@@ -63,13 +63,43 @@ the message body for authority:
 |--------|-----------|--------------|-------|
 | `decision` | yes (status∈BLOCK set) | yes (status∈APPROVE set) | the ONLY approving type |
 | `finding` (recognized RCO) | yes | no | RCO veto is absolute + per-identity |
+| `blocked` | yes (by type) | no | **PRESERVED** live merge-veto type (see reconciliation) |
 | `message` | no | no | coordination only |
 | `handoff` | no | no | coordination only |
 | `wake_request` | no | no | scheduling only |
-| `heartbeat` / `liveness` / `status` / `intent` / `claim` / `release` / `test` / `done` | no | no | informational |
+| `rco_review` / `test` / `done` | no | no | dropped live types — deliberate tightening (below) |
+| `heartbeat` / `liveness` / `status` / `intent` / `claim` / `release` | no | no | informational |
 
 A non-authoritative type **cannot change the gate verdict no matter what its
 status name or body says** (fixes #3/#4/#5).
+
+#### 2.1.1 Reconciliation with the LIVE gate (no silent loosening) — rco-1 finding + emit-audit
+
+The live gate (`check_bridge_changes_requested.py @origin/main`) carries
+`BLOCKING_EVENT_TYPES = {decision, rco_review, finding, blocked, test}` and CLEAR
+types `{decision, rco_review, finding, done}`. This spec's set must not **silently
+drop** a live BLOCK-authority type (that would be a real loosening — a currently
+counted veto would stop counting — contradicting §6/§7). Each divergence below is
+**evidence-based** (rco-1 emit-audit over 65,440 shared-log events, 2026-06-25) and
+is a **safe-direction** change (only ever ADDs/keeps blocks, never drops a veto):
+
+- **`blocked` → PRESERVED as veto-authoritative.** 70 events; **38 ACTIVE PR-task
+  merge-vetoes since 2026-06-01** (`build_consensus_blocked_pending`,
+  `merge_blocked_operator_or_driver`, `build_slot_blocked_tools_author`, …).
+  Dropping it would be the real loosening; it stays (block-by-type).
+- **`rco_review` → DROPPED.** **0 emit instances, ever** — RCOs veto via `finding`
+  / `decision`, never `rco_review`. Dead authority; safe no-op, with the RCO veto
+  fully preserved via `finding`.
+- **`test` → DROPPED from authority** (deliberate tightening). 1433 events: 1252
+  CI/smoke clears + 18 block-vocab. CI noise must not be a bridge gate signal;
+  dropping it is the safe direction (a dropped clear leaves blocks standing). The
+  18 block-instances are verified non-load-bearing before migration #3 ships.
+- **`done` → DROPPED from CLEAR authority** (deliberate tightening). 199 clears; a
+  dropped clear only leaves blocks standing (fail-closed-safe).
+
+So §6's "non-loosening" holds as: **no BLOCK-authority is dropped** (`blocked`
+preserved, `rco_review` proven dead), and the CLEAR-side drops (`test`/`done`) are
+safe tightenings that can only keep blocks standing.
 
 ## 3. The canonical `decision_status` enum
 
@@ -128,10 +158,22 @@ truth; consumers are thin adapters over `classify`.
 ## 5. Mandatory cross-consumer conformance test
 
 A single fixture corpus of events (covering every row in §1 + the negated forms
-in §3.4 + head-expiry in §3.3) is run through **every** consumer's public entry
-point, asserting **identical** verdicts. CI-blocking. Adding a new gate consumer
-without wiring it into this test is a conformance failure. This is what makes the
-single-taxonomy guarantee durable rather than aspirational.
+in §3.4 + head-expiry in §3.3 + the §2.1.1 reconciliation cases) is run through
+**every** consumer's public entry point, asserting **identical** verdicts.
+CI-blocking. Adding a new gate consumer without wiring it into this test is a
+conformance failure. This is what makes the single-taxonomy guarantee durable
+rather than aspirational.
+
+> **The corpus MUST be seeded from CURRENT REAL VERDICTS, not from this spec's
+> sets** (rco-1). If the fixtures are derived from the new taxonomy, a loosening
+> ships "conformant" — the byte-identical proof passes against a corpus that
+> already baked in the loosening. So each migration (#3) computes the live gate's
+> verdict on a sample of real shared-log events FIRST, then asserts the new
+> classifier returns the identical verdict (except the §2.1.1 documented
+> tightenings, each proven to only keep/add a block). **Shared fixture set with
+> the P4c adversarial corpus** (rco-1/rco-2, `wd-p4c-...`): one fixture base, two
+> assertion lenses — §5 = "all consumers agree"; P4c = "the P1 sign-waiver checker
+> can't reopen an RCE class."
 
 ## 6. Non-loosening / safety invariants
 
@@ -140,11 +182,17 @@ single-taxonomy guarantee durable rather than aspirational.
 - RCO veto stays absolute + per-identity; author≠reviewer stays; head-exact
   binding stays; silence still BLOCKS.
 - This spec **only changes HOW authority is read** (structured fields vs free
-  text); it does not grant new authority, loosen any gate, or alter who may sign.
+  text); it does not grant new authority or alter who may sign. **No BLOCK
+  authority is dropped** (`blocked` preserved; `rco_review` proven dead by
+  emit-audit). The only verdict changes are the §2.1.1 **safe-direction
+  tightenings** (`rco_review`/`test`/`done`), each proven to only keep/add a block,
+  never drop a real veto.
 - Migrating a consumer to the shared module is **gate-classifier logic →
   off-allowlist → operator-sign**, landed per-consumer behind the §5 conformance
-  test (no behavior drift permitted: the migration PR must show byte-identical
-  verdicts on the existing corpus + the new §1 cases).
+  test. Behavior drift is permitted ONLY for the §2.1.1 documented tightenings:
+  the migration PR must show verdicts **identical to the live gate on a
+  real-verdict corpus EXCEPT** those enumerated tightenings, each accompanied by
+  its emit-audit evidence and a proof it only keeps/adds a block.
 
 ## 7. Rollout (each via the consensus gate; no bundling)
 

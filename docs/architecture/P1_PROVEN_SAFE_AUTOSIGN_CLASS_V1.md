@@ -13,12 +13,25 @@ RFC: WD Bridge Throughput, Resilience & Pool-Decorrelation, item **P1**
 ## 0. One-paragraph summary
 
 P1 lets a pull request auto-merge **without the per-PR operator signature** —
-**only** when a mechanically-proven, fail-closed checker certifies the PR is in a
-narrow "proven-safe" class. The waiver removes **only the operator signature**.
-It is **ANDed on top of the entire existing gate**: full build consensus
-(lead + tools), recognized-RCO `RCO_PASS` at the exact head, no RCO veto, CI 6/6,
-and charter-clean all still apply, unchanged. The operator signs the **invariant
-below once**; the gate then enforces it fail-closed per-PR.
+**only** when a fail-closed checker certifies the PR is in a narrow class. The
+waiver removes **only the operator signature**. It is **ANDed on top of the
+entire existing gate**: full build consensus (lead + tools), recognized-RCO
+`RCO_PASS` at the exact head, no RCO veto, CI 6/6, and charter-clean all still
+apply, unchanged. The operator signs the **invariant below once**; the gate then
+enforces it fail-closed per-PR.
+
+**Two assurance tiers (be precise about "proven-safe"):**
+- **Statically-proven tier — additive metric definitions** on the positive
+  `METRICS_PATHS` allowlist. Here "proven-safe" is literal: AST verifies the hunk
+  is exclusively `NAME = Counter|Gauge|Histogram|Summary(<all-inert-literal args>)`,
+  which is mechanically decidable and cannot execute arbitrary code.
+- **Best-effort-screened-and-fully-reviewed tier — `tests/**` and
+  `docs/benchmarks/**`.** Here "proven-safe" does **NOT** mean statically proven
+  RCE-free (that is undecidable for arbitrary `tests/**`). It means: **screened**
+  by the predicate-(G) best-effort dangerous-callable scan **AND still subject to
+  the full build + dual-RCO + CI review** that P1 leaves entirely in place. The
+  signature waiver here is "the operator pre-trusts build+RCO+CI for this screened
+  class", not "a machine proved this file is harmless".
 
 ## 1. What P1 changes — and what it does NOT
 
@@ -36,12 +49,14 @@ signature, substituting the operator's **one-time signature on this invariant**.
 - CI 6/6 green stays. Charter-clean stays.
 - Silence still BLOCKS; absence of a required signal never default-allows.
 
-P1 is **strictly additive scrutiny that the operator pre-authorizes** for a class
-it can verify is harmless — it never removes build, RCO, CI, or charter checks.
+P1 is **strictly additive scrutiny that the operator pre-authorizes** for a
+narrow class — statically harmless for the metric tier, screened-and-fully-reviewed
+for the tests/docs tier. It never removes build, RCO, CI, or charter checks; the
+signature waiver is the *only* thing it removes.
 
 ## 2. In-class predicates (the checker must PROVE ALL, fail-closed)
 
-A PR is IN-CLASS only if **every** predicate A–F holds. Any failure, any
+A PR is IN-CLASS only if **every** predicate A–G holds. Any failure, any
 exclusion, any parse error, or any ambiguity → **NOT in class** → per-PR operator
 signature required (the pre-#1 behavior).
 
@@ -49,11 +64,15 @@ signature required (the pre-#1 behavior).
   `docs/benchmarks/**`, **or** is a **proven-additive metric definition** in a
   file on a **narrow positive metrics-allowlist** (`METRICS_PATHS`, e.g.
   `waggledance/**/metrics.py` / a designated metrics dir). *(Scope notes:
-  `tests/**` STAYS in-class (operator ruling 2026-06-24) but is GUARDED by
-  predicate (G) — pytest imports test modules at collection, so an unguarded
-  tests/ file with module-level code would be RCE in CI; (G) blocks that and the
-  operator accepted the false-positive cost (a legit test using a dangerous
-  callable now needs the sign). `docs/runs/**` is dropped (off the charter
+  `tests/**` STAYS in-class (operator ruling 2026-06-24) but is SCREENED by
+  predicate (G) — pytest imports test modules at collection, so a tests/ file
+  with malicious module-level code would execute in CI; (G) is a best-effort
+  screen that catches the known dangerous-callable and dynamic-dispatch forms but
+  does NOT prove the file harmless (see (G) truthful-scope note). The real
+  backstop for the residual is the full build + dual-RCO + CI review, which P1
+  retains; the operator accepted both the false-positive cost (a legit test using
+  a flagged callable now needs the sign) and the residual. `docs/runs/**` is
+  dropped (off the charter
   allowlist, low-value). The metric path is **default-DENY**: it admits
   ONLY files explicitly on `METRICS_PATHS`, never "any non-denylisted path" — a
   denylist-gap on a sign-waiver path would fail open. The metric definition is
@@ -77,17 +96,31 @@ signature required (the pre-#1 behavior).
   `requirements*` / lockfiles; `AGENTS.md` / `CLAUDE.md` / tracked master-prompts;
   any Rule-10 surface; anything `evaluate_paths` denylists or
   `evaluate_diff_content` flags.
-- **(G) No dangerous-callable invocation on ANY changed line, ANY path** (incl.
-  `tests/**`, `docs/benchmarks/**`, metric paths). Detected by **AST** (resolving
-  import aliases) with a substring fallback for non-Python/unparseable hunks:
+- **(G) Best-effort dangerous-callable screen on ANY changed line, ANY path**
+  (incl. `tests/**`, `docs/benchmarks/**`, metric paths). Any match → operator
+  sign. Detected by **AST** (resolving import aliases) with a substring fallback
+  for non-Python/unparseable hunks:
   `eval`/`exec`/`compile`/`__import__`; `os.system`/`os.popen`/`os.exec*`/
   `os.spawn*`/`os.remove|unlink|rename|replace`; `subprocess.*`/`ctypes.*`/
   `importlib.*`; `pickle`/`marshal` load(s); `shutil.rmtree`; a from-import of a
-  dangerous module/name; and dynamic `getattr`/`setattr`. Covers alias
-  (`import os as o; o.system`), from-import (`from os import system; system()`),
-  reassignment (`f = os.system; f()`), dynamic-getattr, and import-then-call
-  evasions. This is what makes `tests/**` (imported at pytest collection) safe to
-  auto-sign; the operator accepted the false-positive cost.
+  dangerous module/name; dynamic-dispatch **escape-hatch** builtins referenced
+  anywhere (`getattr`/`setattr`/`delattr`/`vars`/`globals`/`locals`/`__import__`/
+  `eval`/`exec`/`compile`/`__builtins__`); and `operator.attrgetter`/
+  `methodcaller`. Covers alias (`import os as o; o.system`), from-import
+  (`from os import system; system()`), reassignment (`f = os.system; f()`),
+  `getattr(os,"system")`, `vars()["os"].system`, `globals()["os"].system`,
+  `__builtins__["eval"]`, `operator.attrgetter("system")(os)`, and
+  import-then-call evasions.
+  > **Truthful scope (rco-1 2026-06-24):** (G) is a **best-effort screen, not a
+  > proof**. Statically proving an arbitrary `tests/**` file is RCE-free is
+  > **undecidable**, and a callable denylist is **non-exhaustive** by construction
+  > — it **substantially reduces but does NOT eliminate** the tests/-content risk.
+  > Documented, accepted residuals (e.g. `().__class__.__bases__[0].__subclasses__()`
+  > gadget traversal, novel reflection, file-write side effects) are **not** caught
+  > by (G); they are backstopped by the **full build + dual-RCO + CI** gate that
+  > P1 leaves entirely in place (P1 waives only the per-PR operator signature). The
+  > operator accepted both the false-positive cost (a legit test using a flagged
+  > callable now needs the sign) and this residual.
 
 ### Fail-closed rule
 > Any path outside (A); any (C)/(D)/(E)/(G) pattern; any (F) exclusion; any parse
@@ -99,7 +132,7 @@ signature required (the pre-#1 behavior).
 - The checker file `tools/check_proven_safe_autosign_class.py` is **added to the
   charter denylist** (PR #3). The class therefore **cannot be silently widened**
   by editing the checker — any change to it is itself operator-gated.
-- Each P1 auto-merge emits a **MAGMA receipt** re-deriving the A–F verdict and
+- Each P1 auto-merge emits a **MAGMA receipt** re-deriving the A–G verdict and
   recording the **signed-invariant version** of this spec. A consumer must be
   able to re-derive the in-class verdict from the receipt (no trusting a bare
   flag).
@@ -120,7 +153,7 @@ signature required (the pre-#1 behavior).
    recognized-RCO `changes_requested` holds the autonomous driver; a clean charter
    path must never be read as the missing operator signature.
 2. **PR #2 — checker + tests, DORMANT/UNWIRED.**
-   `tools/check_proven_safe_autosign_class.py` implementing A–F fail-closed, with
+   `tools/check_proven_safe_autosign_class.py` implementing A–G fail-closed, with
    a positive corpus (#1364/#1369-shaped in-class) and a negative corpus (one
    case per F exclusion and per C/D/E violation, each proving fallback to
    operator-sign). It is consulted by **nothing** — pure, testable logic.

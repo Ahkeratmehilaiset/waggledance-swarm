@@ -94,6 +94,26 @@ def test_forbidden_surface_target_escalates():
         assert r["decision"] == OPERATOR_ESCALATE, p
 
 
+def test_missing_target_paths_escalates_not_skips():
+    # rco-1 #1389 fail-open fix: omitting target_paths must NOT skip the forbidden-
+    # surface guard -- it must escalate (cannot verify the target isn't a Rule-10 surface).
+    d = _base()
+    d.pop("target_paths")
+    assert decide_rollback(d)["decision"] == OPERATOR_ESCALATE
+    assert decide_rollback(_base(target_paths=None))["decision"] == OPERATOR_ESCALATE
+    assert decide_rollback(_base(target_paths="waggledance/x.py"))["decision"] == OPERATOR_ESCALATE  # str
+    assert decide_rollback(_base(target_paths=[]))["decision"] == OPERATOR_ESCALATE  # empty
+
+
+def test_debounce_floor_enforced_caller_cannot_go_below():
+    # rco-1 #1389: a caller-supplied required_confirmations=1 must NOT defeat debounce.
+    assert decide_rollback(_base(failure_signal=_signal(required=1, observed=1)))["decision"] == OPERATOR_ESCALATE
+    # floor (2) met -> eligible even if caller required only 1.
+    assert decide_rollback(_base(failure_signal=_signal(required=1, observed=2)))["decision"] == AUTO_ROLLBACK
+    # caller may require MORE than the floor.
+    assert decide_rollback(_base(failure_signal=_signal(required=5, observed=2)))["decision"] == OPERATOR_ESCALATE
+
+
 def test_noop_target_equals_offending_escalates():
     r = decide_rollback(_base(target_sha=BAD))
     assert r["decision"] == OPERATOR_ESCALATE

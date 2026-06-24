@@ -47,6 +47,10 @@ FORBIDDEN_TARGET_SURFACES = (
     "atomic-flip",
 )
 _FULL_SHA_LEN = 40
+# Hard verifier-side debounce floor: a confirmed failure signal needs at least this
+# many confirmations. The caller may require MORE, never fewer (so a caller cannot
+# defeat debounce by passing required_confirmations=1). rco-1 #1389 trust-gap fix.
+MIN_CONFIRMATIONS_FLOOR = 2
 
 
 def _is_full_sha(value: Any) -> bool:
@@ -79,11 +83,14 @@ def _signal_confirmed(signal: Any) -> bool:
     # confirmed must be a strict True, and at least the configured confirmations met.
     if signal.get("confirmed") is not True:
         return False
-    required = signal.get("required_confirmations", 2)
-    observed = signal.get("observed_confirmations")
-    if not isinstance(required, int) or required < 1:
+    required = signal.get("required_confirmations", MIN_CONFIRMATIONS_FLOOR)
+    if not isinstance(required, int):
         return False
-    return isinstance(observed, int) and observed >= required
+    # Enforce the hard floor: the caller may require MORE confirmations but never
+    # fewer than MIN_CONFIRMATIONS_FLOOR (caller-supplied required cannot weaken it).
+    effective_required = max(required, MIN_CONFIRMATIONS_FLOOR)
+    observed = signal.get("observed_confirmations")
+    return isinstance(observed, int) and observed >= effective_required
 
 
 def decide_rollback(decision_input: Mapping[str, Any]) -> dict[str, Any]:
@@ -119,12 +126,17 @@ def decide_rollback(decision_input: Mapping[str, Any]) -> dict[str, Any]:
         return escalate("target_sha == offending_sha (no-op) -> escalate")
 
     # Forbidden surfaces: a rollback touching release/tag/stable/Rule-10 is operator-only.
-    paths = decision_input.get("target_paths") or []
-    if isinstance(paths, Sequence) and not isinstance(paths, (str, bytes)):
-        for p in paths:
-            low = str(p).lower()
-            if any(s in low for s in FORBIDDEN_TARGET_SURFACES):
-                return escalate(f"rollback touches forbidden surface ('{p}') -> operator-only")
+    # target_paths is REQUIRED -- absence/None/non-Sequence/empty means we CANNOT verify
+    # the target isn't a forbidden surface (a green release/tag SHA can be in the registry),
+    # so we ESCALATE rather than silently skip the guard (rco-1 #1389 fail-open fix:
+    # absence-of-evidence is not evidence-of-absence).
+    paths = decision_input.get("target_paths")
+    if not isinstance(paths, Sequence) or isinstance(paths, (str, bytes)) or not paths:
+        return escalate("target_paths missing/invalid/empty -> cannot verify target surfaces -> escalate")
+    for p in paths:
+        low = str(p).lower()
+        if any(s in low for s in FORBIDDEN_TARGET_SURFACES):
+            return escalate(f"rollback touches forbidden surface ('{p}') -> operator-only")
 
     # The target must be a prior known-green + consensus-approved state.
     registry = decision_input.get("known_green_registry")

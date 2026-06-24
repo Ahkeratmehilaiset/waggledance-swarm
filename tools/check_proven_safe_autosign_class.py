@@ -85,7 +85,18 @@ DANGEROUS_BARE_NAMES = frozenset({"eval", "exec", "compile", "__import__"})
 DANGEROUS_DOTTED = frozenset({
     "os.system", "os.popen", "os.remove", "os.unlink", "os.rename", "os.replace",
     "pickle.load", "pickle.loads", "marshal.load", "marshal.loads", "shutil.rmtree",
-    "importlib.import_module",
+    "importlib.import_module", "operator.attrgetter", "operator.methodcaller",
+})
+# Dynamic-resolution ESCAPE-HATCH builtins. Flagged on ANY bare-Name reference
+# (call or not) -> operator_sign, because they resolve callees dynamically and so
+# bypass a dotted-name scan: vars()["os"].system, globals()["os"].system,
+# __builtins__["eval"], getattr(os,"system"), f=getattr;f(...). Operator accepted
+# the false-positive cost (a test referencing getattr now needs the sign).
+# Best-effort: deeper gadget chains (__subclasses__ traversal) remain a documented
+# residual backstopped by build+RCO+CI (rco-1/lead/operator 2026-06-24).
+ESCAPE_HATCH_NAMES = frozenset({
+    "getattr", "setattr", "delattr", "vars", "globals", "locals",
+    "__import__", "eval", "exec", "compile", "__builtins__",
 })
 DANGEROUS_DOTTED_PREFIXES = ("os.exec", "os.spawn", "subprocess.", "ctypes.",
                              "importlib.")
@@ -273,6 +284,14 @@ def _is_dangerous_dotted(dotted: str | None) -> bool:
 def _ast_dangerous(tree: ast.AST) -> str | None:
     aliases = _build_import_aliases(tree)
     for node in ast.walk(tree):
+        # ANY bare-Name reference to a dynamic-resolution escape-hatch builtin ->
+        # out-of-class (call or not). This closes the dynamic-dispatch bypasses a
+        # dotted scan misses: vars()["os"].system, globals()["os"].system,
+        # __builtins__["eval"], getattr(os,"system"), and `f = getattr; f(...)`.
+        # Flag-anywhere is deliberate (lead 2026-06-24): reference == intent to
+        # resolve dynamically; the operator accepted the false-positive cost.
+        if isinstance(node, ast.Name) and node.id in ESCAPE_HATCH_NAMES:
+            return f"escape-hatch builtin '{node.id}'"
         if isinstance(node, ast.ImportFrom) and node.module:
             mod = node.module.split(".")[0]
             if mod in DANGEROUS_FROM_MODULES:

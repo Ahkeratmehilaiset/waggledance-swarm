@@ -61,6 +61,29 @@ def test_tests_dangerous_callable_blocks_auto_sign(evil):
     assert _in_class([ch]) is False, evil
 
 
+# --- The SIX DEMONSTRATED dynamic-dispatch bypasses (operator keep-tests ruling) -
+# rco-1/lead/operator 2026-06-24: tests/ stays in-class, but the scan MUST close
+# the six bypasses that resolve a dangerous callee dynamically (a scan catching
+# os.system but not getattr(os,"system") is BROKEN, not "acceptably leaky"). Each
+# of these must fall to operator_sign. Deeper gadget chains (__subclasses__
+# traversal) are an ACCEPTED documented residual backstopped by build+RCO+CI.
+
+@pytest.mark.parametrize("evil", [
+    "getattr(os, 'system')('x')",                     # 1: literal getattr -> os.system
+    "vars()['os'].system('x')",                       # 2: vars() namespace dict
+    "globals()['os'].system('x')",                    # 3: globals() namespace dict
+    "import operator\noperator.attrgetter('system')(os)('x')",  # 4: operator.attrgetter
+    "__builtins__['eval']('1')",                       # 5: __builtins__ namespace dict
+    "f = getattr\nf(os, 'system')('x')",              # 6: reassignment of escape-hatch
+    "locals()['os'].system('x')",                     # extra: locals() namespace dict
+    "setattr(mod, 'go', os.system)",                  # extra: setattr escape-hatch
+    "x = __import__('os')",                           # extra: __import__ as bare name
+])
+def test_escape_hatch_dynamic_dispatch_blocks(evil):
+    ch = _ch("tests/test_evil.py", evil.split("\n"))
+    assert _in_class([ch]) is False, evil
+
+
 def test_docs_runs_dropped_not_in_class():
     # docs/runs/** was dropped from the safe set (spec SS2.A option-b).
     assert _in_class([_ch("docs/runs/2026-06-24.md", ["# run log", "all green"])]) is False

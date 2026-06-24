@@ -64,6 +64,16 @@ AUTHORITY_FLAGS = ("gate_skip", "solver_call", "receipt_required",
 CONTROL_PLANE_TOKENS = ("def route", "routing", "control_plane", "dispatch(",
                         "merge(", "build_consensus", "rco_pass", "operator_sign")
 
+# A COMPLETE single-line metric definition: `NAME = Counter|Gauge|Histogram|
+# Summary(<balanced args, one level of nesting>)` + optional trailing comment,
+# anchored to the WHOLE line so nothing may trail the call (no `; os.system(...)`,
+# no concatenated statement). Multi-line defs conservatively fall to operator-sign.
+_METRIC_DEF_FULL = re.compile(
+    r"^[A-Za-z_]\w*\s*=\s*(?:Counter|Gauge|Histogram|Summary)\s*"
+    r"\([^()]*(?:\([^()]*\)[^()]*)*\)\s*(?:#.*)?$"
+)
+_METRIC_USAGE = re.compile(r"\.(inc|dec|observe|set|labels|time|count_exceptions)\s*\(")
+
 
 def _norm(path: str) -> str:
     return path.replace("\\", "/").strip().lstrip("./")
@@ -89,40 +99,36 @@ def _in_safe_roots(path: str) -> bool:
 
 
 def _is_additive_metrics_counter(change: dict) -> bool:
-    """A changed source file qualifies only as a PURE-ADDITIVE new metric counter.
+    """A changed source file qualifies ONLY as a pure-additive new metric counter.
 
-    Requires: zero removed lines (no edit to existing lines), at least one added
-    line, every added line is a comment/blank or a metric-counter definition
-    (Counter/Gauge/Histogram/counter(...) new symbol), and no risky token.
+    STRICT (fail-closed): zero removed lines, at least one added line, and EVERY
+    non-blank/non-comment added line must be a COMPLETE single-line metric
+    DEFINITION (``NAME = Counter|Gauge|Histogram|Summary(...)``) — matched whole-
+    line so nothing may trail the call. Any standalone statement, multi-statement
+    line (``;``), metric usage (``.inc()``/``.labels()`` — a hot-path change),
+    authority flag, or multi-line def → NOT in class. A line is NEVER admitted by
+    a trailing-character heuristic (the prior fail-open: rco-1/rco-2/tools #1384).
     """
-    removed = change.get("removed") or []
+    if change.get("removed"):
+        return False  # any removal/edit of an existing line -> not purely additive
     added = change.get("added") or []
-    if removed:
-        return False  # any edit/removal of an existing line -> not purely additive
     if not added:
         return False
-    # Only a module-level metric DEFINITION is allowed (a new inert symbol).
-    metric_def = re.compile(r"=\s*(Counter|Gauge|Histogram|Summary)\s*\(")
-    # Metric USAGE / increment is a hot-path runtime change -> NOT additive-safe.
-    metric_usage = re.compile(r"\.(inc|dec|observe|set|labels|time|count_exceptions)\s*\(")
     saw_metric = False
     for line in added:
         s = line.strip()
         if not s or s.startswith("#"):
             continue
-        low = s.lower()
-        if metric_usage.search(s):
-            return False  # incrementing/labeling a metric edits a live hot path
-        if any(flag in low for flag in AUTHORITY_FLAGS):
+        if ";" in s:
+            return False  # multiple statements on one line
+        if _METRIC_USAGE.search(s):
+            return False  # .inc()/.labels()/... = hot-path runtime change
+        if any(flag in s.lower() for flag in AUTHORITY_FLAGS):
             return False
-        if metric_def.search(s):
+        if _METRIC_DEF_FULL.match(s):
             saw_metric = True
             continue
-        # Permit only continuation lines of the definition (description strings,
-        # closing parens, kwargs) — never another executable statement.
-        if s.endswith((",", "(", ")")) or re.match(r"^['\"]", s):
-            continue
-        return False  # any other executable line -> not a pure metric-counter add
+        return False  # not a complete metric definition -> reject (no heuristic)
     return saw_metric
 
 
@@ -136,7 +142,8 @@ def _scan_tokens(changes: Sequence[dict], tokens: Sequence[str]) -> str | None:
     return None
 
 
-def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "") -> dict:
+def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "",
+                    require_charter: bool = True) -> dict:
     """Pure classifier. ``changes``: [{path, added[], removed[]}]. Fail-closed.
 
     Returns {in_class: bool, decision: 'auto_sign'|'operator_sign', reason}.
@@ -151,7 +158,14 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
     if any(not p for p in paths):
         return out_of_class("missing path in change set -> operator sign")
 
-    # F via the authoritative charter (denylist / diff-content), if supplied.
+    # The authoritative charter is REQUIRED for predicate F — the explicit F-list
+    # + A alone cannot catch arbitrary code under an allowlisted path, so a
+    # MISSING charter FAILS CLOSED rather than falling back to the narrower
+    # hardcoded list (rco-1 #1384 charter=None fail-open fix).
+    if require_charter and charter is None:
+        return out_of_class("charter unavailable -> operator sign (F requires the charter)")
+
+    # F via the authoritative charter (denylist / diff-content), when supplied.
     if charter is not None:
         try:
             from waggledance.core import idle_consensus_charter as _c

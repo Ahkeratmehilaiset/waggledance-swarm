@@ -29,6 +29,12 @@ changes flow with a rollback safety net.
   reverts to the prior good SHA, (4) emits a MAGMA rollback receipt (offending SHA, good
   SHA, trigger, actor). Fail-closed: if the rollback cannot be proven to complete, it
   escalates to operator, never leaves a half-rolled-back state.
+- **Rollback-path is itself a constrained fast-path (rco-1 2026-06-24):** auto-merging a
+  rollback must be a PURE revert to a prior **known-green** SHA only — mechanically verified
+  that the resulting tree equals a previously **CI-green + consensus-approved** state — never
+  an arbitrary edit. A rollback carrying any new content would be an unreviewed auto-merge
+  and is forbidden; such a case escalates to operator. The rollback emits a MAGMA receipt
+  re-deriving the tree-equality proof.
 - **Non-goals:** does not roll back non-reversible effects (releases/tags/Docker-stable —
   Rule-stays-operator); rollback applies to ordinary mergeable commits only.
 
@@ -40,6 +46,10 @@ changes flow with a rollback safety net.
   budget, with a quantified false-positive rate; it is **additive/observability-only**
   (it never gates a merge by itself — CI remains the authoritative pre-merge gate) and is
   the post-merge MTTR trigger, not a second pre-merge gate.
+- **High-confidence/debounced signal before P4a fires (rco-1 2026-06-24):** P4a must NOT
+  fire on a single (possibly flaky) canary run — require a debounced, high-confidence
+  failure (e.g. a one-cycle confirmation / N-of-M), so a false positive cannot revert a
+  GOOD merge (revert-thrash). The quantified false-positive rate (see §5) bounds this.
 - **Non-goals:** not a replacement for CI; not a pre-merge gate.
 
 ### P4c — Matured synthetic adversarial corpus  *(RCO domain — do NOT naively append)*

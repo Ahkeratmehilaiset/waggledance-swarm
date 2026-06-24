@@ -239,7 +239,19 @@ def normalize_raw(raw: dict) -> dict:
     """Best-effort map a RAW bridge event to the normalized taxonomy view. Reads
     ONLY structured fields (payload + top-level), never the status name or message
     body, for authority. Provided for the consumer-migration phase (#3); the
-    classifier logic is tested directly on normalized events."""
+    classifier logic is tested directly on normalized events.
+
+    MIGRATION CRUX (rco-1 #1388 forward note) — DO NOT wire this without it:
+    today's bridge events carry FREE-TEXT status NAMES (e.g.
+    ``build_consensus_pass_supersede``, ``rco1_..._at_head``) in the top-level
+    ``status`` field and have NO ``payload.decision_status``. Fed through this
+    fallback they classify to an UNKNOWN enum -> fail-CLOSED -> MASS OVER-BLOCK.
+    That is the SAFE direction, but it means migration #3 is NOT byte-identical to
+    the live gate until EITHER events start emitting a canonical
+    ``payload.decision_status`` field, OR a vetted free-text->enum mapping is added
+    here. The §5 conformance corpus MUST be seeded from current real verdicts WITH
+    that mapping, or migration wedges the gate. Until then this is a forward-only
+    helper, not a drop-in for the live free-text reads."""
     payload = raw.get("payload") or {}
     return {
         "type": raw.get("type"),

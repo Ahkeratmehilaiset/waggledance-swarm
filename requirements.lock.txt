@@ -84,7 +84,7 @@ google-pasta==0.2.0
 googleapis-common-protos==1.72.0
 greenlet==3.3.2
 grpcio==1.81.1
-grpclib==0.4.8
+grpclib==0.4.9
 gym==0.26.2
 gym-notices==0.1.0
 h11==0.16.0

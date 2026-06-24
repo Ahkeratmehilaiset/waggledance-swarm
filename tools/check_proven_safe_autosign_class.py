@@ -8,14 +8,14 @@ the gate-wiring PR (#3) is operator-signed, the gate may consult this checker to
 waive ONLY the per-PR operator signature for an in-class PR. **This file is
 consulted by nothing yet** — it is pure, testable logic.
 
-FAIL-CLOSED: a PR is IN-CLASS only if EVERY predicate A–F holds. Any path outside
-the safe set, any C/D/E pattern, any F exclusion, empty input, or any parse
-error/ambiguity → NOT in class → per-PR operator signature required. The checker
+FAIL-CLOSED: a PR is IN-CLASS only if EVERY predicate A–G holds. Any path outside
+the safe set, any C/D/E/G pattern, any F exclusion, empty input, or any parse
+error/ambiguity -> NOT in class -> per-PR operator signature required. The checker
 NEVER default-allows on uncertainty.
 
 In-class predicates (all must hold):
-  A  every changed path is in tests/** | docs/runs/** | docs/benchmarks/**,
-     OR is an ADDITIVE metrics counter (pure-addition, new counter symbol).
+  A  every changed path is in tests/** | docs/benchmarks/**, OR is an ADDITIVE
+     metrics counter on the positive METRICS_PATHS allowlist (default-empty).
   B  read-only / default-OFF (no removed/edited lines outside the safe roots).
   C  no claim_safe flip.
   D  no authority-flag edit (gate_skip/solver_call/receipt_required/clinical_decision).
@@ -23,6 +23,11 @@ In-class predicates (all must hold):
   F  hard exclusions: gate/charter/denylist, .agent-bridge/bin/**,
      .github/workflows/**, requirements*/lockfiles, AGENTS.md/CLAUDE.md/
      master-prompts, Rule-10 surface, anything the charter denylists.
+  G  best-effort dangerous-callable screen (AST, alias-resolving) on ANY changed
+     line: direct/aliased/from-import dangerous calls, dynamic-dispatch
+     escape-hatch builtins anywhere, builtins.<hatch> dotted, and reflection /
+     gadget-traversal dunders. A SCREEN, not a proof (RCE-freeness of arbitrary
+     tests/ is undecidable); residuals are backstopped by build+dual-RCO+CI.
 
     python tools/check_proven_safe_autosign_class.py --changed-from-git origin/main --json
 """
@@ -92,11 +97,30 @@ DANGEROUS_DOTTED = frozenset({
 # bypass a dotted-name scan: vars()["os"].system, globals()["os"].system,
 # __builtins__["eval"], getattr(os,"system"), f=getattr;f(...). Operator accepted
 # the false-positive cost (a test referencing getattr now needs the sign).
-# Best-effort: deeper gadget chains (__subclasses__ traversal) remain a documented
-# residual backstopped by build+RCO+CI (rco-1/lead/operator 2026-06-24).
+# Best-effort: this is a SCREEN, not a proof (statically proving an arbitrary
+# tests/ file RCE-free is undecidable). Novel dynamic-resolution + non-call vectors
+# remain a documented residual backstopped by build+RCO+CI (rco-1/lead/operator
+# 2026-06-24); P1 waives only the per-PR operator signature, never that review.
 ESCAPE_HATCH_NAMES = frozenset({
     "getattr", "setattr", "delattr", "vars", "globals", "locals",
     "__import__", "eval", "exec", "compile", "__builtins__",
+    "breakpoint",  # sys.breakpointhook / PYTHONBREAKPOINT runs arbitrary code
+})
+# Modules whose escape-hatch / dangerous-tail attributes (builtins.getattr,
+# builtins.eval, ...) bypass the bare-Name escape-hatch flag via DOTTED access.
+DANGEROUS_BUILTINS_MODULES = frozenset({"builtins", "__builtin__"})
+# Dunder attributes used for reflection / gadget-chain traversal (object-graph
+# walks to a dangerous callable). Flagged on ANY Attribute access OR Subscript with
+# a constant-string key in this set -> operator_sign. Closes os.__dict__["system"],
+# func.__globals__["..."], os.__getattribute__("system"),
+# ().__class__.__bases__[0].__subclasses__()[i](...). Per rco-2 2026-06-24 this is
+# the principled FINITE fix that closes the whole reflection class at once; it
+# INCLUDES __class__ (the operator accepted the false-positive cost: a test merely
+# reading x.__class__ now needs the sign — disqualifying my earlier omission).
+DANGEROUS_DUNDER_ATTRS = frozenset({
+    "__dict__", "__class__", "__bases__", "__subclasses__", "__mro__", "__base__",
+    "__globals__", "__builtins__", "__subclasshook__",
+    "__getattribute__", "__getattr__", "__import__",
 })
 DANGEROUS_DOTTED_PREFIXES = ("os.exec", "os.spawn", "subprocess.", "ctypes.",
                              "importlib.")
@@ -300,12 +324,33 @@ def _ast_dangerous(tree: ast.AST) -> str | None:
                 for a in node.names:
                     if a.name in DANGEROUS_TAILS:
                         return f"from os import {a.name}"
+        # reflection / gadget-traversal dunder reached as an ATTRIBUTE
+        # (os.__dict__["system"], func.__globals__[...], os.__getattribute__("x"),
+        # ().__class__.__bases__[0].__subclasses__()).
+        if isinstance(node, ast.Attribute) and node.attr in DANGEROUS_DUNDER_ATTRS:
+            return f"dunder attribute '{node.attr}'"
+        # ...or as a constant-string SUBSCRIPT key (d["__globals__"], ns["__class__"]).
+        if isinstance(node, ast.Subscript):
+            key = node.slice
+            if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and key.value in DANGEROUS_DUNDER_ATTRS):
+                return f"dunder subscript '{key.value}'"
         # any Attribute reference to a dangerous dotted path (covers calls AND
         # reassignment like `f = os.system`)
         if isinstance(node, ast.Attribute):
             d = _dotted_from_node(node, aliases)
             if _is_dangerous_dotted(d):
                 return d
+            # escape-hatch / dangerous tail reached via the builtins module by
+            # DOTTED access (builtins.getattr, builtins.eval) bypasses the
+            # bare-Name escape-hatch flag.
+            if d and "." in d:
+                head, _, tail = d.partition(".")
+                if head in DANGEROUS_BUILTINS_MODULES and (
+                    tail in ESCAPE_HATCH_NAMES or tail in DANGEROUS_TAILS
+                    or tail in DANGEROUS_BARE_NAMES
+                ):
+                    return d
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             fid = node.func.id
             if fid in DANGEROUS_BARE_NAMES:
@@ -415,7 +460,7 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
     return {
         "in_class": True,
         "decision": "auto_sign",
-        "reason": "all predicates A-F hold (proven-safe class)",
+        "reason": "all predicates A-G hold (proven-safe class)",
     }
 
 

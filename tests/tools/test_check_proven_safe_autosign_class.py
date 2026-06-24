@@ -84,6 +84,38 @@ def test_escape_hatch_dynamic_dispatch_blocks(evil):
     assert _in_class([ch]) is False, evil
 
 
+# --- FINAL best-effort sweep: 3 more evasions tools found on @b5cf0d30 ----------
+# codex-tools-1 corpus 2026-06-24: after the 6 demonstrated were closed, three
+# more easy real evasions still auto-signed. The swarm ruling: close these, add
+# the gadget-dunder chain, THEN STOP the whack-a-mole and rely on the honest doc +
+# build+dual-RCO+CI backstop. Anything past this (os.__dict__.get(), novel
+# reflection, file-write side effects) is the ACCEPTED residual.
+
+@pytest.mark.parametrize("evil", [
+    "os.__dict__['system']('x')",                      # a: module __dict__ subscript
+    "breakpoint()",                                    # b: PYTHONBREAKPOINT arbitrary code
+    "import builtins\nbuiltins.getattr(os, 'system')('x')",  # c: escape-hatch via builtins.
+    "import builtins\nbuiltins.eval('1')",             # rco-2 #4: builtins.eval dotted
+    "os.__getattribute__('system')('x')",              # rco-2 #5: __getattribute__ reflection
+    "().__class__.__bases__[0].__subclasses__()[0]",   # gadget-chain traversal
+    "func.__globals__['os'].system('x')",              # __globals__ reflection
+    "x.__class__('evil')",                             # __class__ now flagged (rco-2)
+    "ns['__globals__']['os'].system('x')",             # dunder via subscript key
+])
+def test_final_sweep_reflection_evasions_block(evil):
+    ch = _ch("tests/test_evil.py", evil.split("\n"))
+    assert _in_class([ch]) is False, evil
+
+
+def test_class_attr_now_flagged_per_rco2():
+    # rco-2 2026-06-24 finite-fixlist (B): __class__ is INCLUDED in the reflection
+    # dunder set — a test reading x.__class__ now falls to operator_sign. The
+    # operator accepted this false-positive cost to close the whole reflection
+    # class in one rule (closing the gadget chain at __class__, not only deeper).
+    assert _in_class([_ch("tests/test_x.py",
+                          ["assert x.__class__ is Foo"])]) is False
+
+
 def test_docs_runs_dropped_not_in_class():
     # docs/runs/** was dropped from the safe set (spec SS2.A option-b).
     assert _in_class([_ch("docs/runs/2026-06-24.md", ["# run log", "all green"])]) is False

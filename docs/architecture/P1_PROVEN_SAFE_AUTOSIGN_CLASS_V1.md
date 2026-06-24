@@ -45,12 +45,17 @@ A PR is IN-CLASS only if **every** predicate A–F holds. Any failure, any
 exclusion, any parse error, or any ambiguity → **NOT in class** → per-PR operator
 signature required (the pre-#1 behavior).
 
-- **(A) Paths.** Every changed path is strictly within `tests/**` or
-  `docs/benchmarks/**`, **or** is a **proven-additive metric definition** in a
+- **(A) Paths.** Every changed path is strictly within `docs/benchmarks/**`
+  (pure inert docs), **or** is a **proven-additive metric definition** in a
   file on a **narrow positive metrics-allowlist** (`METRICS_PATHS`, e.g.
-  `waggledance/**/metrics.py` / a designated metrics dir). *(Scope notes,
-  operator option (b) 2026-06-24: `docs/runs/**` is dropped — it is off the
-  charter allowlist and low-value. The metric path is **default-DENY**: it admits
+  `waggledance/**/metrics.py` / a designated metrics dir). *(Scope notes:
+  `tests/**` is **dropped** (2026-06-24, tools/rco-1): pytest imports test modules
+  at collection, so module-level code in a "test" file executes in CI — admitting
+  tests/ by path would be RCE via the safe-root; tests/ now requires operator-sign.
+  `docs/runs/**` is dropped (off the charter allowlist, low-value). A
+  **dangerous-callable scan** (os.system/subprocess/eval/exec/__import__/…) over
+  all changed lines fails any change to operator-sign as defense-in-depth. The
+  metric path is **default-DENY**: it admits
   ONLY files explicitly on `METRICS_PATHS`, never "any non-denylisted path" — a
   denylist-gap on a sign-waiver path would fail open. The metric definition is
   **AST-verified**: the change must parse as module-level

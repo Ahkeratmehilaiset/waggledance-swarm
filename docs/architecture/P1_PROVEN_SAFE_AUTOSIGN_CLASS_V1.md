@@ -84,8 +84,15 @@ signature required (the pre-#1 behavior).
 ## 4. Rollout — 3 separate PRs (never bundled)
 
 1. **PR #1 — this spec.** `docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V1.md`.
-   Off-allowlist; the **operator signs the invariant** (§1–§3). Changes no
-   behavior.
+   **Charter-allowlist-clean by path** (`evaluate_paths` and `evaluate_diff_content`
+   both return `allowed=True`); it changes no behavior. **But it AUTHORIZES the
+   gate-loosening invariant (§1–§3)**, so it must **NOT** autonomous-merge — the
+   operator-sign requirement here is a **content/policy** matter, *not* a
+   charter-path gate. The operator's invariant endorsement is **captured** by
+   either **(a)** an explicit operator-signed merge at the exact head, or **(b)** a
+   recorded operator-sign event referencing the exact head. Until that capture, a
+   recognized-RCO `changes_requested` holds the autonomous driver; a clean charter
+   path must never be read as the missing operator signature.
 2. **PR #2 — checker + tests, DORMANT/UNWIRED.**
    `tools/check_proven_safe_autosign_class.py` implementing A–F fail-closed, with
    a positive corpus (#1364/#1369-shaped in-class) and a negative corpus (one
@@ -129,10 +136,13 @@ Before the loosening in PR #3 may activate:
 ## 7. Relationship to CLAUDE.md
 
 P1 modifies the autonomous-**merge** approval surface (it pre-authorizes the
-operator-signature for a proven class). PR #1/#2 are off-allowlist
-documentation/tooling that change nothing live. PR #3 (activation) is
-Rule-10-adjacent (a gate loosening) and is therefore operator-signed and
-P4-gated. P1 does not alter the bridge-consensus contract (Rule 9a) except to add
+operator-signature for a proven class). **PR #1** is charter-allowlist-clean by
+path yet **operator-sign-required by content** (it authorizes the invariant;
+captured by an operator-signed merge or operator-sign event at the exact head,
+and held meanwhile by a recognized-RCO `changes_requested`). **PR #2** is
+**off-allowlist** (`evaluate_diff_content` gate-logic denylist hit) →
+operator-sign. Both change nothing live. PR #3 (activation) is Rule-10-adjacent
+(a gate loosening) and is therefore operator-signed and P4-gated. P1 does not alter the bridge-consensus contract (Rule 9a) except to add
 the operator-signature waiver for the mechanically-proven in-class set; build
 consensus, recognized-RCO pass, RCO veto, author≠reviewer, head-exact binding,
 CI, and charter-clean are all retained unchanged.

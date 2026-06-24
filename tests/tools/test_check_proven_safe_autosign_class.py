@@ -45,6 +45,9 @@ def test_tests_clean_change_in_class():
     "import subprocess as sp\nsp.run(['x'])",         # alias on pure-dangerous module
     "from subprocess import run\nrun(['x'])",         # from-import dangerous module
     "getattr(os, 'sys' + 'tem')('x')",                # dynamic getattr (concat)
+    "getattr(os, 'system')('x')",                     # LITERAL getattr -> os.system
+    "import subprocess as sp\ngetattr(sp, 'run')(['x'])",  # alias + literal getattr
+    "setattr(target, attrname, value)",               # dynamic setattr (non-literal attr)
     "__import__('os').system('x')",                   # import-then-call
     "eval('1+1')",
     "exec(code)",

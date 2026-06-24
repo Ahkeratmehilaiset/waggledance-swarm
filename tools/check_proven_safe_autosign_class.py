@@ -294,9 +294,18 @@ def _ast_dangerous(tree: ast.AST) -> str | None:
             resolved = aliases.get(fid)
             if resolved and _is_dangerous_dotted(resolved):
                 return resolved  # e.g. from os import system; system()
-            if fid in ("getattr", "setattr") and len(node.args) >= 2 \
-                    and not isinstance(node.args[1], ast.Constant):
-                return f"dynamic {fid}()"
+            if fid in ("getattr", "setattr") and len(node.args) >= 2:
+                attr = node.args[1]
+                if not isinstance(attr, ast.Constant):
+                    return f"dynamic {fid}()"  # non-literal attr -> conservative flag
+                # LITERAL attr: resolve getattr(os, "system") -> os.system and apply
+                # the dangerous-dotted check (rco-1 getattr-literal evasion #1384).
+                if isinstance(attr.value, str) and isinstance(
+                    node.args[0], (ast.Name, ast.Attribute)
+                ):
+                    base = _dotted_from_node(node.args[0], aliases)
+                    if base and _is_dangerous_dotted(f"{base}.{attr.value}"):
+                        return f"{fid}({base}, '{attr.value}')"
     return None
 
 

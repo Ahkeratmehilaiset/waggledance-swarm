@@ -34,6 +34,17 @@
 - For CI failures, prioritize deterministic fixes over retries/timeouts.
 - Treat broken tests, unsafe write paths, silent fallbacks, and misleading docs as high priority.
 - Always report exact commands run and the final test status.
+- Local test scope: CI is the authoritative full-suite gate and runs the whole
+  suite at the exact head before any merge — do NOT re-run the full ~795-test
+  suite locally on every head. For local iteration, run only the AFFECTED tests:
+  `python tools/select_affected_tests.py --changed-from-git origin/main` (or
+  `--files <changed paths>`) prints the affected test files, or `full_suite`
+  when it cannot narrow safely. The selector is FAIL-SAFE — it returns the full
+  suite whenever the affected set is uncertain (a broad-impact file such as
+  conftest/pyproject/charter/`__init__`, a changed source mapping to no test, an
+  unknown file type, or empty input), so it never silently under-runs. Run the
+  full suite locally only when the selector says `full_suite`. Still report the
+  final test status of whatever you ran.
 
 ## Runtime audit rules
 - Prefer runtime evidence over static guesses.

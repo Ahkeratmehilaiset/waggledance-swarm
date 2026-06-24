@@ -13,9 +13,18 @@ the safe set, any C/D/E/G pattern, any F exclusion, empty input, or any parse
 error/ambiguity -> NOT in class -> per-PR operator signature required. The checker
 NEVER default-allows on uncertainty.
 
+OPTION (c) (operator ruling 2026-06-24, after the P1-pair merge): tests/** is
+DROPPED from the in-class set. The auto-sign class is now STATICALLY PROVABLE end
+to end — additive-metric defs (AST inert-literal-args, decidable) + inert
+docs/benchmarks/** markdown — so "proven-safe" is now ACCURATE with no
+best-effort/undecidable tier. Predicate (G) is retained only as optional
+defense-in-depth on the remaining paths; it is no longer the load-bearing RCE
+control (there is no executable in-class surface left to screen).
+
 In-class predicates (all must hold):
-  A  every changed path is in tests/** | docs/benchmarks/**, OR is an ADDITIVE
+  A  every changed path is in docs/benchmarks/**, OR is an ADDITIVE
      metrics counter on the positive METRICS_PATHS allowlist (default-empty).
+     (tests/** is NOT in-class -> always operator_sign.)
   B  read-only / default-OFF (no removed/edited lines outside the safe roots).
   C  no claim_safe flip.
   D  no authority-flag edit (gate_skip/solver_call/receipt_required/clinical_decision).
@@ -23,11 +32,11 @@ In-class predicates (all must hold):
   F  hard exclusions: gate/charter/denylist, .agent-bridge/bin/**,
      .github/workflows/**, requirements*/lockfiles, AGENTS.md/CLAUDE.md/
      master-prompts, Rule-10 surface, anything the charter denylists.
-  G  best-effort dangerous-callable screen (AST, alias-resolving) on ANY changed
-     line: direct/aliased/from-import dangerous calls, dynamic-dispatch
+  G  OPTIONAL defense-in-depth dangerous-callable screen (AST, alias-resolving) on
+     ANY changed line: direct/aliased/from-import dangerous calls, dynamic-dispatch
      escape-hatch builtins anywhere, builtins.<hatch> dotted, and reflection /
-     gadget-traversal dunders. A SCREEN, not a proof (RCE-freeness of arbitrary
-     tests/ is undecidable); residuals are backstopped by build+dual-RCO+CI.
+     gadget-traversal dunders. With tests/ dropped the in-class set is already
+     statically inert, so (G) is belt-and-suspenders, not the primary control.
 
     python tools/check_proven_safe_autosign_class.py --changed-from-git origin/main --json
 """
@@ -43,11 +52,27 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-# tests/** + docs/benchmarks/** auto-sign by path, GUARDED by the fail-closed
-# dangerous-callable scan (operator ruling 2026-06-24: keep tests/ in-class but
-# block RCE via an AST dangerous-callable scan on all changed lines/paths; FP cost
-# accepted). docs/runs/** dropped (off charter allowlist, low-value).
-SAFE_ROOTS = ("tests/", "docs/benchmarks/")
+# Inert, non-executable safe root. OPTION (c) (operator ruling 2026-06-24, AFTER
+# the P1-pair merge, SUPERSEDING the 12:10 keep-tests/-best-effort ruling):
+# DROP tests/** from the auto-sign in-class set entirely. tests/ is imported and
+# EXECUTED at pytest collection, so statically proving an arbitrary tests/ file
+# RCE-free is undecidable and a dangerous-callable denylist is non-exhaustive;
+# dropping tests/ ELIMINATES the RCE auto-sign surface rather than denylisting it.
+# The auto-sign class is now STATICALLY PROVABLE: additive-metric defs on
+# METRICS_PATHS (AST inert-literal-args) + docs/benchmarks/** (inert markdown,
+# never imported/executed). tests/** -> operator_sign always. docs/runs/** stays
+# dropped (off charter allowlist, low-value).
+SAFE_ROOTS = ("docs/benchmarks/",)
+
+# A safe-root path qualifies ONLY if its extension is on this POSITIVE allowlist of
+# inert, non-executable DATA/DOC types. rco-1 sharp check (2026-06-24): "inert"
+# must be VERIFIED, not assumed — a docs/benchmarks/runner.py is the SAME
+# arbitrary-code-RCE class as tests/ if a benchmark runner / conftest imports it.
+# A positive allowlist (not an executable denylist) keeps this statically provable:
+# anything not explicitly listed (incl. .py/.ipynb/.ps1/.sh/.yaml) -> operator_sign.
+NON_EXECUTABLE_EXTS = frozenset({
+    ".md", ".rst", ".txt", ".json", ".csv", ".tsv",
+})
 
 # Positive metrics-allowlist for the additive-metric path. DEFAULT-EMPTY =>
 # default-DENY: NO metric path auto-signs until the operator-signed charter
@@ -170,7 +195,15 @@ def _is_f_excluded(path: str) -> str | None:
 
 
 def _in_safe_roots(path: str) -> bool:
-    return _norm(path).startswith(SAFE_ROOTS)
+    # In a safe root AND an inert non-executable data/doc type. The extension gate
+    # is what keeps the safe-root tier statically-provable (option c): a .py under
+    # docs/benchmarks/ is executable -> not in-class -> operator_sign.
+    p = _norm(path)
+    if not p.startswith(SAFE_ROOTS):
+        return False
+    dot = p.rfind(".")
+    ext = p[dot:].lower() if dot > p.rfind("/") else ""
+    return ext in NON_EXECUTABLE_EXTS
 
 
 def _on_metrics_allowlist(path: str, metrics_paths: Sequence[str]) -> bool:

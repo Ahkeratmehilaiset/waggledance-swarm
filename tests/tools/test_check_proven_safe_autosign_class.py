@@ -30,90 +30,86 @@ def _in_class(changes, **kw) -> bool:
 
 # --- POSITIVE corpus (in-class -> auto_sign) ---------------------------------
 
-def test_tests_clean_change_in_class():
-    # tests/** is back in-class (operator ruling), guarded by the dangerous-callable
-    # scan; a CLEAN test change (no dangerous callable) still auto-signs.
-    assert _in_class([_ch("tests/test_foo.py",
-                          ["def test_x():", "    assert add(1, 2) == 3"])]) is True
+@pytest.mark.parametrize("path", [
+    "docs/benchmarks/latency.md", "docs/benchmarks/results.json",
+    "docs/benchmarks/runs.csv", "docs/benchmarks/notes.txt",
+])
+def test_docs_benchmarks_data_types_in_class(path):
+    # OPTION (c): the safe-root in-class set is inert non-executable DATA/DOC types.
+    assert _in_class([_ch(path, ["p50 12ms"])]) is True, path
 
+
+# --- OPTION (c): tests/** DROPPED -> ALWAYS operator_sign --------------------
+# operator ruling 2026-06-24 (AFTER the P1-pair merge, supersedes the 12:10
+# keep-tests/-best-effort ruling): tests/ is imported and EXECUTED at pytest
+# collection, so it is the arbitrary-code RCE class. Proving an arbitrary tests/
+# file RCE-free is undecidable; dropping tests/ ELIMINATES the surface rather than
+# denylisting it. tests/** is no longer in-class for ANY content.
+
+@pytest.mark.parametrize("content", [
+    ["def test_x():", "    assert add(1, 2) == 3"],     # perfectly benign test
+    ["os.system('rm -rf /')"],                          # malicious (direct)
+    ["getattr(os, 'system')('x')"],                     # malicious (dynamic dispatch)
+])
+def test_tests_path_always_operator_sign(content):
+    assert _in_class([_ch("tests/test_foo.py", content)]) is False, content
+
+
+# --- OPTION (c): docs/benchmarks INERTNESS gate (rco-1 sharp check) ----------
+# A safe-root path qualifies ONLY if its extension is an inert data/doc type. An
+# EXECUTABLE file under docs/benchmarks/ (.py/.ipynb/.ps1/.yaml...) is the SAME
+# RCE class as tests/ (a benchmark runner / conftest could import it) -> excluded,
+# even with benign content. Positive allowlist (not an executable denylist).
+
+@pytest.mark.parametrize("path", [
+    "docs/benchmarks/runner.py",         # executable Python
+    "docs/benchmarks/bench.ipynb",       # notebook
+    "docs/benchmarks/run.ps1",           # shell
+    "docs/benchmarks/run.sh",
+    "docs/benchmarks/conf.yaml",         # load()-able config -> conservatively excluded
+    "docs/benchmarks/conf.toml",
+    "docs/benchmarks/setup.cfg",
+    "docs/benchmarks/noext",             # no extension
+])
+def test_docs_benchmarks_executable_ext_operator_sign(path):
+    assert _in_class([_ch(path, ["# totally benign content"])]) is False, path
+
+
+# --- (G) DEFENSE-IN-DEPTH on the remaining in-class path (docs/benchmarks) ----
+# With tests/ dropped the in-class set is statically inert, so (G) is NO LONGER
+# the load-bearing control — but it is RETAINED as belt-and-suspenders. These
+# preserve the #1384 dynamic-dispatch/reflection regression coverage, now proving
+# (G) still screens dangerous content on a REMAINING in-class path (a .md whose
+# added lines parse as / substring-match dangerous code).
 
 @pytest.mark.parametrize("evil", [
     "os.system('rm -rf /')",                          # direct dotted
     "import os as o\no.system('x')",                  # alias
     "from os import system\nsystem('x')",             # from-import bare
-    "f = os.system\nf('x')",                          # reassignment (attr reference)
-    "import subprocess as sp\nsp.run(['x'])",         # alias on pure-dangerous module
+    "f = os.system\nf('x')",                          # reassignment
+    "import subprocess as sp\nsp.run(['x'])",         # alias pure-dangerous module
     "from subprocess import run\nrun(['x'])",         # from-import dangerous module
     "getattr(os, 'sys' + 'tem')('x')",                # dynamic getattr (concat)
-    "getattr(os, 'system')('x')",                     # LITERAL getattr -> os.system
+    "getattr(os, 'system')('x')",                     # literal getattr -> os.system
     "import subprocess as sp\ngetattr(sp, 'run')(['x'])",  # alias + literal getattr
-    "setattr(target, attrname, value)",               # dynamic setattr (non-literal attr)
+    "setattr(target, attrname, value)",               # dynamic setattr
     "__import__('os').system('x')",                   # import-then-call
-    "eval('1+1')",
-    "exec(code)",
-    "importlib.import_module('os')",
-    "pickle.loads(blob)",
+    "eval('1+1')", "exec(code)",
+    "importlib.import_module('os')", "pickle.loads(blob)",
+    "vars()['os'].system('x')", "globals()['os'].system('x')",
+    "import operator\noperator.attrgetter('system')(os)('x')",
+    "__builtins__['eval']('1')", "locals()['os'].system('x')",
+    "os.__dict__['system']('x')", "breakpoint()",
+    "import builtins\nbuiltins.getattr(os, 'system')('x')",
+    "import builtins\nbuiltins.eval('1')",
+    "os.__getattribute__('system')('x')",
+    "().__class__.__bases__[0].__subclasses__()[0]",
+    "func.__globals__['os'].system('x')", "x.__class__('evil')",
+    "ns['__globals__']['os'].system('x')",
 ])
-def test_tests_dangerous_callable_blocks_auto_sign(evil):
-    # operator ruling: tests/ stays in-class but a dangerous callable (incl. alias /
-    # from-import / reassignment / dynamic-getattr evasions) -> operator_sign.
-    ch = _ch("tests/test_evil.py", evil.split("\n"))
+def test_g_defense_in_depth_blocks_on_safe_root(evil):
+    ch = _ch("docs/benchmarks/evil.md", evil.split("\n"))
     assert _in_class([ch]) is False, evil
-
-
-# --- The SIX DEMONSTRATED dynamic-dispatch bypasses (operator keep-tests ruling) -
-# rco-1/lead/operator 2026-06-24: tests/ stays in-class, but the scan MUST close
-# the six bypasses that resolve a dangerous callee dynamically (a scan catching
-# os.system but not getattr(os,"system") is BROKEN, not "acceptably leaky"). Each
-# of these must fall to operator_sign. Deeper gadget chains (__subclasses__
-# traversal) are an ACCEPTED documented residual backstopped by build+RCO+CI.
-
-@pytest.mark.parametrize("evil", [
-    "getattr(os, 'system')('x')",                     # 1: literal getattr -> os.system
-    "vars()['os'].system('x')",                       # 2: vars() namespace dict
-    "globals()['os'].system('x')",                    # 3: globals() namespace dict
-    "import operator\noperator.attrgetter('system')(os)('x')",  # 4: operator.attrgetter
-    "__builtins__['eval']('1')",                       # 5: __builtins__ namespace dict
-    "f = getattr\nf(os, 'system')('x')",              # 6: reassignment of escape-hatch
-    "locals()['os'].system('x')",                     # extra: locals() namespace dict
-    "setattr(mod, 'go', os.system)",                  # extra: setattr escape-hatch
-    "x = __import__('os')",                           # extra: __import__ as bare name
-])
-def test_escape_hatch_dynamic_dispatch_blocks(evil):
-    ch = _ch("tests/test_evil.py", evil.split("\n"))
-    assert _in_class([ch]) is False, evil
-
-
-# --- FINAL best-effort sweep: 3 more evasions tools found on @b5cf0d30 ----------
-# codex-tools-1 corpus 2026-06-24: after the 6 demonstrated were closed, three
-# more easy real evasions still auto-signed. The swarm ruling: close these, add
-# the gadget-dunder chain, THEN STOP the whack-a-mole and rely on the honest doc +
-# build+dual-RCO+CI backstop. Anything past this (os.__dict__.get(), novel
-# reflection, file-write side effects) is the ACCEPTED residual.
-
-@pytest.mark.parametrize("evil", [
-    "os.__dict__['system']('x')",                      # a: module __dict__ subscript
-    "breakpoint()",                                    # b: PYTHONBREAKPOINT arbitrary code
-    "import builtins\nbuiltins.getattr(os, 'system')('x')",  # c: escape-hatch via builtins.
-    "import builtins\nbuiltins.eval('1')",             # rco-2 #4: builtins.eval dotted
-    "os.__getattribute__('system')('x')",              # rco-2 #5: __getattribute__ reflection
-    "().__class__.__bases__[0].__subclasses__()[0]",   # gadget-chain traversal
-    "func.__globals__['os'].system('x')",              # __globals__ reflection
-    "x.__class__('evil')",                             # __class__ now flagged (rco-2)
-    "ns['__globals__']['os'].system('x')",             # dunder via subscript key
-])
-def test_final_sweep_reflection_evasions_block(evil):
-    ch = _ch("tests/test_evil.py", evil.split("\n"))
-    assert _in_class([ch]) is False, evil
-
-
-def test_class_attr_now_flagged_per_rco2():
-    # rco-2 2026-06-24 finite-fixlist (B): __class__ is INCLUDED in the reflection
-    # dunder set — a test reading x.__class__ now falls to operator_sign. The
-    # operator accepted this false-positive cost to close the whole reflection
-    # class in one rule (closing the gadget chain at __class__, not only deeper).
-    assert _in_class([_ch("tests/test_x.py",
-                          ["assert x.__class__ is Foo"])]) is False
 
 
 def test_docs_runs_dropped_not_in_class():

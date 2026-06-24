@@ -7,6 +7,17 @@ in this spec loosens any gate until the separate gate-wiring PR (#3) is
 operator-signed.** Authoring this spec (PR #1) and the dormant checker (PR #2)
 changes no runtime behavior.
 
+> **OPTION (c) amendment (2026-06-24, after the original P1-pair merge).** The
+> operator narrowed the in-class set: **`tests/**` is DROPPED entirely** and the
+> class is now **only the statically-provable set** (additive metric defs +
+> *inert, non-executable* `docs/benchmarks/**` data/doc files). This SUPERSEDES
+> the earlier "keep tests/ + best-effort dangerous-callable scan" ruling.
+> Rationale: proving an arbitrary `tests/**` file RCE-free is undecidable and a
+> dangerous-callable denylist is non-exhaustive — dropping `tests/` *eliminates*
+> the RCE auto-sign surface instead of denylisting it, so "proven-safe" becomes
+> **literally accurate** with no best-effort/undecidable tier. This narrowing is
+> strictly safer; the operator re-signs the narrowed invariant.
+
 RFC: WD Bridge Throughput, Resilience & Pool-Decorrelation, item **P1**
 ("asymmetric operator-reduction: per-policy sign for a proven-safe class").
 
@@ -20,18 +31,22 @@ entire existing gate**: full build consensus (lead + tools), recognized-RCO
 apply, unchanged. The operator signs the **invariant below once**; the gate then
 enforces it fail-closed per-PR.
 
-**Two assurance tiers (be precise about "proven-safe"):**
-- **Statically-proven tier — additive metric definitions** on the positive
-  `METRICS_PATHS` allowlist. Here "proven-safe" is literal: AST verifies the hunk
-  is exclusively `NAME = Counter|Gauge|Histogram|Summary(<all-inert-literal args>)`,
-  which is mechanically decidable and cannot execute arbitrary code.
-- **Best-effort-screened-and-fully-reviewed tier — `tests/**` and
-  `docs/benchmarks/**`.** Here "proven-safe" does **NOT** mean statically proven
-  RCE-free (that is undecidable for arbitrary `tests/**`). It means: **screened**
-  by the predicate-(G) best-effort dangerous-callable scan **AND still subject to
-  the full build + dual-RCO + CI review** that P1 leaves entirely in place. The
-  signature waiver here is "the operator pre-trusts build+RCO+CI for this screened
-  class", not "a machine proved this file is harmless".
+**One assurance tier — "proven-safe" is now literally accurate (option c):**
+The in-class set is **exclusively statically-provable**, two non-executable kinds:
+- **Additive metric definitions** on the positive `METRICS_PATHS` allowlist. AST
+  verifies the hunk is exclusively
+  `NAME = Counter|Gauge|Histogram|Summary(<all-inert-literal args>)`, which is
+  mechanically decidable and cannot execute arbitrary code.
+- **Inert `docs/benchmarks/**` data/doc files** whose extension is on a positive
+  non-executable allowlist (`.md/.rst/.txt/.json/.csv/.tsv`). These are never
+  imported or executed (a `.py`/`.ipynb`/`.ps1`/`.yaml` under `docs/benchmarks/`
+  is **excluded** → operator-sign, because a benchmark runner / conftest could
+  execute it — same RCE class as `tests/`).
+
+There is **no best-effort / undecidable tier**: `tests/**` is dropped. The
+predicate-(G) dangerous-callable scan is retained only as **optional
+defense-in-depth** on the remaining paths; it is no longer the load-bearing RCE
+control, because the in-class surface is already statically inert.
 
 ## 1. What P1 changes — and what it does NOT
 
@@ -50,9 +65,9 @@ signature, substituting the operator's **one-time signature on this invariant**.
 - Silence still BLOCKS; absence of a required signal never default-allows.
 
 P1 is **strictly additive scrutiny that the operator pre-authorizes** for a
-narrow class — statically harmless for the metric tier, screened-and-fully-reviewed
-for the tests/docs tier. It never removes build, RCO, CI, or charter checks; the
-signature waiver is the *only* thing it removes.
+narrow, **statically-provable** class (additive metrics + inert benchmark
+data/docs). It never removes build, RCO, CI, or charter checks; the signature
+waiver is the *only* thing it removes.
 
 ## 2. In-class predicates (the checker must PROVE ALL, fail-closed)
 
@@ -60,23 +75,26 @@ A PR is IN-CLASS only if **every** predicate A–G holds. Any failure, any
 exclusion, any parse error, or any ambiguity → **NOT in class** → per-PR operator
 signature required (the pre-#1 behavior).
 
-- **(A) Paths.** Every changed path is strictly within `tests/**` or
-  `docs/benchmarks/**`, **or** is a **proven-additive metric definition** in a
-  file on a **narrow positive metrics-allowlist** (`METRICS_PATHS`, e.g.
-  `waggledance/**/metrics.py` / a designated metrics dir). *(Scope notes:
-  `tests/**` STAYS in-class (operator ruling 2026-06-24) but is SCREENED by
-  predicate (G) — pytest imports test modules at collection, so a tests/ file
-  with malicious module-level code would execute in CI; (G) is a best-effort
-  screen that catches the known dangerous-callable and dynamic-dispatch forms but
-  does NOT prove the file harmless (see (G) truthful-scope note). The real
-  backstop for the residual is the full build + dual-RCO + CI review, which P1
-  retains; the operator accepted both the false-positive cost (a legit test using
-  a flagged callable now needs the sign) and the residual. `docs/runs/**` is
-  dropped (off the charter
-  allowlist, low-value). The metric path is **default-DENY**: it admits
-  ONLY files explicitly on `METRICS_PATHS`, never "any non-denylisted path" — a
-  denylist-gap on a sign-waiver path would fail open. The metric definition is
-  **AST-verified**: the change must parse as module-level
+- **(A) Paths (option c — statically-provable set only).** Every changed path is
+  **either** (1) an **inert `docs/benchmarks/**` data/doc file** whose extension is
+  on a **positive non-executable allowlist** (`.md/.rst/.txt/.json/.csv/.tsv`),
+  **or** (2) a **proven-additive metric definition** in a file on a **narrow
+  positive metrics-allowlist** (`METRICS_PATHS`, e.g. `waggledance/**/metrics.py`).
+  *(Scope notes: **`tests/**` is DROPPED** (operator option-c ruling 2026-06-24) —
+  pytest imports test modules at collection, so a `tests/` file with malicious
+  module-level code executes in CI; proving an arbitrary test RCE-free is
+  undecidable, so `tests/**` is excluded entirely → always operator-sign, rather
+  than relying on a non-exhaustive dangerous-callable denylist. **`docs/benchmarks`
+  is restricted to non-executable extensions** (rco-1 sharp check 2026-06-24): a
+  `.py`/`.ipynb`/`.ps1`/`.sh`/`.yaml`/`.toml`/extension-less file under
+  `docs/benchmarks/` is the SAME arbitrary-code-RCE class as `tests/` (a benchmark
+  runner / conftest could import it) and is therefore **excluded** → operator-sign.
+  The allowlist is positive (inert data/doc types only), not an executable
+  denylist. `docs/runs/**` stays dropped (off charter allowlist, low-value).* The
+  metric path is **default-DENY**: it admits ONLY files explicitly on
+  `METRICS_PATHS`, never "any non-denylisted path" — a denylist-gap on a
+  sign-waiver path would fail open. The metric definition is **AST-verified**: the
+  change must parse as module-level
   `NAME = Counter|Gauge|Histogram|Summary(<all-literal args>)` assignments only —
   any nested call/name/attribute in the args, any other statement, or an
   unparseable hunk is rejected. Adding `METRICS_PATHS` to the charter is itself a
@@ -96,31 +114,27 @@ signature required (the pre-#1 behavior).
   `requirements*` / lockfiles; `AGENTS.md` / `CLAUDE.md` / tracked master-prompts;
   any Rule-10 surface; anything `evaluate_paths` denylists or
   `evaluate_diff_content` flags.
-- **(G) Best-effort dangerous-callable screen on ANY changed line, ANY path**
-  (incl. `tests/**`, `docs/benchmarks/**`, metric paths). Any match → operator
-  sign. Detected by **AST** (resolving import aliases) with a substring fallback
-  for non-Python/unparseable hunks:
+- **(G) OPTIONAL defense-in-depth dangerous-callable screen on ANY changed line.**
+  Any match → operator sign. Detected by **AST** (resolving import aliases) with a
+  substring fallback for non-Python/unparseable hunks:
   `eval`/`exec`/`compile`/`__import__`; `os.system`/`os.popen`/`os.exec*`/
   `os.spawn*`/`os.remove|unlink|rename|replace`; `subprocess.*`/`ctypes.*`/
   `importlib.*`; `pickle`/`marshal` load(s); `shutil.rmtree`; a from-import of a
   dangerous module/name; dynamic-dispatch **escape-hatch** builtins referenced
   anywhere (`getattr`/`setattr`/`delattr`/`vars`/`globals`/`locals`/`__import__`/
-  `eval`/`exec`/`compile`/`__builtins__`); and `operator.attrgetter`/
-  `methodcaller`. Covers alias (`import os as o; o.system`), from-import
-  (`from os import system; system()`), reassignment (`f = os.system; f()`),
-  `getattr(os,"system")`, `vars()["os"].system`, `globals()["os"].system`,
-  `__builtins__["eval"]`, `operator.attrgetter("system")(os)`, and
-  import-then-call evasions.
-  > **Truthful scope (rco-1 2026-06-24):** (G) is a **best-effort screen, not a
-  > proof**. Statically proving an arbitrary `tests/**` file is RCE-free is
-  > **undecidable**, and a callable denylist is **non-exhaustive** by construction
-  > — it **substantially reduces but does NOT eliminate** the tests/-content risk.
-  > Documented, accepted residuals (e.g. `().__class__.__bases__[0].__subclasses__()`
-  > gadget traversal, novel reflection, file-write side effects) are **not** caught
-  > by (G); they are backstopped by the **full build + dual-RCO + CI** gate that
-  > P1 leaves entirely in place (P1 waives only the per-PR operator signature). The
-  > operator accepted both the false-positive cost (a legit test using a flagged
-  > callable now needs the sign) and this residual.
+  `eval`/`exec`/`compile`/`__builtins__`/`breakpoint`); `builtins.<hatch>` dotted;
+  reflection / gadget-traversal dunders (`__dict__`/`__class__`/`__bases__`/
+  `__subclasses__`/`__globals__`/…); and `operator.attrgetter`/`methodcaller`.
+  > **Role under option (c):** (G) is **NO LONGER the load-bearing RCE control** —
+  > with `tests/**` dropped and `docs/benchmarks` restricted to inert extensions,
+  > the in-class surface is already statically inert, so there is no executable
+  > content for (G) to be the primary guard of. (G) is retained purely as
+  > **belt-and-suspenders** (e.g. a dangerous-looking string in a benchmark `.md`).
+  > Its known non-exhaustiveness is therefore **no longer a soundness concern** for
+  > the auto-sign class: a (G) miss cannot admit executable code, because predicate
+  > (A) already excludes every executable path. The prior "best-effort, undecidable
+  > tests/ residual" framing is **obsolete** — that residual was removed with
+  > `tests/`.
 
 ### Fail-closed rule
 > Any path outside (A); any (C)/(D)/(E)/(G) pattern; any (F) exclusion; any parse

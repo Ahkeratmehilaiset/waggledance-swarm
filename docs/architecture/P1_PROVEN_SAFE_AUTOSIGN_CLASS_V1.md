@@ -45,17 +45,16 @@ A PR is IN-CLASS only if **every** predicate A–F holds. Any failure, any
 exclusion, any parse error, or any ambiguity → **NOT in class** → per-PR operator
 signature required (the pre-#1 behavior).
 
-- **(A) Paths.** Every changed path is strictly within `docs/benchmarks/**`
-  (pure inert docs), **or** is a **proven-additive metric definition** in a
+- **(A) Paths.** Every changed path is strictly within `tests/**` or
+  `docs/benchmarks/**`, **or** is a **proven-additive metric definition** in a
   file on a **narrow positive metrics-allowlist** (`METRICS_PATHS`, e.g.
   `waggledance/**/metrics.py` / a designated metrics dir). *(Scope notes:
-  `tests/**` is **dropped** (2026-06-24, tools/rco-1): pytest imports test modules
-  at collection, so module-level code in a "test" file executes in CI — admitting
-  tests/ by path would be RCE via the safe-root; tests/ now requires operator-sign.
-  `docs/runs/**` is dropped (off the charter allowlist, low-value). A
-  **dangerous-callable scan** (os.system/subprocess/eval/exec/__import__/…) over
-  all changed lines fails any change to operator-sign as defense-in-depth. The
-  metric path is **default-DENY**: it admits
+  `tests/**` STAYS in-class (operator ruling 2026-06-24) but is GUARDED by
+  predicate (G) — pytest imports test modules at collection, so an unguarded
+  tests/ file with module-level code would be RCE in CI; (G) blocks that and the
+  operator accepted the false-positive cost (a legit test using a dangerous
+  callable now needs the sign). `docs/runs/**` is dropped (off the charter
+  allowlist, low-value). The metric path is **default-DENY**: it admits
   ONLY files explicitly on `METRICS_PATHS`, never "any non-denylisted path" — a
   denylist-gap on a sign-waiver path would fail open. The metric definition is
   **AST-verified**: the change must parse as module-level
@@ -78,9 +77,20 @@ signature required (the pre-#1 behavior).
   `requirements*` / lockfiles; `AGENTS.md` / `CLAUDE.md` / tracked master-prompts;
   any Rule-10 surface; anything `evaluate_paths` denylists or
   `evaluate_diff_content` flags.
+- **(G) No dangerous-callable invocation on ANY changed line, ANY path** (incl.
+  `tests/**`, `docs/benchmarks/**`, metric paths). Detected by **AST** (resolving
+  import aliases) with a substring fallback for non-Python/unparseable hunks:
+  `eval`/`exec`/`compile`/`__import__`; `os.system`/`os.popen`/`os.exec*`/
+  `os.spawn*`/`os.remove|unlink|rename|replace`; `subprocess.*`/`ctypes.*`/
+  `importlib.*`; `pickle`/`marshal` load(s); `shutil.rmtree`; a from-import of a
+  dangerous module/name; and dynamic `getattr`/`setattr`. Covers alias
+  (`import os as o; o.system`), from-import (`from os import system; system()`),
+  reassignment (`f = os.system; f()`), dynamic-getattr, and import-then-call
+  evasions. This is what makes `tests/**` (imported at pytest collection) safe to
+  auto-sign; the operator accepted the false-positive cost.
 
 ### Fail-closed rule
-> Any path outside (A); any (C)/(D)/(E) pattern; any (F) exclusion; any parse
+> Any path outside (A); any (C)/(D)/(E)/(G) pattern; any (F) exclusion; any parse
 > error or ambiguity → the PR is **NOT in class** → per-PR operator signature is
 > required. The checker **never** default-allows on uncertainty.
 

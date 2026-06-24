@@ -45,9 +45,20 @@ A PR is IN-CLASS only if **every** predicate A–F holds. Any failure, any
 exclusion, any parse error, or any ambiguity → **NOT in class** → per-PR operator
 signature required (the pre-#1 behavior).
 
-- **(A) Paths.** Every changed path is strictly within `tests/**`,
-  `docs/runs/**`, or `docs/benchmarks/**`, **or** is an **additive metrics
-  counter** (a new symbol only; no edit to an existing metric or default line).
+- **(A) Paths.** Every changed path is strictly within `tests/**` or
+  `docs/benchmarks/**`, **or** is a **proven-additive metric definition** in a
+  file on a **narrow positive metrics-allowlist** (`METRICS_PATHS`, e.g.
+  `waggledance/**/metrics.py` / a designated metrics dir). *(Scope notes,
+  operator option (b) 2026-06-24: `docs/runs/**` is dropped — it is off the
+  charter allowlist and low-value. The metric path is **default-DENY**: it admits
+  ONLY files explicitly on `METRICS_PATHS`, never "any non-denylisted path" — a
+  denylist-gap on a sign-waiver path would fail open. The metric definition is
+  **AST-verified**: the change must parse as module-level
+  `NAME = Counter|Gauge|Histogram|Summary(<all-literal args>)` assignments only —
+  any nested call/name/attribute in the args, any other statement, or an
+  unparseable hunk is rejected. Adding `METRICS_PATHS` to the charter is itself a
+  **charter carve-out = operator-signed + dual-RCO-fenced + P4-gated for
+  activation**, delivered as a separate PR; until then no metric path auto-signs.)*
 - **(B) Effect.** Read-only **or** default-OFF: no change to a default-emission
   value, and no new throwable code on a live hot path.
 - **(C) No `claim_safe` flip.** The change must not flip any `claim_safe` (or

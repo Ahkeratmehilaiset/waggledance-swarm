@@ -30,8 +30,10 @@ def _in_class(changes, **kw) -> bool:
 
 # --- POSITIVE corpus (in-class -> auto_sign) ---------------------------------
 
-def test_tests_change_in_class():
-    assert _in_class([_ch("tests/test_foo.py", ["def test_x():", "    assert True"])])
+def test_tests_dropped_not_in_class():
+    # tests/** dropped from auto-sign: pytest imports test modules at collection, so
+    # module-level code in a test file executes in CI = RCE via safe-root (tools #1384).
+    assert _in_class([_ch("tests/test_foo.py", ["def test_x():", "    assert True"])]) is False
 
 
 def test_docs_runs_dropped_not_in_class():
@@ -51,7 +53,7 @@ def test_additive_metric_definition_in_class_when_allowlisted():
 
 
 def test_multi_safe_files_in_class():
-    assert _in_class([_ch("tests/test_a.py", ["x"]),
+    assert _in_class([_ch("docs/benchmarks/a.md", ["x"]),
                       _ch("docs/benchmarks/r.md", ["y"])])
 
 
@@ -174,24 +176,35 @@ def test_metric_def_in_class_only_on_allowlisted_path():
 
 def test_charter_none_fails_closed_even_for_safe_root():
     # With require_charter=True (the production default) and no charter, even a
-    # tests/ change must fall to operator_sign — the charter is mandatory for F.
-    r = classify_change([_ch("tests/test_x.py", ["def test_q(): assert 1"])])
+    # safe-root (docs/benchmarks/) change must fall to operator_sign — charter is
+    # mandatory for F.
+    r = classify_change([_ch("docs/benchmarks/x.md", ["p50 12ms"])])
     assert r["in_class"] is False
     assert "charter" in r["reason"]
 
 
-# --- NEGATIVE corpus: C/D/E (risky tokens even inside safe roots) ------------
+# --- NEGATIVE corpus: C/D/E + dangerous callables (even inside a safe root) ---
 
-def test_c_claim_safe_flip_blocked_even_in_tests():
-    assert _in_class([_ch("tests/test_x.py", ["    claim_safe = True"])]) is False
+def test_c_claim_safe_flip_blocked_even_in_safe_root():
+    assert _in_class([_ch("docs/benchmarks/x.md", ["    claim_safe = True"])]) is False
 
 
 def test_d_authority_flag_blocked():
-    assert _in_class([_ch("tests/test_x.py", ["    gate_skip = True"])]) is False
+    assert _in_class([_ch("docs/benchmarks/x.md", ["    gate_skip = True"])]) is False
 
 
 def test_e_control_plane_token_blocked():
-    assert _in_class([_ch("tests/test_x.py", ["    build_consensus('lead')"])]) is False
+    assert _in_class([_ch("docs/benchmarks/x.md", ["    build_consensus('lead')"])]) is False
+
+
+@pytest.mark.parametrize("danger", [
+    "os.system('rm -rf /')", "subprocess.run(['x'])",
+    "eval('1')", "exec(code)", "__import__('os')", "shutil.rmtree('/data')",
+])
+def test_dangerous_callable_blocked_even_in_safe_root(danger):
+    # Defense-in-depth: a dangerous callable in ANY changed line -> operator_sign,
+    # even on a safe-root path (the RCE class behind dropping tests/).
+    assert _in_class([_ch("docs/benchmarks/x.md", [danger])]) is False, danger
 
 
 # --- charter integration (fail-closed) ---------------------------------------
@@ -224,7 +237,7 @@ def test_charter_supplied_safe_change_in_class():
     except Exception:
         return
     r = classify_change(
-        [_ch("tests/tools/test_demo.py", ["def test_z():", "    assert 1"])],
-        charter=charter, diff_text="+def test_z():\n+    assert 1",
+        [_ch("docs/benchmarks/demo.md", ["p50 12ms", "p99 40ms"])],
+        charter=charter, diff_text="+p50 12ms\n+p99 40ms",
     )
     assert r["in_class"] is True

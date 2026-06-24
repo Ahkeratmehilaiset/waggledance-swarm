@@ -38,8 +38,11 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-# docs/runs/** dropped (off the charter allowlist, low-value; spec SS2.A option-b).
-SAFE_ROOTS = ("tests/", "docs/benchmarks/")
+# Only PURE-INERT doc roots auto-sign by path. tests/** is DROPPED: pytest imports
+# test modules at collection, so module-level code in a "test" file executes in CI
+# -> a malicious test PR would auto-sign AND run arbitrary code (RCE via safe-root;
+# tools/rco-1 #1384). docs/runs/** also dropped (off charter allowlist, low-value).
+SAFE_ROOTS = ("docs/benchmarks/",)
 
 # Positive metrics-allowlist for the additive-metric path. DEFAULT-EMPTY =>
 # default-DENY: NO metric path auto-signs until the operator-signed charter
@@ -73,6 +76,13 @@ AUTHORITY_FLAGS = ("gate_skip", "solver_call", "receipt_required",
                    "clinical_decision", "consensus_grade", "claim_safe")
 CONTROL_PLANE_TOKENS = ("def route", "routing", "control_plane", "dispatch(",
                         "merge(", "build_consensus", "rco_pass", "operator_sign")
+
+# Dangerous callables: any of these in ANY changed line -> operator_sign
+# (defense-in-depth against arbitrary code execution on a safe-root/metrics path).
+DANGEROUS_CALLABLES = ("os.system", "subprocess", "eval(", "exec(", "__import__",
+                       "compile(", ".popen", "popen(", "importlib", "pickle.load",
+                       "marshal.load", "ctypes", "shutil.rmtree", "os.remove",
+                       "os.unlink", "os.rename", "setattr(", "globals(", "locals(")
 
 # Metric constructors permitted for the additive-metric class (verified by AST,
 # not regex — a regex cannot prove the constructor args are inert: a nested call
@@ -258,6 +268,9 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
     hit = _scan_tokens(changes, CONTROL_PLANE_TOKENS)
     if hit:
         return out_of_class(f"E: control-plane/runtime token touched ('{hit}')")
+    hit = _scan_tokens(changes, DANGEROUS_CALLABLES)
+    if hit:
+        return out_of_class(f"dangerous callable touched ('{hit}') -> operator sign")
 
     return {
         "in_class": True,

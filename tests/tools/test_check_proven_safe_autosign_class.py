@@ -13,10 +13,16 @@ def _ch(path, added=None, removed=None) -> dict:
     return {"path": path, "added": added or [], "removed": removed or []}
 
 
+# Test-only allow-all metrics-allowlist: isolates the AST/B metric logic from the
+# default-DENY METRICS_PATHS gate (which is exercised by its own tests below).
+TP = ("**",)
+
+
 def _in_class(changes, **kw) -> bool:
-    # A-F-logic tests isolate the predicates (require_charter=False); the
-    # charter-required fail-closed behavior is tested separately below.
+    # A-F-logic tests isolate the predicates (require_charter=False, metrics
+    # allow-all); the charter-required + default-deny behaviors are tested below.
     kw.setdefault("require_charter", False)
+    kw.setdefault("metrics_paths", TP)
     return classify_change(changes, **kw)["in_class"]
 
 
@@ -26,23 +32,25 @@ def test_tests_change_in_class():
     assert _in_class([_ch("tests/test_foo.py", ["def test_x():", "    assert True"])])
 
 
-def test_docs_runs_in_class():
-    assert _in_class([_ch("docs/runs/2026-06-24.md", ["# run log", "all green"])])
+def test_docs_runs_dropped_not_in_class():
+    # docs/runs/** was dropped from the safe set (spec SS2.A option-b).
+    assert _in_class([_ch("docs/runs/2026-06-24.md", ["# run log", "all green"])]) is False
 
 
 def test_docs_benchmarks_in_class():
     assert _in_class([_ch("docs/benchmarks/latency.md", ["p50 12ms"])])
 
 
-def test_additive_metric_definition_in_class():
+def test_additive_metric_definition_in_class_when_allowlisted():
     ch = _ch("waggledance/adapters/http/routes/metrics.py",
              ["FOO_TOTAL = Counter('foo_total', 'desc')"])
-    assert _is_additive_metrics_counter(ch) is True
-    assert _in_class([ch])
+    assert _is_additive_metrics_counter(ch, TP) is True
+    assert _in_class([ch])  # _in_class uses TP (allow-all) by default
 
 
 def test_multi_safe_files_in_class():
-    assert _in_class([_ch("tests/test_a.py", ["x"]), _ch("docs/runs/r.md", ["y"])])
+    assert _in_class([_ch("tests/test_a.py", ["x"]),
+                      _ch("docs/benchmarks/r.md", ["y"])])
 
 
 # --- NEGATIVE corpus: empty / missing ---------------------------------------
@@ -93,13 +101,13 @@ def test_a_random_source_file_not_in_class():
 def test_b_metric_file_with_removed_line_not_additive():
     ch = _ch("waggledance/x/metrics.py", added=["FOO = Counter('f','d')"],
              removed=["BAR = Counter('b','d')"])
-    assert _is_additive_metrics_counter(ch) is False
+    assert _is_additive_metrics_counter(ch, TP) is False
     assert _in_class([ch]) is False
 
 
 def test_b_metric_increment_is_hotpath_not_in_class():
     ch = _ch("waggledance/x/metrics.py", ["FOO_TOTAL.labels(route='x').inc()"])
-    assert _is_additive_metrics_counter(ch) is False
+    assert _is_additive_metrics_counter(ch, TP) is False
     assert _in_class([ch]) is False
 
 
@@ -131,7 +139,7 @@ def test_legit_single_line_metric_def_still_in_class():
                "M = Counter('m', 'd', labelnames=['route'])",
                "M = Histogram('h','d')  # latency",
                "M = Counter(\n    'm',\n    'd',\n)"]:  # multi-line literal def OK via AST
-        assert _is_additive_metrics_counter(_ch("waggledance/x/metrics.py", ok.split("\n"))), ok
+        assert _is_additive_metrics_counter(_ch("waggledance/x/metrics.py", ok.split("\n")), TP), ok
 
 
 @pytest.mark.parametrize("evil", [
@@ -144,10 +152,28 @@ def test_legit_single_line_metric_def_still_in_class():
 ])
 def test_metric_nested_call_in_args_not_in_class(evil):
     # rco-1/lead #1384: a nested CALL inside the constructor args must NOT qualify
-    # (AST verifies every arg is an inert literal).
+    # (AST verifies every arg is an inert literal) — even on an allowlisted path.
     ch = _ch("tools/foo_metrics.py", [evil])
-    assert _is_additive_metrics_counter(ch) is False, evil
+    assert _is_additive_metrics_counter(ch, TP) is False, evil
     assert _in_class([ch]) is False, evil
+
+
+# --- METRICS_PATHS positive allowlist: default-DENY (rco-1/lead carve-out form) -
+
+def test_metric_def_default_deny_no_allowlist():
+    # With the production default (empty METRICS_PATHS), a legit metric def on ANY
+    # path does NOT auto-sign — nothing qualifies until the operator-signed carve-out.
+    ch = _ch("waggledance/x/metrics.py", ["M = Counter('m','d')"])
+    assert _is_additive_metrics_counter(ch) is False           # default empty
+    assert classify_change([ch], require_charter=False)["in_class"] is False
+
+
+def test_metric_def_in_class_only_on_allowlisted_path():
+    ch = _ch("waggledance/observability/metrics.py", ["M = Counter('m','d')"])
+    allow = ("waggledance/observability/metrics.py",)
+    assert _is_additive_metrics_counter(ch, allow) is True       # explicitly allowlisted
+    other = _ch("waggledance/core/router.py", ["M = Counter('m','d')"])
+    assert _is_additive_metrics_counter(other, allow) is False   # not on the allowlist
 
 
 # --- FAIL-CLOSED regression: charter required (rco-1 #1384) -------------------

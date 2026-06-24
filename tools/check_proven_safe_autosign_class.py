@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import json
 import re
 import subprocess
@@ -37,7 +38,15 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-SAFE_ROOTS = ("tests/", "docs/runs/", "docs/benchmarks/")
+# docs/runs/** dropped (off the charter allowlist, low-value; spec SS2.A option-b).
+SAFE_ROOTS = ("tests/", "docs/benchmarks/")
+
+# Positive metrics-allowlist for the additive-metric path. DEFAULT-EMPTY =>
+# default-DENY: NO metric path auto-signs until the operator-signed charter
+# carve-out PR populates this (e.g. "waggledance/**/metrics.py") alongside the
+# matching charter allowlist entry. Per spec SS2.A + rco-1/lead steer: never
+# "any non-denylisted path" (a denylist-gap on a sign-waiver path fails open).
+METRICS_PATHS: tuple[str, ...] = ()
 
 # F — explicit P1 hard exclusions (in addition to the charter denylist).
 F_EXCLUDE_SUBSTRINGS = (
@@ -94,6 +103,16 @@ def _in_safe_roots(path: str) -> bool:
     return _norm(path).startswith(SAFE_ROOTS)
 
 
+def _on_metrics_allowlist(path: str, metrics_paths: Sequence[str]) -> bool:
+    """True iff path matches an explicit positive metrics-allowlist pattern.
+
+    Default-DENY: with the default empty METRICS_PATHS, this is always False, so
+    no metric path can auto-sign until the operator-signed carve-out populates it.
+    """
+    p = _norm(path)
+    return any(fnmatch.fnmatch(p, pat) for pat in metrics_paths)
+
+
 def _is_inert_literal(node: ast.AST) -> bool:
     """True iff an AST node is a pure literal (no call/name/attr/comprehension)."""
     if isinstance(node, ast.Constant):
@@ -130,7 +149,8 @@ def _is_metric_def_assign(stmt: ast.AST) -> bool:
     return True
 
 
-def _is_additive_metrics_counter(change: dict) -> bool:
+def _is_additive_metrics_counter(change: dict,
+                                 metrics_paths: Sequence[str] = METRICS_PATHS) -> bool:
     """A change qualifies ONLY as a pure-additive new metric DEFINITION (AST-verified).
 
     Fail-closed: zero removed lines; the added lines must parse as a module whose
@@ -142,6 +162,8 @@ def _is_additive_metrics_counter(change: dict) -> bool:
     a regex cannot prove the constructor args are inert (rco-1/rco-2/lead/tools
     #1384: three regex/heuristic fail-opens of the admit-arbitrary-code class).
     """
+    if not _on_metrics_allowlist(change.get("path", ""), metrics_paths):
+        return False  # default-DENY: only files on the positive METRICS_PATHS qualify
     if change.get("removed"):
         return False  # any removal/edit of an existing line -> not purely additive
     added = change.get("added") or []
@@ -174,7 +196,8 @@ def _scan_tokens(changes: Sequence[dict], tokens: Sequence[str]) -> str | None:
 
 
 def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "",
-                    require_charter: bool = True) -> dict:
+                    require_charter: bool = True,
+                    metrics_paths: Sequence[str] = METRICS_PATHS) -> dict:
     """Pure classifier. ``changes``: [{path, added[], removed[]}]. Fail-closed.
 
     Returns {in_class: bool, decision: 'auto_sign'|'operator_sign', reason}.
@@ -217,7 +240,7 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
             return out_of_class(f"{excl}: {path}")
         if _in_safe_roots(path):
             continue
-        if _is_additive_metrics_counter(ch):
+        if _is_additive_metrics_counter(ch, metrics_paths):
             continue
         return out_of_class(f"A: path not in proven-safe class: {path}")
 

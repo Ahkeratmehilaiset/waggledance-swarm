@@ -12,6 +12,14 @@ window instead of bursting.
 Pure + deterministic over its inputs (no clock, no I/O in the core); wiring it
 to a live usage feed is a separate step. ``now`` is passed in.
 
+WIRING GUARDRAIL (mandatory when this is hooked up): the governor is generic
+per-pool and cannot tell a low-value poll from a safety-critical turn. It MUST
+govern only DISCRETIONARY / low-value pool work (idle polling, speculative
+slices). Safety-critical actions — RCO veto, ``build_consensus`` on a ready PR,
+critical fixes, merges — MUST BYPASS the governor and are NEVER throttled or
+stopped by budget, or a near-cap pool could wedge the gate (the very failure
+this exists to prevent).
+
 Decision policy (per pool, fail-safe):
 * no/invalid cap configured  -> ``proceed`` ("ungoverned" — cannot pace without
   a cap; flagged so the absence is visible, never silently enforced);
@@ -35,6 +43,25 @@ STOP = "stop"
 DEFAULT_THROTTLE_AT = 0.8
 
 
+def _coerce_positive_number(value) -> float | None:
+    """Return value as a positive float, or None if not a usable cap.
+
+    Accepts int/float and clean numeric strings ("100"); rejects non-numeric
+    strings, bools, None, and values <= 0 (caller treats None as a config error).
+    """
+    if isinstance(value, bool):  # bool is an int subclass; reject it explicitly
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    if isinstance(value, str):
+        try:
+            n = float(value.strip())
+        except ValueError:
+            return None
+        return n if n > 0 else None
+    return None
+
+
 def window_spend(
     records: Sequence[Mapping],
     pool: str,
@@ -45,27 +72,38 @@ def window_spend(
     """Sum output tokens (and count turns) for ``pool`` within (window_start, now].
 
     Records are dicts with ``pool``, ``ts`` (epoch seconds) and ``output_tokens``.
-    Malformed records are skipped (fail-safe: an unreadable record never lowers
-    the measured spend below reality in a way that hides exhaustion — it just
-    isn't counted; the cap check stays conservative via the explicit fields).
+    Unparseable records are COUNTED in ``dropped`` and surfaced by the caller —
+    NOT silently ignored: for a budget governor, dropping a real-token record
+    lowers measured spend and could hide exhaustion (a fail-OPEN). The returned
+    ``spend`` is therefore a LOWER BOUND when ``dropped > 0``, and the decision
+    layer flags the data-quality gap so a caller can be conservative.
+
+    ``dropped`` counts: non-Mapping records (uninterpretable), and this-pool
+    in-scope records whose ``ts`` or ``output_tokens`` is missing/non-numeric.
+    Records for a different pool are not "dropped" (they are simply out of scope).
     """
     spend = 0
     turns = 0
+    dropped = 0
     for r in records:
         if not isinstance(r, Mapping):
+            dropped += 1  # uninterpretable — cannot rule out this pool
             continue
         if str(r.get("pool", "")) != pool:
-            continue
+            continue  # other pool: out of scope, not a data-quality drop
         ts = r.get("ts")
         if not isinstance(ts, (int, float)):
+            dropped += 1  # this-pool record with bad ts -> spend is incomplete
             continue
         if ts < window_start or ts > now:
             continue
+        turns += 1
         tok = r.get("output_tokens")
         if isinstance(tok, (int, float)) and tok >= 0:
             spend += tok
-        turns += 1
-    return {"spend": spend, "turns": turns}
+        else:
+            dropped += 1  # in-window turn with unknown tokens -> under-count risk
+    return {"spend": spend, "turns": turns, "dropped": dropped}
 
 
 def governor_decision(
@@ -78,13 +116,26 @@ def governor_decision(
     throttle_at: float = DEFAULT_THROTTLE_AT,
 ) -> dict:
     """Decide proceed/throttle/stop for one pool from its measured spend."""
-    if cap is None or not isinstance(cap, (int, float)) or cap <= 0:
+    if cap is None:
         return {
             "decision": PROCEED,
             "governed": False,
             "fraction": None,
-            "reason": "no valid cap configured (ungoverned)",
+            "reason": "no cap configured (ungoverned)",
         }
+    cap_num = _coerce_positive_number(cap)
+    if cap_num is None:
+        # cap is PRESENT but unusable (non-numeric string, <=0, etc.). This is a
+        # config error, not an intentional "no cap" -> flag LOUDLY rather than
+        # silently disabling governance for this pool.
+        return {
+            "decision": PROCEED,
+            "governed": False,
+            "fraction": None,
+            "config_error": True,
+            "reason": f"invalid cap config {cap!r} (governance DISABLED — fix config)",
+        }
+    cap = cap_num
     fraction = spend / cap
     result = {"governed": True, "fraction": round(fraction, 4)}
     if spend >= cap:
@@ -150,6 +201,12 @@ def evaluate(
         )
         d["spend"] = s["spend"]
         d["turns"] = s["turns"]
+        d["dropped"] = s["dropped"]
+        if s["dropped"] > 0:
+            d["data_quality"] = (
+                f"WARNING: {s['dropped']} usage record(s) unparseable for {pool} -> "
+                "spend is a LOWER BOUND; governance may under-throttle (fail-open)"
+            )
         out[pool] = d
     return out
 

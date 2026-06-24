@@ -10,6 +10,7 @@ from tools.burn_governor import (
     PROCEED,
     STOP,
     THROTTLE,
+    _coerce_positive_number,
     evaluate,
     governor_decision,
     window_spend,
@@ -34,6 +35,61 @@ def test_window_spend_sums_in_window_for_pool():
     r = window_spend(recs, "codex", window_start=900, now=1000)
     assert r["spend"] == 150
     assert r["turns"] == 2
+    # "garbage" (non-Mapping) + {"pool":"codex"} (no ts) are dropped, surfaced.
+    assert r["dropped"] == 2
+
+
+def test_window_spend_dropped_counts_bad_token_in_window():
+    recs = [
+        {"pool": "codex", "ts": 950, "output_tokens": 100},   # ok
+        {"pool": "codex", "ts": 960, "output_tokens": "lots"},  # in-window, bad tokens
+        {"pool": "codex", "ts": 970},                          # in-window, missing tokens
+    ]
+    r = window_spend(recs, "codex", window_start=900, now=1000)
+    assert r["spend"] == 100
+    assert r["turns"] == 3       # all three are this-pool in-window turns
+    assert r["dropped"] == 2     # the two with unusable token fields (fail-open guard)
+
+
+# --- seam fixes: data-quality surfacing + cap config errors -------------------
+
+def test_evaluate_surfaces_data_quality_when_records_dropped():
+    recs = ["garbage", {"pool": "codex", "ts": 9990, "output_tokens": 10}]
+    out = evaluate(recs, {"codex": {"cap": 1000, "window_seconds": 100}}, now=10000)
+    assert out["codex"]["dropped"] == 1
+    assert "data_quality" in out["codex"]
+    assert "LOWER BOUND" in out["codex"]["data_quality"]
+
+
+def test_string_numeric_cap_is_governed():
+    d = governor_decision(850, "1000", window_start=0, now=100, reset_ts=None)
+    assert d["governed"] is True
+    assert d["decision"] == THROTTLE   # 0.85 >= 0.8, coerced from "1000"
+
+
+def test_invalid_cap_flags_config_error_not_silent_ungoverned():
+    d = governor_decision(500, "abc", window_start=0, now=100, reset_ts=None)
+    assert d["decision"] == PROCEED
+    assert d["governed"] is False
+    assert d.get("config_error") is True
+    assert "invalid cap" in d["reason"]
+
+
+def test_none_cap_is_ungoverned_without_config_error():
+    d = governor_decision(500, None, window_start=0, now=100, reset_ts=None)
+    assert d["governed"] is False
+    assert d.get("config_error") is None
+    assert "no cap" in d["reason"]
+
+
+def test_coerce_positive_number():
+    assert _coerce_positive_number(100) == 100.0
+    assert _coerce_positive_number("100") == 100.0
+    assert _coerce_positive_number("abc") is None
+    assert _coerce_positive_number(0) is None
+    assert _coerce_positive_number(-5) is None
+    assert _coerce_positive_number(True) is None   # bool rejected
+    assert _coerce_positive_number(None) is None
 
 
 # --- governor_decision -------------------------------------------------------

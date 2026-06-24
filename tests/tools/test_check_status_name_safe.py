@@ -16,15 +16,30 @@ SCRIPT = ROOT / "tools" / "check_status_name_safe.py"
 
 # --- the wedge this tool exists to prevent ----------------------------------
 
-def test_pr1368_self_block_repro_is_flagged():
-    # The exact status NAME fable-5 self-blocked PR #1368 with (2026-06-22): an
-    # endorsement whose name embedded block/cleared tokens was read as a veto.
-    status = "fable_1368_failclosed_endorse_verify_block_cleared_coverage"
+def test_real_phantom_block_repro_is_flagged():
+    # The real status NAME that phantom-blocked PR #1372 (2026-06-23): a ready
+    # handoff whose name embedded a bare "block" token (no cleared/resolved) was
+    # read as a fresh veto. This name STILL phantom-blocks under the post-#1368
+    # classifier (verified), so it is the durable repro for the wedge this tool
+    # prevents.
+    status = "fable_1372_ready_phantom_block_linter"
     r = check_status_name(status)
     assert r["safe"] is False
     assert r["would_block"] is True
     assert any("block" in t for t in r["triggers"])
     assert "no_changes_requested" in r["suggestion"]
+
+
+def test_block_cleared_form_is_safe_post_1368():
+    # #1368 (durable event-type gate) made *_block_cleared_* / resolution forms
+    # NON-blocking on purpose: a status saying a block was CLEARED must not be
+    # read as a fresh veto. The linter is a faithful wrapper, so it must report
+    # such a name as SAFE. (This is the name that originally wedged #1368 pre-fix;
+    # post-#1368 it is correctly safe — guarding against a regression that would
+    # re-introduce the over-block #1368 removed.)
+    status = "fable_1368_failclosed_endorse_verify_block_cleared_coverage"
+    assert check_status_name(status)["safe"] is True
+    assert check_status_name(status)["would_block"] is False
 
 
 # --- exact blocking statuses -------------------------------------------------
@@ -116,7 +131,9 @@ def test_cli_safe_exit_zero():
 
 
 def test_cli_would_block_exit_three():
-    completed = _run("--status", "fable_verify_block_cleared", "--json")
+    # Use a name with a bare "block" token (no cleared/resolved) so it still
+    # phantom-blocks under the post-#1368 classifier (verified).
+    completed = _run("--status", "fable_1372_ready_phantom_block_linter", "--json")
     assert completed.returncode == 3
     assert json.loads(completed.stdout)["safe"] is False
 

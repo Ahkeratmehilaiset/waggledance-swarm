@@ -576,6 +576,88 @@ def test_metrics_body_contains_route_stage_hex_coverage_counters():
     assert "route_stage_trace" not in body
 
 
+def test_metrics_body_contains_route_stage_first_served_hop_counters():
+    runtime_metrics = RouteStageRuntimeMetrics()
+    # hot_cache hit -> first served hop is hot_cache
+    runtime_metrics.record(
+        [
+            {"stage": "language_detection"},
+            {"stage": "hot_cache", "hit": True},
+        ],
+        5.0,
+    )
+    # deterministic solver answers -> first served hop is deterministic_solver
+    runtime_metrics.record(
+        [
+            {"stage": "language_detection"},
+            {"stage": "hot_cache", "hit": False},
+            {"stage": "memory_context"},
+            {"stage": "route_selection"},
+            {"stage": "deterministic_solver", "answered": True},
+        ],
+        10.0,
+    )
+    # earlier resolution stages miss, hex answers -> first served hop is hex
+    # (the honeycomb-first-served case)
+    runtime_metrics.record(
+        [
+            {"stage": "language_detection"},
+            {"stage": "hot_cache", "hit": False},
+            {"stage": "memory_context"},
+            {"stage": "route_selection"},
+            {"stage": "deterministic_solver", "answered": False},
+            {"stage": "hybrid_retrieval_8_cell", "answered": False},
+            {
+                "stage": "hex_neighbor_assist_7_cell",
+                "answered": True,
+                "source": "WD_IMAGE1_PRIVATE_HEX_SOURCE",
+            },
+        ],
+        15.0,
+    )
+    # everything misses until the terminal LLM fallback serves
+    runtime_metrics.record(
+        [
+            {"stage": "language_detection"},
+            {"stage": "hot_cache", "hit": False},
+            {"stage": "deterministic_solver", "answered": False},
+            {"stage": "orchestrator_llm_fallback", "source": "llm"},
+        ],
+        20.0,
+    )
+    container = _FakeContainer(
+        _FakeHexAssist({"enabled": True}),
+        route_stage_runtime_metrics=runtime_metrics,
+    )
+    client = TestClient(_make_app(container))
+
+    body = client.get("/metrics").text
+
+    assert "# HELP waggledance_route_stage_first_served_hop_total" in body
+    assert (
+        'waggledance_route_stage_first_served_hop_total{'
+        'first_served_hop="hot_cache"} 1.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_first_served_hop_total{'
+        'first_served_hop="deterministic_solver"} 1.0'
+    ) in body
+    # hybrid answered=False in every trace, so it is never the first served hop
+    assert (
+        'waggledance_route_stage_first_served_hop_total{'
+        'first_served_hop="hybrid_retrieval_8_cell"} 0.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_first_served_hop_total{'
+        'first_served_hop="hex_neighbor_assist_7_cell"} 1.0'
+    ) in body
+    assert (
+        'waggledance_route_stage_first_served_hop_total{'
+        'first_served_hop="orchestrator_llm_fallback"} 1.0'
+    ) in body
+    assert "WD_IMAGE1_PRIVATE_HEX_SOURCE" not in body
+
+
 def test_metrics_route_stage_runtime_counters_default_to_zero():
     container = _FakeContainer(_FakeHexAssist({"enabled": True}))
     client = TestClient(_make_app(container))

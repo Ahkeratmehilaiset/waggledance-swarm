@@ -60,6 +60,17 @@ HEX_BACKED_ROUTE_STAGE_NAMES = (
     "hex_neighbor_assist_7_cell",
 )
 HEX_STAGE_COVERAGE_STATES = ("entered", "disabled")
+# Resolution stages eligible to be the FIRST stage that SERVES a query, in
+# pipeline order. Pre-processing stages (language_detection, memory_context,
+# route_selection) cannot serve and are excluded. Measurement only: the
+# hex_neighbor_assist_7_cell bucket is the honeycomb-first-served signal.
+FIRST_SERVED_HOP_STAGES = (
+    "hot_cache",
+    "deterministic_solver",
+    "hybrid_retrieval_8_cell",
+    "hex_neighbor_assist_7_cell",
+    "orchestrator_llm_fallback",
+)
 OPTIONAL_ROUTE_STAGE_COMPONENTS = {
     "hybrid_retrieval_8_cell": "_hybrid_retrieval",
     "hex_neighbor_assist_7_cell": "_hex_neighbor_assist",
@@ -117,6 +128,36 @@ ROUTE_STAGE_LATENCY_BUCKET_LABELS: tuple[str, ...] = (
 )
 
 
+def _first_served_route_hop(
+    trace: list[dict[str, Any]] | None,
+) -> str | None:
+    """Return the first route stage that SERVED the query, in trace order.
+
+    A stage "serves" when: ``hot_cache`` hit, a ``deterministic_solver`` /
+    ``hybrid_retrieval_8_cell`` / ``hex_neighbor_assist_7_cell`` stage answered,
+    or the terminal ``orchestrator_llm_fallback`` is reached. Pre-processing
+    stages cannot serve. Strict bool checks only (no truthy coercion). Read-only:
+    derives a label from the already-sanitized trace; changes no behavior.
+    """
+    if not trace:
+        return None
+    for event in trace:
+        if not isinstance(event, dict):
+            continue
+        stage = event.get("stage")
+        if stage not in FIRST_SERVED_HOP_STAGES:
+            continue
+        if stage == "hot_cache":
+            served = event.get("hit") is True
+        elif stage == "orchestrator_llm_fallback":
+            served = True
+        else:
+            served = event.get("answered") is True
+        if served:
+            return stage
+    return None
+
+
 class RouteStageRuntimeMetrics:
     """In-memory counters for sanitized chat route-stage observations."""
 
@@ -136,6 +177,9 @@ class RouteStageRuntimeMetrics:
         self._hex_stage_coverage_total = {
             stage: {state: 0 for state in HEX_STAGE_COVERAGE_STATES}
             for stage in HEX_BACKED_ROUTE_STAGE_NAMES
+        }
+        self._first_served_hop_total = {
+            stage: 0 for stage in FIRST_SERVED_HOP_STAGES
         }
         self._lock = Lock()
 
@@ -178,6 +222,7 @@ class RouteStageRuntimeMetrics:
             if isinstance(stage, str) and stage in HEX_BACKED_ROUTE_STAGE_NAMES
         }
         observed_set = set(observed)
+        first_served_hop = _first_served_route_hop(trace)
         with self._lock:
             for stage in observed:
                 self._observations_total[stage] += 1
@@ -195,6 +240,8 @@ class RouteStageRuntimeMetrics:
                     self._hex_stage_coverage_total[stage]["entered"] += 1
                 elif stage in disabled_hex_stages:
                     self._hex_stage_coverage_total[stage]["disabled"] += 1
+            if first_served_hop is not None:
+                self._first_served_hop_total[first_served_hop] += 1
 
     def snapshot(self) -> dict[str, dict[str, float] | list[str]]:
         with self._lock:
@@ -223,6 +270,10 @@ class RouteStageRuntimeMetrics:
                         for state, value in counts.items()
                     }
                     for stage, counts in self._hex_stage_coverage_total.items()
+                },
+                "first_served_hop_total": {
+                    stage: float(value)
+                    for stage, value in self._first_served_hop_total.items()
                 },
             }
 

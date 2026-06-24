@@ -2,8 +2,8 @@
 """Bridge peer-block status contract.
 
 The merge preflight must fail closed when peer veto vocabulary is carried by
-traffic events, while still ignoring status strings that merely describe an
-answer, correction, or advisory context.
+authoritative review events, while still ignoring bridge conversation traffic
+that merely describes an answer, correction, or advisory context.
 """
 from __future__ import annotations
 
@@ -41,15 +41,15 @@ def _event(event_type: str, status: str, *, agent: str = "codex-lead-1") -> dict
 @pytest.mark.parametrize(
     ("event_type", "status"),
     [
-        ("message", "changes_requested_do_not_merge"),
-        ("message", "rco_changes_requested_pr530"),
-        ("message", "rco_block_critical"),
-        ("message", "blocked_no_fix_yet"),
-        ("handoff", "block_without_fix"),
+        ("decision", "changes_requested_do_not_merge"),
+        ("finding", "rco_changes_requested_pr530"),
+        ("rco_review", "rco_block_critical"),
+        ("finding", "blocked_no_fix_yet"),
+        ("finding", "block_without_fix"),
         ("finding", "changes_requested_shape_validation"),
     ],
 )
-def test_decorated_peer_veto_statuses_block_regardless_of_event_type(
+def test_authoritative_decorated_peer_veto_statuses_block(
     event_type: str,
     status: str,
 ) -> None:
@@ -62,6 +62,31 @@ def test_decorated_peer_veto_statuses_block_regardless_of_event_type(
 
     assert result["clear_to_merge"] is False
     assert result["latest_blocking_event"]["status"] == status
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "changes_requested_do_not_merge"),
+        ("message", "rco_changes_requested_pr530"),
+        ("message", "rco_block_critical"),
+        ("message", "blocked_no_fix_yet"),
+        ("handoff", "block_without_fix"),
+    ],
+)
+def test_non_authoritative_decorated_peer_veto_statuses_do_not_block(
+    event_type: str,
+    status: str,
+) -> None:
+    result = check_bridge_clear_to_merge(
+        events=[_event(event_type, status)],
+        task_id="bridge-peer-block-status-contract",
+        merging_agent="codex-tools-1",
+        identity_registry=AGENT_UUIDS,
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
 
 
 @pytest.mark.parametrize(

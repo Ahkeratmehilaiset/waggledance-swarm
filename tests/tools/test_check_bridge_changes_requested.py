@@ -192,6 +192,51 @@ def test_clear_preflight_status_with_block_context_does_not_override_approval() 
     assert result["latest_approval_event"]["status"] == "build_consensus_pass"
 
 
+def test_coordination_block_clear_request_does_not_override_approval() -> None:
+    events = [
+        _event(
+            "2026-06-21T18:24:35Z",
+            "codex-lead-1",
+            "decision",
+            "build_consensus_pass",
+        ),
+        _event(
+            "2026-06-21T18:26:22Z",
+            "codex-lead-1",
+            "wake_request",
+            "tools_peer_block_clear_needed_after_reattribution",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        pr_number=1364,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "build_consensus_pass"
+
+
+def test_classifier_artifact_no_real_veto_status_does_not_block() -> None:
+    events = [
+        _event(
+            "2026-06-21T18:28:55Z",
+            "claude-rco-1",
+            "message",
+            "peer_block_is_g4_classifier_artifact_no_real_veto",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        pr_number=1364,
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
 def test_build_consensus_pass_typo_does_not_clear_same_peer_block() -> None:
     events = [
         _event("2026-06-07T03:30:00Z", "codex-tools-1", "finding", "changes_requested"),
@@ -388,6 +433,29 @@ def test_changes_requested_clear_status_supersedes_same_agent_block() -> None:
     assert result["latest_approval_event"] is None
 
 
+def test_approved_waiver_block_cleared_supersedes_same_agent_block() -> None:
+    events = [
+        _event(
+            "2026-06-21T18:00:00Z",
+            "codex-tools-1",
+            "blocked",
+            "merge_blocked_operator_or_driver_waiver_required",
+        ),
+        _event(
+            "2026-06-21T18:01:00Z",
+            "codex-tools-1",
+            "decision",
+            "approved_waiver_block_cleared",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+
+
 def test_clear_status_does_not_supersede_other_agent_block() -> None:
     events = [
         _event(
@@ -490,35 +558,92 @@ def test_message_status_correction_with_changes_requested_token_does_not_block()
     assert result["latest_blocking_event"] is None
 
 
-def test_non_decision_exact_changes_requested_status_still_blocks() -> None:
-    events = [
-        _event(
-            "2026-06-21T01:57:31Z",
-            "codex-lead-1",
-            "message",
-            "changes_requested",
-        ),
-    ]
-    result = check_bridge_clear_to_merge(
-        events=events, task_id="T", merging_agent="codex-tools-1"
-    )
-
-    assert result["clear_to_merge"] is False
-    assert result["latest_blocking_event"]["status"] == "changes_requested"
-
-
-def test_message_decorated_veto_statuses_still_block() -> None:
+def test_non_authoritative_exact_changes_requested_status_does_not_block() -> None:
     for event_type, status in [
+        ("message", "changes_requested"),
+        ("handoff", "changes_requested"),
+        ("status", "changes_requested"),
+        ("wake_request", "changes_requested"),
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T01:57:31Z",
+                    "codex-lead-1",
+                    event_type,
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-tools-1",
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+
+
+def test_authoritative_exact_block_statuses_still_block() -> None:
+    for event_type, status in [
+        ("decision", "changes_requested"),
+        ("finding", "changes_requested"),
+        ("rco_review", "rco_block"),
+        ("blocked", "blocked"),
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T01:57:31Z",
+                    "codex-lead-1",
+                    event_type,
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-tools-1",
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
+
+
+def test_non_authoritative_decorated_veto_statuses_do_not_block() -> None:
+    for event_type, status in [
+        ("handoff", "changes_requested_do_not_merge"),
+        ("handoff", "rco_block_critical"),
+        ("handoff", "blocked_no_fix_yet"),
+        ("handoff", "block_without_fix"),
         ("message", "rco_changes_requested_pr530"),
         ("message", "changes_requested_do_not_merge"),
         ("message", "changes_requested_critical"),
         ("message", "rco_block_critical"),
         ("message", "blocked_no_fix_yet"),
         ("message", "block_without_fix"),
-        ("handoff", "changes_requested_do_not_merge"),
-        ("handoff", "rco_block_critical"),
-        ("handoff", "blocked_no_fix_yet"),
-        ("handoff", "block_without_fix"),
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T01:57:31Z",
+                    "codex-lead-1",
+                    event_type,
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-tools-1",
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+
+
+def test_authoritative_decorated_veto_statuses_still_block() -> None:
+    for event_type, status in [
+        ("decision", "rco_changes_requested_pr530"),
+        ("finding", "changes_requested_do_not_merge"),
+        ("rco_review", "changes_requested_critical"),
+        ("finding", "rco_block_critical"),
+        ("finding", "blocked_no_fix_yet"),
+        ("finding", "block_without_fix"),
     ]:
         result = check_bridge_clear_to_merge(
             events=[
@@ -561,7 +686,7 @@ def test_nonblocking_context_statuses_do_not_create_phantom_blocks() -> None:
         assert result["latest_blocking_event"] is None
 
 
-def test_negated_context_words_in_changes_requested_status_still_block() -> None:
+def test_negated_context_words_in_authoritative_changes_requested_status_still_block() -> None:
     for status in [
         "changes_requested_not_yet_addressed",
         "changes_requested_acknowledged_still_critical",
@@ -571,7 +696,7 @@ def test_negated_context_words_in_changes_requested_status_still_block() -> None
                 _event(
                     "2026-06-21T01:57:31Z",
                     "claude-rco-1",
-                    "message",
+                    "finding",
                     status,
                 )
             ],
@@ -634,6 +759,36 @@ def test_changes_requested_resolution_status_clears_prior_block_without_approval
         assert result["latest_approval_event"] is None
 
 
+def test_block_resolution_diagnostics_do_not_create_phantom_blocks() -> None:
+    for status in [
+        "block_cleared",
+        "peer_block_cleared",
+        "waiver_block_cleared",
+        "block_resolved",
+        "block_clear",
+        "changes_requested_block_resolved",
+        "block_cleared_no_remaining_issues",
+        "block_resolved_still_monitoring",
+        "block_cleared_open_followup",
+        "fable_1368_failclosed_endorse_verify_block_cleared_coverage",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-06-21T18:47:13Z",
+                    "fable-5",
+                    "finding",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+
+
 def test_no_changes_requested_text_does_not_downgrade_real_blocking_status() -> None:
     for status in [
         "no_changes_requested_but_blocked",
@@ -663,6 +818,31 @@ def test_veto_statuses_with_negation_words_still_block() -> None:
         "changes_requested_do_not_merge",
         "blocked_no_fix_yet",
         "block_without_fix",
+        "block_incomplete_clear",
+        "block_active_clear_label",
+        "block_persists_resolved",
+        "block_requested",
+        "block_not_resolved",
+        "block_not_cleared",
+        "peer_block_not_cleared",
+        "blocked_not_withdrawn",
+        "block_cannot_be_cleared",
+        "block_cant_clear",
+        "block_isnt_resolved",
+        "block_wont_clear",
+        "block_arent_resolved",
+        "block_resolution_fails_cleared_label",
+        "block_still_open_cleared_label",
+        "block_ongoing_resolved_label",
+        "block_outstanding_withdrawn_label",
+        "block_unresolved",
+        "block_unresolved_not_cleared",
+        "blocking_issue_not_yet_resolved",
+        "block_resolved_denied",
+        "block_cleared_rejected",
+        "block_retracted_refused",
+        "changes_requested_block_clear_required",
+        "merge_blocked_operator_or_driver_waiver_required",
         "rco_block_cleared",
     ]:
         result = check_bridge_clear_to_merge(

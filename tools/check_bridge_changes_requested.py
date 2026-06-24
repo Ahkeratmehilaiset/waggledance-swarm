@@ -63,7 +63,51 @@ BLOCKING_STATUSES = frozenset(
         "block_requested",
     }
 )
+BLOCKING_EVENT_TYPES = frozenset(
+    {"decision", "rco_review", "finding", "blocked", "test"}
+)
+CLEAR_EVENT_TYPES = frozenset({"decision", "rco_review", "finding", "done", "test"})
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
+BLOCKING_RESOLUTION_TOKENS = frozenset(
+    {"clear", "cleared", "resolved", "retracted", "withdrawn"}
+)
+BLOCKING_RESOLUTION_NEGATION_TOKENS = frozenset(
+    {
+        "active",
+        "arent",
+        "cannot",
+        "cant",
+        "denied",
+        "failed",
+        "failing",
+        "fails",
+        "incomplete",
+        "isnt",
+        "never",
+        "no",
+        "not",
+        "open",
+        "ongoing",
+        "outstanding",
+        "persist",
+        "persistent",
+        "persisting",
+        "persists",
+        "refused",
+        "rejected",
+        "still",
+        "uncleared",
+        "unresolved",
+        "unretracted",
+        "unwithdrawn",
+        "wont",
+        "without",
+        "yet",
+    }
+)
+BLOCKING_CLEAR_COORDINATION_TOKENS = frozenset(
+    {"needed", "required", "request", "requested", "supersede", "superseded"}
+)
 BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
 NON_BLOCKING_BLOCK_PHRASES = frozenset(
     {
@@ -93,6 +137,9 @@ CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES = frozenset(
         "cleared",
         "cleared_ci_green",
         "cleared_ci_pending",
+        "block_clear",
+        "block_cleared",
+        "block_resolved",
         "retracted",
         "withdrawn",
     }
@@ -108,10 +155,14 @@ NON_BLOCKING_CONTEXT_STATUS_SEGMENTS = (
     "_corrected_",
     "_correction_",
     "_forwarded_",
+    "_no_remaining_issues_",
+    "_open_followup_",
     "_resolves_",
+    "_still_monitoring_",
 )
 NO_BLOCK_CLEAR_STATUSES = frozenset(
     {
+        "approved_waiver_block_cleared",
         "lead_no_blocker_rco_pending",
         "producer_no_block_reemit_required",
     }
@@ -300,12 +351,12 @@ def check_bridge_clear_to_merge(
             continue
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
-        # Block statuses are type-agnostic (fail-closed). Only explicit
-        # correction/ack/advisory context statuses are exempted so traffic
-        # events can still carry decorated peer vetoes.
+        # Only authoritative review/finding event types can veto. Plain
+        # bridge conversation often includes diagnostic status strings with
+        # "block"/"clear" words and must not become a phantom merge stop.
         # Approvals stay type-restricted.
         if _is_clear_status(status):
-            if event_type in {"decision", "rco_review", "finding", "done", "test"}:
+            if event_type in CLEAR_EVENT_TYPES:
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
@@ -422,9 +473,12 @@ def _is_clear_status(status: str) -> bool:
 
 
 def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
-    if status in BLOCKING_STATUSES:
-        return True
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    normalized_event_type = re.sub(r"[^a-z0-9]+", "_", event_type.lower()).strip("_")
+    if normalized_event_type and normalized_event_type not in BLOCKING_EVENT_TYPES:
+        return False
+    if normalized in BLOCKING_STATUSES:
+        return True
     for prefix in CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES:
         if normalized == prefix:
             return True
@@ -447,7 +501,23 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
         return True
     if not tokens.intersection(BLOCKING_WORD_TOKENS):
         return False
+    if "rco" in tokens:
+        return True
+    if tokens.intersection(BLOCKING_RESOLUTION_TOKENS):
+        if tokens.intersection(BLOCKING_RESOLUTION_NEGATION_TOKENS):
+            return True
+        return False
     if "preflight" in tokens and tokens.intersection(BLOCKING_CLEAR_TOKENS):
+        return False
+    if tokens.intersection(BLOCKING_CLEAR_TOKENS) and tokens.intersection(
+        BLOCKING_CLEAR_COORDINATION_TOKENS
+    ):
+        return False
+    if (
+        {"classifier", "artifact"}.issubset(tokens)
+        and "veto" in tokens
+        and tokens.intersection({"no", "false"})
+    ):
         return False
     return True
 

@@ -581,6 +581,86 @@ def test_type_agnostic_block_invalidates_approval() -> None:
     assert result["identities"]["rco"]["approved"] is False
 
 
+def test_non_authoritative_block_status_does_not_invalidate_consensus() -> None:
+    for event_type, status in [
+        ("message", "changes_requested"),
+        ("handoff", "changes_requested_do_not_merge"),
+        ("status", "rco_block_critical"),
+    ]:
+        events = [
+            *_full_consensus(),
+            {
+                "ts_utc": "2026-05-29T13:03:00Z",
+                "agent": TOOLS,
+                "agent_uuid": AGENT_UUIDS[TOOLS],
+                "type": event_type,
+                "status": status,
+                "task_id": TASK,
+                "message": "bridge coordination chatter",
+                "payload": {"head": HEAD},
+            },
+        ]
+        result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+        assert result["ok"] is True
+        assert result["identities"]["build_tools"]["approved"] is True
+
+
+def test_consensus_mirror_ignores_peer_gate_non_veto_block_diagnostics() -> None:
+    for status in [
+        "tools_peer_block_clear_needed_after_reattribution",
+        "peer_block_is_g4_classifier_artifact_no_real_veto",
+        "approved_waiver_block_cleared",
+        "fable_1368_failclosed_endorse_verify_block_cleared_coverage",
+        "block_cleared_no_remaining_issues",
+        "block_resolved_still_monitoring",
+        "block_cleared_open_followup",
+    ]:
+        events = [
+            *_full_consensus(),
+            {
+                "ts_utc": "2026-05-29T13:03:00Z",
+                "agent": TOOLS,
+                "agent_uuid": AGENT_UUIDS[TOOLS],
+                "type": "finding",
+                "status": status,
+                "task_id": TASK,
+                "message": "diagnostic status, not a veto",
+                "payload": {"head": HEAD},
+            },
+        ]
+        result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+        assert result["ok"] is True
+        assert result["identities"]["build_tools"]["approved"] is True
+
+
+def test_consensus_mirror_still_invalidates_authoritative_vetoes() -> None:
+    for event_type, status in [
+        ("decision", "changes_requested"),
+        ("finding", "changes_requested_shape_validation"),
+        ("rco_review", "rco_block_critical"),
+        ("finding", "block_active_clear_label"),
+    ]:
+        events = [
+            *_full_consensus(),
+            {
+                "ts_utc": "2026-05-29T13:03:00Z",
+                "agent": RCO,
+                "agent_uuid": AGENT_UUIDS[RCO],
+                "type": event_type,
+                "status": status,
+                "task_id": TASK,
+                "message": "authoritative veto",
+                "payload": {"head": HEAD},
+            },
+        ]
+        result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
+        assert result["ok"] is False
+        assert result["identities"]["rco"]["approved"] is False
+
+
 def test_acknowledged_is_not_a_build_vote() -> None:
     # RCO T0b note N2: a bare "acknowledged" is a receipt ack, not an approval.
     events = [

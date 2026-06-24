@@ -38,11 +38,11 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-# Only PURE-INERT doc roots auto-sign by path. tests/** is DROPPED: pytest imports
-# test modules at collection, so module-level code in a "test" file executes in CI
-# -> a malicious test PR would auto-sign AND run arbitrary code (RCE via safe-root;
-# tools/rco-1 #1384). docs/runs/** also dropped (off charter allowlist, low-value).
-SAFE_ROOTS = ("docs/benchmarks/",)
+# tests/** + docs/benchmarks/** auto-sign by path, GUARDED by the fail-closed
+# dangerous-callable scan (operator ruling 2026-06-24: keep tests/ in-class but
+# block RCE via an AST dangerous-callable scan on all changed lines/paths; FP cost
+# accepted). docs/runs/** dropped (off charter allowlist, low-value).
+SAFE_ROOTS = ("tests/", "docs/benchmarks/")
 
 # Positive metrics-allowlist for the additive-metric path. DEFAULT-EMPTY =>
 # default-DENY: NO metric path auto-signs until the operator-signed charter
@@ -77,12 +77,30 @@ AUTHORITY_FLAGS = ("gate_skip", "solver_call", "receipt_required",
 CONTROL_PLANE_TOKENS = ("def route", "routing", "control_plane", "dispatch(",
                         "merge(", "build_consensus", "rco_pass", "operator_sign")
 
-# Dangerous callables: any of these in ANY changed line -> operator_sign
-# (defense-in-depth against arbitrary code execution on a safe-root/metrics path).
+# Dangerous-callable scan (operator ruling 2026-06-24): any dangerous callable on
+# ANY changed line/path -> operator_sign (fail-closed). AST is the primary detector
+# (resolves through import aliases, resists string-literal FPs + getattr evasion);
+# the substring list is a FALLBACK for non-Python / unparseable hunks (e.g. .md).
+DANGEROUS_BARE_NAMES = frozenset({"eval", "exec", "compile", "__import__"})
+DANGEROUS_DOTTED = frozenset({
+    "os.system", "os.popen", "os.remove", "os.unlink", "os.rename", "os.replace",
+    "pickle.load", "pickle.loads", "marshal.load", "marshal.loads", "shutil.rmtree",
+    "importlib.import_module",
+})
+DANGEROUS_DOTTED_PREFIXES = ("os.exec", "os.spawn", "subprocess.", "ctypes.",
+                             "importlib.")
+# from <module> import <name>: flag any from-import of these pure-dangerous modules,
+# or a dangerous tail from a mixed module (os).
+DANGEROUS_FROM_MODULES = frozenset({"subprocess", "ctypes", "importlib", "pickle",
+                                    "marshal", "shutil"})
+DANGEROUS_TAILS = frozenset({"system", "popen", "execv", "execve", "execl", "execlp",
+                             "execvp", "spawnl", "spawnv", "spawnve", "rmtree",
+                             "import_module"})
 DANGEROUS_CALLABLES = ("os.system", "subprocess", "eval(", "exec(", "__import__",
                        "compile(", ".popen", "popen(", "importlib", "pickle.load",
                        "marshal.load", "ctypes", "shutil.rmtree", "os.remove",
-                       "os.unlink", "os.rename", "setattr(", "globals(", "locals(")
+                       "os.unlink", "os.rename", "os.replace", "os.exec", "os.spawn",
+                       "getattr(", "setattr(", "globals(", "locals(")
 
 # Metric constructors permitted for the additive-metric class (verified by AST,
 # not regex — a regex cannot prove the constructor args are inert: a nested call
@@ -212,6 +230,100 @@ def _scan_tokens(changes: Sequence[dict], tokens: Sequence[str]) -> str | None:
     return None
 
 
+# --- dangerous-callable scan (AST primary + substring fallback) ---------------
+
+def _dotted_from_node(node: ast.AST, aliases: dict) -> str | None:
+    """Resolve an Attribute/Name chain to a dotted name, applying import aliases."""
+    parts: list[str] = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(aliases.get(cur.id, cur.id))
+    else:
+        return None  # base is not a plain name (subscript/call/...) -> unresolved
+    return ".".join(reversed(parts))
+
+
+def _build_import_aliases(tree: ast.AST) -> dict:
+    """Map locally-bound names to their real module/dotted target (import aliases)."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                aliases[a.asname or a.name.split(".")[0]] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for a in node.names:
+                aliases[a.asname or a.name] = f"{node.module}.{a.name}"
+    return aliases
+
+
+def _is_dangerous_dotted(dotted: str | None) -> bool:
+    if not dotted:
+        return False
+    if dotted in DANGEROUS_DOTTED:
+        return True
+    if dotted.startswith(DANGEROUS_DOTTED_PREFIXES):
+        return True
+    # tail match (catches alias forms like o.system / sp.run-tail even unresolved)
+    return "." in dotted and dotted.rsplit(".", 1)[-1] in DANGEROUS_TAILS
+
+
+def _ast_dangerous(tree: ast.AST) -> str | None:
+    aliases = _build_import_aliases(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            mod = node.module.split(".")[0]
+            if mod in DANGEROUS_FROM_MODULES:
+                return f"from {node.module} import ..."
+            if mod == "os":
+                for a in node.names:
+                    if a.name in DANGEROUS_TAILS:
+                        return f"from os import {a.name}"
+        # any Attribute reference to a dangerous dotted path (covers calls AND
+        # reassignment like `f = os.system`)
+        if isinstance(node, ast.Attribute):
+            d = _dotted_from_node(node, aliases)
+            if _is_dangerous_dotted(d):
+                return d
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            fid = node.func.id
+            if fid in DANGEROUS_BARE_NAMES:
+                return fid
+            resolved = aliases.get(fid)
+            if resolved and _is_dangerous_dotted(resolved):
+                return resolved  # e.g. from os import system; system()
+            if fid in ("getattr", "setattr") and len(node.args) >= 2 \
+                    and not isinstance(node.args[1], ast.Constant):
+                return f"dynamic {fid}()"
+    return None
+
+
+def _scan_dangerous(changes: Sequence[dict]) -> str | None:
+    """A dangerous callable on any changed line/path -> its name, else None.
+
+    AST per parseable .py hunk (resolves aliases, resists string-literal FPs +
+    getattr evasion); substring fallback for non-Python / unparseable hunks.
+    """
+    for ch in changes:
+        added = ch.get("added") or []
+        src = "\n".join(added)
+        if not src.strip():
+            continue
+        try:
+            tree = ast.parse(src)
+        except (SyntaxError, ValueError):
+            hit = _scan_tokens([ch], DANGEROUS_CALLABLES)  # unparseable -> substring
+            if hit:
+                return hit
+            continue
+        d = _ast_dangerous(tree)
+        if d:
+            return d
+    return None
+
+
 def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "",
                     require_charter: bool = True,
                     metrics_paths: Sequence[str] = METRICS_PATHS) -> dict:
@@ -268,7 +380,7 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
     hit = _scan_tokens(changes, CONTROL_PLANE_TOKENS)
     if hit:
         return out_of_class(f"E: control-plane/runtime token touched ('{hit}')")
-    hit = _scan_tokens(changes, DANGEROUS_CALLABLES)
+    hit = _scan_dangerous(changes)
     if hit:
         return out_of_class(f"dangerous callable touched ('{hit}') -> operator sign")
 

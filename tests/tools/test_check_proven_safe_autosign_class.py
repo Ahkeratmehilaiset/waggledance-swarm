@@ -30,10 +30,32 @@ def _in_class(changes, **kw) -> bool:
 
 # --- POSITIVE corpus (in-class -> auto_sign) ---------------------------------
 
-def test_tests_dropped_not_in_class():
-    # tests/** dropped from auto-sign: pytest imports test modules at collection, so
-    # module-level code in a test file executes in CI = RCE via safe-root (tools #1384).
-    assert _in_class([_ch("tests/test_foo.py", ["def test_x():", "    assert True"])]) is False
+def test_tests_clean_change_in_class():
+    # tests/** is back in-class (operator ruling), guarded by the dangerous-callable
+    # scan; a CLEAN test change (no dangerous callable) still auto-signs.
+    assert _in_class([_ch("tests/test_foo.py",
+                          ["def test_x():", "    assert add(1, 2) == 3"])]) is True
+
+
+@pytest.mark.parametrize("evil", [
+    "os.system('rm -rf /')",                          # direct dotted
+    "import os as o\no.system('x')",                  # alias
+    "from os import system\nsystem('x')",             # from-import bare
+    "f = os.system\nf('x')",                          # reassignment (attr reference)
+    "import subprocess as sp\nsp.run(['x'])",         # alias on pure-dangerous module
+    "from subprocess import run\nrun(['x'])",         # from-import dangerous module
+    "getattr(os, 'sys' + 'tem')('x')",                # dynamic getattr (concat)
+    "__import__('os').system('x')",                   # import-then-call
+    "eval('1+1')",
+    "exec(code)",
+    "importlib.import_module('os')",
+    "pickle.loads(blob)",
+])
+def test_tests_dangerous_callable_blocks_auto_sign(evil):
+    # operator ruling: tests/ stays in-class but a dangerous callable (incl. alias /
+    # from-import / reassignment / dynamic-getattr evasions) -> operator_sign.
+    ch = _ch("tests/test_evil.py", evil.split("\n"))
+    assert _in_class([ch]) is False, evil
 
 
 def test_docs_runs_dropped_not_in_class():

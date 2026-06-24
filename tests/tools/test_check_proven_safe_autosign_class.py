@@ -126,11 +126,28 @@ def test_metric_plus_arbitrary_code_not_in_class(evil):
 
 
 def test_legit_single_line_metric_def_still_in_class():
-    # Guard against over-tightening: a clean single-line def must still qualify.
+    # Guard against over-tightening: a clean literal-arg def must still qualify.
     for ok in ["M = Counter('m','d')",
                "M = Counter('m', 'd', labelnames=['route'])",
-               "M = Histogram('h','d')  # latency"]:
-        assert _is_additive_metrics_counter(_ch("waggledance/x/metrics.py", [ok])), ok
+               "M = Histogram('h','d')  # latency",
+               "M = Counter(\n    'm',\n    'd',\n)"]:  # multi-line literal def OK via AST
+        assert _is_additive_metrics_counter(_ch("waggledance/x/metrics.py", ok.split("\n"))), ok
+
+
+@pytest.mark.parametrize("evil", [
+    "X = Counter(os.system('evil'), 'd')",       # nested call executes at import
+    "X = Counter(eval('1'), 'd')",
+    "X = Counter(__import__('os'), 'd')",
+    "X = Counter('m', registry=CollectorRegistry())",  # non-literal kwarg call
+    "X = Counter('m', subprocess.run(['x']))",
+    "X = Counter(*evil_args)",                    # splat
+])
+def test_metric_nested_call_in_args_not_in_class(evil):
+    # rco-1/lead #1384: a nested CALL inside the constructor args must NOT qualify
+    # (AST verifies every arg is an inert literal).
+    ch = _ch("tools/foo_metrics.py", [evil])
+    assert _is_additive_metrics_counter(ch) is False, evil
+    assert _in_class([ch]) is False, evil
 
 
 # --- FAIL-CLOSED regression: charter required (rco-1 #1384) -------------------

@@ -29,6 +29,7 @@ In-class predicates (all must hold):
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -64,15 +65,10 @@ AUTHORITY_FLAGS = ("gate_skip", "solver_call", "receipt_required",
 CONTROL_PLANE_TOKENS = ("def route", "routing", "control_plane", "dispatch(",
                         "merge(", "build_consensus", "rco_pass", "operator_sign")
 
-# A COMPLETE single-line metric definition: `NAME = Counter|Gauge|Histogram|
-# Summary(<balanced args, one level of nesting>)` + optional trailing comment,
-# anchored to the WHOLE line so nothing may trail the call (no `; os.system(...)`,
-# no concatenated statement). Multi-line defs conservatively fall to operator-sign.
-_METRIC_DEF_FULL = re.compile(
-    r"^[A-Za-z_]\w*\s*=\s*(?:Counter|Gauge|Histogram|Summary)\s*"
-    r"\([^()]*(?:\([^()]*\)[^()]*)*\)\s*(?:#.*)?$"
-)
-_METRIC_USAGE = re.compile(r"\.(inc|dec|observe|set|labels|time|count_exceptions)\s*\(")
+# Metric constructors permitted for the additive-metric class (verified by AST,
+# not regex — a regex cannot prove the constructor args are inert: a nested call
+# like Counter(os.system('x'),'d') executes at import). See _is_additive_metrics_counter.
+METRIC_CTORS = frozenset({"Counter", "Gauge", "Histogram", "Summary"})
 
 
 def _norm(path: str) -> str:
@@ -98,37 +94,72 @@ def _in_safe_roots(path: str) -> bool:
     return _norm(path).startswith(SAFE_ROOTS)
 
 
-def _is_additive_metrics_counter(change: dict) -> bool:
-    """A changed source file qualifies ONLY as a pure-additive new metric counter.
+def _is_inert_literal(node: ast.AST) -> bool:
+    """True iff an AST node is a pure literal (no call/name/attr/comprehension)."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_inert_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(k is not None and _is_inert_literal(k) for k in node.keys) and \
+            all(_is_inert_literal(v) for v in node.values)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return _is_inert_literal(node.operand)  # e.g. -1
+    return False  # Call / Name / Attribute / comprehension / etc. -> NOT inert
 
-    STRICT (fail-closed): zero removed lines, at least one added line, and EVERY
-    non-blank/non-comment added line must be a COMPLETE single-line metric
-    DEFINITION (``NAME = Counter|Gauge|Histogram|Summary(...)``) — matched whole-
-    line so nothing may trail the call. Any standalone statement, multi-statement
-    line (``;``), metric usage (``.inc()``/``.labels()`` — a hot-path change),
-    authority flag, or multi-line def → NOT in class. A line is NEVER admitted by
-    a trailing-character heuristic (the prior fail-open: rco-1/rco-2/tools #1384).
+
+def _is_metric_def_assign(stmt: ast.AST) -> bool:
+    """True iff stmt is `NAME = <MetricCtor>(<all-literal args>)` and nothing else."""
+    if not isinstance(stmt, ast.Assign):
+        return False
+    val = stmt.value
+    if not isinstance(val, ast.Call):
+        return False
+    func = val.func
+    name = (func.id if isinstance(func, ast.Name)
+            else func.attr if isinstance(func, ast.Attribute) else None)
+    if name not in METRIC_CTORS:
+        return False
+    if not all(_is_inert_literal(a) for a in val.args):
+        return False  # a non-literal positional arg (e.g. os.system('x')) -> reject
+    if any(getattr(a, "value", None) is not None for a in val.args
+           if isinstance(a, ast.Starred)):
+        return False  # *args splat -> reject
+    if not all(_is_inert_literal(k.value) for k in val.keywords):
+        return False  # a non-literal kwarg value (e.g. registry=Foo()) -> reject
+    return True
+
+
+def _is_additive_metrics_counter(change: dict) -> bool:
+    """A change qualifies ONLY as a pure-additive new metric DEFINITION (AST-verified).
+
+    Fail-closed: zero removed lines; the added lines must parse as a module whose
+    body is EXCLUSIVELY ``NAME = Counter|Gauge|Histogram|Summary(<all-literal
+    args>)`` assignments. ANYTHING else — a standalone statement, metric usage
+    (.inc/.labels), a nested CALL inside the constructor args
+    (``Counter(os.system('x'),'d')`` executes at import), an unparseable/indented
+    hunk, or no metric def — returns False. AST is used instead of a regex because
+    a regex cannot prove the constructor args are inert (rco-1/rco-2/lead/tools
+    #1384: three regex/heuristic fail-opens of the admit-arbitrary-code class).
     """
     if change.get("removed"):
         return False  # any removal/edit of an existing line -> not purely additive
     added = change.get("added") or []
-    if not added:
+    src = "\n".join(added)
+    if not src.strip():
+        return False
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, ValueError):
+        return False  # unparseable / indented (mid-function) hunk -> fail-closed
+    if not tree.body:
         return False
     saw_metric = False
-    for line in added:
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if ";" in s:
-            return False  # multiple statements on one line
-        if _METRIC_USAGE.search(s):
-            return False  # .inc()/.labels()/... = hot-path runtime change
-        if any(flag in s.lower() for flag in AUTHORITY_FLAGS):
-            return False
-        if _METRIC_DEF_FULL.match(s):
+    for stmt in tree.body:
+        if _is_metric_def_assign(stmt):
             saw_metric = True
             continue
-        return False  # not a complete metric definition -> reject (no heuristic)
+        return False  # any non-(metric-def) statement -> not a pure additive metric
     return saw_metric
 
 

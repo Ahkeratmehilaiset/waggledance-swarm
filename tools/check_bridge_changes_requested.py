@@ -52,6 +52,23 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
+# Cause-B fix (#1387 latch-bypass): authority for a TYPE-based veto comes from the
+# single-source P2/D5 taxonomy, never a hardcoded copy (a divergent copy is the
+# narrower-than-real-set trap that produced #1387). BLOCK_BY_TYPE = {finding,
+# blocked}; RCO_GATED_TYPES = {finding} (a finding vetoes only from a recognized
+# RCO). The recognized-RCO set is single-sourced from the RCO-pass verifier.
+from tools.bridge_event_taxonomy import (  # noqa: E402
+    BLOCK_BY_TYPE as _TAXONOMY_BLOCK_BY_TYPE,
+    RCO_GATED_TYPES as _TAXONOMY_RCO_GATED_TYPES,
+)
+
+# Recognized RCO set per CLAUDE.md Rule 9a / the bridge-consensus contract. Defined
+# locally (NOT imported) because ``tools.check_rco_pass_present`` imports THIS module
+# -> importing it back would be a circular import. The canonical source is
+# ``check_rco_pass_present.DEFAULT_RCO_AGENTS``; a drift-guard test asserts the two
+# stay equal (test-time import, no cycle).
+_RECOGNIZED_RCOS = frozenset({"claude-rco-1", "claude-rco-2"})
+
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 BLOCKING_STATUSES = frozenset(
@@ -360,6 +377,23 @@ def check_bridge_clear_to_merge(
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
+            continue
+        # Cause-B fix (#1387 latch-bypass): a recognized-RCO ``finding`` (and any
+        # ``blocked``-type event) is a veto BY TYPE -- it latches regardless of its
+        # free-text status. The #1387 vector was a recognized-RCO finding whose
+        # status carried a "content_pass" token (no block-vocab), so the
+        # status-string classifier below silently failed open and the PR
+        # auto-merged past a live RCO veto. Authority here is the event TYPE +
+        # RCO identity per the single-source P2/D5 taxonomy
+        # (``BLOCK_BY_TYPE`` / ``RCO_GATED_TYPES``), never the status string. An
+        # explicit clear/retraction status is handled above (so an RCO can still
+        # retract via a clear); the standing veto is otherwise cleared only by a
+        # later ``decision`` rco_pass from the SAME RCO (latest-signal-wins below).
+        if event_type in _TAXONOMY_BLOCK_BY_TYPE and (
+            event_type not in _TAXONOMY_RCO_GATED_TYPES
+            or agent in _RECOGNIZED_RCOS
+        ):
+            peer_signals[agent] = (index, "block", event)
             continue
         if _is_blocking_status(status, event_type=event_type):
             peer_signals[agent] = (index, "block", event)

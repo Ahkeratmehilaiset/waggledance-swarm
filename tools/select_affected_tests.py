@@ -61,6 +61,24 @@ SOURCE_PREFIXES = ("waggledance/", "tools/")
 TEST_PREFIXES = ("tests/",)
 _IMPORT_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
+# Sprint proof mappings for files loaded by importlib or exercised indirectly by
+# an offline proof script. These are intentionally narrow: missing mapped tests
+# fail-safe to the full suite below.
+EXPLICIT_AFFECTED_TESTS: dict[str, frozenset[str]] = {
+    "tools/run_ring_messaging_hierarchy_proof.py": frozenset(
+        {"tests/test_ring_messaging_hierarchy_proof.py"}
+    ),
+    "tools/run_low_risk_autogrowth_real_loop_proof.py": frozenset(
+        {"tests/test_low_risk_autogrowth_real_loop_proof.py"}
+    ),
+    "waggledance/core/hex_topology/parent_child_relations.py": frozenset(
+        {"tests/test_ring_messaging_hierarchy_proof.py"}
+    ),
+    "waggledance/core/hex_topology/subdivision_operator.py": frozenset(
+        {"tests/test_hex_subdivision_plan.py"}
+    ),
+}
+
 
 def _norm(path: str) -> str:
     return path.replace("\\", "/").strip().lstrip("./")
@@ -144,6 +162,16 @@ def _full(reason: str) -> dict:
     return {"full_suite": True, "tests": [], "reason": reason}
 
 
+def _explicit_tests_for(path: str, repo_root: Path) -> tuple[set[str], str | None]:
+    mapped = EXPLICIT_AFFECTED_TESTS.get(_norm(path))
+    if not mapped:
+        return set(), None
+    missing = sorted(t for t in mapped if not (repo_root / t).is_file())
+    if missing:
+        return set(), f"explicit affected test missing for source {path}: {missing[0]}"
+    return set(mapped), None
+
+
 def select_affected_tests(
     changed_files: Iterable[str], repo_root: str | Path = "."
 ) -> dict:
@@ -160,9 +188,13 @@ def select_affected_tests(
             tests.add(f)
             continue
         if _is_source_file(f):
+            explicit, explicit_error = _explicit_tests_for(f, root)
+            if explicit_error:
+                return _full(explicit_error)
             mapped, read_error = _tests_importing(f, root)
             if read_error:
                 return _full(f"unreadable test candidate while mapping: {f}")
+            mapped |= explicit
             if not mapped:
                 return _full(f"no affected test found for source: {f}")
             tests |= mapped

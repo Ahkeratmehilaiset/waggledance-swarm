@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Regression: the gate-policy / gate-ops-tooling class is OFF-ALLOWLIST by construction.
+"""Regression: the gate-policy / safety-substrate class is OFF-ALLOWLIST by construction.
 
 Added 2026-06-25 after the #1387 auto-merge-bypass (an allowlist-clean gate-policy
 spec auto-merged without operator-sign because the free-text RCO safety-latch was
@@ -22,6 +22,10 @@ GATE_POLICY_PATHS = [
     "docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V2.md",  # future via glob
     "docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V1.md",  # rco-2/rco-1 #1393
     "docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V2.md",  # future via glob
+    "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
+    "docs/architecture/P4_SAFETY_SUBSTRATE_RFC_V2.md",  # future via glob
+    "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
+    "docs/architecture/P4B_POST_MERGE_CANARY_V2.md",  # future via glob
     "tools/bridge_event_taxonomy.py",
     "tools/check_proven_safe_autosign_class.py",
     "tools/check_status_name_safe.py",
@@ -33,7 +37,6 @@ GATE_POLICY_PATHS = [
 # Must STAY allowlist-clean (the denylist must not over-broaden onto ordinary work).
 ALLOWLIST_CLEAN_PATHS = [
     "docs/architecture/WD_BRIDGE_THROUGHPUT_RESILIENCE_RFC.md",
-    "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
     "docs/architecture/SOME_FUTURE_DESIGN.md",
     "tools/select_affected_tests.py",
     "tools/burn_governor.py",

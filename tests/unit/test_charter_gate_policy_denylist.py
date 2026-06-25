@@ -24,6 +24,7 @@ GATE_POLICY_PATHS = [
     "tools/check_proven_safe_autosign_class.py",
     "tools/check_status_name_safe.py",
     "tools/auto_rollback_eligibility.py",
+    "tools/verify_bridge_consensus.py",  # defensive future-proof (rco-1 #1393)
 ]
 
 # Must STAY allowlist-clean (the denylist must not over-broaden onto ordinary work).

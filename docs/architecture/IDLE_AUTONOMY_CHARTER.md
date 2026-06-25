@@ -87,6 +87,7 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `tools/check_proven_safe_autosign_class.py` (P1 proven-safe-class checker — self-modification banned)
 * `tools/check_status_name_safe.py` (gate status-name linter — self-modification banned)
 * `tools/auto_rollback_eligibility.py` (P4a auto-rollback eligibility verifier — self-modification banned)
+* `tools/verify_bridge_consensus.py` (bridge-consensus 3-identity verifier — self-modification banned; defensive future-proof: the verifier logic currently lives in the already-denylisted `tools/idle_consensus_auto_merge.py`, this closes the standalone-file refactor path — rco-1 #1393)
 * `.env`
 * `.env.*`
 * `**/.env`

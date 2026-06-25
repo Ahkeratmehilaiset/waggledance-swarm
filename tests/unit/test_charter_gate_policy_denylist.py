@@ -25,6 +25,7 @@ GATE_POLICY_PATHS = [
     "tools/check_status_name_safe.py",
     "tools/auto_rollback_eligibility.py",
     "tools/verify_bridge_consensus.py",  # defensive future-proof (rco-1 #1393)
+    "tests/security/p4c_corpus/validate_p4c_corpus.py",  # corpus validator anchor (rco-1 #1392)
 ]
 
 # Must STAY allowlist-clean (the denylist must not over-broaden onto ordinary work).
@@ -34,6 +35,7 @@ ALLOWLIST_CLEAN_PATHS = [
     "docs/architecture/SOME_FUTURE_DESIGN.md",
     "tools/select_affected_tests.py",
     "tools/burn_governor.py",
+    "tests/security/p4c_corpus/p1_autosign_corpus.py",  # corpus CASES stay extendable (only the validator anchor is denylisted)
 ]
 
 

@@ -166,6 +166,37 @@ atomic-flip cutover, which remains operator-signed under Rule 10 until a
 separate future amendment (gated on a matured synthetic adversarial corpus, a
 proven auto-rollback test, and a post-cutover verification harness) loosens it.
 
+#### 9b. Standing consensus-sign for off-allowlist / high-scrutiny PRs (DORMANT until bootstrap-signed)
+
+Per operator directive 2026-06-25 ("allekirjoitan parhaan mahdollisen
+konsensus-hyväksynnän JÄLKEEN kaikki, nyt + tulevaisuudessa, jatkakaa"), the
+operator's per-PR signature on an **off-allowlist / high-scrutiny** PR may be
+satisfied by a **STANDING** signature whenever a defined **best-possible
+consensus** state holds — removing the per-PR-sign bottleneck while keeping the
+gate at its *fullest* form. The full specification (definition, carve-outs,
+bootstrap, fail-closed semantics, and the #1387 safety case) is the **standing
+consensus-sign amendment** in `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`
+(v1.1, 2026-06-25). In summary:
+
+* **Best-possible consensus** = lead+tools `build_consensus`@head + **DUAL-RCO**
+  `RCO_PASS`@head (BOTH `claude-rco-1` AND `claude-rco-2`, mandatory — stronger
+  than the Rule-9a single-RCO bar for allowlist-clean merges) + CI all-required
+  green@head + **no** unretracted veto/finding from any recognized RCO + charter
+  checks pass + correct head-exact, author≠reviewer consensus computation + a
+  MAGMA receipt recording the basis. Any missing/ambiguous element fails closed to
+  `operator_review_required` (an explicit signature is still required).
+* **Stays operator-EXPLICIT** (never rides standing consensus): Rule-10 / Stage-2
+  cutover, any irreversible/outward-facing action, and the **gate-governance
+  class itself** (`CLAUDE.md`, `IDLE_AUTONOMY_CHARTER.md`, this contract, and the
+  gate-policy/gate-ops tools & specs on the charter denylist) — *the gate must not
+  be able to weaken itself via the mechanism it grants*.
+* **DORMANT until bootstrap-signed**: the rule has NO effect until the operator
+  places an explicit per-PR signature on **both** PR #1393 (charter gate-policy
+  denylist) **and** the PR carrying this amendment. Until then, off-allowlist /
+  high-scrutiny PRs require an explicit per-PR operator signature as before.
+
+This sub-rule governs **MERGE** only and changes nothing about Rule 10.
+
 ### 10. Atomic-flip discipline
 
 The atomic runtime flip ("Stage-2 cutover") is a separate risk domain.

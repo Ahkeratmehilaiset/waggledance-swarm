@@ -246,7 +246,117 @@ code-pattern denylist, so it operator-merges); or a direct bridge instruction
 to all active agents. The operator owns the charter; the substrate proves every
 merge against it.
 
+## Standing consensus-sign for off-allowlist / high-scrutiny PRs (2026-06-25 amendment — DORMANT until bootstrap-signed)
+
+**Status: DORMANT. This section has NO effect until the operator places an
+explicit per-PR signature on BOTH bootstrap PRs (see Bootstrap below). Until then
+the pre-existing rule stands: off-allowlist / high-scrutiny PRs require an
+explicit per-PR operator signature.**
+
+### Operator directive being captured
+
+> "allekirjoitan parhaan mahdollisen konsensus-hyväksynnän JÄLKEEN kaikki,
+> nyt + tulevaisuudessa, jatkakaa" — operator, 2026-06-25
+> ("I sign — AFTER best-possible consensus-approval — all [PRs], now and in
+> future; proceed", with the operator's own carve-out for Rule-10 / irreversible).
+
+This removes the per-PR-sign bottleneck for the off-allowlist class by declaring
+that, for that class, **the operator's signature is STANDING and is satisfied by
+a defined "best-possible consensus" state** — captured here AUTHORITATIVELY (an
+operator-signed amendment), never run from a chat relay. (Relay-only capture is
+exactly what produced the #1387 auto-merge and the B-vs-C relay-ambiguity; a
+relay does not change the gate — only a signed amendment does.)
+
+### Definition — "best-possible consensus" (the operator-sign equivalent; FULL gate, fail-closed)
+
+For an off-allowlist / high-scrutiny PR, the standing operator signature is
+satisfied **iff ALL of the following hold at the exact head SHA**, evaluated
+fail-closed (any missing, ambiguous, or unverifiable element →
+`operator_review_required`, i.e. an explicit per-PR signature is still required):
+
+1. **build_consensus@head** from **both** build slots — lead (`codex-lead-1`)
+   AND tools (`codex-tools-1`), author-excluded (author ≠ reviewer).
+2. **DUAL-RCO `RCO_PASS`@head** — **both** recognized RCOs
+   (`claude-rco-1` AND `claude-rco-2`), mandatory. (This is **stronger** than the
+   Rule-9a single-RCO-sufficient bar that governs allowlist-clean autonomous
+   merge — the off-allowlist class earns the higher bar precisely because it is
+   the class that previously required the operator's own eyes.)
+3. **CI all required checks green@head** (the full required matrix, e.g. 6/6).
+4. **NO unretracted veto/finding** from **any** recognized RCO on the PR's
+   canonical task — RCO veto is absolute and per-identity and **outranks** a
+   pass (`tools/check_bridge_changes_requested.py`).
+5. **Charter checks pass** — `evaluate_paths` + `evaluate_diff_content` evaluated
+   and recorded.
+6. **Correct consensus computation** — head-exact binding (any content-changing
+   re-push invalidates all prior approvals; content-identical base rebase carries
+   forward per the P3 rule), three+ distinct verified identities, agent-uuid
+   identity binding.
+7. **MAGMA receipt** records the standing-sign basis (the directive reference, the
+   approving identities, the head SHA, and each gate element) so a consumer can
+   re-derive the verdict — never a bare "operator standing-signed" flag.
+
+**Safety case (why this is adoptable):** at the #1387 bypass-merge the state was
+rco-2 pass but **no** rco-1 pass **and** an active rco-1 finding. The definition
+above (dual-RCO mandatory + no-unretracted-finding) is **strictly stronger** than
+that state — so the standing rule, defined this way, **would have PREVENTED the
+#1387 incident**. The standing rule does not loosen the gate; it makes the
+operator-sign equivalent the *fullest* form of the gate.
+
+### Stays operator-EXPLICIT (never rides standing consensus)
+
+These require a real per-PR operator signature regardless of any consensus state:
+
+* the **Stage-2 atomic-flip cutover** and everything under Rule 10 / escalation
+  category 5 (already out of scope above; Track T0c gates it separately);
+* any **irreversible or outward-facing** action (publishes, deletes, force-pushes,
+  external sends, secret/credential changes);
+* the **gate-governance class itself** — any change to the approval-authority
+  machinery: `CLAUDE.md`, `IDLE_AUTONOMY_CHARTER.md`, this contract, the gate
+  tools/specs on the charter denylist (the gate-policy/gate-ops class, incl.
+  P1/P2/P3 invariant specs and the merge/veto/verifier tools). This is the
+  existing **Self-modification protection** principle (above) restated for the
+  standing rule: *the gate must not be able to weaken itself via the mechanism it
+  grants.* A gate-governance PR is off-allowlist by construction and NEVER rides
+  standing consensus — it is always operator-explicit.
+* the **two bootstrap PRs** (below).
+
+### Bootstrap (no circular self-authorization)
+
+You cannot use "consensus = sign" to authorize the rule that creates it. The rule
+activates only after the operator places an explicit per-PR signature on **both**:
+
+* **(a)** PR #1393 — the charter gate-policy/gate-ops denylist (the structural
+  recognition that this class is high-scrutiny); and
+* **(b)** the PR carrying THIS amendment (CLAUDE.md Rule 9b + this section).
+
+Both are off-allowlist (`CLAUDE.md` and this contract are denylisted →
+`allowed=False`), so neither can ride the mechanism it establishes. After both are
+operator-signed and merged, the standing rule applies to all subsequent
+off-allowlist / high-scrutiny PRs **except** the carve-outs above.
+
+### Complementarity with the charter denylist (#1393)
+
+The denylist and the standing rule are **complementary, not redundant**: the
+denylist makes the gate-policy/gate-ops class **off-allowlist** (so it receives
+the FULL best-possible-consensus treatment instead of silently auto-merging
+path-clean — the #1387 hole), and the standing rule says that class's
+operator-sign **is** best-possible-consensus — except gate-governance changes,
+which stay operator-explicit per the carve-out above. Both are required.
+
+### Operator emergency-stop and revocation remain authoritative
+
+This amendment does not weaken the operator's stop/revocation layers. Reverting
+this section (an edit to this denylisted contract) is itself off-allowlist and
+operator-merged; the standing rule can be withdrawn at any time the same way it
+was granted.
+
 ## Versioning
 
 * v1 (this doc): three-agent fail-closed MERGE consensus; cutover explicitly
   out of scope. Enforcement lands in T0b; cutover loosening deferred to T0c.
+* v1.1 (2026-06-25 amendment, DORMANT until bootstrap-signed): standing
+  consensus-sign for the off-allowlist / high-scrutiny class — best-possible
+  consensus (dual-RCO + full fail-closed gate) substitutes for the per-PR
+  operator signature, except Rule-10/cutover, irreversible/outward-facing
+  actions, and the gate-governance class. Bootstrap = explicit operator-sign on
+  PR #1393 + the amendment PR.

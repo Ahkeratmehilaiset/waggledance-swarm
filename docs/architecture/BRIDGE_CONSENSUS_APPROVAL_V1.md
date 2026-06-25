@@ -332,7 +332,54 @@ activates only after the operator places an explicit per-PR signature on **both*
 Both are off-allowlist (`CLAUDE.md` and this contract are denylisted →
 `allowed=False`), so neither can ride the mechanism it establishes. After both are
 operator-signed and merged, the standing rule applies to all subsequent
-off-allowlist / high-scrutiny PRs **except** the carve-outs above.
+off-allowlist / high-scrutiny PRs **except** the carve-outs above — subject to the
+**Activation precondition** below.
+
+### Activation precondition — cause-B latch must be fixed first (rco-2 fence, PR #1396)
+
+**Why this is mandatory.** Making consensus *the operator's signature* AMPLIFIES
+every defect in the consensus computation into an **operator-signature bypass**,
+not merely an RCO bypass. Element 4 of the definition ("no unretracted
+veto/finding from any recognized RCO") is computed by
+`tools/check_bridge_changes_requested.py`, which today still has the **cause-B
+free-text latch fail-open** (the #1387 defect class): a recognized-RCO veto posted
+with a non-latching token (a free-text / `hold` / `veto` status rather than
+`changes_requested`/`blocked`), or a pass-then-mistokened-veto at head, does **not**
+latch as a block → element 4 clears → the PR would receive the STANDING operator
+signature **despite a live RCO veto**. Under consensus-as-sign that bypasses the
+operator's signature. The standing rule must therefore NOT be relied upon while
+that fail-open is open.
+
+**Precondition (fail-closed — ALL must hold before the standing rule is treated as
+ACTIVE, in addition to the two bootstrap signatures):**
+
+1. **Bootstrap signatures** — explicit operator-sign on PR #1393 **and** this
+   amendment PR (above).
+2. **Cause-B fixed AND WIRED into the live consumer** — the
+   "recognized-RCO finding blocks by **TYPE**" fix (the P2/D5 gate-event taxonomy,
+   `BRIDGE_EVENT_GATE_TAXONOMY_V1.md` / `tools/bridge_event_taxonomy.py`, #1387/#1388)
+   is wired into `tools/check_bridge_changes_requested.py` so element 4 latches a
+   recognized-RCO veto by event **type/authority**, not by free-text token
+   presence. A mistokened or free-text RCO veto at head must route element 4 to
+   **blocked**.
+3. **Verification harness CI-green** — a conformance corpus / P4c-style harness
+   proves, in CI against the live consumer, that element 4 **cannot be cleared**
+   by a mistokened / negated / free-text recognized-RCO veto at head (the negated
+   and mistokened forms explicitly enforced, not just the happy path).
+
+**Interim posture until the precondition is met (residual documented per the fence
+option-b belt):** the existing **per-PR operator signature stands** for the
+off-allowlist class; the standing rule is **dormant** even after the two bootstrap
+signatures until elements 2–3 land. While dormant, the gate relies on:
+dual-RCO-BOTH-pass + the gate-governance carve-out + the operational requirement
+that **recognized RCOs MUST use latching `changes_requested`/`blocked` block
+vocabulary** for any veto (a free-text "hold" does not latch — see the
+status-field-block-vocabulary discipline). The cause-B latch-fix + harness is a
+**named fast-follow** (the P2/D5 taxonomy-wiring track), not an open-ended TODO.
+
+Net: element 4 is only *sound* once its computation cannot be cleared by a
+mistokened veto. The standing rule activates when that soundness is proven in CI —
+never before.
 
 ### Complementarity with the charter denylist (#1393)
 

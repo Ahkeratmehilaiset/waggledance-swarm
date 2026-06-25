@@ -190,10 +190,17 @@ consensus-sign amendment** in `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md
   class itself** (`CLAUDE.md`, `IDLE_AUTONOMY_CHARTER.md`, this contract, and the
   gate-policy/gate-ops tools & specs on the charter denylist) — *the gate must not
   be able to weaken itself via the mechanism it grants*.
-* **DORMANT until bootstrap-signed**: the rule has NO effect until the operator
-  places an explicit per-PR signature on **both** PR #1393 (charter gate-policy
-  denylist) **and** the PR carrying this amendment. Until then, off-allowlist /
-  high-scrutiny PRs require an explicit per-PR operator signature as before.
+* **DORMANT until bootstrap-signed AND cause-B fixed**: the rule has NO effect
+  until the operator places an explicit per-PR signature on **both** PR #1393
+  (charter gate-policy denylist) **and** the PR carrying this amendment, **AND**
+  the **activation precondition** in the contract is met — the cause-B free-text
+  latch fail-open in `tools/check_bridge_changes_requested.py` (which computes the
+  "no unretracted RCO veto" element 4) is fixed/wired so a recognized-RCO veto
+  latches by event **type**, with a CI-green conformance harness proving a
+  mistokened/free-text veto cannot clear it (rco-2 fence #1396). Consensus-as-sign
+  amplifies any gate fail-open into an operator-signature bypass, so element 4 must
+  be proven sound first. Until all of this holds, off-allowlist / high-scrutiny PRs
+  require an explicit per-PR operator signature as before.
 
 This sub-rule governs **MERGE** only and changes nothing about Rule 10.
 

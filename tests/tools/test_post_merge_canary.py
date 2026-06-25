@@ -103,6 +103,22 @@ def test_fp_rate_unknown_is_inconclusive_fail_closed():
     assert v.outcome == INCONCLUSIVE and v.p4a_signal is None
 
 
+@pytest.mark.parametrize("bad", [
+    -1.0,                 # rco-2 #1391: negative slipped through (-1 > 0.01 is False)
+    -0.0001,
+    1.5,                  # out of [0,1]
+    float("nan"),         # rco-2 #1391: NaN > 0.01 is False -> bypassed
+    float("inf"),
+    "x",                  # rco-2 #1391: non-numeric -> was an uncaught TypeError crash
+    True,                 # bool is not a valid probability
+])
+def test_invalid_fp_rate_is_inconclusive_fail_closed(bad):
+    # an out-of-range / NaN / non-numeric fp_rate must NOT be accepted as "low FP";
+    # validate to a finite probability in [0,1], else fail-closed -> INCONCLUSIVE.
+    v = cls([run({"contract": False}), run({"contract": False})], fp_rate=bad)
+    assert v.outcome == INCONCLUSIVE and v.p4a_signal is None
+
+
 def test_fp_rate_over_threshold_is_inconclusive_not_eligible():
     # even a clean same-cause regress is NOT P4a-eligible if the canary's FP-rate
     # exceeds the acceptance threshold (spec §5).

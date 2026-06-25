@@ -102,14 +102,20 @@ def classify(
             INCONCLUSIVE, fp_rate=fp_rate,
             reason="a canary run exceeded budget / did not complete -> escalate, no rollback")
 
-    # Fail-safe gate 2: the canary's FP-rate must be KNOWN and within threshold to
-    # be P4a-eligible (spec §5). A MISSING/None fp_rate is fail-CLOSED -> INCONCLUSIVE
-    # (rco-1 #1391: defaulting fp_rate to a permissive 0.0 let a caller that omits it
-    # bypass the disqualification gate -> a false rollback on an UNVERIFIED canary).
-    if fp_rate is None:
+    # Fail-safe gate 2: the canary's FP-rate must be a KNOWN, VALID, within-threshold
+    # probability to be P4a-eligible (spec §5). Anything that is not a finite number in
+    # [0.0, 1.0] is fail-CLOSED -> INCONCLUSIVE. (rco-1 #1391: a permissive default 0.0
+    # let an OMITTED fp_rate bypass the gate; rco-2 #1391: a NEGATIVE fp_rate (-1 > 0.01
+    # is False) and NaN (NaN > 0.01 is False) also bypassed it, and a NON-NUMERIC one
+    # crashed -> validate the whole domain, fail-closed, so a false destructive rollback
+    # can't fire on an unverified/garbage canary reliability.)
+    if (not isinstance(fp_rate, (int, float)) or isinstance(fp_rate, bool)
+            or fp_rate != fp_rate                       # NaN
+            or fp_rate < 0.0 or fp_rate > 1.0):
         return CanaryVerdict(
             INCONCLUSIVE, fp_rate=0.0,
-            reason="fp_rate unknown (not measured) -> not P4a-eligible (fail-closed)")
+            reason="fp_rate missing/invalid (must be a finite probability in [0,1]) "
+                   "-> not P4a-eligible (fail-closed)")
     if fp_rate > fp_threshold:
         return CanaryVerdict(
             INCONCLUSIVE, fp_rate=fp_rate,

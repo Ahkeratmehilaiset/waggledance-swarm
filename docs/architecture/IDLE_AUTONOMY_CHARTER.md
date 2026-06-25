@@ -83,6 +83,17 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `docs/architecture/*PROVEN_SAFE_AUTOSIGN*` (P1 invariant, future versions)
 * `docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V1.md` (P2/D5 gate-authority taxonomy invariant)
 * `docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY*` (gate-taxonomy invariant, future versions)
+* `docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V1.md` (P3 consensus carry-forward INVARIANT — a merge/consensus-authority rule of the same class as P1/P2; #1394's own §6 expects this coverage — rco-2/rco-1 #1393)
+* `docs/architecture/*CONTENT_IDENTICAL_REBASE*` (P3 carry-forward invariant, future versions)
+<!-- NOTE: per-spec-number path-enumeration above is the DOWNGRADE-PROOF baseline (a
+     path-denylist entry cannot be stripped by editing the target file — it lives in
+     this charter, itself denylisted). It is intentionally NOT the whole story: a
+     follow-up adds a CONVENTION catch-all (a self-declared gate-policy marker matched
+     by evaluate_diff_content, WITH rco-1's anti-downgrade guard — marker REMOVAL is
+     itself off-allowlist — plus a CI marker-presence test) so NEW gate-policy specs
+     (P5/P6/…) are covered by construction without re-enumeration. Tracked as the
+     gate-policy-marker-convention follow-up; enumeration stays as the belt to the
+     marker's suspenders. — rco-1/rco-2/fable #1393 -->
 * `tools/bridge_event_taxonomy.py` (gate authority classifier — self-modification banned)
 * `tools/check_proven_safe_autosign_class.py` (P1 proven-safe-class checker — self-modification banned)
 * `tools/check_status_name_safe.py` (gate status-name linter — self-modification banned)

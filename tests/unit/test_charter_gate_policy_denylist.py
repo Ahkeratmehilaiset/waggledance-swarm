@@ -20,6 +20,8 @@ GATE_POLICY_PATHS = [
     "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V2.md",  # future version via glob
     "docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V1.md",
     "docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V2.md",  # future via glob
+    "docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V1.md",  # rco-2/rco-1 #1393
+    "docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V2.md",  # future via glob
     "tools/bridge_event_taxonomy.py",
     "tools/check_proven_safe_autosign_class.py",
     "tools/check_status_name_safe.py",

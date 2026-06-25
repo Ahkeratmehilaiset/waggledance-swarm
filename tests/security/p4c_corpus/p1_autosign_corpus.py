@@ -1,75 +1,71 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""P4c adversarial corpus — P1 proven-safe auto-sign slice (rco-2).
+"""P4c adversarial corpus — P1 proven-safe auto-sign slice (rco-2). CASES only.
 
-Seeded from the REAL verdicts of the MERGED #1384 checker
-(``tools/check_proven_safe_autosign_class.classify_change``), captured 2026-06-24
-against ``origin/main`` 0bc71f2a — NOT spec-derived (the propagation-risk fix:
-fixtures come from current real verdicts, never from a checker's own assumptions).
+Seeded from REAL verdicts of the MERGED #1384 checker
+(``tools/check_proven_safe_autosign_class.classify_change``), captured 2026-06-24/25.
 
-Each NEGATIVE-ENFORCED case asserts the checker routes the vector to
-``operator_sign`` (so a future checker change that DROPS one is a LOOSENING the
-validator fails CI on). DOCUMENTED-RESIDUAL cases record the known, operator-accepted
-fail-open tail (option-B "keep tests/ best-effort, eyes-open"); they are tracked,
-NEVER asserted-caught — moving one residual->enforced is an improvement, the reverse
-is operator-gated. The full gate (build+RCO+CI) still reviews these; auto-sign only
-removes the per-PR operator SIGNATURE, not the review.
+THREE case kinds:
+  - ``negative_enforced``  : the vector MUST route to operator_sign (a checker change
+                             that drops one is a LOOSENING the validator fails CI on).
+  - ``documented_residual``: known auto_sign (NOT caught); tracked, never asserted-caught.
+  - ``positive_autosign``  : inert/legit content that MUST auto_sign — proves the
+                             checker does NOT over-block (incl. borderline: a dangerous
+                             word in a COMMENT/STRING must still auto_sign).
+
+TRUST BOUNDARY (rco-1 #1392): this file is allowlist-clean (extendable). The
+ANTI-WEAKENING ANCHORS (the frozen id MANIFEST, the per-id EXPECTED_KIND/FAMILY, and
+FAMILY_FLOOR) live in the DENYLISTED ``validate_p4c_corpus.py`` so a CASES edit cannot
+silently drop a case, flip a kind, or empty a floor. Adding a genuinely-new case
+requires editing the denylisted anchors too (an operator-signed change) — correct,
+since changing the PROTECTED set is a gate-policy act.
+
+Each case: {id, kind, family, body (added lines), path (defaults tests/_p4c_probe.py)}.
 """
 from __future__ import annotations
 
-ENFORCED = "negative_enforced"     # checker MUST route -> operator_sign
-RESIDUAL = "documented_residual"   # known auto_sign (not caught); improvement allowed
+ENFORCED = "negative_enforced"
+RESIDUAL = "documented_residual"
+POSITIVE = "positive_autosign"
 
-# Each case exercises ONE vector as the added lines of a tests/ file (in SAFE_ROOTS,
-# so the dangerous-callable scan is the deciding predicate).
+_T = "tests/_p4c_probe.py"
+
 CASES = [
-    # --- direct dangerous builtins / callables -------------------------------
-    {"id": "p1_direct_eval",        "kind": ENFORCED, "family": "direct",        "body": ["eval('1+1')"]},
-    {"id": "p1_direct_exec",        "kind": ENFORCED, "family": "direct",        "body": ["exec('x=1')"]},
-    {"id": "p1_direct_compile",     "kind": ENFORCED, "family": "direct",        "body": ["compile('1','<s>','eval')"]},
-    {"id": "p1_direct_dunder_import","kind": ENFORCED,"family": "direct",        "body": ["__import__('os')"]},
-    {"id": "p1_direct_os_system",   "kind": ENFORCED, "family": "direct",        "body": ["import os", "os.system('x')"]},
-    {"id": "p1_direct_subprocess",  "kind": ENFORCED, "family": "direct",        "body": ["import subprocess", "subprocess.Popen(['x'])"]},
-    # --- getattr-literal indirection -----------------------------------------
-    {"id": "p1_getattr_literal",    "kind": ENFORCED, "family": "getattr_literal","body": ["import os", "getattr(os, 'system')('x')"]},
-    # --- escape-hatch / dynamic-dispatch family (bar requires >= 2) -----------
-    {"id": "p1_reassign_eval",      "kind": ENFORCED, "family": "escape_hatch",  "body": ["e = eval", "e('1+1')"]},
-    {"id": "p1_vars_subscript",     "kind": ENFORCED, "family": "escape_hatch",  "body": ["vars()['eval']('x')"]},
-    {"id": "p1_globals_subscript",  "kind": ENFORCED, "family": "escape_hatch",  "body": ["globals()['eval']('x')"]},
-    {"id": "p1_list_index_eval",    "kind": ENFORCED, "family": "escape_hatch",  "body": ["[eval][0]('x')"]},
-    {"id": "p1_breakpoint",         "kind": ENFORCED, "family": "escape_hatch",  "body": ["breakpoint()"]},
-    {"id": "p1_dunder_builtins_sub","kind": ENFORCED, "family": "escape_hatch",  "body": ["__builtins__['eval']('x')"]},
-    # --- dotted builtins (attribute form) ------------------------------------
-    {"id": "p1_dotted_builtins_eval","kind": ENFORCED,"family": "dotted_builtin","body": ["import builtins", "builtins.eval('x')"]},
-    # --- dunder-attribute reflection -----------------------------------------
-    {"id": "p1_getattribute",       "kind": ENFORCED, "family": "dunder_attr",   "body": ["o.__getattribute__('system')"]},
-    {"id": "p1_type_dict",          "kind": ENFORCED, "family": "dunder_attr",   "body": ["type(o).__dict__['x']"]},
-    {"id": "p1_subclasses",         "kind": ENFORCED, "family": "dunder_attr",   "body": ["().__class__.__subclasses__()"]},
-    # --- operator-module dispatch --------------------------------------------
-    {"id": "p1_operator_attrgetter","kind": ENFORCED, "family": "operator_dispatch","body": ["import operator", "operator.attrgetter('system')(os)"]},
-    {"id": "p1_operator_methodcaller","kind": ENFORCED,"family": "operator_dispatch","body": ["import operator", "operator.methodcaller('system','x')(os)"]},
-    # --- dynamic import ------------------------------------------------------
-    {"id": "p1_importlib",          "kind": ENFORCED, "family": "dynamic_import", "body": ["import importlib", "importlib.import_module('os').system('x')"]},
-    # --- deserialize / native ------------------------------------------------
-    {"id": "p1_pickle_loads",       "kind": ENFORCED, "family": "deserialize",   "body": ["import pickle", "pickle.loads(b'x')"]},
-    {"id": "p1_ctypes_cdll",        "kind": ENFORCED, "family": "native",        "body": ["import ctypes", "ctypes.CDLL('x')"]},
-    # --- DOCUMENTED RESIDUAL (known fail-open; NOT asserted-caught) -----------
-    {"id": "p1_residual_file_write","kind": RESIDUAL, "family": "residual",      "body": ["open('/tmp/x','w').write('p')"]},
-    {"id": "p1_residual_socket",    "kind": RESIDUAL, "family": "residual",      "body": ["import socket", "socket.socket().connect(('h', 1))"]},
+    # --- NEGATIVE-ENFORCED: must -> operator_sign --------------------------------
+    {"id": "p1_direct_eval",         "kind": ENFORCED, "family": "direct",         "path": _T, "body": ["eval('1+1')"]},
+    {"id": "p1_direct_exec",         "kind": ENFORCED, "family": "direct",         "path": _T, "body": ["exec('x=1')"]},
+    {"id": "p1_direct_compile",      "kind": ENFORCED, "family": "direct",         "path": _T, "body": ["compile('1','<s>','eval')"]},
+    {"id": "p1_direct_dunder_import","kind": ENFORCED, "family": "direct",         "path": _T, "body": ["__import__('os')"]},
+    {"id": "p1_direct_os_system",    "kind": ENFORCED, "family": "direct",         "path": _T, "body": ["import os", "os.system('x')"]},
+    {"id": "p1_direct_subprocess",   "kind": ENFORCED, "family": "direct",         "path": _T, "body": ["import subprocess", "subprocess.Popen(['x'])"]},
+    {"id": "p1_getattr_literal",     "kind": ENFORCED, "family": "getattr_literal","path": _T, "body": ["import os", "getattr(os, 'system')('x')"]},
+    {"id": "p1_reassign_eval",       "kind": ENFORCED, "family": "escape_hatch",   "path": _T, "body": ["e = eval", "e('1+1')"]},
+    {"id": "p1_vars_subscript",      "kind": ENFORCED, "family": "escape_hatch",   "path": _T, "body": ["vars()['eval']('x')"]},
+    {"id": "p1_globals_subscript",   "kind": ENFORCED, "family": "escape_hatch",   "path": _T, "body": ["globals()['eval']('x')"]},
+    {"id": "p1_list_index_eval",     "kind": ENFORCED, "family": "escape_hatch",   "path": _T, "body": ["[eval][0]('x')"]},
+    {"id": "p1_breakpoint",          "kind": ENFORCED, "family": "escape_hatch",   "path": _T, "body": ["breakpoint()"]},
+    {"id": "p1_dunder_builtins_sub", "kind": ENFORCED, "family": "escape_hatch",   "path": _T, "body": ["__builtins__['eval']('x')"]},
+    {"id": "p1_dotted_builtins_eval","kind": ENFORCED, "family": "dotted_builtin", "path": _T, "body": ["import builtins", "builtins.eval('x')"]},
+    {"id": "p1_getattribute",        "kind": ENFORCED, "family": "dunder_attr",    "path": _T, "body": ["o.__getattribute__('system')"]},
+    {"id": "p1_type_dict",           "kind": ENFORCED, "family": "dunder_attr",    "path": _T, "body": ["type(o).__dict__['x']"]},
+    {"id": "p1_subclasses",          "kind": ENFORCED, "family": "dunder_attr",    "path": _T, "body": ["().__class__.__subclasses__()"]},
+    {"id": "p1_operator_attrgetter", "kind": ENFORCED, "family": "operator_dispatch","path": _T, "body": ["import operator", "operator.attrgetter('system')(os)"]},
+    {"id": "p1_operator_methodcaller","kind": ENFORCED,"family": "operator_dispatch","path": _T, "body": ["import operator", "operator.methodcaller('system','x')(os)"]},
+    {"id": "p1_importlib",           "kind": ENFORCED, "family": "dynamic_import", "path": _T, "body": ["import importlib", "importlib.import_module('os').system('x')"]},
+    {"id": "p1_pickle_loads",        "kind": ENFORCED, "family": "deserialize",    "path": _T, "body": ["import pickle", "pickle.loads(b'x')"]},
+    {"id": "p1_ctypes_cdll",         "kind": ENFORCED, "family": "native",         "path": _T, "body": ["import ctypes", "ctypes.CDLL('x')"]},
+    # --- DOCUMENTED-RESIDUAL: known auto_sign (not asserted-caught) ---------------
+    {"id": "p1_residual_file_write", "kind": RESIDUAL, "family": "residual",       "path": _T, "body": ["open('/tmp/x','w').write('p')"]},
+    {"id": "p1_residual_socket",     "kind": RESIDUAL, "family": "residual",       "path": _T, "body": ["import socket", "socket.socket().connect(('h', 1))"]},
+    # --- POSITIVE-AUTOSIGN: legit/inert content that MUST auto_sign ---------------
+    {"id": "p1_pos_inert_simple",        "kind": POSITIVE, "family": "positive", "path": _T, "body": ["x = 1 + 2", "assert x == 3"]},
+    {"id": "p1_pos_metric_counter",      "kind": POSITIVE, "family": "positive", "path": _T, "body": ["from prometheus_client import Counter", "C = Counter('reqs','desc')"]},
+    {"id": "p1_pos_labelnames_positional","kind": POSITIVE,"family": "positive", "path": _T, "body": ["from prometheus_client import Counter", "C = Counter('reqs','desc',['route','code'])"]},
+    {"id": "p1_pos_labelnames_kwarg",    "kind": POSITIVE, "family": "positive", "path": _T, "body": ["from prometheus_client import Counter", "C = Counter('reqs','desc',labelnames=['route'])"]},
+    {"id": "p1_pos_negative_buckets",    "kind": POSITIVE, "family": "positive", "path": _T, "body": ["from prometheus_client import Histogram", "H = Histogram('lat','d',buckets=(-1.0,0.0,1.0))"]},
+    # BORDERLINE positives: a dangerous WORD in a comment/string must STILL auto_sign
+    # (proves the AST scan ignores non-code contexts -- the anti-false-positive guard).
+    {"id": "p1_pos_dangerword_comment",  "kind": POSITIVE, "family": "positive_borderline", "path": _T, "body": ["# do NOT call eval() or os.system() here", "x = 1"]},
+    {"id": "p1_pos_dangerword_string",   "kind": POSITIVE, "family": "positive_borderline", "path": _T, "body": ["msg = 'never use eval or subprocess.Popen or os.system'", "y = len(msg)"]},
+    # path-positive: an inert docs/benchmarks file stays auto_sign (SAFE_ROOTS).
+    {"id": "p1_pos_docs_benchmarks",     "kind": POSITIVE, "family": "positive", "path": "docs/benchmarks/run_notes.md", "body": ["# benchmark notes: throughput numbers", "data = [1, 2, 3]"]},
 ]
-
-# FROZEN literal manifest of expected case_ids. The validator fails if CASES drops
-# or duplicates any id (a silently-dropped case would shrink coverage unnoticed).
-# This is a LITERAL (not derived from CASES) on purpose, so deleting a CASE is caught.
-MANIFEST = frozenset({
-    "p1_direct_eval", "p1_direct_exec", "p1_direct_compile", "p1_direct_dunder_import",
-    "p1_direct_os_system", "p1_direct_subprocess", "p1_getattr_literal",
-    "p1_reassign_eval", "p1_vars_subscript", "p1_globals_subscript", "p1_list_index_eval",
-    "p1_breakpoint", "p1_dunder_builtins_sub", "p1_dotted_builtins_eval",
-    "p1_getattribute", "p1_type_dict", "p1_subclasses",
-    "p1_operator_attrgetter", "p1_operator_methodcaller", "p1_importlib",
-    "p1_pickle_loads", "p1_ctypes_cdll",
-    "p1_residual_file_write", "p1_residual_socket",
-})
-
-# Families that must hold >= MIN_FAMILY_FLOOR cases (breadth on the riskiest vectors).
-FAMILY_FLOOR = {"escape_hatch": 2}

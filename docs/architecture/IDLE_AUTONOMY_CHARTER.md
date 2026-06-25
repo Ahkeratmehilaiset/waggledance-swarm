@@ -73,6 +73,20 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `waggledance/core/magma/demo_policy.py` (adversarial-corpus reference policy anchor — self-consistent-tamper guarded)
 * `waggledance/core/magma/adversarial_corpus_eval.py` (adversarial-corpus evaluator/re-derivation anchor — self-consistent-tamper guarded)
 * `tools/validate_synthetic_adversarial_corpus.py` (adversarial-corpus structural validator anchor — self-consistent-tamper guarded)
+<!-- Gate-policy / gate-ops-tooling class (added 2026-06-25 after the #1387
+auto-merge-bypass: an allowlist-clean gate-policy spec auto-merged without the
+operator-sign because the free-text RCO safety-latch was misclassified. These
+paths are OFF-ALLOWLIST BY CONSTRUCTION so an invariant-bearing / gate-authority
+PR can never autonomous-merge — it is never reliant on a classifier-readable
+latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean.) -->
+* `docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V1.md` (P1 auto-sign INVARIANT — operator signs the invariant)
+* `docs/architecture/*PROVEN_SAFE_AUTOSIGN*` (P1 invariant, future versions)
+* `docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V1.md` (P2/D5 gate-authority taxonomy invariant)
+* `docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY*` (gate-taxonomy invariant, future versions)
+* `tools/bridge_event_taxonomy.py` (gate authority classifier — self-modification banned)
+* `tools/check_proven_safe_autosign_class.py` (P1 proven-safe-class checker — self-modification banned)
+* `tools/check_status_name_safe.py` (gate status-name linter — self-modification banned)
+* `tools/auto_rollback_eligibility.py` (P4a auto-rollback eligibility verifier — self-modification banned)
 * `.env`
 * `.env.*`
 * `**/.env`

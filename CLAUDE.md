@@ -185,11 +185,21 @@ consensus-sign amendment** in `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md
   checks pass + correct head-exact, author≠reviewer consensus computation + a
   MAGMA receipt recording the basis. Any missing/ambiguous element fails closed to
   `operator_review_required` (an explicit signature is still required).
-* **Stays operator-EXPLICIT** (never rides standing consensus): Rule-10 / Stage-2
-  cutover, any irreversible/outward-facing action, and the **gate-governance
-  class itself** (`CLAUDE.md`, `IDLE_AUTONOMY_CHARTER.md`, this contract, and the
-  gate-policy/gate-ops tools & specs on the charter denylist) — *the gate must not
-  be able to weaken itself via the mechanism it grants*.
+* **Scope — the (a)/(b) split** (operator scope decision 2026-06-25; the precise
+  membership line + mechanical rule are in the contract). **(a) stays
+  operator-EXPLICIT** (never rides standing consensus): Rule-10 / Stage-2 cutover,
+  any irreversible/outward-facing action, and the **verdict-computing + core
+  governance class** — `CLAUDE.md`, the charter + its loader, this contract, and
+  the gate code the merge gate reads/executes at runtime to compute a verdict
+  (`verify_bridge_consensus`, `check_bridge_changes_requested`,
+  `check_rco_pass_present`, `idle_consensus_auto_merge`, the merge/receipt
+  executors, `check_proven_safe_autosign_class`), plus any PR that **wires** a
+  dormant tool onto that runtime path — *the gate must not weaken itself via the
+  mechanism it grants*. **(b) RIDES the standing sign**: gate-ADJACENT artifacts
+  NOT on the runtime verdict path — the P1/P2/P3/P4 **spec docs**, **dormant
+  unwired tools** (`bridge_event_taxonomy`, `auto_rollback_eligibility`,
+  `post_merge_canary`), and the **P4c corpus/validator** (CI tests). A dormant tool
+  migrates (b)→(a) the moment a PR wires it into the gate. When in doubt, **(a)**.
 * **DORMANT until bootstrap-signed AND cause-B fixed**: the rule has NO effect
   until the operator places an explicit per-PR signature on **both** PR #1393
   (charter gate-policy denylist) **and** the PR carrying this amendment, **AND**

@@ -302,23 +302,68 @@ that state — so the standing rule, defined this way, **would have PREVENTED th
 #1387 incident**. The standing rule does not loosen the gate; it makes the
 operator-sign equivalent the *fullest* form of the gate.
 
-### Stays operator-EXPLICIT (never rides standing consensus)
+### Scope of the standing sign — the (a)/(b) split (operator scope decision 2026-06-25)
 
-These require a real per-PR operator signature regardless of any consensus state:
+Per the operator's direct scope decision (2026-06-25, via AskUserQuestion in the
+fable-5 session, relayed on this task; **ratified by the operator's signature on
+this amendment**), the off-allowlist / high-scrutiny class is split by the test
+**"does the merge gate READ/EXECUTE it at runtime to compute a merge/sign/veto
+verdict?"**:
+
+**(a) ALWAYS operator-EXPLICIT (never rides standing consensus) — verdict-computing
++ core governance.** A real per-PR operator signature is required regardless of any
+consensus state for:
 
 * the **Stage-2 atomic-flip cutover** and everything under Rule 10 / escalation
   category 5 (already out of scope above; Track T0c gates it separately);
 * any **irreversible or outward-facing** action (publishes, deletes, force-pushes,
   external sends, secret/credential changes);
-* the **gate-governance class itself** — any change to the approval-authority
-  machinery: `CLAUDE.md`, `IDLE_AUTONOMY_CHARTER.md`, this contract, the gate
-  tools/specs on the charter denylist (the gate-policy/gate-ops class, incl.
-  P1/P2/P3 invariant specs and the merge/veto/verifier tools). This is the
-  existing **Self-modification protection** principle (above) restated for the
-  standing rule: *the gate must not be able to weaken itself via the mechanism it
-  grants.* A gate-governance PR is off-allowlist by construction and NEVER rides
-  standing consensus — it is always operator-explicit.
-* the **two bootstrap PRs** (below).
+* the **core governance docs the gate itself reads/obeys**: `CLAUDE.md`,
+  `IDLE_AUTONOMY_CHARTER.md` + its loader `waggledance/core/idle_consensus_charter.py`,
+  and **this contract** (`BRIDGE_CONSENSUS_APPROVAL_V1.md`);
+* the **verdict-computing gate code** — anything the gate reads/executes at runtime
+  to compute a merge / sign / veto verdict: `tools/verify_bridge_consensus.py`,
+  `tools/check_bridge_changes_requested.py`, `tools/check_rco_pass_present.py`,
+  `tools/idle_consensus_auto_merge.py`, `tools/merge_with_bridge_receipt.py`,
+  `tools/write_bridge_consensus_merge_receipt.py`, and
+  `tools/check_proven_safe_autosign_class.py` (the P1 auto-sign checker — operator
+  named it explicitly: "the P1 auto-sign checker once it would compute");
+* **the wiring step itself** — any PR that **wires a dormant tool INTO the gate's
+  runtime verdict path** (e.g. the cause-B fix wiring `bridge_event_taxonomy` into
+  `check_bridge_changes_requested`) is (a), because it touches a verdict-computing
+  consumer and changes what the gate computes;
+* the **two bootstrap PRs** (#1393 + this amendment; see Bootstrap).
+
+This is the existing **Self-modification protection** principle restated: *the gate
+must not be able to weaken itself via the mechanism it grants.* A change on the
+gate's runtime verdict path is off-allowlist **and** operator-explicit.
+
+**(b) RIDES the standing sign (dual-RCO best-possible consensus) — gate-ADJACENT,
+NOT on the runtime verdict path.** These are denylisted (high-scrutiny → full
+treatment) but the operator's standing signature covers them once best-possible
+consensus holds:
+
+* the **gate-policy / design SPEC DOCS** (`P1_PROVEN_SAFE_AUTOSIGN_CLASS*`,
+  `BRIDGE_EVENT_GATE_TAXONOMY*` *spec doc*, `P3_CONTENT_IDENTICAL_REBASE*`, the
+  `P4_*` specs) — they **describe**; the gate does not read them at runtime;
+* **dormant tools NOT yet wired** into the gate: `tools/bridge_event_taxonomy.py`
+  (until the cause-B wiring PR — which is (a)), `tools/auto_rollback_eligibility.py`
+  (until wired to trigger reverts — that wiring is (a)),
+  `tools/post_merge_canary.py` (observability-only — no merge/sign authority even
+  when wired);
+* the **P4c corpus + its validator** (`tests/security/p4c_corpus/**`) — CI
+  integrity tests, not read by the merge gate at runtime. *(Borderline:
+  `validate_p4c_corpus.py` is the anti-tamper anchor for the auto-sign soundness
+  proof; placed in (b) per the runtime-read test but flagged for rco-1's corpus-
+  domain confirmation — tightening it to (a) is acceptable if rco-1 prefers.)*
+
+**Mechanical rule (so the line never needs re-bikeshedding):** a file is **(a)** iff
+it is `CLAUDE.md` / the charter / this contract, **or** the merge gate
+reads/executes it at runtime to compute a verdict (incl. a PR that *puts* it on that
+path). Everything else off-allowlist is **(b)**. A dormant tool **migrates from (b)
+to (a)** the moment a PR wires it into the gate — and that wiring PR is itself (a).
+Borderline membership is decided by lead + rco-1 jointly (operator-delegated); when
+in doubt, **(a)** (fail toward operator-explicit).
 
 ### Bootstrap (no circular self-authorization)
 

@@ -246,7 +246,209 @@ code-pattern denylist, so it operator-merges); or a direct bridge instruction
 to all active agents. The operator owns the charter; the substrate proves every
 merge against it.
 
+## Standing consensus-sign for off-allowlist / high-scrutiny PRs (2026-06-25 amendment — DORMANT until bootstrap-signed)
+
+**Status: DORMANT. This section has NO effect until the operator places an
+explicit per-PR signature on BOTH bootstrap PRs (see Bootstrap below). Until then
+the pre-existing rule stands: off-allowlist / high-scrutiny PRs require an
+explicit per-PR operator signature.**
+
+### Operator directive being captured
+
+> "allekirjoitan parhaan mahdollisen konsensus-hyväksynnän JÄLKEEN kaikki,
+> nyt + tulevaisuudessa, jatkakaa" — operator, 2026-06-25
+> ("I sign — AFTER best-possible consensus-approval — all [PRs], now and in
+> future; proceed", with the operator's own carve-out for Rule-10 / irreversible).
+
+This removes the per-PR-sign bottleneck for the off-allowlist class by declaring
+that, for that class, **the operator's signature is STANDING and is satisfied by
+a defined "best-possible consensus" state** — captured here AUTHORITATIVELY (an
+operator-signed amendment), never run from a chat relay. (Relay-only capture is
+exactly what produced the #1387 auto-merge and the B-vs-C relay-ambiguity; a
+relay does not change the gate — only a signed amendment does.)
+
+### Definition — "best-possible consensus" (the operator-sign equivalent; FULL gate, fail-closed)
+
+For an off-allowlist / high-scrutiny PR, the standing operator signature is
+satisfied **iff ALL of the following hold at the exact head SHA**, evaluated
+fail-closed (any missing, ambiguous, or unverifiable element →
+`operator_review_required`, i.e. an explicit per-PR signature is still required):
+
+1. **build_consensus@head** from **both** build slots — lead (`codex-lead-1`)
+   AND tools (`codex-tools-1`), author-excluded (author ≠ reviewer).
+2. **DUAL-RCO `RCO_PASS`@head** — **both** recognized RCOs
+   (`claude-rco-1` AND `claude-rco-2`), mandatory. (This is **stronger** than the
+   Rule-9a single-RCO-sufficient bar that governs allowlist-clean autonomous
+   merge — the off-allowlist class earns the higher bar precisely because it is
+   the class that previously required the operator's own eyes.)
+3. **CI all required checks green@head** (the full required matrix, e.g. 6/6).
+4. **NO unretracted veto/finding** from **any** recognized RCO on the PR's
+   canonical task — RCO veto is absolute and per-identity and **outranks** a
+   pass (`tools/check_bridge_changes_requested.py`).
+5. **Charter checks pass** — `evaluate_paths` + `evaluate_diff_content` evaluated
+   and recorded.
+6. **Correct consensus computation** — head-exact binding (any content-changing
+   re-push invalidates all prior approvals; content-identical base rebase carries
+   forward per the P3 rule), three+ distinct verified identities, agent-uuid
+   identity binding.
+7. **MAGMA receipt** records the standing-sign basis (the directive reference, the
+   approving identities, the head SHA, and each gate element) so a consumer can
+   re-derive the verdict — never a bare "operator standing-signed" flag.
+
+**Safety case (why this is adoptable):** at the #1387 bypass-merge the state was
+rco-2 pass but **no** rco-1 pass **and** an active rco-1 finding. The definition
+above (dual-RCO mandatory + no-unretracted-finding) is **strictly stronger** than
+that state — so the standing rule, defined this way, **would have PREVENTED the
+#1387 incident**. The standing rule does not loosen the gate; it makes the
+operator-sign equivalent the *fullest* form of the gate.
+
+### Scope of the standing sign — the (a)/(b) split (operator scope decision 2026-06-25)
+
+Per the operator's direct scope decision (2026-06-25, via AskUserQuestion in the
+fable-5 session, relayed on this task; **ratified by the operator's signature on
+this amendment**), the off-allowlist / high-scrutiny class is split by the test
+**"does the merge gate READ/EXECUTE it at runtime to compute a merge/sign/veto
+verdict?"**:
+
+**(a) ALWAYS operator-EXPLICIT (never rides standing consensus) — verdict-computing
++ core governance.** A real per-PR operator signature is required regardless of any
+consensus state for:
+
+* the **Stage-2 atomic-flip cutover** and everything under Rule 10 / escalation
+  category 5 (already out of scope above; Track T0c gates it separately);
+* any **irreversible or outward-facing** action (publishes, deletes, force-pushes,
+  external sends, secret/credential changes);
+* the **core governance docs the gate itself reads/obeys**: `CLAUDE.md`,
+  `IDLE_AUTONOMY_CHARTER.md` + its loader `waggledance/core/idle_consensus_charter.py`,
+  and **this contract** (`BRIDGE_CONSENSUS_APPROVAL_V1.md`);
+* the **verdict-computing gate code** — anything the gate reads/executes at runtime
+  to compute a merge / sign / veto verdict: `tools/verify_bridge_consensus.py`,
+  `tools/check_bridge_changes_requested.py`, `tools/check_rco_pass_present.py`,
+  `tools/idle_consensus_auto_merge.py`, `tools/merge_with_bridge_receipt.py`,
+  `tools/write_bridge_consensus_merge_receipt.py`, and
+  `tools/check_proven_safe_autosign_class.py` (the P1 auto-sign checker — operator
+  named it explicitly: "the P1 auto-sign checker once it would compute");
+* **the wiring step itself** — any PR that **wires a dormant tool INTO the gate's
+  runtime verdict path** (e.g. the cause-B fix wiring `bridge_event_taxonomy` into
+  `check_bridge_changes_requested`) is (a), because it touches a verdict-computing
+  consumer and changes what the gate computes;
+* the **two bootstrap PRs** (#1393 + this amendment; see Bootstrap).
+
+This is the existing **Self-modification protection** principle restated: *the gate
+must not be able to weaken itself via the mechanism it grants.* A change on the
+gate's runtime verdict path is off-allowlist **and** operator-explicit.
+
+**(b) RIDES the standing sign (dual-RCO best-possible consensus) — gate-ADJACENT,
+NOT on the runtime verdict path.** These are denylisted (high-scrutiny → full
+treatment) but the operator's standing signature covers them once best-possible
+consensus holds:
+
+* the **gate-policy / design SPEC DOCS** (`P1_PROVEN_SAFE_AUTOSIGN_CLASS*`,
+  `BRIDGE_EVENT_GATE_TAXONOMY*` *spec doc*, `P3_CONTENT_IDENTICAL_REBASE*`, the
+  `P4_*` specs) — they **describe**; the gate does not read them at runtime;
+* **dormant tools NOT yet wired** into the gate: `tools/bridge_event_taxonomy.py`
+  (until the cause-B wiring PR — which is (a)), `tools/auto_rollback_eligibility.py`
+  (until wired to trigger reverts — that wiring is (a)),
+  `tools/post_merge_canary.py` (observability-only — no merge/sign authority even
+  when wired);
+* the **P4c corpus + its validator** (`tests/security/p4c_corpus/**`) — CI
+  integrity tests, not read by the merge gate at runtime. *(Borderline:
+  `validate_p4c_corpus.py` is the anti-tamper anchor for the auto-sign soundness
+  proof; placed in (b) per the runtime-read test but flagged for rco-1's corpus-
+  domain confirmation — tightening it to (a) is acceptable if rco-1 prefers.)*
+
+**Mechanical rule (so the line never needs re-bikeshedding):** a file is **(a)** iff
+it is `CLAUDE.md` / the charter / this contract, **or** the merge gate
+reads/executes it at runtime to compute a verdict (incl. a PR that *puts* it on that
+path). Everything else off-allowlist is **(b)**. A dormant tool **migrates from (b)
+to (a)** the moment a PR wires it into the gate — and that wiring PR is itself (a).
+Borderline membership is decided by lead + rco-1 jointly (operator-delegated); when
+in doubt, **(a)** (fail toward operator-explicit).
+
+### Bootstrap (no circular self-authorization)
+
+You cannot use "consensus = sign" to authorize the rule that creates it. The rule
+activates only after the operator places an explicit per-PR signature on **both**:
+
+* **(a)** PR #1393 — the charter gate-policy/gate-ops denylist (the structural
+  recognition that this class is high-scrutiny); and
+* **(b)** the PR carrying THIS amendment (CLAUDE.md Rule 9b + this section).
+
+Both are off-allowlist (`CLAUDE.md` and this contract are denylisted →
+`allowed=False`), so neither can ride the mechanism it establishes. After both are
+operator-signed and merged, the standing rule applies to all subsequent
+off-allowlist / high-scrutiny PRs **except** the carve-outs above — subject to the
+**Activation precondition** below.
+
+### Activation precondition — cause-B latch must be fixed first (rco-2 fence, PR #1396)
+
+**Why this is mandatory.** Making consensus *the operator's signature* AMPLIFIES
+every defect in the consensus computation into an **operator-signature bypass**,
+not merely an RCO bypass. Element 4 of the definition ("no unretracted
+veto/finding from any recognized RCO") is computed by
+`tools/check_bridge_changes_requested.py`, which today still has the **cause-B
+free-text latch fail-open** (the #1387 defect class): a recognized-RCO veto posted
+with a non-latching token (a free-text / `hold` / `veto` status rather than
+`changes_requested`/`blocked`), or a pass-then-mistokened-veto at head, does **not**
+latch as a block → element 4 clears → the PR would receive the STANDING operator
+signature **despite a live RCO veto**. Under consensus-as-sign that bypasses the
+operator's signature. The standing rule must therefore NOT be relied upon while
+that fail-open is open.
+
+**Precondition (fail-closed — ALL must hold before the standing rule is treated as
+ACTIVE, in addition to the two bootstrap signatures):**
+
+1. **Bootstrap signatures** — explicit operator-sign on PR #1393 **and** this
+   amendment PR (above).
+2. **Cause-B fixed AND WIRED into the live consumer** — the
+   "recognized-RCO finding blocks by **TYPE**" fix (the P2/D5 gate-event taxonomy,
+   `BRIDGE_EVENT_GATE_TAXONOMY_V1.md` / `tools/bridge_event_taxonomy.py`, #1387/#1388)
+   is wired into `tools/check_bridge_changes_requested.py` so element 4 latches a
+   recognized-RCO veto by event **type/authority**, not by free-text token
+   presence. A mistokened or free-text RCO veto at head must route element 4 to
+   **blocked**.
+3. **Verification harness CI-green** — a conformance corpus / P4c-style harness
+   proves, in CI against the live consumer, that element 4 **cannot be cleared**
+   by a mistokened / negated / free-text recognized-RCO veto at head (the negated
+   and mistokened forms explicitly enforced, not just the happy path).
+
+**Interim posture until the precondition is met (residual documented per the fence
+option-b belt):** the existing **per-PR operator signature stands** for the
+off-allowlist class; the standing rule is **dormant** even after the two bootstrap
+signatures until elements 2–3 land. While dormant, the gate relies on:
+dual-RCO-BOTH-pass + the gate-governance carve-out + the operational requirement
+that **recognized RCOs MUST use latching `changes_requested`/`blocked` block
+vocabulary** for any veto (a free-text "hold" does not latch — see the
+status-field-block-vocabulary discipline). The cause-B latch-fix + harness is a
+**named fast-follow** (the P2/D5 taxonomy-wiring track), not an open-ended TODO.
+
+Net: element 4 is only *sound* once its computation cannot be cleared by a
+mistokened veto. The standing rule activates when that soundness is proven in CI —
+never before.
+
+### Complementarity with the charter denylist (#1393)
+
+The denylist and the standing rule are **complementary, not redundant**: the
+denylist makes the gate-policy/gate-ops class **off-allowlist** (so it receives
+the FULL best-possible-consensus treatment instead of silently auto-merging
+path-clean — the #1387 hole), and the standing rule says that class's
+operator-sign **is** best-possible-consensus — except gate-governance changes,
+which stay operator-explicit per the carve-out above. Both are required.
+
+### Operator emergency-stop and revocation remain authoritative
+
+This amendment does not weaken the operator's stop/revocation layers. Reverting
+this section (an edit to this denylisted contract) is itself off-allowlist and
+operator-merged; the standing rule can be withdrawn at any time the same way it
+was granted.
+
 ## Versioning
 
 * v1 (this doc): three-agent fail-closed MERGE consensus; cutover explicitly
   out of scope. Enforcement lands in T0b; cutover loosening deferred to T0c.
+* v1.1 (2026-06-25 amendment, DORMANT until bootstrap-signed): standing
+  consensus-sign for the off-allowlist / high-scrutiny class — best-possible
+  consensus (dual-RCO + full fail-closed gate) substitutes for the per-PR
+  operator signature, except Rule-10/cutover, irreversible/outward-facing
+  actions, and the gate-governance class. Bootstrap = explicit operator-sign on
+  PR #1393 + the amendment PR.

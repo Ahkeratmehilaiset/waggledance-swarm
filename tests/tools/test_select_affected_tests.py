@@ -132,6 +132,37 @@ def test_source_selected_by_name_convention(tmp_path):
     assert "tests/tools/test_beta.py" in r["tests"]
 
 
+def test_explicit_sprint_proof_mapping_selects_hex_hierarchy_tests(tmp_path):
+    _mkrepo(tmp_path)
+    mapped = tmp_path / "tests" / "test_ring_messaging_hierarchy_proof.py"
+    mapped.write_text("def test_ring():\n    assert True\n", encoding="utf-8")
+    r = select_affected_tests(
+        ["waggledance/core/hex_topology/parent_child_relations.py"], tmp_path
+    )
+    assert r["full_suite"] is False
+    assert r["tests"] == ["tests/test_ring_messaging_hierarchy_proof.py"]
+
+
+def test_explicit_sprint_proof_mapping_selects_importlib_loaded_tool_test(tmp_path):
+    _mkrepo(tmp_path)
+    mapped = tmp_path / "tests" / "test_low_risk_autogrowth_real_loop_proof.py"
+    mapped.write_text("def test_low_risk():\n    assert True\n", encoding="utf-8")
+    r = select_affected_tests(
+        ["tools/run_low_risk_autogrowth_real_loop_proof.py"], tmp_path
+    )
+    assert r["full_suite"] is False
+    assert r["tests"] == ["tests/test_low_risk_autogrowth_real_loop_proof.py"]
+
+
+def test_explicit_sprint_proof_mapping_missing_test_fails_safe(tmp_path):
+    _mkrepo(tmp_path)
+    r = select_affected_tests(
+        ["waggledance/core/hex_topology/subdivision_operator.py"], tmp_path
+    )
+    assert r["full_suite"] is True
+    assert "explicit affected test missing" in r["reason"]
+
+
 def test_cli_json_files(tmp_path):
     _mkrepo(tmp_path)
     completed = subprocess.run(

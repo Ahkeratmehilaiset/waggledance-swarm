@@ -85,6 +85,10 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY*` (gate-taxonomy invariant, future versions)
 * `docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V1.md` (P3 consensus carry-forward INVARIANT — a merge/consensus-authority rule of the same class as P1/P2; #1394's own §6 expects this coverage — rco-2/rco-1 #1393)
 * `docs/architecture/*CONTENT_IDENTICAL_REBASE*` (P3 carry-forward invariant, future versions)
+* `docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md` (P4 safety substrate invariant — operator signs the substrate bounds)
+* `docs/architecture/P4_SAFETY_SUBSTRATE*` (P4 safety substrate invariant, future versions)
+* `docs/architecture/P4B_POST_MERGE_CANARY_V1.md` (P4b post-merge canary invariant — operator signs the post-merge runtime guard)
+* `docs/architecture/P4B_POST_MERGE_CANARY*` (P4b post-merge canary invariant, future versions)
 <!-- NOTE: per-spec-number path-enumeration above is the DOWNGRADE-PROOF baseline (a
      path-denylist entry cannot be stripped by editing the target file — it lives in
      this charter, itself denylisted). It is intentionally NOT the whole story: a
@@ -98,6 +102,7 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `tools/check_proven_safe_autosign_class.py` (P1 proven-safe-class checker — self-modification banned)
 * `tools/check_status_name_safe.py` (gate status-name linter — self-modification banned)
 * `tools/auto_rollback_eligibility.py` (P4a auto-rollback eligibility verifier — self-modification banned)
+* `tools/post_merge_canary.py` (P4b post-merge canary runner — self-modification banned)
 * `tools/verify_bridge_consensus.py` (bridge-consensus 3-identity verifier — self-modification banned; defensive future-proof: the verifier logic currently lives in the already-denylisted `tools/idle_consensus_auto_merge.py`, this closes the standalone-file refactor path — rco-1 #1393)
 * `tests/security/p4c_corpus/validate_p4c_corpus.py` (P4c adversarial-corpus validator anchor — self-consistent-tamper guarded; an auto-merged edit could weaken the content-derived re-derivation / coverage enforcement — rco-1 #1392. Corpus CASE additions stay allowlist-clean so the corpus can be extended; only the validator anchor is protected.)
 * `.env`

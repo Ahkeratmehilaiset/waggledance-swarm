@@ -76,7 +76,7 @@ def classify(
     merged_sha: str,
     prior_good_sha: str = "",
     required_confirmations: int = MIN_CONFIRMATIONS_FLOOR,
-    fp_rate: float = 0.0,
+    fp_rate: float | None = None,
     fp_threshold: float = DEFAULT_FP_THRESHOLD,
     canary_manifest_version: str = "",
     receipt_ref: str = "",
@@ -102,8 +102,14 @@ def classify(
             INCONCLUSIVE, fp_rate=fp_rate,
             reason="a canary run exceeded budget / did not complete -> escalate, no rollback")
 
-    # Fail-safe gate 2: an over-threshold FP-rate disqualifies this canary from
-    # triggering auto-rollback (spec §5) -> INCONCLUSIVE (may alert, never acts).
+    # Fail-safe gate 2: the canary's FP-rate must be KNOWN and within threshold to
+    # be P4a-eligible (spec §5). A MISSING/None fp_rate is fail-CLOSED -> INCONCLUSIVE
+    # (rco-1 #1391: defaulting fp_rate to a permissive 0.0 let a caller that omits it
+    # bypass the disqualification gate -> a false rollback on an UNVERIFIED canary).
+    if fp_rate is None:
+        return CanaryVerdict(
+            INCONCLUSIVE, fp_rate=0.0,
+            reason="fp_rate unknown (not measured) -> not P4a-eligible (fail-closed)")
     if fp_rate > fp_threshold:
         return CanaryVerdict(
             INCONCLUSIVE, fp_rate=fp_rate,

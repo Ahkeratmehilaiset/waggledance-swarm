@@ -23,6 +23,7 @@ def run(checks: dict, *, completed=True, within_budget=True) -> dict:
 def cls(runs, **kw):
     kw.setdefault("merged_sha", SHA)
     kw.setdefault("prior_good_sha", GOOD)
+    kw.setdefault("fp_rate", 0.0)   # explicit KNOWN good fp_rate; omission is fail-closed (tested separately)
     return classify(runs, **kw)
 
 
@@ -91,6 +92,14 @@ def test_run_over_budget_is_inconclusive_no_signal():
 def test_run_not_completed_is_inconclusive():
     v = cls([run({"contract": False}, completed=False),
              run({"contract": False})])
+    assert v.outcome == INCONCLUSIVE and v.p4a_signal is None
+
+
+def test_fp_rate_unknown_is_inconclusive_fail_closed():
+    # rco-1 #1391: omitting fp_rate must NOT default permissive -> a confirmed regress
+    # with an UNKNOWN (unmeasured) fp_rate is fail-CLOSED (INCONCLUSIVE, no rollback).
+    v = classify([run({"contract": False}), run({"contract": False})],
+                 merged_sha=SHA, prior_good_sha=GOOD)   # fp_rate omitted -> None
     assert v.outcome == INCONCLUSIVE and v.p4a_signal is None
 
 

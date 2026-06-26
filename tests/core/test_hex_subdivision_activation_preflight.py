@@ -10,6 +10,7 @@ from waggledance.core.hex_topology.canary_mirror import (
     build_canary_route_comparison,
 )
 from waggledance.core.hex_topology import ring_messaging as rm
+from waggledance.core.hex_topology import subdivision_preflight as sp
 from waggledance.core.hex_topology import subdivision_operator as so
 from waggledance.core.hex_topology.subdivision_preflight import (
     SUBDIVISION_ACTIVATION_PREFLIGHT_NEXT_GATE,
@@ -96,6 +97,20 @@ def test_subdivision_preflight_binds_packet_and_canary_without_authority():
     assert packet["checks"]["input_topology_unchanged"] is True
     assert report["shadow_activation_packet_digest"] == sha256_digest(packet)
 
+    ring = report["ring_delivery_observability"]
+    assert ring["schema_version"] == "hex.ring_delivery_observability.v1"
+    assert ring["total"] == packet["delivery_summary"]["message_count"]
+    assert ring["delivered_count"] == packet["delivery_summary"]["delivered_count"]
+    assert ring["blocked_count"] == 0
+    assert ring["delivery_success_ratio"] == 1.0
+    assert ring["transport_applied"] is False
+    assert ring["by_message_kind"]["parent_to_child"]["delivered"] == 2
+    assert ring["by_message_kind"]["child_to_parent"]["delivered"] == 2
+    assert ring["by_message_kind"]["ring_request"]["delivered"] == 2
+    assert report["ring_delivery_observability_digest"] == sha256_digest(ring)
+    assert report["ring_delivery_success_ratio"] == 1.0
+    assert report["ring_delivery_blocked_by_class"] == {}
+
     canary = report["canary_mirror_report"]
     assert canary["sample_count"] == 2
     assert canary["runtime_authority_granted"] is False
@@ -105,10 +120,12 @@ def test_subdivision_preflight_binds_packet_and_canary_without_authority():
     )
 
     core = {
-        key: value for key, value in report.items()
+        key: value
+        for key, value in report.items()
         if key not in (
             "preflight_digest",
             "shadow_activation_packet",
+            "ring_delivery_observability",
             "canary_mirror_report",
         )
     }
@@ -155,6 +172,12 @@ def test_subdivision_preflight_fails_closed_on_blocked_delivery(monkeypatch):
     assert report["shadow_activation_packet"]["delivery_summary"][
         "blocked_count"
     ] == 6
+    assert "ring_delivery_observability_no_blocked_messages" in (
+        report["blockers"]
+    )
+    assert report["ring_delivery_blocked_by_class"] == {
+        rm.RING_BLOCK_CLASS_SCHEMA: 6
+    }
     assert report["runtime_authority_granted"] is False
 
 
@@ -168,3 +191,26 @@ def test_subdivision_preflight_refuses_canary_authority_drift():
             plan=_plan(),
             canary_comparisons=forged,
         )
+
+
+def test_subdivision_preflight_fails_closed_on_transport_observability(
+    monkeypatch,
+):
+    real_summary = sp.summarize_ring_delivery_batch
+
+    def _forged_transport(deliveries):
+        summary = real_summary(deliveries)
+        return {**summary, "transport_applied": True}
+
+    monkeypatch.setattr(sp, "summarize_ring_delivery_batch", _forged_transport)
+
+    report = build_subdivision_activation_preflight(
+        topology=_topology(),
+        plan=_plan(),
+        canary_comparisons=_canary_records(),
+    )
+
+    assert report["ok"] is False
+    assert "ring_delivery_observability_transport_false" in report["blockers"]
+    assert report["transport_performed"] is False
+    assert report["runtime_authority_granted"] is False

@@ -67,6 +67,13 @@ CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES = {
 MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES = {
     "tools/merge_with_bridge_receipt.py",
 }
+P4_SUBSTRATE_FILE_DENYLIST_ENTRIES = {
+    "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
+    "docs/architecture/P4_SAFETY_SUBSTRATE*",
+    "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
+    "docs/architecture/P4B_POST_MERGE_CANARY*",
+    "tools/post_merge_canary.py",
+}
 LEGACY_CODE_PATTERN_MARKERS = {
     "auto_execute=False",
     "operator_gate_required=True",
@@ -150,6 +157,11 @@ def test_charter_denylist_contains_merge_executor_anchor() -> None:
     assert MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
 
 
+def test_charter_denylist_contains_p4_substrate_operator_gate_artifacts() -> None:
+    charter = load_charter()
+    assert P4_SUBSTRATE_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
 def test_charter_preserves_existing_code_pattern_markers() -> None:
     charter = load_charter()
     code_patterns = "\n".join(charter.code_pattern_denylist)
@@ -169,6 +181,21 @@ def test_evaluate_paths_blocks_denylisted_path() -> None:
     decision = evaluate_paths(charter, ["CLAUDE.md"])
     assert decision.allowed is False
     assert "CLAUDE.md" in decision.blocked_paths
+
+
+def test_evaluate_paths_blocks_p4_substrate_operator_gate_artifacts() -> None:
+    charter = load_charter()
+    for path in (
+        "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
+        "docs/architecture/P4_SAFETY_SUBSTRATE_RFC_V2.md",
+        "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
+        "docs/architecture/P4B_POST_MERGE_CANARY_V2.md",
+        "tools/post_merge_canary.py",
+    ):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False, path
+        assert decision.blocked_paths == (path,)
+        assert decision.reason == "denylist hit"
 
 
 def test_evaluate_paths_blocks_memory_subpath() -> None:

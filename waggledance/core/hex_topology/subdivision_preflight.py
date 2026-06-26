@@ -11,6 +11,10 @@ from waggledance.core.hex_topology.subdivision_operator import (
     SubdivisionPlan,
     build_shadow_activation_packet,
 )
+from waggledance.core.hex_topology.ring_messaging import (
+    RING_DELIVERY_OBSERVABILITY_SCHEMA,
+    summarize_ring_delivery_batch,
+)
 from waggledance.core.magma.canonical import sha256_digest
 
 
@@ -50,6 +54,10 @@ def build_subdivision_activation_preflight(
     canary_report = summarize_canary_mirror(canary_comparisons)
 
     delivery_summary = packet_dict["delivery_summary"]
+    ring_delivery_observability = summarize_ring_delivery_batch(
+        list(packet.deliveries)
+    )
+    message_kind_summary = ring_delivery_observability["by_message_kind"]
     guardrails = {
         "target_state_is_shadow": plan.target_state == (
             "subdivision_in_shadow"
@@ -71,6 +79,27 @@ def build_subdivision_activation_preflight(
         "canary_report_read_only": all(
             canary_report.get(flag) is expected
             for flag, expected in _CANARY_AUTHORITY_FLAGS.items()
+        ),
+        "ring_delivery_observability_schema_current": (
+            ring_delivery_observability["schema_version"]
+            == RING_DELIVERY_OBSERVABILITY_SCHEMA
+        ),
+        "ring_delivery_observability_covers_activation_messages": (
+            ring_delivery_observability["total"]
+            == delivery_summary["message_count"]
+        ),
+        "ring_delivery_observability_transport_false": (
+            ring_delivery_observability["transport_applied"] is False
+        ),
+        "ring_delivery_observability_no_blocked_messages": (
+            ring_delivery_observability["blocked_count"] == 0
+        ),
+        "ring_delivery_observability_success_ratio_one": (
+            ring_delivery_observability["delivery_success_ratio"] == 1.0
+        ),
+        "ring_hierarchy_message_mix_present": all(
+            message_kind_summary.get(kind, {}).get("delivered", 0) > 0
+            for kind in ("parent_to_child", "child_to_parent", "ring_request")
         ),
         "required_next_gate_is_runtime_commit": (
             SUBDIVISION_ACTIVATION_PREFLIGHT_NEXT_GATE
@@ -98,6 +127,15 @@ def build_subdivision_activation_preflight(
         "new_child_cell_ids": list(plan.new_child_cell_ids),
         "target_state": plan.target_state,
         "shadow_activation_packet_digest": sha256_digest(packet_dict),
+        "ring_delivery_observability_digest": sha256_digest(
+            ring_delivery_observability
+        ),
+        "ring_delivery_success_ratio": (
+            ring_delivery_observability["delivery_success_ratio"]
+        ),
+        "ring_delivery_blocked_by_class": (
+            ring_delivery_observability["blocked_by_class"]
+        ),
         "canary_mirror_report_digest": canary_report["canonical_digest"],
         "canary_sample_count": canary_report["sample_count"],
         "canary_agreement_rate": canary_report["agreement_rate"],
@@ -113,5 +151,6 @@ def build_subdivision_activation_preflight(
         **core,
         "preflight_digest": sha256_digest(core),
         "shadow_activation_packet": packet_dict,
+        "ring_delivery_observability": ring_delivery_observability,
         "canary_mirror_report": canary_report,
     }

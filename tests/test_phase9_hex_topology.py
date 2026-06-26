@@ -533,6 +533,93 @@ def test_shadow_subdivision_children_can_exchange_ring_messages():
     assert delivery.blocked_reason is None
 
 
+def test_shadow_activation_packet_wires_parent_child_and_ring_delivery():
+    t_orig = _topo()
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2", "b3"),
+    )
+
+    packet = so.build_shadow_activation_packet(t_orig, plan)
+    packet_dict = packet.to_dict()
+
+    assert packet.ok is True
+    assert packet.no_runtime_mutation is True
+    assert packet.runtime_activation_authority_granted is False
+    assert set(packet.checks.values()) == {True}
+    assert pcr.children_of(packet.shadow_topology, "b") == [
+        "b1", "b2", "b3",
+    ]
+    for child_id in plan.new_child_cell_ids:
+        assert pcr.parent_of(packet.shadow_topology, child_id) == "b"
+        assert set(pcr.neighbors_of(packet.shadow_topology, child_id)) == (
+            set(plan.new_child_cell_ids) - {child_id}
+        )
+    assert packet_dict["delivery_summary"] == {
+        "message_count": 9,
+        "delivered_count": 9,
+        "blocked_count": 0,
+        "blocked_categories": [],
+    }
+    assert {
+        message["kind"] for message in packet_dict["activation_messages"]
+    } == {"parent_to_child", "child_to_parent", "ring_request"}
+
+
+def test_shadow_activation_packet_does_not_mutate_input_topology():
+    t_orig = _topo()
+    before = json.loads(json.dumps(t_orig, sort_keys=True))
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2"),
+    )
+
+    packet = so.build_shadow_activation_packet(t_orig, plan)
+
+    assert t_orig == before
+    assert "b1" not in t_orig["cells"]
+    assert "b1" in packet.shadow_topology["cells"]
+    assert packet.checks["input_topology_unchanged"] is True
+
+
+def test_shadow_activation_packet_requires_shadow_target_state():
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2"),
+        target_state="subdivision_planned",
+    )
+
+    with pytest.raises(ValueError, match="requires target_state"):
+        so.build_shadow_activation_packet(_topo(), plan)
+
+
+def test_shadow_activation_packet_fails_closed_on_blocked_delivery(monkeypatch):
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2"),
+    )
+
+    def _blocked_batch(topology, messages):
+        return [
+            rm.RingDelivery(
+                message_id_seq=index,
+                delivered=False,
+                blocked_reason="forged block",
+                blocked_category=rm.RING_BLOCK_SCHEMA_INVALID,
+                msg=message,
+            )
+            for index, message in enumerate(messages)
+        ]
+
+    monkeypatch.setattr(so, "deliver_batch", _blocked_batch)
+
+    packet = so.build_shadow_activation_packet(_topo(), plan)
+
+    assert packet.ok is False
+    assert packet.checks["activation_messages_delivered"] is False
+    assert packet.to_dict()["delivery_summary"]["blocked_count"] == 6
+
+
 def test_apply_plan_rejects_unknown_parent():
     plan = so.plan_subdivision(
         parent_cell_id="ghost",

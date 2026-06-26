@@ -42,7 +42,7 @@ class CanaryVerdict:
     outcome: str
     failing_check_ids: list = field(default_factory=list)
     confirmations: int = 0
-    fp_rate: float = 0.0
+    fp_rate: float | None = None
     p4a_signal: dict | None = None      # populated ONLY on CONFIRMED_REGRESS
     reason: str = ""
 
@@ -70,6 +70,14 @@ def _run_usable(run: dict) -> bool:
     return bool(run.get("completed")) and bool(run.get("within_budget"))
 
 
+def _known_fp_rate(fp_rate: object) -> float | None:
+    if not isinstance(fp_rate, (int, float)) or isinstance(fp_rate, bool):
+        return None
+    if fp_rate != fp_rate or fp_rate < 0.0 or fp_rate > 1.0:
+        return None
+    return float(fp_rate)
+
+
 def classify(
     runs: Sequence[dict],
     *,
@@ -90,16 +98,17 @@ def classify(
     CONFIRMED_REGRESS (+ P4a signal); a failure not yet debounced -> SUSPECT.
     """
     required = max(int(required_confirmations), MIN_CONFIRMATIONS_FLOOR)
+    known_fp_rate = _known_fp_rate(fp_rate)
 
     if not runs:
-        return CanaryVerdict(INCONCLUSIVE, fp_rate=fp_rate,
+        return CanaryVerdict(INCONCLUSIVE, fp_rate=known_fp_rate,
                              reason="no canary runs -> cannot confirm; escalate")
 
     # Fail-safe gate 1: every run must be usable. An unrunnable/timed-out run means
     # we cannot positively confirm health OR a regress -> INCONCLUSIVE, no trigger.
     if any(not _run_usable(r) for r in runs):
         return CanaryVerdict(
-            INCONCLUSIVE, fp_rate=fp_rate,
+            INCONCLUSIVE, fp_rate=known_fp_rate,
             reason="a canary run exceeded budget / did not complete -> escalate, no rollback")
 
     # Fail-safe gate 2: the canary's FP-rate must be a KNOWN, VALID, within-threshold
@@ -109,17 +118,15 @@ def classify(
     # is False) and NaN (NaN > 0.01 is False) also bypassed it, and a NON-NUMERIC one
     # crashed -> validate the whole domain, fail-closed, so a false destructive rollback
     # can't fire on an unverified/garbage canary reliability.)
-    if (not isinstance(fp_rate, (int, float)) or isinstance(fp_rate, bool)
-            or fp_rate != fp_rate                       # NaN
-            or fp_rate < 0.0 or fp_rate > 1.0):
+    if known_fp_rate is None:
         return CanaryVerdict(
-            INCONCLUSIVE, fp_rate=0.0,
+            INCONCLUSIVE, fp_rate=None,
             reason="fp_rate missing/invalid (must be a finite probability in [0,1]) "
                    "-> not P4a-eligible (fail-closed)")
-    if fp_rate > fp_threshold:
+    if known_fp_rate > fp_threshold:
         return CanaryVerdict(
-            INCONCLUSIVE, fp_rate=fp_rate,
-            reason=f"fp_rate {fp_rate} > threshold {fp_threshold} -> not P4a-eligible")
+            INCONCLUSIVE, fp_rate=known_fp_rate,
+            reason=f"fp_rate {known_fp_rate} > threshold {fp_threshold} -> not P4a-eligible")
 
     # Per-check confirmation count across usable runs (same-cause binding).
     counts: dict[str, int] = {}
@@ -128,7 +135,7 @@ def classify(
             counts[cid] = counts.get(cid, 0) + 1
 
     if not counts:
-        return CanaryVerdict(PASS, fp_rate=fp_rate,
+        return CanaryVerdict(PASS, fp_rate=known_fp_rate,
                              reason=f"canary green on {len(runs)} run(s)")
 
     confirmed = {cid: n for cid, n in counts.items() if n >= required}
@@ -138,18 +145,18 @@ def classify(
         signal = build_p4a_signal(
             merged_sha=merged_sha, prior_good_sha=prior_good_sha,
             failing_check_ids=failing, confirmations=confirmations,
-            fp_rate=fp_rate, canary_manifest_version=canary_manifest_version,
+            fp_rate=known_fp_rate, canary_manifest_version=canary_manifest_version,
             receipt_ref=receipt_ref,
         )
         return CanaryVerdict(
             CONFIRMED_REGRESS, failing_check_ids=failing, confirmations=confirmations,
-            fp_rate=fp_rate, p4a_signal=signal,
+            fp_rate=known_fp_rate, p4a_signal=signal,
             reason=f"same-cause regress confirmed on >={required} runs: {failing}")
 
     # A failure exists but is not debounced to the floor (could be flaky).
     return CanaryVerdict(
         SUSPECT, failing_check_ids=sorted(counts), confirmations=max(counts.values()),
-        fp_rate=fp_rate,
+        fp_rate=known_fp_rate,
         reason=f"regress seen but < {required} same-cause confirmations -> suspect, no trigger")
 
 

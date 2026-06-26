@@ -101,6 +101,9 @@ def test_fp_rate_unknown_is_inconclusive_fail_closed():
     v = classify([run({"contract": False}), run({"contract": False})],
                  merged_sha=SHA, prior_good_sha=GOOD)   # fp_rate omitted -> None
     assert v.outcome == INCONCLUSIVE and v.p4a_signal is None
+    assert v.fp_rate is None
+    r = canary_receipt(v, merged_sha=SHA, canary_manifest_version="v1")
+    assert r["fp_rate"] is None
 
 
 @pytest.mark.parametrize("bad", [
@@ -117,6 +120,9 @@ def test_invalid_fp_rate_is_inconclusive_fail_closed(bad):
     # validate to a finite probability in [0,1], else fail-closed -> INCONCLUSIVE.
     v = cls([run({"contract": False}), run({"contract": False})], fp_rate=bad)
     assert v.outcome == INCONCLUSIVE and v.p4a_signal is None
+    assert v.fp_rate is None
+    r = canary_receipt(v, merged_sha=SHA, canary_manifest_version="v1")
+    assert r["fp_rate"] is None
 
 
 def test_fp_rate_over_threshold_is_inconclusive_not_eligible():
@@ -157,6 +163,7 @@ def test_receipt_records_outcome_and_trigger_flag():
                        budget_seconds_used=120.0, run_count=2)
     assert r["type"] == "p4b_canary_receipt" and r["merged_sha"] == SHA
     assert r["outcome"] == CONFIRMED_REGRESS and r["p4a_trigger_emitted"] is True
+    assert r["fp_rate"] == 0.0
     assert r["run_count"] == 2
 
 

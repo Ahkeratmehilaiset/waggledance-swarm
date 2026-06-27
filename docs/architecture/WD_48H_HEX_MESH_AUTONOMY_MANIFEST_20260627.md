@@ -108,13 +108,19 @@ work continues.
 - PR #1412 opened the first self-drive queue planner slice and was fixed at
   head `54ff64db20cc525c147ac1c2c2fdb01a10a292dc`.
 - Lead, RCO1, RCO2, local affected tests, live path-free smoke, charter path
-  evaluation, and GitHub CI are green for #1412 content.
-- The remaining #1412 blocker is merge governance, not content: the merge
-  wrapper fail-closes because `codex-tools-1` is the author lane and cannot
-  satisfy its own `build_tools` reviewer slot.
-- Durable unblock is a symmetric tools-slot waiver or wrapper-recognized
-  neutral re-author path. Until that lands, do not force-merge around the
-  wrapper.
+  evaluation, and GitHub CI were green for #1412 content.
+- After the operator standing signature, #1412 was merged by exact-head squash
+  into main at `04812c0674973508723c2f0de021c030372f564a`. That signature was
+  used only for the `codex-tools-1` author-slot governance gap, not to bypass
+  content review.
+- Durable follow-up remains: codify a symmetric tools-slot waiver or
+  wrapper-recognized neutral re-author path so future tools-authored PRs do not
+  need manual governance handling after content gates are green.
+- PR #1414 added the first offline parent-child plus ring-routing invariant
+  proof and reached exact-head lead/tools/RCO/CI green review state during this
+  sprint. PR #1415 and PR #1416 extended the fable lane with additional
+  observability and subdivision-operation proof slices and are in the review
+  queue.
 
 ## 48H Exit Criteria
 

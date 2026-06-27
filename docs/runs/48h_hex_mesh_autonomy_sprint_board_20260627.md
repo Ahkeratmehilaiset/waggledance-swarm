@@ -10,31 +10,33 @@ Manifest: `docs/architecture/WD_48H_HEX_MESH_AUTONOMY_MANIFEST_20260627.md`.
 | --- | ---: | ---: | --- |
 | Product direction | 100% | 100% | Operator direction captured from storyboard. |
 | Bridge dispatch | 100% | 100% | Lanes published to agents. |
-| Agent input | 85% | 100% | Tools, RCO1, RCO2, and Fable have all delivered sprint-lane output. |
-| Implementation | 45% | 55% | PR #1412 is merged; PR #1414 is gate-complete; PR #1415/#1416 are in review. |
-| Validation | 60% | 65% | #1412 has post-review merge evidence; #1414 has lead/tools/RCO/CI green evidence. |
-| Merge/readiness | 45% | 60% | Self-drive substrate is merged; docs/proof queue is being drained exact-head. |
-| Big-picture WD readiness | 35% | 38% to 42% | Improved by merged self-drive queue substrate plus offline hex proof evidence. |
+| Agent input | 100% | 100% | Tools, RCO1, RCO2, and Fable have all delivered sprint-lane output. |
+| Implementation | 55% | 60% | Self-drive queue substrate and the first fable proof stack are merged. |
+| Validation | 65% | 70% | #1412 through #1416 reached exact-head green review before merge; #1416 main CI is running on the merge commit. |
+| Merge/readiness | 65% | 72% | The docs/proof queue is drained through #1416; #1417 is the current truth-refresh PR. |
+| Big-picture WD readiness | 39% | 40% to 42% | Current product-readiness estimate after merged self-drive substrate plus offline hex/ring/hierarchy proof evidence. |
 
 ## Lane Board
 
 | Lane | Owner | Current item | State | Next action |
 | --- | --- | --- | --- | --- |
 | Lead | codex-lead-1 | Roadmap manifest, sprint board, merge executor | Active | Keep docs truthful after merges, then drain exact-head green queue. |
-| Tools | codex-tools-1 | Self-drive queue planner and proof reviews | #1412 merged; #1413/#1414 build passes posted | Review #1415/#1416 once CI is green. |
-| RCO1 | claude-rco-1 | Autonomy guardrail review | #1413/#1414 RCO passes posted | Review #1415/#1416 or flag blockers. |
-| RCO2 | claude-rco-2 | Live-smoke and authority-boundary review | #1413/#1414 RCO passes posted | Review #1415/#1416 and monitor exact-head gates. |
-| Fable | fable-5 | Hex subdivision/ring proof lane | #1414/#1415/#1416 delivered | Pace production while gate queue drains. |
-| Codex spare | codex | Scout/implementation reserve | Idle | Claim unblocked docs/tests-only support if bridge stays clear. |
+| Tools | codex-tools-1 | Self-drive queue planner and proof reviews | #1412 build lane merged; #1413 through #1416 reviewed/merged | Review #1417 and help codify tools-author governance. |
+| RCO1 | claude-rco-1 | Autonomy guardrail review | #1413 through #1416 RCO passes posted before merge | Review #1417 or next governance/proof seed. |
+| RCO2 | claude-rco-2 | Live-smoke and authority-boundary review | #1413 through #1416 RCO passes posted before merge | Monitor #1416 main CI and review next authority-boundary task. |
+| Fable | fable-5 | Hex subdivision/ring proof lane | #1414/#1415/#1416 delivered and merged | Prepare the next narrow proof only after #1417/gates clear. |
+| Codex spare | codex | Scout/implementation reserve | Idle | Claim unblocked docs/tests-only support if bridge stays clear and no higher-priority gate is pending. |
 
 ## Exact-Head Items
 
 | Item | Head | Evidence | Decision |
 | --- | --- | --- | --- |
 | PR #1412 self-drive queue planner | `54ff64db20cc525c147ac1c2c2fdb01a10a292dc` | `python -m pytest tests/tools/test_build_self_drive_queue_planner.py -q` passed with 10 tests; `compileall` passed; `git diff --check` passed; live bridge smoke with `--max-items 200 --json` reported `path_free=true` and no Windows/unix/url/worktree leak markers; GitHub CI 6/6 green; RCO1/RCO2 green; lead build consensus green. | Merged by operator-signed exact-head squash at `04812c0674973508723c2f0de021c030372f564a`; governance waiver used only for tools-author slot. |
-| PR #1414 offline parent-child plus ring invariant proof | `124ce0c6d91e52a12fe8ad57cc034af37c3676a0` | Lead and tools build consensus green; RCO1/RCO2 green; GitHub CI 6/6 green; lead local validation ran 54 tests, compileall, diff-check, and proof CLI with `runtime_mutation_authority_false=true`. | Gate-complete and ready for exact-head merge once merge executor drains queue. |
-| PR #1415 ring-delivery observability proof | `c871c8130d5fbf962f8d5e92e375fe4f8708f9ea` | Lead local validation green: 54 tests, compileall, diff-check, and CLI proof with topology-vs-schema distinguishability and no transport. | Awaiting GitHub CI and remaining exact-head review slots. |
-| PR #1416 subdivision-operation invariant proof | `e1ccd7fe83a5749fc5c23c9e79af98ae369ebcfb` | Fable reported local pytest 3 passed and compileall clean. | Awaiting lead/tools/RCO review and GitHub CI. |
+| PR #1413 autonomy manifest docs | `f202ccb3226c840eb20024a92bb84e80e97cce8d` | Lead/tools/RCO evidence reached green for the docs manifest lane. | Merged at `c08f71d6ba851e58ddcb9c33ba535849e1549cc6`; the merged board snapshot was later made stale by #1414 through #1416 landing. |
+| PR #1414 offline parent-child plus ring invariant proof | `124ce0c6d91e52a12fe8ad57cc034af37c3676a0` | Lead and tools build consensus green; RCO1/RCO2 green; GitHub CI 6/6 green; lead local validation ran 54 tests, compileall, diff-check, and proof CLI with `runtime_mutation_authority_false=true`. | Merged at `1004b04f523d219b71862f3b7775c89d69fc15f3`. |
+| PR #1415 ring-delivery observability proof | `c871c8130d5fbf962f8d5e92e375fe4f8708f9ea` | Lead/tools build consensus green; RCO pass present; GitHub CI 6/6 green; lead local validation ran 54 tests, compileall, diff-check, and CLI proof with topology-vs-schema distinguishability and no transport. | Merged by exact-head squash at `319b4dadb8d817b9d5aec17b25685b337a2bd8ca`. |
+| PR #1416 subdivision-operation invariant proof | `e1ccd7fe83a5749fc5c23c9e79af98ae369ebcfb` | Lead/tools build consensus green; RCO1/RCO2 pass present; GitHub CI 6/6 green; lead local validation ran 54 tests, compileall, diff-check, and proof CLI with `source_topology_unchanged=true` and `plan_no_runtime_mutation_flag=true`. | Merged at `5c3692d5a373f1ee05e23a78c6241b160b805f82`; main CI started on the merge commit. |
+| PR #1417 sprint board truth refresh | `3b4eff57c472ecb5a0bdd932e3e29e92bf8f6393` before this edit | Rebased onto #1416 main and updated to reflect #1412 through #1416 merged. | In progress; requires fresh CI/build/RCO at the final pushed head before merge. |
 
 ## Validation Commands Run By Lead
 
@@ -69,28 +71,20 @@ Result:
 
 ## Next Three Queue Seeds
 
-1. Drain the exact-head green docs/proof queue
+1. Finish #1417 truth refresh
    - Owner: lead executor.
-   - Scope: #1413 and #1414, using `--match-head-commit` and existing
-     exact-head build/RCO/CI evidence.
-   - Done when: both PRs are merged or a changed-head/CI/content blocker is
-     recorded.
+   - Scope: keep the 48h manifest and board aligned with #1412 through #1416.
+   - Done when: #1417 has fresh CI/build/RCO evidence at its final head and is
+     merged, or a content blocker is recorded.
 
-2. Review the next fable proof pair
-   - Owner: lead plus tools and RCOs.
-   - Scope: #1415 ring-delivery observability and #1416 subdivision-operation
-     invariant proof.
-   - Done when: affected tests, compileall, diff-check, GitHub CI, and
-     build/RCO slots are green or blockers are recorded.
-
-3. Codify tools-author build-slot governance
+2. Codify tools-author build-slot governance
    - Owner: lead plus RCOs for policy review; operator only if policy requires
      explicit sign-off.
    - Scope: wrapper/policy amendment or neutral re-author convention.
    - Done when: `merge_with_bridge_receipt.py` dry-run no longer refuses a
      tools-authored PR solely because the tools lane cannot self-review.
 
-4. Autonomy authority-boundary adversarial test
+3. Autonomy authority-boundary adversarial test
    - Owner: claude-rco-2 or codex spare, depending on bridge availability.
    - Scope: tests or proof around deterministic solver authority versus LLM
      advisory fallback.

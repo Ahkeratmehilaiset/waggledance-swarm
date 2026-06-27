@@ -26,20 +26,23 @@ Build toward a deterministic-first WaggleDance Swarm AI:
 
 Current storyboard readiness at sprint start: about 32%.
 
+Current storyboard readiness after the #1412 through #1416 exact-head queue
+drain: about 39%.
+
 Target readiness after this 48 hour sprint: 38% to 42%.
 
 This is product/vision readiness, not a percentage of repository files complete.
 No literal image claim becomes safe merely because this sprint lands. Claim
 safety changes only when the proof tool and RCO review support them.
 
-| Storyboard area | Start | 48h target | Sprint focus |
-| --- | ---: | ---: | --- |
-| Smart router and hex entry | 45% | 47% | Keep router evidence current; no every-query claim flip. |
-| Deterministic solver plus MAGMA audit | 50% | 53% | Preserve deterministic-first authority and audit evidence. |
-| Low-risk autonomy loop | 30% | 38% | Add self-drive queue substrate and hard advisory boundaries. |
-| Hex subdivision, ring, hierarchy | 15% | 25% | Add or review offline proof and invariant evidence. |
-| Self-organizing swarm mesh | 10% | 13% | Keep as roadmap, only measured/shadow evidence. |
-| Future scale and industrial efficiency | 5% | 8% | Produce queueable benchmark and evidence tasks, not claims. |
+| Storyboard area | Start | Current | 48h target | Sprint focus |
+| --- | ---: | ---: | ---: | --- |
+| Smart router and hex entry | 45% | 46% | 47% | Keep router evidence current; no every-query claim flip. |
+| Deterministic solver plus MAGMA audit | 50% | 52% | 53% | Preserve deterministic-first authority and audit evidence. |
+| Low-risk autonomy loop | 30% | 36% | 38% | Add self-drive queue substrate and hard advisory boundaries. |
+| Hex subdivision, ring, hierarchy | 15% | 25% | 25% | Merge offline proof and invariant evidence; do not claim runtime activation. |
+| Self-organizing swarm mesh | 10% | 12% | 13% | Keep as roadmap, only measured/shadow evidence. |
+| Future scale and industrial efficiency | 5% | 7% | 8% | Produce queueable benchmark and evidence tasks, not claims. |
 
 ## 48H Deliverables
 
@@ -105,22 +108,27 @@ work continues.
 ## Current Concrete State
 
 - PR #1410 and PR #1411 are merged and post-merge main CI was green.
-- PR #1412 opened the first self-drive queue planner slice and was fixed at
-  head `54ff64db20cc525c147ac1c2c2fdb01a10a292dc`.
+- PR #1412 opened the first self-drive queue planner slice and was merged by
+  exact-head squash into main at
+  `04812c0674973508723c2f0de021c030372f564a`.
 - Lead, RCO1, RCO2, local affected tests, live path-free smoke, charter path
-  evaluation, and GitHub CI were green for #1412 content.
-- After the operator standing signature, #1412 was merged by exact-head squash
-  into main at `04812c0674973508723c2f0de021c030372f564a`. That signature was
-  used only for the `codex-tools-1` author-slot governance gap, not to bypass
-  content review.
+  evaluation, and GitHub CI were green for #1412 content. The operator standing
+  signature was used only for the `codex-tools-1` author-slot governance gap,
+  not to bypass content review.
 - Durable follow-up remains: codify a symmetric tools-slot waiver or
   wrapper-recognized neutral re-author path so future tools-authored PRs do not
   need manual governance handling after content gates are green.
+- PR #1413 added this manifest and the first board snapshot, then merged at
+  `c08f71d6ba851e58ddcb9c33ba535849e1549cc6`.
 - PR #1414 added the first offline parent-child plus ring-routing invariant
-  proof and reached exact-head lead/tools/RCO/CI green review state during this
-  sprint. PR #1415 and PR #1416 extended the fable lane with additional
-  observability and subdivision-operation proof slices and are in the review
-  queue.
+  proof and merged at `1004b04f523d219b71862f3b7775c89d69fc15f3`.
+- PR #1415 extended ring-delivery observability proof coverage and merged at
+  `319b4dadb8d817b9d5aec17b25685b337a2bd8ca`.
+- PR #1416 added subdivision-operation invariant proof coverage and merged at
+  `5c3692d5a373f1ee05e23a78c6241b160b805f82`; main CI started on that merge
+  commit.
+- PR #1417 is the current truth-refresh PR for this manifest and the sprint
+  board after the rapid #1414 through #1416 queue drain.
 
 ## 48H Exit Criteria
 

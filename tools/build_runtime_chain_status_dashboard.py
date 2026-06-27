@@ -322,10 +322,13 @@ def _summarize_stage(
     min_rco_passes: int,
 ) -> dict[str, Any]:
     latest = max(events, key=lambda event: _string(event.get("ts_utc")))
+    pr_number = _extract_pr_number(events)
+    head_sha = _extract_latest_sha(events)
+    evidence_events = _latest_head_segment(events, head_sha)
     build_agents = sorted(
         {
             _string(event.get("agent"))
-            for event in events
+            for event in evidence_events
             if _string(event.get("status")).lower() == "build_consensus_pass"
         }
         - {""}
@@ -333,7 +336,7 @@ def _summarize_stage(
     rco_agents = sorted(
         {
             _string(event.get("agent"))
-            for event in events
+            for event in evidence_events
             if _string(event.get("status")).lower() == "rco_pass"
         }
         - {""}
@@ -341,13 +344,13 @@ def _summarize_stage(
     missing_build_agents = [
         agent for agent in required_build_agents if agent not in build_agents
     ]
-    pr_number = _extract_pr_number(events)
-    head_sha = _extract_latest_sha(events)
     merge_commit = _extract_merge_commit(events)
-    ci_state = _ci_state(events)
-    safety_state = _safety_state(events)
-    blockers = _stage_blockers(events, missing_build_agents, rco_agents, min_rco_passes)
-    state = _state(events, blockers=blockers)
+    ci_state = _ci_state(evidence_events)
+    safety_state = _safety_state(evidence_events)
+    blockers = _stage_blockers(
+        evidence_events, missing_build_agents, rco_agents, min_rco_passes
+    )
+    state = _state(evidence_events, blockers=blockers)
     next_gate = _next_gate(
         state=state,
         blockers=blockers,
@@ -385,6 +388,8 @@ def _stage_blockers(
     rco_agents: Sequence[str],
     min_rco_passes: int,
 ) -> list[str]:
+    if _post_merge_green(events):
+        return []
     blockers: list[str] = []
     for event in events:
         status = _string(event.get("status")).lower()
@@ -492,16 +497,36 @@ def _extract_pr_number(events: Sequence[Mapping[str, Any]]) -> int | None:
 
 def _extract_latest_sha(events: Sequence[Mapping[str, Any]]) -> str:
     for event in reversed(events):
-        payload = _mapping(event.get("payload"))
-        for key in ("exact_head", "head_sha", "head", "merge_commit", "base_sha"):
-            value = payload.get(key)
-            if isinstance(value, str) and SHA40_RE.fullmatch(value):
-                return value.lower()
-        message = _string(event.get("message"))
-        matches = SHA40_RE.findall(message)
+        matches = _event_sha_values(event)
         if matches:
             return matches[-1].lower()
     return ""
+
+
+def _latest_head_segment(
+    events: Sequence[Mapping[str, Any]], head_sha: str
+) -> Sequence[Mapping[str, Any]]:
+    if not head_sha:
+        return events
+    segment_start = 0
+    for index, event in enumerate(events):
+        shas = set(_event_sha_values(event))
+        if shas and head_sha not in shas:
+            segment_start = index + 1
+    return events[segment_start:] or events[-1:]
+
+
+def _event_sha_values(event: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    payload = _mapping(event.get("payload"))
+    for key in ("exact_head", "head_sha", "head", "merge_commit", "base_sha"):
+        value = payload.get(key)
+        if isinstance(value, str) and SHA40_RE.fullmatch(value):
+            values.append(value.lower())
+    values.extend(
+        match.lower() for match in SHA40_RE.findall(_string(event.get("message")))
+    )
+    return values
 
 
 def _extract_merge_commit(events: Sequence[Mapping[str, Any]]) -> str:
@@ -519,7 +544,7 @@ def _ci_state(events: Sequence[Mapping[str, Any]]) -> str:
     text = "\n".join(_text(event).lower() for event in events)
     if "ci failed" in text or "conclusion failure" in text:
         return "failed"
-    if any(fragment in text for fragment in POST_MERGE_GREEN_FRAGMENTS):
+    if any(_has_post_merge_green_status(event) for event in events):
         return "green"
     if any(fragment in text for fragment in CI_GREEN_FRAGMENTS):
         return "green"
@@ -551,8 +576,12 @@ def _merged(events: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def _post_merge_green(events: Sequence[Mapping[str, Any]]) -> bool:
-    text = "\n".join(_text(event).lower() for event in events)
-    return any(fragment in text for fragment in POST_MERGE_GREEN_FRAGMENTS)
+    return any(_has_post_merge_green_status(event) for event in events)
+
+
+def _has_post_merge_green_status(event: Mapping[str, Any]) -> bool:
+    status = _string(event.get("status")).lower()
+    return any(fragment in status for fragment in POST_MERGE_GREEN_FRAGMENTS)
 
 
 def _events_path(path: Path | None, bridge_root: Path | None) -> Path:

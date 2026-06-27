@@ -258,6 +258,33 @@ def test_dashboard_links_watch_claim_post_merge_green_back_to_pr_stage() -> None
     assert report["summary"]["post_merge_pending_count"] == 0
 
 
+def test_dashboard_ignores_free_text_post_merge_mentions_for_current_stage() -> None:
+    report = build_runtime_chain_status_dashboard(
+        events=[
+            _event(
+                agent="codex-tools-1",
+                event_type="message",
+                task_id="codex-tools-1/swarm-dashboard-runtime-chain-status-20260627",
+                status="pr1410_head_sha_correction",
+                message=(
+                    "CORRECTION for PR #1410 head. Scope unchanged: "
+                    "post-merge rollup fix; live bridge smoke "
+                    "post_merge_pending_count 0 for #1409."
+                ),
+                paths=["pull/1410"],
+            ),
+        ],
+        match_terms=("runtime-chain-status",),
+        now_utc=FIXED_NOW,
+    )
+
+    stage = report["stages"][0]
+    assert stage["pr_number"] == 1410
+    assert stage["state"] == "blocked_or_incomplete"
+    assert stage["next_gate"] == "build_consensus"
+    assert stage["ci_state"] == "unknown"
+
+
 def test_dashboard_refuses_redaction_sentinel_and_keeps_output_path_free() -> None:
     marker = "PRIVATE" + "_MARKER"
     report = build_runtime_chain_status_dashboard(

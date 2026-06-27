@@ -3,6 +3,9 @@
 param(
     [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent = '',
     [int] $Tail = 40,
+    # Keep the interactive continuity view responsive on large bridge logs.
+    # Use 0 only for deep audits that intentionally scan all history.
+    [int] $ContinuityTail = 5000,
     [switch] $OtherOnly,
     [switch] $ShowClaims,
     [switch] $ShowLiveness,
@@ -53,11 +56,11 @@ function Read-BridgeEventObjects {
     param([Parameter(Mandatory)] [string] $Path, [int] $MaxLines = 50000)
     $items = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $Path)) { return $items }
-    $allLines = if ($MaxLines -le 0) {
-        @(Get-Content -Path $Path -Encoding UTF8)
+    $allLines = @(if ($MaxLines -le 0) {
+        Get-Content -Path $Path -Encoding UTF8
     } else {
-        @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
-    }
+        Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8
+    })
     foreach ($line in $allLines) {
         if (-not $line) { continue }
         try {
@@ -71,17 +74,17 @@ function Read-BridgeContinuityEventObjects {
     param(
         [Parameter(Mandatory)] [string] $Path,
         [Parameter(Mandatory)] [string] $AgentName,
-        [int] $MaxLines = 50000
+        [int] $MaxLines = 5000
     )
 
     $items = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $Path)) { return $items }
 
-    $allLines = if ($MaxLines -le 0) {
-        @(Get-Content -Path $Path -Encoding UTF8)
+    $allLines = @(if ($MaxLines -le 0) {
+        Get-Content -Path $Path -Encoding UTF8
     } else {
-        @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
-    }
+        Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8
+    })
 
     $selectedIndexes = New-Object 'System.Collections.Generic.HashSet[int]'
     $agentFieldNeedle = '"agent":"' + $AgentName + '"'
@@ -264,8 +267,8 @@ if ($Agent -and -not $NoContinuity) {
         Write-Host '  (no events.jsonl yet)'
         Write-Host ''
     } else {
-        $allEvents = Read-BridgeContinuityEventObjects -Path $eventsPath -AgentName $Agent
-        $displayEvents = Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail
+        $allEvents = @(Read-BridgeContinuityEventObjects -Path $eventsPath -AgentName $Agent -MaxLines $ContinuityTail)
+        $displayEvents = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
         $displayTaskIds = @{}
         foreach ($displayEvent in $displayEvents) {
             $displayTaskId = [string]$displayEvent.task_id

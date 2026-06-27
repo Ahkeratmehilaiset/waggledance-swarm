@@ -285,6 +285,48 @@ def test_dashboard_ignores_free_text_post_merge_mentions_for_current_stage() -> 
     assert stage["ci_state"] == "unknown"
 
 
+def test_dashboard_ignores_free_text_merged_post_merge_state_names() -> None:
+    report = build_runtime_chain_status_dashboard(
+        events=[
+            _event(
+                agent="codex-tools-1",
+                event_type="test",
+                task_id="codex-tools-1/swarm-dashboard-runtime-chain-status-20260627",
+                status="ci_green_review_ready_6ed161ba_current_main",
+                message=(
+                    "PR #1410 is OPEN/CLEAN at exact rebased head "
+                    f"{HEAD_1409} with GitHub CI 6/6 SUCCESS."
+                ),
+                paths=["pull/1410"],
+            ),
+            _event(
+                agent="codex-lead-1",
+                event_type="finding",
+                task_id="codex-tools-1/runtime-chain-status-dashboard-20260627",
+                status="changes_requested_open_pr_false_merged_post_merge_pending",
+                message=(
+                    "The blocker text mentions a merged_post_merge_ci_pending "
+                    "row and state=merged_post_merge_ci_pending while explaining "
+                    "a false-positive regression, but it "
+                    "does not report that PR #1410 was merged."
+                ),
+                payload={"pr": 1410, "head": HEAD_1409},
+            ),
+        ],
+        match_terms=("runtime-chain-status",),
+        now_utc=FIXED_NOW,
+    )
+
+    stage = next(
+        stage
+        for stage in report["stages"]
+        if stage["task_id"] == "codex-tools-1/runtime-chain-status-dashboard-20260627"
+    )
+    assert stage["pr_number"] == 1410
+    assert stage["state"] == "blocked_or_incomplete"
+    assert stage["next_gate"] == "resolve_blocker"
+
+
 def test_dashboard_refuses_redaction_sentinel_and_keeps_output_path_free() -> None:
     marker = "PRIVATE" + "_MARKER"
     report = build_runtime_chain_status_dashboard(

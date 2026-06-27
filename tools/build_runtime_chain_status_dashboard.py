@@ -41,7 +41,15 @@ POST_MERGE_GREEN_FRAGMENTS = (
     "post_merge_main_ci_green",
     "post_merge_ci_green",
 )
-MERGE_FRAGMENTS = (" merged by ", " merged at exact head", "merged_post_merge")
+MERGED_STATUS_VALUES = {
+    "merged",
+    "merged_observed",
+    "merged_post_merge_ci_pending",
+}
+MERGED_STATUS_PREFIXES = (
+    "merged_observed_",
+    "merged_post_merge_",
+)
 NO_LIVE_RUNTIME_FRAGMENTS = (
     "no live runtime",
     "dormant",
@@ -567,12 +575,18 @@ def _safety_state(events: Sequence[Mapping[str, Any]]) -> str:
 def _merged(events: Sequence[Mapping[str, Any]]) -> bool:
     for event in events:
         status = _string(event.get("status")).lower()
-        if status in TERMINAL_STATUSES and "merged" in status:
+        if _is_merged_status(status):
             return True
-        text = f" {_text(event).lower()} "
-        if any(fragment in text for fragment in MERGE_FRAGMENTS):
+        payload = _mapping(event.get("payload"))
+        if _is_merged_status(_string(payload.get("state")).lower()):
+            return True
+        if _is_merged_status(_string(payload.get("merge_state")).lower()):
             return True
     return False
+
+
+def _is_merged_status(status: str) -> bool:
+    return status in MERGED_STATUS_VALUES or status.startswith(MERGED_STATUS_PREFIXES)
 
 
 def _post_merge_green(events: Sequence[Mapping[str, Any]]) -> bool:

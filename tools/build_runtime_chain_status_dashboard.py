@@ -36,7 +36,11 @@ REDACTION_SENTINELS = ("PRIVATE" + "_MARKER", "_DO" + "_NOT" + "_LEAK")
 TERMINAL_STATUSES = {"done", "merged", "merged_observed", "post_merge_main_ci_green"}
 BLOCKING_STATUS_FRAGMENTS = ("changes_requested", "block", "failed", "error")
 CI_GREEN_FRAGMENTS = ("ci 6/6 green", "ci green", "github ci 6/6", "6/6 success")
-POST_MERGE_GREEN_FRAGMENTS = ("post-merge main ci green", "post_merge_main_ci_green")
+POST_MERGE_GREEN_FRAGMENTS = (
+    "post-merge main ci green",
+    "post_merge_main_ci_green",
+    "post_merge_ci_green",
+)
 MERGE_FRAGMENTS = (" merged by ", " merged at exact head", "merged_post_merge")
 NO_LIVE_RUNTIME_FRAGMENTS = (
     "no live runtime",
@@ -151,9 +155,7 @@ def build_runtime_chain_status_dashboard(
     normalized_terms = tuple(
         term.lower() for term in match_terms if isinstance(term, str) and term.strip()
     )
-    selected = [
-        event for event in loaded_events if _event_matches(event, normalized_terms)
-    ]
+    selected = _select_matching_events(loaded_events, normalized_terms)
     stages = _summarize_stages(
         selected,
         required_build_agents=tuple(dict.fromkeys(required_build_agents)),
@@ -254,7 +256,62 @@ def _summarize_stages(
         )
         for task_id, task_events in grouped.items()
     ]
+    _apply_pr_terminal_evidence(rows)
     return sorted(rows, key=lambda row: (row["latest_ts_utc"], row["task_id"]))
+
+
+def _select_matching_events(
+    events: Sequence[Mapping[str, Any]], terms: Sequence[str]
+) -> list[Mapping[str, Any]]:
+    selected = [event for event in events if _event_matches(event, terms)]
+    selected_prs = {
+        pr_number
+        for pr_number in (_extract_pr_number((event,)) for event in selected)
+        if pr_number is not None
+    }
+    if not selected_prs:
+        return selected
+    expanded: list[Mapping[str, Any]] = []
+    seen_event_ids: set[int] = set()
+    for event in events:
+        if id(event) in seen_event_ids:
+            continue
+        pr_number = _extract_pr_number((event,))
+        if event in selected or pr_number in selected_prs:
+            expanded.append(event)
+            seen_event_ids.add(id(event))
+    return expanded
+
+
+def _apply_pr_terminal_evidence(rows: list[dict[str, Any]]) -> None:
+    rows_by_pr: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        pr_number = row.get("pr_number")
+        if isinstance(pr_number, int):
+            rows_by_pr[pr_number].append(row)
+
+    for pr_rows in rows_by_pr.values():
+        green_rows = [
+            row for row in pr_rows if row.get("state") == "post_merge_main_ci_green"
+        ]
+        if not green_rows:
+            continue
+        merge_commit_prefix = next(
+            (
+                str(row.get("merge_commit_prefix"))
+                for row in green_rows
+                if row.get("merge_commit_prefix")
+            ),
+            "",
+        )
+        for row in pr_rows:
+            if row.get("state") == "merged_post_merge_ci_pending":
+                row["state"] = "post_merge_main_ci_green"
+                row["next_gate"] = "complete"
+                row["ci_state"] = "green"
+                row["blockers"] = []
+                if merge_commit_prefix and not row.get("merge_commit_prefix"):
+                    row["merge_commit_prefix"] = merge_commit_prefix
 
 
 def _summarize_stage(

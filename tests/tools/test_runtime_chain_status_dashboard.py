@@ -222,6 +222,42 @@ def test_dashboard_tracks_merged_post_merge_ci_pending_and_green() -> None:
     assert green_stage["next_gate"] == "complete"
 
 
+def test_dashboard_links_watch_claim_post_merge_green_back_to_pr_stage() -> None:
+    report = build_runtime_chain_status_dashboard(
+        events=[
+            _event(
+                agent="codex-lead-1",
+                event_type="done",
+                task_id=TASK_1409,
+                status="merged_post_merge_ci_pending",
+                message=(
+                    "Merged PR #1409 with exact-head guard. "
+                    "Merge commit is "
+                    "7cc32b2e5edef4bc78e48c27cb59397011039783. "
+                    "Post-merge main CI is now pending."
+                ),
+                payload={"pr": 1409},
+            ),
+            _event(
+                agent="codex-tools-1",
+                event_type="test",
+                task_id="codex-tools-1/pr1409-rco-merge-post-ci-watch-20260627",
+                status="post_merge_main_ci_green_1409_tools_observed",
+                message=(
+                    "codex-tools-1 observed PR #1409 post-merge main CI green "
+                    "on merge commit 7cc32b2e5edef4bc78e48c27cb59397011039783."
+                ),
+            ),
+        ],
+        now_utc=FIXED_NOW,
+    )
+
+    canonical = next(stage for stage in report["stages"] if stage["task_id"] == TASK_1409)
+    assert canonical["state"] == "post_merge_main_ci_green"
+    assert canonical["next_gate"] == "complete"
+    assert report["summary"]["post_merge_pending_count"] == 0
+
+
 def test_dashboard_refuses_redaction_sentinel_and_keeps_output_path_free() -> None:
     marker = "PRIVATE" + "_MARKER"
     report = build_runtime_chain_status_dashboard(

@@ -54,7 +54,10 @@ def _event(
     }
 
 
-def _run_reader(bridge_root: Path) -> subprocess.CompletedProcess[str]:
+def _run_reader(
+    bridge_root: Path,
+    *extra_args: str,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge_root)
     return subprocess.run(
@@ -71,6 +74,7 @@ def _run_reader(bridge_root: Path) -> subprocess.CompletedProcess[str]:
             "-NoAckReceived",
             "-Tail",
             "3",
+            *extra_args,
         ],
         cwd=ROOT,
         env=env,
@@ -163,3 +167,40 @@ def test_read_agent_bridge_tail_hides_resolved_items_outside_tail(
     assert "OPEN old-resolved-tail-noise-2026-05-11" not in result.stdout
     assert "old-resolved-tail-noise-2026-05-11" not in result.stdout
     assert "answered/closed item(s) outside -Tail hidden" in result.stdout
+
+
+def test_read_agent_bridge_continuity_tail_can_be_bounded_or_full(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    _append_event(
+        events_path,
+        _event(
+            ts_utc="2026-05-11T16:00:00.0000000Z",
+            agent="claude",
+            event_type="wake_request",
+            task_id="old-continuity-tail-request",
+            status="open",
+            to="codex",
+            message="old request outside continuity tail",
+        ),
+    )
+    for index in range(5):
+        _append_event(
+            events_path,
+            _event(
+                ts_utc=f"2026-05-11T17:0{index}:00.0000000Z",
+                agent="codex",
+                event_type="heartbeat",
+                task_id=f"recent-continuity-filler-{index}",
+                status="active",
+                message=f"recent filler {index}",
+            ),
+        )
+
+    bounded = _run_reader(bridge_root, "-ContinuityTail", "3")
+    full = _run_reader(bridge_root, "-ContinuityTail", "0")
+
+    assert "OPEN old-continuity-tail-request" not in bounded.stdout
+    assert "OPEN old-continuity-tail-request" in full.stdout

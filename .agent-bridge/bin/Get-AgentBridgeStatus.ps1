@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [int] $Tail = 50000,
+    [int] $Tail = 1000,
     [int] $Recent = 12,
     [int] $MaxUnresolved = 25,
     [switch] $Json
@@ -39,11 +39,11 @@ function Read-EventObjects {
     param([Parameter(Mandatory)] [string] $Path, [int] $MaxLines = 50000)
     $items = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $Path)) { return $items }
-    $lines = if ($MaxLines -le 0) {
-        @(Get-Content -Path $Path -Encoding UTF8)
+    $lines = @(if ($MaxLines -le 0) {
+        Get-Content -Path $Path -Encoding UTF8
     } else {
-        @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
-    }
+        Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8
+    })
     foreach ($line in $lines) {
         if (-not $line) { continue }
         try { [void]$items.Add(($line | ConvertFrom-Json)) } catch {}

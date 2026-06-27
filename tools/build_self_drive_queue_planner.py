@@ -564,7 +564,7 @@ def _action(
     if head:
         row["head_prefix"] = head
     if write_scope:
-        row["write_scope"] = sorted(str(item) for item in write_scope)
+        row["write_scope"] = sorted(_safe_scope_label(item) for item in write_scope)
     return row
 
 
@@ -641,6 +641,15 @@ def _head_prefix(value: object) -> str:
     if len(text) >= 12 and all(char in "0123456789abcdefABCDEF" for char in text[:12]):
         return text[:12].lower()
     return ""
+
+
+def _safe_scope_label(value: object) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return "<empty-scope>"
+    if ":" in text or text.startswith(("/", "~")):
+        return "<absolute-path-redacted>"
+    return text
 
 
 def _normalize_agents(agents: Sequence[str] | None) -> list[str]:

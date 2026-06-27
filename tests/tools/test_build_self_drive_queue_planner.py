@@ -188,6 +188,29 @@ def test_planner_reports_stale_and_current_claims() -> None:
     assert report["lanes"]["active_claims_by_agent"] == {"codex-tools-1": 2}
 
 
+def test_claim_write_scope_redacts_absolute_paths() -> None:
+    claim = _claim(task_id="claim-with-absolute-path")
+    claim["write_scope"] = [
+        "tools/build_self_drive_queue_planner.py",
+        "C:\\Python\\wd-agent-prompts\\handoff\\codex-tools-1.md",
+    ]
+
+    report = build_self_drive_queue_planner(
+        events=[],
+        claims=[claim],
+        now_utc=NOW,
+    )
+
+    encoded = json.dumps(report, sort_keys=True)
+    action = report["queue"]["next_actions"][0]
+    assert action["write_scope"] == [
+        "<absolute-path-redacted>",
+        "tools/build_self_drive_queue_planner.py",
+    ]
+    assert "C:\\Python" not in encoded
+    assert "wd-agent-prompts" not in encoded
+
+
 def test_ready_review_item_uses_latest_non_terminal_status() -> None:
     report = build_self_drive_queue_planner(
         events=[

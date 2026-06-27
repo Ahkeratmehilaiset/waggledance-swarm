@@ -104,6 +104,8 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `tools/auto_rollback_eligibility.py` (P4a auto-rollback eligibility verifier — self-modification banned)
 * `tools/post_merge_canary.py` (P4b post-merge canary runner — self-modification banned)
 * `tools/verify_bridge_consensus.py` (bridge-consensus 3-identity verifier — self-modification banned; defensive future-proof: the verifier logic currently lives in the already-denylisted `tools/idle_consensus_auto_merge.py`, this closes the standalone-file refactor path — rco-1 #1393)
+* `tests/tools/test_verify_bridge_consensus_conformance.py` (bridge-consensus conformance manifest anchor — self-modification banned; prevents allowlist-clean edits from dropping required fail-closed consensus cases)
+* `tests/tools/verify_bridge_consensus_conformance_corpus.json` (bridge-consensus conformance corpus anchor — self-modification banned; prevents allowlist-clean edits from weakening required fail-closed consensus cases)
 * `tests/security/p4c_corpus/validate_p4c_corpus.py` (P4c adversarial-corpus validator anchor — self-consistent-tamper guarded; an auto-merged edit could weaken the content-derived re-derivation / coverage enforcement — rco-1 #1392. Corpus CASE additions stay allowlist-clean so the corpus can be extended; only the validator anchor is protected.)
 * `.env`
 * `.env.*`

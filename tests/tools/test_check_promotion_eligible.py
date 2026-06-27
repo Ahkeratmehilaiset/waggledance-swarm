@@ -272,26 +272,65 @@ def test_author_rco_self_pass_does_not_count() -> None:
 
 
 @pytest.mark.parametrize(
-    ("author_agent", "role"),
+    ("author_agent", "waived_role", "peer_role"),
     [
-        ("codex-lead-1", "build_lead"),
-        ("codex-tools-1", "build_tools"),
+        ("codex-lead-1", "build_lead", "build_tools"),
+        ("codex-tools-1", "build_tools", "build_lead"),
     ],
 )
-def test_author_build_self_pass_does_not_count(
+def test_build_author_slot_waiver_allows_with_independent_peer(
     author_agent: str,
-    role: str,
+    waived_role: str,
+    peer_role: str,
 ) -> None:
     report = _evaluate(author_agent=author_agent)
 
-    identity = report["gate_results"]["bridge_consensus"]["by_agent"][
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
         "claude-rco-1"
-    ]["identities"][role]
+    ]
+    waived = consensus["identities"][waived_role]
+    peer = consensus["identities"][peer_role]
+    assert report["eligible"] is True
+    assert consensus["build_author_slot_waivers"] == [author_agent]
+    assert waived["eligible"] is False
+    assert waived["approved"] is True
+    assert waived["direct_approval"] is False
+    assert waived["build_author_slot_waived"] is True
+    assert waived["self_approval_ignored"] is True
+    assert peer["approved"] is True
+
+
+@pytest.mark.parametrize(
+    ("author_agent", "waived_role", "peer_role"),
+    [
+        ("codex-lead-1", "build_lead", "build_tools"),
+        ("codex-tools-1", "build_tools", "build_lead"),
+    ],
+)
+def test_build_author_slot_waiver_requires_independent_peer(
+    author_agent: str,
+    waived_role: str,
+    peer_role: str,
+) -> None:
+    report = _evaluate(
+        author_agent=author_agent,
+        events=[
+            _event(author_agent, "build_consensus_pass", ts="2026-06-05T05:30:00Z"),
+            _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+        ],
+    )
+
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]
+    waived = consensus["identities"][waived_role]
+    peer = consensus["identities"][peer_role]
     assert report["eligible"] is False
     assert "bridge consensus incomplete" in report["reasons"]
-    assert identity["eligible"] is False
-    assert identity["approved"] is False
-    assert identity["self_approval_ignored"] is True
+    assert consensus["build_author_slot_waivers"] == [author_agent]
+    assert waived["approved"] is True
+    assert waived["direct_approval"] is False
+    assert peer["approved"] is False
 
 
 def test_missing_author_agent_fails_closed() -> None:

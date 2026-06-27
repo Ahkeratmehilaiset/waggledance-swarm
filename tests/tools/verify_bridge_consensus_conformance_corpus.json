@@ -1,7 +1,7 @@
 {
   "corpus_version": "wd.bridge_consensus_verifier.conformance_corpus.v1",
   "title": "WaggleDance Bridge Consensus Verifier Conformance Corpus",
-  "description": "Versioned, deterministic, offline fixture locking the fail-closed behavior of verify_bridge_consensus (in tools/idle_consensus_auto_merge.py) against regression. This is the 3-identity head-bound bridge-consensus verifier the autonomous merge path depends on (CLAUDE.md Rule 9a). refuse_cases enumerate every must-REFUSE scenario: only 2-of-3 identities present (missing tools, missing lead, missing rco); duplicate/self-approving identity set (same agent posting two roles); author-as-own-reviewer attempts by lead, tools, or RCO; rco_pass present but lead/tools approval NOT head-bound (head SHA absent from their message); approval at a DIFFERENT/stale head; wrong agent identity posting a role; an rco veto (changes_requested/finding/blocked) present from claude-rco-1; build_consensus status NOT in BUILD_CONSENSUS_STATUSES (e.g. test:pass instead of build_consensus_pass). allow_cases enumerate the must-ALLOW: three DISTINCT non-author head-bound identities - codex-lead-1 + codex-tools-1 each with a status in BUILD_CONSENSUS_STATUSES and the exact head in their message, plus claude-rco-1 status=rco_pass at the exact head, no later veto. Synthetic events use append-order for latest, stable task_id and 40-hex heads. This corpus + test ensures any future weakening of the gate (e.g. allowing 2-of-3, duplicate identities, author self-review, non-head-bound, stale head, wrong identity, rco veto, or out-of-set status) will break the locked test deterministically.",
+  "description": "Versioned, deterministic, offline fixture locking the fail-closed behavior of verify_bridge_consensus (in tools/idle_consensus_auto_merge.py) against regression. This is the head-bound bridge-consensus verifier the autonomous merge path depends on (CLAUDE.md Rule 9a). refuse_cases enumerate every must-REFUSE scenario: only 2-of-3 identities present (missing tools, missing lead, missing rco); duplicate/self-approving identity set (same agent posting two roles); RCO author-as-own-reviewer; build-author waiver without the other build peer; rco_pass present but lead/tools approval NOT head-bound (head SHA absent from their message); approval at a DIFFERENT/stale head; wrong agent identity posting a role; an rco veto (changes_requested/finding/blocked) present from claude-rco-1; build_consensus status NOT in BUILD_CONSENSUS_STATUSES (e.g. test:pass instead of build_consensus_pass). allow_cases enumerate the must-ALLOW: non-author lead+tools+RCO consensus, or a lead/tools-authored PR where the author build slot is waived while the other build peer and a non-author RCO approve at the exact head, no later veto. Synthetic events use append-order for latest, stable task_id and 40-hex heads. This corpus + test ensures any future weakening of the gate (e.g. allowing 2-of-3, duplicate identities, RCO author self-review, missing peer under build-author waiver, non-head-bound, stale head, wrong identity, rco veto, or out-of-set status) will break the locked test deterministically.",
   "provenance": "hand-authored stable event shapes per BRIDGE_CONSENSUS_APPROVAL_V1 + verify_bridge_consensus logic in idle_consensus_auto_merge.py (BUILD_CONSENSUS_STATUSES, DECISION_EVENT_TYPES, _event_binds_head via message/payload, _is_consensus_block type-agnostic, latest-by-append-index, distinct agent exact-match, head-exact binding); no wallclock, no network, no random, no real tokens/paths; deterministic by event list order only; stable synthetic task_id and heads only",
   "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
   "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
@@ -400,8 +400,8 @@
       }
     },
     {
-      "name": "author_lead_self_build_rejected",
-      "description": "lead+tools+rco approve, but codex-lead-1 is the PR author, so the lead build approval is author-as-own-reviewer -> REFUSE.",
+      "name": "author_lead_waiver_missing_tools_peer_rejected",
+      "description": "codex-lead-1 is the PR author and posts a self build event, but codex-tools-1 is absent; author build slot is waived, yet the independent tools build slot is still required -> REFUSE.",
       "author_agent": "codex-lead-1",
       "events": [
         {
@@ -410,15 +410,7 @@
           "type": "decision",
           "status": "build_consensus_pass",
           "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
-          "message": "lead self-approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
-        },
-        {
-          "ts_utc": "2026-06-03T10:01:00Z",
-          "agent": "codex-tools-1",
-          "type": "decision",
-          "status": "build_consensus_pass",
-          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
-          "message": "tools concurs at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          "message": "lead self event at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
         },
         {
           "ts_utc": "2026-06-03T10:02:00Z",
@@ -437,25 +429,17 @@
       }
     },
     {
-      "name": "author_tools_self_build_rejected",
-      "description": "lead+tools+rco approve, but codex-tools-1 is the PR author, so the tools build approval is author-as-own-reviewer -> REFUSE.",
+      "name": "author_tools_waiver_missing_lead_peer_rejected",
+      "description": "codex-tools-1 is the PR author and posts a self build event, but codex-lead-1 is absent; author build slot is waived, yet the independent lead build slot is still required -> REFUSE.",
       "author_agent": "codex-tools-1",
       "events": [
-        {
-          "ts_utc": "2026-06-03T10:00:00Z",
-          "agent": "codex-lead-1",
-          "type": "decision",
-          "status": "build_consensus_pass",
-          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
-          "message": "lead approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
-        },
         {
           "ts_utc": "2026-06-03T10:01:00Z",
           "agent": "codex-tools-1",
           "type": "decision",
           "status": "build_consensus_pass",
           "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
-          "message": "tools self-approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          "message": "tools self event at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
         },
         {
           "ts_utc": "2026-06-03T10:02:00Z",
@@ -666,6 +650,80 @@
           "status": "rco_pass",
           "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
           "message": "Backup RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "expected": {
+        "ok": true,
+        "decision": "bridge_consensus_verified"
+      }
+    },
+    {
+      "name": "author_lead_build_slot_waived_with_tools_peer",
+      "description": "codex-lead-1 is the PR author; the lead build slot is waived, codex-tools-1 provides the independent build approval, and claude-rco-1 provides non-author RCO_PASS at the exact head -> ALLOW.",
+      "author_agent": "codex-lead-1",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "lead self event ignored at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "codex-tools-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "tools concurs at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:02:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "expected": {
+        "ok": true,
+        "decision": "bridge_consensus_verified"
+      }
+    },
+    {
+      "name": "author_tools_build_slot_waived_with_lead_peer",
+      "description": "codex-tools-1 is the PR author; the tools build slot is waived, codex-lead-1 provides the independent build approval, and claude-rco-1 provides non-author RCO_PASS at the exact head -> ALLOW.",
+      "author_agent": "codex-tools-1",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "codex-lead-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "lead approves at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:01:00Z",
+          "agent": "codex-tools-1",
+          "type": "decision",
+          "status": "build_consensus_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "tools self event ignored at head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        },
+        {
+          "ts_utc": "2026-06-03T10:02:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
         }
       ],
       "task_id": "waggledance/grok-scout-1/verify-bridge-consensus-conformance-corpus-20260603",

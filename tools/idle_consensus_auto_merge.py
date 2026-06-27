@@ -944,6 +944,9 @@ def verify_bridge_consensus(
             "decision": "bridge_consensus_incomplete",
             "reasons": ["no recognized RCO remains eligible after author exclusion"],
         }
+    waived_build_author_agents = {
+        agent for agent in build_expected if agent == author_agent
+    }
     eligible_build_agents = {
         agent: agent != author_agent for agent in build_expected
     }
@@ -1086,15 +1089,20 @@ def verify_bridge_consensus(
     ):
         approval = latest_build_approval.get(agent)
         block_index = latest_build_block.get(agent)
+        build_author_slot_waived = agent in waived_build_author_agents
         eligible = bool(eligible_build_agents.get(agent, False))
-        approved = eligible and approval is not None and (
+        direct_approved = eligible and approval is not None and (
             block_index is None or approval[0] > block_index
         )
+        waiver_satisfied = build_author_slot_waived and block_index is None
+        approved = waiver_satisfied or direct_approved
         identities[role] = {
             "agent": agent,
             "eligible": eligible,
             "approved": approved,
-            "direct_approval": approved,
+            "direct_approval": direct_approved,
+            "build_author_slot_waived": build_author_slot_waived,
+            "build_author_slot_waiver_satisfied": waiver_satisfied,
             "self_approval_ignored": bool(not eligible and approval is not None),
             "failover_engaged": False,
             "approval_index": approval[0] if approval is not None else None,
@@ -1103,7 +1111,12 @@ def verify_bridge_consensus(
             "shape_mismatch": latest_build_shape_mismatch.get(agent),
         }
         if not approved:
-            if not eligible:
+            if build_author_slot_waived:
+                build_identity_reasons[role] = (
+                    f"{role} ({agent}): author build-slot waiver is blocked "
+                    "by a later block"
+                )
+            elif not eligible:
                 build_identity_reasons[role] = (
                     f"{role} ({agent}): author_agent cannot satisfy its own "
                     "reviewer slot"
@@ -1249,7 +1262,7 @@ def verify_bridge_consensus(
     if (
         allow_lead_stall_failover
         and not lead_stall_failover["engaged"]
-        and not identities["build_lead"]["direct_approval"]
+        and not identities["build_lead"]["approved"]
     ):
         reasons.extend(
             f"lead-stall failover refused: {reason}"
@@ -1275,6 +1288,7 @@ def verify_bridge_consensus(
         "rco_pass_ref": rco_pass_ref,
         "recognized_rco_agents": list(recognized_rco_agents),
         "eligible_rco_agents": list(eligible_rco_agents),
+        "build_author_slot_waivers": sorted(waived_build_author_agents),
         "author_agent": author_agent,
         "blocking_rco_agents": sorted(blocking_rco_agents),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,

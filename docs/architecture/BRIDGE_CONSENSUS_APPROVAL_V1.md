@@ -30,13 +30,17 @@ An autonomous merge is approved **only if all of the following hold**. Any
 missing, duplicated, forged, or stale signal fails closed to
 `operator_review_required` — the gate never default-allows.
 
-1. **Build consensus** — two distinct verified identities, the lead
-   (`codex-lead-1`) and the tools/impl peer (`codex-tools-1`), both concur on
-   the change. The concurring build identity **must not be the PR author**:
-   a lead-authored PR cannot satisfy the build-lead slot with the lead's own
-   event, and a tools-authored PR cannot satisfy the build-tools slot with the
-   tools agent's own event. **Identity matching is head-bound, not label-bound
-   (2026-06-05):**
+1. **Build consensus** — two verified build slots, the lead (`codex-lead-1`)
+   and the tools/impl peer (`codex-tools-1`), concur on the change. For a PR
+   authored by neither build identity, both build identities must post
+   head-bound build-consensus approvals. For a PR authored by one of the build
+   identities, the author's own build slot is explicitly **waived**, not
+   approved: the author's own event is ignored for reviewer authority, the
+   other build identity remains mandatory, and the verifier records
+   `build_author_slot_waived` in the receipt material. There is no waiver for
+   RCO authors or non-build authors, and a later block from the build author
+   still blocks that waived slot. **Identity matching is head-bound, not
+   label-bound (2026-06-05):**
    a `build_consensus_pass` event counts for a PR when its canonical PR scope
    matches and the event still binds the PR's exact head SHA, or when a
    descriptive `task_id` carries a structured head field (`payload.head`,
@@ -49,8 +53,8 @@ missing, duplicated, forged, or stale signal fails closed to
    stalls where valid concurrence under a descriptive `task_id` (e.g.
    `prNNN-refresh-current-main`) was invisible. Canonical-`task_id` match remains
    accepted; exact structured head match is the additional, authoritative key
-   for descriptive labels. Build consensus still requires **two distinct** build
-   identities and is still subject to head-exact binding (clause 6).
+   for descriptive labels. The non-author build peer is still subject to
+   head-exact binding (clause 6).
 2. **Independent RCO pass** — a **recognized RCO identity** posts an explicit
    `RCO_PASS` (`type=decision` with a status in the approval set) on the PR's
    **canonical task_id** (= branch name) at the **exact head SHA**. The
@@ -76,17 +80,20 @@ missing, duplicated, forged, or stale signal fails closed to
 4. **RCO absence = NO merge** — if no recognized RCO `RCO_PASS` at the exact head
    is present, the gate refuses even when build-consensus and every charter
    condition pass. Silence blocks; it does not default-allow.
-5. **Three distinct identities** — the approval set is build-lead + build-tools +
-   exactly one recognized RCO = three distinct verified identities. An RCO
-   identity counts for the RCO slot only, never a build slot. Duplicate, missing,
-   unverifiable, self-approving, or author-as-own-reviewer signal sets fail
-   closed. **"Verified" includes agent-uuid binding (2026-06-11):** the claimed
+5. **Independent slots** — the normal approval set is build-lead + build-tools +
+   exactly one recognized RCO = three distinct verified identities. For a
+   lead-authored or tools-authored PR, the author build slot is a recorded waiver
+   and the approval set is the other build identity + exactly one recognized,
+   non-author RCO. An RCO identity counts for the RCO slot only, never a build
+   slot. Duplicate, missing, unverifiable, self-approving, RCO author-as-reviewer,
+   or missing-peer-under-build-author-waiver signal sets fail closed. **"Verified"
+   includes agent-uuid binding (2026-06-11):** the claimed
    `agent` label must carry the registered `agent_uuid` — see "Enforcement of
    agent-uuid identity binding" below.
-6. **Head-exact binding** — all three approvals bind to the exact head SHA. Any
-   re-push that **changes content** invalidates all prior approvals; re-consensus
-   is required (mirrors `gh pr merge --match-head-commit` and the PR #777
-   head-drift fail-close). **Exception — content-identical base rebase
+6. **Head-exact binding** — all required, non-waived approvals bind to the exact
+   head SHA. Any re-push that **changes content** invalidates all prior approvals;
+   re-consensus is required (mirrors `gh pr merge --match-head-commit` and the
+   PR #777 head-drift fail-close). **Exception — content-identical base rebase
    (2026-06-05):** a pure rebase onto current `origin/main` with **no content
    change** carries the consensus approvals (RCO_PASS + build_consensus) forward
    to the new head, because the reviewed content is unchanged. The verifier
@@ -163,7 +170,33 @@ reviews):
 
 This removes the silent-stall class where valid concurrence under a descriptive
 `task_id` (e.g. `prNNN-refresh-current-main`) was invisible to the gate, while
-keeping head-exact binding and the distinct-identity requirement intact.
+keeping head-exact binding and independent-slot requirements intact.
+
+## Enforcement of build-author slot waiver (2026-06-27 amendment)
+
+The lead/tools author waiver is an availability repair for the case where the
+author is itself one of the two build-slot identities. It does not grant that
+author reviewer authority over its own PR.
+
+* `tools/idle_consensus_auto_merge.py` (`verify_bridge_consensus`) — when
+  `author_agent == codex-lead-1`, mark the `build_lead` slot as
+  `build_author_slot_waived=true`, ignore any lead self build event for direct
+  approval, and still require a head-bound `codex-tools-1` build-consensus event.
+  Symmetrically, when `author_agent == codex-tools-1`, waive only `build_tools`
+  and still require a head-bound `codex-lead-1` build-consensus event.
+  A later block from the build author makes the waiver unsatisfied until cleared.
+* No RCO waiver exists: an RCO-authored PR still requires a different recognized
+  RCO to satisfy the RCO slot.
+* No arbitrary producer waiver exists: if the author is not `codex-lead-1` or
+  `codex-tools-1`, both build slots remain mandatory.
+* Receipts and reports carry the waiver state explicitly via
+  `build_author_slot_waivers` and per-role `build_author_slot_waived`, so an
+  auditor can distinguish a waived author slot from a direct author approval.
+
+Required fail-closed tests: lead-authored + tools build + non-author RCO allows;
+tools-authored + lead build + non-author RCO allows; lead-authored without tools
+build refuses; tools-authored without lead build refuses; RCO-authored self-pass
+refuses; duplicate build identity still refuses.
 
 ## Enforcement of agent-uuid identity binding (2026-06-11 amendment)
 

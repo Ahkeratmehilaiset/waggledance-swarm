@@ -459,15 +459,15 @@ def _promotion_gate_diagnostics(
             ):
                 diagnostics.append(
                     {
-                        "kind": "lead_authored_pr_waiting_build_lead_policy_signal",
+                        "kind": "lead_authored_pr_missing_build_author_slot_waiver",
                         "agent": "codex-lead-1",
                         "head_bound": True,
                         "merge_authority_changed": False,
                         "reason": (
-                            "current bridge-consensus contract still requires "
-                            "a head-bound build_lead approval or an explicit "
-                            "driver/operator waiver; tools and RCO approvals "
-                            "alone do not satisfy the three-identity gate"
+                            "current bridge-consensus contract waives the "
+                            "author's build_lead slot only when the verifier "
+                            "records build_author_slot_waived; tools and RCO "
+                            "approvals without that recorded waiver fail closed"
                         ),
                     }
                 )

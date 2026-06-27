@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""T0b — fail-closed three-identity bridge-consensus approver.
+"""T0b — fail-closed bridge-consensus approver.
 
 Covers the forge cases RCO committed to probe: missing RCO_PASS, 2-of-3,
 stale-head approvals, duplicate/stand-in identity, and a block that
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import waggledance.core.bridge_identity_registry as identity_registry_module
 from tools.idle_consensus_auto_merge import (
     evaluate_auto_merge_gate,
@@ -449,7 +450,7 @@ def test_author_rco_self_pass_does_not_satisfy_rco_slot() -> None:
     assert any("recognized non-author RCO" in reason for reason in result["reasons"])
 
 
-def test_author_lead_self_pass_does_not_satisfy_build_slot() -> None:
+def test_author_lead_build_slot_is_waived_with_tools_peer() -> None:
     result = verify_bridge_consensus(
         events=_full_consensus(),
         task_id=TASK,
@@ -457,17 +458,17 @@ def test_author_lead_self_pass_does_not_satisfy_build_slot() -> None:
         author_agent=LEAD,
     )
 
-    assert result["ok"] is False
+    assert result["ok"] is True
+    assert result["build_author_slot_waivers"] == [LEAD]
     assert result["identities"]["build_lead"]["eligible"] is False
-    assert result["identities"]["build_lead"]["approved"] is False
+    assert result["identities"]["build_lead"]["approved"] is True
+    assert result["identities"]["build_lead"]["direct_approval"] is False
+    assert result["identities"]["build_lead"]["build_author_slot_waived"] is True
     assert result["identities"]["build_lead"]["self_approval_ignored"] is True
-    assert any(
-        "author_agent cannot satisfy its own reviewer slot" in reason
-        for reason in result["reasons"]
-    )
+    assert result["identities"]["build_tools"]["approved"] is True
 
 
-def test_author_tools_self_pass_does_not_satisfy_build_slot() -> None:
+def test_author_tools_build_slot_is_waived_with_lead_peer() -> None:
     result = verify_bridge_consensus(
         events=_full_consensus(),
         task_id=TASK,
@@ -475,12 +476,71 @@ def test_author_tools_self_pass_does_not_satisfy_build_slot() -> None:
         author_agent=TOOLS,
     )
 
-    assert result["ok"] is False
+    assert result["ok"] is True
+    assert result["build_author_slot_waivers"] == [TOOLS]
     assert result["identities"]["build_tools"]["eligible"] is False
-    assert result["identities"]["build_tools"]["approved"] is False
+    assert result["identities"]["build_tools"]["approved"] is True
+    assert result["identities"]["build_tools"]["direct_approval"] is False
+    assert result["identities"]["build_tools"]["build_author_slot_waived"] is True
     assert result["identities"]["build_tools"]["self_approval_ignored"] is True
+    assert result["identities"]["build_lead"]["approved"] is True
+
+
+@pytest.mark.parametrize(
+    ("author_agent", "author_role", "peer_role", "peer_agent"),
+    [
+        (LEAD, "build_lead", "build_tools", TOOLS),
+        (TOOLS, "build_tools", "build_lead", LEAD),
+    ],
+)
+def test_build_author_waiver_still_requires_other_build_peer(
+    author_agent: str,
+    author_role: str,
+    peer_role: str,
+    peer_agent: str,
+) -> None:
+    result = verify_bridge_consensus(
+        events=[
+            _approval(author_agent, "build_consensus", ts="2026-05-29T13:00:00Z"),
+            _approval(RCO, "rco_pass", ts="2026-05-29T13:02:00Z", in_message=True),
+        ],
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent=author_agent,
+    )
+
+    assert result["ok"] is False
+    assert result["build_author_slot_waivers"] == [author_agent]
+    assert result["identities"][author_role]["approved"] is True
+    assert result["identities"][author_role]["direct_approval"] is False
+    assert result["identities"][author_role]["build_author_slot_waived"] is True
+    assert result["identities"][peer_role]["approved"] is False
     assert any(
-        "author_agent cannot satisfy its own reviewer slot" in reason
+        f"{peer_role} ({peer_agent}): no head-bound approval at {HEAD}" in reason
+        for reason in result["reasons"]
+    )
+
+
+def test_build_author_slot_waiver_does_not_override_author_block() -> None:
+    result = verify_bridge_consensus(
+        events=[
+            *_full_consensus(),
+            _block(LEAD, ts="2026-05-29T13:03:00Z"),
+        ],
+        task_id=TASK,
+        head_sha=HEAD,
+        author_agent=LEAD,
+    )
+
+    assert result["ok"] is False
+    assert result["identities"]["build_lead"]["build_author_slot_waived"] is True
+    assert (
+        result["identities"]["build_lead"]["build_author_slot_waiver_satisfied"]
+        is False
+    )
+    assert result["identities"]["build_lead"]["approved"] is False
+    assert any(
+        "author build-slot waiver is blocked by a later block" in reason
         for reason in result["reasons"]
     )
 

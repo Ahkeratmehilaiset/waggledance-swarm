@@ -207,8 +207,36 @@ def test_claim_write_scope_redacts_absolute_paths() -> None:
         "<absolute-path-redacted>",
         "tools/build_self_drive_queue_planner.py",
     ]
+    assert report["source"]["path_free"] is True
+    assert report["source"]["path_free_derived_from_output"] is True
+    assert report["source"]["path_free_scan"] == {
+        "unix_absolute_path_found": False,
+        "url_scheme_found": False,
+        "windows_absolute_path_found": False,
+        "worktree_marker_found": False,
+    }
     assert "C:\\Python" not in encoded
     assert "wd-agent-prompts" not in encoded
+
+
+def test_path_free_is_derived_from_final_output() -> None:
+    report = build_self_drive_queue_planner(
+        events=[
+            _event(
+                to="codex-tools-1",
+                task_id="C:\\Python\\leaky-task",
+                status="open",
+            ),
+        ],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    encoded = json.dumps(report, sort_keys=True)
+    assert "C:\\\\Python" in encoded
+    assert report["source"]["path_free"] is False
+    assert report["source"]["path_free_derived_from_output"] is True
+    assert report["source"]["path_free_scan"]["windows_absolute_path_found"] is True
 
 
 def test_ready_review_item_uses_latest_non_terminal_status() -> None:

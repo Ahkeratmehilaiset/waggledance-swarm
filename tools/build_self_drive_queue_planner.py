@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -64,6 +65,17 @@ OPERATOR_GATE_STATUS_FRAGMENTS = (
     "signed_",
     "_gate_",
     "gate_required",
+)
+WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"[A-Za-z]:(?:\\\\|/)")
+URL_SCHEME_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{1,20}://")
+UNIX_ABSOLUTE_PATH_RE = re.compile(
+    r'(?<![:\w])/(?:home|Users|tmp|var|etc|mnt|opt|root|workspace|workspaces)/'
+)
+WORKTREE_MARKERS = (
+    "waggledance-agent-worktrees",
+    "project2-master",
+    "wd-agent-prompts",
+    "_wd_",
 )
 
 
@@ -257,7 +269,7 @@ def build_self_drive_queue_planner(
         "source": {
             "event_count": len(loaded_events),
             "events_digest": _events_digest(loaded_events),
-            "path_free": True,
+            "path_free": False,
             "messages_redacted": True,
             "payloads_redacted": True,
             "events_path_recorded": False,
@@ -271,6 +283,7 @@ def build_self_drive_queue_planner(
         "lanes": _lane_summary(events=loaded_events, claims=claims, now_utc=effective_now),
         "authority_boundary": _authority_boundary(),
     }
+    _derive_path_free_source_flag(report)
     _assert_no_redaction_sentinels(report)
     return report
 
@@ -650,6 +663,34 @@ def _safe_scope_label(value: object) -> str:
     if ":" in text or text.startswith(("/", "~")):
         return "<absolute-path-redacted>"
     return text
+
+
+def _derive_path_free_source_flag(report: dict[str, Any]) -> None:
+    source = report.setdefault("source", {})
+    if not isinstance(source, dict):
+        report["source"] = source = {}
+    source["path_free"] = False
+    source["path_free_derived_from_output"] = True
+    encoded = json.dumps(report, sort_keys=True, default=str)
+    scan = _path_leak_scan(encoded)
+    source["path_free"] = not any(scan.values())
+    source["path_free_scan"] = scan
+
+
+def _path_leak_scan(encoded_output: str) -> dict[str, bool]:
+    lowered = encoded_output.lower()
+    return {
+        "windows_absolute_path_found": bool(
+            WINDOWS_ABSOLUTE_PATH_RE.search(encoded_output)
+        ),
+        "unix_absolute_path_found": bool(
+            UNIX_ABSOLUTE_PATH_RE.search(encoded_output)
+        ),
+        "url_scheme_found": bool(URL_SCHEME_RE.search(encoded_output)),
+        "worktree_marker_found": any(
+            marker.lower() in lowered for marker in WORKTREE_MARKERS
+        ),
+    }
 
 
 def _normalize_agents(agents: Sequence[str] | None) -> list[str]:

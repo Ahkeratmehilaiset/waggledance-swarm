@@ -122,6 +122,33 @@ def test_runtime_readiness_dry_run_fails_closed_when_top_level_dormancy_flips(
     }
 
 
+def test_runtime_readiness_dry_run_fails_closed_when_authority_boundary_flips(
+    tmp_path, monkeypatch
+):
+    authority_boundary = {
+        **AUTHORITY_BOUNDARY,
+        "runtime_executor_invocation": True,
+        "runtime_topology_mutation": True,
+        "routing_influence": True,
+        "transport": True,
+    }
+    monkeypatch.setattr(dry_run, "AUTHORITY_BOUNDARY", authority_boundary)
+
+    report = build_hex_subdivision_runtime_readiness_dry_run(
+        out_dir=tmp_path / "readiness"
+    )
+
+    assert report["ok"] is False
+    assert report["runtime_ready_evidence_available"] is False
+    assert "runtime_authority_false_everywhere" in report["blockers"]
+    assert set(report["forbidden_true_flag_paths"]) == {
+        "authority_boundary.runtime_executor_invocation",
+        "authority_boundary.runtime_topology_mutation",
+        "authority_boundary.routing_influence",
+        "authority_boundary.transport",
+    }
+
+
 def test_runtime_readiness_dry_run_cli_json(tmp_path):
     out_dir = tmp_path / "readiness"
     cmd = [

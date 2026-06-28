@@ -9,12 +9,13 @@ refuse_case and allow_case using keyword args (events=, task_id=, head_sha=).
 - For every allow_case: asserts result['ok'] is True and result['decision'] == "bridge_consensus_verified".
 
 The corpus enumerates the exact REFUSE set (2-of-3 missing any identity; duplicate/self-approving;
-author-as-own-reviewer by lead/tools/RCO; lead/tools not head-bound via absent sha in message;
-stale/different head; wrong agent identity; rco veto changes_requested/finding/blocked from claude-rco-1;
-build status not in BUILD_CONSENSUS_STATUSES)
-and ALLOW set (three distinct, head-bound via message, correct statuses, correct identities, no later veto).
+RCO author-as-own-reviewer; build-author waiver without the other build peer; lead/tools not
+head-bound via absent sha in message; stale/different head; wrong agent identity; rco veto
+changes_requested/finding/blocked from claude-rco-1; build status not in BUILD_CONSENSUS_STATUSES)
+and ALLOW set (head-bound build peer plus a waived build-author slot when applicable,
+correct statuses, correct identities, no later veto).
 
-This locks the autonomy safety property of the 3-identity head-bound bridge-consensus (CLAUDE.md Rule 9a)
+This locks the autonomy safety property of the head-bound bridge-consensus (CLAUDE.md Rule 9a)
 against regression. Any future change that weakens verify_bridge_consensus (or its callers in
 idle_consensus_auto_merge.py) such that a refuse_case now returns ok=True or an allow_case is refused
 will cause this test to fail deterministically.
@@ -65,8 +66,8 @@ REQUIRED_REFUSE_CASE_NAMES = {
     "rco_veto_changes_requested_after_pass",
     "rco_veto_blocked_type_after_pass",
     "build_status_not_in_BUILD_CONSENSUS_STATUSES",
-    "author_lead_self_build_rejected",
-    "author_tools_self_build_rejected",
+    "author_lead_waiver_missing_tools_peer_rejected",
+    "author_tools_waiver_missing_lead_peer_rejected",
     "author_rco_self_pass_rejected",
     "other_recognized_rco_veto_blocks_pass",
 }
@@ -75,6 +76,8 @@ REQUIRED_ALLOW_CASE_NAMES = {
     "allow_various_build_statuses_and_rco_review_type",
     "fresh_pass_after_earlier_rco_veto_still_allows",
     "backup_rco_only_pass_satisfies_rco_slot",
+    "author_lead_build_slot_waived_with_tools_peer",
+    "author_tools_build_slot_waived_with_lead_peer",
 }
 
 

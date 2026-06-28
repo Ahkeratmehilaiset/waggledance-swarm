@@ -74,6 +74,10 @@ P4_SUBSTRATE_FILE_DENYLIST_ENTRIES = {
     "docs/architecture/P4B_POST_MERGE_CANARY*",
     "tools/post_merge_canary.py",
 }
+BRIDGE_CONSENSUS_CONFORMANCE_ANCHOR_FILE_DENYLIST_ENTRIES = {
+    "tests/tools/test_verify_bridge_consensus_conformance.py",
+    "tests/tools/verify_bridge_consensus_conformance_corpus.json",
+}
 LEGACY_CODE_PATTERN_MARKERS = {
     "auto_execute=False",
     "operator_gate_required=True",
@@ -160,6 +164,13 @@ def test_charter_denylist_contains_merge_executor_anchor() -> None:
 def test_charter_denylist_contains_p4_substrate_operator_gate_artifacts() -> None:
     charter = load_charter()
     assert P4_SUBSTRATE_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
+def test_charter_denylist_contains_bridge_consensus_conformance_anchors() -> None:
+    charter = load_charter()
+    assert BRIDGE_CONSENSUS_CONFORMANCE_ANCHOR_FILE_DENYLIST_ENTRIES <= set(
+        charter.file_denylist
+    )
 
 
 def test_charter_preserves_existing_code_pattern_markers() -> None:
@@ -262,6 +273,15 @@ def test_evaluate_paths_blocks_corpus_policy_anchors_despite_broad_allowlist() -
 def test_evaluate_paths_blocks_merge_executor_anchor_despite_broad_allowlist() -> None:
     charter = load_charter()
     for path in sorted(MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False
+        assert decision.blocked_paths == (path,)
+        assert decision.reason == "denylist hit"
+
+
+def test_evaluate_paths_blocks_bridge_consensus_conformance_anchors() -> None:
+    charter = load_charter()
+    for path in sorted(BRIDGE_CONSENSUS_CONFORMANCE_ANCHOR_FILE_DENYLIST_ENTRIES):
         decision = evaluate_paths(charter, [path])
         assert decision.allowed is False
         assert decision.blocked_paths == (path,)

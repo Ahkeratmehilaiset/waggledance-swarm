@@ -221,7 +221,7 @@ def test_missing_bridge_consensus_returns_not_eligible(tmp_path: Path) -> None:
     )
 
 
-def test_lead_authored_missing_build_lead_reports_policy_signal_needed(
+def test_lead_authored_tools_and_rco_satisfy_build_author_slot_waiver(
     tmp_path: Path,
 ) -> None:
     events = [
@@ -231,22 +231,19 @@ def test_lead_authored_missing_build_lead_reports_policy_signal_needed(
 
     report = _build(tmp_path, events=events, author_agent="codex-lead-1")
 
-    assert report["eligible"] is False
-    assert report["decision"] == "promotion_not_eligible"
-    assert report["gate_diagnostics"] == [
-        {
-            "kind": "lead_authored_pr_waiting_build_lead_policy_signal",
-            "agent": "codex-lead-1",
-            "head_bound": True,
-            "merge_authority_changed": False,
-            "reason": (
-                "current bridge-consensus contract still requires "
-                "a head-bound build_lead approval or an explicit "
-                "driver/operator waiver; tools and RCO approvals "
-                "alone do not satisfy the three-identity gate"
-            ),
-        }
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+    assert report["gate_diagnostics"] == []
+    consensus = report["eligibility"]["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
     ]
+    assert consensus["build_author_slot_waivers"] == ["codex-lead-1"]
+    assert consensus["identities"]["build_lead"]["approved"] is True
+    assert consensus["identities"]["build_lead"]["direct_approval"] is False
+    assert (
+        consensus["identities"]["build_lead"]["build_author_slot_waived"] is True
+    )
+    assert consensus["identities"]["build_tools"]["approved"] is True
 
 
 def test_missing_author_claim_fails_closed(tmp_path: Path) -> None:

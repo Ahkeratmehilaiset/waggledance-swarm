@@ -52,14 +52,14 @@ def _event(
     }
 
 
-def _evaluate(events: list[dict]) -> dict:
+def _evaluate(events: list[dict], *, author_agent: str = "fable-5") -> dict:
     return evaluate_promotion_eligibility(
         pr_status=_status(),
         events=events,
         task_id=TASK,
         head=HEAD,
         origin_main_sha=BASE,
-        author_agent="fable-5",
+        author_agent=author_agent,
     )
 
 
@@ -208,3 +208,61 @@ def test_canonical_exact_head_build_consensus_remains_eligible() -> None:
     assert report["eligible"] is True
     assert report["decision"] == "promotion_eligible"
     assert report["gate_results"]["bridge_consensus"]["ok"] is True
+
+
+def test_lead_authored_promotion_uses_build_author_slot_waiver() -> None:
+    report = _evaluate(
+        [
+            _event(
+                "codex-lead-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:15:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:16:00Z",
+            ),
+            _event("claude-rco-1", "rco_pass", ts="2026-06-07T02:17:00Z"),
+        ],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is True
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]
+    assert consensus["build_author_slot_waivers"] == ["codex-lead-1"]
+    assert consensus["identities"]["build_lead"]["approved"] is True
+    assert consensus["identities"]["build_lead"]["direct_approval"] is False
+    assert (
+        consensus["identities"]["build_lead"]["build_author_slot_waived"] is True
+    )
+    assert consensus["identities"]["build_tools"]["approved"] is True
+
+
+def test_build_author_slot_waiver_does_not_replace_other_build_peer() -> None:
+    report = _evaluate(
+        [
+            _event(
+                "codex-tools-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:16:00Z",
+            ),
+            _event("claude-rco-1", "rco_pass", ts="2026-06-07T02:17:00Z"),
+        ],
+        author_agent="codex-tools-1",
+    )
+
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]
+    assert consensus["build_author_slot_waivers"] == ["codex-tools-1"]
+    assert consensus["identities"]["build_tools"]["approved"] is True
+    assert consensus["identities"]["build_tools"]["direct_approval"] is False
+    assert (
+        consensus["identities"]["build_tools"]["build_author_slot_waived"] is True
+    )
+    assert consensus["identities"]["build_lead"]["approved"] is False

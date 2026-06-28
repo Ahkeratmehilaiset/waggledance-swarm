@@ -649,16 +649,17 @@ def test_bridge_consensus_accepts_exact_head_payload_alias(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    ("author_agent", "role"),
+    ("author_agent", "waived_role", "peer_role"),
     [
-        ("codex-lead-1", "build_lead"),
-        ("codex-tools-1", "build_tools"),
+        ("codex-lead-1", "build_lead", "build_tools"),
+        ("codex-tools-1", "build_tools", "build_lead"),
     ],
 )
-def test_bridge_consensus_rejects_build_author_self_review(
+def test_bridge_consensus_waives_build_author_slot_with_independent_peer(
     tmp_path: Path,
     author_agent: str,
-    role: str,
+    waived_role: str,
+    peer_role: str,
 ) -> None:
     events = [
         _bridge_event(
@@ -693,15 +694,80 @@ def test_bridge_consensus_rejects_build_author_self_review(
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
     )
-    identity = report["bridge_consensus"]["identities"][role]
-    assert report["decision"] == "operator_review_required"
-    assert report["bridge_consensus"]["ok"] is False
-    assert identity["eligible"] is False
-    assert identity["approved"] is False
-    assert identity["self_approval_ignored"] is True
-    assert any(
+    consensus = report["bridge_consensus"]
+    waived = consensus["identities"][waived_role]
+    peer = consensus["identities"][peer_role]
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert consensus["ok"] is True
+    assert consensus["build_author_slot_waivers"] == [author_agent]
+    assert waived["build_author_slot_waived"] is True
+    assert waived["eligible"] is False
+    assert waived["approved"] is True
+    assert waived["direct_approval"] is False
+    assert waived["self_approval_ignored"] is True
+    assert peer["build_author_slot_waived"] is False
+    assert peer["approved"] is True
+    assert peer["direct_approval"] is True
+    assert not any(
         "author_agent cannot satisfy its own reviewer slot" in reason
-        for reason in report["bridge_consensus"]["reasons"]
+        for reason in consensus["reasons"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("author_agent", "waived_role", "peer_role", "peer_agent"),
+    [
+        ("codex-lead-1", "build_lead", "build_tools", "codex-tools-1"),
+        ("codex-tools-1", "build_tools", "build_lead", "codex-lead-1"),
+    ],
+)
+def test_bridge_consensus_build_author_waiver_still_requires_peer_build_slot(
+    tmp_path: Path,
+    author_agent: str,
+    waived_role: str,
+    peer_role: str,
+    peer_agent: str,
+) -> None:
+    events = [
+        _bridge_event(
+            agent=author_agent,
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="decision",
+            status="rco_pass",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {"payload": {"pr": 477, "exact_head": HEAD}},
+    ]
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(author_agent=author_agent),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    consensus = report["bridge_consensus"]
+    waived = consensus["identities"][waived_role]
+    peer = consensus["identities"][peer_role]
+    assert report["decision"] == "operator_review_required"
+    assert consensus["ok"] is False
+    assert consensus["build_author_slot_waivers"] == [author_agent]
+    assert waived["build_author_slot_waived"] is True
+    assert waived["approved"] is True
+    assert waived["direct_approval"] is False
+    assert waived["self_approval_ignored"] is True
+    assert peer["approved"] is False
+    assert any(
+        f"{peer_role} ({peer_agent}): no head-bound approval at {HEAD}" in reason
+        for reason in consensus["reasons"]
     )
 
 

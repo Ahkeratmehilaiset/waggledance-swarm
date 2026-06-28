@@ -40,6 +40,7 @@ def test_runtime_readiness_dry_run_writes_blocked_report(tmp_path):
         "pipeline_e2e_checks_all_true": True,
         "executor_admission_proof_ok": True,
         "executor_admission_checks_all_true": True,
+        "pipeline_execution_request_digest_matches_executor_admission": True,
         "executor_admission_remains_blocked": True,
         "dry_run_rejects_cutover_authorization": True,
         "runtime_authority_false_everywhere": True,
@@ -49,9 +50,14 @@ def test_runtime_readiness_dry_run_writes_blocked_report(tmp_path):
 
     pipeline = report["source_reports"]["pipeline_e2e"]
     assert pipeline["ok"] is True
+    assert isinstance(pipeline["execution_request_digest"], str)
+    assert pipeline["execution_request_digest"].startswith("sha256:")
     assert pipeline["execution_request_live_runtime_authorized"] is False
     admission = report["source_reports"]["executor_admission"]
     assert admission["ok"] is True
+    assert admission["runtime_execution_request_digest"] == (
+        pipeline["execution_request_digest"]
+    )
     assert admission["ready_for_runtime_executor_admission"] is False
     assert admission["runtime_executor_invoked"] is False
     assert admission["runtime_commit_performed"] is False
@@ -147,6 +153,53 @@ def test_runtime_readiness_dry_run_fails_closed_when_authority_boundary_flips(
         "authority_boundary.routing_influence",
         "authority_boundary.transport",
     }
+
+
+def test_runtime_readiness_dry_run_fails_closed_when_admission_digest_unbound(
+    tmp_path, monkeypatch
+):
+    real_build_admission = dry_run.build_subdivision_runtime_executor_admission
+
+    def mismatched_primary_admission(*, execution_request, cutover_authorization=None):
+        admission = real_build_admission(
+            execution_request=execution_request,
+            cutover_authorization=cutover_authorization,
+        )
+        if (
+            cutover_authorization is None
+            and execution_request.get("executor_admission_probe") != "drift"
+            and execution_request.get("runtime_executor_invoked") is not True
+        ):
+            return {
+                **admission,
+                "runtime_execution_request_digest": "sha256:" + ("0" * 64),
+            }
+        return admission
+
+    monkeypatch.setattr(
+        dry_run,
+        "build_subdivision_runtime_executor_admission",
+        mismatched_primary_admission,
+    )
+
+    report = build_hex_subdivision_runtime_readiness_dry_run(
+        out_dir=tmp_path / "readiness"
+    )
+
+    assert report["ok"] is False
+    assert report["runtime_ready_evidence_available"] is False
+    assert (
+        "pipeline_execution_request_digest_matches_executor_admission"
+        in report["blockers"]
+    )
+    assert report["proof_checks"][
+        "pipeline_execution_request_digest_matches_executor_admission"
+    ] is False
+    assert report["source_reports"]["pipeline_e2e"][
+        "execution_request_digest"
+    ] != report["source_reports"]["executor_admission"][
+        "runtime_execution_request_digest"
+    ]
 
 
 def test_runtime_readiness_dry_run_cli_json(tmp_path):

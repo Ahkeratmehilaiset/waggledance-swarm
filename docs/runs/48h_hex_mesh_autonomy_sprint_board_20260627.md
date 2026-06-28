@@ -41,7 +41,7 @@ Last truth refresh: 2026-06-28T07:50Z on
 | PR #1417 sprint board truth refresh | `3d1c199c05e15608f9f72093d428f065d1d6d2f4` | Truth refresh for #1412 through #1416. | Merged at `e9fdf76c6fe77c60920d57f6b6578ebb56c4e6d0`. |
 | PR #1419 offline post-subdivision ring-readiness proof capstone | `253fdde7bcded2a8f1e65f320d9c44d89c94e141` | Hex subdivision/ring/hierarchy 48h target was met with offline proof evidence and runtime mutation authority false. | Merged at `81bbdf585dc54ee96c4deb403b33777e01968331`. |
 | PR #1418 build-author consensus slot waiver | `115e8e5ed52ea451324837e4553ab775f1fe5e98` | CI 6/6 green, tools build consensus present, RCO present, explicit operator signature received on 2026-06-28. | Merged by expected-head squash at `9f369d62ab90995d168cf85aa0af3db6279b8dfa`; no admin, no no-verify, no force-push. |
-| Current objective: offline runtime-readiness dry-run harness | local branch from `9f369d62ab90995d168cf85aa0af3db6279b8dfa` | `python -m pytest tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py -q` passed, including top-level dormancy and authority-boundary grant fail-closed hardening; compileall passed; dry-run CLI emitted `runtime_ready_evidence_available=true` with `production_activation_ready=false` and `runtime_mutation_authority=false`. | In progress in this PR; after the authority-boundary hardening push it requires fresh CI, tools/build review refresh, RCO review, and normal operator merge gate. |
+| Current objective: offline runtime-readiness dry-run harness | local branch from `9f369d62ab90995d168cf85aa0af3db6279b8dfa` | `python -m pytest tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py -q` passed, including top-level dormancy, authority-boundary grant fail-closed hardening, and digest-binding fail-closed coverage; compileall passed; dry-run CLI emitted `runtime_ready_evidence_available=true` with `production_activation_ready=false`, `runtime_mutation_authority=false`, and matching pipeline/admission execution-request digests. | In progress in this PR; after the digest-binding hardening push it requires fresh CI, tools/build review refresh, RCO review, and normal operator merge gate. |
 
 ## Current Lead Objective
 
@@ -87,13 +87,23 @@ Result:
   returned `[]` when `authority_boundary.runtime_executor_invocation`,
   `runtime_topology_mutation`, `routing_influence`, and `transport` were set
   true; after the fix it reports all four paths
-- pytest: 5 passed
+- digest-binding finding reproduction: before the fix, generated child proof
+  files showed `pipeline_e2e.handoff_digests.execution_request_digest` did not
+  equal `executor_admission.subdivision_runtime_executor_admission.runtime_execution_request_digest`
+  while the readiness report still returned `ok=true`,
+  `runtime_ready_evidence_available=true`, all proof checks true, and no
+  blockers
+- after the fix, executor admission is built from the pipeline execution
+  request and the readiness proof check
+  `pipeline_execution_request_digest_matches_executor_admission` must pass;
+  the CLI smoke reports matching `sha256:` execution-request digests
+- pytest: 6 passed
 - compileall: pass
 - dry-run CLI: pass
 - affected-test selector: `FULL SUITE` because the board doc is unmapped
 - local full `python -m pytest`: timed out after 20 minutes; GitHub CI remains
   the authoritative full-suite gate for this PR
-- targeted runtime-readiness/proof regression set: 17 passed
+- targeted runtime-readiness/proof regression set: 18 passed
 - diff-check: pass, with Git's existing LF-to-CRLF working-copy warnings for
   changed text files
 - dry-run status: `runtime_ready_evidence_available_activation_blocked`

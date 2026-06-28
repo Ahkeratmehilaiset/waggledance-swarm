@@ -30,13 +30,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.run_hex_subdivision_runtime_executor_admission_proof import (  # noqa: E402
-    build_hex_subdivision_runtime_executor_admission_proof,
+    REPORT_VERSION as EXECUTOR_ADMISSION_PROOF_REPORT_VERSION,
 )
 from tools.run_hex_subdivision_runtime_pipeline_e2e_proof import (  # noqa: E402
+    _build_chain as _build_pipeline_e2e_chain,
     build_hex_subdivision_runtime_pipeline_e2e_proof,
 )
 from waggledance.core.hex_topology.subdivision_runtime_executor_admission import (  # noqa: E402
     SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER,
+    build_subdivision_runtime_executor_admission,
 )
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 
@@ -154,12 +156,25 @@ def build_hex_subdivision_runtime_readiness_dry_run(
         out_dir=out_dir / "pipeline_e2e",
         now_utc=generated_at,
     )
-    admission_report = build_hex_subdivision_runtime_executor_admission_proof(
+    pipeline_execution_request = _build_pipeline_e2e_chain(generated_at)[
+        "request"
+    ]
+    admission_report = _build_executor_admission_proof_for_request(
         out_dir=out_dir / "executor_admission",
-        now_utc=generated_at,
+        generated_at=generated_at,
+        execution_request=pipeline_execution_request,
     )
     admission = _mapping_as_dict(
         admission_report.get("subdivision_runtime_executor_admission")
+    )
+    pipeline_handoff_digests = _mapping_as_dict(
+        pipeline_report.get("handoff_digests")
+    )
+    pipeline_execution_request_digest = pipeline_handoff_digests.get(
+        "execution_request_digest"
+    )
+    admission_execution_request_digest = admission.get(
+        "runtime_execution_request_digest"
     )
     top_level_dormancy = dict(TOP_LEVEL_DORMANCY_FLAGS)
     forbidden_true_paths = _forbidden_true_flag_paths(
@@ -179,6 +194,12 @@ def build_hex_subdivision_runtime_readiness_dry_run(
         "executor_admission_proof_ok": admission_report.get("ok") is True,
         "executor_admission_checks_all_true": _checks_all_true(
             admission_report.get("proof_checks")
+        ),
+        "pipeline_execution_request_digest_matches_executor_admission": (
+            isinstance(pipeline_execution_request_digest, str)
+            and bool(pipeline_execution_request_digest)
+            and pipeline_execution_request_digest
+            == admission_execution_request_digest
         ),
         "executor_admission_remains_blocked": (
             admission.get("ready_for_runtime_executor_admission") is False
@@ -228,6 +249,9 @@ def build_hex_subdivision_runtime_readiness_dry_run(
                 "report_version": pipeline_report.get("report_version"),
                 "ok": pipeline_report.get("ok") is True,
                 "proof_path": pipeline_report.get("proof_path"),
+                "execution_request_digest": (
+                    pipeline_execution_request_digest
+                ),
                 "execution_request_live_runtime_authorized": (
                     pipeline_report.get(
                         "execution_request_live_runtime_authorized"
@@ -239,6 +263,9 @@ def build_hex_subdivision_runtime_readiness_dry_run(
                 "ok": admission_report.get("ok") is True,
                 "proof_path": admission_report.get("proof_path"),
                 "admission_decision": admission.get("admission_decision"),
+                "runtime_execution_request_digest": (
+                    admission_execution_request_digest
+                ),
                 "ready_for_runtime_executor_admission": admission.get(
                     "ready_for_runtime_executor_admission"
                 ),
@@ -261,6 +288,99 @@ def build_hex_subdivision_runtime_readiness_dry_run(
         "report_path": str(report_path),
     }
     report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
+def _build_executor_admission_proof_for_request(
+    *,
+    out_dir: Path,
+    generated_at: datetime,
+    execution_request: Mapping[str, Any],
+) -> dict[str, Any]:
+    out_dir = out_dir.resolve()
+    if out_dir.exists():
+        raise ValueError(f"out_dir must not exist: {out_dir}")
+    if not out_dir.parent.exists():
+        raise ValueError(f"out_dir parent does not exist: {out_dir.parent}")
+    out_dir.mkdir()
+
+    request = dict(execution_request)
+    admission = build_subdivision_runtime_executor_admission(
+        execution_request=request,
+    )
+    drifted_request = build_subdivision_runtime_executor_admission(
+        execution_request={**request, "executor_admission_probe": "drift"},
+    )
+    runtime_claim_request = build_subdivision_runtime_executor_admission(
+        execution_request={
+            **request,
+            "runtime_executor_invoked": True,
+        },
+    )
+    cutover_supplied = build_subdivision_runtime_executor_admission(
+        execution_request=request,
+        cutover_authorization={
+            "operator_verified_runtime_subdivision_executor_cutover": True,
+            "plan_id": request["plan_id"],
+            "verified_at_utc": _format_utc(generated_at),
+        },
+    )
+
+    proof_checks = {
+        "executor_admission_proof_valid": admission["ok"] is True,
+        "executor_admission_remains_blocked": (
+            admission["ready_for_runtime_executor_admission"] is False
+            and admission["admission_blockers"]
+            == [SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER]
+        ),
+        "executor_admission_does_not_run_live_runtime": (
+            admission["live_runtime_execution_authorized"] is False
+            and admission["runtime_executor_invoked"] is False
+            and admission["runtime_commit_performed"] is False
+            and admission["runtime_topology_mutation_applied"] is False
+            and admission["transport_performed"] is False
+        ),
+        "request_digest_drift_blocks_admission": (
+            drifted_request["ok"] is False
+            and "execution_request_digest_rederives"
+            in drifted_request["blockers"]
+        ),
+        "runtime_claim_blocks_admission": (
+            runtime_claim_request["ok"] is False
+            and "execution_request_runtime_flags_false"
+            in runtime_claim_request["blockers"]
+        ),
+        "cutover_authorization_is_not_accepted_by_dry_run": (
+            cutover_supplied["ok"] is False
+            and "cutover_authorization_absent"
+            in cutover_supplied["blockers"]
+        ),
+    }
+    blockers = [
+        name for name, passed in proof_checks.items() if passed is not True
+    ]
+    report = {
+        "report_version": EXECUTOR_ADMISSION_PROOF_REPORT_VERSION,
+        "generated_at_utc": _format_utc(generated_at),
+        "ok": not blockers,
+        "blockers": blockers,
+        "proof_checks": proof_checks,
+        "cutover_authorization_fixture": (
+            "synthetic_cutover_input_rejected_by_dry_run"
+        ),
+        "subdivision_runtime_executor_admission": admission,
+        "drifted_request_blockers": drifted_request["blockers"],
+        "runtime_claim_request_blockers": runtime_claim_request["blockers"],
+        "cutover_supplied_blockers": cutover_supplied["blockers"],
+    }
+    proof_path = (
+        out_dir / "hex_subdivision_runtime_executor_admission_proof.json"
+    )
+    report["proof_path"] = str(proof_path)
+    proof_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )

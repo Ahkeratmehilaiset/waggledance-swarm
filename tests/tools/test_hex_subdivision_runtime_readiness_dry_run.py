@@ -76,6 +76,44 @@ def test_runtime_readiness_dry_run_writes_blocked_report(tmp_path):
     assert saved == report
 
 
+def test_runtime_ready_evidence_contract_is_not_activation_readiness(tmp_path):
+    report = build_hex_subdivision_runtime_readiness_dry_run(
+        out_dir=tmp_path / "readiness"
+    )
+
+    assert report["ok"] is True
+    assert report["readiness_status"] == (
+        "runtime_ready_evidence_available_activation_blocked"
+    )
+    assert report["runtime_ready_evidence_available"] is True
+    assert report["production_activation_ready"] is False
+    assert report["runtime_mutation_authority"] is False
+    assert report["required_next_gate"] == (
+        "operator_verified_runtime_subdivision_executor_cutover"
+    )
+    assert report["activation_blockers"] == [
+        SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER
+    ]
+    assert report["forbidden_true_flag_paths"] == []
+
+    authority = report["authority_boundary"]
+    assert authority["runtime_executor_invocation"] is False
+    assert authority["runtime_topology_mutation"] is False
+    assert authority["routing_influence"] is False
+    assert authority["transport"] is False
+    assert authority["bridge_append_allowed"] is False
+    assert authority["scheduler_enqueue_allowed"] is False
+    assert authority["merge_allowed"] is False
+
+    admission = report["source_reports"]["executor_admission"]
+    assert admission["admission_decision"] == (
+        "blocked_pending_operator_verified_cutover"
+    )
+    assert admission["ready_for_runtime_executor_admission"] is False
+    assert admission["runtime_executor_invoked"] is False
+    assert admission["runtime_commit_performed"] is False
+
+
 def test_runtime_readiness_dry_run_refuses_existing_out_dir(tmp_path):
     out_dir = tmp_path / "readiness"
     out_dir.mkdir()

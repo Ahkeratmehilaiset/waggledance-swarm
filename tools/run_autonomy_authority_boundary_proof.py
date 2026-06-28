@@ -197,9 +197,14 @@ def build_authority_boundary_proof() -> dict[str, Any]:
         and auth["deterministic_solver_selected"]
         and auth["llm_selected"] is False
     )
+    # The advisory route must actually be the LLM (explain.llm_reasoning), stamped
+    # BRONZE + fallback. Requiring adv["llm_selected"] is True makes the claim
+    # fail closed: a bronze fallback that does NOT select the LLM does not prove
+    # the LLM-advisory boundary (it could be some other non-LLM fallback).
     llm_advisory_only = bool(
         adv["quality_path"] == "bronze"
         and adv["fallback_used"] is True
+        and adv["llm_selected"] is True
         and adv["deterministic_solver_selected"] is False
     )
     # Bronze is the ceiling for any fallback route → the advisory LLM can never

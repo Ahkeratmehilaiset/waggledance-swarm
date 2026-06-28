@@ -75,6 +75,29 @@ def test_llm_promotion_to_authoritative_fails_closed(monkeypatch):
     assert "advisory_cannot_be_authoritative" in report["blockers"]
 
 
+def test_advisory_without_llm_selection_fails_closed(monkeypatch):
+    """A bronze fallback route that does NOT select the LLM (explain.llm_reasoning)
+    must fail the LLM-advisory claim closed: the boundary is only proven when the
+    LLM is the selected advisory capability, not merely 'some fallback was used'."""
+    real = mod._route_view
+
+    def fake(intent, query):
+        if intent == mod.ADVISORY_INTENT:
+            return {
+                "quality_path": "bronze",
+                "fallback_used": True,
+                "selected_capability_ids": ["explain.some_other_fallback"],
+                "llm_selected": False,            # bronze fallback, but NOT the LLM
+                "deterministic_solver_selected": False,
+            }
+        return real(intent, query)
+
+    monkeypatch.setattr(mod, "_route_view", fake)
+    report = mod.build_authority_boundary_proof()
+    assert report["ok"] is False
+    assert "llm_advisory_only" in report["blockers"]
+
+
 # ── (b) no LLM output can grant runtime-mutation authority ──────────────────-
 
 def test_mutation_authority_boundary():

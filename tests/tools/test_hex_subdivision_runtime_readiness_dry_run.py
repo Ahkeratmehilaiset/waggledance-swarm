@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 
+import tools.run_hex_subdivision_runtime_readiness_dry_run as dry_run
 from tools.run_hex_subdivision_runtime_readiness_dry_run import (
     AUTHORITY_BOUNDARY,
     READINESS_STATUS,
@@ -91,6 +92,34 @@ def test_runtime_readiness_dry_run_refuses_existing_out_dir(tmp_path):
 
     assert proc.returncode == 1
     assert "out_dir must not exist" in proc.stderr
+
+
+def test_runtime_readiness_dry_run_fails_closed_when_top_level_dormancy_flips(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        dry_run,
+        "TOP_LEVEL_DORMANCY_FLAGS",
+        {
+            "production_activation_ready": True,
+            "runtime_mutation_authority": True,
+        },
+    )
+
+    report = build_hex_subdivision_runtime_readiness_dry_run(
+        out_dir=tmp_path / "readiness"
+    )
+
+    assert report["ok"] is False
+    assert report["runtime_ready_evidence_available"] is False
+    assert report["production_activation_ready"] is True
+    assert report["runtime_mutation_authority"] is True
+    assert "production_activation_not_ready" in report["blockers"]
+    assert "runtime_authority_false_everywhere" in report["blockers"]
+    assert set(report["forbidden_true_flag_paths"]) == {
+        "top_level_dormancy.production_activation_ready",
+        "top_level_dormancy.runtime_mutation_authority",
+    }
 
 
 def test_runtime_readiness_dry_run_cli_json(tmp_path):

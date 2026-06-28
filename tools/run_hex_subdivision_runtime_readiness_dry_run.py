@@ -43,6 +43,10 @@ from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 
 REPORT_VERSION = "wd.hex_subdivision_runtime_readiness_dry_run.v0"
 READINESS_STATUS = "runtime_ready_evidence_available_activation_blocked"
+TOP_LEVEL_DORMANCY_FLAGS = {
+    "production_activation_ready": False,
+    "runtime_mutation_authority": False,
+}
 
 AUTHORITY_BOUNDARY = {
     "runtime_mutation_authority": False,
@@ -65,6 +69,7 @@ _FORBIDDEN_TRUE_FIELDS = {
     "production_activation",
     "operator_cutover",
     "operator_approval",
+    "production_activation_ready",
     "live_runtime_execution_authorized",
     "live_runtime_commit_authorized",
     "runtime_topology_mutation_applied",
@@ -152,8 +157,10 @@ def build_hex_subdivision_runtime_readiness_dry_run(
     admission = _mapping_as_dict(
         admission_report.get("subdivision_runtime_executor_admission")
     )
+    top_level_dormancy = dict(TOP_LEVEL_DORMANCY_FLAGS)
     forbidden_true_paths = _forbidden_true_flag_paths(
         {
+            "top_level_dormancy": top_level_dormancy,
             "authority_boundary": AUTHORITY_BOUNDARY,
             "pipeline_e2e": pipeline_report,
             "executor_admission_proof": admission_report,
@@ -181,7 +188,9 @@ def build_hex_subdivision_runtime_readiness_dry_run(
             is True
         ),
         "runtime_authority_false_everywhere": forbidden_true_paths == [],
-        "production_activation_not_ready": True,
+        "production_activation_not_ready": (
+            top_level_dormancy.get("production_activation_ready") is False
+        ),
         "operator_cutover_gate_required": (
             SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER
             in activation_blockers
@@ -199,8 +208,12 @@ def build_hex_subdivision_runtime_readiness_dry_run(
         "blockers": blockers,
         "readiness_status": READINESS_STATUS,
         "runtime_ready_evidence_available": ok,
-        "production_activation_ready": False,
-        "runtime_mutation_authority": False,
+        "production_activation_ready": top_level_dormancy[
+            "production_activation_ready"
+        ],
+        "runtime_mutation_authority": top_level_dormancy[
+            "runtime_mutation_authority"
+        ],
         "authority_boundary": dict(AUTHORITY_BOUNDARY),
         "activation_blockers": activation_blockers,
         "required_next_gate": admission.get("required_next_gate"),

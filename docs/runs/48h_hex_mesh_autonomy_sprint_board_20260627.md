@@ -41,7 +41,7 @@ Last truth refresh: 2026-06-28T07:50Z on
 | PR #1417 sprint board truth refresh | `3d1c199c05e15608f9f72093d428f065d1d6d2f4` | Truth refresh for #1412 through #1416. | Merged at `e9fdf76c6fe77c60920d57f6b6578ebb56c4e6d0`. |
 | PR #1419 offline post-subdivision ring-readiness proof capstone | `253fdde7bcded2a8f1e65f320d9c44d89c94e141` | Hex subdivision/ring/hierarchy 48h target was met with offline proof evidence and runtime mutation authority false. | Merged at `81bbdf585dc54ee96c4deb403b33777e01968331`. |
 | PR #1418 build-author consensus slot waiver | `115e8e5ed52ea451324837e4553ab775f1fe5e98` | CI 6/6 green, tools build consensus present, RCO present, explicit operator signature received on 2026-06-28. | Merged by expected-head squash at `9f369d62ab90995d168cf85aa0af3db6279b8dfa`; no admin, no no-verify, no force-push. |
-| Current objective: offline runtime-readiness dry-run harness | local branch from `9f369d62ab90995d168cf85aa0af3db6279b8dfa` | `python -m pytest tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py -q` passed; compileall passed; dry-run CLI emitted `runtime_ready_evidence_available=true` with `production_activation_ready=false` and `runtime_mutation_authority=false`. | In progress in this PR; requires push, CI, tools/build review, RCO review, and normal merge gate. |
+| Current objective: offline runtime-readiness dry-run harness | local branch from `9f369d62ab90995d168cf85aa0af3db6279b8dfa` | `python -m pytest tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py -q` passed, including top-level dormancy fail-closed hardening; compileall passed; dry-run CLI emitted `runtime_ready_evidence_available=true` with `production_activation_ready=false` and `runtime_mutation_authority=false`. | In progress in this PR; after the hardening push it requires fresh CI, tools/build review refresh, RCO review, and normal operator merge gate. |
 
 ## Current Lead Objective
 
@@ -83,13 +83,13 @@ git diff --check
 
 Result:
 
-- pytest: 3 passed
+- pytest: 4 passed
 - compileall: pass
 - dry-run CLI: pass
 - affected-test selector: `FULL SUITE` because the board doc is unmapped
 - local full `python -m pytest`: timed out after 20 minutes; GitHub CI remains
   the authoritative full-suite gate for this PR
-- targeted runtime-readiness/proof regression set: 15 passed
+- targeted runtime-readiness/proof regression set: 16 passed
 - diff-check: pass, with Git's existing LF-to-CRLF working-copy warning for the
   board markdown file
 - dry-run status: `runtime_ready_evidence_available_activation_blocked`

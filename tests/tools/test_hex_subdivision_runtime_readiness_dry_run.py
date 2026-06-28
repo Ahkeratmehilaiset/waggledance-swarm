@@ -202,6 +202,60 @@ def test_runtime_readiness_dry_run_fails_closed_when_admission_digest_unbound(
     ]
 
 
+def test_runtime_readiness_dry_run_fails_closed_when_cutover_authorization_accepted(
+    tmp_path, monkeypatch
+):
+    real_build_admission = dry_run.build_subdivision_runtime_executor_admission
+
+    def cutover_accepting_admission(*, execution_request, cutover_authorization=None):
+        admission = real_build_admission(
+            execution_request=execution_request,
+            cutover_authorization=cutover_authorization,
+        )
+        if cutover_authorization is not None:
+            return {
+                **admission,
+                "ok": True,
+                "blockers": [],
+                "admission_blockers": [],
+                "ready_for_runtime_executor_admission": True,
+            }
+        return admission
+
+    monkeypatch.setattr(
+        dry_run,
+        "build_subdivision_runtime_executor_admission",
+        cutover_accepting_admission,
+    )
+
+    report = build_hex_subdivision_runtime_readiness_dry_run(
+        out_dir=tmp_path / "readiness"
+    )
+
+    assert report["ok"] is False
+    assert report["runtime_ready_evidence_available"] is False
+    assert report["production_activation_ready"] is False
+    assert report["runtime_mutation_authority"] is False
+    assert report["activation_blockers"] == [
+        SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER
+    ]
+    assert "dry_run_rejects_cutover_authorization" in report["blockers"]
+    assert report["proof_checks"]["dry_run_rejects_cutover_authorization"] is False
+
+    admission_proof = json.loads(
+        (
+            tmp_path
+            / "readiness"
+            / "executor_admission"
+            / "hex_subdivision_runtime_executor_admission_proof.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert admission_proof["proof_checks"][
+        "cutover_authorization_is_not_accepted_by_dry_run"
+    ] is False
+    assert admission_proof["cutover_supplied_blockers"] == []
+
+
 def test_runtime_readiness_dry_run_cli_json(tmp_path):
     out_dir = tmp_path / "readiness"
     cmd = [

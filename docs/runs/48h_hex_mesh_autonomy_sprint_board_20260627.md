@@ -3,8 +3,9 @@
 Window: 2026-06-27T16:17:27Z to 2026-06-29T16:17:27Z.
 Lead: codex-lead-1.
 Manifest: `docs/architecture/WD_48H_HEX_MESH_AUTONOMY_MANIFEST_20260627.md`.
-Last truth refresh: 2026-06-28T07:50Z on
-`codex/hex-runtime-readiness-dry-run-20260628`.
+Last truth refresh: 2026-06-28T17:21Z on `origin/main`
+`9af3fa63f80e4966bf58e5cdfc5b2189c8e76e98`, with a follow-up
+truth-contract slice on `codex/hex-runtime-readiness-dry-run-20260628`.
 
 ## Progress Snapshot
 
@@ -13,20 +14,20 @@ Last truth refresh: 2026-06-28T07:50Z on
 | Product direction | 100% | 100% | Operator direction captured from storyboard. |
 | Bridge dispatch | 100% | 100% | Next runtime-readiness objective and seed #3 dispatch are posted to bridge. |
 | Agent input | 100% | 100% | Tools, RCO1, RCO2, and Fable delivered the first sprint-lane outputs; new RCO2/codex-spare seed #3 is dispatched. |
-| Implementation | 60% | 60% | Self-drive queue substrate and the first fable proof stack are merged; offline runtime-readiness dry-run harness is now lead-owned work in progress. |
-| Validation | 72% | 70% | #1412 through #1419 reached green gated states before merge; the new dry-run harness has local targeted tests and CLI smoke green. |
-| Merge/readiness | 74% | 72% | The first queue is drained through #1419 and #1418; next objective is a new reversible PR, not runtime activation. |
-| Big-picture WD readiness | 40% | 40% to 42% | Offline hex/ring/hierarchy target is met; current work advances from shadow proof toward runtime-ready evidence while keeping activation false. |
+| Implementation | 62% | 62% | Self-drive queue substrate, the first fable proof stack, and the offline runtime-readiness dry-run harness are merged; current lead work is post-merge truth-contract hardening. |
+| Validation | 74% | 72% | #1412 through #1421 reached green gated states before merge; this follow-up adds an activation-blocked regression around the dry-run cutover fixture. |
+| Merge/readiness | 78% | 76% | The first queue is drained through #1421; next work remains reversible evidence, observability, and regression coverage, not runtime activation. |
+| Big-picture WD readiness | 42% | 42% | Offline hex/ring/hierarchy target is met and runtime-ready evidence now exists while production activation remains blocked on operator cutover. |
 
 ## Lane Board
 
 | Lane | Owner | Current item | State | Next action |
 | --- | --- | --- | --- | --- |
-| Lead | codex-lead-1 | Offline hex subdivision runtime-readiness dry-run harness | Claimed on `wd/hex-runtime-readiness-dry-run-20260628` | Finish PR from `origin/main`, publish as draft, then follow build/RCO/tools/CI gates. |
-| Tools | codex-tools-1 | Self-drive queue planner and proof/tooling reviews | #1412 merged; #1418 governance policy merged | Review the dry-run harness for authority boundary and path/output behavior when PR is open. |
-| RCO1 | claude-rco-1 | Autonomy guardrail review | First proof/docs queue reviewed and merged | Review the dry-run harness for dormant/fail-closed semantics after CI. |
-| RCO2 | claude-rco-2 | Live-smoke and authority-boundary review | Queue seed #3 dispatched | Own autonomy authority-boundary adversarial test; optionally review dry-run authority fields. |
-| Fable | fable-5 | Hex subdivision/ring proof lane | #1414/#1415/#1416/#1419 delivered and merged | Hold new hex shadow/offline proofs until this lead readiness objective clears or bridge assigns a fresh fable proof. |
+| Lead | codex-lead-1 | Post-#1421 runtime-readiness truth contract | Claimed on `wd/hex-runtime-readiness-truth-contract-20260628` | Add the activation-blocked regression, refresh this board, publish focused evidence, and release the claim. |
+| Tools | codex-tools-1 | Self-drive queue planner and proof/tooling reviews | #1412, #1418, and #1421 merged | Pick the runtime-readiness observability roll-up after current review gates clear. |
+| RCO1 | claude-rco-1 | Autonomy guardrail review | First proof/docs queue and #1421 reviewed and merged | Review new authority-boundary or activation semantics only when fresh code changes require RCO. |
+| RCO2 | claude-rco-2 | Live-smoke and authority-boundary review | Queue seed #3 dispatched; #1420 author lane active | Own autonomy authority-boundary adversarial test; do not self-review authored #1420 changes. |
+| Fable | fable-5 | Hex subdivision/ring proof lane | #1414/#1415/#1416/#1419 delivered and merged | Hold new hex shadow/offline proofs until bridge assigns a fresh fable proof. |
 | Codex spare | codex | Scout/implementation reserve | Seed #3 backup | Claim seed #3 only if RCO2 is unavailable and no higher-priority gate is pending. |
 
 ## Exact-Head Items
@@ -41,18 +42,20 @@ Last truth refresh: 2026-06-28T07:50Z on
 | PR #1417 sprint board truth refresh | `3d1c199c05e15608f9f72093d428f065d1d6d2f4` | Truth refresh for #1412 through #1416. | Merged at `e9fdf76c6fe77c60920d57f6b6578ebb56c4e6d0`. |
 | PR #1419 offline post-subdivision ring-readiness proof capstone | `253fdde7bcded2a8f1e65f320d9c44d89c94e141` | Hex subdivision/ring/hierarchy 48h target was met with offline proof evidence and runtime mutation authority false. | Merged at `81bbdf585dc54ee96c4deb403b33777e01968331`. |
 | PR #1418 build-author consensus slot waiver | `115e8e5ed52ea451324837e4553ab775f1fe5e98` | CI 6/6 green, tools build consensus present, RCO present, explicit operator signature received on 2026-06-28. | Merged by expected-head squash at `9f369d62ab90995d168cf85aa0af3db6279b8dfa`; no admin, no no-verify, no force-push. |
-| Current objective: offline runtime-readiness dry-run harness | local branch from `9f369d62ab90995d168cf85aa0af3db6279b8dfa` | `python -m pytest tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py -q` passed, including top-level dormancy, authority-boundary grant fail-closed hardening, and digest-binding fail-closed coverage; compileall passed; dry-run CLI emitted `runtime_ready_evidence_available=true` with `production_activation_ready=false`, `runtime_mutation_authority=false`, and matching pipeline/admission execution-request digests. | In progress in this PR; after the digest-binding hardening push it requires fresh CI, tools/build review refresh, RCO review, and normal operator merge gate. |
+| PR #1421 offline runtime-readiness dry-run harness | `236cf7a6fc13d19a82ce7e4f78bfe025401ee789` | Local targeted tests, compileall, dry-run CLI smoke, tools/build review, RCO review, and GitHub CI were green. The report emitted `runtime_ready_evidence_available=true` while `production_activation_ready=false`, `runtime_mutation_authority=false`, the operator cutover blocker remained present, and pipeline/admission execution-request digests matched. | Merged at `9af3fa63f80e4966bf58e5cdfc5b2189c8e76e98`; this board now tracks the post-merge truth-contract follow-up, not an activation grant. |
+| Current follow-up: activation-blocked truth contract | local branch `codex/hex-runtime-readiness-dry-run-20260628` | Adds a regression proving the readiness dry-run fails closed if a synthetic cutover authorization is accepted by the underlying executor admission proof. | In progress under `wd/hex-runtime-readiness-truth-contract-20260628`; no source/runtime behavior change. |
 
 ## Current Lead Objective
 
-Objective id: `wd/hex-runtime-readiness-dry-run-20260628`.
+Objective id: `wd/hex-runtime-readiness-truth-contract-20260628`.
 
-Deliverable: `tools/run_hex_subdivision_runtime_readiness_dry_run.py` plus tests
-and this board update.
+Deliverable: a targeted regression in
+`tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py` plus this
+board truth refresh.
 
-Purpose: move from merged shadow/offline proof toward runtime-ready evidence by
-aggregating the existing pipeline E2E proof and executor-admission dry-run into a
-single gate-facing report.
+Purpose: keep the merged #1421 runtime-readiness evidence truthful by pinning
+that the dry-run remains activation-blocked even if a synthetic operator
+cutover fixture is accidentally accepted by executor admission internals.
 
 Authority boundary:
 
@@ -64,10 +67,12 @@ Authority boundary:
 - `merge_allowed=false`
 - `scheduler_enqueue_allowed=false`
 
-This objective does not create new fable-lane hex proof scope and does not grant
-runtime activation.
+This objective does not change the dry-run tool, create new fable-lane hex proof
+scope, or grant runtime activation.
 
-## Validation Commands Run By Lead
+## Validation History
+
+Historical #1421 validation commands:
 
 ```powershell
 git fetch origin main
@@ -112,13 +117,33 @@ Result:
 - `production_activation_ready=false`
 - `runtime_mutation_authority=false`
 
+Post-#1421 truth-contract validation commands:
+
+```powershell
+python tools\select_affected_tests.py --files tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py docs/runs/48h_hex_mesh_autonomy_sprint_board_20260627.md
+python -m pytest tests/tools/test_hex_subdivision_runtime_readiness_dry_run.py -q
+python -m compileall -q tests\tools\test_hex_subdivision_runtime_readiness_dry_run.py
+git diff --check
+```
+
+Result:
+
+- added `test_runtime_readiness_dry_run_fails_closed_when_cutover_authorization_accepted`
+- affected-test selector: `FULL SUITE` because this sprint-board doc is unmapped
+- focused pytest: 7 passed
+- compileall: pass
+- diff-check: pass, with Git's existing LF-to-CRLF working-copy warnings for
+  changed text files
+- local full suite was not rerun in this bounded post-merge truth-contract
+  slice; GitHub CI remains the authoritative full-suite gate
+
 ## Next Three Queue Seeds
 
-1. Land offline runtime-readiness dry-run harness
+1. Close post-#1421 activation-blocked truth contract
    - Owner: codex-lead-1.
-   - Scope: tests/tooling/docs only.
-   - Done when: draft PR has green CI, tools/build review, RCO review, and is
-     merged through the normal gate.
+   - Scope: tests/docs only.
+   - Done when: focused regression is green, bridge evidence is posted, and the
+     claim is released.
 
 2. Autonomy authority-boundary adversarial test
    - Owner: claude-rco-2; backup: codex spare.

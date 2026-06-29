@@ -38,6 +38,9 @@ from tools.idle_consensus_artifact import (  # noqa: E402
     DEFAULT_OUT_DIR as DEFAULT_ARTIFACT_OUT_DIR,
     write_idle_consensus_artifact,
 )
+from tools.check_standing_consensus_sign_class import (  # noqa: E402
+    evaluate_standing_consensus_sign,
+)
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
     evaluate_diff_content,
@@ -179,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--standing-consensus-sign",
+        action="store_true",
+        help=(
+            "Default-off Rule 9b path: allow an eligible off-allowlist (b)-class "
+            "PR to satisfy the operator signature via standing bridge consensus. "
+            "Gate/governance/charter-denylisted paths still fail closed."
+        ),
+    )
+    parser.add_argument(
         "--allow-lead-stall-failover",
         action="store_true",
         help=(
@@ -212,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bridge_task_id=args.bridge_task_id,
             apply=args.apply,
             require_bridge_consensus=args.require_bridge_consensus,
+            standing_consensus_sign=args.standing_consensus_sign,
             allow_lead_stall_failover=args.allow_lead_stall_failover,
             artifact_writer=_cli_artifact_writer(args, events_path),
         )
@@ -257,6 +270,7 @@ def evaluate_auto_merge_gate(
     bridge_task_id: str = "",
     apply: bool = False,
     require_bridge_consensus: bool = False,
+    standing_consensus_sign: bool = False,
     allow_lead_stall_failover: bool = False,
     lead_stall_failover_threshold_seconds: int = (
         LEAD_STALL_FAILOVER_THRESHOLD_SECONDS
@@ -408,6 +422,27 @@ def evaluate_auto_merge_gate(
             for reason in reasons:
                 blockers.append(f"bridge consensus incomplete: {reason}")
 
+    # 9b standing-consensus-sign admission (DEFAULT-OFF; never self-activating).
+    # When enabled, a (b)-class OFF-ALLOWLIST PR whose best-possible-consensus holds
+    # has the operator's per-PR signature satisfied by the STANDING signature, so we
+    # drop ONLY the off-allowlist path-gate blocker. Every OTHER gate stays enforced
+    # (CI, base, mergeable, receipt, diff, bridge-consensus). The classifier is
+    # fail-closed and treats gate-verdict code / governance / itself as (a), so this
+    # can never weaken the gate nor auto-sign the PR that wires it.
+    ci_all_green = bool(checks) and not failing_checks
+    receipt_present = bool(receipt_bundle_path) or bool(apply and artifact_hook_configured)
+    standing_sign_gate = evaluate_standing_consensus_sign(
+        enabled=standing_consensus_sign,
+        changed_paths=changed_paths,
+        bridge_consensus=bridge_consensus,
+        ci_all_green=ci_all_green,
+        diff_gate_allowed=bool(diff_gate.allowed),
+        head_matches=(head_sha == expected_head),
+        receipt_present=receipt_present,
+    )
+    if standing_sign_gate.get("admitted"):
+        blockers = [b for b in blockers if not b.startswith("path gate failed")]
+
     command = _merge_command(
         pr_number=pr_number,
         expected_head=expected_head,
@@ -441,6 +476,7 @@ def evaluate_auto_merge_gate(
             "ok": False,
             "operator_review_required": True,
             "reasons": blockers,
+            "standing_consensus_sign": standing_sign_gate,
         }
 
     report = {
@@ -450,6 +486,7 @@ def evaluate_auto_merge_gate(
         "would_merge": True,
         "operator_review_required": False,
         "reasons": ["all auto-merge gates passed"],
+        "standing_consensus_sign": standing_sign_gate,
     }
     if not apply:
         return report

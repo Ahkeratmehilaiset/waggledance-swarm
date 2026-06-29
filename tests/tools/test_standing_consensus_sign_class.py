@@ -52,6 +52,7 @@ A_CLASS_PATHS = [
     "docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V2.md",   # future contract -> (a)
     "docs/architecture/IDLE_AUTONOMY_CHARTER_V2.md",       # future charter -> (a)
     "docs/architecture/POLICY_SURFACE_V1.md",             # governance -> (a)
+    "docs/architecture/MAGMA_SUBSTRATE_AUDIT_V2.md",      # future audit version -> (a)
     "tests/tools/test_some_new_gate_conformance.py",       # future conformance -> (a)
     "tests/tools/some_new_conformance_corpus.json",       # future corpus anchor -> (a)
 ]

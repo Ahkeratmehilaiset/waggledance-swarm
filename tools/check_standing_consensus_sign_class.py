@@ -90,6 +90,7 @@ _A_GOV_DOC_SUBSTR = (
     "stage2_cutover",          # STAGE2_CUTOVER_RFC*
     "policy_surface",          # POLICY_SURFACE_V*
     "idle_protocol_v",         # IDLE_PROTOCOL_V*
+    "magma_substrate_audit",   # MAGMA_SUBSTRATE_AUDIT* (complete _A_EXACT gov family)
 )
 _A_PREFIX = (
     ".agent-bridge/bin/",

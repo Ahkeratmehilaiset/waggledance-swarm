@@ -31,6 +31,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -2515,8 +2516,14 @@ def _is_successful_completion_event(event: Mapping[str, Any]) -> bool:
 
 
 def _status_is_successful(status: str) -> bool:
-    tokens = {token for token in status.lower().replace("-", "_").split("_") if token}
-    return any(token in SUCCESSFUL_COMPLETION_STATUSES for token in tokens)
+    tokens = re.findall(r"[a-z0-9]+", status.lower())
+    for index, token in enumerate(tokens):
+        if token not in SUCCESSFUL_COMPLETION_STATUSES:
+            continue
+        if "not" in tokens[max(0, index - 3) : index]:
+            continue
+        return True
+    return False
 
 
 def _parse_utc(value: str) -> datetime:

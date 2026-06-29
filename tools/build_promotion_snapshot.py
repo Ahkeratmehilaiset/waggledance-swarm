@@ -489,12 +489,16 @@ def _report(
     eligibility: Mapping[str, Any],
 ) -> dict[str, Any]:
     eligible = eligibility.get("eligible") is True
+    route = _queue_route(eligibility)
     report = {
         "ok": eligible,
         "eligible": eligible,
         "decision": str(eligibility.get("decision", "promotion_not_eligible")),
         "dry_run": True,
         "would_execute": False,
+        "queue_route": route["queue_route"],
+        "next_action": route["next_action"],
+        "operator_required": route["operator_required"],
         "repo": repo,
         "pr_number": pr_number,
         "task_id": task_id,
@@ -539,6 +543,92 @@ def _report(
     return report
 
 
+def _queue_route(eligibility: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify a dry-run snapshot into the next queue lane.
+
+    This is deliberately diagnostic only. The underlying eligibility report
+    remains the authority for whether an executor may promote or merge.
+    """
+    if eligibility.get("eligible") is True:
+        return {
+            "queue_route": "autonomous_promotion_ready",
+            "next_action": "run_promotion_executor_with_match_head",
+            "operator_required": False,
+        }
+
+    gate_results = eligibility.get("gate_results")
+    gates = gate_results if isinstance(gate_results, Mapping) else {}
+    paths = gates.get("paths") if isinstance(gates.get("paths"), Mapping) else {}
+    diff = gates.get("diff") if isinstance(gates.get("diff"), Mapping) else {}
+    ci = gates.get("ci") if isinstance(gates.get("ci"), Mapping) else {}
+    base = gates.get("base") if isinstance(gates.get("base"), Mapping) else {}
+    rco_pass = (
+        gates.get("rco_pass") if isinstance(gates.get("rco_pass"), Mapping) else {}
+    )
+    bridge = (
+        gates.get("bridge_consensus")
+        if isinstance(gates.get("bridge_consensus"), Mapping)
+        else {}
+    )
+    peer_veto = (
+        gates.get("peer_veto") if isinstance(gates.get("peer_veto"), Mapping) else {}
+    )
+    hex_acceptance = (
+        gates.get("hex_promotion_acceptance")
+        if isinstance(gates.get("hex_promotion_acceptance"), Mapping)
+        else {}
+    )
+
+    if paths.get("allowed") is False or diff.get("allowed") is False:
+        return {
+            "queue_route": "operator_signature_required",
+            "next_action": "leave_pr_for_operator_gated_review",
+            "operator_required": True,
+        }
+    if hex_acceptance.get("ok") is False:
+        return {
+            "queue_route": "operator_signature_required",
+            "next_action": "fix_or_route_hex_acceptance_operator_gate",
+            "operator_required": True,
+        }
+    if ci.get("ok") is False:
+        return {
+            "queue_route": "await_ci_green",
+            "next_action": "wait_for_or_debug_required_status_checks",
+            "operator_required": False,
+        }
+    if base.get("ok") is False:
+        base_status = str(base.get("base_status", ""))
+        if base_status == "stale":
+            return {
+                "queue_route": "refresh_base_required",
+                "next_action": "attempt_content_identical_rebase_then_recheck_ci",
+                "operator_required": False,
+            }
+        return {
+            "queue_route": "reconsensus_required",
+            "next_action": "collect_fresh_head_bound_consensus",
+            "operator_required": False,
+        }
+    if peer_veto.get("clear_to_merge") is False:
+        return {
+            "queue_route": "peer_blocked",
+            "next_action": "address_latest_bridge_block_before_promotion",
+            "operator_required": False,
+        }
+    if rco_pass.get("ok") is False or bridge.get("ok") is False:
+        return {
+            "queue_route": "await_bridge_consensus",
+            "next_action": "request_missing_head_bound_build_or_rco_consensus",
+            "operator_required": False,
+        }
+    return {
+        "queue_route": "manual_triage_required",
+        "next_action": "inspect_fail_closed_eligibility_reasons",
+        "operator_required": False,
+    }
+
+
 def _invalid_report(error: str) -> dict[str, Any]:
     report: dict[str, Any] = {
         "ok": False,
@@ -546,6 +636,9 @@ def _invalid_report(error: str) -> dict[str, Any]:
         "decision": "invalid_input",
         "dry_run": True,
         "would_execute": False,
+        "queue_route": "manual_triage_required",
+        "next_action": "fix_snapshot_input_then_rerun",
+        "operator_required": False,
         "reasons": [],
         "errors": [error],
         "undraft_cmd": [],

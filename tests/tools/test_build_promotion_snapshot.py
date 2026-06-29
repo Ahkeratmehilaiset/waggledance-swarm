@@ -45,7 +45,14 @@ def _pr_view(*, base: str = BASE, checks: list[dict] | None = None) -> dict:
     }
 
 
-def _runner(*, base: str = BASE, checks: list[dict] | None = None):
+def _runner(
+    *,
+    base: str = BASE,
+    checks: list[dict] | None = None,
+    paths: list[str] | None = None,
+    diff: str = DIFF,
+):
+    paths = paths or PATHS
     commands = {
         (
             "gh",
@@ -65,7 +72,7 @@ def _runner(*, base: str = BASE, checks: list[dict] | None = None):
             "--repo",
             REPO,
             "--name-only",
-        ): _completed("\n".join(PATHS) + "\n"),
+        ): _completed("\n".join(paths) + "\n"),
         (
             "gh",
             "pr",
@@ -74,7 +81,7 @@ def _runner(*, base: str = BASE, checks: list[dict] | None = None):
             "--repo",
             REPO,
             "--patch",
-        ): _completed(DIFF),
+        ): _completed(diff),
     }
 
     def run(command: tuple[str, ...]) -> SimpleNamespace:
@@ -160,6 +167,8 @@ def _build(
     base: str = BASE,
     origin_main_sha: str = BASE,
     author_agent: str = "",
+    paths: list[str] | None = None,
+    diff: str = DIFF,
 ) -> dict:
     return build_promotion_snapshot(
         repo=REPO,
@@ -167,7 +176,7 @@ def _build(
         events_path=_events_path(tmp_path, events if events is not None else _events()),
         origin_main_sha=origin_main_sha,
         author_agent=author_agent,
-        runner=_runner(base=base),
+        runner=_runner(base=base, paths=paths, diff=diff),
     )
 
 
@@ -178,6 +187,9 @@ def test_builds_eligible_dry_run_snapshot_from_gh_and_bridge_claim(
 
     assert report["eligible"] is True
     assert report["decision"] == "promotion_eligible"
+    assert report["queue_route"] == "autonomous_promotion_ready"
+    assert report["next_action"] == "run_promotion_executor_with_match_head"
+    assert report["operator_required"] is False
     assert report["author_agent"] == "fable-5"
     assert report["pr_status"]["head_sha"] == HEAD
     assert report["pr_status"]["base_sha"] == BASE
@@ -204,6 +216,9 @@ def test_stale_base_returns_not_eligible_without_commands(tmp_path: Path) -> Non
 
     assert report["eligible"] is False
     assert report["decision"] == "promotion_not_eligible"
+    assert report["queue_route"] == "refresh_base_required"
+    assert report["next_action"] == "attempt_content_identical_rebase_then_recheck_ci"
+    assert report["operator_required"] is False
     assert "base is stale" in report["reasons"]
     assert report["undraft_cmd"] == []
     assert report["merge_cmd"] == []
@@ -214,6 +229,9 @@ def test_missing_bridge_consensus_returns_not_eligible(tmp_path: Path) -> None:
 
     assert report["eligible"] is False
     assert report["decision"] == "promotion_not_eligible"
+    assert report["queue_route"] == "await_bridge_consensus"
+    assert report["next_action"] == "request_missing_head_bound_build_or_rco_consensus"
+    assert report["operator_required"] is False
     assert "bridge consensus incomplete" in report["reasons"]
     assert (
         "missing exact-head RCO_PASS from recognized non-author RCO"
@@ -233,6 +251,7 @@ def test_lead_authored_tools_and_rco_satisfy_build_author_slot_waiver(
 
     assert report["eligible"] is True
     assert report["decision"] == "promotion_eligible"
+    assert report["queue_route"] == "autonomous_promotion_ready"
     assert report["gate_diagnostics"] == []
     consensus = report["eligibility"]["gate_results"]["bridge_consensus"]["by_agent"][
         "claude-rco-1"
@@ -251,9 +270,49 @@ def test_missing_author_claim_fails_closed(tmp_path: Path) -> None:
 
     assert report["eligible"] is False
     assert report["decision"] == "invalid_input"
+    assert report["queue_route"] == "manual_triage_required"
+    assert report["next_action"] == "fix_snapshot_input_then_rerun"
+    assert report["operator_required"] is False
     assert "author_agent could not be derived" in report["errors"][0]
     assert report["undraft_cmd"] == []
     assert report["merge_cmd"] == []
+
+
+def test_operator_gated_path_routes_to_operator_signature(
+    tmp_path: Path,
+) -> None:
+    report = _build(
+        tmp_path,
+        author_agent="fable-5",
+        paths=["CLAUDE.md"],
+        diff="diff --git a/CLAUDE.md b/CLAUDE.md\n+gate policy\n",
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["queue_route"] == "operator_signature_required"
+    assert report["next_action"] == "leave_pr_for_operator_gated_review"
+    assert report["operator_required"] is True
+    assert "path gate failed: denylist hit" in report["reasons"]
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
+def test_pending_ci_routes_to_ci_wait_or_debug(tmp_path: Path) -> None:
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=BASE,
+        runner=_runner(checks=[{"name": "unified", "state": "pending"}]),
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["queue_route"] == "await_ci_green"
+    assert report["next_action"] == "wait_for_or_debug_required_status_checks"
+    assert report["operator_required"] is False
+    assert "status checks not green: unified" in report["reasons"]
 
 
 def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:

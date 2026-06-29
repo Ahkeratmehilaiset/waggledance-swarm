@@ -1532,7 +1532,17 @@ def _production_liveness_report(
         bridge_root=bridge_root,
         now_utc=now_utc,
     )
-    if not stalled and not suppressed_stalled and not wake_delivery:
+    rco_preflight = _rco_wake_liveness_preflight_summary(
+        events=events,
+        wake_delivery=wake_delivery,
+        now_utc=now_utc,
+    )
+    if (
+        not stalled
+        and not suppressed_stalled
+        and not wake_delivery
+        and not rco_preflight
+    ):
         return {}
     for records in (stalled, suppressed_stalled):
         records.sort(
@@ -1552,6 +1562,8 @@ def _production_liveness_report(
         report["suppressed_stalled_agents"] = suppressed_stalled
     if wake_delivery:
         report["wake_delivery"] = wake_delivery
+    if rco_preflight:
+        report["rco_wake_liveness_preflight"] = rco_preflight
     return report
 
 
@@ -1721,6 +1733,229 @@ def _wake_delivery_escalation_from_liveness(
     if escalation.get("operator_action_required") is not True:
         return None
     return escalation
+
+
+def _rco_wake_liveness_preflight_summary(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    wake_delivery: Mapping[str, Any],
+    now_utc: datetime,
+) -> dict[str, Any]:
+    target_agents = _rco_wake_liveness_targets(events, wake_delivery=wake_delivery)
+    if not target_agents:
+        return {}
+    stalled_wakes = [
+        dict(row)
+        for row in wake_delivery.get("stalled_wakes", [])
+        if isinstance(row, Mapping)
+        and _is_rco_agent(str(row.get("target_agent") or ""))
+    ]
+    unanswered = _rco_unanswered_request_rows(
+        events=events,
+        target_agents=target_agents,
+        now_utc=now_utc,
+    )
+    blockers: list[str] = []
+    if stalled_wakes:
+        blockers.append("rco_wake_delivery_stalled")
+    if unanswered:
+        blockers.append("rco_unanswered_requests_visible")
+    if not blockers:
+        return {}
+
+    by_agent: dict[str, int] = {}
+    for row in stalled_wakes:
+        target = str(row.get("target_agent") or "")
+        if target:
+            by_agent[target] = by_agent.get(target, 0) + 1
+    unanswered_by_agent: dict[str, int] = {}
+    for row in unanswered:
+        target = str(row.get("target_agent") or "")
+        if target:
+            unanswered_by_agent[target] = unanswered_by_agent.get(target, 0) + 1
+    return {
+        "decision": "rco_wake_liveness_preflight_failed",
+        "report_version": "wd.rco_wake_liveness_preflight.v0",
+        "read_only": True,
+        "fail_closed": True,
+        "preflight_passed": False,
+        "target_agents": target_agents,
+        "blockers": blockers,
+        "safe_next_action": (
+            "operator or target session must verify/restart the RCO bridge "
+            "session or poll loop, then require fresh RCO-origin bridge "
+            "activity before treating dual-RCO as available"
+        ),
+        "wake_stalled_count": len(stalled_wakes),
+        "wake_by_agent": dict(sorted(by_agent.items())),
+        "unanswered_count": len(unanswered),
+        "unanswered_by_agent": dict(sorted(unanswered_by_agent.items())),
+        "last_target_activity": _latest_rco_target_activity_rows(
+            events=events,
+            target_agents=target_agents,
+            now_utc=now_utc,
+        ),
+        "guardrails": {
+            "read_only_report_only": True,
+            "runtime_authority_granted": False,
+            "scheduler_or_rollback_authority_granted": False,
+            "rco_impersonation_allowed": False,
+            "merge_or_gate_skip_authority_granted": False,
+            "additional_wake_requests_are_delivery_proof": False,
+        },
+    }
+
+
+def _rco_wake_liveness_targets(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    wake_delivery: Mapping[str, Any],
+) -> list[str]:
+    targets: set[str] = set()
+    for row_key in ("stalled_wakes", "self_pacing_wakes"):
+        for row in wake_delivery.get(row_key, []):
+            if not isinstance(row, Mapping):
+                continue
+            target = str(row.get("target_agent") or "").strip().lower()
+            if target and _is_rco_agent(target):
+                targets.add(target)
+    for event in events:
+        event_agent = _event_agent(event)
+        if event_agent and _is_rco_agent(event_agent):
+            targets.add(event_agent)
+        for target in _event_recipients(event):
+            if _is_rco_agent(target):
+                targets.add(target)
+    return sorted(targets)
+
+
+def _rco_unanswered_request_rows(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    target_agents: Sequence[str],
+    now_utc: datetime,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    max_age_minutes = DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS * 60.0
+    latest_activity = _latest_rco_target_activity_ts_by_agent(
+        events=events,
+        target_agents=target_agents,
+    )
+    for target in sorted(target_agents):
+        requests = _deduplicate_repeated_wake_requests(
+            _open_requests_for_agent(agent=target, events=events),
+            agent=target,
+        )
+        for request in requests:
+            request_ts = _parse_utc(_event_ts(request))
+            if request_ts is None:
+                continue
+            latest_target_ts = latest_activity.get(target)
+            if latest_target_ts is not None and latest_target_ts > request_ts:
+                continue
+            age_minutes = _elapsed_minutes(now_utc, request_ts)
+            if age_minutes < DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES:
+                continue
+            if age_minutes > max_age_minutes:
+                continue
+            rows.append(
+                {
+                    "target_agent": target,
+                    "requester": _event_agent(request),
+                    "task_id": _task_id(request),
+                    "type": _event_type(request),
+                    "status": _event_status(request),
+                    "ts_utc": _event_ts(request),
+                    "age_minutes": _round_minutes(age_minutes),
+                    "message": _bounded_message(request.get("message")),
+                }
+            )
+    rows.sort(
+        key=lambda row: (
+            -float(row["age_minutes"]),
+            str(row["target_agent"]),
+            str(row["task_id"]),
+        )
+    )
+    return rows
+
+
+def _latest_rco_target_activity_ts_by_agent(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    target_agents: Sequence[str],
+) -> dict[str, datetime]:
+    latest: dict[str, datetime] = {}
+    target_set = set(target_agents)
+    for event in events:
+        agent = _event_agent(event)
+        if agent not in target_set or not _is_wake_delivery_self_liveness_activity(
+            event
+        ):
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
+        existing = latest.get(agent)
+        if existing is None or event_ts > existing:
+            latest[agent] = event_ts
+    return latest
+
+
+def _latest_rco_target_activity_rows(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    target_agents: Sequence[str],
+    now_utc: datetime,
+) -> list[dict[str, Any]]:
+    latest: dict[str, Mapping[str, Any]] = {}
+    target_set = set(target_agents)
+    for event in events:
+        agent = _event_agent(event)
+        if agent not in target_set or not _is_wake_delivery_self_liveness_activity(
+            event
+        ):
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
+        existing = latest.get(agent)
+        existing_ts = _parse_utc(_event_ts(existing)) if existing else None
+        if existing_ts is None or event_ts > existing_ts:
+            latest[agent] = event
+
+    rows: list[dict[str, Any]] = []
+    for target in sorted(target_set):
+        event = latest.get(target)
+        if event is None:
+            rows.append(
+                {
+                    "agent": target,
+                    "last_activity_ts_utc": "",
+                    "last_activity_age_minutes": None,
+                    "last_activity_type": "",
+                    "last_activity_status": "",
+                    "last_activity_task_id": "",
+                }
+            )
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        age_minutes = (
+            _round_minutes(_elapsed_minutes(now_utc, event_ts))
+            if event_ts is not None
+            else None
+        )
+        rows.append(
+            {
+                "agent": target,
+                "last_activity_ts_utc": _event_ts(event),
+                "last_activity_age_minutes": age_minutes,
+                "last_activity_type": _event_type(event),
+                "last_activity_status": _event_status(event),
+                "last_activity_task_id": _task_id(event),
+            }
+        )
+    return rows
 
 
 def _unresolved_wake_delivery_groups(

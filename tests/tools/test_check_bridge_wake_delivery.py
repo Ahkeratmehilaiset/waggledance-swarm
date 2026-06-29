@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from tools import check_bridge_wake_delivery as wake_delivery_module  # noqa: E402
 from tools.check_bridge_wake_delivery import (  # noqa: E402
     WakeDeliveryError,
+    build_rco_wake_liveness_preflight,
     check_wake_delivery,
 )
 
@@ -421,6 +422,85 @@ def test_wake_send_failure_is_attached_to_unresolved_group() -> None:
     assert "TitleMap" in row["safe_next_action"]
 
 
+def test_rco_wake_liveness_preflight_fails_closed_on_stalled_rco_wake(
+    tmp_path: Path,
+) -> None:
+    report = build_rco_wake_liveness_preflight(
+        events=[
+            _activity(
+                ts="2026-06-13T11:55:00Z",
+                agent="claude-rco-2",
+                event_type="decision",
+                status="rco_loop_alive_monitoring",
+            ),
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+        ],
+        bridge_root=tmp_path,
+        agents=["claude-rco-2"],
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "rco_wake_liveness_preflight_failed"
+    assert report["read_only"] is True
+    assert report["fail_closed"] is True
+    assert report["preflight_passed"] is False
+    assert report["target_agents"] == ["claude-rco-2"]
+    assert report["blockers"] == [
+        "rco_wake_delivery_stalled",
+        "rco_unanswered_requests_visible",
+    ]
+    assert report["wake_delivery"]["stalled_count"] == 1
+    assert report["unanswered_requests"]["unanswered_count"] == 1
+    assert report["guardrails"] == {
+        "read_only_report_only": True,
+        "runtime_authority_granted": False,
+        "scheduler_or_rollback_authority_granted": False,
+        "rco_impersonation_allowed": False,
+        "merge_or_gate_skip_authority_granted": False,
+        "additional_wake_requests_are_delivery_proof": False,
+    }
+    assert report["last_target_activity"] == [
+        {
+            "agent": "claude-rco-2",
+            "last_activity_ts_utc": "2026-06-13T11:55:00Z",
+            "last_activity_age_minutes": 35.0,
+            "last_activity_type": "decision",
+            "last_activity_status": "rco_loop_alive_monitoring",
+            "last_activity_task_id": "claude-rco-2-session",
+        }
+    ]
+    assert "require fresh RCO-origin bridge activity" in report["safe_next_action"]
+
+
+def test_rco_wake_liveness_preflight_passes_after_rco_activity() -> None:
+    report = build_rco_wake_liveness_preflight(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _activity(
+                ts="2026-06-13T12:06:00Z",
+                agent="claude-rco-2",
+                event_type="decision",
+                status="rco_pass",
+            ),
+        ],
+        agents=["claude-rco-2"],
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "rco_wake_liveness_preflight_passed"
+    assert report["fail_closed"] is False
+    assert report["preflight_passed"] is True
+    assert report["blockers"] == []
+    assert report["wake_delivery"]["stalled_count"] == 0
+    assert report["unanswered_requests"]["unanswered_count"] == 0
+
+
 def test_agent_filter_limits_targets() -> None:
     report = check_wake_delivery(
         events=[
@@ -480,3 +560,41 @@ def test_cli_json_and_fail_on_stalled(tmp_path: Path) -> None:
     report = json.loads(result.stdout)
     assert report["decision"] == "wake_delivery_stalled"
     assert report["stalled_count"] == 1
+
+
+def test_cli_rco_preflight_fail_on_stalled(tmp_path: Path) -> None:
+    events_path = _events_file(
+        tmp_path,
+        [
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--events",
+            str(events_path),
+            "--bridge-root",
+            str(tmp_path),
+            "--agent",
+            "claude-rco-2",
+            "--now",
+            "2026-06-13T12:30:00Z",
+            "--min-age-minutes",
+            "0",
+            "--rco-preflight",
+            "--fail-on-stalled",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    report = json.loads(result.stdout)
+    assert report["decision"] == "rco_wake_liveness_preflight_failed"
+    assert report["fail_closed"] is True

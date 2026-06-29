@@ -2319,6 +2319,19 @@ def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
     assert wake["age_minutes"] == 20.0
     assert wake["latest_wake_age_minutes"] == 15.0
     assert wake["safe_next_action"].startswith("restart or verify")
+    preflight = liveness["rco_wake_liveness_preflight"]
+    assert preflight["decision"] == "rco_wake_liveness_preflight_failed"
+    assert preflight["read_only"] is True
+    assert preflight["fail_closed"] is True
+    assert preflight["target_agents"] == ["claude-rco-1"]
+    assert preflight["blockers"] == [
+        "rco_wake_delivery_stalled",
+        "rco_unanswered_requests_visible",
+    ]
+    assert preflight["wake_stalled_count"] == 1
+    assert preflight["unanswered_count"] == 1
+    assert preflight["guardrails"]["runtime_authority_granted"] is False
+    assert preflight["guardrails"]["merge_or_gate_skip_authority_granted"] is False
 
 
 def test_prior_target_self_liveness_does_not_suppress_wake_delivery_escalation(

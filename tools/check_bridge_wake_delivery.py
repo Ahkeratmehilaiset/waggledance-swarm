@@ -31,9 +31,14 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_status,
     _event_ts,
     _event_type,
+    _is_rco_agent,
     _parse_utc,
     _task_id,
     read_events,
+)
+from tools.report_unanswered_bridge_requests import (  # noqa: E402
+    UnansweredRequestError,
+    report_unanswered_requests,
 )
 from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
 
@@ -134,6 +139,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return exit code 3 when stalled wake delivery is detected.",
     )
+    parser.add_argument(
+        "--rco-preflight",
+        action="store_true",
+        help=(
+            "Emit the read-only RCO wake/liveness preflight contract instead "
+            "of the raw wake-delivery report."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -143,16 +156,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     bridge_root = resolve_bridge_root(args.bridge_root)
     events_path = args.events or bridge_root / "shared" / "events.jsonl"
     try:
-        report = check_wake_delivery(
-            events=read_events(events_path, tail=args.tail),
-            bridge_root=bridge_root,
-            agents=args.agent,
-            min_age_minutes=args.min_age_minutes,
-            min_repeats=args.min_repeats,
-            max_age_hours=args.max_age_hours,
-            self_liveness_window_minutes=args.self_liveness_window_minutes,
-            now_utc=_parse_now(args.now),
-        )
+        events = read_events(events_path, tail=args.tail)
+        if args.rco_preflight:
+            report = build_rco_wake_liveness_preflight(
+                events=events,
+                bridge_root=bridge_root,
+                agents=args.agent,
+                min_age_minutes=args.min_age_minutes,
+                min_repeats=args.min_repeats,
+                max_age_hours=args.max_age_hours,
+                self_liveness_window_minutes=args.self_liveness_window_minutes,
+                now_utc=_parse_now(args.now),
+            )
+        else:
+            report = check_wake_delivery(
+                events=events,
+                bridge_root=bridge_root,
+                agents=args.agent,
+                min_age_minutes=args.min_age_minutes,
+                min_repeats=args.min_repeats,
+                max_age_hours=args.max_age_hours,
+                self_liveness_window_minutes=args.self_liveness_window_minutes,
+                now_utc=_parse_now(args.now),
+            )
     except BridgeNextActionError as exc:
         report = {
             "ok": False,
@@ -160,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "errors": exc.report.get("errors", [str(exc)]),
         }
         exit_code = 2
-    except WakeDeliveryError as exc:
+    except (WakeDeliveryError, UnansweredRequestError) as exc:
         report = exc.report
         exit_code = exc.exit_code
     except OSError as exc:
@@ -171,7 +197,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         exit_code = 1
     else:
-        exit_code = 3 if args.fail_on_stalled and report["stalled_count"] else 0
+        if args.fail_on_stalled and (
+            report.get("stalled_count") or report.get("fail_closed")
+        ):
+            exit_code = 3
+        else:
+            exit_code = 0
 
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -323,6 +354,282 @@ def check_wake_delivery(
         "self_pacing_wake_count": len(self_pacing),
         "self_pacing_wakes": self_pacing,
     }
+
+
+def build_rco_wake_liveness_preflight(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path | None = None,
+    agents: Sequence[str] | None = None,
+    min_age_minutes: float = DEFAULT_MIN_AGE_MINUTES,
+    min_repeats: int = DEFAULT_MIN_REPEATS,
+    max_age_hours: float | None = DEFAULT_MAX_AGE_HOURS,
+    self_liveness_window_minutes: float = DEFAULT_SELF_LIVENESS_WINDOW_MINUTES,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Return a read-only, fail-closed RCO wake/liveness preflight report."""
+    target_agents = _rco_preflight_target_agents(events=events, agents=agents)
+    effective_now = now_utc or _utc_now()
+    if not target_agents:
+        return {
+            "ok": True,
+            "decision": "rco_wake_liveness_preflight_failed",
+            "report_version": "wd.rco_wake_liveness_preflight.v0",
+            "read_only": True,
+            "fail_closed": True,
+            "preflight_passed": False,
+            "target_agents": [],
+            "blockers": ["no_rco_target_agent_observed"],
+            "safe_next_action": (
+                "select an explicit RCO target agent before relying on "
+                "dual-RCO availability"
+            ),
+            "wake_delivery": _empty_wake_delivery_summary(),
+            "unanswered_requests": _empty_unanswered_summary(),
+            "last_target_activity": [],
+            "guardrails": _rco_preflight_guardrails(),
+        }
+
+    wake_report = check_wake_delivery(
+        events=events,
+        bridge_root=bridge_root,
+        agents=target_agents,
+        min_age_minutes=min_age_minutes,
+        min_repeats=min_repeats,
+        max_age_hours=max_age_hours,
+        self_liveness_window_minutes=self_liveness_window_minutes,
+        now_utc=effective_now,
+    )
+    unanswered_report = report_unanswered_requests(
+        events=events,
+        agents=target_agents,
+        min_age_minutes=min_age_minutes,
+        max_age_hours=max_age_hours,
+        max_items=100,
+        now_utc=effective_now,
+    )
+    unanswered_summary = _rco_preflight_unanswered_summary(
+        unanswered_report,
+        events=events,
+        target_agents=target_agents,
+    )
+    blockers: list[str] = []
+    if int(wake_report.get("stalled_count") or 0):
+        blockers.append("rco_wake_delivery_stalled")
+    if int(unanswered_summary.get("unanswered_count") or 0):
+        blockers.append("rco_unanswered_requests_visible")
+
+    fail_closed = bool(blockers)
+    safe_next_action = (
+        "operator or target session must verify/restart the RCO bridge session "
+        "or poll loop, then require fresh RCO-origin bridge activity before "
+        "treating dual-RCO as available"
+        if fail_closed
+        else "RCO wake/liveness preflight is clear for this read-only check"
+    )
+    return {
+        "ok": True,
+        "decision": (
+            "rco_wake_liveness_preflight_failed"
+            if fail_closed
+            else "rco_wake_liveness_preflight_passed"
+        ),
+        "report_version": "wd.rco_wake_liveness_preflight.v0",
+        "read_only": True,
+        "fail_closed": fail_closed,
+        "preflight_passed": not fail_closed,
+        "target_agents": target_agents,
+        "blockers": blockers,
+        "safe_next_action": safe_next_action,
+        "wake_delivery": _rco_preflight_wake_summary(wake_report),
+        "unanswered_requests": unanswered_summary,
+        "last_target_activity": _latest_target_activity_rows(
+            events=events,
+            target_agents=target_agents,
+            now_utc=effective_now,
+        ),
+        "guardrails": _rco_preflight_guardrails(),
+    }
+
+
+def _rco_preflight_target_agents(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    agents: Sequence[str] | None,
+) -> list[str]:
+    explicit = _normalize_agent_filter(agents)
+    if explicit:
+        return sorted(agent for agent in explicit if _is_rco_agent(agent))
+    targets: set[str] = set()
+    for event in events:
+        event_agent = _event_agent(event)
+        if event_agent and _is_rco_agent(event_agent):
+            targets.add(event_agent)
+        for target in _event_recipients(event):
+            if _is_rco_agent(target):
+                targets.add(target)
+    return sorted(targets)
+
+
+def _rco_preflight_guardrails() -> dict[str, bool]:
+    return {
+        "read_only_report_only": True,
+        "runtime_authority_granted": False,
+        "scheduler_or_rollback_authority_granted": False,
+        "rco_impersonation_allowed": False,
+        "merge_or_gate_skip_authority_granted": False,
+        "additional_wake_requests_are_delivery_proof": False,
+    }
+
+
+def _empty_wake_delivery_summary() -> dict[str, Any]:
+    return {
+        "decision": "wake_delivery_ok",
+        "stalled_count": 0,
+        "by_agent": {},
+        "delivery_escalation": _delivery_escalation([], {}, bridge_root=None),
+        "stalled_wakes": [],
+    }
+
+
+def _empty_unanswered_summary() -> dict[str, Any]:
+    return {
+        "decision": "unanswered_bridge_requests_report",
+        "unanswered_count": 0,
+        "by_agent": {},
+        "requests": [],
+    }
+
+
+def _rco_preflight_wake_summary(report: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "decision": str(report.get("decision") or ""),
+        "stalled_count": int(report.get("stalled_count") or 0),
+        "by_agent": dict(report.get("by_agent") or {}),
+        "delivery_escalation": dict(report.get("delivery_escalation") or {}),
+        "stalled_wakes": list(report.get("stalled_wakes") or []),
+    }
+
+
+def _rco_preflight_unanswered_summary(
+    report: Mapping[str, Any],
+    *,
+    events: Sequence[Mapping[str, Any]],
+    target_agents: Sequence[str],
+) -> dict[str, Any]:
+    latest_activity = _latest_target_activity_ts_by_agent(
+        events=events,
+        target_agents=target_agents,
+    )
+    rows = [
+        dict(row)
+        for row in report.get("requests", [])
+        if isinstance(row, Mapping)
+        and not _request_superseded_by_target_activity(row, latest_activity)
+    ]
+    by_agent: dict[str, int] = {}
+    for row in rows:
+        target = str(row.get("target_agent") or "")
+        if target:
+            by_agent[target] = by_agent.get(target, 0) + 1
+    return {
+        "decision": str(report.get("decision") or ""),
+        "unanswered_count": len(rows),
+        "by_agent": dict(sorted(by_agent.items())),
+        "requests": rows,
+    }
+
+
+def _request_superseded_by_target_activity(
+    row: Mapping[str, Any],
+    latest_activity: Mapping[str, datetime],
+) -> bool:
+    target = str(row.get("target_agent") or "")
+    latest_ts = latest_activity.get(target)
+    request_ts = _parse_utc(str(row.get("ts_utc") or ""))
+    return bool(
+        latest_ts is not None and request_ts is not None and latest_ts > request_ts
+    )
+
+
+def _latest_target_activity_ts_by_agent(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    target_agents: Sequence[str],
+) -> dict[str, datetime]:
+    latest: dict[str, datetime] = {}
+    target_set = set(target_agents)
+    for event in events:
+        agent = _event_agent(event)
+        if agent not in target_set or not _is_self_liveness_activity(event):
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
+        existing = latest.get(agent)
+        if existing is None or event_ts > existing:
+            latest[agent] = event_ts
+    return latest
+
+
+def _latest_target_activity_rows(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    target_agents: Sequence[str],
+    now_utc: datetime,
+) -> list[dict[str, Any]]:
+    latest: dict[str, Mapping[str, Any]] = {}
+    target_set = set(target_agents)
+    for event in events:
+        agent = _event_agent(event)
+        if agent not in target_set or not _is_self_liveness_activity(event):
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
+        existing = latest.get(agent)
+        existing_ts = _parse_utc(_event_ts(existing)) if existing else None
+        if existing_ts is None or event_ts > existing_ts:
+            latest[agent] = event
+
+    rows: list[dict[str, Any]] = []
+    for agent in sorted(target_set):
+        event = latest.get(agent)
+        if event is None:
+            rows.append(
+                {
+                    "agent": agent,
+                    "last_activity_ts_utc": "",
+                    "last_activity_age_minutes": None,
+                    "last_activity_type": "",
+                    "last_activity_status": "",
+                    "last_activity_task_id": "",
+                }
+            )
+            continue
+        event_ts = _parse_utc(_event_ts(event))
+        age = (
+            max(
+                0.0,
+                (now_utc.astimezone(timezone.utc) - event_ts).total_seconds()
+                / 60.0,
+            )
+            if event_ts is not None
+            else None
+        )
+        rows.append(
+            {
+                "agent": agent,
+                "last_activity_ts_utc": _event_ts(event),
+                "last_activity_age_minutes": round(age, 3)
+                if age is not None
+                else None,
+                "last_activity_type": _event_type(event),
+                "last_activity_status": _event_status(event),
+                "last_activity_task_id": _task_id(event),
+            }
+        )
+    return rows
 
 
 def _delivery_escalation(

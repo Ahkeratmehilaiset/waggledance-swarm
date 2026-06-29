@@ -9,31 +9,37 @@ Author: claude-rco-1. Date: 2026-06-05.
 WD has become a self-measuring, claim-driven run loop, but the **draft → merge
 promotion** step is still manual: producers leave PRs in `draft` until a human
 (or RCO) marks them ready, and the merge driver skips drafts. This is the last
-operator-in-the-loop gate for *charter-clean* work that already satisfies every
-safety condition. This policy defines a fail-closed pipeline that promotes
-(undraft + merge) **only** PRs that provably clear every gate, while leaving all
-operator-gated work behind the operator's manual signature.
+operator-in-the-loop gate for work that already satisfies every safety condition.
+This policy defines a fail-closed pipeline that promotes (undraft + merge)
+**only** PRs that provably clear every gate, while leaving self-modification,
+runtime activation, irreversible/outward-facing work, and secrets/payments behind
+the operator's manual signature.
 
 ## Hard scope boundary (non-negotiable)
 
-Autonomous promotion applies **only** to **charter-clean** PRs:
+Autonomous promotion applies to PRs with **repo-versioned path authority**:
 
-* `evaluate_paths(charter, changed_paths).allowed is True`, AND
+* `evaluate_paths(charter, changed_paths).allowed is True`, OR
+* the executable `standing_consensus_sign` gate verifies best-possible bridge
+  consensus for a normal off-allowlist / eligible high-scrutiny path, AND
 * `evaluate_diff_content(charter, diff)` reports no denylist / privacy-canary hit.
 
-**Operator-gated PRs are never auto-promoted.** Any PR whose paths hit the
-charter `file_denylist`, fall outside the `allowlist`, or whose diff trips the
+**Operator-explicit carve-outs are never auto-promoted.** Any PR that touches the
+merge/sign/veto verdict path, Rule-10 runtime activation, irreversible or
+outward-facing actions, credentials/secrets/payments, or whose diff trips the
 code-pattern denylist is routed to a *needs-operator-signature* queue and stays
-`draft` until the operator signs it (per `CLAUDE.md` Rule 9a / 10). The pipeline
-must never undraft or merge such a PR, even with full bridge consensus.
+`draft` until the operator signs it. Normal off-allowlist path mismatches do not
+stop the loop once `standing_consensus_sign` verifies best-possible bridge
+consensus at the exact head.
 
 ## Eligibility gates (all must hold — AND, fail-closed)
 
 A PR is *promotion-eligible* only when **every** condition below is true. Any
 unknown / unreadable / ambiguous result evaluates to **not eligible**.
 
-1. **Charter-clean** — `evaluate_paths` allowed AND `evaluate_diff_content`
-   clean (the scope boundary above).
+1. **Path authority + content clean** — `evaluate_paths` allowed OR
+   `standing_consensus_sign` verified, and `evaluate_diff_content` clean (the
+   scope boundary above).
 2. **CI green** — all required checks `SUCCESS`, read from the live
    `statusCheckRollup` at the exact head (no inference, no partial-green).
 3. **Producer-ready signal** — `build_consensus_pass` present from **both**
@@ -132,8 +138,10 @@ the executor.
 
 ## Tests (required, fail-closed proofs)
 
-* operator-gated PR (denylist path / off-allowlist / canary in diff) →
-  `eligible:false`, never promoted.
+* operator-explicit PR (verdict-path carve-out / runtime activation / canary in
+  diff) → `eligible:false`, never promoted.
+* normal off-allowlist PR + best-possible bridge consensus + dual-RCO exact-head
+  pass → `eligible:true`.
 * charter-clean but missing build_consensus from lead OR tools →
   `eligible:false` (no undraft of WIP).
 * charter-clean + full consensus but RCO veto present → `eligible:false`.
@@ -152,5 +160,5 @@ the executor.
 ## Out of scope (V1)
 
 * Stage-2 atomic flip / cutover (remains operator-signed, `CLAUDE.md` Rule 10).
-* Auto-promotion of operator-gated PRs (always manual signature).
+* Auto-promotion of operator-explicit carve-outs (always manual signature).
 * Backup-RCO PASS co-authority (separate Rule 9a amendment).

@@ -95,6 +95,60 @@ LEAD_STALL_NON_SUBSTANTIVE_TYPES = frozenset({"heartbeat", "liveness"})
 LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
     {"alive", "heartbeat", "heartbeat_ok", "idle_heartbeat", "liveness"}
 )
+STANDING_CONSENSUS_ALWAYS_OPERATOR_PATHS = (
+    "CLAUDE.md",
+    "memory/**",
+    ".agent-bridge/**",
+    ".github/**",
+    "configs/bridge_event_validation_waivers.json",
+    "configs/deployment/**",
+    "deploy/**",
+    "deployment/**",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "docs/architecture/STAGE2_CUTOVER_RFC.md",
+    "docs/architecture/HUMAN_APPROVAL*.yaml*",
+    "docs/architecture/IDLE_PROTOCOL_V1.md",
+    "docs/architecture/MAGMA_SUBSTRATE_AUDIT_2026_05_17.md",
+    "docs/architecture/POLICY_SURFACE_V0.md",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+    "docs/architecture/IDLE_CONSENSUS_ARTIFACT_V1.md",
+    "docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md",
+    "tools/idle_consensus_auto_merge.py",
+    "tools/merge_with_bridge_receipt.py",
+    "tools/check_bridge_changes_requested.py",
+    "tools/check_rco_pass_present.py",
+    "tools/write_bridge_consensus_merge_receipt.py",
+    "tools/bridge_event_taxonomy.py",
+    "tools/check_proven_safe_autosign_class.py",
+    "tools/check_status_name_safe.py",
+    "tools/verify_bridge_consensus.py",
+    "waggledance/core/idle_consensus_charter.py",
+    "waggledance/core/magma/demo_policy.py",
+    "waggledance/core/magma/adversarial_corpus_eval.py",
+    "tools/validate_synthetic_adversarial_corpus.py",
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "*secret*",
+    "**/*secret*",
+    "*token*",
+    "**/*token*",
+    "*credential*",
+    "**/*credential*",
+)
+STANDING_CONSENSUS_HIGH_SCRUTINY_ELIGIBLE_PATHS = (
+    "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS*",
+    "docs/architecture/*PROVEN_SAFE_AUTOSIGN*",
+    "docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY*",
+    "docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD*",
+    "docs/architecture/*CONTENT_IDENTICAL_REBASE*",
+    "docs/architecture/P4_SAFETY_SUBSTRATE*",
+    "docs/architecture/P4B_POST_MERGE_CANARY*",
+    "tests/security/p4c_corpus/**",
+)
 
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
@@ -339,10 +393,11 @@ def evaluate_auto_merge_gate(
     )
 
     blockers: list[str] = []
+    path_gate_blocker = ""
     if head_sha != expected_head:
         blockers.append("exact head mismatch")
     if not path_gate.allowed:
-        blockers.append(f"path gate failed: {path_gate.reason}")
+        path_gate_blocker = f"path gate failed: {path_gate.reason}"
     if not diff_gate.allowed:
         blockers.append(f"diff gate failed: {diff_gate.reason}")
     if mergeable not in MERGEABLE_STATES:
@@ -408,6 +463,24 @@ def evaluate_auto_merge_gate(
             for reason in reasons:
                 blockers.append(f"bridge consensus incomplete: {reason}")
 
+    standing_consensus_sign = _evaluate_standing_consensus_sign(
+        require_bridge_consensus=require_bridge_consensus,
+        events=events,
+        events_path=events_path,
+        task_id=bridge_gate_task_id,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        author_agent=author_agent,
+        path_gate=path_gate,
+        diff_gate=diff_gate,
+        bridge_consensus=bridge_consensus,
+    )
+    if path_gate_blocker and not standing_consensus_sign.get("path_gate_waived", False):
+        blockers.append(path_gate_blocker)
+        if standing_consensus_sign.get("eligible", False):
+            for reason in standing_consensus_sign.get("reasons", []):
+                blockers.append(f"standing consensus sign incomplete: {reason}")
+
     command = _merge_command(
         pr_number=pr_number,
         expected_head=expected_head,
@@ -429,6 +502,7 @@ def evaluate_auto_merge_gate(
         diff_gate=_gate_to_dict(diff_gate),
         base_gate=base_gate,
         bridge_consensus=bridge_consensus,
+        standing_consensus_sign=standing_consensus_sign,
     )
     if blockers:
         return {
@@ -609,6 +683,7 @@ def _base_report(
     diff_gate: Mapping[str, Any],
     base_gate: Mapping[str, Any],
     bridge_consensus: Mapping[str, Any],
+    standing_consensus_sign: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "decision": "auto_merge_gate",
@@ -632,6 +707,7 @@ def _base_report(
         "bridge_peer_gate": dict(bridge_peer_gate),
         "rco_pass_gate": dict(rco_pass_gate),
         "bridge_consensus": dict(bridge_consensus),
+        "standing_consensus_sign": dict(standing_consensus_sign),
         "rate_gate": dict(rate_gate),
         "gh_command": list(command),
     }
@@ -1601,6 +1677,245 @@ def _evaluate_bridge_consensus(
                 *result["reasons"],
             ]
     return result
+
+
+def _evaluate_standing_consensus_sign(
+    *,
+    require_bridge_consensus: bool,
+    events: Sequence[Mapping[str, Any]],
+    events_path: Path | None,
+    task_id: str,
+    pr_number: int | None,
+    head_sha: str,
+    author_agent: str,
+    path_gate: Any,
+    diff_gate: Any,
+    bridge_consensus: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate the standing-sign waiver for off-allowlist/high-scrutiny paths.
+
+    This gate is deliberately narrower and stronger than the normal Rule 9a path:
+    it only waives an allowlist/path mismatch, never a code-pattern denylist hit,
+    and it requires every non-author recognized RCO to pass at the exact head.
+    """
+    path_class = _standing_consensus_path_class(path_gate)
+    dual_rco_pass_gate = _standing_dual_rco_pass_gate(
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        author_agent=author_agent,
+        checked=events_path is not None,
+    )
+    base: dict[str, Any] = {
+        "required": bool(require_bridge_consensus),
+        "applies": False,
+        "eligible": False,
+        "ok": False,
+        "path_gate_waived": False,
+        "standing_operator_signature": False,
+        "operator_explicit_required": False,
+        "decision": "not_applicable",
+        "reasons": [],
+        "head_sha": head_sha,
+        "canonical_task_id": task_id,
+        "pr_number": pr_number,
+        "author_agent": author_agent,
+        "path_class": path_class,
+        "dual_rco_pass_gate": dual_rco_pass_gate,
+    }
+    if bool(getattr(path_gate, "allowed", False)):
+        return {
+            **base,
+            "ok": True,
+            "decision": "allowlist_clean_not_needed",
+        }
+
+    reasons: list[str] = []
+    if not bool(getattr(diff_gate, "allowed", False)):
+        reasons.append(f"diff gate failed: {getattr(diff_gate, 'reason', '')}")
+    reasons.extend(path_class["operator_explicit_reasons"])
+    if not path_class["standing_eligible_paths"]:
+        reasons.append("no standing-consensus-eligible off-allowlist path")
+
+    applies = bool(path_class["standing_eligible_paths"])
+    if applies:
+        if not require_bridge_consensus:
+            reasons.append("bridge consensus is required for standing sign")
+        if not bool(bridge_consensus.get("ok", False)):
+            bridge_reasons = bridge_consensus.get("reasons") or [
+                "bridge consensus incomplete"
+            ]
+            reasons.extend(
+                f"bridge consensus incomplete: {reason}"
+                for reason in bridge_reasons
+            )
+        if not bool(dual_rco_pass_gate.get("ok", False)):
+            dual_reasons = dual_rco_pass_gate.get("reasons") or [
+                "dual RCO_PASS gate incomplete"
+            ]
+            reasons.extend(
+                f"dual RCO_PASS incomplete: {reason}"
+                for reason in dual_reasons
+            )
+
+    if reasons:
+        return {
+            **base,
+            "applies": applies,
+            "eligible": applies and not path_class["operator_explicit_reasons"],
+            "operator_explicit_required": bool(
+                path_class["operator_explicit_reasons"]
+            ),
+            "decision": (
+                "operator_explicit_required"
+                if path_class["operator_explicit_reasons"]
+                else "standing_consensus_sign_incomplete"
+            ),
+            "reasons": reasons,
+        }
+
+    return {
+        **base,
+        "applies": True,
+        "eligible": True,
+        "ok": True,
+        "path_gate_waived": True,
+        "standing_operator_signature": True,
+        "decision": "standing_consensus_sign_verified",
+        "reasons": ["standing consensus sign verified"],
+    }
+
+
+def _standing_dual_rco_pass_gate(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    head_sha: str,
+    author_agent: str,
+    checked: bool,
+) -> dict[str, Any]:
+    recognized_rco_agents = tuple(BRIDGE_CONSENSUS_RCO_AGENTS)
+    eligible_rco_agents = tuple(
+        agent for agent in recognized_rco_agents if agent != author_agent
+    )
+    per_agent: dict[str, Mapping[str, Any]] = {}
+    reasons: list[str] = []
+    if not checked:
+        reasons.append("bridge events path is required for dual RCO_PASS")
+    if not eligible_rco_agents:
+        reasons.append("no recognized RCO remains eligible after author exclusion")
+
+    for agent in eligible_rco_agents:
+        result = check_rco_pass_present(
+            events=events,
+            task_id=task_id,
+            head=head_sha,
+            rco_agent=(agent,),
+            author_agent=author_agent,
+        )
+        per_agent[agent] = result
+        if not bool(result.get("ok", False)):
+            reasons.append(f"{agent}: exact-head RCO_PASS required")
+
+    return {
+        "ok": checked and bool(eligible_rco_agents) and not reasons,
+        "decision": (
+            "dual_rco_pass_verified"
+            if checked and bool(eligible_rco_agents) and not reasons
+            else "dual_rco_pass_incomplete"
+        ),
+        "reasons": reasons,
+        "head_sha": head_sha,
+        "canonical_task_id": task_id,
+        "recognized_rco_agents": list(recognized_rco_agents),
+        "required_rco_agents": list(eligible_rco_agents),
+        "author_agent": author_agent,
+        "per_agent": {agent: dict(result) for agent, result in per_agent.items()},
+    }
+
+
+def _standing_consensus_path_class(path_gate: Any) -> dict[str, Any]:
+    blocked_paths = tuple(str(path) for path in getattr(path_gate, "blocked_paths", ()))
+    unmatched_paths = tuple(
+        str(path) for path in getattr(path_gate, "unmatched_paths", ())
+    )
+    operator_explicit_paths: list[str] = []
+    unsupported_blocked_paths: list[str] = []
+    high_scrutiny_paths: list[str] = []
+    ordinary_off_allowlist_paths: list[str] = []
+
+    for path in blocked_paths:
+        if _standing_path_matches_any(path, STANDING_CONSENSUS_ALWAYS_OPERATOR_PATHS):
+            operator_explicit_paths.append(path)
+        elif _standing_path_matches_any(
+            path, STANDING_CONSENSUS_HIGH_SCRUTINY_ELIGIBLE_PATHS
+        ):
+            high_scrutiny_paths.append(path)
+        else:
+            unsupported_blocked_paths.append(path)
+
+    for path in unmatched_paths:
+        if _standing_path_matches_any(path, STANDING_CONSENSUS_ALWAYS_OPERATOR_PATHS):
+            operator_explicit_paths.append(path)
+        else:
+            ordinary_off_allowlist_paths.append(path)
+
+    operator_explicit_reasons: list[str] = []
+    if operator_explicit_paths:
+        operator_explicit_reasons.append(
+            "operator-explicit path: " + ", ".join(sorted(operator_explicit_paths))
+        )
+    if unsupported_blocked_paths:
+        operator_explicit_reasons.append(
+            "denylisted path is not standing-consensus eligible: "
+            + ", ".join(sorted(unsupported_blocked_paths))
+        )
+
+    standing_eligible_paths = tuple(
+        sorted({*ordinary_off_allowlist_paths, *high_scrutiny_paths})
+    )
+    return {
+        "ordinary_off_allowlist_paths": ordinary_off_allowlist_paths,
+        "high_scrutiny_paths": high_scrutiny_paths,
+        "standing_eligible_paths": list(standing_eligible_paths),
+        "operator_explicit_paths": operator_explicit_paths,
+        "unsupported_blocked_paths": unsupported_blocked_paths,
+        "operator_explicit_reasons": operator_explicit_reasons,
+    }
+
+
+def _standing_path_matches_any(path: str, patterns: Sequence[str]) -> bool:
+    normalized = _normalize_standing_path(path)
+    return any(_standing_path_matches(normalized, pattern) for pattern in patterns)
+
+
+def _normalize_standing_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _standing_path_matches(path: str, pattern: str) -> bool:
+    if not pattern:
+        return False
+    candidate = path.casefold()
+    glob = pattern.replace("\\", "/").strip().casefold()
+    if glob == candidate:
+        return True
+    if glob.endswith("/**"):
+        prefix = glob[:-3]
+        if candidate == prefix or candidate.startswith(prefix + "/"):
+            return True
+    if glob.endswith("/*"):
+        prefix = glob[:-2]
+        return candidate.startswith(prefix + "/") and "/" not in candidate[
+            len(prefix) + 1 :
+        ]
+    if "*" in glob:
+        regex = re.escape(glob).replace("\\*\\*", ".*").replace("\\*", "[^/]*")
+        return re.fullmatch(regex, candidate) is not None
+    return False
 
 
 def _consensus_scope_match(

@@ -10,10 +10,13 @@ LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
 AUTHOR = "claude-rco-2"
+NON_RCO_AUTHOR = "fable-5"
 AGENT_UUIDS = {
     LEAD: "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     TOOLS: "7a8af68d-20bc-4598-9953-23c5dd98b102",
     RCO: "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    AUTHOR: "76739997-0058-41a2-8514-78ff295537aa",
+    NON_RCO_AUTHOR: "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
 
 
@@ -35,6 +38,13 @@ def _full_bridge_consensus() -> list[dict]:
         _approval(LEAD, "build_consensus_pass", ts="2026-06-06T01:00:00Z"),
         _approval(TOOLS, "build_consensus_pass", ts="2026-06-06T01:01:00Z"),
         _approval(RCO, "rco_pass", ts="2026-06-06T01:02:00Z"),
+    ]
+
+
+def _best_possible_consensus() -> list[dict]:
+    return [
+        *_full_bridge_consensus(),
+        _approval(AUTHOR, "rco_pass", ts="2026-06-06T01:03:00Z"),
     ]
 
 
@@ -66,7 +76,7 @@ def _status(**overrides) -> dict:
     return status
 
 
-def test_off_allowlist_change_stays_operator_gated_even_with_full_consensus(
+def test_off_allowlist_change_uses_standing_consensus_sign_when_author_is_rco(
     tmp_path: Path,
 ) -> None:
     report = evaluate_auto_merge_gate(
@@ -86,15 +96,76 @@ def test_off_allowlist_change_stays_operator_gated_even_with_full_consensus(
     assert report["bridge_consensus"]["ok"] is True
     assert report["rco_pass_gate"]["ok"] is True
     assert report["path_gate"]["allowed"] is False
-    assert report["ok"] is False
-    assert report["would_merge"] is False
+    assert report["standing_consensus_sign"]["ok"] is True
+    assert report["standing_consensus_sign"]["path_gate_waived"] is True
+    assert report["standing_consensus_sign"]["dual_rco_pass_gate"][
+        "required_rco_agents"
+    ] == [RCO]
+    assert report["ok"] is True
+    assert report["would_merge"] is True
     assert report["external_effect"] is False
+    assert report["operator_review_required"] is False
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["reasons"] == ["all auto-merge gates passed"]
+
+
+def test_off_allowlist_change_requires_dual_rco_for_non_rco_author(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            author_agent=NON_RCO_AUTHOR,
+            changed_paths=["docs/runs/48h_hex_mesh_autonomy_status.md"],
+        ),
+        expected_head=HEAD,
+        consensus_proposal_id=TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _full_bridge_consensus()),
+        require_bridge_consensus=True,
+    )
+
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["path_gate"]["allowed"] is False
+    assert report["standing_consensus_sign"]["ok"] is False
+    assert report["standing_consensus_sign"]["eligible"] is True
+    assert report["standing_consensus_sign"]["dual_rco_pass_gate"][
+        "required_rco_agents"
+    ] == [RCO, AUTHOR]
+    assert report["ok"] is False
     assert report["operator_review_required"] is True
     assert report["decision"] == "operator_review_required"
     assert any(
-        reason.startswith("path gate failed: paths not on allowlist")
+        reason == "standing consensus sign incomplete: dual RCO_PASS incomplete: "
+        f"{AUTHOR}: exact-head RCO_PASS required"
         for reason in report["reasons"]
     )
+
+
+def test_off_allowlist_change_uses_standing_consensus_sign_with_dual_rco(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(
+            author_agent=NON_RCO_AUTHOR,
+            changed_paths=["docs/runs/48h_hex_mesh_autonomy_status.md"],
+        ),
+        expected_head=HEAD,
+        consensus_proposal_id=TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _best_possible_consensus()),
+        require_bridge_consensus=True,
+    )
+
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["path_gate"]["allowed"] is False
+    assert report["standing_consensus_sign"]["ok"] is True
+    assert report["standing_consensus_sign"]["path_gate_waived"] is True
+    assert report["standing_consensus_sign"]["dual_rco_pass_gate"][
+        "required_rco_agents"
+    ] == [RCO, AUTHOR]
+    assert report["ok"] is True
+    assert report["operator_review_required"] is False
+    assert report["decision"] == "auto_merge_plan_ready"
 
 
 def test_bridge_bin_change_stays_operator_gated_even_with_full_consensus(

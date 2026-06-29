@@ -279,12 +279,15 @@ code-pattern denylist, so it operator-merges); or a direct bridge instruction
 to all active agents. The operator owns the charter; the substrate proves every
 merge against it.
 
-## Standing consensus-sign for off-allowlist / high-scrutiny PRs (2026-06-25 amendment — DORMANT until bootstrap-signed)
+## Standing consensus-sign for off-allowlist / high-scrutiny PRs (2026-06-25 amendment — ACTIVE 2026-06-29)
 
-**Status: DORMANT. This section has NO effect until the operator places an
-explicit per-PR signature on BOTH bootstrap PRs (see Bootstrap below). Until then
-the pre-existing rule stands: off-allowlist / high-scrutiny PRs require an
-explicit per-PR operator signature.**
+**Status: ACTIVE once the executable gate change carrying this text lands.**
+At that head, `tools/idle_consensus_auto_merge.py` treats a verified
+`standing_consensus_sign` as the operator-sign equivalent for normal
+off-allowlist / high-scrutiny PRs. The gate still fails closed for the explicit
+carve-outs below: Rule-10 / runtime activation, irreversible or outward-facing
+actions, credentials/secrets/payments, and any file on the merge/sign/veto
+verdict path.
 
 ### Operator directive being captured
 
@@ -295,10 +298,9 @@ explicit per-PR operator signature.**
 
 This removes the per-PR-sign bottleneck for the off-allowlist class by declaring
 that, for that class, **the operator's signature is STANDING and is satisfied by
-a defined "best-possible consensus" state** — captured here AUTHORITATIVELY (an
-operator-signed amendment), never run from a chat relay. (Relay-only capture is
-exactly what produced the #1387 auto-merge and the B-vs-C relay-ambiguity; a
-relay does not change the gate — only a signed amendment does.)
+a defined "best-possible consensus" state** — captured here and enforced by the
+repo-versioned gate. Relay-only capture is not enough; the executable gate and
+its tests are the authority.
 
 ### Definition — "best-possible consensus" (the operator-sign equivalent; FULL gate, fail-closed)
 
@@ -445,19 +447,18 @@ ACTIVE, in addition to the two bootstrap signatures):**
    by a mistokened / negated / free-text recognized-RCO veto at head (the negated
    and mistokened forms explicitly enforced, not just the happy path).
 
-**Interim posture until the precondition is met (residual documented per the fence
-option-b belt):** the existing **per-PR operator signature stands** for the
-off-allowlist class; the standing rule is **dormant** even after the two bootstrap
-signatures until elements 2–3 land. While dormant, the gate relies on:
-dual-RCO-BOTH-pass + the gate-governance carve-out + the operational requirement
-that **recognized RCOs MUST use latching `changes_requested`/`blocked` block
-vocabulary** for any veto (a free-text "hold" does not latch — see the
-status-field-block-vocabulary discipline). The cause-B latch-fix + harness is a
-**named fast-follow** (the P2/D5 taxonomy-wiring track), not an open-ended TODO.
+**2026-06-29 activation evidence:** the cause-B latch fix is wired into
+`tools/check_bridge_changes_requested.py` through the single-source
+`tools/bridge_event_taxonomy.py`, and
+`tests/tools/test_cause_b_rco_finding_blocks_by_type.py` proves that mistokened,
+negated, free-text, and neutral-looking recognized-RCO findings still latch as
+vetoes. The executable standing-sign gate additionally requires every
+non-author recognized RCO to post exact-head `RCO_PASS`; a single-RCO pass is
+not enough for a non-RCO-authored off-allowlist PR.
 
-Net: element 4 is only *sound* once its computation cannot be cleared by a
-mistokened veto. The standing rule activates when that soundness is proven in CI —
-never before.
+Net: element 4 is now computed by type/authority, not fragile free-text status
+tokens, and the standing rule is enforced only where the executable gate can
+re-derive that state.
 
 ### Complementarity with the charter denylist (#1393)
 
@@ -479,9 +480,9 @@ was granted.
 
 * v1 (this doc): three-agent fail-closed MERGE consensus; cutover explicitly
   out of scope. Enforcement lands in T0b; cutover loosening deferred to T0c.
-* v1.1 (2026-06-25 amendment, DORMANT until bootstrap-signed): standing
+* v1.1 (2026-06-25 amendment, activated by the 2026-06-29 executable gate):
+  standing
   consensus-sign for the off-allowlist / high-scrutiny class — best-possible
   consensus (dual-RCO + full fail-closed gate) substitutes for the per-PR
   operator signature, except Rule-10/cutover, irreversible/outward-facing
-  actions, and the gate-governance class. Bootstrap = explicit operator-sign on
-  PR #1393 + the amendment PR.
+  actions, and the gate-governance class.

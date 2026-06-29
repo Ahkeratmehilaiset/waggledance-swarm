@@ -146,8 +146,13 @@ All seven conditions must hold. Failure of any one downgrades the PR to operator
 3. **Receipt verified**: a MAGMA receipt bundle is written for the consensus and `verify_manifest` returns `ok=True` (via `waggledance/core/magma/receipt_bundle.write_receipt_bundle`).
 4. **Rate limit**: within the UTC-day cap of `DEFAULT_MAX_AUTONOMOUS_MERGES_PER_DAY = 5` (matches `tools/idle_protocol_activate.DEFAULT_MAX_INSTANCES_PER_DAY`).
 5. **Mergeable clean**: GitHub reports `mergeable: clean` (no conflicts).
-6. **Allowlist match**: every changed file path in the diff matches an allowlist entry.
-7. **No denylist hit**: no changed file path matches the file denylist and no diff content matches the code-pattern denylist.
+6. **Path authority**: every changed file path in the diff either matches an
+   allowlist entry, or the executable `standing_consensus_sign` gate verifies a
+   best-possible bridge consensus for a normal off-allowlist / eligible
+   high-scrutiny path.
+7. **No unwaivable denylist hit**: no changed file path matches a
+   self-modification / runtime-activation / irreversible-action / secrets
+   carve-out, and no diff content matches the code-pattern denylist.
 
 ## Bridge-consensus approval path (2026-05-29)
 
@@ -159,17 +164,22 @@ per-action operator queries). The full contract is in
 (`tools/idle_consensus_auto_merge.py`) enforces it fail-closed (enforcement
 lands in Track T0b). In summary, a bridge consensus requires **all** of:
 
-* **three distinct verified identities** — lead (`codex-lead-1`) + tools peer
-  (`codex-tools-1`) build consensus, plus an independent `claude-rco-1`
-  `RCO_PASS`; duplicate/missing/unverifiable identities or a 2-of-3 set fail
-  closed;
-* **RCO veto + RCO absence = no merge** — any `claude-rco-1`
+* **verified identities** — lead (`codex-lead-1`) + tools peer
+  (`codex-tools-1`) build consensus, plus recognized-RCO `RCO_PASS` evidence;
+  duplicate/missing/unverifiable identities or a stale head fail closed;
+* **RCO veto + RCO absence = no merge** — any recognized RCO
   `finding`/`changes_requested` blocks; absence of an explicit `RCO_PASS` at the
-  exact head also blocks (silence never default-allows);
-* **head-exact binding** — all three approvals bind to the exact head SHA; any
+  exact head from the required recognized-RCO slot(s) also blocks (silence never
+  default-allows);
+* **standing sign for normal off-allowlist** — when the path gate fails only
+  because the path is off-allowlist or in the eligible high-scrutiny class, the
+  merge gate may waive the path blocker only after best-possible bridge
+  consensus, including exact-head `RCO_PASS` from every non-author recognized
+  RCO;
+* **head-exact binding** — all approvals bind to the exact head SHA; any
   re-push invalidates them and requires re-consensus;
 * the seven parallel conditions above, plus a **MAGMA receipt** recording the
-  three identities + head SHA + `RCO_PASS` reference, re-derivable by a consumer.
+  identities + head SHA + `RCO_PASS` reference, re-derivable by a consumer.
 
 This path governs **MERGE only**. It does **not** authorize the Stage-2 cutover,
 which stays operator-signed (Rule 10 / escalation category 5) until a separate

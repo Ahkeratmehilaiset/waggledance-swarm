@@ -32,6 +32,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Sequence
 
@@ -66,6 +67,10 @@ from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 
 REPORT_VERSION = "wd.hex_runtime_readiness_trace.v0"
 OUTPUT_FILENAME = "hex_runtime_readiness_trace.json"
+# Strict: lowercase-hex only. A 'sha256:' + 64 non-hex chars value must NOT pass
+# (a prefix+length check alone would fail open -- a fake but self-consistent
+# digest could carry the single-shared-digest proof; see the binding test).
+SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 TRACE_STATUS = "runtime_ready_evidence_traced_activation_blocked"
 TRACE_BLOCKED_STATUS = "runtime_readiness_trace_blocked"
 
@@ -145,7 +150,7 @@ def evaluate_runtime_readiness_trace_binding(
         rollup_admission_request_digest,
     )
     shared = canonical_execution_request_digest
-    is_sha256 = isinstance(shared, str) and shared.startswith("sha256:") and len(shared) == 71
+    is_sha256 = isinstance(shared, str) and bool(SHA256_DIGEST_RE.fullmatch(shared))
     return {
         "canonical_execution_request_digest_well_formed": is_sha256,
         "solver_verdict_reproduces_canonical_plan_id": (
@@ -164,7 +169,12 @@ def evaluate_runtime_readiness_trace_binding(
         "rollup_pipeline_digest_bound": rollup_pipeline_request_digest == shared,
         "rollup_admission_digest_bound": rollup_admission_request_digest == shared,
         "single_shared_execution_request_digest": (
-            is_sha256 and all(d == shared for d in bound_digests)
+            is_sha256
+            and all(
+                isinstance(d, str) and bool(SHA256_DIGEST_RE.fullmatch(d))
+                for d in bound_digests
+            )
+            and all(d == shared for d in bound_digests)
         ),
         "readiness_authority_false_everywhere": (
             readiness_authority_false_everywhere is True

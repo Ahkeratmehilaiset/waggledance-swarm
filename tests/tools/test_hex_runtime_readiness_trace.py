@@ -144,6 +144,26 @@ def test_binding_fails_on_malformed_canonical_digest():
     assert checks["single_shared_execution_request_digest"] is False
 
 
+def test_binding_rejects_fake_non_hex_digest_shared_by_every_link():
+    # Regression (lead build-review #1435): 'sha256:' + 64 NON-hex chars has the
+    # right prefix and length but is not a real digest. Even if every link shares
+    # that fake value, the well-formedness AND single-shared checks must fail --
+    # a prefix+length check alone would fail open and forge the digest proof.
+    fake = "sha256:" + "z" * 64
+    kwargs = _matched_binding_kwargs()
+    for key in (
+        "canonical_execution_request_digest",
+        "readiness_execution_request_digest",
+        "readiness_admission_request_digest",
+        "rollup_pipeline_request_digest",
+        "rollup_admission_request_digest",
+    ):
+        kwargs[key] = fake
+    checks = evaluate_runtime_readiness_trace_binding(**kwargs)
+    assert checks["canonical_execution_request_digest_well_formed"] is False
+    assert checks["single_shared_execution_request_digest"] is False
+
+
 def test_trace_refuses_existing_out_dir(tmp_path):
     out_dir = tmp_path / "trace"
     out_dir.mkdir()

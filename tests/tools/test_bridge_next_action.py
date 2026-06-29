@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -2318,6 +2319,51 @@ def test_repeated_wake_delivery_gap_is_reported_in_production_liveness(
     assert wake["wake_file_present"] is True
     assert wake["age_minutes"] == 20.0
     assert wake["latest_wake_age_minutes"] == 15.0
+    assert wake["safe_next_action"].startswith("restart or verify")
+
+
+def test_single_rco_wake_file_preflight_is_reported_in_production_liveness(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    bridge_root.mkdir()
+    wake_file = bridge_root / "wake_claude-rco-2"
+    wake_file.write_text("2026-06-06T10:00:00Z", encoding="utf-8")
+    timestamp = datetime(2026, 6, 6, 10, 0, tzinfo=timezone.utc).timestamp()
+    os.utime(wake_file, (timestamp, timestamp))
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "escalate_wake_delivery_stall"
+    assert report["operator_action_required"] is True
+    assert report["operator_action_target_agents"] == ["claude-rco-2"]
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["decision"] == "wake_delivery_stalled"
+    assert delivery["stalled_wake_count"] == 1
+    assert delivery["single_wake_preflight_count"] == 1
+    wake = delivery["stalled_wakes"][0]
+    assert wake["classification"] == "rco_single_wake_preflight_stalled"
+    assert wake["wake_request_count"] == 1
+    assert wake["wake_file_present"] is True
+    assert wake["wake_file_age_minutes"] == 20.0
     assert wake["safe_next_action"].startswith("restart or verify")
 
 

@@ -280,6 +280,62 @@ def test_min_repeats_filters_single_wake() -> None:
     assert report["stalled_count"] == 0
 
 
+def test_single_rco_wake_with_old_wake_file_triggers_preflight(
+    tmp_path: Path,
+) -> None:
+    wake_file = tmp_path / "wake_claude-rco-2"
+    wake_file.write_text("2026-06-13T12:00:00Z", encoding="utf-8")
+    _set_mtime(wake_file, datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc))
+
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+        ],
+        bridge_root=tmp_path,
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "wake_delivery_stalled"
+    assert report["stalled_count"] == 1
+    assert report["single_wake_preflight_count"] == 1
+    assert report["delivery_escalation"]["do_not_emit_additional_wake_requests"] is True
+    row = report["stalled_wakes"][0]
+    assert row["classification"] == "rco_single_wake_preflight_stalled"
+    assert row["target_agent"] == "claude-rco-2"
+    assert row["wake_request_count"] == 1
+    assert row["wake_file_present"] is True
+    assert row["wake_file_age_minutes"] == 30.0
+    assert row["safe_next_action"].startswith("restart or verify")
+
+
+def test_single_non_rco_wake_with_wake_file_still_respects_min_repeats(
+    tmp_path: Path,
+) -> None:
+    wake_file = tmp_path / "wake_codex-tools-1"
+    wake_file.write_text("2026-06-13T12:00:00Z", encoding="utf-8")
+    _set_mtime(wake_file, datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc))
+
+    report = check_wake_delivery(
+        events=[
+            _wake(
+                ts="2026-06-13T12:00:00Z",
+                to="codex-tools-1",
+                task_id="tools-needed",
+            ),
+        ],
+        bridge_root=tmp_path,
+        now_utc=_now(),
+        min_age_minutes=12,
+        min_repeats=2,
+    )
+
+    assert report["decision"] == "wake_delivery_ok"
+    assert report["stalled_count"] == 0
+    assert report["single_wake_preflight_count"] == 0
+
+
 def test_min_age_filters_young_wake_group() -> None:
     report = check_wake_delivery(
         events=[

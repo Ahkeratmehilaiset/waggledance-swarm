@@ -1530,6 +1530,66 @@ def test_completed_same_day_dream_seed_advances_to_next_seed(
     )
 
 
+def test_spaced_success_status_dream_seed_advances_to_next_seed(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    completed_smokes = [
+        {
+            "ts_utc": "2026-05-20T12:10:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+            "status": "done",
+            "message": "daily substrate smoke passed",
+        }
+        for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+    ]
+    first = _pick_dream_mode_seed(agent="codex", now_utc=NOW)
+    assert first is not None
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            *completed_smokes,
+            {
+                "ts_utc": "2026-05-20T12:20:00Z",
+                "agent": "codex-lead-1",
+                "type": "done",
+                "task_id": first["task_id_suggestion"],
+                "status": (
+                    "counterfactual eval extension inventory complete; "
+                    "smallest next work is read-only readiness summary"
+                ),
+                "message": "dream-mode seed completed with a human-readable status",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert report["decision"] == "claim_dream_mode_seed"
+    assert candidate["task_id_suggestion"] != first["task_id_suggestion"]
+    assert (
+        first["task_id_suggestion"]
+        in candidate["rotation"]["skipped_completed_task_ids"]
+    )
+
+
 def test_legacy_compact_done_dream_seed_advances_to_next_seed(
     tmp_path: Path,
 ) -> None:

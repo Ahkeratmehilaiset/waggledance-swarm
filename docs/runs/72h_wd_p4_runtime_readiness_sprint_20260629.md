@@ -39,8 +39,25 @@ Responses received inside the bounded planning window:
   keep P4 dormant and reversible; avoid another sprint that is only
   process-about-process without moving runtime-readiness evidence.
 
-No bounded-window response was received from `codex-tools-1`, `claude-rco-2`,
-or `codex`. Their lanes remain invited to claim scoped work from this board.
+Late responses received while this plan PR was being opened:
+
+- `codex-tools-1` at 2026-06-29T18:58:05Z:
+  make the autonomous loop operationally trustworthy before expanding runtime
+  authority; close wake-delivery and tooling reliability gaps; keep tool output
+  deterministic and replayable; add contract tests for bridge recommendations
+  around open incoming, stale liveness, active same-agent claims, foreign write
+  claims, unavailable-agent suppression, and selector uncertainty. Stop if
+  observability becomes authority or if bridge/tool mismatches are silently
+  swallowed.
+- `claude-rco-2` at 2026-06-29T19:01:40Z:
+  add a live-gate fail-open regression substrate and RCO-lane SPOF mitigation;
+  cover cause-B ordering, fake digest binding, observability state-name scans,
+  exact-token shape mismatches, task-alias consensus splits, and dark-RCO
+  stalls. The previous sprint's gate held correctly; the fix is liveness and
+  regression coverage, not relaxing dual-RCO.
+
+No response was received from `codex` in the planning window. The reserve lane
+remains invited to claim scoped work from this board.
 
 ## Sprint Thesis
 
@@ -98,6 +115,10 @@ The finish line is not "more infrastructure exists." The finish line is:
    - Done when: tool reports whether target RCO bridge activity exists after a
      wake, emits a fail-closed finding when it does not, and does not send
      repeated wakes or start watchers.
+   - Tools/RCO2 requirements: contract tests must cover the production pattern
+     "targeted wake exists but target has no fresh activity", unavailable-agent
+     suppression, active own claim, foreign write claim, stale liveness, and
+     open incoming request precedence.
 
 2. Standing-sign receipt replay canary
    - Owner: codex-tools-1; reviewers: RCO1/RCO2.
@@ -116,9 +137,11 @@ The finish line is not "more infrastructure exists." The finish line is:
 4. P4 adversarial corpus
    - Owner: RCO1 primary; codex spare or tools can implement.
    - Scope: tests/data only unless bridge assigns a tool implementation.
-   - Minimum corpus: 24 cases across novel-name governance docs,
+   - Minimum corpus: 32 cases across novel-name governance docs,
      vocabulary/name-list drift, active-on-merge, stale-pass/head-drift,
-     author-slot confusion, wake-delivery silence, and receipt mismatch.
+     author-slot confusion, wake-delivery silence, receipt mismatch,
+     cause-B ordering, fake-digest consistency, observability state-name scans,
+     exact-token shape mismatch, and task-alias consensus splits.
    - Done when: canary/verifier classifiers fail closed on every case.
 
 5. First real standing-sign `(b)`-class proof

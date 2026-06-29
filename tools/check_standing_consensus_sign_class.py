@@ -68,15 +68,28 @@ _A_CODE_SUBSTR = (
     "idle_consensus_to_pr",
 )
 # gate-CONFORMANCE anchors (tests/corpora that LOCK the gate fail-closed behaviour).
+# "conformance" as a substring catches a FUTURE gate-conformance anchor that was
+# not enumerated (rco-2 forward-hardening note ii); p4c corpus CASES do not contain
+# it so they stay (b).
 _A_CONFORMANCE_SUBSTR = (
-    "test_verify_bridge_consensus_conformance",
-    "verify_bridge_consensus_conformance_corpus",
+    "conformance",                             # any *conformance* anchor -> (a)
     "test_cause_b_rco_finding_blocks_by_type",
     "test_check_bridge_changes_requested",
     "test_check_rco_pass_present",
     "test_standing_consensus_sign_class",      # this module's own conformance (self)
-    "standing_consensus_sign_class_corpus",
     "validate_p4c_corpus",                     # p4c VALIDATOR anchor (corpus CASES stay (b))
+)
+# GOVERNANCE-CONTRACT doc substrings: catch FUTURE versions (V2/V3) of the core
+# governance/contract docs so they never ride (b) via the docs/architecture/*.md
+# pattern (rco-2 forward-hardening note i). _A_EXACT pins the current files; these
+# substrings future-proof renames/versions.
+_A_GOV_DOC_SUBSTR = (
+    "consensus_approval",      # BRIDGE_CONSENSUS_APPROVAL_V*
+    "autonomy_charter",        # IDLE_AUTONOMY_CHARTER*
+    "consensus_artifact",      # IDLE_CONSENSUS_ARTIFACT_V*
+    "stage2_cutover",          # STAGE2_CUTOVER_RFC*
+    "policy_surface",          # POLICY_SURFACE_V*
+    "idle_protocol_v",         # IDLE_PROTOCOL_V*
 )
 _A_PREFIX = (
     ".agent-bridge/bin/",
@@ -120,6 +133,8 @@ def _path_is_a(path: str) -> bool:
     if any(s in p for s in _A_CODE_SUBSTR):
         return True
     if any(s in p for s in _A_CONFORMANCE_SUBSTR):
+        return True
+    if any(s in p for s in _A_GOV_DOC_SUBSTR):
         return True
     if any(p.startswith(pre) for pre in _A_PREFIX):
         return True

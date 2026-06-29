@@ -46,6 +46,14 @@ A_CLASS_PATHS = [
     "tools/some_new_helper.py",                            # unrecognized tools/ -> (a)
     "tools/run_gate.py",                                   # run_* NOT proof/dry_run -> (a)
     "tools/run_consensus_verdict.py",                     # run_* gate-ish name -> (a)
+    # forward-hardening (rco-2 fence notes): FUTURE governance-contract versions
+    # and FUTURE gate-conformance anchors must not ride (b) via the broad doc/test
+    # patterns.
+    "docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V2.md",   # future contract -> (a)
+    "docs/architecture/IDLE_AUTONOMY_CHARTER_V2.md",       # future charter -> (a)
+    "docs/architecture/POLICY_SURFACE_V1.md",             # governance -> (a)
+    "tests/tools/test_some_new_gate_conformance.py",       # future conformance -> (a)
+    "tests/tools/some_new_conformance_corpus.json",       # future corpus anchor -> (a)
 ]
 
 # --- (b)-class: recognized reversible artifacts that MAY ride standing-sign ---

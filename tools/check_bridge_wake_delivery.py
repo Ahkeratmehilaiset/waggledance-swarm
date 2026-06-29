@@ -48,6 +48,7 @@ WAKE_SEND_FAILED_TARGET_PATTERN = re.compile(
     r"\bKeying\s+['\"](?P<agent>[a-z0-9][a-z0-9_.-]*)['\"]\s+failed\b",
     re.IGNORECASE,
 )
+RCO_AGENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*-rco-\d+$")
 
 
 class WakeDeliveryError(ValueError):
@@ -250,7 +251,13 @@ def check_wake_delivery(
             continue
         if max_age_minutes is not None and latest_wake_age_minutes > max_age_minutes:
             continue
-        if int(group["wake_request_count"]) < min_repeats:
+        single_wake_preflight = _rco_single_wake_preflight(
+            group,
+            bridge_root=bridge_root,
+            now_utc=effective_now,
+            min_age_minutes=min_age_minutes,
+        )
+        if int(group["wake_request_count"]) < min_repeats and not single_wake_preflight:
             continue
         self_liveness = _self_liveness_suppression(
             group,
@@ -278,6 +285,11 @@ def check_wake_delivery(
                 latest_wake_age_minutes=latest_wake_age_minutes,
                 now_utc=effective_now,
                 bridge_root=bridge_root,
+                classification=(
+                    "rco_single_wake_preflight_stalled"
+                    if single_wake_preflight
+                    else "stalled_wake_delivery"
+                ),
             )
         )
 
@@ -320,6 +332,11 @@ def check_wake_delivery(
         "by_agent": dict(sorted(by_agent.items())),
         "delivery_escalation": delivery_escalation,
         "stalled_wakes": stalled,
+        "single_wake_preflight_count": sum(
+            1
+            for row in stalled
+            if row.get("classification") == "rco_single_wake_preflight_stalled"
+        ),
         "self_pacing_wake_count": len(self_pacing),
         "self_pacing_wakes": self_pacing,
     }
@@ -528,6 +545,36 @@ def _self_liveness_suppression(
         "last_self_activity_age_minutes": round(self_age_minutes, 3),
         "self_liveness_reason": reason,
     }
+
+
+def _rco_single_wake_preflight(
+    group: Mapping[str, Any],
+    *,
+    bridge_root: Path | None,
+    now_utc: datetime,
+    min_age_minutes: float,
+) -> bool:
+    if int(group.get("wake_request_count") or 0) != 1:
+        return False
+    target = str(group.get("target_agent") or "")
+    if not RCO_AGENT_PATTERN.fullmatch(target):
+        return False
+    wake_file = _wake_file_status(
+        bridge_root,
+        target,
+        last_wake_ts_utc=str(group.get("last_ts_utc") or ""),
+        now_utc=now_utc,
+    )
+    if wake_file.get("wake_file_present") is not True:
+        return False
+    try:
+        wake_file_age_minutes = float(wake_file.get("wake_file_age_minutes"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(wake_file_age_minutes)
+        and wake_file_age_minutes >= min_age_minutes
+    )
 
 
 def _clear_for_target_activity(

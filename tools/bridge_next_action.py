@@ -143,6 +143,7 @@ DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_REPEATS = 2
 DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS = 12.0
 DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES = 40.0
+WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS = 2.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 WAKE_DELIVERY_IGNORED_TARGETS = {*PRODUCTION_LIVENESS_IGNORED_AGENTS, "driver"}
 HEARTBEAT_ONLY_EVENT_TYPES = {"heartbeat"}
@@ -150,6 +151,7 @@ WAKE_SEND_FAILED_TARGET_PATTERN = re.compile(
     r"\bKeying\s+['\"](?P<agent>[a-z0-9][a-z0-9_.-]*)['\"]\s+failed\b",
     re.IGNORECASE,
 )
+RCO_AGENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*-rco-\d+$")
 PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json"
 TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
@@ -1608,7 +1610,15 @@ def _wake_delivery_liveness_summary(
             continue
         if latest_wake_age_minutes > max_age_minutes:
             continue
-        if int(group["wake_request_count"]) < DEFAULT_WAKE_DELIVERY_MIN_REPEATS:
+        single_wake_preflight = _rco_single_wake_preflight(
+            group,
+            bridge_root=bridge_root,
+            now_utc=now_utc,
+        )
+        if (
+            int(group["wake_request_count"]) < DEFAULT_WAKE_DELIVERY_MIN_REPEATS
+            and not single_wake_preflight
+        ):
             continue
         self_liveness = _wake_delivery_self_liveness_suppression(
             group,
@@ -1622,6 +1632,7 @@ def _wake_delivery_liveness_summary(
                     bridge_root=bridge_root,
                     age_minutes=age_minutes,
                     latest_wake_age_minutes=latest_wake_age_minutes,
+                    now_utc=now_utc,
                     classification="self_pacing_or_silent_by_design",
                     self_liveness=self_liveness,
                 )
@@ -1633,6 +1644,12 @@ def _wake_delivery_liveness_summary(
                 bridge_root=bridge_root,
                 age_minutes=age_minutes,
                 latest_wake_age_minutes=latest_wake_age_minutes,
+                now_utc=now_utc,
+                classification=(
+                    "rco_single_wake_preflight_stalled"
+                    if single_wake_preflight
+                    else "stalled_wake_delivery"
+                ),
             )
         )
     if not stalled and not self_pacing:
@@ -1667,6 +1684,11 @@ def _wake_delivery_liveness_summary(
             else _wake_delivery_no_escalation()
         ),
         "stalled_wakes": stalled,
+        "single_wake_preflight_count": sum(
+            1
+            for row in stalled
+            if row.get("classification") == "rco_single_wake_preflight_stalled"
+        ),
         "self_liveness_window_minutes": (
             DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES
         ),
@@ -1858,6 +1880,35 @@ def _wake_delivery_self_liveness_suppression(
     }
 
 
+def _rco_single_wake_preflight(
+    group: Mapping[str, Any],
+    *,
+    bridge_root: Path | None,
+    now_utc: datetime,
+) -> bool:
+    if int(group.get("wake_request_count") or 0) != 1:
+        return False
+    target = str(group.get("target_agent") or "")
+    if not RCO_AGENT_PATTERN.fullmatch(target):
+        return False
+    wake_file = _wake_file_status(
+        bridge_root,
+        target,
+        last_wake_ts_utc=str(group.get("last_ts_utc") or ""),
+        now_utc=now_utc,
+    )
+    if wake_file.get("wake_file_present") is not True:
+        return False
+    try:
+        wake_file_age_minutes = float(wake_file.get("wake_file_age_minutes"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(wake_file_age_minutes)
+        and wake_file_age_minutes >= DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES
+    )
+
+
 def _clear_wake_delivery_groups_for_target_activity(
     groups: dict[tuple[str, str], dict[str, Any]],
     *,
@@ -1894,11 +1945,17 @@ def _wake_delivery_row(
     bridge_root: Path | None,
     age_minutes: float,
     latest_wake_age_minutes: float,
+    now_utc: datetime,
     classification: str = "stalled_wake_delivery",
     self_liveness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = str(group["target_agent"])
-    wake_file = _wake_file_status(bridge_root, target)
+    wake_file = _wake_file_status(
+        bridge_root,
+        target,
+        last_wake_ts_utc=str(group["last_ts_utc"]),
+        now_utc=now_utc,
+    )
     requesters = group.get("requesters")
     requester_list = (
         sorted(str(item) for item in requesters) if isinstance(requesters, set) else []
@@ -1964,20 +2021,60 @@ def _wake_delivery_row(
     return row
 
 
-def _wake_file_status(bridge_root: Path | None, target: str) -> dict[str, Any]:
+def _wake_file_status(
+    bridge_root: Path | None,
+    target: str,
+    *,
+    last_wake_ts_utc: str,
+    now_utc: datetime,
+) -> dict[str, Any]:
     if bridge_root is None:
-        return {"wake_file_present": False, "wake_file_mtime_utc": ""}
+        return {
+            "wake_file_present": False,
+            "wake_file_mtime_utc": "",
+            "wake_file_age_minutes": None,
+            "wake_file_lag_seconds": None,
+            "wake_file_fresh_after_last_wake": False,
+        }
     wake_path = bridge_root / f"wake_{target}"
     if not wake_path.exists():
-        return {"wake_file_present": False, "wake_file_mtime_utc": ""}
+        return {
+            "wake_file_present": False,
+            "wake_file_mtime_utc": "",
+            "wake_file_age_minutes": None,
+            "wake_file_lag_seconds": None,
+            "wake_file_fresh_after_last_wake": False,
+        }
     try:
         mtime = datetime.fromtimestamp(wake_path.stat().st_mtime, tz=timezone.utc)
+        last_wake_ts = _parse_utc(last_wake_ts_utc)
+        lag_seconds = (
+            (mtime - last_wake_ts).total_seconds()
+            if last_wake_ts is not None
+            else None
+        )
+        fresh_after_last_wake = (
+            lag_seconds is not None
+            and lag_seconds >= -WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS
+        )
+        age_minutes = _elapsed_minutes(now_utc.astimezone(timezone.utc), mtime)
         return {
             "wake_file_present": True,
             "wake_file_mtime_utc": _format_utc(mtime),
+            "wake_file_age_minutes": _round_minutes(age_minutes),
+            "wake_file_lag_seconds": (
+                round(lag_seconds, 3) if lag_seconds is not None else None
+            ),
+            "wake_file_fresh_after_last_wake": fresh_after_last_wake,
         }
     except OSError:
-        return {"wake_file_present": True, "wake_file_mtime_utc": ""}
+        return {
+            "wake_file_present": True,
+            "wake_file_mtime_utc": "",
+            "wake_file_age_minutes": None,
+            "wake_file_lag_seconds": None,
+            "wake_file_fresh_after_last_wake": False,
+        }
 
 
 def _append_liveness_record(

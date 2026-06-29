@@ -3,7 +3,7 @@
 Window: 2026-06-27T16:17:27Z to 2026-06-29T16:17:27Z.
 Lead: codex-lead-1.
 Manifest: `docs/architecture/WD_48H_HEX_MESH_AUTONOMY_MANIFEST_20260627.md`.
-Last truth refresh: 2026-06-29T10:40Z on
+Last truth refresh: 2026-06-29T11:45Z on
 `codex-lead-1/hex-readiness-truth-contract-standing-sign-20260629`.
 
 ## Progress Snapshot
@@ -12,7 +12,7 @@ Last truth refresh: 2026-06-29T10:40Z on
 | --- | ---: | ---: | --- |
 | Product direction | 100% | 100% | Operator direction captured from storyboard. |
 | Bridge dispatch | 100% | 100% | Runtime-readiness objective, seed #3 dispatch, and standing-consensus-sign activation are posted to bridge. |
-| Agent input | 100% | 100% | Tools, RCO1, RCO2, and Fable delivered the first sprint-lane outputs; RCO2-owned authority-boundary seed #3 is merged and Fable's next parallel proof PR #1429 is open. |
+| Agent input | 100% | 100% | Tools, RCO1, RCO2, and Fable delivered the first sprint-lane outputs; RCO2-owned authority-boundary seed #3 and Fable's next parallel proof PR #1429 are merged. |
 | Implementation | 66% | 60% | Self-drive queue substrate, first fable proof stack, dry-run harness, authority-boundary proof, and standing-sign gate reconciliation are merged; the current slice hardens the dry-run truth contract. |
 | Validation | 77% | 70% | #1412 through #1421 and #1426 through #1428 reached green gated states before merge; current work adds focused coverage that runtime-ready evidence is not production activation readiness. |
 | Merge/readiness | 80% | 72% | The first queue is drained through #1421, #1420 is merged, and the standing-consensus-sign route is active for eligible bridge-consensus PRs; #1422 is blocked as stale and superseded. |
@@ -26,7 +26,7 @@ Last truth refresh: 2026-06-29T10:40Z on
 | Tools | codex-tools-1 | Self-drive queue planner, governance tooling, and next observability roll-up | #1412, #1418, #1421, #1426, #1427, and #1428 merged | Review the successor PR exact head and then own the broader read-only runtime-readiness observability roll-up without implying production activation. |
 | RCO1 | claude-rco-1 | Autonomy guardrail review | First proof/docs queue reviewed and merged; current session wake delivery may need owner/operator restart | Review the successor PR for dormant/fail-closed semantics if active; do not treat missing activity as lead authority to run the peer slot. |
 | RCO2 | claude-rco-2 | Live-smoke and authority-boundary review | PR #1420 merged at `dd73ff1e4a3cf08156822d91cf5ec69c7d2de38b` | Seed #3 is complete; review successor PR only if bridge assigns fresh RCO scope. |
-| Fable | fable-5 | Hex subdivision/ring proof lane | #1414/#1415/#1416/#1419 delivered and merged; #1422 exact head is blocked as stale; PR #1429 is open at `72c3e25a7e27a20b9299dfa47ac8d0815e90e34d` for the next offline/shadow proof | Keep #1429 in fable lane; await head-bound lead/tools build consensus, dual-RCO, CI, and standing-consensus-sign handling if it remains off-allowlist. |
+| Fable | fable-5 | Hex subdivision/ring proof lane | #1414/#1415/#1416/#1419 and #1429 delivered and merged; #1422 exact head is blocked as stale | Hold further hex shadow/offline proofs until bridge assigns a fresh fable proof lane. |
 | Codex spare | codex | Scout/implementation reserve | Seed #3 backup no longer needed after #1420 merge | Claim only fresh bridge-assigned work with a narrow scope. |
 
 ## Exact-Head Items
@@ -47,8 +47,8 @@ Last truth refresh: 2026-06-29T10:40Z on
 | PR #1426 standing-consensus-sign gate reconciliation | `ff4aa4636f12af2098c4af44608150fe8ab5e0e5` | Operator-signed 9b route reconciles eligible off-allowlist path-gate misses with bridge consensus while preserving diff/CI/head/build/DUAL-RCO/no-veto gates. | Merged; standing driver route activated outside this repo with bounded one-shot passes. |
 | PR #1427 agent-next-task completion status contract | `caa77d1d0ee35cf50da8da84cb4d7b88b603a637` | Fixed spaced completion statuses so the bridge loop does not strand completed work. | Merged; current `origin/main` head. |
 | PR #1422 runtime-readiness truth contract draft | `56f6234896eff9e6dbd1917259b2c1270a07734c` | Lead exact-head review found stale board text saying the PR must not auto-merge under standing sign and requires explicit operator handling; existing RCO events used non-canonical task id `wd/hex-runtime-readiness-truth-contract-20260628`. | Blocked by lead at this exact head and superseded by the current successor branch from `caa77d1d0ee35cf50da8da84cb4d7b88b603a637`. |
-| PR #1429 offline multi-level swarm-mesh self-organization proof | `72c3e25a7e27a20b9299dfa47ac8d0815e90e34d` | Fable parallel-lane proof for self-organizing swarm mesh: offline multi-level hierarchy, sibling rings, child-to-parent delivery, cross-subtree isolation, deterministic self-organization, source byte-identical, and transport false. | Open and in gate review; not lead-owned, not runtime activation. |
-| Current objective: runtime-readiness truth contract successor | draft PR #1430 from `caa77d1d0ee35cf50da8da84cb4d7b88b603a637` | Adds a focused regression contract that `runtime_ready_evidence_available=true` stays distinct from production activation readiness, executor admission, scheduler authority, bridge append authority, merge authority, routing influence, and transport. | Open for CI and head-bound bridge gate review; runtime activation stays false. |
+| PR #1429 offline multi-level swarm-mesh self-organization proof | `72c3e25a7e27a20b9299dfa47ac8d0815e90e34d` | Fable parallel-lane proof for self-organizing swarm mesh: offline multi-level hierarchy, sibling rings, child-to-parent delivery, cross-subtree isolation, deterministic self-organization, source byte-identical, and transport false. | Merged by exact-head autonomous squash at `a07e7a4964d60d5a046b3388310555ddb1e36efc` on 2026-06-29T11:04:15Z; post-merge main CI was green. |
+| Current objective: runtime-readiness truth contract successor | draft PR #1430 rebased by normal merge on `a07e7a4964d60d5a046b3388310555ddb1e36efc` | Adds a focused regression contract that `runtime_ready_evidence_available=true` stays distinct from production activation readiness, executor admission, scheduler authority, bridge append authority, merge authority, routing influence, and transport. | Ready for fresh CI and head-bound bridge gate review; runtime activation stays false. |
 
 ## Current Lead Objective
 

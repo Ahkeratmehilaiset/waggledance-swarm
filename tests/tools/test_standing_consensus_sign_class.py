@@ -15,6 +15,7 @@ from tools.check_standing_consensus_sign_class import (
     classify_ab,
     evaluate_standing_consensus_sign,
 )
+from waggledance.core.idle_consensus_charter import evaluate_paths, load_charter
 
 
 # --- (a)-class: ALWAYS operator-explicit, never rides standing-sign ----------
@@ -46,6 +47,15 @@ A_CLASS_PATHS = [
     "tools/some_new_helper.py",                            # unrecognized tools/ -> (a)
     "tools/run_gate.py",                                   # run_* NOT proof/dry_run -> (a)
     "tools/run_consensus_verdict.py",                     # run_* gate-ish name -> (a)
+    # Charter-denylisted gate/safety invariants must not be reclassified as (b)
+    # by a local standing-sign pattern.
+    "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V1.md",
+    "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V2.md",
+    "docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V1.md",
+    "docs/architecture/P3_CONTENT_IDENTICAL_REBASE_CARRYFORWARD_V1.md",
+    "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
+    "docs/architecture/P4_SAFETY_SUBSTRATE_NEXT.md",
+    "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
     # forward-hardening (rco-2 fence notes): FUTURE governance-contract versions
     # and FUTURE gate-conformance anchors must not ride (b) via the broad doc/test
     # patterns.
@@ -71,8 +81,6 @@ B_CLASS_PATHS = [
     "tools/run_hex_subdivision_runtime_readiness_dry_run.py",
     "tools/run_hex_parent_child_ring_invariant_proof.py",
     "tools/run_some_offline_proof.py",
-    "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V1.md",
-    "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
     "docs/runs/48h_hex_mesh_autonomy_sprint_board_20260627.md",
     "tests/tools/test_hex_foo_proof.py",
     "tests/tools/test_run_bar_proof.py",
@@ -163,6 +171,22 @@ def test_unrecognized_path_never_admitted():
 
 def test_mixed_a_and_b_never_admitted():
     out = _eval(changed_paths=["tools/run_hex_x_proof.py", "CLAUDE.md"])
+    assert out["admitted"] is False
+    assert out["ab_class"] == "a"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V1.md",
+        "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
+        "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
+    ],
+)
+def test_charter_denylisted_invariants_never_admit(path):
+    charter_decision = evaluate_paths(load_charter(), [path])
+    assert charter_decision.reason == "denylist hit"
+    out = _eval(changed_paths=[path])
     assert out["admitted"] is False
     assert out["ab_class"] == "a"
 

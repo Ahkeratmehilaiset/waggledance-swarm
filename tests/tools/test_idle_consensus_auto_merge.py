@@ -9,6 +9,7 @@ import pytest
 
 from tools.idle_consensus_auto_merge import (
     AutoMergeGateError,
+    build_parser,
     evaluate_auto_merge_gate,
     main,
 )
@@ -734,6 +735,21 @@ def test_standing_sign_refuses_single_rco(tmp_path: Path) -> None:
     )
     assert report["standing_consensus_sign"]["admitted"] is False
     assert report["decision"] == "operator_review_required"
+
+
+def test_cli_exposes_default_off_standing_consensus_sign_flag() -> None:
+    args = build_parser().parse_args(
+        [
+            "--pr-status-file",
+            "status.json",
+            "--expected-head",
+            HEAD,
+            "--consensus-proposal-id",
+            "idle-consensus-001",
+            "--standing-consensus-sign",
+        ]
+    )
+    assert args.standing_consensus_sign is True
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,8 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
+from waggledance.core.idle_consensus_charter import evaluate_paths, load_charter
+
 REPORT_VERSION = "wd.standing_consensus_sign_class.v0"
 
 RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
@@ -104,16 +106,6 @@ _A_SUBSTR = ("secret", "token", "credential", ".env")
 # a CLOSED allowlist of categories. Anything matching neither (a) nor (b) falls
 # through to (a) -- "when in doubt, operator-explicit" (fail-closed).
 # ----------------------------------------------------------------------------
-# docs/architecture is (a)-by-DEFAULT (fail-closed; tools/RCO #1423 fence): a NOVEL
-# governance/gate doc must NOT ride (b) by omission. Only the EXPLICITLY-recognized
-# gate-policy SPEC-doc families ride (b) -- a doc/architecture file matching NONE of
-# these falls through to (a). New spec families (P5/...) are (a) until enumerated.
-_B_ARCH_SPEC = re.compile(
-    r"^docs/architecture/[a-z0-9_./-]*("
-    r"proven_safe_autosign|bridge_event_gate_taxonomy|gate_taxonomy"
-    r"|content_identical_rebase|safety_substrate|post_merge_canary|p4c_corpus"
-    r")[a-z0-9_./-]*\.md$"
-)
 _B_PATTERNS = (
     re.compile(r"^docs/runs/[a-z0-9_./-]+\.md$"),             # sprint boards / run logs
     re.compile(r"^docs/benchmarks/[a-z0-9_./-]+\.md$"),       # perf docs (non-gate)
@@ -124,7 +116,6 @@ _B_PATTERNS = (
     re.compile(r"^tools/run_[a-z0-9_]+_(proof|dry_run|harness)\.py$"),
     re.compile(r"^tests/tools/test_(hex|run)_[a-z0-9_]+\.py$"),
     re.compile(r"^tests/security/p4c_corpus/[a-z0-9_./-]+$"), # p4c corpus CASES (validator is (a))
-    _B_ARCH_SPEC,                                             # recognized gate-policy SPEC docs only
 )
 
 
@@ -136,10 +127,27 @@ def _norm(path: str) -> str:
     return p.lstrip("/")
 
 
+def _path_hits_charter_denylist(path: str) -> bool:
+    """True when the source-of-truth charter explicitly denylists this path.
+
+    Paths missing from the charter allowlist are not automatically (a) here; the
+    closed (b) allowlist below decides whether they are reversible standing-sign
+    candidates. Explicit denylist hits, however, must never be reclassified as
+    (b), even if a local pattern would otherwise match.
+    """
+    try:
+        decision = evaluate_paths(load_charter(), [path])
+    except Exception:
+        return True
+    return (not decision.allowed) and decision.reason == "denylist hit"
+
+
 def _path_is_a(path: str) -> bool:
     p = _norm(path)
     if not p:
         return True                              # empty/unknown -> (a) fail-closed
+    if _path_hits_charter_denylist(p):
+        return True
     if p in _A_EXACT:
         return True
     if any(s in p for s in _A_CODE_SUBSTR):

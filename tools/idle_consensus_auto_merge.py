@@ -182,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--standing-consensus-sign",
+        action="store_true",
+        help=(
+            "Default-off Rule 9b path: allow an eligible off-allowlist (b)-class "
+            "PR to satisfy the operator signature via standing bridge consensus. "
+            "Gate/governance/charter-denylisted paths still fail closed."
+        ),
+    )
+    parser.add_argument(
         "--allow-lead-stall-failover",
         action="store_true",
         help=(
@@ -215,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bridge_task_id=args.bridge_task_id,
             apply=args.apply,
             require_bridge_consensus=args.require_bridge_consensus,
+            standing_consensus_sign=args.standing_consensus_sign,
             allow_lead_stall_failover=args.allow_lead_stall_failover,
             artifact_writer=_cli_artifact_writer(args, events_path),
         )

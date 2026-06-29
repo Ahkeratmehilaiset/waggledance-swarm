@@ -9,6 +9,7 @@ import pytest
 
 from tools.idle_consensus_auto_merge import (
     AutoMergeGateError,
+    build_parser,
     evaluate_auto_merge_gate,
     main,
 )
@@ -646,6 +647,109 @@ def test_bridge_consensus_accepts_exact_head_payload_alias(tmp_path: Path) -> No
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["bridge_consensus"]["ok"] is True
     assert report["bridge_consensus"]["rco_pass_ref"]["agent"] == "claude-rco-1"
+
+
+# --- 9b standing-consensus-sign wiring (end-to-end through the merge gate) ---
+def _dual_rco_events() -> list[dict]:
+    """lead+tools build + DUAL-RCO rco_pass, all head-bound (best-possible-consensus).
+    Includes a fable-5 author claim so the author resolves to a non-reviewer agent
+    (both recognized RCOs stay eligible)."""
+    return [
+        _claim("fable-5", "idle-consensus-001", ts="2026-06-07T17:30:00Z"),
+        _bridge_event(
+            agent="codex-lead-1", type_="decision",
+            status="build_consensus_pass", ts="2026-06-07T17:34:11Z",
+        ) | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1", type_="decision",
+            status="build_consensus_pass", ts="2026-06-07T17:38:40Z",
+        ) | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-1", type_="decision",
+            status="rco_pass", ts="2026-06-07T17:39:47Z",
+        ) | {"payload": {"pr": 477, "exact_head": HEAD}},
+        _bridge_event(
+            agent="claude-rco-2", type_="decision",
+            status="rco_pass", ts="2026-06-07T17:40:10Z",
+        ) | {"payload": {"pr": 477, "exact_head": HEAD}},
+    ]
+
+
+def _standing_status(**overrides) -> dict:
+    # off-allowlist (path not on the allowlist) + (b)-class + non-RCO author so
+    # both recognized RCOs are eligible reviewers.
+    base = dict(
+        author_agent="fable-5",
+        changed_paths=["tools/run_hex_readiness_proof.py", "docs/runs/board.md"],
+    )
+    base.update(overrides)
+    return _status(**base)
+
+
+def _standing_gate(tmp_path: Path, *, events: list[dict] | None = None, **over):
+    kw = dict(
+        pr_status=_standing_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _dual_rco_events() if events is None else events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+    kw.update(over)
+    return evaluate_auto_merge_gate(**kw)
+
+
+def test_standing_sign_admits_b_class_offallowlist_with_dual_rco(tmp_path: Path) -> None:
+    report = _standing_gate(tmp_path, standing_consensus_sign=True)
+    assert report["path_gate"]["allowed"] is False          # off-allowlist
+    assert report["standing_consensus_sign"]["admitted"] is True
+    assert report["standing_consensus_sign"]["ab_class"] == "b"
+    assert report["decision"] == "auto_merge_plan_ready"     # path block dropped
+
+
+def test_standing_sign_default_off_keeps_offallowlist_blocked(tmp_path: Path) -> None:
+    report = _standing_gate(tmp_path)                         # standing_consensus_sign defaults False
+    assert report["standing_consensus_sign"]["admitted"] is False
+    assert report["decision"] == "operator_review_required"
+    assert any("path gate failed" in r for r in report["reasons"])
+
+
+def test_standing_sign_refuses_a_class_even_when_enabled(tmp_path: Path) -> None:
+    report = _standing_gate(
+        tmp_path,
+        pr_status=_standing_status(changed_paths=["tools/idle_consensus_auto_merge.py"]),
+        standing_consensus_sign=True,
+    )
+    assert report["standing_consensus_sign"]["ab_class"] == "a"
+    assert report["standing_consensus_sign"]["admitted"] is False
+    assert report["decision"] == "operator_review_required"
+
+
+def test_standing_sign_refuses_single_rco(tmp_path: Path) -> None:
+    # drop rco-2 -> only single RCO (claim, lead, tools, rco-1) -> dual-RCO
+    # incomplete -> not admitted
+    report = _standing_gate(
+        tmp_path, events=_dual_rco_events()[:4], standing_consensus_sign=True,
+    )
+    assert report["standing_consensus_sign"]["admitted"] is False
+    assert report["decision"] == "operator_review_required"
+
+
+def test_cli_exposes_default_off_standing_consensus_sign_flag() -> None:
+    args = build_parser().parse_args(
+        [
+            "--pr-status-file",
+            "status.json",
+            "--expected-head",
+            HEAD,
+            "--consensus-proposal-id",
+            "idle-consensus-001",
+            "--standing-consensus-sign",
+        ]
+    )
+    assert args.standing_consensus_sign is True
 
 
 @pytest.mark.parametrize(

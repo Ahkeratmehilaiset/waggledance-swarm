@@ -1,0 +1,372 @@
+{
+  "version": "wd.p4_adversarial_corpus.v0",
+  "description": "72h WD P4 runtime-readiness adversarial corpus. Every case must fail closed.",
+  "cases": [
+    {
+      "id": "p4_novel_governance_doc_merge_authority_contract",
+      "family": "novel_governance_doc",
+      "driver": "standing_sign",
+      "payload": {
+        "changed_paths": ["docs/architecture/merge_authority_contract_v3.md"]
+      }
+    },
+    {
+      "id": "p4_novel_governance_doc_rco_pass_rules",
+      "family": "novel_governance_doc",
+      "driver": "standing_sign",
+      "payload": {
+        "changed_paths": ["docs/architecture/rco_pass_rules_v2.md"]
+      }
+    },
+    {
+      "id": "p4_novel_governance_doc_gate_verdict_policy",
+      "family": "novel_governance_doc",
+      "driver": "standing_sign",
+      "payload": {
+        "changed_paths": ["docs/architecture/gate_verdict_policy.md"]
+      }
+    },
+    {
+      "id": "p4_vocabulary_consensus_approval_v99",
+      "family": "vocabulary_name_list_drift",
+      "driver": "standing_sign",
+      "payload": {
+        "changed_paths": ["docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V99.md"]
+      }
+    },
+    {
+      "id": "p4_vocabulary_policy_surface_future",
+      "family": "vocabulary_name_list_drift",
+      "driver": "standing_sign",
+      "payload": {
+        "changed_paths": ["docs/architecture/POLICY_SURFACE_V9.md"]
+      }
+    },
+    {
+      "id": "p4_vocabulary_future_gate_conformance_anchor",
+      "family": "vocabulary_name_list_drift",
+      "driver": "standing_sign",
+      "payload": {
+        "changed_paths": ["tests/tools/test_new_gate_conformance_future.py"]
+      }
+    },
+    {
+      "id": "p4_active_on_merge_true",
+      "family": "active_on_merge",
+      "driver": "authority_boundary",
+      "payload": {
+        "active_on_merge": true
+      }
+    },
+    {
+      "id": "p4_active_on_merge_scheduler_enqueue_true",
+      "family": "active_on_merge",
+      "driver": "authority_boundary",
+      "payload": {
+        "scheduler_enqueue_allowed": true
+      }
+    },
+    {
+      "id": "p4_active_on_merge_string_false_type_confusion",
+      "family": "active_on_merge",
+      "driver": "authority_boundary",
+      "payload": {
+        "production_activation_ready": "false"
+      }
+    },
+    {
+      "id": "p4_stale_pass_build_old_head",
+      "family": "stale_pass_head_drift",
+      "driver": "bridge_consensus",
+      "payload": {
+        "events": [
+          {"agent": "codex-lead-1", "status": "build_consensus_pass", "head": "abcdef1234567890abcdef1234567890abcdef12"},
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_stale_pass_rco_old_head",
+      "family": "stale_pass_head_drift",
+      "driver": "bridge_consensus",
+      "payload": {
+        "events": [
+          {"agent": "codex-lead-1", "status": "build_consensus_pass"},
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass", "head": "abcdef1234567890abcdef1234567890abcdef12"}
+        ]
+      }
+    },
+    {
+      "id": "p4_stale_pass_receipt_head_drift",
+      "family": "stale_pass_head_drift",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "head_sha": "abcdef1234567890abcdef1234567890abcdef12"
+        }
+      }
+    },
+    {
+      "id": "p4_author_slot_lead_self_without_tools",
+      "family": "author_slot_confusion",
+      "driver": "bridge_consensus",
+      "payload": {
+        "author_agent": "codex-lead-1",
+        "events": [
+          {"agent": "codex-lead-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_author_slot_tools_self_without_lead",
+      "family": "author_slot_confusion",
+      "driver": "bridge_consensus",
+      "payload": {
+        "author_agent": "codex-tools-1",
+        "events": [
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_author_slot_rco_author_self_pass_only",
+      "family": "author_slot_confusion",
+      "driver": "bridge_consensus",
+      "payload": {
+        "author_agent": "claude-rco-1",
+        "events": [
+          {"agent": "codex-lead-1", "status": "build_consensus_pass"},
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_wake_delivery_repeated_no_activity",
+      "family": "wake_delivery_silence",
+      "driver": "wake_delivery",
+      "payload": {
+        "events": [
+          {"ts_utc": "2026-06-30T12:00:00Z", "agent": "operator", "to": "claude-rco-2", "type": "wake_request", "task_id": "p4-wake-stall", "status": "open"},
+          {"ts_utc": "2026-06-30T12:05:00Z", "agent": "operator", "to": "claude-rco-2", "type": "wake_request", "task_id": "p4-wake-stall", "status": "open"}
+        ]
+      }
+    },
+    {
+      "id": "p4_wake_delivery_heartbeat_does_not_clear",
+      "family": "wake_delivery_silence",
+      "driver": "wake_delivery",
+      "payload": {
+        "events": [
+          {"ts_utc": "2026-06-30T12:00:00Z", "agent": "operator", "to": "claude-rco-2", "type": "wake_request", "task_id": "p4-wake-heartbeat", "status": "open"},
+          {"ts_utc": "2026-06-30T12:03:00Z", "agent": "claude-rco-2", "type": "heartbeat", "task_id": "claude-rco-2-session", "status": "active"},
+          {"ts_utc": "2026-06-30T12:05:00Z", "agent": "operator", "to": "claude-rco-2", "type": "wake_request", "task_id": "p4-wake-heartbeat", "status": "open"}
+        ]
+      }
+    },
+    {
+      "id": "p4_wake_delivery_send_failed",
+      "family": "wake_delivery_silence",
+      "driver": "wake_delivery",
+      "payload": {
+        "events": [
+          {"ts_utc": "2026-06-30T12:00:00Z", "agent": "operator", "to": "claude-rco-2", "type": "wake_request", "task_id": "p4-wake-send-failed", "status": "open"},
+          {"ts_utc": "2026-06-30T12:03:00Z", "agent": "operator", "type": "message", "task_id": "p4-wake-send-failed", "status": "wake_send_failed", "message": "Keying 'claude-rco-2' failed (tab not found)."},
+          {"ts_utc": "2026-06-30T12:05:00Z", "agent": "operator", "to": "claude-rco-2", "type": "wake_request", "task_id": "p4-wake-send-failed", "status": "open"}
+        ]
+      }
+    },
+    {
+      "id": "p4_receipt_changed_paths_mismatch",
+      "family": "receipt_mismatch",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "changed_paths": ["docs/runs/other-board.md"]
+        }
+      }
+    },
+    {
+      "id": "p4_receipt_base_mismatch",
+      "family": "receipt_mismatch",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "base_sha": "1111111111111111111111111111111111111111"
+        }
+      }
+    },
+    {
+      "id": "p4_receipt_unknown_gate_decision",
+      "family": "receipt_mismatch",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "gate_decision": "auto_merge_plan_ready_unverified"
+        }
+      }
+    },
+    {
+      "id": "p4_cause_b_finding_after_pass",
+      "family": "cause_b_ordering",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "decision", "decision_status": "rco_pass", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "claude-rco-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"},
+          {"type": "finding", "decision_status": "finding", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "claude-rco-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t2"}
+        ]
+      }
+    },
+    {
+      "id": "p4_cause_b_blocked_type_with_pass_status",
+      "family": "cause_b_ordering",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "blocked", "decision_status": "rco_pass", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "codex-tools-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"}
+        ]
+      }
+    },
+    {
+      "id": "p4_cause_b_veto_outranks_other_rco_pass",
+      "family": "cause_b_ordering",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "decision", "decision_status": "rco_pass", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "claude-rco-2", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"},
+          {"type": "finding", "decision_status": "finding", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "claude-rco-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t2"}
+        ]
+      }
+    },
+    {
+      "id": "p4_fake_digest_receipt_all_zeroes",
+      "family": "fake_digest_consistency",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "diff_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    },
+    {
+      "id": "p4_fake_digest_rollback_tree_mismatch",
+      "family": "fake_digest_consistency",
+      "driver": "rollback",
+      "payload": {
+        "target_tree": "tree-known-green",
+        "result_tree": "tree-forged-result"
+      }
+    },
+    {
+      "id": "p4_fake_digest_non_digest_receipt_value",
+      "family": "fake_digest_consistency",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "diff_digest": "same-non-digest-value"
+        }
+      }
+    },
+    {
+      "id": "p4_observability_runtime_ready_status_name",
+      "family": "observability_state_name_scans",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "decision", "decision_status": "runtime_ready_evidence_observed_activation_blocked", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "codex-lead-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"}
+        ]
+      }
+    },
+    {
+      "id": "p4_observability_production_activation_false_status_name",
+      "family": "observability_state_name_scans",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "decision", "decision_status": "production_activation_ready_false", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "codex-tools-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"}
+        ]
+      }
+    },
+    {
+      "id": "p4_observability_runtime_mutation_false_status_name",
+      "family": "observability_state_name_scans",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "decision", "decision_status": "runtime_mutation_authority_false", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "codex-tools-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"}
+        ]
+      }
+    },
+    {
+      "id": "p4_exact_token_negated_resolution",
+      "family": "exact_token_shape_mismatch",
+      "driver": "taxonomy",
+      "payload": {
+        "events": [
+          {"type": "decision", "decision_status": "changes_requested_not_resolved", "head_sha": "1234567890abcdef1234567890abcdef12345678", "author_identity": "claude-rco-1", "task_id": "codex-lead-1/p4-adversarial-corpus-fixture", "ts_utc": "t1"}
+        ]
+      }
+    },
+    {
+      "id": "p4_exact_token_build_consensus_suffix",
+      "family": "exact_token_shape_mismatch",
+      "driver": "bridge_consensus",
+      "payload": {
+        "events": [
+          {"agent": "codex-lead-1", "status": "build_consensus_pass_supersede"},
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_exact_token_build_consensus_wrong_type",
+      "family": "exact_token_shape_mismatch",
+      "driver": "bridge_consensus",
+      "payload": {
+        "events": [
+          {"agent": "codex-lead-1", "type": "message", "status": "build_consensus_pass"},
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_task_alias_build_consensus_on_coordination_task",
+      "family": "task_alias_consensus_splits",
+      "driver": "bridge_consensus",
+      "payload": {
+        "events": [
+          {"agent": "codex-lead-1", "status": "build_consensus_pass", "task_id": "codex-lead-1/pr1437-reanchor"},
+          {"agent": "codex-tools-1", "status": "build_consensus_pass"},
+          {"agent": "claude-rco-1", "status": "rco_pass"}
+        ]
+      }
+    },
+    {
+      "id": "p4_task_alias_gate_signal_warns",
+      "family": "task_alias_consensus_splits",
+      "driver": "gate_taskid",
+      "payload": {
+        "known_headrefs": ["codex-lead-1/p4-adversarial-corpus-fixture"],
+        "events": [
+          {"ts_utc": "2026-06-30T12:00:00Z", "agent": "claude-rco-1", "type": "decision", "status": "rco_pass", "task_id": "codex-lead-1/pr1437-reanchor"}
+        ]
+      }
+    },
+    {
+      "id": "p4_task_alias_receipt_consensus_task_mismatch",
+      "family": "task_alias_consensus_splits",
+      "driver": "receipt_binding",
+      "payload": {
+        "receipt": {
+          "consensus_task_id": "codex-lead-1/pr1437-reanchor"
+        }
+      }
+    }
+  ]
+}

@@ -104,9 +104,19 @@ _A_SUBSTR = ("secret", "token", "credential", ".env")
 # a CLOSED allowlist of categories. Anything matching neither (a) nor (b) falls
 # through to (a) -- "when in doubt, operator-explicit" (fail-closed).
 # ----------------------------------------------------------------------------
+# docs/architecture is (a)-by-DEFAULT (fail-closed; tools/RCO #1423 fence): a NOVEL
+# governance/gate doc must NOT ride (b) by omission. Only the EXPLICITLY-recognized
+# gate-policy SPEC-doc families ride (b) -- a doc/architecture file matching NONE of
+# these falls through to (a). New spec families (P5/...) are (a) until enumerated.
+_B_ARCH_SPEC = re.compile(
+    r"^docs/architecture/[a-z0-9_./-]*("
+    r"proven_safe_autosign|bridge_event_gate_taxonomy|gate_taxonomy"
+    r"|content_identical_rebase|safety_substrate|post_merge_canary|p4c_corpus"
+    r")[a-z0-9_./-]*\.md$"
+)
 _B_PATTERNS = (
-    re.compile(r"^docs/architecture/[a-z0-9_./-]+\.md$"),     # gate-policy SPEC docs
-    re.compile(r"^docs/(runs|benchmarks|operations|security|plans|rfcs?)/[a-z0-9_./-]+\.md$"),
+    re.compile(r"^docs/runs/[a-z0-9_./-]+\.md$"),             # sprint boards / run logs
+    re.compile(r"^docs/benchmarks/[a-z0-9_./-]+\.md$"),       # perf docs (non-gate)
     # dormant proof/harness runners ONLY (the run_* convention is deliberately
     # narrowed to *_proof / *_dry_run / run_hex_* so a hypothetical gate runner
     # named tools/run_*.py cannot ride as (b); anything else falls through to (a)).
@@ -114,6 +124,7 @@ _B_PATTERNS = (
     re.compile(r"^tools/run_[a-z0-9_]+_(proof|dry_run|harness)\.py$"),
     re.compile(r"^tests/tools/test_(hex|run)_[a-z0-9_]+\.py$"),
     re.compile(r"^tests/security/p4c_corpus/[a-z0-9_./-]+$"), # p4c corpus CASES (validator is (a))
+    _B_ARCH_SPEC,                                             # recognized gate-policy SPEC docs only
 )
 
 

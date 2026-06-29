@@ -55,6 +55,15 @@ A_CLASS_PATHS = [
     "docs/architecture/MAGMA_SUBSTRATE_AUDIT_V2.md",      # future audit version -> (a)
     "tests/tools/test_some_new_gate_conformance.py",       # future conformance -> (a)
     "tests/tools/some_new_conformance_corpus.json",       # future corpus anchor -> (a)
+    # STRUCTURAL fail-closed (tools/RCO #1423 fence): a NOVEL governance/gate doc
+    # under docs/architecture that matches NO recognized spec family must -> (a),
+    # never ride (b) by omission.
+    "docs/architecture/gate_verdict_policy.md",
+    "docs/architecture/merge_authority_contract.md",
+    "docs/architecture/rco_pass_rules_v2.md",
+    "docs/architecture/some_brand_new_design.md",
+    "docs/security/new_gate_security_policy.md",           # non-(b) doc tree -> (a)
+    "docs/plans/some_governance_plan.md",                 # non-(b) doc tree -> (a)
 ]
 
 # --- (b)-class: recognized reversible artifacts that MAY ride standing-sign ---

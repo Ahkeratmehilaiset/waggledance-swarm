@@ -12,6 +12,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -32,6 +33,7 @@ from waggledance.core.hex_topology.subdivision_runtime_executor_admission import
 REPORT_VERSION = "wd.hex_runtime_readiness_observability_rollup.v0"
 OUTPUT_FILENAME = "hex_runtime_readiness_observability_rollup.json"
 ROLLUP_STATUS = "runtime_ready_evidence_observed_activation_blocked"
+SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 FORBIDDEN_TRUE_FIELDS = {
     "bridge_append_allowed",
     "claim_safe_upgrade",
@@ -228,7 +230,7 @@ def build_hex_runtime_readiness_observability_rollup(
                 == [SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER]
             ),
             "pipeline_executor_digest_matches": (
-                isinstance(pipeline.get("execution_request_digest"), str)
+                _is_sha256_digest(pipeline.get("execution_request_digest"))
                 and pipeline.get("execution_request_digest")
                 == admission.get("runtime_execution_request_digest")
             ),
@@ -300,10 +302,15 @@ def _blockers(
         SUBDIVISION_RUNTIME_EXECUTOR_ADMISSION_BLOCKER
     ]:
         blockers.append("operator_cutover_activation_blocker_missing")
+    pipeline_digest = pipeline.get("execution_request_digest")
+    admission_digest = admission.get("runtime_execution_request_digest")
+    if not _is_sha256_digest(pipeline_digest):
+        blockers.append("pipeline_execution_request_digest_invalid")
+    if not _is_sha256_digest(admission_digest):
+        blockers.append("executor_admission_runtime_execution_request_digest_invalid")
     if not (
-        isinstance(pipeline.get("execution_request_digest"), str)
-        and pipeline.get("execution_request_digest")
-        == admission.get("runtime_execution_request_digest")
+        _is_sha256_digest(pipeline_digest)
+        and pipeline_digest == admission_digest
     ):
         blockers.append("pipeline_executor_digest_mismatch")
     if pipeline.get("execution_request_live_runtime_authorized") is not False:
@@ -335,6 +342,10 @@ def _read_json_object(path: Path) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
         raise ValueError("readiness report must be a JSON object")
     return payload
+
+
+def _is_sha256_digest(value: Any) -> bool:
+    return isinstance(value, str) and SHA256_DIGEST_RE.fullmatch(value) is not None
 
 
 def _forbidden_true_flag_paths(value: Any, prefix: str = "") -> list[str]:

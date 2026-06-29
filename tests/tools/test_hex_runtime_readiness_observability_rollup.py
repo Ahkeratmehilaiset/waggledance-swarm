@@ -183,6 +183,37 @@ def test_rollup_fails_closed_when_digest_or_cutover_gate_is_unbound(
     assert "pipeline_executor_digest_mismatch" in report["blockers"]
 
 
+def test_rollup_fails_closed_when_digest_binding_is_not_real_sha256(
+    tmp_path: Path,
+) -> None:
+    for index, bad_digest in enumerate(("", "same-non-digest-value")):
+        readiness = _valid_readiness_report()
+        readiness["source_reports"]["pipeline_e2e"][
+            "execution_request_digest"
+        ] = bad_digest
+        readiness["source_reports"]["executor_admission"][
+            "runtime_execution_request_digest"
+        ] = bad_digest
+        readiness_path = tmp_path / f"readiness_{index}.json"
+        _write_report(readiness_path, readiness)
+
+        report = build_hex_runtime_readiness_observability_rollup(
+            readiness_report_path=readiness_path,
+        )
+
+        assert report["ok"] is False
+        assert report["runtime_ready_evidence_available"] is False
+        assert (
+            "pipeline_execution_request_digest_invalid"
+            in report["blockers"]
+        )
+        assert (
+            "executor_admission_runtime_execution_request_digest_invalid"
+            in report["blockers"]
+        )
+        assert "pipeline_executor_digest_mismatch" in report["blockers"]
+
+
 def test_rollup_refuses_existing_out_dir(tmp_path: Path) -> None:
     readiness_path = tmp_path / "readiness.json"
     _write_report(readiness_path, _valid_readiness_report())

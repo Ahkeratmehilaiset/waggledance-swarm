@@ -3,9 +3,9 @@
 """AIR-01 read-only HTTP transport for operator-allowlisted sensors.
 
 This module performs one operator-selected JSON GET. It deliberately does not
-scan networks, follow redirects, store credentials, or infer LAN devices. Private
-or loopback hosts are refused unless the caller explicitly allowlists the exact
-host for this read-only request.
+scan networks, follow redirects, store credentials, or infer LAN devices. Every
+host is refused unless the caller explicitly allowlists the exact host for this
+read-only request.
 """
 from __future__ import annotations
 
@@ -141,22 +141,21 @@ def _validate_url(
 
 def _validate_host(hostname: str, allowed_private_hosts: frozenset[str]) -> None:
     normalized = _normalize_host(hostname)
+    if normalized in allowed_private_hosts:
+        return
     if normalized in {"localhost", "localhost."} or normalized.endswith(
         ".localhost"
     ):
-        if normalized not in allowed_private_hosts:
-            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
-        return
+        raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
     try:
         parsed_ip = ip_address(normalized)
     except ValueError:
-        return
+        raise Air01SensorHttpTransportError("URL_HOST_NOT_ALLOWLISTED") from None
     if parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_unspecified:
-        if normalized not in allowed_private_hosts:
-            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
-        return
-    if parsed_ip.is_private and normalized not in allowed_private_hosts:
+        raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
+    if parsed_ip.is_private:
         raise Air01SensorHttpTransportError("URL_PRIVATE_HOST_REFUSED")
+    raise Air01SensorHttpTransportError("URL_HOST_NOT_ALLOWLISTED")
 
 
 def _normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:
@@ -178,7 +177,7 @@ def _normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:
 
 
 def _normalize_host(host: str) -> str:
-    return host.strip().lower().strip("[]")
+    return host.strip().lower().strip("[]").rstrip(".")
 
 
 def _validate_headers(

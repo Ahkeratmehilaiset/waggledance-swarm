@@ -27,7 +27,7 @@ python -m waggledance.adapters.cli.eng01_recommend --input examples/eng01/offlin
 Use `--url` for an operator-selected public HTTP JSON feed:
 
 ```powershell
-python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --pretty
+python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --allowed-private-hosts prices.example.test --pretty
 ```
 
 Use `--render-card --output data/eng01/latest_advisory.json` when the
@@ -36,6 +36,7 @@ operator wants the read-only HTTP snapshot route to serve the latest card:
 ```powershell
 python -m waggledance.adapters.cli.eng01_recommend `
   --url https://prices.example.test/day-ahead.json `
+  --allowed-private-hosts prices.example.test `
   --render-card `
   --pretty `
   --output data/eng01/latest_advisory.json
@@ -64,6 +65,8 @@ Before wiring a feed into `--url`, verify by hand that:
 7. The price unit is known: `EUR_per_MWh` or `EUR_per_kWh`.
 8. The response is fresh enough for the default 12-hour stale threshold,
    or the operator has a reason to override `--stale-threshold-hours`.
+9. The exact hostname is passed with `--allowed-private-hosts`; URL mode
+   refuses every non-allowlisted host, including public FQDNs.
 
 Do not add real provider credentials, tokens, cookies, account ids, or
 session material to this repository. If a feed needs secrets, treat it
@@ -100,6 +103,7 @@ That shape maps to:
 ```powershell
 python -m waggledance.adapters.cli.eng01_recommend `
   --url https://prices.example.test/day-ahead.json `
+  --allowed-private-hosts prices.example.test `
   --rows-path data,prices `
   --hour-key timestamp_utc `
   --price-key eur_per_mwh `
@@ -127,6 +131,7 @@ Override these only when the feed shape or operator requirement differs:
 ```powershell
 python -m waggledance.adapters.cli.eng01_recommend `
   --url https://prices.example.test/day-ahead.json `
+  --allowed-private-hosts prices.example.test `
   --horizon-start-utc 2026-01-16T00:00:00Z `
   --fetched-at-utc 2026-01-15T20:00:00Z `
   --feed-source operator_selected_public_spot_price_feed `
@@ -141,6 +146,7 @@ outside committed docs and pass:
 ```powershell
 python -m waggledance.adapters.cli.eng01_recommend `
   --url https://prices.example.test/day-ahead.json `
+  --allowed-private-hosts prices.example.test `
   --headers-file C:\path\to\local_headers.json
 ```
 
@@ -210,7 +216,9 @@ the age of the data.
 
 If a URL refusal appears, confirm that the target is a public HTTP or
 HTTPS URL and does not point at localhost, a private LAN host, or a URL
-that embeds credentials.
+that embeds credentials. If the refusal is `URL_HOST_NOT_ALLOWLISTED`,
+add the exact hostname with `--allowed-private-hosts` only after the
+operator has verified the feed endpoint.
 
 ## What this guide does not cover
 

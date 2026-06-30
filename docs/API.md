@@ -205,8 +205,9 @@ The optional adapter is configured under `magma_handoff_metrics_alert_feed` in
 `configs/settings.yaml` and is disabled by default. It performs only bounded
 read-only GETs to an operator-owned Alertmanager `/api/v2/alerts` endpoint.
 URL userinfo, query strings, fragments, credential-like headers, redirects,
-oversized responses, and private or localhost hosts without an exact
-`allowed_private_hosts` entry are refused. It also keeps a bounded in-process
+oversized responses, and any host without an exact `allowed_private_hosts`
+entry are refused. This includes public FQDNs as well as private, loopback,
+link-local, and localhost hosts. It also keeps a bounded in-process
 TTL cache (`cache_ttl_s`) and failure backoff (`failure_backoff_s`) so repeated
 Ops scrapes can reuse the last sanitized snapshot when the operator feed is
 temporarily unavailable. The cache/backoff state appears only as sanitized
@@ -451,8 +452,9 @@ The optional provider is configured under `route_stage_latency_feed` in
 `configs/settings.yaml` and is disabled by default. It only performs bounded
 read-only GETs to operator-owned Prometheus `/api/v1/query` and Alertmanager
 `/api/v2/alerts` endpoints. URL userinfo, query-string URLs, credential-like
-headers, redirects, and private/localhost hosts without an exact
-`allowed_private_hosts` entry are refused. The adapter keeps a bounded
+headers, redirects, and any host without an exact `allowed_private_hosts`
+entry are refused. This includes public FQDNs as well as private, loopback,
+link-local, and localhost hosts. The adapter keeps a bounded
 in-process TTL cache (`cache_ttl_s`) and failure backoff
 (`failure_backoff_s`) so repeated Ops or `/metrics` scrapes can reuse the last
 sanitized snapshot when the operator feed is temporarily unavailable. `/metrics`

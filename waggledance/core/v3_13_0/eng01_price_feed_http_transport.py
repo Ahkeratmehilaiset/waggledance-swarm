@@ -10,7 +10,6 @@ inputs by default instead of implementing auth.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ipaddress import ip_address
 from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
@@ -21,6 +20,9 @@ from waggledance.core.v3_13_0.eng01_price_feed_response_parser import (
 )
 from waggledance.core.v3_13_0.secret_markers import (
     contains_secret_marker_substring,
+)
+from waggledance.core.v3_13_0.ssrf_host_guard import (
+    classify_request_host,
 )
 
 
@@ -142,19 +144,14 @@ def _validate_url(url: str) -> str:
 
 
 def _validate_public_host(hostname: str) -> None:
-    normalized = hostname.strip().lower()
-    if normalized in {"localhost", "localhost."} or normalized.endswith(
-        ".localhost"
-    ):
-        raise Eng01PriceFeedHttpTransportError("URL_LOCAL_HOST_REFUSED")
-    try:
-        parsed_ip = ip_address(normalized.strip("[]"))
-    except ValueError:
-        return
-    if parsed_ip.is_loopback or parsed_ip.is_link_local:
-        raise Eng01PriceFeedHttpTransportError("URL_LOCAL_HOST_REFUSED")
-    if parsed_ip.is_private:
-        raise Eng01PriceFeedHttpTransportError("URL_PRIVATE_HOST_REFUSED")
+    # ENG-01 price feeds are public, so no allowlist: refuse every local-use /
+    # private host. The shared guard also closes the DNS-hostname SSRF gap a bare
+    # ip_address() check missed (e.g. metadata.google.internal, *.internal,
+    # *.lan, single-label names), which would otherwise let a scheduled fetch
+    # reach a cloud metadata or internal endpoint. See ssrf_host_guard.
+    code = classify_request_host(hostname)
+    if code is not None:
+        raise Eng01PriceFeedHttpTransportError(code)
 
 
 def _validate_headers(

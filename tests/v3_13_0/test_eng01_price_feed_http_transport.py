@@ -14,11 +14,9 @@ from waggledance.core.v3_13_0.eng01_price_feed_adapter import (
 )
 from waggledance.core.v3_13_0.eng01_price_feed_http_transport import (
     DEFAULT_ACCEPT_HEADER,
-    DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_USER_AGENT,
     MAX_RESPONSE_BYTES,
-    MAX_TIMEOUT_SECONDS,
     Eng01PriceFeedHttpResponse,
     Eng01PriceFeedHttpTransportError,
     fetch_price_feed_http_response,

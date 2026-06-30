@@ -421,3 +421,34 @@ def test_refuses_invalid_body_from_transport() -> None:
     with pytest.raises(Eng01PriceFeedHttpTransportError,
                        match="RESPONSE_BODY_REFUSED"):
         fetch_price_feed_http_response(URL, transport=lambda *_: response)
+
+
+def test_metadata_and_internal_dns_hosts_refused() -> None:
+    # SSRF regression (#1451, rco-1 + rco-2): the price-feed transport must refuse
+    # cloud-metadata and local-use DNS names, not only literal private IPs. The
+    # injected transport must never be reached -- refusal is in URL validation.
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    for host in (
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://air.internal/feed.json",
+        "http://host.lan/feed.json",
+        "http://router/feed.json",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://192.168.1.10/feed.json",
+    ):
+        with pytest.raises(Eng01PriceFeedHttpTransportError,
+                           match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED"):
+            fetch_price_feed_http_response(host, transport=transport)
+
+
+def test_public_price_feed_host_still_allowed() -> None:
+    seen: list[str] = []
+
+    def transport(url, *_):
+        seen.append(url)
+        return _response(source_url=url)
+
+    fetch_price_feed_http_response(URL, transport=transport)
+    assert seen == [URL]

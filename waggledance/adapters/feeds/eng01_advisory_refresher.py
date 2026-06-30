@@ -47,6 +47,10 @@ def refresh_eng01_latest_advisory(
 
 
 def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
+    # Defense-in-depth: never follow a pre-existing symlink at the snapshot path
+    # (a swapped symlink could redirect the write outside data/eng01).
+    if path.is_symlink():
+        raise ValueError("snapshot_path must not be a symbolic link")
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, sort_keys=True) + "\n"
     tmp_name: str | None = None

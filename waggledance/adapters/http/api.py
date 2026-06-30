@@ -22,6 +22,7 @@ from waggledance.adapters.http.routes.magma import router as magma_router
 from waggledance.adapters.http.routes.memory import router as memory_router
 from waggledance.adapters.http.routes.metrics import router as metrics_router
 from waggledance.adapters.http.routes.status import router as status_router
+from waggledance.adapters.http.routes.solvers import router as solvers_router
 from waggledance.adapters.http.routes.storage import router as storage_router
 from waggledance.adapters.http.routes.trust import router as trust_router
 from waggledance.core.domain.events import DomainEvent, EventType
@@ -236,5 +237,7 @@ def create_app(container) -> FastAPI:
     app.include_router(candidate_lab_router)
     # ENG-01 advisory snapshot (/api/eng01/advisory/latest)
     app.include_router(eng01_advisory_router)
+    # Deterministic v3.13.0 solver execution (/api/solvers/*)
+    app.include_router(solvers_router)
 
     return app

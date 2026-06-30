@@ -197,6 +197,7 @@ def test_main_url_mode_writes_output_snapshot(
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-hosts", "prices.example.test",
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
             "--horizon-start-utc", "2026-01-16T00:00:00Z",
             "--horizon-hours", "3",
@@ -345,6 +346,7 @@ def test_main_fetches_url_with_injected_transport() -> None:
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-hosts", "prices.example.test",
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
             "--horizon-start-utc", "2026-01-16T00:00:00Z",
             "--horizon-hours", "3",
@@ -408,6 +410,7 @@ def test_main_url_mode_reads_headers_file_and_custom_rows_path(
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-hosts", "prices.example.test",
             "--headers-file", str(headers_path),
             "--rows-path", "data,prices",
             "--hour-key", "timestamp",
@@ -436,6 +439,7 @@ def test_main_url_mode_derives_horizon_start_from_first_row() -> None:
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-hosts", "prices.example.test",
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
             "--horizon-hours", "3",
         ],
@@ -460,7 +464,12 @@ def test_main_url_mode_refuses_transport_error() -> None:
 
     assert exit_code == 2
     assert output["result_marker"] == "INVALID_INPUT_REFUSED"
-    assert "URL_LOCAL_HOST_REFUSED" in output["error"]
+    # Deny-by-default may surface either the local-host refusal or the broader
+    # not-allowlisted refusal; both are valid security refusals of 127.0.0.1.
+    assert (
+        "URL_LOCAL_HOST_REFUSED" in output["error"]
+        or "URL_HOST_NOT_ALLOWLISTED" in output["error"]
+    )
 
 
 def test_main_headers_file_must_be_json_object(tmp_path: Path) -> None:
@@ -502,6 +511,7 @@ def test_main_url_mode_can_opt_in_to_credential_headers(
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-hosts", "prices.example.test",
             "--headers-file", str(headers_path),
             "--allow-credential-headers",
             "--fetched-at-utc", "2026-01-15T20:00:00Z",

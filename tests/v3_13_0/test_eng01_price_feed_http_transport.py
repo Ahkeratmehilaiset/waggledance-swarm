@@ -14,11 +14,9 @@ from waggledance.core.v3_13_0.eng01_price_feed_adapter import (
 )
 from waggledance.core.v3_13_0.eng01_price_feed_http_transport import (
     DEFAULT_ACCEPT_HEADER,
-    DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_USER_AGENT,
     MAX_RESPONSE_BYTES,
-    MAX_TIMEOUT_SECONDS,
     Eng01PriceFeedHttpResponse,
     Eng01PriceFeedHttpTransportError,
     fetch_price_feed_http_response,
@@ -73,6 +71,7 @@ def test_fetch_uses_injected_transport_and_composes_with_parser() -> None:
         URL,
         headers={"Accept": "application/json"},
         timeout_seconds=2,
+        allowed_hosts=("prices.example.test",),
         transport=transport,
     )
     rows = parse_price_feed_response(
@@ -107,7 +106,11 @@ def test_fetch_adds_default_headers_for_injected_transport() -> None:
         assert timeout_seconds == DEFAULT_TIMEOUT_SECONDS
         return _response(source_url=url)
 
-    fetch_price_feed_http_response(URL, transport=transport)
+    fetch_price_feed_http_response(
+        URL,
+        allowed_hosts=("prices.example.test",),
+        transport=transport,
+    )
 
     assert seen_headers == [{
         "Accept": DEFAULT_ACCEPT_HEADER,
@@ -118,6 +121,7 @@ def test_fetch_adds_default_headers_for_injected_transport() -> None:
 def test_transport_rows_compose_with_adapter_and_solver() -> None:
     response = fetch_price_feed_http_response(
         URL,
+        allowed_hosts=("prices.example.test",),
         transport=lambda *_: _response(),
     )
     rows = parse_price_feed_response(
@@ -179,7 +183,11 @@ def test_default_httpx_transport_uses_sync_client_without_live_network(
         FakeClient,
     )
 
-    response = fetch_price_feed_http_response(URL, timeout_seconds=3)
+    response = fetch_price_feed_http_response(
+        URL,
+        timeout_seconds=3,
+        allowed_hosts=("prices.example.test",),
+    )
 
     assert captured["url"] == URL
     assert captured["headers"] == {
@@ -214,7 +222,9 @@ def test_normalizes_default_transport_connect_error(
 
     with pytest.raises(Eng01PriceFeedHttpTransportError,
                        match="NETWORK_CONNECT_FAILED"):
-        fetch_price_feed_http_response(URL)
+        fetch_price_feed_http_response(
+            URL, allowed_hosts=("prices.example.test",)
+        )
 
 
 @pytest.mark.parametrize("url", ["", "   "])
@@ -265,8 +275,10 @@ def test_refuses_secret_like_url_query(query: str) -> None:
     "https://[::1]/feed.json",
 ])
 def test_refuses_loopback_or_localhost_url(url: str) -> None:
-    with pytest.raises(Eng01PriceFeedHttpTransportError,
-                       match="URL_LOCAL_HOST_REFUSED"):
+    with pytest.raises(
+        Eng01PriceFeedHttpTransportError,
+        match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+    ):
         fetch_price_feed_http_response(url, transport=lambda *_: _response())
 
 
@@ -276,8 +288,10 @@ def test_refuses_loopback_or_localhost_url(url: str) -> None:
     "https://192.168.1.10/feed.json",
 ])
 def test_refuses_private_ip_url(url: str) -> None:
-    with pytest.raises(Eng01PriceFeedHttpTransportError,
-                       match="URL_PRIVATE_HOST_REFUSED"):
+    with pytest.raises(
+        Eng01PriceFeedHttpTransportError,
+        match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+    ):
         fetch_price_feed_http_response(url, transport=lambda *_: _response())
 
 
@@ -287,6 +301,7 @@ def test_refuses_secret_like_header_name_by_default() -> None:
         fetch_price_feed_http_response(
             URL,
             headers={"Authorization": "Bearer abc"},
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -297,6 +312,7 @@ def test_refuses_union_secret_markers_in_header_values() -> None:
         fetch_price_feed_http_response(
             URL,
             headers={"X-Trace": "private_key material"},
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -312,6 +328,7 @@ def test_refuses_union_secret_markers_in_header_names(header_name: str) -> None:
         fetch_price_feed_http_response(
             URL,
             headers={header_name: "trace-value"},
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -331,6 +348,7 @@ def test_allows_credential_header_only_with_explicit_opt_in() -> None:
         URL,
         headers={"Authorization": "Bearer abc"},
         allow_credential_headers=True,
+        allowed_hosts=("prices.example.test",),
         transport=transport,
     )
 
@@ -343,6 +361,7 @@ def test_refuses_header_control_characters() -> None:
         fetch_price_feed_http_response(
             URL,
             headers={"X-Trace": "ok\r\nInjected: true"},
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -354,6 +373,7 @@ def test_refuses_invalid_timeout(timeout: object) -> None:
         fetch_price_feed_http_response(
             URL,
             timeout_seconds=timeout,
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -368,6 +388,7 @@ def test_refuses_invalid_size_cap(size_cap: object) -> None:
         fetch_price_feed_http_response(
             URL,
             max_response_bytes=size_cap,
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -377,6 +398,7 @@ def test_refuses_non_2xx_response_from_transport() -> None:
                        match="HTTP_STATUS_503"):
         fetch_price_feed_http_response(
             URL,
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(status_code=503),
         )
 
@@ -387,6 +409,7 @@ def test_refuses_response_over_size_cap() -> None:
         fetch_price_feed_http_response(
             URL,
             max_response_bytes=1,
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(body=b"{}"),
         )
 
@@ -396,6 +419,7 @@ def test_refuses_unsupported_response_content_type() -> None:
                        match="RESPONSE_CONTENT_TYPE_REFUSED"):
         fetch_price_feed_http_response(
             URL,
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(content_type="text/html"),
         )
 
@@ -405,6 +429,7 @@ def test_refuses_transport_mismatched_source_url() -> None:
                        match="RESPONSE_SOURCE_URL_REFUSED"):
         fetch_price_feed_http_response(
             URL,
+            allowed_hosts=("prices.example.test",),
             transport=lambda *_: _response(
                 source_url="https://other.example.test/feed.json"
             ),
@@ -420,4 +445,42 @@ def test_refuses_invalid_body_from_transport() -> None:
     )
     with pytest.raises(Eng01PriceFeedHttpTransportError,
                        match="RESPONSE_BODY_REFUSED"):
-        fetch_price_feed_http_response(URL, transport=lambda *_: response)
+        fetch_price_feed_http_response(
+            URL,
+            allowed_hosts=("prices.example.test",),
+            transport=lambda *_: response,
+        )
+
+
+def test_metadata_and_internal_dns_hosts_refused() -> None:
+    # SSRF regression (#1451, rco-1 + rco-2): the price-feed transport must refuse
+    # cloud-metadata and local-use DNS names, not only literal private IPs. The
+    # injected transport must never be reached -- refusal is in URL validation.
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    for host in (
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://air.internal/feed.json",
+        "http://host.lan/feed.json",
+        "http://router/feed.json",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://192.168.1.10/feed.json",
+    ):
+        with pytest.raises(
+            Eng01PriceFeedHttpTransportError,
+            match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+        ):
+            fetch_price_feed_http_response(host, transport=transport)
+
+
+def test_public_price_feed_host_refused_without_allowlist() -> None:
+    # Deny-by-default (mandatory allowlist): even a normal public price-feed FQDN
+    # is REFUSED without an allowlist entry, closing the resolve-to-private /
+    # DNS-rebinding vector. The transport must never be reached.
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    with pytest.raises(Eng01PriceFeedHttpTransportError,
+                       match="URL_HOST_NOT_ALLOWLISTED"):
+        fetch_price_feed_http_response(URL, transport=transport)

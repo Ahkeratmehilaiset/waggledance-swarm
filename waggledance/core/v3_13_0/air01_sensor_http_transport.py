@@ -10,12 +10,12 @@ host for this read-only request.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ipaddress import ip_address
 from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
 
+from waggledance.core.v3_13_0.ssrf_host_guard import classify_request_host
 from waggledance.core.v3_13_0.secret_markers import (
     contains_secret_marker_substring,
 )
@@ -140,23 +140,18 @@ def _validate_url(
 
 
 def _validate_host(hostname: str, allowed_private_hosts: frozenset[str]) -> None:
-    normalized = _normalize_host(hostname)
-    if normalized in {"localhost", "localhost."} or normalized.endswith(
-        ".localhost"
-    ):
-        if normalized not in allowed_private_hosts:
-            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
-        return
-    try:
-        parsed_ip = ip_address(normalized)
-    except ValueError:
-        return
-    if parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_unspecified:
-        if normalized not in allowed_private_hosts:
-            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
-        return
-    if parsed_ip.is_private and normalized not in allowed_private_hosts:
-        raise Air01SensorHttpTransportError("URL_PRIVATE_HOST_REFUSED")
+    # Deny-by-default (mandatory allowlist): AIR-01's --url is operator/attacker-
+    # supplied, so only explicitly allowlisted sensor hosts may be fetched. A
+    # public FQDN with no allowlist entry -- which could resolve to an internal
+    # address (DNS-rebinding / resolve-to-private) -- is refused. Delegates to the
+    # shared ssrf_host_guard so the AIR-01 and ENG-01 transports share one policy.
+    code = classify_request_host(
+        hostname,
+        allowed_private_hosts=allowed_private_hosts,
+        require_allowlist=True,
+    )
+    if code is not None:
+        raise Air01SensorHttpTransportError(code)
 
 
 def _normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:

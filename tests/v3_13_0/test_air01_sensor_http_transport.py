@@ -67,6 +67,7 @@ def test_fetch_uses_injected_transport_and_default_headers() -> None:
     response = fetch_air_quality_sensor_response(
         PUBLIC_URL,
         timeout_seconds=2,
+        allowed_private_hosts=("air.example.test",),
         transport=transport,
     )
 
@@ -82,8 +83,10 @@ def test_fetch_uses_injected_transport_and_default_headers() -> None:
 
 
 def test_private_lan_host_refused_without_explicit_allowlist() -> None:
-    with pytest.raises(Air01SensorHttpTransportError,
-                       match="URL_PRIVATE_HOST_REFUSED"):
+    with pytest.raises(
+        Air01SensorHttpTransportError,
+        match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+    ):
         fetch_air_quality_sensor_response(
             LAN_URL,
             transport=lambda *_: _response(source_url=LAN_URL),
@@ -111,6 +114,72 @@ def test_private_lan_host_allowed_only_by_exact_host_allowlist() -> None:
     assert response.source_url == LAN_URL
 
 
+def test_internal_dns_host_refused_without_allowlist() -> None:
+    # SSRF regression (#1443): a local-use DNS name resolves to an internal
+    # address; it must be refused unless allowlisted even though it is not a
+    # literal private IP. The transport must never be reached.
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    for url in (
+        "http://air.internal/api/air/current",
+        "http://host.lan/current.json",
+        "http://sensor.local/current.json",
+    ):
+        with pytest.raises(
+            Air01SensorHttpTransportError,
+            match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+        ):
+            fetch_air_quality_sensor_response(url, transport=transport)
+
+
+def test_single_label_host_refused_without_allowlist() -> None:
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    with pytest.raises(
+        Air01SensorHttpTransportError,
+        match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+    ):
+        fetch_air_quality_sensor_response(
+            "http://air/current.json", transport=transport
+        )
+
+
+def test_internal_dns_host_allowed_only_by_exact_allowlist() -> None:
+    internal_url = "http://air.internal/api/air/current"
+    seen: list[str] = []
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> Air01SensorHttpResponse:
+        seen.append(url)
+        return _response(source_url=url)
+
+    response = fetch_air_quality_sensor_response(
+        internal_url,
+        allowed_private_hosts=("air.internal",),
+        transport=transport,
+    )
+
+    assert seen == [internal_url]
+    assert response.source_url == internal_url
+
+
+def test_public_fqdn_refused_without_allowlist() -> None:
+    # Deny-by-default (mandatory allowlist): a normal dotted public FQDN is
+    # REFUSED without an allowlist entry, closing the resolve-to-private /
+    # DNS-rebinding vector. The transport must never be reached.
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    with pytest.raises(Air01SensorHttpTransportError,
+                       match="URL_HOST_NOT_ALLOWLISTED"):
+        fetch_air_quality_sensor_response(PUBLIC_URL, transport=transport)
+
+
 def test_allowlisted_lan_response_composes_with_adapter_and_advisor() -> None:
     response = fetch_air_quality_sensor_response(
         LAN_URL,
@@ -130,8 +199,10 @@ def test_allowlisted_lan_response_composes_with_adapter_and_advisor() -> None:
 
 
 def test_localhost_refused_even_with_injected_transport_by_default() -> None:
-    with pytest.raises(Air01SensorHttpTransportError,
-                       match="URL_LOCAL_HOST_REFUSED"):
+    with pytest.raises(
+        Air01SensorHttpTransportError,
+        match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+    ):
         fetch_air_quality_sensor_response(
             "http://localhost:8080/current.json",
             transport=lambda *_: _response(
@@ -145,8 +216,10 @@ def test_localhost_refused_even_with_injected_transport_by_default() -> None:
     "http://[::]/current.json",
 ])
 def test_unspecified_ip_refused_by_default(url: str) -> None:
-    with pytest.raises(Air01SensorHttpTransportError,
-                       match="URL_LOCAL_HOST_REFUSED"):
+    with pytest.raises(
+        Air01SensorHttpTransportError,
+        match=r"URL_(LOCAL|PRIVATE)_HOST_REFUSED|URL_HOST_NOT_ALLOWLISTED",
+    ):
         fetch_air_quality_sensor_response(
             url,
             transport=lambda *_: _response(source_url=url),
@@ -165,6 +238,7 @@ def test_refuses_secret_query_and_credential_header_by_default() -> None:
         fetch_air_quality_sensor_response(
             PUBLIC_URL,
             headers={"Authorization": "Bearer abc"},
+            allowed_private_hosts=("air.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -189,6 +263,7 @@ def test_refuses_union_secret_markers_in_header_values() -> None:
         fetch_air_quality_sensor_response(
             PUBLIC_URL,
             headers={"X-Trace": "private_key material"},
+            allowed_private_hosts=("air.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -204,6 +279,7 @@ def test_refuses_union_secret_markers_in_header_names(header_name: str) -> None:
         fetch_air_quality_sensor_response(
             PUBLIC_URL,
             headers={header_name: "trace-value"},
+            allowed_private_hosts=("air.example.test",),
             transport=lambda *_: _response(),
         )
 
@@ -212,12 +288,14 @@ def test_refuses_redirect_or_html_response_from_transport() -> None:
     with pytest.raises(Air01SensorHttpTransportError, match="HTTP_STATUS_302"):
         fetch_air_quality_sensor_response(
             PUBLIC_URL,
+            allowed_private_hosts=("air.example.test",),
             transport=lambda *_: _response(status_code=302),
         )
     with pytest.raises(Air01SensorHttpTransportError,
                        match="RESPONSE_CONTENT_TYPE_REFUSED"):
         fetch_air_quality_sensor_response(
             PUBLIC_URL,
+            allowed_private_hosts=("air.example.test",),
             transport=lambda *_: _response(content_type="text/html"),
         )
 
@@ -258,7 +336,11 @@ def test_default_httpx_transport_uses_sync_client_without_live_network(
         FakeClient,
     )
 
-    response = fetch_air_quality_sensor_response(PUBLIC_URL, timeout_seconds=3)
+    response = fetch_air_quality_sensor_response(
+        PUBLIC_URL,
+        timeout_seconds=3,
+        allowed_private_hosts=("air.example.test",),
+    )
 
     assert captured["url"] == PUBLIC_URL
     assert captured["headers"] == {

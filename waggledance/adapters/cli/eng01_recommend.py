@@ -128,6 +128,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Allow credential-like headers in --url mode",
     )
     parser.add_argument(
+        "--allowed-hosts",
+        default="",
+        help="Comma-separated allowlist of price-feed hosts (REQUIRED for --url; "
+             "deny-by-default, only listed hosts are fetched)",
+    )
+    parser.add_argument(
         "--pretty",
         action="store_true",
         default=False,
@@ -188,6 +194,7 @@ def run_from_url(
     price_unit: str = PRICE_UNIT_EUR_PER_MWH,
     stale_threshold_hours: int = 12,
     allow_credential_headers: bool = False,
+    allowed_hosts: Sequence[str] = (),
     transport: Eng01PriceFeedTransport | None = None,
 ) -> dict[str, Any]:
     response = fetch_price_feed_http_response(
@@ -196,6 +203,7 @@ def run_from_url(
         timeout_seconds=timeout_seconds,
         max_response_bytes=max_response_bytes,
         allow_credential_headers=allow_credential_headers,
+        allowed_hosts=allowed_hosts,
         transport=transport,
     )
     rows = parse_price_feed_response(
@@ -254,6 +262,7 @@ def main(
                 price_unit=args.price_unit or PRICE_UNIT_EUR_PER_MWH,
                 stale_threshold_hours=args.stale_threshold_hours,
                 allow_credential_headers=args.allow_credential_headers,
+                allowed_hosts=_parse_allowed_hosts(args.allowed_hosts),
                 transport=transport,
             )
 
@@ -309,6 +318,15 @@ def _parse_rows_path(raw: str) -> tuple[str, ...]:
     parts = tuple(part.strip() for part in raw.split(separator))
     if any(not part for part in parts):
         raise ValueError("rows-path entries must be non-empty")
+    return parts
+
+
+def _parse_allowed_hosts(raw: str) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    parts = tuple(part.strip() for part in raw.split(","))
+    if any(not part for part in parts):
+        raise ValueError("allowed-hosts entries must be non-empty")
     return parts
 
 

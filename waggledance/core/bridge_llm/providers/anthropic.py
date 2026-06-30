@@ -84,6 +84,18 @@ class AnthropicProvider(ProviderPlugin):
         # API key required at call time.
         if not os.environ.get("ANTHROPIC_API_KEY"):
             return False
+        # Redactor MUST be present AND functional. Without a working
+        # redactor we cannot scrub PII before egress, so the cloud tier
+        # is NOT available — the client then skips it and falls through to
+        # the local heuristic tier instead of risking un-redacted bytes
+        # reaching the cloud (operator decision 4, fail-closed).
+        if self._redactor is None:
+            return False
+        try:
+            if not self._redactor.is_available():
+                return False
+        except Exception:
+            return False
         return True
 
     def call(self, request: LLMRequest) -> LLMResponse:
@@ -93,10 +105,32 @@ class AnthropicProvider(ProviderPlugin):
                 "falling through to next tier"
             )
 
+        # SECURITY CRUX — redaction BEFORE egress, fail-closed.
+        # Everything below (SDK import, client construction, network call)
+        # is gated on a successful redaction. If the redactor is missing or
+        # raises, we MUST NOT send anything to the cloud; we raise
+        # ProviderError so the four-tier chain falls through to the local
+        # heuristic tier exactly as the old CloudStubProvider did.
+        if self._redactor is None:
+            raise ProviderError(
+                "redactor unavailable; refusing to dispatch cloud call "
+                "(fail-closed per operator decision 4)"
+            )
+
         accept_pii = bool(request.metadata.get("accept_pii_to_cloud", False))
-        redaction = self._redactor.redact(
-            request.prompt, accept_pii_to_cloud=accept_pii,
-        )
+        try:
+            redaction = self._redactor.redact(
+                request.prompt, accept_pii_to_cloud=accept_pii,
+            )
+        except Exception as exc:
+            # The redactor is meant to fail closed internally (returning
+            # failed=True), but if it raises anyway we must NOT leak the
+            # raw prompt to the cloud. Convert to ProviderError so the
+            # chain falls through; the raw prompt never escapes this scope.
+            raise ProviderError(
+                "redactor errored; refusing to dispatch cloud call "
+                "(fail-closed per operator decision 4)"
+            ) from exc
 
         # Fail closed (R22.0 finding F2): trust the structured
         # `failed` flag, NOT text equality with the sentinel string.

@@ -33,7 +33,6 @@ from .budget import BudgetConfig, BudgetExhausted, BudgetTracker, load_budget_co
 from .providers.anthropic import AnthropicProvider
 from .providers.base import ProviderError, ProviderPlugin, all_providers
 from .providers.cache import ExactCacheProvider
-from .providers.cloud_stub import CloudStubProvider
 from .providers.heuristic import HeuristicProvider
 from .providers.ollama import OllamaProvider
 from .telemetry import TelemetryLogger
@@ -43,13 +42,21 @@ from .types import CallBudget, FallbackLevel, LLMRequest, LLMResponse
 log = logging.getLogger(__name__)
 
 
-# Default fallback chain — names must match registered provider .name.
+# Default fallback chain. Tier names index the provider registry. The
+# Tier-3 "cloud" slot resolves to the live AnthropicProvider (registered
+# under both its descriptive "anthropic-api" name and the canonical
+# "cloud" alias), which replaced the deliberately-unavailable
+# CloudStubProvider. With no ANTHROPIC_API_KEY / SDK / working redactor the
+# cloud tier reports unavailable and the chain falls through to heuristic.
 DEFAULT_CHAIN: tuple[str, ...] = (
     "cache",
     "local-ollama",
     "cloud",
     "heuristic",
 )
+
+# Canonical name of the Tier-3 cloud slot in the default chain.
+CLOUD_TIER_NAME = "cloud"
 
 
 def _env_flag(name: str) -> bool | None:
@@ -124,17 +131,32 @@ class BridgeLLMClient:
         self._config = config if config is not None else {"enabled": True}
         self._providers: dict[str, ProviderPlugin] = {}
         if providers is None:
+            # AnthropicProvider is the live Tier-3 cloud provider; it
+            # replaces the deliberately-unavailable CloudStubProvider.
             providers = [
                 ExactCacheProvider(),
                 OllamaProvider(),
                 AnthropicProvider(),
-                CloudStubProvider(),
                 HeuristicProvider(),
             ]
         for p in providers:
             self._providers[p.name] = p
         for p in all_providers().values():
             self._providers[p.name] = p
+        # Alias the canonical "cloud" tier to the real Anthropic provider.
+        # The provider keeps its descriptive "anthropic-api" identity (used
+        # by Profile L chains that name it directly and by telemetry); the
+        # "cloud" alias lets the default chain serve real cloud calls in
+        # place of the removed CloudStubProvider. We never clobber an
+        # explicitly-registered "cloud" provider (e.g. a caller-injected
+        # cloud plugin), and only alias when an anthropic-api provider is
+        # actually present.
+        if (
+            CLOUD_TIER_NAME not in self._providers
+            and AnthropicProvider.name in self._providers
+        ):
+            self._providers[CLOUD_TIER_NAME] = \
+                self._providers[AnthropicProvider.name]
         if fallback_chain is None:
             fallback_chain = self._config.get("fallback_chain") or DEFAULT_CHAIN
         self._fallback_chain = tuple(fallback_chain)

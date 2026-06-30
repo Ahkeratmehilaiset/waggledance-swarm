@@ -615,3 +615,85 @@ def test_register_provider_makes_plugin_globally_visible():
     ))
     assert response.provider == "test-signal"
     assert response.text == "signal"
+
+
+# ─── Lane #7: real Anthropic cloud tier replaces CloudStubProvider ──
+
+def test_default_client_wires_anthropic_as_cloud_tier(monkeypatch):
+    """The default client's Tier-3 'cloud' slot now resolves to the live
+    AnthropicProvider (same instance also reachable as 'anthropic-api'),
+    replacing the retired, always-unavailable CloudStubProvider."""
+    monkeypatch.delenv("AGENT_BRIDGE_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("WAGGLE_FALLBACK_CHAIN", raising=False)
+    monkeypatch.delenv("WAGGLE_BRIDGE_LLM_ENABLED", raising=False)
+    from waggledance.core.bridge_llm import BridgeLLMClient
+
+    client = BridgeLLMClient.default()
+    assert "cloud" in client.providers
+    assert client.providers["cloud"].__class__.__name__ == "AnthropicProvider"
+    # The "cloud" alias and the descriptive "anthropic-api" name point at
+    # the SAME provider instance.
+    assert client.providers["cloud"] is client.providers["anthropic-api"]
+    # Default chain still names the canonical cloud tier.
+    assert "cloud" in client.fallback_chain
+    # The retired stub is no longer serving the cloud tier.
+    assert client.providers["cloud"].__class__.__name__ != "CloudStubProvider"
+
+
+def test_client_cloud_tier_falls_through_to_heuristic_when_redactor_fails(monkeypatch):
+    """Security fall-through: when the cloud tier is reached but redaction
+    fails, the provider raises ProviderError and the chain degrades to the
+    local heuristic tier WITHOUT contacting the cloud."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
+    from waggledance.core.bridge_llm.redactor import BridgeLLMRedactor
+
+    class RaisingRedactor(BridgeLLMRedactor):
+        def redact(self, prompt, *, accept_pii_to_cloud=False):
+            raise RuntimeError("redactor backend down")
+
+    class ExplodingAnthropic:
+        def __init__(self, *a, **kw):
+            raise AssertionError("cloud must NOT be contacted on redaction failure")
+
+    monkeypatch.setitem(sys.modules, "anthropic", type(sys)("anthropic_stub"))
+    sys.modules["anthropic"].Anthropic = ExplodingAnthropic  # type: ignore[attr-defined]
+
+    cloud = AnthropicProvider(redactor=RaisingRedactor())
+    # Force the tier to be 'attempted' so call() runs and fails closed,
+    # exercising the chain fall-through.
+    monkeypatch.setattr(cloud, "is_available", lambda: True)
+
+    client = BridgeLLMClient(
+        providers=[cloud, HeuristicProvider()],
+        fallback_chain=("anthropic-api", "heuristic"),
+        config={"enabled": True},
+    )
+    response = client.run(LLMRequest(
+        injection_point="x", prompt="alice@example.org leaked?"
+    ))
+    assert response.fallback_level == FallbackLevel.HEURISTIC
+    assert response.provider == "heuristic"
+    assert response.success is True
+
+
+def test_client_skips_cloud_tier_when_no_api_key(monkeypatch):
+    """No ANTHROPIC_API_KEY -> cloud tier reports unavailable -> the chain
+    skips it cleanly and serves heuristic (no fake cloud serving)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
+
+    cloud = AnthropicProvider()
+    assert cloud.is_available() is False
+    client = BridgeLLMClient(
+        providers=[cloud, HeuristicProvider()],
+        fallback_chain=("anthropic-api", "heuristic"),
+        config={"enabled": True},
+    )
+    response = client.run(LLMRequest(injection_point="x", prompt="hello"))
+    assert response.fallback_level == FallbackLevel.HEURISTIC
+    assert response.provider == "heuristic"

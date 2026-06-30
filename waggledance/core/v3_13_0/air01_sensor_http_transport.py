@@ -150,6 +150,16 @@ def _validate_host(hostname: str, allowed_private_hosts: frozenset[str]) -> None
     try:
         parsed_ip = ip_address(normalized)
     except ValueError:
+        # Not a literal IP: a DNS hostname. A single-label name (e.g. "air") or a
+        # known private/local-use suffix (e.g. "air.internal", "host.lan") can
+        # resolve to an internal address, so it must be explicitly allowlisted
+        # (SSRF guard). A normal dotted public FQDN is allowed. (Pinning the
+        # resolved IP to defend DNS-rebinding of a public name onto a private
+        # address is a separate transport hardening, out of scope here.)
+        if _is_local_use_hostname(normalized) and (
+            normalized not in allowed_private_hosts
+        ):
+            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
         return
     if parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_unspecified:
         if normalized not in allowed_private_hosts:
@@ -179,6 +189,33 @@ def _normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:
 
 def _normalize_host(host: str) -> str:
     return host.strip().lower().strip("[]")
+
+
+# Private / local-use DNS suffixes (RFC 6762 .local, RFC 8375 .home.arpa, plus
+# common LAN conventions). A name ending in one of these, or a single-label name
+# with no dot, is treated as local-use and must be explicitly allowlisted.
+_LOCAL_USE_SUFFIXES = (
+    ".local",
+    ".internal",
+    ".intranet",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".localdomain",
+    ".corp",
+    ".private",
+)
+
+
+def _is_local_use_hostname(hostname: str) -> bool:
+    name = hostname.strip(".")
+    if not name:
+        return True
+    if "." not in name:
+        # single-label hostname (e.g. "air", "router") -> not a public FQDN
+        return True
+    return any(hostname == suffix.lstrip(".") or hostname.endswith(suffix)
+               for suffix in _LOCAL_USE_SUFFIXES)
 
 
 def _validate_headers(

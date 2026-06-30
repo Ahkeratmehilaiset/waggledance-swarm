@@ -95,6 +95,45 @@ def test_url_mode_refuses_local_host_ssrf():
     assert json.loads(err)["result_marker"] == "INVALID_INPUT_REFUSED"
 
 
+def test_url_mode_refuses_internal_dns_host_without_allowlist():
+    # SSRF regression (tools/rco build review #1443): a non-IP local-use DNS name
+    # (e.g. air.internal) or a single-label name must be refused unless explicitly
+    # allowlisted, even though it is not a literal private IP. The injected
+    # transport must NEVER be reached -- the refusal happens in URL validation.
+    def fake_transport(url, headers, timeout):
+        raise AssertionError("transport must not be called for a refused host")
+
+    for host_url in ("http://air.internal/sensor", "http://air/sensor"):
+        code, out, err = _run(["--url", host_url], transport=fake_transport)
+        assert code == 2, host_url
+        assert out == ""
+        assert json.loads(err)["result_marker"] == "INVALID_INPUT_REFUSED"
+
+
+def test_url_mode_allows_internal_dns_host_only_with_allowlist():
+    body = json.dumps(_digheran_payload()).encode("utf-8")
+
+    def fake_transport(url, headers, timeout):
+        return Air01SensorHttpResponse(
+            body=body,
+            content_type="application/json",
+            status_code=200,
+            source_url=url,
+        )
+
+    code, out, err = _run(
+        [
+            "--url", "http://air.internal/sensor",
+            "--allowed-private-hosts", "air.internal",
+            "--fetched-at-utc", "2026-05-15T18:05:00Z",
+        ],
+        transport=fake_transport,
+    )
+
+    assert code == 0, err
+    assert json.loads(out)["result_marker"] == "AIR_QUALITY_WARNING"
+
+
 def test_output_is_written_atomically_under_data_air01(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     src = tmp_path / "sensor.json"

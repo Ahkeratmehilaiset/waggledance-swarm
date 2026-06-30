@@ -111,6 +111,73 @@ def test_private_lan_host_allowed_only_by_exact_host_allowlist() -> None:
     assert response.source_url == LAN_URL
 
 
+def test_internal_dns_host_refused_without_allowlist() -> None:
+    # SSRF regression (#1443): a local-use DNS name resolves to an internal
+    # address; it must be refused unless allowlisted even though it is not a
+    # literal private IP. The transport must never be reached.
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    for url in (
+        "http://air.internal/api/air/current",
+        "http://host.lan/current.json",
+        "http://sensor.local/current.json",
+    ):
+        with pytest.raises(Air01SensorHttpTransportError,
+                           match="URL_LOCAL_HOST_REFUSED"):
+            fetch_air_quality_sensor_response(url, transport=transport)
+
+
+def test_single_label_host_refused_without_allowlist() -> None:
+    def transport(*_):
+        raise AssertionError("transport must not run for a refused host")
+
+    with pytest.raises(Air01SensorHttpTransportError,
+                       match="URL_LOCAL_HOST_REFUSED"):
+        fetch_air_quality_sensor_response(
+            "http://air/current.json", transport=transport
+        )
+
+
+def test_internal_dns_host_allowed_only_by_exact_allowlist() -> None:
+    internal_url = "http://air.internal/api/air/current"
+    seen: list[str] = []
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> Air01SensorHttpResponse:
+        seen.append(url)
+        return _response(source_url=url)
+
+    response = fetch_air_quality_sensor_response(
+        internal_url,
+        allowed_private_hosts=("air.internal",),
+        transport=transport,
+    )
+
+    assert seen == [internal_url]
+    assert response.source_url == internal_url
+
+
+def test_public_fqdn_still_allowed_without_allowlist() -> None:
+    # Guard against over-blocking: a normal dotted public FQDN must remain
+    # reachable without an allowlist entry.
+    seen: list[str] = []
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> Air01SensorHttpResponse:
+        seen.append(url)
+        return _response(source_url=url)
+
+    fetch_air_quality_sensor_response(PUBLIC_URL, transport=transport)
+    assert seen == [PUBLIC_URL]
+
+
 def test_allowlisted_lan_response_composes_with_adapter_and_advisor() -> None:
     response = fetch_air_quality_sensor_response(
         LAN_URL,

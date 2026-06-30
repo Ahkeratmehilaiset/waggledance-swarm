@@ -536,6 +536,7 @@ class TestApiOpsExtended:
                 "autogrowth_alert_feed": {
                     "enabled": True,
                     "alertmanager_base_url": "https://alerts.example",
+                    "allowed_private_hosts": ["alerts.example"],
                     "timeout_s": 2,
                     "max_response_bytes": 1000,
                     "cache_ttl_s": 11,
@@ -1280,6 +1281,7 @@ class TestApiOpsExtended:
         with pytest.raises(MagmaHandoffMetricsAlertFeedError) as header_secret:
             MagmaHandoffMetricsAlertmanagerFeed.from_config({
                 "alertmanager_base_url": "https://alerts.example",
+                "allowed_private_hosts": ["alerts.example"],
                 "headers": {"Authorization": "Bearer abc"},
             })
         assert "CREDENTIAL_HEADER_REFUSED" in str(header_secret.value)
@@ -1296,6 +1298,7 @@ class TestApiOpsExtended:
                 "magma_handoff_metrics_alert_feed": {
                     "enabled": True,
                     "alertmanager_base_url": "https://alerts.example",
+                    "allowed_private_hosts": ["alerts.example"],
                     "timeout_s": 2,
                     "max_response_bytes": 1000,
                     "cache_ttl_s": 11,
@@ -1969,6 +1972,10 @@ class TestApiOpsExtended:
                     "enabled": True,
                     "prometheus_base_url": "https://prometheus.example",
                     "alertmanager_base_url": "https://alerts.example",
+                    "allowed_private_hosts": [
+                        "prometheus.example",
+                        "alerts.example",
+                    ],
                     "timeout_s": 2,
                     "max_response_bytes": 1000,
                     "cache_ttl_s": 11,

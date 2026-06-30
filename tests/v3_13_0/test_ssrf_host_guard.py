@@ -91,3 +91,19 @@ def test_require_allowlist_denies_public_host_unless_allowlisted():
         allowed_private_hosts=("evil.attacker.com",),
         require_allowlist=True,
     ) is None
+
+
+def test_trailing_dot_does_not_bypass_local_use_or_allowlist():
+    # SSRF regression (tools #1454): a trailing DNS root dot must NOT evade the
+    # local-use refusal, and must match the allowlist as the same host.
+    assert classify_request_host("air.internal.") == HOST_REFUSED_LOCAL
+    assert classify_request_host("metadata.google.internal.") == HOST_REFUSED_LOCAL
+    assert classify_request_host(
+        "evil.attacker.com.", require_allowlist=True
+    ) == HOST_NOT_ALLOWLISTED
+    # trailing dot still matches an allowlisted host (no false-negative)
+    assert classify_request_host(
+        "air.example.test.",
+        allowed_private_hosts=("air.example.test",),
+        require_allowlist=True,
+    ) is None

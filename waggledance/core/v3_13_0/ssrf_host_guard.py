@@ -45,7 +45,10 @@ HOST_NOT_ALLOWLISTED = "URL_HOST_NOT_ALLOWLISTED"
 
 
 def normalize_host(host: str) -> str:
-    return host.strip().lower().strip("[]")
+    # Strip a trailing DNS root dot so "air.internal." == "air.internal" for both
+    # local-use detection and allowlist matching (a trailing dot is otherwise an
+    # SSRF bypass / a false-negative allowlist miss).
+    return host.strip().lower().strip("[]").rstrip(".")
 
 
 def is_local_use_hostname(hostname: str) -> bool:

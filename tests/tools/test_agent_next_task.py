@@ -186,6 +186,44 @@ def test_defers_when_operator_wake_request_is_open(tmp_path: Path) -> None:
                 "agent": "operator",
                 "to": "codex-tools-1",
                 "type": "wake_request",
+                "task_id": "operator-wake-request-20260520",
+                "status": "open",
+                "severity": "medium",
+                "message": (
+                    "please read the bridge and answer the visible request. "
+                    "classification=rco_wake_requested"
+                ),
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-tools-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["bridge_recommendation"]["action"] == "answer_incoming"
+    assert (
+        report["bridge_recommendation"]["task_id"]
+        == "operator-wake-request-20260520"
+    )
+    assert report["bridge_recommendation"]["incoming"]["type"] == "wake_request"
+
+
+def test_ignores_operator_bridge_follow_nudge_as_work_request(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:55:00Z",
+                "agent": "operator",
+                "to": "codex-tools-1",
+                "type": "wake_request",
                 "task_id": "bridge-follow-nudge-20260520",
                 "status": "open",
                 "severity": "medium",
@@ -205,10 +243,10 @@ def test_defers_when_operator_wake_request_is_open(tmp_path: Path) -> None:
         now_utc=NOW,
     )
 
-    assert report["decision"] == "defer_to_bridge_next_action"
-    assert report["bridge_recommendation"]["action"] == "answer_incoming"
-    assert report["bridge_recommendation"]["task_id"] == "bridge-follow-nudge-20260520"
-    assert report["bridge_recommendation"]["incoming"]["type"] == "wake_request"
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["bridge_recommendation"]["action"] == "claim_unblocked_work"
+    assert report["bridge_recommendation"]["open_incoming_count"] == 0
+    assert report["bridge_recommendation"]["stale_incoming_count"] == 0
 
 
 def test_ignores_stale_incoming_request_using_agent_now(tmp_path: Path) -> None:
@@ -1258,6 +1296,7 @@ def test_agent_next_task_defers_suppressed_agent_follow_nudge(
     assert report["decision"] == "defer_to_bridge_next_action"
     assert report["bridge_recommendation"]["action"] == "agent_suppressed_unavailable"
     assert report["bridge_recommendation"]["task_id"] == "agent-suppressed-unavailable"
+    assert report["bridge_recommendation"]["open_incoming_count"] == 0
     assert (
         report["bridge_recommendation"]["suppression_reason"]
         == "operator reported lane unavailable"

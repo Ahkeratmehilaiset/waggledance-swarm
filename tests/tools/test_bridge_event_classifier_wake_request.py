@@ -177,7 +177,7 @@ def test_closure_events_still_count_as_answers(
 def test_next_action_ages_out_old_operator_wake_request(tmp_path: Path) -> None:
     event = _event("wake_request", "open")
     event["agent"] = "operator"
-    event["task_id"] = "bridge-follow-nudge-20260612"
+    event["task_id"] = "operator-wake-request-20260612"
     event["ts_utc"] = "2026-06-12T12:00:00Z"
 
     report = _next_action(tmp_path, [event])
@@ -190,14 +190,27 @@ def test_next_action_ages_out_old_operator_wake_request(tmp_path: Path) -> None:
 def test_next_action_keeps_recent_wake_request_actionable(tmp_path: Path) -> None:
     event = _event("wake_request", "open")
     event["agent"] = "operator"
-    event["task_id"] = "bridge-follow-nudge-20260613"
+    event["task_id"] = "operator-wake-request-20260613"
     event["ts_utc"] = "2026-06-13T02:30:00Z"
 
     report = _next_action(tmp_path, [event])
 
     assert report["action"] == "answer_incoming"
-    assert report["task_id"] == "bridge-follow-nudge-20260613"
+    assert report["task_id"] == "operator-wake-request-20260613"
     assert report["open_incoming_count"] == 1
+    assert report["stale_incoming_count"] == 0
+
+
+def test_next_action_ignores_recent_bridge_follow_nudge(tmp_path: Path) -> None:
+    event = _event("wake_request", "open")
+    event["agent"] = "operator"
+    event["task_id"] = "bridge-follow-nudge-20260613"
+    event["ts_utc"] = "2026-06-13T02:30:00Z"
+
+    report = _next_action(tmp_path, [event])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 0
 
 
@@ -217,5 +230,5 @@ def test_next_action_reports_suppressed_agent_instead_of_follow_nudge(
 
     assert report["action"] == "agent_suppressed_unavailable"
     assert report["task_id"] == "agent-suppressed-unavailable"
-    assert report["open_incoming_count"] == 1
+    assert report["open_incoming_count"] == 0
     assert report["suppression_reason"] == "operator reported lane unavailable"

@@ -87,7 +87,7 @@ def test_suppressed_unavailable_agent_does_not_claim_operator_follow_nudge() -> 
     assert report["action"] == "agent_suppressed_unavailable"
     assert report["task_id"] == "agent-suppressed-unavailable"
     assert report["safe_mode"] == "read-only"
-    assert report["open_incoming_count"] == 1
+    assert report["open_incoming_count"] == 0
     assert report["suppression_reason"] == "operator reported fable lane unavailable"
 
 
@@ -696,7 +696,7 @@ def test_target_stale_sweep_finding_suppresses_reported_stale_request() -> None:
             "agent": "operator",
             "to": "codex-tools-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260611",
+            "task_id": "stale-wake-request-20260611",
             "status": "open",
             "message": "historical wake request",
         },
@@ -709,7 +709,7 @@ def test_target_stale_sweep_finding_suppresses_reported_stale_request() -> None:
             "status": "stale_incoming_sweep_complete",
             "message": "classified the stale backlog as historical noise",
             "payload": {
-                "stale_task_ids": ["bridge-follow-nudge-20260611"],
+                "stale_task_ids": ["stale-wake-request-20260611"],
             },
         },
     ]
@@ -738,7 +738,7 @@ def test_stale_sweep_finding_before_request_does_not_suppress_new_stale_request(
             "status": "stale_incoming_sweep_complete",
             "message": "prior stale sweep",
             "payload": {
-                "stale_task_ids": ["bridge-follow-nudge-20260611"],
+                "stale_task_ids": ["stale-wake-request-20260611"],
             },
         },
         {
@@ -746,7 +746,7 @@ def test_stale_sweep_finding_before_request_does_not_suppress_new_stale_request(
             "agent": "operator",
             "to": "codex-tools-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260611",
+            "task_id": "stale-wake-request-20260611",
             "status": "open",
             "message": "new wake request after the prior sweep",
         },
@@ -762,7 +762,7 @@ def test_stale_sweep_finding_before_request_does_not_suppress_new_stale_request(
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 1
-    assert report["stale_incoming_task_ids"] == ["bridge-follow-nudge-20260611"]
+    assert report["stale_incoming_task_ids"] == ["stale-wake-request-20260611"]
 
 
 def test_other_agent_stale_sweep_finding_does_not_suppress_target_stale_request() -> None:
@@ -772,7 +772,7 @@ def test_other_agent_stale_sweep_finding_does_not_suppress_target_stale_request(
             "agent": "operator",
             "to": "codex-tools-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260611",
+            "task_id": "stale-wake-request-20260611",
             "status": "open",
             "message": "historical wake request",
         },
@@ -785,7 +785,7 @@ def test_other_agent_stale_sweep_finding_does_not_suppress_target_stale_request(
             "status": "stale_incoming_sweep_complete",
             "message": "a different agent cannot close tools stale backlog",
             "payload": {
-                "stale_task_ids": ["bridge-follow-nudge-20260611"],
+                "stale_task_ids": ["stale-wake-request-20260611"],
             },
         },
     ]
@@ -800,7 +800,7 @@ def test_other_agent_stale_sweep_finding_does_not_suppress_target_stale_request(
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 1
-    assert report["stale_incoming_task_ids"] == ["bridge-follow-nudge-20260611"]
+    assert report["stale_incoming_task_ids"] == ["stale-wake-request-20260611"]
 
 
 def test_archives_very_old_stale_incoming_without_changing_next_action() -> None:
@@ -1366,12 +1366,12 @@ def test_operator_wake_request_is_incoming_for_target_agent() -> None:
             "agent": "operator",
             "to": "codex-tools-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260612",
+            "task_id": "operator-wake-request-20260612",
             "status": "open",
             "severity": "medium",
             "message": (
-                "jatka: read the bridge and answer open requests. "
-                "classification=rco_wake_requested openIncoming=1"
+                "please review the visible bridge request. "
+                "classification=rco_wake_requested"
             ),
         }
     ]
@@ -1384,10 +1384,37 @@ def test_operator_wake_request_is_incoming_for_target_agent() -> None:
     )
 
     assert report["action"] == "answer_incoming"
-    assert report["task_id"] == "bridge-follow-nudge-20260612"
+    assert report["task_id"] == "operator-wake-request-20260612"
     assert report["incoming"]["type"] == "wake_request"
     assert report["incoming"]["status"] == "open"
     assert report["open_incoming_count"] == 1
+
+
+def test_bridge_follow_nudge_is_not_actionable_incoming_or_stale() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "bridge-follow-nudge-20260612",
+            "status": "open",
+            "message": "read the bridge again",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+    assert "stale_incoming_task_ids" not in report
+    assert "archived_stale_incoming_count" not in report
 
 
 def test_operator_wake_request_ages_out_before_selection() -> None:
@@ -1397,7 +1424,7 @@ def test_operator_wake_request_ages_out_before_selection() -> None:
             "agent": "operator",
             "to": "codex-tools-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260612",
+            "task_id": "operator-wake-request-20260612",
             "status": "open",
             "message": "old operator wake",
         }
@@ -1413,7 +1440,7 @@ def test_operator_wake_request_ages_out_before_selection() -> None:
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 1
-    assert report["stale_incoming_task_ids"] == ["bridge-follow-nudge-20260612"]
+    assert report["stale_incoming_task_ids"] == ["operator-wake-request-20260612"]
 
 
 def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
@@ -1423,7 +1450,7 @@ def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
             "agent": "operator",
             "to": "codex-lead-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260612",
+            "task_id": "operator-wake-request-20260612",
             "status": "open",
             "message": "first wake",
         },
@@ -1432,7 +1459,7 @@ def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
             "agent": "operator",
             "to": "codex-lead-1",
             "type": "wake_request",
-            "task_id": "bridge-follow-nudge-20260612",
+            "task_id": "operator-wake-request-20260612",
             "status": "open",
             "message": "latest wake",
         },
@@ -1446,7 +1473,7 @@ def test_repeated_wake_request_rows_count_as_one_actionable_incoming() -> None:
     )
 
     assert report["action"] == "answer_incoming"
-    assert report["task_id"] == "bridge-follow-nudge-20260612"
+    assert report["task_id"] == "operator-wake-request-20260612"
     assert report["incoming"]["message"] == "latest wake"
     assert report["open_incoming_count"] == 1
     assert report["open_incoming_event_count"] == 2

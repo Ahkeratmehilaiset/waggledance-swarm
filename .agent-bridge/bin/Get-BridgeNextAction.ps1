@@ -77,6 +77,18 @@ $nowUtc = if ($Now) {
     (Get-Date).ToUniversalTime()
 }
 $openRequestCutoffUtc = $nowUtc.AddHours(-1 * $OpenRequestMaxAgeHours)
+$bridgeFollowNudgeTaskPrefix = 'bridge-follow-nudge-'
+
+function Test-BridgeFollowNudgeRequest {
+    param([Parameter(Mandatory)] [object] $Event)
+
+    return [string]$Event.type -eq 'wake_request' -and
+        [string]$Event.task_id -and
+        ([string]$Event.task_id).StartsWith(
+            $bridgeFollowNudgeTaskPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+}
 
 function Read-BridgeEventObjects {
     param([string] $Path, [int] $MaxLines)
@@ -131,7 +143,11 @@ $foreignWriteClaims = @($claims | Where-Object { [string]$_.agent -ne $Agent -an
 
 $requestsForAgent = @(
     $events |
-        Where-Object { (Test-BridgeRequestLikeEvent -Event $_) -and (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent) } |
+        Where-Object {
+            (Test-BridgeRequestLikeEvent -Event $_) -and
+            -not (Test-BridgeFollowNudgeRequest -Event $_) -and
+            (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent)
+        } |
         Sort-Object ts_utc
 )
 

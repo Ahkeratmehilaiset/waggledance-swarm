@@ -215,7 +215,7 @@ def test_ollama_provider_uses_request_generation_params(monkeypatch):
 def test_anthropic_provider_uses_request_generation_params(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
-    from waggledance.core.bridge_llm.types import LLMRequest
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
 
     captured_create = {}
 
@@ -255,6 +255,7 @@ def test_anthropic_provider_uses_request_generation_params(monkeypatch):
         model="claude-test",
         temperature=0.0,
         max_tokens=321,
+        budget=CallBudget(allow_cloud=True),
     ))
 
     assert response.text == "ok"
@@ -649,6 +650,7 @@ def test_client_cloud_tier_falls_through_to_heuristic_when_redactor_fails(monkey
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
     from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
     from waggledance.core.bridge_llm.redactor import BridgeLLMRedactor
+    from waggledance.core.bridge_llm.types import CallBudget
 
     class RaisingRedactor(BridgeLLMRedactor):
         def redact(self, prompt, *, accept_pii_to_cloud=False):
@@ -671,8 +673,11 @@ def test_client_cloud_tier_falls_through_to_heuristic_when_redactor_fails(monkey
         fallback_chain=("anthropic-api", "heuristic"),
         config={"enabled": True},
     )
+    # allow_cloud=True so the client gate admits the cloud tier; the
+    # fall-through here is driven by the redaction failure, not the gate.
     response = client.run(LLMRequest(
-        injection_point="x", prompt="alice@example.org leaked?"
+        injection_point="x", prompt="alice@example.org leaked?",
+        budget=CallBudget(allow_cloud=True),
     ))
     assert response.fallback_level == FallbackLevel.HEURISTIC
     assert response.provider == "heuristic"
@@ -686,6 +691,7 @@ def test_client_skips_cloud_tier_when_no_api_key(monkeypatch):
     from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
     from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
+    from waggledance.core.bridge_llm.types import CallBudget
 
     cloud = AnthropicProvider()
     assert cloud.is_available() is False
@@ -694,6 +700,146 @@ def test_client_skips_cloud_tier_when_no_api_key(monkeypatch):
         fallback_chain=("anthropic-api", "heuristic"),
         config={"enabled": True},
     )
-    response = client.run(LLMRequest(injection_point="x", prompt="hello"))
+    # allow_cloud=True so the skip here is driven by missing-key
+    # unavailability, not the allow_cloud gate.
+    response = client.run(LLMRequest(
+        injection_point="x", prompt="hello",
+        budget=CallBudget(allow_cloud=True),
+    ))
     assert response.fallback_level == FallbackLevel.HEURISTIC
     assert response.provider == "heuristic"
+
+
+# ─── Lane #7 (#1449 review): honor allow_cloud before cloud dispatch ──
+
+def test_llm_request_defaults_deny_cloud():
+    """The authoritative default: a bare request must NOT opt in to cloud.
+    CallBudget.allow_cloud defaults to False, so allows_cloud() is False.
+    Fail-closed: a None budget also denies."""
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
+    assert CallBudget().allow_cloud is False
+    req = LLMRequest(injection_point="x", prompt="p")
+    assert req.budget.allow_cloud is False
+    assert req.allows_cloud() is False
+    assert LLMRequest(
+        injection_point="x", prompt="p",
+        budget=CallBudget(allow_cloud=True),
+    ).allows_cloud() is True
+    # Fail-closed robustness: a torn-down/None budget denies cloud.
+    req.budget = None  # type: ignore[assignment]
+    assert req.allows_cloud() is False
+
+
+def test_client_does_not_dispatch_cloud_when_allow_cloud_false(monkeypatch):
+    """#1449 review repro: a request that opts OUT of cloud must never reach
+    a CLOUD_LLM-tier provider, even when that tier is available (key +
+    redactor present). The chain skips it and serves heuristic;
+    cloud_calls == 0. Covers BOTH explicit allow_cloud=False AND the bare
+    (default-deny) request."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
+    from waggledance.core.bridge_llm.providers.base import ProviderPlugin
+    from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
+    from waggledance.core.bridge_llm.types import CallBudget, LLMResponse
+
+    class SpyCloudProvider(ProviderPlugin):
+        # Same name the default chain aliases to 'cloud'; CLOUD_LLM tier.
+        name = "anthropic-api"
+        fallback_level = FallbackLevel.CLOUD_LLM
+
+        def __init__(self):
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True  # available, yet must NOT be dispatched
+
+        def call(self, request) -> LLMResponse:
+            self.calls += 1
+            raise AssertionError(
+                "cloud provider was dispatched despite allow_cloud=False"
+            )
+
+    spy = SpyCloudProvider()
+    client = BridgeLLMClient(
+        providers=[spy, HeuristicProvider()],
+        fallback_chain=("anthropic-api", "heuristic"),
+        config={"enabled": True},
+    )
+
+    # Explicit opt-out.
+    resp = client.run(LLMRequest(
+        injection_point="x", prompt="secret",
+        budget=CallBudget(allow_cloud=False),
+    ))
+    assert resp.provider == "heuristic"
+    assert resp.fallback_level == FallbackLevel.HEURISTIC
+    assert spy.calls == 0
+
+    # Bare request → default-deny → same outcome.
+    resp2 = client.run(LLMRequest(injection_point="x", prompt="secret"))
+    assert resp2.provider == "heuristic"
+    assert spy.calls == 0
+
+
+def test_client_dispatches_and_redacts_cloud_when_allow_cloud_true(monkeypatch):
+    """allow_cloud=True (with key + working redactor): the chain DOES
+    dispatch to the cloud tier, and the payload that reaches the SDK is
+    redacted — proving the gate opens only on opt-in and the redaction
+    boundary still holds end-to-end through the client."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
+    from waggledance.core.bridge_llm.types import CallBudget
+
+    captured_create: dict = {}
+
+    class StubUsage:
+        input_tokens = 3
+        output_tokens = 4
+
+    class StubBlock:
+        type = "text"
+        text = "cloud-ok"
+
+    class StubResponse:
+        content = [StubBlock()]
+        usage = StubUsage()
+
+    class StubAnthropic:
+        def __init__(self, timeout=None, **kwargs):
+            pass
+
+        @property
+        def messages(self):
+            class _M:
+                @staticmethod
+                def create(**kwargs):
+                    captured_create.update(kwargs)
+                    return StubResponse()
+            return _M()
+
+    monkeypatch.setitem(sys.modules, "anthropic", type(sys)("anthropic_stub"))
+    sys.modules["anthropic"].Anthropic = StubAnthropic  # type: ignore[attr-defined]
+
+    cloud = AnthropicProvider()  # real BridgeLLMRedactor
+    monkeypatch.setattr(cloud, "is_available", lambda: True)
+    client = BridgeLLMClient(
+        providers=[cloud, HeuristicProvider()],
+        fallback_chain=("anthropic-api", "heuristic"),
+        config={"enabled": True},
+    )
+
+    response = client.run(LLMRequest(
+        injection_point="x", prompt="email alice@example.org now",
+        budget=CallBudget(allow_cloud=True),
+    ))
+
+    # Cloud tier served (not heuristic).
+    assert response.provider == "anthropic-api"
+    assert response.fallback_level == FallbackLevel.CLOUD_LLM
+    assert response.text == "cloud-ok"
+    # ...and the wire payload was redacted.
+    sent = captured_create["messages"][0]["content"]
+    assert "alice@example.org" not in sent
+    assert "<EMAIL_1>" in sent

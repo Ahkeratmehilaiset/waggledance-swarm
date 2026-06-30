@@ -234,6 +234,17 @@ class BridgeLLMClient:
             provider = self._providers.get(provider_name)
             if provider is None:
                 continue
+            # Primary cloud-egress gate: never dispatch to a CLOUD_LLM tier
+            # when the request disallows cloud (default deny — see
+            # LLMRequest.allows_cloud / CallBudget.allow_cloud). The cloud
+            # provider also self-guards (defense in depth), but this skip
+            # ensures no CLOUD_LLM-tier provider is even reached.
+            if (
+                provider.fallback_level == FallbackLevel.CLOUD_LLM
+                and not request.allows_cloud()
+            ):
+                last_error = f"{provider_name}: cloud disabled (allow_cloud=False)"
+                continue
             if not provider.is_available():
                 last_error = f"{provider_name}: unavailable"
                 continue

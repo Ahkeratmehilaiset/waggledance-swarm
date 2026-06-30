@@ -105,6 +105,18 @@ class AnthropicProvider(ProviderPlugin):
                 "falling through to next tier"
             )
 
+        # Honor the per-request cloud opt-in BEFORE redaction and before
+        # any SDK import/egress. Defense-in-depth: the client already skips
+        # CLOUD_LLM-tier providers when allow_cloud is False, but a direct
+        # caller of this provider must not be able to bypass the gate.
+        # Fail-closed: a missing/None budget denies cloud (see
+        # LLMRequest.allows_cloud).
+        if not request.allows_cloud():
+            raise ProviderError(
+                "cloud disabled for this request (budget.allow_cloud is "
+                "False); falling through to next tier"
+            )
+
         # SECURITY CRUX — redaction BEFORE egress, fail-closed.
         # Everything below (SDK import, client construction, network call)
         # is gated on a successful redaction. If the redactor is missing or

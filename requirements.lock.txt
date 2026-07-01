@@ -317,7 +317,7 @@ tyro==1.0.8
 tzdata==2025.2
 tzlocal==5.3.1
 unsloth==2026.3.3
-unsloth_zoo==2026.3.1
+unsloth_zoo==2026.6.7
 uritemplate==4.2.0
 urllib3==2.7.0
 uvicorn==0.48.0

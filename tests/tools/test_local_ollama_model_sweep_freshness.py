@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tools.run_phase17d_local_model_sweep import select_panel
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs" / "benchmarks" / "LOCAL_OLLAMA_MODEL_SWEEP_2026.md"
@@ -61,3 +63,48 @@ def test_inventory_only_models_are_not_added_to_measured_panel() -> None:
     ]
     assert "qwen3:4b" not in rows
     assert "llama3.1:8b" not in rows
+
+
+def test_current_inventory_auto_selection_keeps_four_model_panel() -> None:
+    installed = [
+        {
+            "name": "gemma3:4b",
+            "id": "a2af6cc3eb7f",
+            "size_text": "3.3 GB",
+            "size_gb_estimate": 3.3,
+        },
+        {
+            "name": "qwen3:4b",
+            "id": "359d7dd4bcda",
+            "size_text": "2.5 GB",
+            "size_gb_estimate": 2.5,
+        },
+        {
+            "name": "llama3.2:3b",
+            "id": "a80c4f17acd5",
+            "size_text": "2.0 GB",
+            "size_gb_estimate": 2.0,
+        },
+        {
+            "name": "llama3.1:8b",
+            "id": "46e0c10c039e",
+            "size_text": "4.9 GB",
+            "size_gb_estimate": 4.9,
+        },
+    ]
+
+    selected, deferred, rationale = select_panel(
+        installed=installed,
+        override=None,
+        max_models=4,
+        prefer_larger=False,
+    )
+
+    assert [model["name"] for model in selected] == [
+        "gemma3:4b",
+        "llama3.2:3b",
+        "qwen3:4b",
+        "llama3.1:8b",
+    ]
+    assert deferred == []
+    assert rationale == "auto preference order"

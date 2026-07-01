@@ -136,12 +136,13 @@ render as a `handoff` template; rejected or blocked admissions render as a
 
 `--replay-sanitization-summary-json` emits the next narrower replay
 sanitization contract view. It records the manifest version, admission-contract
-version/digest, sanitization contract (`sanitization_v0`), required check names,
-rejection-mode count, report invariants, redaction inventory, entry count, and
-digest bindings. It deliberately omits the full `replay_plan`, per-entry ids,
-per-entry receipt/EvaluationResult digests, local paths, payload material,
-transport, and runtime authority. Rejected imports still exit nonzero and emit
-the same path-free no-authority flags plus a blocker class.
+version/digest, sanitization contract (`sanitization_v0`), required-check
+count, rejection-mode count, report invariants, redaction-inventory count,
+entry count, and digest bindings. It deliberately omits required-check names,
+redaction-inventory entries, the full `replay_plan`, per-entry ids, per-entry
+receipt/EvaluationResult digests, local paths, payload material, transport, and
+runtime authority. Rejected imports still exit nonzero and emit the same
+path-free no-authority flags plus a blocker class.
 
 `tools/build_magma_share_import_replay_sanitization_bridge_event_template.py`
 turns that replay-sanitization summary into a bridge-event template for

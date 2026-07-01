@@ -208,30 +208,19 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
     for key in ("status", "blocker_class", "sanitization_contract", "scope"):
         if not _safe_token(summary.get(key)):
             return None, f"{key}_unsafe"
-    # Every collected list member and mapping key/value is shape-validated:
-    # list members must be safe tokens, mapping keys safe tokens, mapping values
-    # bool. Malformed members fail closed (RCO2 forge criterion) even though only
-    # their counts are echoed -- a list/mapping carrying an object or unsafe key
-    # must NOT be silently accepted and counted.
-    for key in ("blockers", "required_check_names", "redaction_inventory"):
-        items = summary.get(key)
-        if not isinstance(items, list) or not all(
-            _safe_token(item) for item in items
-        ):
-            return None, f"{key}_unsafe"
+    # The summary contract is count/digest-only. Legacy list fields are rejected
+    # rather than silently accepted and dropped.
+    for key in ("required_check_names", "redaction_inventory", "replay_plan"):
+        if key in summary:
+            return None, f"{key}_exported"
+    items = summary.get("blockers")
+    if not isinstance(items, list) or not all(_safe_token(item) for item in items):
+        return None, "blockers_unsafe"
     invariants = summary.get("report_invariants")
     if not isinstance(invariants, Mapping) or not all(
         _safe_token(k) and isinstance(v, bool) for k, v in invariants.items()
     ):
         return None, "report_invariants_unsafe"
-    # The echoed required_check_count must equal the validated name list length.
-    required_check_count = summary.get("required_check_count")
-    if (
-        isinstance(required_check_count, bool)
-        or not isinstance(required_check_count, int)
-        or required_check_count != len(summary["required_check_names"])
-    ):
-        return None, "required_check_count_mismatch"
     for key in TRUE_FLAGS:
         if summary.get(key) is not True:
             return None, f"{key}_not_true"
@@ -245,7 +234,12 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
     # Echoed scalar/count fields must be strict non-bool ints: a string/float
     # count must NOT silently default to 0. admission_contract_digest must be a
     # real sha256 in every summary (it is present in both ready and rejected).
-    for key in ("entry_count", "rejection_mode_count"):
+    for key in (
+        "entry_count",
+        "required_check_count",
+        "rejection_mode_count",
+        "redaction_inventory_count",
+    ):
         if not _is_uint(summary.get(key)):
             return None, f"{key}_unsafe"
     if not _is_sha(summary.get("admission_contract_digest")):
@@ -279,10 +273,10 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
         ):
             if not _is_sha(summary.get(key)):
                 return None, f"{key}_unsafe"
-        if not summary["required_check_names"]:
-            return None, "required_check_names_empty"
-        if not summary["redaction_inventory"]:
-            return None, "redaction_inventory_empty"
+        if summary["required_check_count"] <= 0:
+            return None, "required_check_count_empty"
+        if summary["redaction_inventory_count"] <= 0:
+            return None, "redaction_inventory_count_empty"
         if not summary["report_invariants"]:
             return None, "report_invariants_empty"
     return summary, ""
@@ -316,7 +310,9 @@ def _payload(summary: Mapping[str, Any]) -> dict[str, Any]:
         "entry_count": _int(summary.get("entry_count")),
         "required_check_count": _int(summary.get("required_check_count")),
         "rejection_mode_count": _int(summary.get("rejection_mode_count")),
-        "redaction_inventory_count": len(summary.get("redaction_inventory") or []),
+        "redaction_inventory_count": _int(
+            summary.get("redaction_inventory_count")
+        ),
         "report_invariant_count": len(summary.get("report_invariants") or {}),
         "context_verified": summary.get("context_verified") is True,
         "context_drift_detected": summary.get("context_drift_detected") is True,

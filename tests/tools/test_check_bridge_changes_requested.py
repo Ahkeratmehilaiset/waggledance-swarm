@@ -141,13 +141,36 @@ def test_registered_peer_uuid_mismatch_block_is_ignored() -> None:
     )
 
 
-def test_author_rco_signal_is_ignored_when_author_agent_supplied() -> None:
+def test_author_rco_veto_still_blocks_when_author_agent_supplied() -> None:
     events = [
         _event(
             "2026-07-01T01:00:00Z",
             "claude-rco-2",
             "finding",
-            "author_context_signal",
+            "changes_requested",
+        ),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-lead-1",
+        author_agent="claude-rco-2",
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-2"
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+    assert result["ignored_author_events"] == []
+
+
+def test_author_rco_approval_is_ignored_when_author_agent_supplied() -> None:
+    events = [
+        _event(
+            "2026-07-01T01:00:00Z",
+            "claude-rco-2",
+            "decision",
+            "rco_pass",
         ),
     ]
 
@@ -159,9 +182,9 @@ def test_author_rco_signal_is_ignored_when_author_agent_supplied() -> None:
     )
 
     assert result["clear_to_merge"] is True
-    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
     assert result["ignored_author_events"][0]["agent"] == "claude-rco-2"
-    assert result["ignored_author_events"][0]["status"] == "author_context_signal"
+    assert result["ignored_author_events"][0]["status"] == "rco_pass"
 
 
 def test_non_author_rco_signal_still_blocks_when_author_agent_supplied() -> None:

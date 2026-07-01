@@ -371,11 +371,7 @@ def check_bridge_clear_to_merge(
         agent = str(event.get("agent", ""))
         if agent == merging_agent:
             continue
-        if author_agent and agent == author_agent:
-            summary = _summarize_event(event)
-            if summary is not None:
-                ignored_author_events.append(summary)
-            continue
+        author_event = bool(author_agent and agent == author_agent)
         binding_status = bridge_identity_binding_status(
             event,
             registry=registry,
@@ -394,6 +390,11 @@ def check_bridge_clear_to_merge(
         # Approvals stay type-restricted.
         if _is_clear_status(status):
             if event_type in CLEAR_EVENT_TYPES:
+                if author_event:
+                    summary = _summarize_event(event)
+                    if summary is not None:
+                        ignored_author_events.append(summary)
+                    continue
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
@@ -423,9 +424,19 @@ def check_bridge_clear_to_merge(
         if event_type not in {"decision", "rco_review", "finding", "done"}:
             continue
         if _is_clear_status(status):
+            if author_event:
+                summary = _summarize_event(event)
+                if summary is not None:
+                    ignored_author_events.append(summary)
+                continue
             peer_signals.pop(agent, None)
             continue
         if _is_approval_status(status):
+            if author_event:
+                summary = _summarize_event(event)
+                if summary is not None:
+                    ignored_author_events.append(summary)
+                continue
             peer_signals[agent] = (index, "approval", event)
 
     blocking_events = [

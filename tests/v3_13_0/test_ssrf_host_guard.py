@@ -25,6 +25,23 @@ def test_normalizes_terminal_dns_root_dot_for_exact_allowlist() -> None:
     ) is None
 
 
+def test_classify_rejects_bare_string_allowlist_before_host_check() -> None:
+    with pytest.raises(ValueError, match="ALLOWLIST_HOSTS_REFUSED"):
+        classify_request_host(
+            "p",
+            allowed_hosts="prices.example.test",
+            require_allowlist=True,
+        )
+
+
+def test_classify_accepts_normalized_frozenset_allowlist() -> None:
+    assert classify_request_host(
+        "prices.example.test",
+        allowed_hosts=frozenset({"prices.example.test"}),
+        require_allowlist=True,
+    ) is None
+
+
 @pytest.mark.parametrize("host", [
     "sensor.example.test",
     "1.2.3.4",

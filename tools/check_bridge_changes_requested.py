@@ -227,8 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--author-agent",
         default="",
         help=(
-            "Optional PR author agent. When provided, that identity is not "
-            "treated as a peer reviewer for bridge-side veto accounting."
+            "Optional PR author agent. When provided, author approval/clear "
+            "signals are ignored as self-review, while author blocking or "
+            "changes-requested signals remain authoritative."
         ),
     )
     parser.add_argument(
@@ -333,11 +334,11 @@ def check_bridge_clear_to_merge(
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
-    A peer is any agent != merging_agent and, when supplied, != author_agent.
     We scan events for the task_id and optional PR number, then record the most
-    recent decision event whose status is blocking, approving, or explicitly
-    clears a prior block. If the most recent peer signal is blocking, we refuse.
-    Otherwise we permit.
+    recent authoritative signal. ``author_agent`` is asymmetric: author
+    approval/clear signals are ignored as self-review, but author-originated
+    blocking or changes-requested signals still count. If the most recent
+    authoritative signal is blocking, we refuse. Otherwise we permit.
     """
     author_agent = (author_agent or "").strip()
     try:

@@ -98,3 +98,19 @@ def test_main_targets_are_zero_arg_callable_for_console_wrapper():
             f"{name}: {target} main() has required positional args "
             f"{[p.name for p in required_positional]}; console wrapper calls main()"
         )
+
+
+@pytest.mark.parametrize("name,target", sorted(_solver_scripts().items()))
+def test_console_script_is_actually_invokable_via_help(name, target, capsys):
+    # Stronger than resolution: prove the CLI's argparse layer constructs and the
+    # command is genuinely user-invokable end-to-end. `--help` must build the
+    # parser and exit 0 (the product last-mile guarantee: all 8 solver commands
+    # stay runnable, not just importable). Regression guard for the "solvers not
+    # user-invokable" gap that the console scripts (#1466) closed.
+    module_path, _, attr = target.partition(":")
+    main = getattr(importlib.import_module(module_path), attr)
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0, f"{name}: {target} --help exited {exc.value.code}"
+    out = capsys.readouterr().out
+    assert "usage" in out.lower(), f"{name}: --help printed no usage text"

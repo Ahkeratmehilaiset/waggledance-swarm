@@ -3,7 +3,7 @@
 """Shared SSRF host-validation guard for outbound operator-selected fetches."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping
 from ipaddress import ip_address
 
 
@@ -17,9 +17,12 @@ def normalize_host(host: str) -> str:
     return host.strip().lower().strip("[]").rstrip(".")
 
 
-def normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:
+def normalize_allowed_hosts(raw_hosts: Iterable[str]) -> frozenset[str]:
     """Validate and canonicalize an exact-host allowlist."""
-    if not isinstance(raw_hosts, Sequence) or isinstance(raw_hosts, (str, bytes)):
+    if (
+        not isinstance(raw_hosts, Iterable)
+        or isinstance(raw_hosts, (str, bytes, Mapping))
+    ):
         raise ValueError("ALLOWLIST_HOSTS_REFUSED")
     normalized: set[str] = set()
     for index, host in enumerate(raw_hosts):
@@ -40,7 +43,7 @@ def classify_request_host(
 ) -> str | None:
     """Return a refusal code for an outbound host, or ``None`` when allowed."""
     normalized = normalize_host(hostname)
-    allowed = {normalize_host(host) for host in allowed_hosts}
+    allowed = normalize_allowed_hosts(allowed_hosts)
     if not normalized:
         return HOST_REFUSED_LOCAL
     if normalized in allowed:

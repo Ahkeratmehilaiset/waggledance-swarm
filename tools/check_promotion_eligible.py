@@ -281,6 +281,7 @@ def _evaluate_promotion_eligibility(
         events=events,
         task_id=task_id,
         merging_agent=from_agent,
+        author_agent=author_agent,
         pr_number=number,
     )
     rco_pass_gate = _rco_pass_set_gate(

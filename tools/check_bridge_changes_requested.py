@@ -224,6 +224,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="The agent attempting the merge (claude / codex / operator).",
     )
     parser.add_argument(
+        "--author-agent",
+        default="",
+        help=(
+            "Optional PR author agent. When provided, author approval signals "
+            "are ignored as self-review, author clear/retraction signals can "
+            "clear that author's prior block, and author blocking or "
+            "changes-requested signals remain authoritative."
+        ),
+    )
+    parser.add_argument(
         "--pr-number",
         type=int,
         default=None,
@@ -287,6 +297,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         events=events,
         task_id=args.task_id,
         merging_agent=args.from_agent,
+        author_agent=args.author_agent,
         pr_number=args.pr_number,
     )
     if args.json:
@@ -318,16 +329,20 @@ def check_bridge_clear_to_merge(
     events: Sequence[Mapping[str, Any]],
     task_id: str,
     merging_agent: str,
+    author_agent: str = "",
     pr_number: int | None = None,
     identity_registry: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
-    A peer is any agent != merging_agent. We scan events for the task_id and
-    optional PR number, then record the most recent decision event whose status
-    is blocking, approving, or explicitly clears a prior block. If the most
-    recent peer signal is blocking, we refuse. Otherwise we permit.
+    We scan events for the task_id and optional PR number, then record the most
+    recent authoritative signal. ``author_agent`` is asymmetric: author
+    approval signals are ignored as self-review, author clear/retraction
+    signals can clear that author's own prior block, and author-originated
+    blocking or changes-requested signals still count. If the most recent
+    authoritative signal is blocking, we refuse. Otherwise we permit.
     """
+    author_agent = (author_agent or "").strip()
     try:
         registry = (
             load_bridge_identity_registry()
@@ -341,14 +356,17 @@ def check_bridge_clear_to_merge(
             "task_id": task_id,
             "pr_number": pr_number,
             "merging_agent": merging_agent,
+            "author_agent": author_agent,
             "latest_blocking_event": None,
             "latest_approval_event": None,
             "ignored_identity_mismatch_events": [],
+            "ignored_author_events": [],
             "decision": "invalid_identity_registry",
             "error": str(exc),
         }
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    ignored_author_events: list[dict[str, Any]] = []
 
     for index, event in enumerate(events):
         if not _event_matches_scope(event, task_id=task_id, pr_number=pr_number):
@@ -356,6 +374,7 @@ def check_bridge_clear_to_merge(
         agent = str(event.get("agent", ""))
         if agent == merging_agent:
             continue
+        author_event = bool(author_agent and agent == author_agent)
         binding_status = bridge_identity_binding_status(
             event,
             registry=registry,
@@ -374,6 +393,9 @@ def check_bridge_clear_to_merge(
         # Approvals stay type-restricted.
         if _is_clear_status(status):
             if event_type in CLEAR_EVENT_TYPES:
+                if author_event:
+                    peer_signals[agent] = (index, "clear", event)
+                    continue
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
@@ -403,9 +425,19 @@ def check_bridge_clear_to_merge(
         if event_type not in {"decision", "rco_review", "finding", "done"}:
             continue
         if _is_clear_status(status):
+            if author_event:
+                summary = _summarize_event(event)
+                if summary is not None:
+                    ignored_author_events.append(summary)
+                continue
             peer_signals.pop(agent, None)
             continue
         if _is_approval_status(status):
+            if author_event:
+                summary = _summarize_event(event)
+                if summary is not None:
+                    ignored_author_events.append(summary)
+                continue
             peer_signals[agent] = (index, "approval", event)
 
     blocking_events = [
@@ -427,6 +459,7 @@ def check_bridge_clear_to_merge(
         "task_id": task_id,
         "pr_number": pr_number,
         "merging_agent": merging_agent,
+        "author_agent": author_agent,
         "latest_blocking_event": _summarize_event(
             latest_block[1] if latest_block is not None else None
         ),
@@ -434,6 +467,7 @@ def check_bridge_clear_to_merge(
             latest_approval[1] if latest_approval is not None else None
         ),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
+        "ignored_author_events": ignored_author_events,
         "decision": "clear" if clear else "blocked",
     }
 

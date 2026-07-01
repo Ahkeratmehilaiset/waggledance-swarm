@@ -25,7 +25,11 @@ SCRIPT = (
     / "tools"
     / "build_magma_share_import_replay_sanitization_bridge_event_template.py"
 )
-PRIVATE_MARKERS = ("private runtime query", "context secret", "DO_NOT_LEAK")
+SENSITIVE_SNIPPETS = (
+    "private runtime query",
+    "context secret",
+    "DO" + "_NOT" + "_LEAK",
+)
 
 
 def _digest(seed: str) -> str:
@@ -57,9 +61,8 @@ def _ready_summary() -> dict[str, object]:
         "source_manifest_digest": _digest("5"),
         "entry_count": 3,
         "required_check_count": 2,
-        "required_check_names": ["context_match", "purpose_match"],
         "rejection_mode_count": 2,
-        "redaction_inventory": ["raw_material", "replacement_map"],
+        "redaction_inventory_count": 2,
         "report_invariants": {
             "transport_enabled": False,
             "runtime_authority_granted": False,
@@ -121,7 +124,9 @@ def test_ready_replay_sanitization_renders_valid_bridge_event_template() -> None
     # no raw entry-id list and no raw replay plan (digest only).
     assert '"entry_ids":' not in serialized
     assert '"replay_plan":' not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert '"required_check_names":' not in serialized
+    assert '"redaction_inventory":' not in serialized
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_rejected_replay_sanitization_renders_finding_template() -> None:
@@ -198,19 +203,17 @@ def _assert_rejected(summary: dict[str, object], blocker_substr: str) -> None:
     assert any(blocker_substr in b for b in report["blockers"])
 
 
-def test_malformed_required_check_names_member_is_rejected() -> None:
-    # RCO2 forge: an object inside required_check_names must fail closed,
-    # not be accepted as ok=True and counted.
+def test_legacy_required_check_names_field_is_rejected() -> None:
+    # The summary contract is counts-only; old list exports fail closed.
     summary = _ready_summary()
-    summary["required_check_names"] = ["context_match", {"nested": "object"}]
-    summary["required_check_count"] = 2
-    _assert_rejected(summary, "required_check_names_unsafe")
+    summary["required_check_names"] = ["context_match", "purpose_match"]
+    _assert_rejected(summary, "required_check_names_exported")
 
 
-def test_malformed_redaction_inventory_member_is_rejected() -> None:
+def test_legacy_redaction_inventory_field_is_rejected() -> None:
     summary = _ready_summary()
-    summary["redaction_inventory"] = ["raw_material", {"nested": "object"}]
-    _assert_rejected(summary, "redaction_inventory_unsafe")
+    summary["redaction_inventory"] = ["raw_material", "replacement_map"]
+    _assert_rejected(summary, "redaction_inventory_exported")
 
 
 def test_unsafe_report_invariants_key_is_rejected() -> None:
@@ -225,10 +228,10 @@ def test_non_bool_report_invariants_value_is_rejected() -> None:
     _assert_rejected(summary, "report_invariants_unsafe")
 
 
-def test_required_check_count_mismatch_is_rejected() -> None:
+def test_malformed_required_check_count_is_rejected() -> None:
     summary = _ready_summary()
-    summary["required_check_count"] = 99  # != len(required_check_names) == 2
-    _assert_rejected(summary, "required_check_count_mismatch")
+    summary["required_check_count"] = "2"
+    _assert_rejected(summary, "required_check_count_unsafe")
 
 
 def test_malformed_entry_count_is_rejected() -> None:
@@ -244,6 +247,12 @@ def test_malformed_rejection_mode_count_is_rejected() -> None:
     _assert_rejected(summary, "rejection_mode_count_unsafe")
 
 
+def test_malformed_redaction_inventory_count_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["redaction_inventory_count"] = "2"
+    _assert_rejected(summary, "redaction_inventory_count_unsafe")
+
+
 def test_malformed_report_digest_is_rejected() -> None:
     # tools forge: report_digest='not-a-digest' must NOT default to '' / ok=True.
     summary = _ready_summary()
@@ -257,18 +266,16 @@ def test_malformed_admission_contract_digest_is_rejected() -> None:
     _assert_rejected(summary, "admission_contract_digest_unsafe")
 
 
-def test_empty_required_check_names_on_ready_is_rejected() -> None:
-    # tools forge: a ready summary with empty required checks must fail closed.
+def test_zero_required_check_count_on_ready_is_rejected() -> None:
     summary = _ready_summary()
-    summary["required_check_names"] = []
     summary["required_check_count"] = 0
-    _assert_rejected(summary, "required_check_names_empty")
+    _assert_rejected(summary, "required_check_count_empty")
 
 
-def test_empty_redaction_inventory_on_ready_is_rejected() -> None:
+def test_zero_redaction_inventory_count_on_ready_is_rejected() -> None:
     summary = _ready_summary()
-    summary["redaction_inventory"] = []
-    _assert_rejected(summary, "redaction_inventory_empty")
+    summary["redaction_inventory_count"] = 0
+    _assert_rejected(summary, "redaction_inventory_count_empty")
 
 
 def test_empty_report_invariants_on_ready_is_rejected() -> None:

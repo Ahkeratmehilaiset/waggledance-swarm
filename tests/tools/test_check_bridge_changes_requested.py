@@ -164,6 +164,35 @@ def test_author_rco_veto_still_blocks_when_author_agent_supplied() -> None:
     assert result["ignored_author_events"] == []
 
 
+def test_author_rco_clear_can_clear_own_prior_veto() -> None:
+    events = [
+        _event(
+            "2026-07-01T01:00:00Z",
+            "claude-rco-2",
+            "finding",
+            "changes_requested",
+        ),
+        _event(
+            "2026-07-01T01:05:00Z",
+            "claude-rco-2",
+            "decision",
+            "changes_requested_resolved",
+        ),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-lead-1",
+        author_agent="claude-rco-2",
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"] is None
+    assert result["ignored_author_events"] == []
+
+
 def test_author_rco_approval_is_ignored_when_author_agent_supplied() -> None:
     events = [
         _event(

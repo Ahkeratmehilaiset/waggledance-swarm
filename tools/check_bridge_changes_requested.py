@@ -227,8 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--author-agent",
         default="",
         help=(
-            "Optional PR author agent. When provided, author approval/clear "
-            "signals are ignored as self-review, while author blocking or "
+            "Optional PR author agent. When provided, author approval signals "
+            "are ignored as self-review, author clear/retraction signals can "
+            "clear that author's prior block, and author blocking or "
             "changes-requested signals remain authoritative."
         ),
     )
@@ -336,7 +337,8 @@ def check_bridge_clear_to_merge(
 
     We scan events for the task_id and optional PR number, then record the most
     recent authoritative signal. ``author_agent`` is asymmetric: author
-    approval/clear signals are ignored as self-review, but author-originated
+    approval signals are ignored as self-review, author clear/retraction
+    signals can clear that author's own prior block, and author-originated
     blocking or changes-requested signals still count. If the most recent
     authoritative signal is blocking, we refuse. Otherwise we permit.
     """
@@ -392,9 +394,7 @@ def check_bridge_clear_to_merge(
         if _is_clear_status(status):
             if event_type in CLEAR_EVENT_TYPES:
                 if author_event:
-                    summary = _summarize_event(event)
-                    if summary is not None:
-                        ignored_author_events.append(summary)
+                    peer_signals[agent] = (index, "clear", event)
                     continue
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":

@@ -34,7 +34,11 @@ from waggledance.core.magma.share_manifest import (
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "import_magma_share_manifest.py"
 FIXED_NOW = datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc)
-PRIVATE_MARKERS = ("private runtime query", "context secret", "DO_NOT_LEAK")
+SENSITIVE_SNIPPETS = (
+    "private runtime query",
+    "context secret",
+    "DO" + "_NOT" + "_LEAK",
+)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -240,7 +244,7 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
         "actual_gate",
         "verdict",
     }
-    assert not any(marker in json.dumps(report) for marker in PRIVATE_MARKERS)
+    assert not any(marker in json.dumps(report) for marker in SENSITIVE_SNIPPETS)
 
 
 def test_import_admission_status_summary_is_path_free_and_no_authority(
@@ -287,7 +291,7 @@ def test_import_admission_status_summary_is_path_free_and_no_authority(
     assert "operator:decision" not in serialized
     assert "entry_id" not in serialized
     assert "receipt_digest" not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
     empty = build_magma_share_import_admission_status_summary(None)
     assert empty["source"] == "not_configured"
@@ -330,7 +334,7 @@ def test_import_admission_status_summary_blocks_malformed_report_without_leak(
     serialized = json.dumps(summary)
     assert str(tmp_path) not in serialized
     assert "DO_NOT_LEAK-admission" not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_import_replay_sanitization_summary_is_path_free_contract_view(
@@ -368,19 +372,12 @@ def test_import_replay_sanitization_summary_is_path_free_contract_view(
     assert summary["required_check_count"] == len(
         report["admission_contract"]["required_checks"]
     )
-    assert "forbidden_material_absence_preserved" in (
-        summary["required_check_names"]
-    )
+    assert "required_check_names" not in summary
     assert summary["rejection_mode_count"] == len(
         report["admission_contract"]["rejection_modes"]
     )
-    assert summary["redaction_inventory"] == [
-        "raw_payload",
-        "replacement_map",
-        "raw_context",
-        "raw_solver_output",
-        "raw_query_digest",
-    ]
+    assert summary["redaction_inventory_count"] == 5
+    assert "redaction_inventory" not in summary
     assert summary["report_invariants"][
         "ok_requires_runtime_authority_granted_false"
     ] is True
@@ -404,8 +401,10 @@ def test_import_replay_sanitization_summary_is_path_free_contract_view(
     assert replay_entry["entry_id"] not in serialized
     assert replay_entry["receipt_digest"] not in serialized
     assert replay_entry["evaluation_result_digest"] not in serialized
+    assert "forbidden_material_absence_preserved" not in serialized
+    assert "raw_payload" not in serialized
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
     empty = build_magma_share_import_replay_sanitization_summary(None)
     assert empty["source"] == "not_configured"
@@ -442,6 +441,9 @@ def test_import_replay_sanitization_summary_blocks_malformed_report_without_leak
     assert summary["blocker_class"] == "authority_or_privacy_boundary"
     assert summary["blockers"] == ["authority_or_privacy_boundary"]
     assert summary["sanitization_contract"] == "sanitization_v0"
+    assert "required_check_names" not in summary
+    assert "redaction_inventory" not in summary
+    assert summary["redaction_inventory_count"] == 5
     assert summary["transport_enabled"] is False
     assert summary["runtime_authority_granted"] is False
     assert summary["payload_files_imported"] == 0
@@ -449,7 +451,7 @@ def test_import_replay_sanitization_summary_blocks_malformed_report_without_leak
     serialized = json.dumps(summary, sort_keys=True)
     assert str(tmp_path) not in serialized
     assert f"{private_marker}-sanitization" not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_importer_builds_operator_owned_peer_review_handoff_without_authority(
@@ -524,7 +526,7 @@ def test_importer_builds_operator_owned_peer_review_handoff_without_authority(
     serialized = json.dumps(handoff)
     assert "operator:decision:magma-share-import:001" not in serialized
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_import_handoff_status_summary_is_read_only_and_sanitized(
@@ -574,7 +576,7 @@ def test_import_handoff_status_summary_is_read_only_and_sanitized(
     serialized = json.dumps(summary)
     assert "operator:decision:magma-share-import:summary" not in serialized
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
     empty = build_magma_share_import_handoff_status_summary(None)
     assert empty["source"] == "not_configured"
@@ -649,7 +651,7 @@ def test_import_handoff_status_summary_retains_bounded_history(
     serialized = json.dumps(summary)
     assert "operator:decision:magma-share-import:history" not in serialized
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_import_handoff_status_summary_validates_history_before_truncating(
@@ -1306,7 +1308,7 @@ def test_cli_admission_status_json_reports_ready_without_full_replay_plan(
     assert "admission_contract" not in payload
     serialized = json.dumps(payload, sort_keys=True)
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_cli_admission_status_json_failure_reports_rejected_status(
@@ -1352,10 +1354,10 @@ def test_cli_replay_sanitization_summary_json_reports_contract_view(
     assert payload["share_id"] == "magma:share:import:001"
     assert payload["purpose"] == "cross_instance_replay"
     assert payload["entry_count"] == 1
-    assert "forbidden_material_absence_preserved" in (
-        payload["required_check_names"]
-    )
-    assert "raw_payload" in payload["redaction_inventory"]
+    assert payload["required_check_count"] > 0
+    assert payload["redaction_inventory_count"] == 5
+    assert "required_check_names" not in payload
+    assert "redaction_inventory" not in payload
     assert payload["context_verified"] is True
     assert payload["context_drift_detected"] is False
     assert payload["replay_metadata_only"] is True
@@ -1373,8 +1375,10 @@ def test_cli_replay_sanitization_summary_json_reports_contract_view(
     assert "replay_plan" not in payload
     serialized = json.dumps(payload, sort_keys=True)
     assert "magma:share:import:001:entry" not in serialized
+    assert "forbidden_material_absence_preserved" not in serialized
+    assert "raw_payload" not in serialized
     assert str(tmp_path) not in serialized
-    assert not any(marker in serialized for marker in PRIVATE_MARKERS)
+    assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
 def test_cli_replay_sanitization_summary_json_failure_reports_rejected_status(
@@ -1401,6 +1405,9 @@ def test_cli_replay_sanitization_summary_json_failure_reports_rejected_status(
     assert payload["blockers"] == ["expected_share_id_mismatch"]
     assert payload["expected_share_id_configured"] is False
     assert payload["sanitization_contract"] == "sanitization_v0"
+    assert "required_check_names" not in payload
+    assert "redaction_inventory" not in payload
+    assert payload["redaction_inventory_count"] == 5
     assert payload["transport_enabled"] is False
     assert payload["runtime_authority_granted"] is False
     assert payload["payload_files_imported"] == 0
@@ -1472,11 +1479,11 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
     written_handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     assert written_handoff == handoff
     assert str(tmp_path) not in result.stdout
-    assert not any(marker in result.stdout for marker in PRIVATE_MARKERS)
+    assert not any(marker in result.stdout for marker in SENSITIVE_SNIPPETS)
     assert not any(
         marker in _all_json_text(tmp_path / "share-export")
-        for marker in PRIVATE_MARKERS
+        for marker in SENSITIVE_SNIPPETS
     )
     assert not any(
-        marker in handoff_path.read_text(encoding="utf-8") for marker in PRIVATE_MARKERS
+        marker in handoff_path.read_text(encoding="utf-8") for marker in SENSITIVE_SNIPPETS
     )

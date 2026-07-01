@@ -660,8 +660,9 @@ def build_magma_share_import_replay_sanitization_summary(
 
     This view is narrower than the full import report and complementary to the
     admission-status summary. It records the sanitization contract boundary and
-    replay-admission check taxonomy, but it does not expose the replay plan,
-    entry ids, local paths, payload material, transport, or runtime authority.
+    replay-admission check counts, but it does not expose required-check names,
+    redaction inventory entries, the replay plan, entry ids, local paths,
+    payload material, transport, or runtime authority.
     """
     source = "magma_share_manifest_import_report"
     if import_report is None:
@@ -751,9 +752,8 @@ def build_magma_share_import_replay_sanitization_summary(
         "source_manifest_digest": import_report["source_manifest_digest"],
         "entry_count": entry_count,
         "required_check_count": len(required_check_names),
-        "required_check_names": required_check_names,
         "rejection_mode_count": rejection_mode_count,
-        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "redaction_inventory_count": len(FORBIDDEN_MATERIAL),
         "report_invariants": report_invariants,
         "context_verified": import_report["context_verified"],
         "context_drift_detected": import_report["context_drift_detected"],
@@ -813,11 +813,8 @@ def build_magma_share_import_failed_replay_sanitization_summary(
         "expected_purpose_configured": safe_expected_purpose is not None,
         "entry_count": 0,
         "required_check_count": len(admission_contract["required_checks"]),
-        "required_check_names": [
-            item["name"] for item in admission_contract["required_checks"]
-        ],
         "rejection_mode_count": len(admission_contract["rejection_modes"]),
-        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "redaction_inventory_count": len(FORBIDDEN_MATERIAL),
         "report_invariants": dict(admission_contract["report_invariants"]),
         "context_verified": False,
         "context_drift_detected": False,
@@ -1470,9 +1467,8 @@ def _empty_import_replay_sanitization_summary(source: str) -> dict[str, Any]:
         "scope": "no_authority_metadata_replay",
         "entry_count": 0,
         "required_check_count": 0,
-        "required_check_names": [],
         "rejection_mode_count": 0,
-        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "redaction_inventory_count": len(FORBIDDEN_MATERIAL),
         "report_invariants": {},
         "context_verified": False,
         "context_drift_detected": False,
@@ -1512,9 +1508,8 @@ def _blocked_import_replay_sanitization_summary(
         "scope": "no_authority_metadata_replay",
         "entry_count": 0,
         "required_check_count": 0,
-        "required_check_names": [],
         "rejection_mode_count": 0,
-        "redaction_inventory": list(FORBIDDEN_MATERIAL),
+        "redaction_inventory_count": len(FORBIDDEN_MATERIAL),
         "report_invariants": {},
         "context_verified": False,
         "context_drift_detected": False,

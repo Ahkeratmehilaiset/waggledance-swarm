@@ -252,6 +252,7 @@ def test_auto_panel_includes_qwen3_when_earlier_models_absent():
         "gemma3:4b",
         "llama3.2:3b",
         "qwen3:4b",
+        "llama3.1:8b",
     ]
     assert deferred == []
     assert rationale == "auto preference order"

@@ -67,6 +67,18 @@ lora = [
 
 [project.scripts]
 waggledance = "waggledance.adapters.cli.start_runtime:main"
+# The 8 deterministic v3_13_0 solver CLIs, installed as console scripts so a
+# user can run each solver directly (e.g. `wd-air01 --input sensor.json`).
+# Each target is the module's argv-parsing main(); keep in sync with the
+# cli_module fields in schemas/v3_13_0/solver_registry.json.
+wd-eng01 = "waggledance.adapters.cli.eng01_recommend:main"
+wd-eng06 = "waggledance.adapters.cli.eng06_fireplace:main"
+wd-air01 = "waggledance.adapters.cli.air01_advisory:main"
+wd-pdf01 = "waggledance.adapters.cli.pdf01_extract_invoice:main"
+wd-acct01 = "waggledance.adapters.cli.acct01_reconcile_bills:main"
+wd-fin10 = "waggledance.adapters.cli.fin10_classify_receipts:main"
+wd-email01 = "waggledance.adapters.cli.email01_classify_inbox:main"
+wd-email02 = "waggledance.adapters.cli.email02_index_vendor_emails:main"
 
 [project.urls]
 Homepage = "https://github.com/Ahkeratmehilaiset/waggledance-swarm"

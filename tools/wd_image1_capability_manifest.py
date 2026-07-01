@@ -842,6 +842,7 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "waggledance/adapters/http/routes/metrics.py",
         "waggledance/adapters/http/routes/compat_dashboard.py",
         "waggledance/adapters/http/route_stage_latency_feed.py",
+        "waggledance/core/v3_13_0/ssrf_host_guard.py",
         "waggledance/bootstrap/container.py",
         "web/hologram-brain-v6.html",
         "configs/settings.yaml",
@@ -942,6 +943,9 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
     ).read_text(encoding="utf-8")
     provider_text = (
         repo_root / "waggledance/adapters/http/route_stage_latency_feed.py"
+    ).read_text(encoding="utf-8")
+    ssrf_guard_text = (
+        repo_root / "waggledance/core/v3_13_0/ssrf_host_guard.py"
     ).read_text(encoding="utf-8")
     container_text = (repo_root / "waggledance/bootstrap/container.py").read_text(
         encoding="utf-8"
@@ -1920,14 +1924,30 @@ def build_hex_mesh_route_stage_runtime_metrics_smoke(
         "ops_latency_feed_provider_guardrails_present": all(
             token in provider_text
             for token in (
+                "classify_request_host",
+                "normalize_allowed_hosts",
+                "allowed_hosts=allowed_private_hosts",
                 "URL_USERINFO_REFUSED",
                 "URL_QUERY_REFUSED",
                 "URL_SECRET_REFUSED",
-                "URL_PRIVATE_HOST_REFUSED",
                 "CREDENTIAL_HEADER_REFUSED",
+                "HEADER_CONTROL_REFUSED",
                 "follow_redirects=False",
                 "MAX_TIMEOUT_SECONDS",
                 "MAX_RESPONSE_BYTES",
+            )
+        )
+        and all(
+            token in ssrf_guard_text
+            for token in (
+                "HOST_REFUSED_LOCAL",
+                "HOST_REFUSED_NOT_ALLOWLISTED",
+                "HOST_REFUSED_PRIVATE",
+                "require_allowlist: bool = True",
+                "normalized in allowed",
+                'rstrip(".")',
+                "ip_address",
+                "_is_localhost_name",
             )
         ),
         "latency_runbook_present": all(
@@ -6711,6 +6731,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
 
     repo_root = Path(root)
     adapter_rel = "waggledance/adapters/http/magma_handoff_metrics_alert_feed.py"
+    ssrf_guard_rel = "waggledance/core/v3_13_0/ssrf_host_guard.py"
     container_rel = "waggledance/bootstrap/container.py"
     ops_rel = "waggledance/adapters/http/routes/compat_dashboard.py"
     metrics_rel = "waggledance/adapters/http/routes/metrics.py"
@@ -6787,6 +6808,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     hologram_rel = "web/hologram-brain-v6.html"
     required = (
         adapter_rel,
+        ssrf_guard_rel,
         container_rel,
         ops_rel,
         metrics_rel,
@@ -6847,6 +6869,7 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
         )
 
     adapter_text = (repo_root / adapter_rel).read_text(encoding="utf-8")
+    ssrf_guard_text = (repo_root / ssrf_guard_rel).read_text(encoding="utf-8")
     container_text = (repo_root / container_rel).read_text(encoding="utf-8")
     ops_text = (repo_root / ops_rel).read_text(encoding="utf-8")
     metrics_text = (repo_root / metrics_rel).read_text(encoding="utf-8")
@@ -7070,10 +7093,12 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
             "/api/v2/alerts",
             "follow_redirects=False",
             "allowed_private_hosts",
+            "classify_request_host",
+            "normalize_allowed_hosts",
+            "allowed_hosts=allowed_private_hosts",
             "CREDENTIAL_HEADER_REFUSED",
             "URL_USERINFO_REFUSED",
             "URL_QUERY_REFUSED",
-            "URL_LOCAL_HOST_REFUSED",
             "RESPONSE_TOO_LARGE",
             "RESPONSE_SOURCE_URL_REFUSED",
             "contains_secret_marker_substring",
@@ -7805,15 +7830,28 @@ def build_magma_handoff_metrics_alertmanager_adapter_smoke(
     guardrails_present = all(
         token in adapter_text
         for token in (
+            "classify_request_host",
+            "normalize_allowed_hosts",
+            "allowed_hosts=allowed_private_hosts",
             "URL_USERINFO_REFUSED",
             "URL_QUERY_REFUSED",
             "URL_SECRET_REFUSED",
-            "URL_PRIVATE_HOST_REFUSED",
-            "URL_LOCAL_HOST_REFUSED",
             "CREDENTIAL_HEADER_REFUSED",
             "HEADER_CONTROL_REFUSED",
             "TIMEOUT_OUT_OF_RANGE",
             "SIZE_CAP_OUT_OF_RANGE",
+        )
+    ) and all(
+        token in ssrf_guard_text
+        for token in (
+            "HOST_REFUSED_LOCAL",
+            "HOST_REFUSED_NOT_ALLOWLISTED",
+            "HOST_REFUSED_PRIVATE",
+            "require_allowlist: bool = True",
+            "normalized in allowed",
+            'rstrip(".")',
+            "ip_address",
+            "_is_localhost_name",
         )
     )
     forbidden_control_tokens = {

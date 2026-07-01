@@ -3,14 +3,13 @@
 """AIR-01 read-only HTTP transport for operator-allowlisted sensors.
 
 This module performs one operator-selected JSON GET. It deliberately does not
-scan networks, follow redirects, store credentials, or infer LAN devices. Private
-or loopback hosts are refused unless the caller explicitly allowlists the exact
-host for this read-only request.
+scan networks, follow redirects, store credentials, or infer LAN devices. Every
+host is refused unless the caller explicitly allowlists the exact host for this
+read-only request.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ipaddress import ip_address
 from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -18,6 +17,10 @@ import httpx
 
 from waggledance.core.v3_13_0.secret_markers import (
     contains_secret_marker_substring,
+)
+from waggledance.core.v3_13_0.ssrf_host_guard import (
+    classify_request_host,
+    normalize_allowed_hosts,
 )
 
 
@@ -140,45 +143,16 @@ def _validate_url(
 
 
 def _validate_host(hostname: str, allowed_private_hosts: frozenset[str]) -> None:
-    normalized = _normalize_host(hostname)
-    if normalized in {"localhost", "localhost."} or normalized.endswith(
-        ".localhost"
-    ):
-        if normalized not in allowed_private_hosts:
-            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
-        return
-    try:
-        parsed_ip = ip_address(normalized)
-    except ValueError:
-        return
-    if parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_unspecified:
-        if normalized not in allowed_private_hosts:
-            raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
-        return
-    if parsed_ip.is_private and normalized not in allowed_private_hosts:
-        raise Air01SensorHttpTransportError("URL_PRIVATE_HOST_REFUSED")
+    code = classify_request_host(hostname, allowed_hosts=allowed_private_hosts)
+    if code is not None:
+        raise Air01SensorHttpTransportError(code)
 
 
 def _normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:
-    if not isinstance(raw_hosts, Sequence) or isinstance(raw_hosts, (str, bytes)):
-        raise Air01SensorHttpTransportError("ALLOWLIST_HOSTS_REFUSED")
-    normalized: set[str] = set()
-    for index, host in enumerate(raw_hosts):
-        if not isinstance(host, str) or not host.strip():
-            raise Air01SensorHttpTransportError(
-                f"ALLOWLIST_HOSTS_REFUSED_{index}"
-            )
-        clean = _normalize_host(host)
-        if "://" in clean or "/" in clean or "?" in clean or "@" in clean:
-            raise Air01SensorHttpTransportError(
-                f"ALLOWLIST_HOSTS_REFUSED_{index}"
-            )
-        normalized.add(clean)
-    return frozenset(normalized)
-
-
-def _normalize_host(host: str) -> str:
-    return host.strip().lower().strip("[]")
+    try:
+        return normalize_allowed_hosts(raw_hosts)
+    except ValueError as exc:
+        raise Air01SensorHttpTransportError(str(exc)) from exc
 
 
 def _validate_headers(

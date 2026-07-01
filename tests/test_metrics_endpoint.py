@@ -1042,6 +1042,47 @@ def test_metrics_magma_alert_feed_response_refusal_reason_is_fixed_label():
     assert "127.0.0.1" not in body
 
 
+def test_magma_alert_feed_requires_explicit_public_host_allowlist():
+    from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+        MagmaHandoffMetricsAlertFeedError,
+        MagmaHandoffMetricsAlertmanagerFeed,
+    )
+
+    with pytest.raises(MagmaHandoffMetricsAlertFeedError,
+                       match="URL_HOST_NOT_ALLOWLISTED"):
+        MagmaHandoffMetricsAlertmanagerFeed(
+            alertmanager_base_url="https://alerts.example.test",
+        )
+
+
+def test_magma_alert_feed_allows_trailing_dot_host_by_canonical_allowlist():
+    from waggledance.adapters.http.magma_handoff_metrics_alert_feed import (
+        MagmaHandoffMetricsAlertFeedHttpResponse,
+        MagmaHandoffMetricsAlertmanagerFeed,
+    )
+
+    seen_urls = []
+
+    def transport(url, headers, timeout_seconds, params):
+        seen_urls.append(url)
+        return MagmaHandoffMetricsAlertFeedHttpResponse(
+            body=b"[]",
+            content_type="application/json",
+            status_code=200,
+            source_url=url,
+        )
+
+    feed = MagmaHandoffMetricsAlertmanagerFeed(
+        alertmanager_base_url="https://alerts.example.test.",
+        allowed_private_hosts=["alerts.example.test"],
+        transport=transport,
+    )
+
+    feed.snapshot()
+
+    assert seen_urls == ["https://alerts.example.test./api/v2/alerts"]
+
+
 def test_metrics_body_contains_route_stage_latency_feed_cache_gauges():
     from waggledance.adapters.http.route_stage_latency_feed import (
         RouteStageLatencyFeedHttpResponse,
@@ -1148,6 +1189,52 @@ def test_metrics_route_stage_latency_feed_preserves_explicit_none_reason():
         "waggledance_route_stage_latency_feed_failure_reason{"
         'reason="FEED_READ_FAILED"} 0.0'
     ) in body
+
+
+def test_route_stage_latency_feed_requires_explicit_public_host_allowlist():
+    from waggledance.adapters.http.route_stage_latency_feed import (
+        RouteStageLatencyFeedError,
+        RouteStageLatencyPrometheusAlertmanagerFeed,
+    )
+
+    with pytest.raises(RouteStageLatencyFeedError,
+                       match="URL_HOST_NOT_ALLOWLISTED"):
+        RouteStageLatencyPrometheusAlertmanagerFeed(
+            prometheus_base_url="https://prometheus.example.test",
+        )
+
+
+def test_route_stage_latency_feed_allows_trailing_dot_host_by_canonical_allowlist():
+    from waggledance.adapters.http.route_stage_latency_feed import (
+        RouteStageLatencyFeedHttpResponse,
+        RouteStageLatencyPrometheusAlertmanagerFeed,
+    )
+
+    seen_urls = []
+
+    def transport(url, headers, timeout_seconds, params):
+        seen_urls.append(url)
+        body = {"status": "success", "data": {"result": []}}
+        return RouteStageLatencyFeedHttpResponse(
+            body=json.dumps(body).encode("utf-8"),
+            content_type="application/json",
+            status_code=200,
+            source_url=url,
+        )
+
+    feed = RouteStageLatencyPrometheusAlertmanagerFeed(
+        prometheus_base_url="https://prometheus.example.test.",
+        allowed_private_hosts=["prometheus.example.test"],
+        transport=transport,
+    )
+
+    feed.snapshot()
+
+    assert seen_urls == [
+        "https://prometheus.example.test./api/v1/query",
+        "https://prometheus.example.test./api/v1/query",
+        "https://prometheus.example.test./api/v1/query",
+    ]
 
 
 def test_metrics_body_contains_autogrowth_alert_feed_cache_gauges():

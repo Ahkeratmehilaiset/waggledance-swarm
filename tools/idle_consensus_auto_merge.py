@@ -314,6 +314,7 @@ def evaluate_auto_merge_gate(
         task_id=bridge_gate_task_id,
         pr_number=pr_number,
         from_agent=from_agent,
+        author_agent=author_agent,
         checked=events_path is not None,
     )
     charter = load_charter(charter_path)
@@ -1732,6 +1733,7 @@ def _bridge_peer_gate(
     task_id: str,
     pr_number: int,
     from_agent: str,
+    author_agent: str,
     checked: bool,
 ) -> dict[str, Any]:
     if not checked:
@@ -1742,6 +1744,7 @@ def _bridge_peer_gate(
             "task_id": task_id,
             "pr_number": pr_number,
             "merging_agent": from_agent,
+            "author_agent": author_agent,
             "latest_blocking_event": None,
             "latest_approval_event": None,
         }
@@ -1749,6 +1752,7 @@ def _bridge_peer_gate(
         events=events,
         task_id=task_id,
         merging_agent=from_agent,
+        author_agent=author_agent,
         pr_number=pr_number,
     )
 

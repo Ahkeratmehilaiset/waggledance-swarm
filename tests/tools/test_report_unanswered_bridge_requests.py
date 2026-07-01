@@ -296,9 +296,9 @@ def test_prior_autonomous_merge_receipt_prevents_obsolete_driver_ready_reopen() 
     assert report["unanswered_count"] == 0
 
 
-def test_prior_closure_does_not_suppress_later_non_pr_follow_nudge() -> None:
+def test_prior_closure_does_not_suppress_later_non_pr_wake_request() -> None:
     answered = _answer(
-        task_id="bridge-follow-nudge-20260615",
+        task_id="operator-wake-request-20260615",
         ts="2026-06-13T12:05:00Z",
         agent="codex-lead-1",
         status="answered",
@@ -309,12 +309,41 @@ def test_prior_closure_does_not_suppress_later_non_pr_follow_nudge() -> None:
             _request(
                 agent="operator",
                 to="codex-lead-1",
-                task_id="bridge-follow-nudge-20260615",
+                task_id="operator-wake-request-20260615",
                 ts="2026-06-13T12:00:00Z",
                 status="open",
             )
             | {"payload": {}},
             answered,
+            _request(
+                agent="operator",
+                to="codex-lead-1",
+                task_id="operator-wake-request-20260615",
+                ts="2026-06-13T12:10:00Z",
+                status="open",
+            )
+            | {"payload": {}},
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["task_id"] == "operator-wake-request-20260615"
+    assert report["requests"][0]["age_minutes"] == 10.0
+
+
+def test_bridge_follow_nudge_is_not_unanswered_pressure() -> None:
+    report = report_unanswered_requests(
+        events=[
+            _request(
+                agent="operator",
+                to="codex-lead-1",
+                task_id="bridge-follow-nudge-20260615",
+                ts="2026-06-13T12:00:00Z",
+                status="open",
+            )
+            | {"payload": {}},
             _request(
                 agent="operator",
                 to="codex-lead-1",
@@ -328,9 +357,9 @@ def test_prior_closure_does_not_suppress_later_non_pr_follow_nudge() -> None:
         min_age_minutes=0,
     )
 
-    assert report["unanswered_count"] == 1
-    assert report["requests"][0]["task_id"] == "bridge-follow-nudge-20260615"
-    assert report["requests"][0]["age_minutes"] == 10.0
+    assert report["unanswered_count"] == 0
+    assert report["by_agent"] == {}
+    assert report["requests"] == []
 
 
 def test_non_terminal_third_party_event_does_not_close_request() -> None:

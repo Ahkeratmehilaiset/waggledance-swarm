@@ -76,6 +76,23 @@ class LLMRequest:
             return default
         return parsed if parsed > 0 else default
 
+    def allows_cloud(self) -> bool:
+        """True only if this request opts in to cloud (Tier-3) dispatch.
+
+        The authoritative per-request flag is ``budget.allow_cloud``. It is
+        FALSE by default (see ``CallBudget.allow_cloud``), so a bare request
+        never egresses to the cloud tier unless the caller explicitly opts
+        in. This is the single source of truth consulted by both the
+        client's chain gate and the cloud provider's self-guard.
+
+        Fail-closed: a missing or ``None`` budget, or an absent flag, denies
+        cloud rather than defaulting to allow.
+        """
+        budget = getattr(self, "budget", None)
+        if budget is None:
+            return False
+        return bool(getattr(budget, "allow_cloud", False))
+
 
 @dataclass(slots=True)
 class LLMResponse:

@@ -63,7 +63,7 @@ fastapi==0.135.1
 faster-whisper==1.2.0
 feedparser==6.0.12
 ffmpeg-python==0.2.0
-ffmpy==0.5.0
+ffmpy==1.0.0
 filelock==3.29.4
 flatbuffers==25.2.10
 fonttools==4.61.1

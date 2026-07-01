@@ -49,11 +49,12 @@ The harness picks the first N already-installed models from this preference orde
 3. `llama3.2:3b`
 4. `phi4-mini:latest`
 5. `qwen3:4b` (rank-5 spillover; selected automatically when earlier preferred models are absent, or in a larger panel)
-6. `qwen2.5:7b` (legacy spillover; in panel only with a larger `--max-models` when higher-preference models are present)
+6. `llama3.1:8b` (rank-6 spillover; selected automatically when earlier preferred models are absent, or in a larger panel)
+7. `qwen2.5:7b` (legacy spillover; in panel only with a larger `--max-models` when higher-preference models are present)
 
 Models > 10 GB (`gemma4:26b`, `qwen2.5:32b`, `osoderholm/poro:latest`) are NOT in the auto panel. They surface in the JSON's `deferred_too_large_by_default[]` field. Operator can opt in via `--prefer-larger-models` or `--models <list>`.
 
-This selection-rule refresh does not alter the Phase 17D measured numbers below. `qwen3:4b` remains unmeasured in this artifact until a new local sweep is run and published.
+This selection-rule refresh does not alter the Phase 17D measured numbers below. `qwen3:4b` and `llama3.1:8b` remain unmeasured in this artifact until a new local sweep is run and published.
 
 The CLI override `--models a,b,c` accepts any explicit comma-separated list. Every named model must be already-installed; if any is missing, the harness fails closed and refuses to proceed.
 

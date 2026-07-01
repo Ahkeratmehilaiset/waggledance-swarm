@@ -10,8 +10,7 @@ inputs by default instead of implementing auth.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ipaddress import ip_address
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
@@ -21,6 +20,10 @@ from waggledance.core.v3_13_0.eng01_price_feed_response_parser import (
 )
 from waggledance.core.v3_13_0.secret_markers import (
     contains_secret_marker_substring,
+)
+from waggledance.core.v3_13_0.ssrf_host_guard import (
+    classify_request_host,
+    normalize_allowed_hosts,
 )
 
 
@@ -64,6 +67,7 @@ def fetch_price_feed_http_response(
     headers: Mapping[str, str] | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    allowed_private_hosts: Sequence[str] = (),
     allow_credential_headers: bool = False,
     transport: Eng01PriceFeedTransport | None = None,
 ) -> Eng01PriceFeedHttpResponse:
@@ -73,7 +77,8 @@ def fetch_price_feed_http_response(
     Tests and higher-level adapters can inject ``transport`` to avoid live
     network calls while preserving the same validation contract.
     """
-    normalized_url = _validate_url(url)
+    normalized_allowed_hosts = _normalize_allowed_hosts(allowed_private_hosts)
+    normalized_url = _validate_url(url, allowed_hosts=normalized_allowed_hosts)
     normalized_headers = _validate_headers(
         headers,
         allow_credential_headers=allow_credential_headers,
@@ -126,7 +131,7 @@ def _httpx_transport(
     )
 
 
-def _validate_url(url: str) -> str:
+def _validate_url(url: str, *, allowed_hosts: frozenset[str]) -> str:
     if not isinstance(url, str) or not url.strip():
         raise Eng01PriceFeedHttpTransportError("URL_EMPTY")
     normalized = url.strip()
@@ -137,24 +142,21 @@ def _validate_url(url: str) -> str:
         raise Eng01PriceFeedHttpTransportError("URL_USERINFO_REFUSED")
     if contains_secret_marker_substring(parsed.query):
         raise Eng01PriceFeedHttpTransportError("URL_SECRET_REFUSED")
-    _validate_public_host(parsed.hostname or "")
+    _validate_public_host(parsed.hostname or "", allowed_hosts=allowed_hosts)
     return normalized
 
 
-def _validate_public_host(hostname: str) -> None:
-    normalized = hostname.strip().lower()
-    if normalized in {"localhost", "localhost."} or normalized.endswith(
-        ".localhost"
-    ):
-        raise Eng01PriceFeedHttpTransportError("URL_LOCAL_HOST_REFUSED")
+def _validate_public_host(hostname: str, *, allowed_hosts: frozenset[str]) -> None:
+    code = classify_request_host(hostname, allowed_hosts=allowed_hosts)
+    if code is not None:
+        raise Eng01PriceFeedHttpTransportError(code)
+
+
+def _normalize_allowed_hosts(raw_hosts: Sequence[str]) -> frozenset[str]:
     try:
-        parsed_ip = ip_address(normalized.strip("[]"))
-    except ValueError:
-        return
-    if parsed_ip.is_loopback or parsed_ip.is_link_local:
-        raise Eng01PriceFeedHttpTransportError("URL_LOCAL_HOST_REFUSED")
-    if parsed_ip.is_private:
-        raise Eng01PriceFeedHttpTransportError("URL_PRIVATE_HOST_REFUSED")
+        return normalize_allowed_hosts(raw_hosts)
+    except ValueError as exc:
+        raise Eng01PriceFeedHttpTransportError(str(exc)) from exc
 
 
 def _validate_headers(

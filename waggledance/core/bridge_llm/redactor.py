@@ -73,6 +73,14 @@ IBAN_HINT_RE: Pattern[str] = re.compile(r"[A-Z]{2}\d{2}", re.IGNORECASE)
 PHONE_HINT_RE: Pattern[str] = re.compile(r"\d[\d\s-]{8}")
 
 
+# Cheap, side-effect-free availability probe. A cloud provider consults
+# ``BridgeLLMRedactor.is_available()`` before egress; the probe carries a
+# known email so a working redactor scrubs it (applied=True, failed=False).
+# If the machinery is broken the probe fails closed -> is_available()=False
+# -> the cloud tier is treated as unavailable and the chain falls through.
+_AVAILABILITY_PROBE = "redactor availability probe probe.user@example.invalid"
+
+
 # Placeholder names per master prompt §2.6
 EMAIL_PLACEHOLDER = "EMAIL"
 TOKEN_PLACEHOLDER = "TOKEN"   # credit-card / opaque digit token
@@ -130,6 +138,23 @@ class BridgeLLMRedactor:
     is the operator-decision-4 "fail closed if redaction is unavailable"
     requirement.
     """
+
+    def is_available(self) -> bool:
+        """Return True only if the redaction machinery actually scrubs.
+
+        A cloud provider MUST refuse to egress when redaction cannot be
+        applied (operator decision 4, fail-closed). This is a cheap,
+        side-effect-free functional self-test: it scrubs a known-PII probe
+        and confirms the redactor applied a placeholder without failing.
+        Any exception, ``failed=True`` result, or a redactor that silently
+        stops scrubbing returns False so the chain skips the cloud tier
+        rather than risk sending un-redacted text.
+        """
+        try:
+            result = self.redact(_AVAILABILITY_PROBE)
+        except Exception:
+            return False
+        return bool(result is not None and not result.failed and result.applied)
 
     def redact(self, prompt: str, *, accept_pii_to_cloud: bool = False) -> RedactionResult:
         if accept_pii_to_cloud:

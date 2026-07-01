@@ -18,6 +18,7 @@ from waggledance.core.v3_13_0.eng01_price_feed_http_transport import (
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_INPUT = ROOT / "examples" / "eng01" / "offline_prices_sample.json"
 URL = "https://prices.example.test/day-ahead.json"
+HOST = "prices.example.test"
 
 
 def _payload() -> dict:
@@ -197,6 +198,7 @@ def test_main_url_mode_writes_output_snapshot(
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-private-hosts", HOST,
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
             "--horizon-start-utc", "2026-01-16T00:00:00Z",
             "--horizon-hours", "3",
@@ -345,6 +347,7 @@ def test_main_fetches_url_with_injected_transport() -> None:
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-private-hosts", HOST,
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
             "--horizon-start-utc", "2026-01-16T00:00:00Z",
             "--horizon-hours", "3",
@@ -408,6 +411,7 @@ def test_main_url_mode_reads_headers_file_and_custom_rows_path(
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-private-hosts", HOST,
             "--headers-file", str(headers_path),
             "--rows-path", "data,prices",
             "--hour-key", "timestamp",
@@ -436,6 +440,7 @@ def test_main_url_mode_derives_horizon_start_from_first_row() -> None:
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-private-hosts", HOST,
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
             "--horizon-hours", "3",
         ],
@@ -463,13 +468,32 @@ def test_main_url_mode_refuses_transport_error() -> None:
     assert "URL_LOCAL_HOST_REFUSED" in output["error"]
 
 
+def test_main_url_mode_refuses_public_host_without_allowlist() -> None:
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["--url", URL],
+        stderr=stderr,
+        transport=lambda url, *_: _http_response(url),
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "URL_HOST_NOT_ALLOWLISTED" in output["error"]
+
+
 def test_main_headers_file_must_be_json_object(tmp_path: Path) -> None:
     headers_path = tmp_path / "headers.json"
     headers_path.write_text(json.dumps(["Accept"]), encoding="utf-8")
     stderr = io.StringIO()
 
     exit_code = main(
-        ["--url", URL, "--headers-file", str(headers_path)],
+        [
+            "--url", URL,
+            "--allowed-private-hosts", HOST,
+            "--headers-file", str(headers_path),
+        ],
         stderr=stderr,
         transport=lambda url, *_: _http_response(url),
     )
@@ -502,6 +526,7 @@ def test_main_url_mode_can_opt_in_to_credential_headers(
     exit_code = main(
         [
             "--url", URL,
+            "--allowed-private-hosts", HOST,
             "--headers-file", str(headers_path),
             "--allow-credential-headers",
             "--fetched-at-utc", "2026-01-15T20:00:00Z",
@@ -532,6 +557,24 @@ def test_main_refuses_headers_file_with_input_mode(tmp_path: Path) -> None:
 
     assert exit_code == 2
     assert "--headers-file requires --url" in output["error"]
+
+
+def test_main_refuses_allowed_hosts_with_input_mode(tmp_path: Path) -> None:
+    input_path = tmp_path / "prices.json"
+    input_path.write_text(json.dumps(_payload()), encoding="utf-8")
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(input_path),
+            "--allowed-private-hosts", HOST,
+        ],
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert "--allowed-private-hosts requires --url" in output["error"]
 
 
 def _http_response(url: str) -> Eng01PriceFeedHttpResponse:

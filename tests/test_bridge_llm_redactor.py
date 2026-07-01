@@ -311,7 +311,7 @@ def test_anthropic_provider_fails_closed_on_redactor_sentinel(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
     from waggledance.core.bridge_llm.providers.base import ProviderError
-    from waggledance.core.bridge_llm.types import LLMRequest
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
     from waggledance.core.bridge_llm.redactor import (
         BridgeLLMRedactor, RedactionResult,
     )
@@ -330,7 +330,10 @@ def test_anthropic_provider_fails_closed_on_redactor_sentinel(monkeypatch):
     # Patch is_available so we get past the find_spec check
     monkeypatch.setattr(p, "is_available", lambda: True)
     with pytest.raises(ProviderError, match="redactor failed"):
-        p.call(LLMRequest(injection_point="x", prompt="prompt-with-pii"))
+        p.call(LLMRequest(
+            injection_point="x", prompt="prompt-with-pii",
+            budget=CallBudget(allow_cloud=True),
+        ))
 
 
 # ─── R22.0 hotfix: 3 post-merge audit findings ───────────────────
@@ -419,7 +422,7 @@ def test_r22_f2_anthropic_provider_uses_failed_flag_not_text(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
     from waggledance.core.bridge_llm.providers.base import ProviderError
-    from waggledance.core.bridge_llm.types import LLMRequest
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
     from waggledance.core.bridge_llm.redactor import (
         BridgeLLMRedactor, RedactionResult,
     )
@@ -443,7 +446,10 @@ def test_r22_f2_anthropic_provider_uses_failed_flag_not_text(monkeypatch):
     # because anthropic SDK isn't configured for a real call, but
     # NOT the redactor-fail-closed branch.
     with pytest.raises(ProviderError) as excinfo:
-        p.call(LLMRequest(injection_point="x", prompt="prompt"))
+        p.call(LLMRequest(
+            injection_point="x", prompt="prompt",
+            budget=CallBudget(allow_cloud=True),
+        ))
     assert "redactor failed" not in str(excinfo.value), (
         f"AnthropicProvider mis-classified pass-through sentinel as "
         f"failed-closed: {excinfo.value!r}"
@@ -464,6 +470,229 @@ def test_r22_f3_cost_cents_estimate_is_positive_for_haiku():
 def test_r22_f3_cost_cents_zero_for_zero_tokens():
     from waggledance.core.bridge_llm.providers.anthropic import _estimate_cost_cents
     assert _estimate_cost_cents(0, 0) == 0
+
+
+# ─── Lane #7: redactor availability gate ─────────────────────────
+
+def test_redactor_is_available_true_for_working_redactor():
+    """A functioning redactor reports available so the cloud tier may run."""
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    assert BridgeLLMRedactor().is_available() is True
+
+
+def test_redactor_is_available_false_when_scrub_machinery_broken(monkeypatch):
+    """If the redaction machinery is broken, is_available() is False so a
+    cloud provider refuses to egress (fail-closed)."""
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+
+    def crash(*a, **kw):
+        raise RuntimeError("simulated regex pathology")
+
+    # redact() catches this and returns failed=True; is_available() must
+    # then report False (it consults the structured `failed` flag).
+    monkeypatch.setattr(r, "_redact_safely", crash)
+    assert r.is_available() is False
+
+
+# ─── Lane #7: pre-egress redaction is the security boundary ──────
+
+def test_anthropic_provider_sends_only_redacted_text_to_cloud(monkeypatch):
+    """SECURITY CRUX (the most important test): a prompt carrying PII must
+    reach the Anthropic SDK only AFTER redaction. We capture exactly what
+    would be transmitted on the wire and assert it contains placeholders
+    and NONE of the raw PII. Uses the REAL default redactor."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.types import CallBudget, FallbackLevel, LLMRequest
+
+    captured_create: dict = {}
+
+    class StubUsage:
+        input_tokens = 5
+        output_tokens = 7
+
+    class StubBlock:
+        type = "text"
+        text = "cloud-reply"
+
+    class StubResponse:
+        content = [StubBlock()]
+        usage = StubUsage()
+
+    class StubAnthropic:
+        def __init__(self, timeout=None, **kwargs):
+            pass
+
+        @property
+        def messages(self):
+            class _M:
+                @staticmethod
+                def create(**kwargs):
+                    captured_create.update(kwargs)
+                    return StubResponse()
+            return _M()
+
+    monkeypatch.setitem(sys.modules, "anthropic", type(sys)("anthropic_stub"))
+    sys.modules["anthropic"].Anthropic = StubAnthropic  # type: ignore[attr-defined]
+
+    raw_pii = {
+        "email": "alice@example.org",
+        "phone": "0401234567",
+        "card": "4111111111111111",
+        "path": "/var/log/secret.log",
+    }
+    prompt = (
+        f"Contact {raw_pii['email']} or call {raw_pii['phone']} about "
+        f"card {raw_pii['card']}; logs in {raw_pii['path']}"
+    )
+
+    provider = AnthropicProvider()  # real BridgeLLMRedactor
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+    response = provider.call(LLMRequest(
+        injection_point="x", prompt=prompt,
+        budget=CallBudget(allow_cloud=True),
+    ))
+
+    # The SDK WAS invoked...
+    assert captured_create, "anthropic SDK was never invoked"
+    sent = captured_create["messages"][0]["content"]
+    # ...with placeholders substituted...
+    assert "<EMAIL_1>" in sent
+    assert "<PHONE_1>" in sent
+    assert "<TOKEN_1>" in sent
+    assert "<PATH_1>" in sent
+    # ...and ZERO raw PII bytes on the wire.
+    for original in raw_pii.values():
+        assert original not in sent, (
+            f"RAW PII {original!r} egressed to the cloud client"
+        )
+    # Happy path: the mocked cloud reply maps onto LLMResponse.
+    assert response.text == "cloud-reply"
+    assert response.success is True
+    assert response.fallback_level == FallbackLevel.CLOUD_LLM
+    assert response.redaction_applied is True
+
+
+def test_anthropic_provider_does_not_call_cloud_when_redactor_raises(monkeypatch):
+    """If the redactor RAISES (not merely returns failed=True), the
+    provider must NOT construct/contact the cloud SDK; it raises
+    ProviderError so the chain falls through. The raw prompt must not leak
+    into the escaping error."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.providers.base import ProviderError
+    from waggledance.core.bridge_llm.redactor import BridgeLLMRedactor
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
+
+    class RaisingRedactor(BridgeLLMRedactor):
+        def redact(self, prompt, *, accept_pii_to_cloud=False):
+            raise RuntimeError("redactor backend down")
+
+    class ExplodingAnthropic:
+        def __init__(self, *a, **kw):
+            raise AssertionError(
+                "cloud SDK must NOT be constructed when redaction fails"
+            )
+
+    monkeypatch.setitem(sys.modules, "anthropic", type(sys)("anthropic_stub"))
+    sys.modules["anthropic"].Anthropic = ExplodingAnthropic  # type: ignore[attr-defined]
+
+    provider = AnthropicProvider(redactor=RaisingRedactor())
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+    raw = "alice@example.org and card 4111111111111111"
+    with pytest.raises(ProviderError) as excinfo:
+        provider.call(LLMRequest(
+            injection_point="x", prompt=raw,
+            budget=CallBudget(allow_cloud=True),
+        ))
+    # The fail-closed error must not echo the raw prompt.
+    assert "alice@example.org" not in str(excinfo.value)
+    assert "4111111111111111" not in str(excinfo.value)
+
+
+def test_anthropic_provider_unavailable_when_redactor_unavailable(monkeypatch):
+    """is_available() is False when the redactor cannot scrub — even with
+    a key and SDK present — so the chain skips cloud (requirement 3)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm.providers import anthropic as ap_module
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.redactor import BridgeLLMRedactor
+
+    # Force the SDK-presence check to pass so the redactor gate is the
+    # deciding factor regardless of whether anthropic is installed here.
+    monkeypatch.setattr(
+        ap_module.importlib.util, "find_spec",
+        lambda name, *a, **kw: object() if name == "anthropic" else None,
+    )
+
+    class DeadRedactor(BridgeLLMRedactor):
+        def is_available(self):
+            return False
+
+    assert AnthropicProvider(redactor=DeadRedactor()).is_available() is False
+    # Control: same env + a working redactor IS available, proving the
+    # redactor is the discriminating condition.
+    assert AnthropicProvider().is_available() is True
+
+
+def test_anthropic_provider_fails_closed_when_redactor_is_none(monkeypatch):
+    """Defensive fail-closed: if the provider's redactor is cleared to None
+    at runtime it is never available and call() refuses to egress.
+
+    (The constructor defaults redactor=None to a real BridgeLLMRedactor, so
+    this simulates a redactor that was torn down after construction.)"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm.providers import anthropic as ap_module
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.providers.base import ProviderError
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
+
+    monkeypatch.setattr(
+        ap_module.importlib.util, "find_spec",
+        lambda name, *a, **kw: object() if name == "anthropic" else None,
+    )
+    provider = AnthropicProvider()
+    provider._redactor = None  # simulate a torn-down redactor
+    assert provider.is_available() is False
+    # Even if is_available is bypassed, call() refuses to egress. (Cloud is
+    # explicitly allowed here so the allow_cloud guard is not what trips.)
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+    with pytest.raises(ProviderError, match="redactor unavailable"):
+        provider.call(LLMRequest(
+            injection_point="x", prompt="alice@example.org",
+            budget=CallBudget(allow_cloud=True),
+        ))
+
+
+def test_anthropic_provider_refuses_when_allow_cloud_false(monkeypatch):
+    """#1449 review — defense-in-depth: a direct caller cannot bypass the
+    gate. With key + SDK + redactor all available, a request that disallows
+    cloud makes call() raise ProviderError BEFORE any SDK construction or
+    egress. Covers explicit allow_cloud=False AND the bare (default) request."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.providers.base import ProviderError
+    from waggledance.core.bridge_llm.types import CallBudget, LLMRequest
+
+    class ExplodingAnthropic:
+        def __init__(self, *a, **kw):
+            raise AssertionError("SDK constructed despite allow_cloud=False")
+
+    monkeypatch.setitem(sys.modules, "anthropic", type(sys)("anthropic_stub"))
+    sys.modules["anthropic"].Anthropic = ExplodingAnthropic  # type: ignore[attr-defined]
+
+    provider = AnthropicProvider()
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+    # Explicit opt-out → refuse (no SDK touched).
+    with pytest.raises(ProviderError, match="cloud disabled"):
+        provider.call(LLMRequest(
+            injection_point="x", prompt="alice@example.org",
+            budget=CallBudget(allow_cloud=False),
+        ))
+    # Bare request (default-deny) → refuse.
+    with pytest.raises(ProviderError, match="cloud disabled"):
+        provider.call(LLMRequest(injection_point="x", prompt="alice@example.org"))
 
 
 def test_r22_f3_anthropic_provider_passes_timeout_to_sdk(monkeypatch):
@@ -497,7 +726,7 @@ def test_r22_f3_anthropic_provider_passes_timeout_to_sdk(monkeypatch):
     monkeypatch.setattr(p, "is_available", lambda: True)
     request = LLMRequest(
         injection_point="x", prompt="hello",
-        budget=CallBudget(max_latency_ms=2500),
+        budget=CallBudget(max_latency_ms=2500, allow_cloud=True),
     )
     try:
         p.call(request)

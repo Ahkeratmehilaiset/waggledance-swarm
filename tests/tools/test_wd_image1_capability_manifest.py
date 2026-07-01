@@ -1195,6 +1195,7 @@ def test_hex_mesh_route_stage_runtime_metrics_smoke_blocks_foreign_root(
         "waggledance/adapters/http/routes/metrics.py",
         "waggledance/adapters/http/routes/compat_dashboard.py",
         "waggledance/adapters/http/route_stage_latency_feed.py",
+        "waggledance/core/v3_13_0/ssrf_host_guard.py",
         "waggledance/bootstrap/container.py",
         "web/hologram-brain-v6.html",
         "configs/settings.yaml",

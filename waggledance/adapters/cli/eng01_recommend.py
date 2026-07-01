@@ -80,6 +80,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Maximum HTTP response size for --url mode",
     )
     parser.add_argument(
+        "--allowed-private-hosts",
+        action="append",
+        default=[],
+        help=(
+            "Exact HTTP feed host allowlist for --url mode; repeat or use "
+            "comma-separated hosts"
+        ),
+    )
+    parser.add_argument(
         "--rows-path",
         default="",
         help="Dot- or comma-separated JSON path to rows in --url mode",
@@ -187,6 +196,7 @@ def run_from_url(
     feed_source: str | None = None,
     price_unit: str = PRICE_UNIT_EUR_PER_MWH,
     stale_threshold_hours: int = 12,
+    allowed_private_hosts: Sequence[str] = (),
     allow_credential_headers: bool = False,
     transport: Eng01PriceFeedTransport | None = None,
 ) -> dict[str, Any]:
@@ -195,6 +205,7 @@ def run_from_url(
         headers=headers,
         timeout_seconds=timeout_seconds,
         max_response_bytes=max_response_bytes,
+        allowed_private_hosts=allowed_private_hosts,
         allow_credential_headers=allow_credential_headers,
         transport=transport,
     )
@@ -253,6 +264,9 @@ def main(
                 feed_source=args.feed_source,
                 price_unit=args.price_unit or PRICE_UNIT_EUR_PER_MWH,
                 stale_threshold_hours=args.stale_threshold_hours,
+                allowed_private_hosts=_parse_allowed_hosts(
+                    args.allowed_private_hosts
+                ),
                 allow_credential_headers=args.allow_credential_headers,
                 transport=transport,
             )
@@ -323,8 +337,17 @@ def _ensure_url_only_args_are_absent(args: argparse.Namespace) -> None:
         raise ValueError("--horizon-start-utc requires --url")
     if args.feed_source is not None:
         raise ValueError("--feed-source requires --url")
+    if args.allowed_private_hosts:
+        raise ValueError("--allowed-private-hosts requires --url")
     if args.allow_credential_headers:
         raise ValueError("--allow-credential-headers requires --url")
+
+
+def _parse_allowed_hosts(raw_hosts: Sequence[str]) -> tuple[str, ...]:
+    hosts: list[str] = []
+    for raw in raw_hosts:
+        hosts.extend(part.strip() for part in raw.split(",") if part.strip())
+    return tuple(hosts)
 
 
 def _write_output_file(raw_path: str, output_text: str) -> None:

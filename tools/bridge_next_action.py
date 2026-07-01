@@ -143,6 +143,7 @@ DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_REPEATS = 2
 DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS = 12.0
 DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES = 40.0
+BRIDGE_FOLLOW_NUDGE_TASK_PREFIX = "bridge-follow-nudge-"
 WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS = 2.0
 PRODUCTION_LIVENESS_IGNORED_AGENTS = {"operator", "system", "unknown"}
 WAKE_DELIVERY_IGNORED_TARGETS = {*PRODUCTION_LIVENESS_IGNORED_AGENTS, "driver"}
@@ -1077,6 +1078,8 @@ def _idle_protocol_progressed_by_index(
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
+    if _is_bridge_follow_nudge(event):
+        return False
     status = _event_status(event)
     if _is_closed_request_status(status):
         return False
@@ -1084,6 +1087,12 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
         return False
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
+    )
+
+
+def _is_bridge_follow_nudge(event: Mapping[str, Any]) -> bool:
+    return _event_type(event) == "wake_request" and _task_id(event).lower().startswith(
+        BRIDGE_FOLLOW_NUDGE_TASK_PREFIX
     )
 
 

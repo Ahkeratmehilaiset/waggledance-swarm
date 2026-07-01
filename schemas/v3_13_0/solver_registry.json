@@ -76,6 +76,7 @@
       "transport_modules": [
         "waggledance.core.v3_13_0.air01_sensor_http_transport"
       ],
+      "cli_module": "waggledance.adapters.cli.air01_advisory",
       "risk_class": "informational",
       "write_intent": "none",
       "marker_class": "informational_with_severity",

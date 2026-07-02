@@ -30,7 +30,7 @@ def _write_snapshot(case_id: str, payload: dict) -> None:
 def test_serves_html_with_no_snapshots(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    response = _client().get("/dashboard/advisories")
+    response = _client().get("/api/dashboard/advisories")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
@@ -62,7 +62,7 @@ def test_renders_all_three_advisories(tmp_path, monkeypatch):
         "metrics": {"fire_event_count_30d": 4, "days_with_fire": 3},
     })
 
-    text = _client().get("/dashboard/advisories").text
+    text = _client().get("/api/dashboard/advisories").text
 
     assert "2026-01-16T02:00:00Z" in text
     assert "0.031 EUR/kWh" in text
@@ -78,7 +78,7 @@ def test_refused_snapshot_renders_refused_state(tmp_path, monkeypatch):
     Path(SNAPSHOT_PATHS["ENG-01"]).parent.mkdir(parents=True, exist_ok=True)
     Path(SNAPSHOT_PATHS["ENG-01"]).write_text("{not-json", encoding="utf-8")
 
-    text = _client().get("/dashboard/advisories").text
+    text = _client().get("/api/dashboard/advisories").text
 
     assert "SNAPSHOT_REFUSED" in text
     assert "parse_failed" in text
@@ -91,7 +91,7 @@ def test_escapes_malicious_snapshot_content(tmp_path, monkeypatch):
         "risk_level": "<img src=x onerror=alert(1)>",
     })
 
-    text = _client().get("/dashboard/advisories").text
+    text = _client().get("/api/dashboard/advisories").text
 
     assert "<script>alert(1)</script>" not in text
     assert "<img src=x" not in text
@@ -106,7 +106,7 @@ def test_rendering_is_total_on_garbage_nested_fields(tmp_path, monkeypatch):
                                "risk_level": ["x"]})
     _write_snapshot("ENG-06", {"result_marker": "OK", "metrics": "garbage"})
 
-    response = _client().get("/dashboard/advisories")
+    response = _client().get("/api/dashboard/advisories")
 
     assert response.status_code == 200
     assert response.text.count("OK") >= 3
@@ -116,7 +116,7 @@ def test_emergency_marker_renders_as_critical_state(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_snapshot("AIR-01", {"result_marker": "AIR_QUALITY_EMERGENCY"})
 
-    text = _client().get("/dashboard/advisories").text
+    text = _client().get("/api/dashboard/advisories").text
 
     assert "AIR_QUALITY_EMERGENCY" in text
     assert "#d03b3b" in text  # critical accent on the card
@@ -128,7 +128,7 @@ def test_render_function_handles_missing_verticals_directly():
         assert case_id in html_text
 
 
-def test_route_registered_in_api_factory_without_auth() -> None:
+def test_route_registered_in_api_factory_and_auth_gated() -> None:
     from waggledance.adapters.http.api import create_app
 
     class Settings:
@@ -138,11 +138,19 @@ def test_route_registered_in_api_factory_without_auth() -> None:
         _settings = Settings()
 
     app = create_app(Container())
+    client = TestClient(app, raise_server_exceptions=False)
 
-    # Non-/api path: served WITHOUT a bearer token, like /hologram.
-    response = TestClient(app, raise_server_exceptions=False).get(
-        "/dashboard/advisories"
+    # Auth-consistent with the JSON advisory routes: the same telemetry must
+    # not be readable unauthenticated (rco-2 security review, PR #1471).
+    unauthenticated = client.get("/api/dashboard/advisories")
+    assert unauthenticated.status_code == 401
+
+    response = client.get(
+        "/api/dashboard/advisories",
+        headers={"Authorization": "Bearer test-key"},
     )
-
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["content-security-policy"] == (
+        "default-src 'none'; style-src 'unsafe-inline'"
+    )

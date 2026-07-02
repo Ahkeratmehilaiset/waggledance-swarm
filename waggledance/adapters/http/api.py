@@ -237,7 +237,8 @@ def create_app(container) -> FastAPI:
     app.include_router(candidate_lab_router)
     # ENG-01 advisory snapshot (/api/eng01/advisory/latest)
     app.include_router(eng01_advisory_router)
-    # Read-only advisory status dashboard (/dashboard/advisories, non-API HTML)
+    # Read-only advisory status dashboard (/api/dashboard/advisories, HTML;
+    # bearer- or session-cookie-gated like the JSON advisory routes)
     app.include_router(advisory_dashboard_router)
 
     return app

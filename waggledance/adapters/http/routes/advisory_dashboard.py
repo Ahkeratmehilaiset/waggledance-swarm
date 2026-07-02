@@ -7,9 +7,14 @@ Server-rendered HTML status tiles for ENG-01 (spot electricity), AIR-01
 ``data/<case>/latest_advisory.json`` snapshot files the JSON advisory routes
 serve and renders them server-side:
 
-- no client-side ``/api`` fetch and therefore no bearer token in the browser
-  (the page lives outside ``/api/*`` like ``/hologram``);
-- no JavaScript, no external assets, no new dependencies;
+- served under ``/api/*`` so it carries the SAME auth requirement as the JSON
+  advisory routes (bearer token, or the HttpOnly ``waggle_session`` cookie for
+  browser use after ``/api/auth/session`` login). The advisory telemetry is
+  protected on the API side, so the dashboard must not expose it
+  unauthenticated (rco-2 security review, PR #1471);
+- no client-side fetch and no token embedded in the page;
+- no JavaScript, no external assets, no new dependencies; a strict
+  Content-Security-Policy header as defense-in-depth;
 - every interpolated value is HTML-escaped;
 - rendering is TOTAL: nested snapshot fields are isinstance-guarded so a
   malformed snapshot can never 500 the page (it degrades to marker-only).
@@ -58,14 +63,21 @@ _STATUS_SERIOUS = "#ec835a"
 _STATUS_CRITICAL = "#d03b3b"
 
 
-@router.get("/dashboard/advisories", response_class=HTMLResponse)
+# No JS and full output escaping make this belt-and-braces, not load-bearing.
+_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+
+
+@router.get("/api/dashboard/advisories", response_class=HTMLResponse)
 def get_advisory_dashboard() -> HTMLResponse:
     """Render the read-only advisory status dashboard."""
     snapshots = {
         case_id: _load_snapshot(path)
         for case_id, path in SNAPSHOT_PATHS.items()
     }
-    return HTMLResponse(render_advisories_dashboard_html(snapshots))
+    return HTMLResponse(
+        render_advisories_dashboard_html(snapshots),
+        headers={"Content-Security-Policy": _CSP},
+    )
 
 
 def _load_snapshot(path: Path) -> dict[str, Any]:

@@ -285,19 +285,25 @@ def _air01_rows(snapshot: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def _eng06_rows(snapshot: Mapping[str, Any]) -> list[tuple[str, str]]:
+    # Two snapshot shapes exist: the eng06_advisory_card.v1 nests the numbers
+    # under "metrics"; the raw solver payload (CLI output / hand-written
+    # snapshot) carries them at the top level. Read whichever is present
+    # (tools build review #1471).
     rows: list[tuple[str, str]] = []
     metrics = snapshot.get("metrics")
-    if isinstance(metrics, Mapping):
-        labels = (
-            ("fire_event_count_30d", "Fires (30d)"),
-            ("days_with_fire", "Days with fire"),
-            ("peak_chimney_temp_c", "Peak chimney °C"),
-            ("average_chimney_temp_c", "Avg chimney °C"),
-        )
-        for key, label in labels:
-            value = metrics.get(key)
-            if isinstance(value, (int, float)):
-                rows.append((label, str(value)))
+    source: Mapping[str, Any] = (
+        metrics if isinstance(metrics, Mapping) else snapshot
+    )
+    labels = (
+        ("fire_event_count_30d", "Fires (30d)"),
+        ("days_with_fire", "Days with fire"),
+        ("peak_chimney_temp_c", "Peak chimney °C"),
+        ("average_chimney_temp_c", "Avg chimney °C"),
+    )
+    for key, label in labels:
+        value = source.get(key)
+        if isinstance(value, (int, float)):
+            rows.append((label, str(value)))
     return rows
 
 

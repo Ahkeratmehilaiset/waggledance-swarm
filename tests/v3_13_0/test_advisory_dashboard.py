@@ -112,6 +112,25 @@ def test_rendering_is_total_on_garbage_nested_fields(tmp_path, monkeypatch):
     assert response.text.count("OK") >= 3
 
 
+def test_eng06_raw_solver_payload_shape_renders_metrics(tmp_path, monkeypatch):
+    # Regression (tools build review #1471): the raw ENG-06 solver payload
+    # carries metrics at the TOP level (no card "metrics" nesting) and must
+    # render too, not just the eng06_advisory_card.v1 shape.
+    monkeypatch.chdir(tmp_path)
+    _write_snapshot("ENG-06", {
+        "result_marker": "OK",
+        "fire_event_count_30d": 7,
+        "days_with_fire": 5,
+        "peak_chimney_temp_c": 181.5,
+    })
+
+    text = _client().get("/api/dashboard/advisories").text
+
+    assert "Fires (30d)" in text
+    assert ">7<" in text
+    assert "181.5" in text
+
+
 def test_emergency_marker_renders_as_critical_state(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_snapshot("AIR-01", {"result_marker": "AIR_QUALITY_EMERGENCY"})

@@ -14,6 +14,7 @@ from waggledance.adapters.http.routes.chat import router as chat_router
 from waggledance.adapters.http.routes.compat_dashboard import router as compat_router
 from waggledance.adapters.http.routes.cross_agent import router as cross_agent_router
 from waggledance.adapters.http.routes.eng01_advisory import router as eng01_advisory_router
+from waggledance.adapters.http.routes.air01_advisory import router as air01_advisory_router
 from waggledance.adapters.http.routes.graph import router as graph_router
 from waggledance.adapters.http.routes.hologram import router as hologram_router
 from waggledance.adapters.http.routes.candidate_lab import router as candidate_lab_router
@@ -236,5 +237,7 @@ def create_app(container) -> FastAPI:
     app.include_router(candidate_lab_router)
     # ENG-01 advisory snapshot (/api/eng01/advisory/latest)
     app.include_router(eng01_advisory_router)
+    # AIR-01 advisory snapshot (/api/air01/advisory/latest)
+    app.include_router(air01_advisory_router)
 
     return app

@@ -14,9 +14,11 @@ error/ambiguity -> NOT in class -> per-PR operator signature required. The check
 NEVER default-allows on uncertainty.
 
 In-class predicates (all must hold):
-  A  every changed path is in tests/** | docs/benchmarks/**, OR is an ADDITIVE
-     metrics counter on the positive METRICS_PATHS allowlist (default-empty).
-  B  read-only / default-OFF (no removed/edited lines outside the safe roots).
+  A  every changed path is in tests/** | docs/benchmarks/**, one of the exact
+     sprint product gate-extension paths, OR is an ADDITIVE metrics counter on
+     the positive METRICS_PATHS allowlist (default-empty).
+  B  additive-metric paths are add-only/default-OFF; exact path allowlists are
+     still guarded by F plus the C/D/E/G content screens.
   C  no claim_safe flip.
   D  no authority-flag edit (gate_skip/solver_call/receipt_required/clinical_decision).
   E  no control-plane / runtime-behavior change.
@@ -49,6 +51,43 @@ from typing import Sequence
 # accepted). docs/runs/** dropped (off charter allowlist, low-value).
 SAFE_ROOTS = ("tests/", "docs/benchmarks/")
 
+# Operator option-B sprint product extension (2026-06-30/2026-07-02 bridge
+# handoff): exact paths only, not a package wildcard. Network transports, auth,
+# credential/secret, autonomy, and gate-verdict surfaces remain hard-excluded by
+# predicate F before this allowlist is consulted.
+PRODUCT_GATE_EXTENSION_PATHS = frozenset({
+    "waggledance/adapters/http/routes/air01_advisory.py",
+    "waggledance/adapters/http/routes/eng01_advisory.py",
+    "waggledance/adapters/http/routes/eng06_advisory.py",
+    "waggledance/adapters/http/routes/advisory_dashboard.py",
+    "waggledance/adapters/http/routes/solvers.py",
+    "waggledance/adapters/feeds/air01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng06_advisory_refresher.py",
+    "waggledance/adapters/feeds/advisory_refresh_ticker.py",
+    "waggledance/adapters/cli/acct01_reconcile_bills.py",
+    "waggledance/adapters/cli/email01_classify_inbox.py",
+    "waggledance/adapters/cli/email02_index_vendor_emails.py",
+    "waggledance/adapters/cli/eng01_recommend.py",
+    "waggledance/adapters/cli/eng06_fireplace.py",
+    "waggledance/adapters/cli/fin10_classify_receipts.py",
+    "waggledance/adapters/cli/pdf01_extract_invoice.py",
+    "waggledance/core/v3_13_0/acct01_unpaid_bill_reconciler.py",
+    "waggledance/core/v3_13_0/air01_air_quality_advisor.py",
+    "waggledance/core/v3_13_0/air01_digheran_adapter.py",
+    "waggledance/core/v3_13_0/email01_inbox_priority_classifier.py",
+    "waggledance/core/v3_13_0/email02_vendor_email_indexer.py",
+    "waggledance/core/v3_13_0/eng01_advisory_card.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_adapter.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_response_parser.py",
+    "waggledance/core/v3_13_0/eng01_spot_electricity.py",
+    "waggledance/core/v3_13_0/eng06_advisory_card.py",
+    "waggledance/core/v3_13_0/eng06_burn_log_adapter.py",
+    "waggledance/core/v3_13_0/eng06_fireplace_advisor.py",
+    "waggledance/core/v3_13_0/fin10_receipt_classifier.py",
+    "waggledance/core/v3_13_0/pdf01_invoice_field_extractor.py",
+})
+
 # Positive metrics-allowlist for the additive-metric path. DEFAULT-EMPTY =>
 # default-DENY: NO metric path auto-signs until the operator-signed charter
 # carve-out PR populates this (e.g. "waggledance/**/metrics.py") alongside the
@@ -58,23 +97,44 @@ METRICS_PATHS: tuple[str, ...] = ()
 
 # F — explicit P1 hard exclusions (in addition to the charter denylist).
 F_EXCLUDE_SUBSTRINGS = (
+    ".agent-bridge/",
     ".agent-bridge/bin/",
     ".github/workflows/",
+    "_http_transport.py",
+    "credential_vault",
     "idle_consensus_charter",
     "idle_consensus_auto_merge",
     "check_bridge_changes_requested",
     "check_rco_pass_present",
     "check_proven_safe_autosign_class",   # the checker itself (anti-widening)
     "bridge_identity_registry",
+    "bridge_event_taxonomy",
     "invoke-bridgemergedriver",
+    "merge_with_bridge_receipt",
+    "secret_markers",
+    "solver_provenance",
+    "ssrf_host_guard",
     "stage2_cutover",
     "human_approval",
+    "verify_bridge_consensus",
+    "write_rco_gate",
 )
 F_EXCLUDE_BASENAMES = frozenset(
     {"agents.md", "claude.md", "requirements.txt", "requirements.lock.txt",
      "pyproject.toml", "poetry.lock"}
 )
 F_EXCLUDE_BASENAME_SUBSTR = ("requirements", "master_prompt", "lock")
+F_EXCLUDE_AUTH_MARKERS = (
+    "/auth",
+    "auth/",
+    "auth.",
+    "auth_",
+    "_auth",
+    "-auth",
+    "authentication",
+    "authorization",
+    "oauth",
+)
 
 # C/D/E — risky tokens scanned in changed lines (fail-closed).
 AUTHORITY_FLAGS = ("gate_skip", "solver_call", "receipt_required",
@@ -158,6 +218,19 @@ def _is_f_excluded(path: str) -> str | None:
     """Return an exclusion reason if the path is hard-excluded (F), else None."""
     p = _norm(path).lower()
     base = p.rsplit("/", 1)[-1]
+    if p.startswith("waggledance/core/autonomy/") or base == "autonomy.py":
+        return "F exclusion (autonomy surface)"
+    if p.startswith("tools/check_"):
+        return "F exclusion (gate check tool)"
+    if p.startswith("tools/idle_consensus_") or p.startswith(
+        "waggledance/core/idle_consensus_"
+    ):
+        return "F exclusion (idle consensus gate code)"
+    if p.startswith("docs/") and ("charter" in p or "contract" in p):
+        return "F exclusion (charter/contract docs)"
+    for marker in F_EXCLUDE_AUTH_MARKERS:
+        if marker in p:
+            return f"F exclusion (auth path marker '{marker}')"
     for sub in F_EXCLUDE_SUBSTRINGS:
         if sub in p:
             return f"F exclusion (path contains '{sub}')"
@@ -171,6 +244,10 @@ def _is_f_excluded(path: str) -> str | None:
 
 def _in_safe_roots(path: str) -> bool:
     return _norm(path).startswith(SAFE_ROOTS)
+
+
+def _in_product_gate_extension(path: str) -> bool:
+    return _norm(path) in PRODUCT_GATE_EXTENSION_PATHS
 
 
 def _on_metrics_allowlist(path: str, metrics_paths: Sequence[str]) -> bool:
@@ -440,7 +517,7 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
         excl = _is_f_excluded(path)
         if excl:
             return out_of_class(f"{excl}: {path}")
-        if _in_safe_roots(path):
+        if _in_safe_roots(path) or _in_product_gate_extension(path):
             continue
         if _is_additive_metrics_counter(ch, metrics_paths):
             continue

@@ -125,6 +125,84 @@ def test_docs_benchmarks_in_class():
     assert _in_class([_ch("docs/benchmarks/latency.md", ["p50 12ms"])])
 
 
+def test_docs_benchmarks_json_in_class():
+    assert _in_class([_ch("docs/benchmarks/latency.json", ['{"p50_ms": 12}'])])
+
+
+@pytest.mark.parametrize("path", [
+    "waggledance/adapters/http/routes/air01_advisory.py",
+    "waggledance/adapters/http/routes/eng01_advisory.py",
+    "waggledance/adapters/http/routes/eng06_advisory.py",
+    "waggledance/adapters/http/routes/advisory_dashboard.py",
+    "waggledance/adapters/http/routes/solvers.py",
+    "waggledance/adapters/feeds/air01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng06_advisory_refresher.py",
+    "waggledance/adapters/feeds/advisory_refresh_ticker.py",
+    "waggledance/adapters/cli/acct01_reconcile_bills.py",
+    "waggledance/adapters/cli/email01_classify_inbox.py",
+    "waggledance/adapters/cli/email02_index_vendor_emails.py",
+    "waggledance/adapters/cli/eng01_recommend.py",
+    "waggledance/adapters/cli/eng06_fireplace.py",
+    "waggledance/adapters/cli/fin10_classify_receipts.py",
+    "waggledance/adapters/cli/pdf01_extract_invoice.py",
+    "waggledance/core/v3_13_0/acct01_unpaid_bill_reconciler.py",
+    "waggledance/core/v3_13_0/air01_air_quality_advisor.py",
+    "waggledance/core/v3_13_0/air01_digheran_adapter.py",
+    "waggledance/core/v3_13_0/email01_inbox_priority_classifier.py",
+    "waggledance/core/v3_13_0/email02_vendor_email_indexer.py",
+    "waggledance/core/v3_13_0/eng01_advisory_card.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_adapter.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_response_parser.py",
+    "waggledance/core/v3_13_0/eng01_spot_electricity.py",
+    "waggledance/core/v3_13_0/eng06_advisory_card.py",
+    "waggledance/core/v3_13_0/eng06_burn_log_adapter.py",
+    "waggledance/core/v3_13_0/eng06_fireplace_advisor.py",
+    "waggledance/core/v3_13_0/fin10_receipt_classifier.py",
+    "waggledance/core/v3_13_0/pdf01_invoice_field_extractor.py",
+])
+def test_product_gate_extension_paths_in_class(path):
+    assert _in_class([_ch(path, ["VALUE = 1"])]) is True
+
+
+def test_product_gate_extension_path_still_runs_dangerous_scan():
+    assert _in_class([
+        _ch("waggledance/adapters/http/routes/solvers.py",
+            ["import subprocess", "subprocess.run(['x'])"])
+    ]) is False
+
+
+@pytest.mark.parametrize("path", [
+    "waggledance/core/v3_13_0/air01_sensor_http_transport.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_http_transport.py",
+    "waggledance/core/v3_13_0/ssrf_host_guard.py",
+    "waggledance/core/v3_13_0/credential_vault.py",
+    "waggledance/core/v3_13_0/secret_markers.py",
+    "waggledance/adapters/http/routes/auth_session.py",
+    "waggledance/core/v3_13_0/write_rco_gate.py",
+    "waggledance/core/v3_13_0/solver_provenance.py",
+    "waggledance/core/autonomy/runtime.py",
+    ".agent-bridge/shared/events.jsonl",
+    "CLAUDE.md",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+    "docs/eig2/contracts/color_class_interleaving.json",
+    "tools/check_bridge_changes_requested.py",
+    "tools/verify_bridge_consensus.py",
+    "tools/merge_with_bridge_receipt.py",
+    "waggledance/core/bridge_event_taxonomy.py",
+])
+def test_product_gate_extension_hard_exclusions_fail_before_a(path):
+    # Metric-def content with metrics_paths=("**",) would otherwise satisfy A via
+    # the additive-metrics carve-out, so a false result proves predicate F fires.
+    r = classify_change(
+        [_ch(path, ["M = Counter('m', 'd')"])],
+        require_charter=False,
+        metrics_paths=("**",),
+    )
+    assert r["in_class"] is False, path
+    assert r["reason"].startswith("F"), (path, r["reason"])
+
+
 def test_additive_metric_definition_in_class_when_allowlisted():
     ch = _ch("waggledance/adapters/http/routes/metrics.py",
              ["FOO_TOTAL = Counter('foo_total', 'desc')"])

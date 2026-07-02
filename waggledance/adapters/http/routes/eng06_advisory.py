@@ -63,6 +63,14 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
     marker = parsed.get("result_marker")
     if not isinstance(marker, str) or not marker.strip():
         return _refused("missing_result_marker")
+    # Fail-closed serializability guard: Python's json.loads accepts NaN /
+    # Infinity constants (and 1e999 overflows to inf without one), which the
+    # strict JSONResponse encoder then refuses -> a 500 instead of a refusal.
+    # Reject non-finite / unserializable content here instead.
+    try:
+        json.dumps(parsed, allow_nan=False)
+    except (ValueError, RecursionError):
+        return _refused("non_finite_number")
     return parsed
 
 

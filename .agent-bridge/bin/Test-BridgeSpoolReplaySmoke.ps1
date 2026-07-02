@@ -35,7 +35,7 @@ try {
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
 
     $out = & $replayScript -BridgeRoot $tempRoot
-    Add-Check -Name 'replay reports one replayed' -Passed ($out -match 'replayed=1 failed=0')
+    Add-Check -Name 'replay reports one replayed' -Passed ($out -match 'replayed=1 deduped=0 failed=0')
     $logged = Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8
     Add-Check -Name 'event appended to shared log' -Passed ($logged -match 'spool-replay-smoke')
     Add-Check -Name 'spool file archived' -Passed (
@@ -57,12 +57,37 @@ try {
         ($out -match 'failed=1') -and (Test-Path -LiteralPath $badFile) -and ($before -eq $after)
     )
 
-    # 5. DryRun neither appends nor archives
+    # 5. Duplicate already live in events.jsonl -> archived WITHOUT second
+    #    append (rco-2 #1483 finding 1: the caller-retried-and-succeeded case;
+    #    retry copies differ by ts_utc, so the dedup key is semantic).
     Remove-Item -LiteralPath $badFile -Force
+    $retryCopy = '{"ts_utc":"2026-07-02T10:00:05Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}'
+    Add-Content -LiteralPath $eventsPath -Value $retryCopy -Encoding UTF8
+    $dupSpool = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-fable-5-20260702T100001000-77.jsonl'
+    # The spooled FAILED attempt: same signal, OLDER ts + different pid.
+    Set-Content -LiteralPath $dupSpool -Value '{"ts_utc":"2026-07-02T10:00:01Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}' -Encoding UTF8 -NoNewline
+    $before = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
+    $out = & $replayScript -BridgeRoot $tempRoot
+    $after = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
+    Add-Check -Name 'live duplicate archived without second append' -Passed (
+        ($out -match 'deduped=1') -and ($after -eq $before) -and
+        (-not (Test-Path -LiteralPath $dupSpool))
+    ) -Detail "before=$before after=$after out=$out"
+
+    # 6. Spool line missing core fields (no agent) is skipped and kept
+    $noAgent = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-x-20260702T120000000-5.jsonl'
+    Set-Content -LiteralPath $noAgent -Value '{"ts_utc":"2026-07-02T12:00:00Z","type":"message","task_id":"t","status":"info"}' -Encoding UTF8 -NoNewline
+    $out = & $replayScript -BridgeRoot $tempRoot 3>$null
+    Add-Check -Name 'missing-core-field line skipped and kept' -Passed (
+        ($out -match 'failed=1') -and (Test-Path -LiteralPath $noAgent)
+    )
+    Remove-Item -LiteralPath $noAgent -Force
+
+    # 7. DryRun neither appends nor archives
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (
-        ($out -match 'would replay') -and (Test-Path -LiteralPath $spoolFile)
+        (($out -match 'would archive as duplicate') -or ($out -match 'would replay')) -and (Test-Path -LiteralPath $spoolFile)
     )
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {

@@ -94,8 +94,41 @@ function Add-LineWithMutex {
     }
 }
 
+function Get-BridgeEventDedupKey {
+    param([Parameter(Mandatory)] $EventObject)
+    # Semantic duplicate key (rco-2 #1483 finding 1): a caller that retried
+    # after spooling produced a LIVE copy with a NEW ts_utc/pid, so identity
+    # fields alone or byte-equality would miss it. Same agent+task+type+
+    # status+message = the same signal; replaying it would double count-based
+    # logic and could resurrect an old signal as latest-by-position.
+    # Total under StrictMode: events in the live log may lack fields.
+    # Select-Object projects missing properties as $null without throwing.
+    $proj = $EventObject | Select-Object agent, task_id, type, status, message
+    return (@(
+        [string]$proj.agent,
+        [string]$proj.task_id,
+        [string]$proj.type,
+        [string]$proj.status,
+        [string]$proj.message
+    ) -join "`u{1}")
+}
+
+$existingKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
+    foreach ($line in [System.IO.File]::ReadLines($eventsPath)) {
+        if (-not $line) { continue }
+        try {
+            $obj = $line | ConvertFrom-Json -ErrorAction Stop
+            if ($null -ne $obj -and $null -ne $obj.PSObject.Properties['type']) {
+                [void]$existingKeys.Add((Get-BridgeEventDedupKey -EventObject $obj))
+            }
+        } catch {}
+    }
+}
+
 $replayed = 0
 $failed = 0
+$deduped = 0
 foreach ($file in $spoolFiles) {
     $raw = (Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8)
     if ([string]::IsNullOrWhiteSpace($raw)) {
@@ -108,17 +141,45 @@ foreach ($file in $spoolFiles) {
         }
         continue
     }
-    # Fail-closed shape check: only replay parseable JSON object lines.
+    # Fail-closed shape check (rco-2 finding 2: mirror the reader guard) -
+    # every line must be a JSON object carrying the writer's core fields.
     $ok = $true
+    $parsedLines = @()
     foreach ($line in ($raw -split "`r?`n" | Where-Object { $_ })) {
         try {
             $obj = $line | ConvertFrom-Json -ErrorAction Stop
-            if ($null -eq $obj -or $null -eq $obj.PSObject.Properties['type']) { $ok = $false }
+            if (
+                $null -eq $obj -or
+                $null -eq $obj.PSObject.Properties['type'] -or
+                $null -eq $obj.PSObject.Properties['agent'] -or
+                $null -eq $obj.PSObject.Properties['task_id'] -or
+                $null -eq $obj.PSObject.Properties['status']
+            ) { $ok = $false } else { $parsedLines += [pscustomobject]@{ Line = $line; Obj = $obj } }
         } catch { $ok = $false }
     }
     if (-not $ok) {
         Write-Warning "skipping malformed spool file (left in place): $($file.Name)"
         $failed++
+        continue
+    }
+
+    # Dedup (rco-2 finding 1): drop lines whose signal is already live in
+    # events.jsonl (the common case: the caller retried after spooling and
+    # the retry succeeded). Archive-without-append when everything deduped.
+    $linesToAppend = @()
+    foreach ($pair in $parsedLines) {
+        $key = Get-BridgeEventDedupKey -EventObject $pair.Obj
+        if ($existingKeys.Contains($key)) { $deduped++ } else { $linesToAppend += $pair }
+    }
+    if ($linesToAppend.Count -eq 0) {
+        if (-not $DryRun) {
+            if (-not (Test-Path -LiteralPath $archiveDir)) {
+                [void](New-Item -ItemType Directory -Path $archiveDir -Force)
+            }
+            Move-Item -LiteralPath $file.FullName -Destination (Join-Path $archiveDir $file.Name) -Force
+        } else {
+            Write-Output "would archive as duplicate: $($file.Name)"
+        }
         continue
     }
 
@@ -128,7 +189,11 @@ foreach ($file in $spoolFiles) {
         continue
     }
 
-    if (Add-LineWithMutex -Path $eventsPath -Line $raw.TrimEnd()) {
+    $joined = (@($linesToAppend | ForEach-Object { $_.Line }) -join [Environment]::NewLine)
+    if (Add-LineWithMutex -Path $eventsPath -Line $joined) {
+        foreach ($pair in $linesToAppend) {
+            [void]$existingKeys.Add((Get-BridgeEventDedupKey -EventObject $pair.Obj))
+        }
         if (-not (Test-Path -LiteralPath $archiveDir)) {
             [void](New-Item -ItemType Directory -Path $archiveDir -Force)
         }
@@ -140,4 +205,4 @@ foreach ($file in $spoolFiles) {
     }
 }
 
-Write-Output ("spool replay complete: replayed={0} failed={1} dryRun={2}" -f $replayed, $failed, $DryRun.IsPresent)
+Write-Output ("spool replay complete: replayed={0} deduped={1} failed={2} dryRun={3}" -f $replayed, $deduped, $failed, $DryRun.IsPresent)

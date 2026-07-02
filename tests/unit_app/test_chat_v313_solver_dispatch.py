@@ -9,6 +9,7 @@ import pytest
 
 from waggledance.application.dto.chat_dto import ChatRequest
 from waggledance.application.services.chat_service import ChatService
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.orchestration.routing_policy import select_route
 
 
@@ -146,6 +147,34 @@ def _payloads() -> dict[str, dict[str, object]]:
     }
 
 
+def _assert_magma_receipt(
+    response: dict[str, object],
+    *,
+    solver_name: str,
+    actual_gate: str,
+) -> None:
+    bundle = response["magma_receipt"]
+    assert isinstance(bundle, dict)
+    summary = bundle["summary"]
+    evaluation = bundle["evaluation_result"]
+    receipt = bundle["receipt"]
+
+    assert summary["source"] == "v3_13_0_solver_registry"
+    assert summary["solver"] == solver_name
+    assert summary["write_intent"] == "none"
+    assert summary["transport_modules_used"] == []
+    assert summary["network_access"] == "not_permitted"
+    assert summary["payload_digest"].startswith("sha256:")
+    assert summary["result_digest"].startswith("sha256:")
+    assert evaluation["target_digest"] == sha256_digest(summary)
+    assert evaluation["actual_gate"] == actual_gate
+    assert evaluation["solver_selection"] == [summary["case_id"]]
+    assert receipt["receipt_version"] == "magma.receipt.v1"
+    assert receipt["canonical_payload_digest"] == evaluation["target_digest"]
+    assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
+    assert receipt["operator_gate_required"] is False
+
+
 @pytest.mark.parametrize("solver_name,payload", _payloads().items())
 def test_chat_dispatch_runs_registered_v313_solver(
     solver_name: str,
@@ -175,7 +204,9 @@ def test_chat_dispatch_runs_registered_v313_solver(
         assert response["solver"] == solver_name
         assert response["source"] == "v3_13_0_solver_registry"
         assert response["write_intent"] == "none"
+        assert response["result_marker"] == response["result"]["result_marker"]
         assert response["result"]["result_marker"]
+        _assert_magma_receipt(response, solver_name=solver_name, actual_gate="allow")
         assert result.route_stage_trace[2]["stage"] == "memory_context"
         assert result.route_stage_trace[3]["route_type"] == "solver"
         assert result.route_stage_trace[3]["solver_intent"] == "v3_13_0_solver"
@@ -212,6 +243,171 @@ def test_chat_dispatch_refuses_malformed_v313_payload(
         assert result.source == "solver"
         assert response["result_marker"] == "V3_13_SOLVER_INPUT_REFUSED"
         assert response["solver"] == "FIN-10"
+        assert response["refusal_reason"] == "payload_json_invalid"
+        _assert_magma_receipt(response, solver_name="FIN-10", actual_gate="refuse")
+        assert mock_orchestrator.handle_task.call_count == 0
+        assert mock_hot_cache.set.call_count == 0
+
+    asyncio.run(_run())
+
+
+def test_chat_dispatch_refuses_unknown_v313_solver_without_llm_or_cache(
+    mock_orchestrator,
+    mock_memory_service,
+    mock_hot_cache,
+    mock_config,
+) -> None:
+    async def _run() -> None:
+        svc = ChatService(
+            orchestrator=mock_orchestrator,
+            memory_service=mock_memory_service,
+            hot_cache=mock_hot_cache,
+            routing_policy_fn=select_route,
+            config=mock_config,
+        )
+
+        query = "Run deterministic solver NOPE-99 with payload {}"
+        first = await svc.handle(ChatRequest(query=query))
+        second = await svc.handle(ChatRequest(query=query))
+
+        for result in (first, second):
+            response = json.loads(result.response)
+            assert result.source == "solver"
+            assert response["result_marker"] == "V3_13_SOLVER_INPUT_REFUSED"
+            assert response["refusal_reason"] == "unknown_solver"
+            _assert_magma_receipt(
+                response,
+                solver_name="NOPE-99",
+                actual_gate="refuse",
+            )
+        assert mock_orchestrator.handle_task.call_count == 0
+        assert mock_hot_cache.set.call_count == 0
+
+    asyncio.run(_run())
+
+
+def test_chat_dispatch_refuses_oversized_v313_payload_without_llm_or_cache(
+    mock_orchestrator,
+    mock_memory_service,
+    mock_hot_cache,
+    mock_config,
+) -> None:
+    async def _run() -> None:
+        svc = ChatService(
+            orchestrator=mock_orchestrator,
+            memory_service=mock_memory_service,
+            hot_cache=mock_hot_cache,
+            routing_policy_fn=select_route,
+            config=mock_config,
+        )
+
+        query = (
+            "Run deterministic solver FIN-10 with payload "
+            f"{json.dumps({'blob': 'x' * 70000})}"
+        )
+        result = await svc.handle(ChatRequest(query=query))
+        response = json.loads(result.response)
+
+        assert result.source == "solver"
+        assert response["result_marker"] == "V3_13_SOLVER_INPUT_REFUSED"
+        assert response["refusal_reason"] == "payload_too_large"
+        _assert_magma_receipt(response, solver_name="FIN-10", actual_gate="refuse")
+        assert mock_orchestrator.handle_task.call_count == 0
+        assert mock_hot_cache.set.call_count == 0
+
+    asyncio.run(_run())
+
+
+def test_chat_dispatch_solver_exception_refuses_without_silent_llm_fallback(
+    monkeypatch,
+    mock_orchestrator,
+    mock_memory_service,
+    mock_hot_cache,
+    mock_config,
+) -> None:
+    from waggledance.core.v3_13_0 import chat_dispatch
+
+    def _boom(_solver):
+        def _raise(_payload):
+            raise RuntimeError("solver boom")
+
+        return _raise
+
+    async def _run() -> None:
+        monkeypatch.setattr(chat_dispatch, "resolve_solver_entrypoint", _boom)
+        svc = ChatService(
+            orchestrator=mock_orchestrator,
+            memory_service=mock_memory_service,
+            hot_cache=mock_hot_cache,
+            routing_policy_fn=select_route,
+            config=mock_config,
+        )
+
+        query = (
+            "Run deterministic solver FIN-10 with payload "
+            f"{json.dumps(_payloads()['FIN-10'], sort_keys=True)}"
+        )
+        result = await svc.handle(ChatRequest(query=query))
+        response = json.loads(result.response)
+
+        assert result.source == "solver"
+        assert response["solver"] == "FIN-10"
+        assert response["result_marker"] == "V3_13_SOLVER_INPUT_REFUSED"
+        assert response["refusal_reason"] == "solver_refused:RuntimeError"
+        _assert_magma_receipt(response, solver_name="FIN-10", actual_gate="refuse")
+        assert mock_orchestrator.handle_task.call_count == 0
+        assert mock_hot_cache.set.call_count == 0
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("solver_name", ["ENG-01", "AIR-01"])
+def test_chat_dispatch_does_not_call_http_transports_from_chat_payload(
+    solver_name,
+    monkeypatch,
+    mock_orchestrator,
+    mock_memory_service,
+    mock_hot_cache,
+    mock_config,
+) -> None:
+    from waggledance.core.v3_13_0 import air01_sensor_http_transport
+    from waggledance.core.v3_13_0 import eng01_price_feed_http_transport
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("chat dispatch must not call HTTP transport")
+
+    async def _run() -> None:
+        monkeypatch.setattr(
+            eng01_price_feed_http_transport,
+            "fetch_price_feed_http_response",
+            _forbidden,
+        )
+        monkeypatch.setattr(
+            air01_sensor_http_transport,
+            "fetch_air_quality_sensor_response",
+            _forbidden,
+        )
+        monkeypatch.setattr(eng01_price_feed_http_transport, "_httpx_transport", _forbidden)
+        monkeypatch.setattr(air01_sensor_http_transport, "_httpx_transport", _forbidden)
+        svc = ChatService(
+            orchestrator=mock_orchestrator,
+            memory_service=mock_memory_service,
+            hot_cache=mock_hot_cache,
+            routing_policy_fn=select_route,
+            config=mock_config,
+        )
+
+        query = (
+            f"Run deterministic solver {solver_name} with payload "
+            f"{json.dumps(_payloads()[solver_name], sort_keys=True)}"
+        )
+        result = await svc.handle(ChatRequest(query=query))
+        response = json.loads(result.response)
+
+        assert result.source == "solver"
+        assert response["solver"] == solver_name
+        assert response["magma_receipt"]["summary"]["transport_modules_used"] == []
+        assert response["magma_receipt"]["summary"]["network_access"] == "not_permitted"
         assert mock_orchestrator.handle_task.call_count == 0
 
     asyncio.run(_run())

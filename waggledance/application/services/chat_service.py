@@ -22,6 +22,11 @@ from waggledance.core.policies.confidence_policy import should_cache_result
 
 # Solver caching: high-confidence solver results are always cache-worthy
 def should_cache_result_simple(response: str, freq: int) -> bool:
+    if (
+        '"source":"v3_13_0_solver_registry"' in response
+        and "_REFUSED" in response
+    ):
+        return False
     return bool(response) and freq >= 2
 from waggledance.core.policies.escalation_policy import EscalationPolicy
 from waggledance.core.ports.config_port import ConfigPort

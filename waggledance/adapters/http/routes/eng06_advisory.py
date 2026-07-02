@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: BUSL-1.1
 # SPDX-FileCopyrightText: Jani Korpi / Ahkerat Mehilaiset / JKH Service
-"""Read-only ENG-01 advisory snapshot route.
+"""Read-only ENG-06 fireplace-safety advisory snapshot route.
 
-The route never fetches a URL and never runs the solver. It only returns an
-operator-written JSON snapshot so dashboard/SituationRoom clients can render
-the latest advisory without gaining a new network execution surface.
+The route never reads a burn log and never runs the solver. It only returns a
+JSON snapshot written by the ENG-06 refresher (or an operator), so
+dashboard/SituationRoom clients can render the latest fireplace advisory card
+without gaining a new execution surface. Mirrors ``routes/eng01_advisory.py``
+and ``routes/air01_advisory.py``.
 """
 from __future__ import annotations
 
@@ -16,17 +18,17 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 
-DEFAULT_SNAPSHOT_PATH = Path("data/eng01/latest_advisory.json")
+DEFAULT_SNAPSHOT_PATH = Path("data/eng06/latest_advisory.json")
 ADVISORY_MAX_BYTES = 1_000_000
 
 NO_ADVISORY_YET = "NO_ADVISORY_YET"
 SNAPSHOT_REFUSED = "SNAPSHOT_REFUSED"
 
-router = APIRouter(prefix="/api/eng01", tags=["eng01-advisory"])
+router = APIRouter(prefix="/api/eng06", tags=["eng06-advisory"])
 
 
 def get_snapshot_path() -> Path:
-    """Return the operator-written advisory snapshot path."""
+    """Return the advisory snapshot path the refresher writes."""
     return DEFAULT_SNAPSHOT_PATH
 
 
@@ -34,7 +36,7 @@ def get_snapshot_path() -> Path:
 def get_latest_advisory(
     snapshot_path: Path = Depends(get_snapshot_path),
 ) -> JSONResponse:
-    """Return the latest operator-written ENG-01 advisory snapshot."""
+    """Return the latest ENG-06 advisory snapshot."""
     payload = _load_snapshot(snapshot_path)
     return JSONResponse(payload)
 

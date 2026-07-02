@@ -16,6 +16,7 @@ from waggledance.adapters.http.routes.compat_dashboard import router as compat_r
 from waggledance.adapters.http.routes.cross_agent import router as cross_agent_router
 from waggledance.adapters.http.routes.eng01_advisory import router as eng01_advisory_router
 from waggledance.adapters.http.routes.air01_advisory import router as air01_advisory_router
+from waggledance.adapters.http.routes.eng06_advisory import router as eng06_advisory_router
 from waggledance.adapters.http.routes.graph import router as graph_router
 from waggledance.adapters.http.routes.hologram import router as hologram_router
 from waggledance.adapters.http.routes.candidate_lab import router as candidate_lab_router
@@ -240,6 +241,8 @@ def create_app(container) -> FastAPI:
     app.include_router(eng01_advisory_router)
     # AIR-01 advisory snapshot (/api/air01/advisory/latest)
     app.include_router(air01_advisory_router)
+    # ENG-06 advisory snapshot (/api/eng06/advisory/latest)
+    app.include_router(eng06_advisory_router)
     # Read-only advisory status dashboard (/api/dashboard/advisories, HTML;
     # bearer- or session-cookie-gated like the JSON advisory routes)
     app.include_router(advisory_dashboard_router)

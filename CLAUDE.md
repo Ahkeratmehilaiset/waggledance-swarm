@@ -146,16 +146,20 @@ evaluated fail-closed:
   to `operator_review_required`.
 * **Head-exact binding** — all three approvals bind to the exact head SHA; any
   re-push that **changes content** invalidates all prior approvals and requires
-  re-consensus (PR #777 head-drift fail-close). **Exception — content-identical
-  base rebase (added 2026-06-05):** a pure rebase onto current `origin/main`
-  with **no content change** (the PR's diff against the new base is byte-identical
-  to its diff against the prior base — mechanically verified, no conflict-edit)
-  **carries the consensus approvals forward** to the new head, because the
-  reviewed content is unchanged. CI **must still be re-run green** against the
-  new head before merge (to catch semantic skew from the advanced base). The
-  carry-forward applies to content-review approvals only, never to CI; any
-  content difference (conflict resolution, edit) forfeits it and forces full
-  re-consensus.
+  re-consensus (PR #777 head-drift fail-close). **Carry-forward status
+  (doc↔code truth, corrected 2026-07-02):** the 2026-06-05 amendment specified
+  a carve-out where a **content-identical base rebase** (the PR's diff against
+  the new base byte-identical to its diff against the prior base — mechanically
+  verified, no conflict-edit) carries content-review approvals forward to the
+  new head (never CI, which must re-run green). **This carve-out is NOT
+  implemented in the gate code**: `verify_bridge_consensus` /
+  `check_rco_pass_present` bind strictly to the exact head, so in practice
+  EVERY re-push — rebase or not, content-identical or not — strands prior
+  approvals and requires re-posts at the new head (2026-07-02 bridge audit;
+  observed across all of that day's rebases). The code is the STRICTER of the
+  two and governs. If the carve-out is ever implemented, it lands as (a)-class
+  gate code with its own adversarial review; until then, plan on re-consensus
+  after any re-push.
 * **MAGMA receipt** — the merge emits a MAGMA receipt recording the three
   identities (including **which** recognized RCO satisfied the RCO slot), the
   head SHA, and the `RCO_PASS` event reference; a consumer must be able to

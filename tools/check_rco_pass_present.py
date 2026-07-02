@@ -457,6 +457,7 @@ def check_rco_pass_present(
     # deterministic author-agent namespace alias.
     rco_events: list[tuple[int, Mapping[str, Any]]] = []
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    unverified_rco_veto_events: list[dict[str, Any]] = []
     accepted_task_id_alias_rco_events: list[dict[str, Any]] = []
     restricted_agents = set(recognized_rco_agents)
     for index, event in enumerate(events):
@@ -473,6 +474,22 @@ def check_rco_pass_present(
             restricted_agents=restricted_agents,
         )
         if binding_status in {"missing_uuid", "mismatch_uuid"}:
+            # Fail-closed veto asymmetry (bridge audit 2026-07-02): identity
+            # binding exists to stop FORGED passes, so an unverified pass
+            # stays ignored. But an unverified VETO-shaped event from a
+            # recognized-RCO name must still latch as a veto - dropping it
+            # would let registry drift on one RCO disable its absolute veto
+            # while the other RCO's verified pass enables the merge. Worst
+            # case of honoring a forged veto is a spurious hold (safe);
+            # worst case of dropping a real one is a merge past a live veto.
+            if _is_rco_veto_event(event):
+                summary = _summarize_event(event)
+                if summary is not None:
+                    summary["identity_binding_status"] = binding_status
+                    summary["unverified_veto_fail_closed"] = True
+                    unverified_rco_veto_events.append(summary)
+                rco_events.append((index, event))
+                continue
             summary = _summarize_event(event)
             if summary is not None:
                 summary["identity_binding_status"] = binding_status
@@ -484,6 +501,7 @@ def check_rco_pass_present(
                 accepted_task_id_alias_rco_events.append(summary)
         rco_events.append((index, event))
     base["ignored_identity_mismatch_events"] = ignored_identity_mismatch_events
+    base["unverified_rco_veto_events"] = unverified_rco_veto_events
     base["accepted_task_id_alias_rco_events"] = (
         accepted_task_id_alias_rco_events
     )

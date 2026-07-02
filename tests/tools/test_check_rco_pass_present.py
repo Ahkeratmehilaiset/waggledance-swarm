@@ -661,14 +661,18 @@ def test_registered_rco_uuid_mismatch_does_not_count() -> None:
     )
 
 
-def test_registered_rco_missing_uuid_veto_does_not_override_genuine_pass() -> None:
-    forged_veto = _rco_event(
+def test_registered_rco_missing_uuid_veto_latches_fail_closed() -> None:
+    # Contract fix (bridge audit 2026-07-02): an unverified VETO-shaped event
+    # from a recognized-RCO name now latches instead of being dropped. The
+    # worst case of honoring a forged veto is a spurious hold (safe); the
+    # worst case of dropping a real one is a merge past a live veto.
+    unverified_veto = _rco_event(
         ts="2026-06-03T10:01:00Z",
         status="changes_requested",
         type_="finding",
         message="unsigned veto",
     )
-    forged_veto.pop("agent_uuid")
+    unverified_veto.pop("agent_uuid")
     events = [
         _rco_event(
             ts="2026-06-03T10:00:00Z",
@@ -676,17 +680,72 @@ def test_registered_rco_missing_uuid_veto_does_not_override_genuine_pass() -> No
             type_="decision",
             message=f"RCO_PASS at exact head {HEAD}",
         ),
-        forged_veto,
+        unverified_veto,
     ]
 
     result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    # The pass itself remains qualifying; the unverified veto outranks it at
+    # the ok/decision level (veto outranks pass).
     assert result["has_qualifying_rco_pass_at_head"] is True
+    assert result["unverified_rco_veto_events"][0][
+        "unverified_veto_fail_closed"
+    ] is True
+
+
+def test_unverified_rco_pass_still_gets_no_credit() -> None:
+    # Asymmetry: an unverified PASS never counts (forge resistance intact).
+    unverified_pass = _rco_event(
+        ts="2026-06-03T10:00:00Z",
+        status="rco_pass",
+        type_="decision",
+        message=f"RCO_PASS at exact head {HEAD}",
+    )
+    unverified_pass.pop("agent_uuid")
+
+    result = check_rco_pass_present(
+        events=[unverified_pass], task_id=TASK, head=HEAD
+    )
+
+    assert result["has_qualifying_rco_pass_at_head"] is False
     assert (
         result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
         == "missing_uuid"
     )
+
+
+def test_cross_identity_drift_cannot_bypass_rco_veto() -> None:
+    # The re-analysis scenario: rco-1 vetoes with a drifted uuid AFTER rco-2's
+    # VERIFIED pass. The drifted veto must still hold this gate. (The
+    # earlier-veto variant belongs to the peer preflight by design and is
+    # covered in test_check_bridge_changes_requested.)
+    drifted_veto = _rco_event(
+        ts="2026-06-03T10:10:00Z",
+        agent="claude-rco-1",
+        status="changes_requested",
+        type_="finding",
+        message="veto from drifted identity",
+    )
+    drifted_veto["agent_uuid"] = "00000000-dead-beef-0000-000000000000"
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:05:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+        ),
+        drifted_veto,
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert "claude-rco-1" in result["blocking_rco_agents"]
+    assert result["unverified_rco_veto_events"][0]["agent"] == "claude-rco-1"
 
 
 def test_author_rco_self_pass_is_excluded_fail_closed() -> None:

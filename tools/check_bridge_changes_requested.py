@@ -360,12 +360,14 @@ def check_bridge_clear_to_merge(
             "latest_blocking_event": None,
             "latest_approval_event": None,
             "ignored_identity_mismatch_events": [],
+            "unverified_rco_block_events": [],
             "ignored_author_events": [],
             "decision": "invalid_identity_registry",
             "error": str(exc),
         }
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    unverified_rco_block_events: list[dict[str, Any]] = []
     ignored_author_events: list[dict[str, Any]] = []
 
     for index, event in enumerate(events):
@@ -380,6 +382,36 @@ def check_bridge_clear_to_merge(
             registry=registry,
         )
         if binding_status in {"missing_uuid", "mismatch_uuid"}:
+            status = str(event.get("status", "")).lower()
+            event_type = str(event.get("type", "")).lower()
+            # Fail-closed veto asymmetry: identity binding exists to stop
+            # FORGED approvals/clears, so those stay ignored when the uuid
+            # does not verify. But silently dropping an unverified VETO from
+            # a recognized-RCO NAME inverts the contract ("veto outranks a
+            # pass"): registry drift on one RCO would disable its absolute
+            # veto while the other RCO's verified pass still enables merges.
+            # A block-shaped event from a recognized RCO name therefore
+            # latches as a blocker even when unverified - the worst case of
+            # honoring a forged veto is a spurious hold (safe), while the
+            # worst case of dropping a real one is a merge past a live veto
+            # (unsafe). Only a later VERIFIED signal from the same identity
+            # can clear it (latest-signal-wins below never admits unverified
+            # clears).
+            block_shaped = (
+                event_type in _TAXONOMY_BLOCK_BY_TYPE
+                and (
+                    event_type not in _TAXONOMY_RCO_GATED_TYPES
+                    or agent in _RECOGNIZED_RCOS
+                )
+            ) or _is_blocking_status(status, event_type=event_type)
+            if agent in _RECOGNIZED_RCOS and block_shaped:
+                summary = _summarize_event(event)
+                if summary is not None:
+                    summary["identity_binding_status"] = binding_status
+                    summary["unverified_veto_fail_closed"] = True
+                    unverified_rco_block_events.append(summary)
+                peer_signals[agent] = (index, "block", event)
+                continue
             summary = _summarize_event(event)
             if summary is not None:
                 summary["identity_binding_status"] = binding_status
@@ -467,6 +499,7 @@ def check_bridge_clear_to_merge(
             latest_approval[1] if latest_approval is not None else None
         ),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
+        "unverified_rco_block_events": unverified_rco_block_events,
         "ignored_author_events": ignored_author_events,
         "decision": "clear" if clear else "blocked",
     }

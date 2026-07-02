@@ -63,7 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--prior-approved-diff-file",
         type=Path,
         default=None,
-        help="Prior approved diff text for content-identical carry-forward.",
+        help=(
+            "Prior approved diff text for diagnostics; carry-forward is inactive "
+            "until reviewed gate wiring lands."
+        ),
     )
     parser.add_argument(
         "--rco-agent",

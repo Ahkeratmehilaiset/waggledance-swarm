@@ -88,7 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--prior-approved-diff-file",
         type=Path,
         default=None,
-        help="Prior approved diff text for content-identical carry-forward.",
+        help=(
+            "Prior approved diff text for diagnostics; carry-forward is inactive "
+            "until reviewed gate wiring lands."
+        ),
     )
     parser.add_argument(
         "--rco-agent",
@@ -645,25 +648,17 @@ def _base_status_gate(
         }
     if not prior_approved_head or prior_approved_head == head:
         return gate
-    if prior_approved_diff_text is None:
-        return {
-            **gate,
-            "ok": False,
-            "base_status": "content_changed",
-            "reason": "prior approved diff required for carry-forward",
-        }
-    if diff_text != prior_approved_diff_text:
-        return {
-            **gate,
-            "ok": False,
-            "base_status": "content_changed",
-            "reason": "content changed since prior approved head",
-        }
+
+    base_status = "content_changed"
+    if prior_approved_diff_text is not None and diff_text == prior_approved_diff_text:
+        base_status = "content_identical_rebase"
+
     return {
         **gate,
-        "base_status": "content_identical_rebase",
-        "carry_forward": True,
-        "approval_head": prior_approved_head,
+        "base_status": base_status,
+        "carry_forward": False,
+        "approval_head": head,
+        "reason": "carry-forward inactive; current-head consensus required",
     }
 
 

@@ -217,7 +217,7 @@ def test_stale_base_returns_not_eligible_without_commands(tmp_path: Path) -> Non
     assert report["eligible"] is False
     assert report["decision"] == "promotion_not_eligible"
     assert report["queue_route"] == "refresh_base_required"
-    assert report["next_action"] == "attempt_content_identical_rebase_then_recheck_ci"
+    assert report["next_action"] == "refresh_base_then_recollect_head_bound_consensus"
     assert report["operator_required"] is False
     assert "base is stale" in report["reasons"]
     assert report["undraft_cmd"] == []

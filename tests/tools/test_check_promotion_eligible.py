@@ -98,11 +98,21 @@ def _event(
     return event
 
 
-def _full_events(*, rco_agent: str = "claude-rco-1") -> list[dict]:
+def _full_events(*, rco_agent: str = "claude-rco-1", head: str = HEAD) -> list[dict]:
     return [
-        _event("codex-lead-1", "build_consensus_pass", ts="2026-06-05T05:30:00Z"),
-        _event("codex-tools-1", "build_consensus_pass", ts="2026-06-05T05:31:00Z"),
-        _event(rco_agent, "rco_pass", ts="2026-06-05T05:32:00Z"),
+        _event(
+            "codex-lead-1",
+            "build_consensus_pass",
+            head=head,
+            ts="2026-06-05T05:30:00Z",
+        ),
+        _event(
+            "codex-tools-1",
+            "build_consensus_pass",
+            head=head,
+            ts="2026-06-05T05:31:00Z",
+        ),
+        _event(rco_agent, "rco_pass", head=head, ts="2026-06-05T05:32:00Z"),
     ]
 
 
@@ -478,7 +488,7 @@ def test_stale_base_refuses() -> None:
     assert report["gate_results"]["base"]["origin_main_sha"] == OTHER_BASE
 
 
-def test_content_identical_rebase_carries_prior_approvals() -> None:
+def test_content_identical_rebase_requires_current_head_approvals() -> None:
     diff = "+ def helper():\n+     return 1\n"
     report = _evaluate(
         status=_status(head_sha=NEW_HEAD, diff_text=diff),
@@ -488,10 +498,33 @@ def test_content_identical_rebase_carries_prior_approvals() -> None:
         prior_approved_diff_text=diff,
     )
 
+    assert report["eligible"] is False
+    assert report["base_status"] == "content_identical_rebase"
+    assert report["carry_forward"] is False
+    assert report["approval_head"] == NEW_HEAD
+    assert (
+        report["gate_results"]["base"]["reason"]
+        == "carry-forward inactive; current-head consensus required"
+    )
+    assert "missing exact-head RCO_PASS from recognized non-author RCO" in report[
+        "reasons"
+    ]
+
+
+def test_rebased_head_with_fresh_consensus_can_pass() -> None:
+    diff = "+ def helper():\n+     return 1\n"
+    report = _evaluate(
+        status=_status(head_sha=NEW_HEAD, diff_text=diff),
+        events=_full_events(head=NEW_HEAD),
+        head=NEW_HEAD,
+        prior_approved_head=HEAD,
+        prior_approved_diff_text=diff,
+    )
+
     assert report["eligible"] is True
     assert report["base_status"] == "content_identical_rebase"
-    assert report["carry_forward"] is True
-    assert report["approval_head"] == HEAD
+    assert report["carry_forward"] is False
+    assert report["approval_head"] == NEW_HEAD
     assert report["gate_results"]["ci"]["ok"] is True
     assert report["gate_results"]["rco_pass"]["satisfying_rco_agent"] == "claude-rco-1"
 
@@ -504,14 +537,14 @@ def test_content_identical_rebase_still_requires_current_ci_green() -> None:
             diff_text=diff,
             checks=[{"name": "unified", "state": "pending"}],
         ),
-        events=_full_events(),
+        events=_full_events(head=NEW_HEAD),
         head=NEW_HEAD,
         prior_approved_head=HEAD,
         prior_approved_diff_text=diff,
     )
 
     assert report["eligible"] is False
-    assert report["carry_forward"] is True
+    assert report["carry_forward"] is False
     assert "status checks not green: unified" in report["reasons"]
 
 
@@ -529,7 +562,10 @@ def test_content_changed_repush_forfeits_carry_forward() -> None:
     assert report["eligible"] is False
     assert report["base_status"] == "content_changed"
     assert report["carry_forward"] is False
-    assert "content changed since prior approved head" in report["reasons"]
+    assert report["approval_head"] == NEW_HEAD
+    assert "missing exact-head RCO_PASS from recognized non-author RCO" in report[
+        "reasons"
+    ]
 
 
 def test_missing_prior_diff_for_rebased_head_fails_closed() -> None:
@@ -542,7 +578,10 @@ def test_missing_prior_diff_for_rebased_head_fails_closed() -> None:
 
     assert report["eligible"] is False
     assert report["base_status"] == "content_changed"
-    assert "prior approved diff required for carry-forward" in report["reasons"]
+    assert report["approval_head"] == NEW_HEAD
+    assert "missing exact-head RCO_PASS from recognized non-author RCO" in report[
+        "reasons"
+    ]
 
 
 def test_backup_rco_veto_blocks_even_when_rco1_passes() -> None:

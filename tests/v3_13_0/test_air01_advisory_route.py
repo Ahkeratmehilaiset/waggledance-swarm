@@ -114,6 +114,35 @@ def test_refuses_missing_result_marker(tmp_path: Path) -> None:
     assert response.json()["reason"] == "missing_result_marker"
 
 
+def test_refuses_nan_constant_instead_of_500(tmp_path: Path) -> None:
+    # Same class as the lead's #1470 finding: json.loads accepts NaN/Infinity
+    # constants; strict JSONResponse then 500s. Must refuse instead.
+    snapshot = tmp_path / "latest_advisory.json"
+    snapshot.write_text(
+        '{"result_marker": "OK", "triggered_metrics": [{"value": NaN}]}',
+        encoding="utf-8",
+    )
+
+    response = _client(snapshot).get("/api/air01/advisory/latest")
+
+    assert response.status_code == 200
+    assert response.json()["result_marker"] == SNAPSHOT_REFUSED
+    assert response.json()["reason"] == "non_finite_number"
+
+
+def test_refuses_float_overflow_to_infinity_instead_of_500(tmp_path: Path) -> None:
+    snapshot = tmp_path / "latest_advisory.json"
+    snapshot.write_text(
+        '{"result_marker": "OK", "value": 1e999}', encoding="utf-8"
+    )
+
+    response = _client(snapshot).get("/api/air01/advisory/latest")
+
+    assert response.status_code == 200
+    assert response.json()["result_marker"] == SNAPSHOT_REFUSED
+    assert response.json()["reason"] == "non_finite_number"
+
+
 def test_route_registered_in_api_factory() -> None:
     from waggledance.adapters.http.api import create_app
 

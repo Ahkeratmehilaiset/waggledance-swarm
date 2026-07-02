@@ -637,15 +637,56 @@ function Add-LineWithRetry {
         [void](New-Item -ItemType Directory -Path $parent -Force)
     }
     $encoding = New-Object System.Text.UTF8Encoding($false)
-    for ($i = 0; $i -lt 40; $i++) {
+
+    # Contention hardening (bridge audit 2026-07-02): serialize appends across
+    # processes with a named mutex so the boot-burst / multi-agent case stops
+    # exhausting the retry loop. AbandonedMutexException means a holder died
+    # while owning the mutex - ownership transfers to us, so treat as
+    # acquired. A WaitOne timeout falls back to the unserialized retry loop
+    # below (never deadlock the bridge on a hung holder).
+    $mutex = $null
+    $acquired = $false
+    try {
         try {
-            [System.IO.File]::AppendAllText($Path, $Line, $encoding)
-            return
-        } catch {
-            Start-Sleep -Milliseconds (25 + ($i * 10))
+            $mutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeAppendV1')
+            try { $acquired = $mutex.WaitOne(10000) }
+            catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+        } catch { $mutex = $null }
+
+        for ($i = 0; $i -lt 40; $i++) {
+            try {
+                [System.IO.File]::AppendAllText($Path, $Line, $encoding)
+                return
+            } catch {
+                Start-Sleep -Milliseconds (25 + ($i * 10))
+            }
+        }
+    } finally {
+        if ($null -ne $mutex) {
+            if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }
+            $mutex.Dispose()
         }
     }
-    throw "could not append bridge event after retries: $Path"
+
+    # Durability (bridge audit 2026-07-02): the event used to be LOST when the
+    # retry budget ran out (and the outbox copy was skipped because this throw
+    # aborts the script). Spool it to a per-event file first so nothing is
+    # dropped - a replay can append spooled events later - then still throw
+    # loudly so the caller knows the shared log missed it.
+    $spoolDir = Join-Path (Split-Path -Parent $parent) 'spool'
+    try {
+        if (-not (Test-Path -LiteralPath $spoolDir)) {
+            [void](New-Item -ItemType Directory -Path $spoolDir -Force)
+        }
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff')
+        $spoolPath = Join-Path $spoolDir ("failed-append-{0}-{1}-{2}.jsonl" -f $Agent, $stamp, $PID)
+        [System.IO.File]::WriteAllText($spoolPath, $Line, $encoding)
+        throw "could not append bridge event after retries: $Path (event spooled to $spoolPath)"
+    } catch [System.Management.Automation.RuntimeException] {
+        throw
+    } catch {
+        throw "could not append bridge event after retries: $Path (spool also failed: $_)"
+    }
 }
 
 function Write-JsonAtomic {

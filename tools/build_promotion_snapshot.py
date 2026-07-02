@@ -602,7 +602,7 @@ def _queue_route(eligibility: Mapping[str, Any]) -> dict[str, Any]:
         if base_status == "stale":
             return {
                 "queue_route": "refresh_base_required",
-                "next_action": "refresh_base_then_recollect_head_bound_consensus",
+                "next_action": "attempt_content_identical_rebase_then_recheck_ci",
                 "operator_required": False,
             }
         return {

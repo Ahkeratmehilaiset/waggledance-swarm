@@ -121,10 +121,15 @@ Never `--admin`, `--no-verify`, or force-push. PR-only.
   base_status: fresh|content_identical_rebase|content_changed|stale,
   carry_forward: bool}` and exit 0 only when **all** gates pass. Absent /
   malformed / ambiguous inputs → `eligible:false` (fail-closed).
-* **Content-identity check (carry-forward):** specified but **not implemented**.
-  Current behavior is strict: if `--head` differs from the approved head,
-  `carry_forward=false`, approvals are checked against the current head, and full
-  re-consensus is required at that head.
+* **Content-identity check (carry-forward, future P3 wiring):** when `--head` ≠
+  the prior approved head, compute whether the diff `merge_base..head` is
+  **byte-identical** to the prior approved head's diff. If identical →
+  `base_status=content_identical_rebase`, `carry_forward=true`: prior RCO_PASS +
+  build_consensus count for the new head, **but the CI gate must independently
+  pass at the new head** (carry-forward never covers CI). If any difference →
+  `carry_forward=false`, `base_status=content_changed`, full re-consensus
+  required (`eligible:false` until re-consensus at the new head). Until this is
+  implemented in gate code, `carry_forward` must remain false.
 * Re-derives every verdict from inputs; never trusts an upstream `ok` flag.
 * Composes the existing `evaluate_paths` / `evaluate_diff_content` /
   `check_rco_pass_present` / `check_bridge_changes_requested` /
@@ -143,15 +148,10 @@ the executor.
   `eligible:false` (no undraft of WIP).
 * charter-clean + full consensus but RCO veto present → `eligible:false`.
 * charter-clean + full consensus but stale base, not yet rebased → `eligible:false`.
-* Current implementation: **content-identical base rebase** (diff byte-identical
-  to prior approved head) + only prior-head approvals →
-  `carry_forward=false`, `eligible:false`; fresh consensus at the new head is
-  required.
-* Current implementation: **content-changed re-push** (diff differs after rebase)
-  → `carry_forward=false`; eligible only after full re-consensus at the new head.
-* Future P3 wiring: content-identical base rebase + CI green at new head may
-  become `carry_forward=true`, `eligible:true` only after the gate lands the
-  reviewed proof/receipt path.
+* **content-identical base rebase** (diff byte-identical to prior approved head)
+  + CI green at new head → `carry_forward=true`, `eligible:true` (approvals carry).
+* **content-changed re-push** (diff differs after rebase) → `carry_forward=false`,
+  `eligible:false` until full re-consensus at the new head.
 * content-identical rebase but CI **not** re-run green at new head →
   `eligible:false`.
 * head mismatch with no prior-approved-head provided → `eligible:false`.

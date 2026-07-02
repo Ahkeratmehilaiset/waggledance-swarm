@@ -78,6 +78,7 @@ function Add-RawEvent {
 
 $tempRoot = Join-Path $env:TEMP "bridge-polymorphic-continuity-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$nextActionNow = '2026-05-11T18:00:00.0000000Z'
 
 try {
     Write-Host 'Bridge polymorphic continuity smoke test' -ForegroundColor Cyan
@@ -203,7 +204,7 @@ try {
         -Passed ($readerOutput -match 'answered claude-codex-postchat-2026-05-11: request message/open -> message/answered_plus_reminder') `
         -Detail (($readerOutput -split "`r?`n" | Where-Object { $_ -match 'claude-codex-postchat-2026-05-11' } | Select-Object -First 2) -join ' | ')
 
-    $next = (& $nextActionScript -Agent codex -Json -Tail 100 | ConvertFrom-Json)
+    $next = (& $nextActionScript -Agent codex -Json -Tail 100 -Now $nextActionNow | ConvertFrom-Json)
     Add-Check -Name 'next-action no longer asks Codex to answer already-answered postchat' `
         -Passed (-not ([string]$next.task_id -eq 'claude-codex-postchat-2026-05-11' -and [string]$next.action -eq 'answer_incoming')) `
         -Detail "action=$($next.action), task=$($next.task_id)"
@@ -229,7 +230,7 @@ try {
         -Passed ($waitingRcoForClaude.Count -eq 1) `
         -Detail "unresolved_rco_for_claude=$($waitingRcoForClaude.Count)"
 
-    $nextClaude = (& $nextActionScript -Agent claude -Json -Tail 100 | ConvertFrom-Json)
+    $nextClaude = (& $nextActionScript -Agent claude -Json -Tail 100 -Now $nextActionNow | ConvertFrom-Json)
     Add-Check -Name 'next-action routes rco_requested handoff to target agent' `
         -Passed ([string]$nextClaude.action -eq 'answer_incoming' -and
                  [string]$nextClaude.task_id -eq 'monitor-rco-requested-2026-05-11') `

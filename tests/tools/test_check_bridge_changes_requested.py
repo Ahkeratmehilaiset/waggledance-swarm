@@ -117,7 +117,11 @@ def test_blocked_when_peer_changes_requested_is_latest() -> None:
     assert result["latest_blocking_event"]["status"] == "changes_requested"
 
 
-def test_registered_peer_uuid_mismatch_block_is_ignored() -> None:
+def test_recognized_rco_uuid_mismatch_block_latches_fail_closed() -> None:
+    # Contract fix (bridge audit 2026-07-02): identity binding stops FORGED
+    # approvals; silently dropping an unverified VETO from a recognized-RCO
+    # NAME inverted "veto outranks pass" under registry drift. Block-shaped
+    # events from recognized RCO names now latch even when unverified.
     events = [
         _event(
             "2026-06-11T16:28:40Z",
@@ -132,13 +136,102 @@ def test_registered_peer_uuid_mismatch_block_is_ignored() -> None:
         events=events, task_id="T", merging_agent="codex-lead-1"
     )
 
-    assert result["clear_to_merge"] is True
-    assert result["latest_blocking_event"] is None
-    assert result["ignored_identity_mismatch_events"][0]["agent"] == "claude-rco-2"
+    assert result["clear_to_merge"] is False
+    assert result["unverified_rco_block_events"][0]["agent"] == "claude-rco-2"
     assert (
-        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        result["unverified_rco_block_events"][0]["identity_binding_status"]
         == "mismatch_uuid"
     )
+    assert result["unverified_rco_block_events"][0][
+        "unverified_veto_fail_closed"
+    ] is True
+
+
+def test_cross_identity_drift_cannot_bypass_rco_veto() -> None:
+    # The re-analysis scenario: rco-1's veto with drifted uuid + rco-2's
+    # VERIFIED pass. Before the fix the drifted veto was dropped and the
+    # verified pass carried the merge past an "absolute" veto.
+    events = [
+        _event("2026-06-11T16:00:00Z", "claude-rco-1", "finding", "blocking")
+        | {"agent_uuid": "00000000-dead-beef-0000-000000000000"},
+        _event("2026-06-11T16:10:00Z", "claude-rco-2", "decision", "rco_pass"),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["unverified_rco_block_events"][0]["agent"] == "claude-rco-1"
+
+
+def test_unverified_rco_pass_still_gets_no_credit() -> None:
+    # Asymmetry: an unverified APPROVAL stays ignored (forge resistance).
+    events = [
+        _event("2026-06-11T16:00:00Z", "claude-rco-2", "decision", "rco_pass")
+        | {"agent_uuid": AGENT_UUIDS["fable-5"]},
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_approval_event"] is None
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == "claude-rco-2"
+
+
+def test_unverified_clear_cannot_lift_verified_rco_veto() -> None:
+    # Asymmetry: an unverified CLEAR must never lift a real veto.
+    events = [
+        _event("2026-06-11T16:00:00Z", "claude-rco-2", "finding", "blocking"),
+        _event("2026-06-11T16:10:00Z", "claude-rco-2", "decision", "approved")
+        | {"agent_uuid": AGENT_UUIDS["fable-5"]},
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is False
+
+
+def test_later_verified_pass_clears_own_unverified_veto() -> None:
+    # Recoverability: after registry drift is fixed, the SAME identity's
+    # later VERIFIED signal supersedes its unverified veto (latest wins).
+    events = [
+        _event("2026-06-11T16:00:00Z", "claude-rco-2", "finding", "blocking")
+        | {"agent_uuid": AGENT_UUIDS["fable-5"]},
+        _event("2026-06-11T16:10:00Z", "claude-rco-2", "decision", "rco_pass"),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is True
+
+
+def test_non_rco_peer_uuid_mismatch_block_stays_ignored() -> None:
+    # Scoping: the fail-closed latch is only for the recognized-RCO names
+    # whose veto the contract calls absolute; other peers' unverified blocks
+    # remain ignored as before.
+    events = [
+        _event(
+            "2026-06-11T16:28:40Z",
+            "codex-tools-1",
+            "decision",
+            "changes_requested",
+        )
+        | {"agent_uuid": AGENT_UUIDS["fable-5"]},
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == "codex-tools-1"
 
 
 def test_author_rco_veto_still_blocks_when_author_agent_supplied() -> None:

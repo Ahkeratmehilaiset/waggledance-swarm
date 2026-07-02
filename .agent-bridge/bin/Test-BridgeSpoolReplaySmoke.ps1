@@ -83,7 +83,31 @@ try {
     )
     Remove-Item -LiteralPath $noAgent -Force
 
-    # 7. DryRun neither appends nor archives
+    # 7. Concurrent replay guard exits without consuming spool files.
+    $guardFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-guard-20260702T130000000-6.jsonl'
+    Set-Content -LiteralPath $guardFile -Value $event -Encoding UTF8 -NoNewline
+    $guardMutex = $null
+    $guardAcquired = $false
+    try {
+        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeSpoolReplayV1')
+        $guardAcquired = $guardMutex.WaitOne(0)
+        if (-not $guardAcquired) {
+            Add-Check -Name 'concurrent replay guard setup' -Passed $false -Detail 'could not acquire replay mutex'
+        } else {
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $replayScript -BridgeRoot $tempRoot
+            Add-Check -Name 'concurrent replay guard keeps file' -Passed (
+                ($out -match 'already running') -and (Test-Path -LiteralPath $guardFile)
+            ) -Detail "out=$out"
+        }
+    } finally {
+        if ($null -ne $guardMutex) {
+            if ($guardAcquired) { try { $guardMutex.ReleaseMutex() } catch {} }
+            $guardMutex.Dispose()
+        }
+    }
+    Remove-Item -LiteralPath $guardFile -Force -ErrorAction SilentlyContinue
+
+    # 8. DryRun neither appends nor archives
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (

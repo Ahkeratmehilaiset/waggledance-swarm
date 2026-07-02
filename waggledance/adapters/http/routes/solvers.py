@@ -29,7 +29,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from waggledance.core.v3_13_0.chat_dispatch import (
-    MAX_PAYLOAD_BYTES,
     REFUSAL_MARKER,
     run_v313_solver,
 )
@@ -48,20 +47,10 @@ _BAD_REQUEST_REASONS = frozenset({
 async def run_solver(case_id: str, request: Request) -> JSONResponse:
     """Run the registered solver for ``case_id`` over the JSON request body."""
     body = await request.body()
-    # Bound the work before decoding (the dispatch core also checks the encoded
-    # length, but refusing an over-cap body up front avoids parsing it).
-    if len(body) > MAX_PAYLOAD_BYTES:
-        return JSONResponse(
-            {
-                "source": "v3_13_0_solver_registry",
-                "solver": str(case_id).strip().upper(),
-                "result_marker": REFUSAL_MARKER,
-                "refusal_reason": "payload_too_large",
-            },
-            status_code=413,
-        )
-
-    payload_text = body.decode("utf-8", errors="replace") if body else ""
+    try:
+        payload_text = body.decode("utf-8") if body else ""
+    except UnicodeDecodeError:
+        payload_text = ""
     result_text = run_v313_solver(case_id, payload_text)
     result = json.loads(result_text)
     return JSONResponse(result, status_code=_status_for(result))

@@ -52,6 +52,15 @@ def test_malformed_json_body_is_400() -> None:
     status, body = _post("AIR-01", "{not-json")
     assert status == 400
     assert body["refusal_reason"] == "payload_json_invalid"
+    assert "magma_receipt" in body
+
+
+def test_invalid_utf8_body_is_400() -> None:
+    status, body = _post("AIR-01", b'{"bogus": "\xff"}')
+    assert status == 400
+    assert body["result_marker"] == "V3_13_SOLVER_INPUT_REFUSED"
+    assert body["refusal_reason"] == "payload_json_invalid"
+    assert "magma_receipt" in body
 
 
 def test_non_object_body_is_400() -> None:
@@ -65,6 +74,7 @@ def test_oversized_body_is_413() -> None:
     status, body = _post("AIR-01", big)
     assert status == 413
     assert body["refusal_reason"] == "payload_too_large"
+    assert "magma_receipt" in body
 
 
 def test_solver_domain_refusal_is_200() -> None:

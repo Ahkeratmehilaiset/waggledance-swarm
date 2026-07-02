@@ -10,19 +10,20 @@ and ``routes/air01_advisory.py``.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from waggledance.adapters.http.routes._advisory_snapshot import (
+    ADVISORY_MAX_BYTES,
+    NO_ADVISORY_YET,
+    SNAPSHOT_REFUSED,
+    load_snapshot as _load_snapshot,
+)
+
 
 DEFAULT_SNAPSHOT_PATH = Path("data/eng06/latest_advisory.json")
-ADVISORY_MAX_BYTES = 1_000_000
-
-NO_ADVISORY_YET = "NO_ADVISORY_YET"
-SNAPSHOT_REFUSED = "SNAPSHOT_REFUSED"
 
 router = APIRouter(prefix="/api/eng06", tags=["eng06-advisory"])
 
@@ -40,52 +41,6 @@ def get_latest_advisory(
     payload = _load_snapshot(snapshot_path)
     return JSONResponse(payload)
 
-
-def _load_snapshot(path: Path) -> dict[str, Any]:
-    try:
-        if not path.exists() or not path.is_file():
-            return _no_advisory("missing")
-        size = path.stat().st_size
-        if size == 0:
-            return _no_advisory("empty")
-        if size > ADVISORY_MAX_BYTES:
-            return _refused("size_exceeded")
-        raw = path.read_bytes()
-    except OSError:
-        return _refused("read_failed")
-
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return _refused("parse_failed")
-    if not isinstance(parsed, dict):
-        return _refused("not_object")
-    marker = parsed.get("result_marker")
-    if not isinstance(marker, str) or not marker.strip():
-        return _refused("missing_result_marker")
-    # Fail-closed serializability guard: Python's json.loads accepts NaN /
-    # Infinity constants (and 1e999 overflows to inf without one), which the
-    # strict JSONResponse encoder then refuses -> a 500 instead of a refusal.
-    # Reject non-finite / unserializable content here instead.
-    try:
-        json.dumps(parsed, allow_nan=False)
-    except (ValueError, RecursionError):
-        return _refused("non_finite_number")
-    return parsed
-
-
-def _no_advisory(reason: str) -> dict[str, Any]:
-    return {
-        "result_marker": NO_ADVISORY_YET,
-        "reason": reason,
-    }
-
-
-def _refused(reason: str) -> dict[str, Any]:
-    return {
-        "result_marker": SNAPSHOT_REFUSED,
-        "reason": reason,
-    }
 
 
 __all__ = [

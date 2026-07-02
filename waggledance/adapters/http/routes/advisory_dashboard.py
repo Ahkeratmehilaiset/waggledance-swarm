@@ -32,12 +32,19 @@ alone — every state ships an icon glyph + text label.
 from __future__ import annotations
 
 import html
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+
+from waggledance.adapters.http.routes._advisory_snapshot import (
+    ADVISORY_MAX_BYTES,
+    NO_ADVISORY_YET,
+    SNAPSHOT_REFUSED,
+    load_snapshot as _load_snapshot,
+    no_advisory as _no_advisory,
+)
 
 
 router = APIRouter(tags=["advisory-dashboard"])
@@ -49,11 +56,6 @@ SNAPSHOT_PATHS = {
     "AIR-01": Path("data/air01/latest_advisory.json"),
     "ENG-06": Path("data/eng06/latest_advisory.json"),
 }
-ADVISORY_MAX_BYTES = 1_000_000
-
-NO_ADVISORY_YET = "NO_ADVISORY_YET"
-SNAPSHOT_REFUSED = "SNAPSHOT_REFUSED"
-
 # Reserved status palette (validated for light #fcfcfb / dark #1a1a19
 # surfaces). Sub-3:1 light-surface contrast on warning/serious is mitigated
 # by the mandatory icon + text label pairing: color never carries meaning alone.
@@ -79,39 +81,6 @@ def get_advisory_dashboard() -> HTMLResponse:
         headers={"Content-Security-Policy": _CSP},
     )
 
-
-def _load_snapshot(path: Path) -> dict[str, Any]:
-    """Load one snapshot with the advisory routes' validation semantics."""
-    try:
-        if not path.exists() or not path.is_file():
-            return _no_advisory("missing")
-        size = path.stat().st_size
-        if size == 0:
-            return _no_advisory("empty")
-        if size > ADVISORY_MAX_BYTES:
-            return _refused("size_exceeded")
-        raw = path.read_bytes()
-    except OSError:
-        return _refused("read_failed")
-
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return _refused("parse_failed")
-    if not isinstance(parsed, dict):
-        return _refused("not_object")
-    marker = parsed.get("result_marker")
-    if not isinstance(marker, str) or not marker.strip():
-        return _refused("missing_result_marker")
-    return parsed
-
-
-def _no_advisory(reason: str) -> dict[str, Any]:
-    return {"result_marker": NO_ADVISORY_YET, "reason": reason}
-
-
-def _refused(reason: str) -> dict[str, Any]:
-    return {"result_marker": SNAPSHOT_REFUSED, "reason": reason}
 
 
 _CARD_TITLES = {

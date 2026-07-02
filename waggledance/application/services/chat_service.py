@@ -628,6 +628,12 @@ class ChatService:
     def _try_solver(query: str, intent: str) -> str | None:
         """Try deterministic solver for math/thermal/stats. Returns answer or None."""
         try:
+            if intent == "v3_13_0_solver":
+                from waggledance.core.v3_13_0.chat_dispatch import (
+                    run_v313_solver_chat_request,
+                )
+
+                return run_v313_solver_chat_request(query)
             if intent == "math":
                 from core.math_solver import MathSolver
                 if MathSolver.is_math(query):

@@ -52,17 +52,15 @@ unknown / unreadable / ambiguous result evaluates to **not eligible**.
    blocking `changes_requested` as the most recent peer signal (this already
    honors *any* peer, including a backup RCO such as `claude-rco-2`).
 6. **Fresh base** — the PR is merged against current `origin/main`. A stale base
-   is **not** merged as-is. In the future P3 design, an executor may rebase onto
-   current main, re-run CI, and carry consensus approvals forward iff the rebase
-   is content-identical. In the currently implemented gate, that carry-forward is
-   unavailable; a rebased PR needs fresh consensus at the new exact head.
+   is **not** merged as-is. Current runtime gates do **not** implement the
+   content-identical carry-forward carve-out, so any rebase/re-push requires
+   approvals to be re-posted at the new head before promotion.
 7. **Head-exact / content-identity** — every consensus/approval binds to the head
    SHA; the merge uses `gh pr merge --match-head-commit=<full sha>`. A
-   content-changing re-push forces re-consensus. The specified
-   **content-identical base rebase** carry-forward remains inactive until
-   implemented in gate code, so current practice requires re-consensus after any
-   re-push plus fresh CI green at the new head (`BRIDGE_CONSENSUS_APPROVAL_V1.md`
-   §Head-exact binding).
+   content-changing re-push forces re-consensus; in current code, a
+   **content-identical base rebase** also requires re-consensus because the
+   carry-forward carve-out is specified but not implemented
+   (`BRIDGE_CONSENSUS_APPROVAL_V1.md` §Head-exact binding).
 
 Conditions 1–2 and 4–7 are the existing autonomous-merge contract; this policy
 adds **(3) producer-ready signal as the undraft trigger**, **(6) serial-rebase
@@ -76,23 +74,20 @@ implemented, the executor can drain eligible PRs **serially**:
 
 1. Pick the highest-priority PR that passes gates 1–5 (charter-clean, CI green,
    producer-ready, RCO_PASS, no veto).
-2. If its base ≠ current `origin/main`: **rebase onto current main**. Prove the
-   rebase is **content-identical** (diff `merge_base..head` byte-identical to the
-   prior approved head's diff). If content changed (conflict edits) → drop to
-   full re-consensus, skip this PR for now.
+2. If its base ≠ current `origin/main`: **rebase onto current main** and require
+   consensus approvals to be re-posted at the rebased head. A future
+   content-identical carry-forward path is specified in the approval contract,
+   but it is not implemented in current gate code.
 3. **Re-run CI** against the rebased head; require green (catches semantic skew
-   from the advanced base). Consensus approvals carry forward only after P3 gate
-   code proves and records the content-identity predicate.
+   from the advanced base).
 4. Merge with `--match-head-commit=<rebased head>`.
 5. Move to the next PR (now stale → rebase again). Repeat until the queue drains
    or a PR fails a gate.
 
-Serial processing + content-identical carry-forward is the proposed queue drain:
-one merge at a time without a re-review treadmill, while re-CI per step preserves
-the skew guard. Until P3 is wired, a stale/rebased PR still needs fresh
-consensus at the new exact head. (A second RCO `claude-rco-2` and a cheap
-cross-model grok review add review throughput for the cases that *do* need
-re-consensus.)
+Serial processing still drains one merge at a time, but until carry-forward is
+implemented it may require a re-consensus treadmill after rebases. Re-CI per step
+preserves the skew guard. (A second RCO `claude-rco-2` and a cheap cross-model
+grok review add review throughput for the cases that need re-consensus.)
 
 ## Promotion sequence (executor, per PR)
 
@@ -100,10 +95,9 @@ re-consensus.)
    queue, leave `draft`, stop.
 2. If gates 3–4 not yet satisfied → leave `draft` (waiting on producers / RCO),
    stop. (No undraft of WIP.)
-3. If base stale → today, require fresh consensus after any rebase. After P3 gate
-   wiring exists, serial-rebase + re-CI + content-identity check may preserve
-   content-review approvals; if the rebase is not content-identical → full
-   re-consensus required, stop.
+3. If base stale → today, refresh the base, re-run CI, and collect fresh
+   consensus at the rebased head. After P3 gate wiring exists, serial-rebase +
+   re-CI + content-identity check may preserve content-review approvals.
 4. If **all** gates hold at the (possibly rebased) head → `gh pr ready` (undraft)
    **then** `gh pr merge --squash --match-head-commit=<head>`.
 5. Emit a MAGMA-style promotion receipt recording: PR number, head SHA (and prior
@@ -120,22 +114,17 @@ Never `--admin`, `--no-verify`, or force-push. PR-only.
 * Inputs: `--task-id` (canonical = PR `headRefName`), `--head`, `--pr-number`,
   `--changed-paths` (or computes from diff), `--diff`, `--events`,
   `--ci-rollup`, `--base-sha` / `--origin-main-sha`, `--rco-agent` (repeatable
-  set, see §backup-RCO). For the carry-forward path also:
-  `--prior-approved-head` and the prior approved diff (or compute both diffs).
+  set, see §backup-RCO). The previously specified carry-forward inputs
+  (`--prior-approved-head` and prior approved diff) are dormant until the gate
+  code implements that carve-out.
 * Returns structured `{eligible: bool, gate_results: {...}, reasons: [...],
   base_status: fresh|content_identical_rebase|content_changed|stale,
   carry_forward: bool}` and exit 0 only when **all** gates pass. Absent /
   malformed / ambiguous inputs → `eligible:false` (fail-closed).
-* **Content-identity check (carry-forward, future P3 wiring):** when `--head` ≠
-  the prior approved head, compute whether the diff `merge_base..head` is
-  **byte-identical** to the prior approved head's diff. If identical →
-  `base_status=content_identical_rebase`, `carry_forward=true`: prior RCO_PASS +
-  build_consensus count for the new head, **but the CI gate must independently
-  pass at the new head** (carry-forward never covers CI). If any difference →
-  `carry_forward=false`, `base_status=content_changed`, full re-consensus
-  required (`eligible:false` until re-consensus at the new head). Until this is
-  implemented in runtime gate code, `carry_forward` must remain false and the
-  verifier must check approvals against the current head.
+* **Content-identity check (carry-forward):** specified but **not implemented**.
+  Current behavior is strict: if `--head` differs from the approved head,
+  `carry_forward=false`, approvals are checked against the current head, and full
+  re-consensus is required at that head.
 * Re-derives every verdict from inputs; never trusts an upstream `ok` flag.
 * Composes the existing `evaluate_paths` / `evaluate_diff_content` /
   `check_rco_pass_present` / `check_bridge_changes_requested` /
@@ -164,7 +153,7 @@ the executor.
   become `carry_forward=true`, `eligible:true` only after the gate lands the
   reviewed proof/receipt path.
 * content-identical rebase but CI **not** re-run green at new head →
-  `eligible:false` (carry-forward never covers CI).
+  `eligible:false`.
 * head mismatch with no prior-approved-head provided → `eligible:false`.
 * CI not fully green (one pending / failure) → `eligible:false`.
 * all gates pass (fresh base) → `eligible:true` exactly once, head-exact.

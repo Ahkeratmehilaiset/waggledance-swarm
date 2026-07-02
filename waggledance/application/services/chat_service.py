@@ -22,6 +22,11 @@ from waggledance.core.policies.confidence_policy import should_cache_result
 
 # Solver caching: high-confidence solver results are always cache-worthy
 def should_cache_result_simple(response: str, freq: int) -> bool:
+    if (
+        '"source":"v3_13_0_solver_registry"' in response
+        and "_REFUSED" in response
+    ):
+        return False
     return bool(response) and freq >= 2
 from waggledance.core.policies.escalation_policy import EscalationPolicy
 from waggledance.core.ports.config_port import ConfigPort
@@ -628,6 +633,12 @@ class ChatService:
     def _try_solver(query: str, intent: str) -> str | None:
         """Try deterministic solver for math/thermal/stats. Returns answer or None."""
         try:
+            if intent == "v3_13_0_solver":
+                from waggledance.core.v3_13_0.chat_dispatch import (
+                    run_v313_solver_chat_request,
+                )
+
+                return run_v313_solver_chat_request(query)
             if intent == "math":
                 from core.math_solver import MathSolver
                 if MathSolver.is_math(query):

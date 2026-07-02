@@ -1,0 +1,226 @@
+{
+  "benchmark": "hex_routing_enable_benchmark.v1",
+  "deterministic_views": {
+    "disabled": {
+      "efficiency": {
+        "budget_exhaustions": 0,
+        "preflight_passes": 0,
+        "preflight_skips": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "total_hex_queries": 0
+      },
+      "enabled": false,
+      "llm_calls": 0,
+      "metrics": {
+        "budget_exhaustions": 0,
+        "cells_loaded": 7,
+        "completed_hex_neighbor_batches": 0,
+        "enabled": false,
+        "global_escalations": 0,
+        "llm_last_resolutions": 0,
+        "local_only_resolutions": 0,
+        "magma_traces_written": 0,
+        "neighbor_assist_resolutions": 0,
+        "neighbors_consulted_total": 0,
+        "origin_cell_resolutions": 0,
+        "preflight_passes": 0,
+        "preflight_skips": 0,
+        "quarantined_cells": 0,
+        "self_heal_events": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "ttl_exhaustions": 0
+      },
+      "outcomes": {
+        "fallback_none": 42,
+        "resolved": 0
+      },
+      "workload": {
+        "categories": [
+          "apiary",
+          "energy",
+          "general",
+          "logistics",
+          "production",
+          "safety",
+          "weather"
+        ],
+        "queries_per_category": 6,
+        "total_queries": 42
+      }
+    },
+    "enabled": {
+      "efficiency": {
+        "budget_exhaustions": 0,
+        "preflight_passes": 16,
+        "preflight_skips": 26,
+        "skipped_local_attempts": 26,
+        "skipped_neighbor_attempts": 30,
+        "total_hex_queries": 42
+      },
+      "enabled": true,
+      "llm_calls": 16,
+      "metrics": {
+        "budget_exhaustions": 0,
+        "cells_loaded": 7,
+        "completed_hex_neighbor_batches": 0,
+        "enabled": true,
+        "global_escalations": 30,
+        "llm_last_resolutions": 0,
+        "local_only_resolutions": 12,
+        "magma_traces_written": 0,
+        "neighbor_assist_resolutions": 0,
+        "neighbors_consulted_total": 0,
+        "origin_cell_resolutions": 42,
+        "preflight_passes": 16,
+        "preflight_skips": 26,
+        "quarantined_cells": 0,
+        "self_heal_events": 0,
+        "skipped_local_attempts": 26,
+        "skipped_neighbor_attempts": 30,
+        "ttl_exhaustions": 0
+      },
+      "outcomes": {
+        "fallback_none": 30,
+        "resolved": 12
+      },
+      "workload": {
+        "categories": [
+          "apiary",
+          "energy",
+          "general",
+          "logistics",
+          "production",
+          "safety",
+          "weather"
+        ],
+        "queries_per_category": 6,
+        "total_queries": 42
+      }
+    }
+  },
+  "modes": {
+    "disabled": {
+      "_runtime_seconds": 0.035,
+      "efficiency": {
+        "budget_exhaustions": 0,
+        "cell_success_memory": {},
+        "escalation_ratio": 0.0,
+        "local_success_ratio": 0.0,
+        "neighbor_success_ratio": 0.0,
+        "preflight_passes": 0,
+        "preflight_skip_ratio": 0.0,
+        "preflight_skips": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "total_hex_queries": 0
+      },
+      "enabled": false,
+      "llm_calls": 0,
+      "metrics": {
+        "avg_neighbors_per_assist": 0.0,
+        "budget_exhaustions": 0,
+        "cells_loaded": 7,
+        "completed_hex_neighbor_batches": 0,
+        "enabled": false,
+        "global_escalations": 0,
+        "llm_last_resolutions": 0,
+        "local_only_resolutions": 0,
+        "magma_traces_written": 0,
+        "neighbor_assist_resolutions": 0,
+        "neighbors_consulted_total": 0,
+        "origin_cell_resolutions": 0,
+        "preflight_passes": 0,
+        "preflight_skips": 0,
+        "quarantined_cells": 0,
+        "self_heal_events": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "ttl_exhaustions": 0
+      },
+      "outcomes": {
+        "fallback_none": 42,
+        "resolved": 0
+      },
+      "workload": {
+        "categories": [
+          "apiary",
+          "energy",
+          "general",
+          "logistics",
+          "production",
+          "safety",
+          "weather"
+        ],
+        "queries_per_category": 6,
+        "total_queries": 42
+      }
+    },
+    "enabled": {
+      "_runtime_seconds": 0.046,
+      "efficiency": {
+        "budget_exhaustions": 0,
+        "cell_success_memory": {
+          "bee_ops": 1.0,
+          "environment": 0.0,
+          "home_comfort": 1.0,
+          "hub": 0.0,
+          "logistics": 0.0,
+          "production": 0.0,
+          "safety_security": 0.0
+        },
+        "escalation_ratio": 0.7142857142857143,
+        "local_success_ratio": 0.2857142857142857,
+        "neighbor_success_ratio": 0.0,
+        "preflight_passes": 16,
+        "preflight_skip_ratio": 0.6190476190476191,
+        "preflight_skips": 26,
+        "skipped_local_attempts": 26,
+        "skipped_neighbor_attempts": 30,
+        "total_hex_queries": 42
+      },
+      "enabled": true,
+      "llm_calls": 16,
+      "metrics": {
+        "avg_neighbors_per_assist": 0.0,
+        "budget_exhaustions": 0,
+        "cells_loaded": 7,
+        "completed_hex_neighbor_batches": 0,
+        "enabled": true,
+        "global_escalations": 30,
+        "llm_last_resolutions": 0,
+        "local_only_resolutions": 12,
+        "magma_traces_written": 0,
+        "neighbor_assist_resolutions": 0,
+        "neighbors_consulted_total": 0,
+        "origin_cell_resolutions": 42,
+        "preflight_passes": 16,
+        "preflight_skips": 26,
+        "quarantined_cells": 0,
+        "self_heal_events": 0,
+        "skipped_local_attempts": 26,
+        "skipped_neighbor_attempts": 30,
+        "ttl_exhaustions": 0
+      },
+      "outcomes": {
+        "fallback_none": 30,
+        "resolved": 12
+      },
+      "workload": {
+        "categories": [
+          "apiary",
+          "energy",
+          "general",
+          "logistics",
+          "production",
+          "safety",
+          "weather"
+        ],
+        "queries_per_category": 6,
+        "total_queries": 42
+      }
+    }
+  },
+  "topology_config": "configs/hex_cells.yaml"
+}

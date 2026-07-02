@@ -16,7 +16,14 @@ ALLOWED_ROUTE_TYPES = frozenset({
 })
 
 # Solver-eligible intents (deterministic, no LLM needed)
-SOLVER_INTENTS = frozenset({"math", "thermal", "stats", "symbolic", "constraint"})
+SOLVER_INTENTS = frozenset({
+    "math",
+    "thermal",
+    "stats",
+    "symbolic",
+    "constraint",
+    "v3_13_0_solver",
+})
 
 SYSTEM_KEYWORDS = frozenset({
     "status", "tila", "health", "terveys", "uptime", "agents", "agentit",
@@ -79,6 +86,15 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
         return TaskRoute(
             route_type="micromodel",
             confidence=features.micromodel_confidence,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    # Explicit registry solver commands carry JSON payloads where words like
+    # "date" or "status" are data, not chat-level time/system intents.
+    if features.solver_intent == "v3_13_0_solver":
+        return TaskRoute(
+            route_type="solver",
+            confidence=0.95,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 

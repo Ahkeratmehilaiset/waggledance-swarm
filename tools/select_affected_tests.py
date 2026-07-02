@@ -77,6 +77,9 @@ EXPLICIT_AFFECTED_TESTS: dict[str, frozenset[str]] = {
     "waggledance/core/hex_topology/subdivision_operator.py": frozenset(
         {"tests/test_hex_subdivision_plan.py"}
     ),
+    "waggledance/core/v3_13_0/chat_dispatch.py": frozenset(
+        {"tests/unit_app/test_chat_v313_solver_dispatch.py"}
+    ),
 }
 
 

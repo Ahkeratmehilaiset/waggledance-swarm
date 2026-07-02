@@ -361,6 +361,49 @@ def test_chat_dispatch_solver_exception_refuses_without_silent_llm_fallback(
     asyncio.run(_run())
 
 
+def test_chat_dispatch_nonfinite_solver_result_refuses_without_silent_llm_fallback(
+    monkeypatch,
+    mock_orchestrator,
+    mock_memory_service,
+    mock_hot_cache,
+    mock_config,
+) -> None:
+    from waggledance.core.v3_13_0 import chat_dispatch
+
+    def _nonfinite(_solver):
+        def _result(_payload):
+            return {"result_marker": "OK", "value": float("inf")}
+
+        return _result
+
+    async def _run() -> None:
+        monkeypatch.setattr(chat_dispatch, "resolve_solver_entrypoint", _nonfinite)
+        svc = ChatService(
+            orchestrator=mock_orchestrator,
+            memory_service=mock_memory_service,
+            hot_cache=mock_hot_cache,
+            routing_policy_fn=select_route,
+            config=mock_config,
+        )
+
+        query = (
+            "Run deterministic solver FIN-10 with payload "
+            f"{json.dumps(_payloads()['FIN-10'], sort_keys=True)}"
+        )
+        result = await svc.handle(ChatRequest(query=query))
+        response = json.loads(result.response)
+
+        assert result.source == "solver"
+        assert response["solver"] == "FIN-10"
+        assert response["result_marker"] == "V3_13_SOLVER_INPUT_REFUSED"
+        assert response["refusal_reason"] == "dispatch_internal_error"
+        _assert_magma_receipt(response, solver_name="FIN-10", actual_gate="refuse")
+        assert mock_orchestrator.handle_task.call_count == 0
+        assert mock_hot_cache.set.call_count == 0
+
+    asyncio.run(_run())
+
+
 @pytest.mark.parametrize("solver_name", ["ENG-01", "AIR-01"])
 def test_chat_dispatch_does_not_call_http_transports_from_chat_payload(
     solver_name,

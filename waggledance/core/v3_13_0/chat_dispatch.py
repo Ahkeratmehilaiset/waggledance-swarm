@@ -79,12 +79,44 @@ def run_v313_solver_chat_request(query: str) -> str | None:
     request = parse_v313_solver_chat_request(query)
     if request is None:
         return None
+    return _run_recognized_v313_solver_chat_request(request)
 
+
+def _run_recognized_v313_solver_chat_request(
+    request: V313SolverChatRequest,
+) -> str:
+    raw_payload_digest = sha256_digest({"payload_text": request.payload_text})
+    payload_digest = raw_payload_digest
+    solver: SolverManifest | None = None
+
+    try:
+        return _run_recognized_v313_solver_chat_request_inner(
+            request,
+            raw_payload_digest=raw_payload_digest,
+            payload_digest=payload_digest,
+            solver=solver,
+        )
+    except Exception:  # noqa: BLE001 - recognized requests must never fall through.
+        return _json_response(_refusal(
+            request.solver_ref,
+            "dispatch_internal_error",
+            payload_digest=payload_digest,
+            solver=solver,
+        ))
+
+
+def _run_recognized_v313_solver_chat_request_inner(
+    request: V313SolverChatRequest,
+    *,
+    raw_payload_digest: str,
+    payload_digest: str,
+    solver: SolverManifest | None,
+) -> str:
     if len(request.payload_text.encode("utf-8")) > MAX_PAYLOAD_BYTES:
         return _json_response(_refusal(
             request.solver_ref,
             "payload_too_large",
-            payload_digest=sha256_digest({"payload_text": request.payload_text}),
+            payload_digest=raw_payload_digest,
         ))
 
     try:
@@ -93,13 +125,21 @@ def run_v313_solver_chat_request(query: str) -> str | None:
         return _json_response(_refusal(
             request.solver_ref,
             "payload_json_invalid",
-            payload_digest=sha256_digest({"payload_text": request.payload_text}),
+            payload_digest=raw_payload_digest,
         ))
     if not isinstance(payload, Mapping):
         return _json_response(_refusal(
             request.solver_ref,
             "payload_must_be_object",
-            payload_digest=sha256_digest(payload),
+            payload_digest=raw_payload_digest,
+        ))
+    try:
+        payload_digest = sha256_digest(payload)
+    except (TypeError, ValueError):
+        return _json_response(_refusal(
+            request.solver_ref,
+            "payload_json_invalid",
+            payload_digest=raw_payload_digest,
         ))
 
     try:
@@ -108,14 +148,14 @@ def run_v313_solver_chat_request(query: str) -> str | None:
         return _json_response(_refusal(
             request.solver_ref,
             "unknown_solver",
-            payload_digest=sha256_digest(payload),
+            payload_digest=payload_digest,
         ))
 
     if solver.write_intent != "none":
         return _json_response(_refusal(
             solver.name,
             "write_intent_not_allowed",
-            payload_digest=sha256_digest(payload),
+            payload_digest=payload_digest,
             solver=solver,
         ))
 
@@ -126,28 +166,36 @@ def run_v313_solver_chat_request(query: str) -> str | None:
         return _json_response(_refusal(
             solver.name,
             f"solver_refused:{type(exc).__name__}",
-            payload_digest=sha256_digest(payload),
+            payload_digest=payload_digest,
             solver=solver,
         ))
 
-    response = {
-        "source": SOURCE,
-        "solver": solver.name,
-        "case_id": solver.case_id,
-        "write_intent": solver.write_intent,
-        "risk_class": solver.risk_class,
-        "result_marker": str(result_payload.get("result_marker", "")),
-        "result": result_payload,
-    }
-    response["magma_receipt"] = _build_dispatch_receipt_bundle(
-        solver_ref=request.solver_ref,
-        solver=solver,
-        payload_digest=sha256_digest(payload),
-        result_payload=result_payload,
-        verdict="pass",
-        reason_codes=["v313_solver_dispatch_pass"],
-    )
-    return _json_response(response)
+    try:
+        response = {
+            "source": SOURCE,
+            "solver": solver.name,
+            "case_id": solver.case_id,
+            "write_intent": solver.write_intent,
+            "risk_class": solver.risk_class,
+            "result_marker": str(result_payload.get("result_marker", "")),
+            "result": result_payload,
+        }
+        response["magma_receipt"] = _build_dispatch_receipt_bundle(
+            solver_ref=request.solver_ref,
+            solver=solver,
+            payload_digest=payload_digest,
+            result_payload=result_payload,
+            verdict="pass",
+            reason_codes=["v313_solver_dispatch_pass"],
+        )
+        return _json_response(response)
+    except Exception:  # noqa: BLE001 - success-path residue must fail closed.
+        return _json_response(_refusal(
+            solver.name,
+            "dispatch_internal_error",
+            payload_digest=payload_digest,
+            solver=solver,
+        ))
 
 
 def _resolve_solver(solver_ref: str) -> SolverManifest:

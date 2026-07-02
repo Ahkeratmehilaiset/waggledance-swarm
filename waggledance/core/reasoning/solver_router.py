@@ -400,6 +400,14 @@ class SolverRouter:
         """
         q = query.lower().strip()
 
+        if "solver" in q and "payload" in q:
+            from waggledance.core.v3_13_0.chat_dispatch import (
+                detect_v313_solver_chat_request,
+            )
+
+            if detect_v313_solver_chat_request(query):
+                return "v3_13_0_solver"
+
         # ── Early arithmetic detection (overrides "what is" retrieval) ──
         # "what is 15% of 300", "paljonko on 15% sadasta"
         if re.search(r'\d+\s*%\s*(?:of|sadasta)?\s*\d+', q):

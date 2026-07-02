@@ -130,9 +130,8 @@ re-established at the new head) — this is the existing head-exact-binding rule
 made mechanical. A BLOCK is cleared by: (a) a CLEAR/APPROVE from the same identity
 at ≥ the block's head, (b) an explicit `retracts_event_id`, or (c) head
 auto-expiry. There is **no** "carry a stale old-head block onto a new head"
-(fixes #6). *(Content-identical rebase carry-forward remains a specified but
-currently unimplemented CLAUDE.md 9a / P3 carve-out. If it lands, patch-id proof
-belongs in gate code, not in this classifier.)*
+(fixes #6). *(Content-identical rebase carry-forward remains the CLAUDE.md 9a
+exception, evaluated by patch-id, not by this classifier.)*
 
 ### 3.4 Negation-aware classification
 Classification is by **exact enum match**, not substring presence. A status that

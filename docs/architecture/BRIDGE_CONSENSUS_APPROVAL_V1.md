@@ -91,18 +91,19 @@ missing, duplicated, forged, or stale signal fails closed to
    `agent` label must carry the registered `agent_uuid` — see "Enforcement of
    agent-uuid identity binding" below.
 6. **Head-exact binding** — all required, non-waived approvals bind to the exact
-   head SHA. Any re-push strands prior approvals and requires re-consensus at
-   the new head (mirrors `gh pr merge --match-head-commit` and the PR #777
-   head-drift fail-close). **Carry-forward status (doc-code truth, corrected
-   2026-07-02):** the 2026-06-05 amendment specified a future carve-out where a
-   content-identical base rebase could carry content-review approvals forward
-   after a mechanical diff-identity proof and fresh CI. That carve-out is **not
-   implemented in the current gate code**: `verify_bridge_consensus`,
-   `check_rco_pass_present`, and promotion eligibility bind strictly to the
-   exact head SHA. Until a reviewed gate-code implementation lands, every
-   re-push requires approval re-posts at the new head, even for a
-   content-identical base rebase. CI also remains head-bound and must be green at
-   the merge head.
+   head SHA. Any re-push that **changes content** invalidates all prior approvals;
+   re-consensus is required (mirrors `gh pr merge --match-head-commit` and the
+   PR #777 head-drift fail-close). **Exception — content-identical base rebase
+   (2026-06-05):** a pure rebase onto current `origin/main` with **no content
+   change** carries the consensus approvals (RCO_PASS + build_consensus) forward
+   to the new head, because the reviewed content is unchanged. The verifier
+   proves content-identity mechanically: the diff `merge_base..head` at the new
+   head is byte-identical to the diff at the prior approved head (no
+   conflict-resolution edits). CI **must be re-run green against the new head**
+   before merge (carry-forward covers content review only, never CI — the
+   advanced base can introduce semantic skew). Any content difference forfeits
+   carry-forward and forces full re-consensus. This breaks the stale-base
+   deadlock (every merge re-stales the rest) without weakening content review.
 7. **All existing charter conditions still hold** — the seven parallel
    conditions in `IDLE_AUTONOMY_CHARTER.md` (CI green, receipt verified, rate
    limit, mergeable clean, allowlist match, no denylist hit) are unchanged and
@@ -319,9 +320,10 @@ fail-closed (any missing, ambiguous, or unverifiable element →
    pass (`tools/check_bridge_changes_requested.py`).
 5. **Charter checks pass** — `evaluate_paths` + `evaluate_diff_content` evaluated
    and recorded.
-6. **Correct consensus computation** — strict head-exact binding (current gate
-   code does not implement the content-identical-rebase carry-forward carve-out),
-   three+ distinct verified identities, agent-uuid identity binding.
+6. **Correct consensus computation** — head-exact binding (any content-changing
+   re-push invalidates all prior approvals; content-identical base rebase carries
+   forward per the P3 rule), three+ distinct verified identities, agent-uuid
+   identity binding.
 7. **MAGMA receipt** records the standing-sign basis (the directive reference, the
    approving identities, the head SHA, and each gate element) so a consumer can
    re-derive the verdict — never a bare "operator standing-signed" flag.

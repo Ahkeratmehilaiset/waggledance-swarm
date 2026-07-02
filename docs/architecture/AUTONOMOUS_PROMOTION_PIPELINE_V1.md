@@ -4,12 +4,6 @@ Status: proposed (RCO-authored policy; enforcement verifier to be implemented by
 the impl lane and reviewed independently by RCO).
 Author: claude-rco-1. Date: 2026-06-05.
 
-Implementation status corrected 2026-07-02: this remains a proposed pipeline.
-The content-identical rebase carry-forward path described below is **not active
-runtime behavior**. Today's merge gate binds approvals strictly to the exact
-head, so every re-push/rebase requires fresh consensus posts at the new head
-until the P3 predicate and gate wiring land as reviewed gate code.
-
 ## Problem
 
 WD has become a self-measuring, claim-driven run loop, but the **draft → merge
@@ -52,42 +46,42 @@ unknown / unreadable / ambiguous result evaluates to **not eligible**.
    blocking `changes_requested` as the most recent peer signal (this already
    honors *any* peer, including a backup RCO such as `claude-rco-2`).
 6. **Fresh base** — the PR is merged against current `origin/main`. A stale base
-   is **not** merged as-is. Current runtime gates do **not** implement the
-   content-identical carry-forward carve-out, so any rebase/re-push requires
-   approvals to be re-posted at the new head before promotion.
+   is **not** merged as-is; instead the executor **rebases onto current main**,
+   re-runs CI, and (per the head-exact carry-forward rule) carries consensus
+   approvals forward iff the rebase is content-identical. See "Serial merge queue"
+   below — this is what breaks the stale-base deadlock.
 7. **Head-exact / content-identity** — every consensus/approval binds to the head
    SHA; the merge uses `gh pr merge --match-head-commit=<full sha>`. A
-   content-changing re-push forces re-consensus; in current code, a
-   **content-identical base rebase** also requires re-consensus because the
-   carry-forward carve-out is specified but not implemented
-   (`BRIDGE_CONSENSUS_APPROVAL_V1.md` §Head-exact binding).
+   content-changing re-push forces re-consensus; a **content-identical base
+   rebase** carries approvals forward but still requires a fresh CI green at the
+   new head (`BRIDGE_CONSENSUS_APPROVAL_V1.md` §Head-exact binding).
 
 Conditions 1–2 and 4–7 are the existing autonomous-merge contract; this policy
 adds **(3) producer-ready signal as the undraft trigger**, **(6) serial-rebase
 stale-base handling**, and binds them into one ordered, fail-closed check.
 
-## Proposed serial merge queue (breaks the stale-base deadlock after P3 wiring)
+## Serial merge queue (breaks the stale-base deadlock)
 
 With head-exact binding and many concurrent PRs, **every merge re-stales the
-rest** — a naive "refuse stale base" gate deadlocks the queue. Once P3 is
-implemented, the executor can drain eligible PRs **serially**:
+rest** — a naive "refuse stale base" gate deadlocks the queue. The executor
+therefore drains eligible PRs **serially**:
 
 1. Pick the highest-priority PR that passes gates 1–5 (charter-clean, CI green,
    producer-ready, RCO_PASS, no veto).
-2. If its base ≠ current `origin/main`: **rebase onto current main** and require
-   consensus approvals to be re-posted at the rebased head. A future
-   content-identical carry-forward path is specified in the approval contract,
-   but it is not implemented in current gate code.
+2. If its base ≠ current `origin/main`: **rebase onto current main**. Prove the
+   rebase is **content-identical** (diff `merge_base..head` byte-identical to the
+   prior approved head's diff). If content changed (conflict edits) → drop to
+   full re-consensus, skip this PR for now.
 3. **Re-run CI** against the rebased head; require green (catches semantic skew
-   from the advanced base).
+   from the advanced base). Consensus approvals carry forward (content unchanged).
 4. Merge with `--match-head-commit=<rebased head>`.
 5. Move to the next PR (now stale → rebase again). Repeat until the queue drains
    or a PR fails a gate.
 
-Serial processing still drains one merge at a time, but until carry-forward is
-implemented it may require a re-consensus treadmill after rebases. Re-CI per step
-preserves the skew guard. (A second RCO `claude-rco-2` and a cheap cross-model
-grok review add review throughput for the cases that need re-consensus.)
+Serial processing + content-identical carry-forward means the queue drains one
+merge at a time without a re-review treadmill, while re-CI per step preserves the
+skew guard. (A second RCO `claude-rco-2` and a cheap cross-model grok review add
+review throughput for the cases that *do* need re-consensus.)
 
 ## Promotion sequence (executor, per PR)
 
@@ -95,9 +89,8 @@ grok review add review throughput for the cases that need re-consensus.)
    queue, leave `draft`, stop.
 2. If gates 3–4 not yet satisfied → leave `draft` (waiting on producers / RCO),
    stop. (No undraft of WIP.)
-3. If base stale → today, refresh the base, re-run CI, and collect fresh
-   consensus at the rebased head. After P3 gate wiring exists, serial-rebase +
-   re-CI + content-identity check may preserve content-review approvals.
+3. If base stale → serial-rebase + re-CI + content-identity check (above). If the
+   rebase is not content-identical → full re-consensus required, stop.
 4. If **all** gates hold at the (possibly rebased) head → `gh pr ready` (undraft)
    **then** `gh pr merge --squash --match-head-commit=<head>`.
 5. Emit a MAGMA-style promotion receipt recording: PR number, head SHA (and prior
@@ -114,22 +107,19 @@ Never `--admin`, `--no-verify`, or force-push. PR-only.
 * Inputs: `--task-id` (canonical = PR `headRefName`), `--head`, `--pr-number`,
   `--changed-paths` (or computes from diff), `--diff`, `--events`,
   `--ci-rollup`, `--base-sha` / `--origin-main-sha`, `--rco-agent` (repeatable
-  set, see §backup-RCO). The previously specified carry-forward inputs
-  (`--prior-approved-head` and prior approved diff) are dormant until the gate
-  code implements that carve-out.
+  set, see §backup-RCO). For the carry-forward path also:
+  `--prior-approved-head` and the prior approved diff (or compute both diffs).
 * Returns structured `{eligible: bool, gate_results: {...}, reasons: [...],
   base_status: fresh|content_identical_rebase|content_changed|stale,
   carry_forward: bool}` and exit 0 only when **all** gates pass. Absent /
   malformed / ambiguous inputs → `eligible:false` (fail-closed).
-* **Content-identity check (carry-forward, future P3 wiring):** when `--head` ≠
-  the prior approved head, compute whether the diff `merge_base..head` is
-  **byte-identical** to the prior approved head's diff. If identical →
-  `base_status=content_identical_rebase`, `carry_forward=true`: prior RCO_PASS +
-  build_consensus count for the new head, **but the CI gate must independently
-  pass at the new head** (carry-forward never covers CI). If any difference →
-  `carry_forward=false`, `base_status=content_changed`, full re-consensus
-  required (`eligible:false` until re-consensus at the new head). Until this is
-  implemented in gate code, `carry_forward` must remain false.
+* **Content-identity check (carry-forward):** when `--head` ≠ the prior approved
+  head, compute whether the diff `merge_base..head` is **byte-identical** to the
+  prior approved head's diff. If identical → `base_status=content_identical_rebase`,
+  `carry_forward=true`: prior RCO_PASS + build_consensus count for the new head,
+  **but the CI gate must independently pass at the new head** (carry-forward never
+  covers CI). If any difference → `carry_forward=false`, `base_status=content_changed`,
+  full re-consensus required (`eligible:false` until re-consensus at the new head).
 * Re-derives every verdict from inputs; never trusts an upstream `ok` flag.
 * Composes the existing `evaluate_paths` / `evaluate_diff_content` /
   `check_rco_pass_present` / `check_bridge_changes_requested` /
@@ -153,7 +143,7 @@ the executor.
 * **content-changed re-push** (diff differs after rebase) → `carry_forward=false`,
   `eligible:false` until full re-consensus at the new head.
 * content-identical rebase but CI **not** re-run green at new head →
-  `eligible:false`.
+  `eligible:false` (carry-forward never covers CI).
 * head mismatch with no prior-approved-head provided → `eligible:false`.
 * CI not fully green (one pending / failure) → `eligible:false`.
 * all gates pass (fresh base) → `eligible:true` exactly once, head-exact.

@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from waggledance.adapters.http.middleware.auth import BearerAuthMiddleware
 from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+from waggledance.adapters.http.routes.advisory_dashboard import router as advisory_dashboard_router
 from waggledance.adapters.http.routes.auth_session import router as auth_router
 from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
@@ -236,5 +237,7 @@ def create_app(container) -> FastAPI:
     app.include_router(candidate_lab_router)
     # ENG-01 advisory snapshot (/api/eng01/advisory/latest)
     app.include_router(eng01_advisory_router)
+    # Read-only advisory status dashboard (/dashboard/advisories, non-API HTML)
+    app.include_router(advisory_dashboard_router)
 
     return app

@@ -82,6 +82,23 @@ def run_v313_solver_chat_request(query: str) -> str | None:
     return _run_recognized_v313_solver_chat_request(request)
 
 
+def run_v313_solver(solver_ref: str, payload_text: str) -> str:
+    """Run a registered v3.13 solver by ref over an already-extracted payload.
+
+    The non-chat entry point (e.g. the ``POST /api/solvers/{case_id}`` route):
+    the caller supplies the solver ref and the payload as a JSON text string,
+    and gets back the SAME fail-closed JSON response the chat path produces -
+    identical size / parse / resolve / write-intent / call / receipt /
+    totality handling, so there is exactly one dispatch orchestration. It does
+    not parse natural language, open URLs, read files, or write state.
+    """
+    request = V313SolverChatRequest(
+        solver_ref=str(solver_ref).strip().upper(),
+        payload_text=payload_text,
+    )
+    return _run_recognized_v313_solver_chat_request(request)
+
+
 def _run_recognized_v313_solver_chat_request(
     request: V313SolverChatRequest,
 ) -> str:
@@ -383,5 +400,6 @@ __all__ = [
     "V313SolverChatRequest",
     "detect_v313_solver_chat_request",
     "parse_v313_solver_chat_request",
+    "run_v313_solver",
     "run_v313_solver_chat_request",
 ]

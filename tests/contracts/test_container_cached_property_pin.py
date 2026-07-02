@@ -90,6 +90,7 @@ PINNED_CACHED_PROPERTIES: frozenset[str] = frozenset(
         # Feed ingest
         "feed_ingest_sink",
         "data_feed_scheduler",
+        "advisory_refresh_ticker",
         # Operator metric feeds
         "route_stage_latency_feed",
         "magma_share_import_handoff_metrics_alert_feed",

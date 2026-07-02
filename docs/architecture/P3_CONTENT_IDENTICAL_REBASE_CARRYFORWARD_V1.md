@@ -4,10 +4,14 @@
 **Status:** DRAFT spec (design-first). RFC item **P3 — "Cut churn:
 content-identical-rebase carry-forward"** (*fable / rco-1 P3 / rco-2 P5*).
 Producer-authored (`fable-5`); dual-RCO review; gate-policy → operator-sign.
-**Changes no runtime behavior**; it mechanizes the **existing** CLAUDE.md Rule-9a
-content-identical-base-rebase carve-out — it grants no new latitude, only automates
-a carve-out the operator already ratified. Lower priority than the charter-denylist
-(operator top-priority) and the P4 substrate; queued behind them.
+**Changes no runtime behavior**. Doc-code truth corrected 2026-07-02: the
+content-identical-base-rebase carve-out is a specified target, but it is **not
+implemented in the current merge gate**. Today `verify_bridge_consensus`,
+`check_rco_pass_present`, and the merge gate require fresh approvals at every new
+head. P3 is the proposed mechanism that would make carry-forward real after its
+predicate, adversarial tests, and gate wiring land as reviewed (a)-class code.
+Lower priority than the charter-denylist (operator top-priority) and the P4
+substrate; queued behind them.
 
 ## 0. One-paragraph summary
 
@@ -17,13 +21,14 @@ approvals** (the correct default — a content-changing re-push must re-consensu
 But when the rebase is **content-identical** — the PR's diff against the new base
 is **byte-identical** to its diff against the old base (no conflict edit, no
 content change) — the *reviewed content is unchanged*, so full re-consensus is pure
-toil. P3 lets such a rebase **carry the existing build + RCO approvals forward** to
-the new head, **re-running CI only** (to catch semantic skew from the advanced
-base). This is exactly the CLAUDE.md Rule-9a carve-out, made mechanical and
-fail-closed. It attacks the documented stale-base bottleneck (repeatedly ~17 of 19
-open PRs stale after a merge) without loosening any gate.
+toil. P3 would let such a rebase **carry the existing build + RCO approvals
+forward** to the new head, **re-running CI only** (to catch semantic skew from the
+advanced base). This is the specified Rule-9a carve-out, made mechanical and
+fail-closed, but it is not active until gate code implements it. It attacks the
+documented stale-base bottleneck (repeatedly ~17 of 19 open PRs stale after a
+merge) without loosening any gate.
 
-## 1. The carve-out it mechanizes (CLAUDE.md Rule 9a, verbatim intent)
+## 1. The carve-out it would mechanize (CLAUDE.md Rule 9a specified intent)
 
 > **content-identical base rebase:** a pure rebase onto current `origin/main` with
 > **no content change** (the PR's diff against the new base is byte-identical to its
@@ -34,8 +39,11 @@ open PRs stale after a merge) without loosening any gate.
 > content-review approvals only, never to CI; any content difference (conflict
 > resolution, edit) forfeits it and forces full re-consensus.
 
-P3 adds **nothing** to this; it only makes the "mechanically verified" test
-explicit and automatable.
+Current implementation caveat: the text above is the specified target, not the
+runtime gate. Until P3 lands in gate code, any re-push/rebase strands prior
+approvals and requires re-consensus at the new exact head. P3 adds **nothing** to
+the intended authority boundary; it only makes the "mechanically verified" test
+explicit and automatable for a future implementation.
 
 ## 2. The content-identical test (mechanical, fail-closed)
 
@@ -60,7 +68,8 @@ diff / ambiguous patch-id / tooling error → **fail-closed** (forfeit; re-conse
 
 ## 3. What carries forward — and what does NOT
 
-**Carries forward** (only when §2 holds), re-anchored to `new_head`:
+**Would carry forward after P3 is implemented** (only when §2 holds), re-anchored
+to `new_head`:
 - `build_consensus_pass` (lead + tools) — the reviewed content is unchanged.
 - recognized-RCO `RCO_PASS` — same.
 - The carry-forward is recorded with the **proof**: old_head, new_head, the shared
@@ -95,9 +104,10 @@ diff / ambiguous patch-id / tooling error → **fail-closed** (forfeit; re-conse
   produce a receipt the gate can re-derive (same discipline as every other
   approval), so it can never be a free-text claim.
 - **vs auto-rebase (tools P2 proposal):** P3 is the *carry-forward decision*; an
-  auto-rebase tool may USE it (rebase a stale-but-content-identical PR, carry
-  approvals, re-run CI), but the two are separable — P3 is the predicate, the
-  auto-rebase is the actuator (off-allowlist ops).
+  auto-rebase tool may USE it only after gate wiring lands (rebase a
+  stale-but-content-identical PR, carry approvals, re-run CI), but the two are
+  separable — P3 is the predicate, the auto-rebase is the actuator
+  (off-allowlist ops).
 - **vs P4b canary:** unrelated; P3 is pre-merge churn reduction, P4b is post-merge.
 
 ## 6. Rollout & ownership

@@ -78,6 +78,18 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("AutogrowthBackgroundTicker start failed: %s", exc)
 
+    # Start the advisory snapshot refresh loop if configured
+    advisory_ticker = getattr(container, "advisory_refresh_ticker", None)
+    if advisory_ticker is not None:
+        try:
+            if await advisory_ticker.start():
+                logger.info(
+                    "AdvisoryRefreshTicker started (%s)",
+                    ", ".join(advisory_ticker.configured_verticals),
+                )
+        except Exception as exc:
+            logger.warning("AdvisoryRefreshTicker start failed: %s", exc)
+
     # Start autonomy runtime if available
     if hasattr(container, "autonomy_service"):
         try:
@@ -123,6 +135,15 @@ async def lifespan(app: FastAPI):
             logger.info("AutogrowthBackgroundTicker stopped")
         except Exception as exc:
             logger.warning("AutogrowthBackgroundTicker stop failed: %s", exc)
+
+    # Stop the advisory snapshot refresh loop
+    advisory_ticker = getattr(container, "advisory_refresh_ticker", None)
+    if advisory_ticker is not None:
+        try:
+            await advisory_ticker.stop()
+            logger.info("AdvisoryRefreshTicker stopped")
+        except Exception as exc:
+            logger.warning("AdvisoryRefreshTicker stop failed: %s", exc)
 
     # Stop DataFeedScheduler first so in-flight feed tasks can drain into the sink
     scheduler = getattr(container, "data_feed_scheduler", None)

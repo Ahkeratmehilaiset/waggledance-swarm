@@ -921,6 +921,25 @@ class Container:
         )
 
     @cached_property
+    def advisory_refresh_ticker(self):
+        """AdvisoryRefreshTicker — returns None when advisory_refresh.enabled is false."""
+        cfg = self._settings.get("advisory_refresh", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return None
+        try:
+            from waggledance.adapters.feeds.advisory_refresh_ticker import (
+                AdvisoryRefreshTicker,
+            )
+
+            return AdvisoryRefreshTicker(cfg)
+        except Exception as exc:
+            logger.warning(
+                "AdvisoryRefreshTicker construction failed; advisory "
+                "refresh inactive: %s", exc,
+            )
+            return None
+
+    @cached_property
     def route_stage_latency_feed(self):
         """Optional read-only Prometheus/Alertmanager route-stage feed."""
         cfg = self._settings.get("route_stage_latency_feed", {}) or {}

@@ -5,7 +5,11 @@ All memory access goes through MemoryService.retrieve_context().
 """
 
 import asyncio
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
 import hashlib
+import inspect
+import json
 import logging
 import re
 import time
@@ -206,6 +210,12 @@ class ChatService:
             micromodel_confidence=mm_confidence,
         )
         route = select_route(features, self._config)
+        if features.solver_intent == "v3_13_solver" and route.route_type != "solver":
+            route = route.__class__(
+                route_type="solver",
+                confidence=0.95,
+                routing_latency_ms=route.routing_latency_ms,
+            )
         record_route_stage(
             "route_selection",
             route_type=route.route_type,
@@ -628,6 +638,9 @@ class ChatService:
     def _try_solver(query: str, intent: str) -> str | None:
         """Try deterministic solver for math/thermal/stats. Returns answer or None."""
         try:
+            v3_13_result = _try_v3_13_solver(query, intent)
+            if v3_13_result is not None:
+                return v3_13_result
             if intent == "math":
                 from core.math_solver import MathSolver
                 if MathSolver.is_math(query):
@@ -715,3 +728,140 @@ def _risk_label(score: float) -> str:
     elif score <= 0.6:
         return "medium risk"
     return "high risk"
+
+
+def _try_v3_13_solver(query: str, intent: str) -> str | None:
+    raw_request = _parse_v3_13_solver_request(query)
+    if raw_request is None:
+        return None
+    if intent not in {"v3_13_solver", "solver", ""}:
+        return None
+
+    case_id = raw_request.get("case_id")
+    try:
+        if not isinstance(case_id, str) or not case_id:
+            raise ValueError("case_id must be a non-empty string")
+        payload = raw_request.get("payload")
+        if not isinstance(payload, Mapping):
+            raise ValueError("payload must be an object")
+        kwargs = raw_request.get("kwargs", {})
+        if not isinstance(kwargs, Mapping):
+            raise ValueError("kwargs must be an object when provided")
+
+        from waggledance.core.v3_13_0.solver_registry import (
+            get_solver_manifest,
+            resolve_solver_entrypoint,
+        )
+
+        solver = get_solver_manifest(case_id)
+        if solver.risk_class != "informational" or solver.write_intent != "none":
+            raise ValueError("solver is not eligible for chat dispatch")
+
+        entrypoint = resolve_solver_entrypoint(solver)
+        result = _invoke_v3_13_entrypoint(entrypoint, payload, kwargs)
+        result_payload = _solver_result_to_payload(result)
+        if isinstance(result_payload, dict):
+            result_payload.setdefault("case_id", solver.case_id)
+            result_payload.setdefault("write_intent", solver.write_intent)
+        return _v3_13_solver_response(
+            case_id=solver.case_id,
+            solver_name=solver.name,
+            human_name=solver.human_name,
+            result=result_payload,
+            risk_class=solver.risk_class,
+            write_intent=solver.write_intent,
+        )
+    except Exception as exc:  # noqa: BLE001 - explicit requests fail closed.
+        return _v3_13_solver_response(
+            case_id=str(case_id or "unknown"),
+            solver_name=None,
+            human_name=None,
+            result={
+                "case_id": str(case_id or "unknown"),
+                "result_marker": "SOLVER_REQUEST_REFUSED",
+                "write_intent": "none",
+                "refusal_reason": type(exc).__name__,
+            },
+            risk_class=None,
+            write_intent="none",
+        )
+
+
+def _parse_v3_13_solver_request(query: str) -> dict[str, object] | None:
+    stripped = query.lstrip()
+    if not stripped.startswith("{") or '"case_id"' not in stripped:
+        return None
+    try:
+        raw = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict) or "payload" not in raw:
+        return None
+    return raw
+
+
+def _invoke_v3_13_entrypoint(
+    entrypoint: object,
+    payload: Mapping[str, object],
+    request_kwargs: Mapping[str, object],
+) -> object:
+    signature = inspect.signature(entrypoint)
+    params = list(signature.parameters.values())
+    keyword_only = {
+        param.name: param
+        for param in params
+        if param.kind == inspect.Parameter.KEYWORD_ONLY
+    }
+
+    unknown_kwargs = set(request_kwargs) - set(keyword_only)
+    if unknown_kwargs:
+        raise ValueError("unknown solver kwargs refused")
+
+    kwargs = dict(request_kwargs)
+    for name, param in keyword_only.items():
+        if (
+            name not in kwargs
+            and name in payload
+            and param.default is inspect.Parameter.empty
+        ):
+            kwargs[name] = payload[name]
+
+    if params and params[0].name == "burn_log":
+        if "burn_log" not in payload:
+            raise ValueError("ENG-06 payload requires burn_log")
+        return entrypoint(payload["burn_log"], **kwargs)
+    return entrypoint(payload, **kwargs)
+
+
+def _solver_result_to_payload(result: object) -> object:
+    to_payload = getattr(result, "to_payload", None)
+    if callable(to_payload):
+        return to_payload()
+    to_mapping = getattr(result, "to_mapping", None)
+    if callable(to_mapping):
+        return to_mapping()
+    if isinstance(result, Mapping):
+        return dict(result)
+    if is_dataclass(result):
+        return asdict(result)
+    return result
+
+
+def _v3_13_solver_response(
+    *,
+    case_id: str,
+    solver_name: str | None,
+    human_name: str | None,
+    result: object,
+    risk_class: str | None,
+    write_intent: str | None,
+) -> str:
+    payload = {
+        "case_id": case_id,
+        "solver_name": solver_name,
+        "human_name": human_name,
+        "risk_class": risk_class,
+        "write_intent": write_intent,
+        "result": result,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))

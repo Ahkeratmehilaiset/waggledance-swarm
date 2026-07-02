@@ -15,6 +15,7 @@ SmartRouterV2 is NOT replaced — it feeds intent classification into this route
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -261,6 +262,27 @@ def _has_signal(query_lower: str, signals: set[str] | frozenset[str]) -> bool:
     return bool(pat.search(query_lower))
 
 
+def is_v3_13_solver_request(query: str) -> bool:
+    """Return True for explicit registry-backed v3.13 solver JSON requests."""
+
+    stripped = query.lstrip()
+    if not stripped.startswith("{") or '"case_id"' not in stripped:
+        return False
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    case_id = payload.get("case_id")
+    solver_payload = payload.get("payload")
+    return (
+        isinstance(case_id, str)
+        and "__" in case_id
+        and isinstance(solver_payload, dict)
+    )
+
+
 class SolverRouter:
     """
     Solver-first reasoning router.
@@ -398,6 +420,9 @@ class SolverRouter:
         In production, this is replaced by the SmartRouterV2 or
         specialist domain-language adapter.
         """
+        if is_v3_13_solver_request(query):
+            return "v3_13_solver"
+
         q = query.lower().strip()
 
         # ── Early arithmetic detection (overrides "what is" retrieval) ──

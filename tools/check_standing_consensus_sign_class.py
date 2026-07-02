@@ -53,6 +53,19 @@ _A_EXACT = frozenset({
     "license",
     "readme.md",
     "pyproject.toml",
+    # Option-B product gate hard-excludes: these are execution, egress, secret,
+    # storage, provenance, or gate surfaces and must stay operator-explicit even
+    # as neighboring read-only product paths become (b)-class.
+    "waggledance/adapters/http/routes/solvers.py",
+    "waggledance/core/v3_13_0/air01_sensor_http_transport.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_http_transport.py",
+    "waggledance/core/v3_13_0/ssrf_host_guard.py",
+    "waggledance/core/v3_13_0/credential_vault.py",
+    "waggledance/core/v3_13_0/secret_markers.py",
+    "waggledance/core/v3_13_0/write_rco_gate.py",
+    "waggledance/core/v3_13_0/solver_provenance.py",
+    "waggledance/core/v3_13_0/sqlite_read_transport.py",
+    "waggledance/core/v3_13_0/doc_ingest.py",
 })
 # Verdict-computing gate code + bridge gate scripts + THIS module (self).
 _A_CODE_SUBSTR = (
@@ -98,17 +111,55 @@ _A_PREFIX = (
     ".agent-bridge/bin/",
     ".agent-bridge/",                # bridge runtime
     "deploy/", "deployment/", "configs/deployment/",
+    "waggledance/core/autonomy/",
 )
-_A_SUBSTR = ("secret", "token", "credential", ".env")
+_A_SUBSTR = ("auth", "secret", "token", "credential", ".env")
 
 # ----------------------------------------------------------------------------
 # (b)-class: recognized REVERSIBLE artifacts that MAY ride standing-sign. This is
 # a CLOSED allowlist of categories. Anything matching neither (a) nor (b) falls
 # through to (a) -- "when in doubt, operator-explicit" (fail-closed).
 # ----------------------------------------------------------------------------
+_B_EXACT = frozenset({
+    # Read-only product routes. The solver execution/admission route is excluded
+    # above and must remain (a)-class.
+    "waggledance/adapters/http/routes/air01_advisory.py",
+    "waggledance/adapters/http/routes/eng01_advisory.py",
+    "waggledance/adapters/http/routes/eng06_advisory.py",
+    "waggledance/adapters/http/routes/advisory_dashboard.py",
+    # Snapshot refreshers/ticker delegate egress to hard-excluded transports.
+    "waggledance/adapters/feeds/air01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng06_advisory_refresher.py",
+    "waggledance/adapters/feeds/advisory_refresh_ticker.py",
+    # Product CLIs.
+    "waggledance/adapters/cli/acct01_reconcile_bills.py",
+    "waggledance/adapters/cli/air01_advisory.py",
+    "waggledance/adapters/cli/email01_classify_inbox.py",
+    "waggledance/adapters/cli/email02_index_vendor_emails.py",
+    "waggledance/adapters/cli/eng01_recommend.py",
+    "waggledance/adapters/cli/eng06_fireplace.py",
+    "waggledance/adapters/cli/fin10_classify_receipts.py",
+    "waggledance/adapters/cli/pdf01_extract_invoice.py",
+    # Network-free v3.13.0 solver/card/parser/adapter modules from spec v3.
+    "waggledance/core/v3_13_0/acct01_unpaid_bill_reconciler.py",
+    "waggledance/core/v3_13_0/air01_air_quality_advisor.py",
+    "waggledance/core/v3_13_0/air01_digheran_adapter.py",
+    "waggledance/core/v3_13_0/email01_inbox_priority_classifier.py",
+    "waggledance/core/v3_13_0/email02_vendor_email_indexer.py",
+    "waggledance/core/v3_13_0/eng01_advisory_card.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_response_parser.py",
+    "waggledance/core/v3_13_0/eng01_spot_electricity.py",
+    "waggledance/core/v3_13_0/eng06_advisory_card.py",
+    "waggledance/core/v3_13_0/eng06_burn_log_adapter.py",
+    "waggledance/core/v3_13_0/eng06_fireplace_advisor.py",
+    "waggledance/core/v3_13_0/fin10_receipt_classifier.py",
+    "waggledance/core/v3_13_0/pdf01_invoice_field_extractor.py",
+})
 _B_PATTERNS = (
     re.compile(r"^docs/runs/[a-z0-9_./-]+\.md$"),             # sprint boards / run logs
     re.compile(r"^docs/benchmarks/[a-z0-9_./-]+\.md$"),       # perf docs (non-gate)
+    re.compile(r"^docs/benchmarks/[a-z0-9_./-]+\.json$"),     # benchmark result artifacts
     # dormant proof/harness runners ONLY (the run_* convention is deliberately
     # narrowed to *_proof / *_dry_run / run_hex_* so a hypothetical gate runner
     # named tools/run_*.py cannot ride as (b); anything else falls through to (a)).
@@ -165,7 +216,7 @@ def _path_is_a(path: str) -> bool:
 
 def _path_is_b(path: str) -> bool:
     p = _norm(path)
-    return bool(p) and any(rx.match(p) for rx in _B_PATTERNS)
+    return bool(p) and (p in _B_EXACT or any(rx.match(p) for rx in _B_PATTERNS))
 
 
 def classify_ab(changed_paths: Sequence[str]) -> dict[str, Any]:

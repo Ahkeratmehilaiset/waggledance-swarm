@@ -16,7 +16,7 @@ param(
     [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
-    [int] $Tail = 50000,
+    [int] $Tail = 5000,
 
     [double] $OpenRequestMaxAgeHours = 12.0,
 
@@ -101,7 +101,24 @@ function Read-BridgeEventObjects {
     }
     foreach ($line in $lines) {
         if (-not $line) { continue }
-        try { [void]$items.Add(($line | ConvertFrom-Json -ErrorAction Stop)) } catch {}
+        try {
+            $obj = $line | ConvertFrom-Json -ErrorAction Stop
+            # Shape guard: a transient partial read of the shared log can
+            # yield bare null / scalar / array lines. NOTE: `-is
+            # [pscustomobject]` is NOT a valid shape test here - PowerShell
+            # wraps scalars in PSObject so `42 -is [pscustomobject]` is true.
+            # Require the core event members every writer emits, so StrictMode
+            # consumers can never throw on a missing property.
+            if (
+                $null -ne $obj -and
+                $null -ne $obj.PSObject -and
+                $null -ne $obj.PSObject.Properties['type'] -and
+                $null -ne $obj.PSObject.Properties['task_id'] -and
+                $null -ne $obj.PSObject.Properties['agent']
+            ) {
+                [void]$items.Add($obj)
+            }
+        } catch {}
     }
     return $items
 }
@@ -162,32 +179,53 @@ foreach ($req in $requestsForAgent) {
     }
 }
 
-$candidateOpenRequests = New-Object System.Collections.Generic.List[object]
-foreach ($req in $freshRequestsForAgent) {
+function Test-BridgeRequestStillOpen {
+    param([Parameter(Mandatory)] [object] $Request)
+
     $answer = @(
         $events |
             Where-Object {
                 [string]$_.agent -eq $Agent -and
-                [string]$_.task_id -eq [string]$req.task_id -and
-                [string]$_.ts_utc -gt [string]$req.ts_utc -and
+                [string]$_.task_id -eq [string]$Request.task_id -and
+                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
                 (Test-BridgeAnswerEvent -Event $_)
             } |
-            Sort-Object ts_utc |
-            Select-Object -Last 1
+            Select-Object -First 1
     )
+    if ($answer.Count -gt 0) { return $false }
     $requesterClosure = @(
         $events |
             Where-Object {
-                [string]$_.agent -eq [string]$req.agent -and
-                [string]$_.task_id -eq [string]$req.task_id -and
-                [string]$_.ts_utc -gt [string]$req.ts_utc -and
+                [string]$_.agent -eq [string]$Request.agent -and
+                [string]$_.task_id -eq [string]$Request.task_id -and
+                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
                 (Test-BridgeRequesterClosureEvent -Event $_)
             } |
-            Sort-Object ts_utc |
-            Select-Object -Last 1
+            Select-Object -First 1
     )
-    if ($answer.Count -eq 0 -and $requesterClosure.Count -eq 0) {
+    return ($requesterClosure.Count -eq 0)
+}
+
+$candidateOpenRequests = New-Object System.Collections.Generic.List[object]
+foreach ($req in $freshRequestsForAgent) {
+    if (Test-BridgeRequestStillOpen -Request $req) {
         [void]$candidateOpenRequests.Add($req)
+    }
+}
+
+# Stale bucket: previously counted raw (no dedup, no answered check), which
+# inflated stale_incoming_count with every repeated poke ever received and
+# produced false dark-agent alarms. Dedup by requester+task (latest poke per
+# pair) FIRST, then apply the same answered/closure filter as the fresh path.
+$staleOpenRequests = New-Object System.Collections.Generic.List[object]
+$staleByKey = @{}
+foreach ($req in $staleRequests) {
+    $key = "$([string]$req.agent)|$([string]$req.task_id)"
+    $staleByKey[$key] = $req  # requests are ts-sorted; last wins
+}
+foreach ($req in @($staleByKey.Values)) {
+    if (Test-BridgeRequestStillOpen -Request $req) {
+        [void]$staleOpenRequests.Add($req)
     }
 }
 
@@ -234,7 +272,7 @@ $result = [pscustomobject]@{
     summary = $summary
     active_claim_count = $claims.Count
     open_incoming_count = $openRequests.Count
-    stale_incoming_count = $staleRequests.Count
+    stale_incoming_count = $staleOpenRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
 }
 if ($suppressionReason) {

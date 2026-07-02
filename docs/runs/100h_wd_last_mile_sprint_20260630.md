@@ -67,3 +67,27 @@ Merges flow on best-possible consensus (9b standing-sign is proven in production
 off-allowlist (b)-class PRs auto-merge without a per-PR operator signature). The
 WD-Supervisor watchdog keeps the loop alive; the WD-ConsensusStallDetector surfaces
 any silent merge stall. Author ≠ reviewer holds across all lanes.
+
+## Status refresh — 2026-07-02 (day 2)
+
+Verified against merged main (every claim below = a merged PR, not prose):
+
+| Lane / seed | Deliverable | Status |
+| --- | --- | --- |
+| Lead #1 | v3.13 registry solvers wired into live chat dispatch (fail-closed total, MAGMA receipt per dispatch) | MERGED #1469 |
+| Fable #6/#8 | AIR-01 + ENG-01 advisory verticals | landed day 1; ENG-06 completed parity (#1470) |
+| Fable (parity) | AIR-01 + ENG-06 advisory HTTP routes + refreshers | MERGED #1468 / #1470 |
+| Seed #13 | 8 solver CLIs as console scripts + invokability tests | MERGED #1466 / #1467 (day 1) |
+| Seed #14 | Operator advisory dashboard (auth-gated /api/dashboard/advisories) | MERGED #1471 |
+| Plan B | Per-solver refusal passthrough coverage (all 8 solvers + registry-completeness guard) | MERGED #1473 |
+| Follow-up | Advisory snapshot loader consolidation (+ NaN/Inf-500 class closed: #1472/#1468/#1470 guards) | MERGED #1474 / #1472 |
+| Follow-up | In-runtime AdvisoryRefreshTicker (scheduler-written LIVE advisories without OS cron; default OFF) | MERGED #1475 |
+| Seed #11 | Hex ROUTING enable benchmark (first measured baseline; neighbor-rung fixture gap documented) | PR #1481 (dual-RCO, in gate) |
+| Ops (fix-all) | Bridge audit fixes: next-action 4x + meaningful stale count (#1476), gate unverified-veto fail-closed (#1477), write mutex+spool (#1479), nudger idempotency (ops) | MERGED + ops-applied |
+| Governance | CLAUDE.md carry-forward doc-truth | PR #1480 held for operator per-PR signature (carve-out) |
+
+Remaining open seeds: #12 sensor-fusion (MQTT/Frigate), #15 memory folder ingestion,
+#5 EMAIL live ingestion (credential_vault — operator-explicit), tools #2 solver-execute
+route lane, lead MAGMA receipt observability. Panel-2 truth bar (deterministic-first +
+MAGMA on live chat) is MERGED and claimable; hex subdivision/ring remain aspirational
+and unclaimed as specified.

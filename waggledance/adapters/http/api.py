@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from waggledance.adapters.http.middleware.auth import BearerAuthMiddleware
 from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+from waggledance.adapters.http.routes.advisory_dashboard import router as advisory_dashboard_router
 from waggledance.adapters.http.routes.auth_session import router as auth_router
 from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
@@ -242,5 +243,8 @@ def create_app(container) -> FastAPI:
     app.include_router(air01_advisory_router)
     # ENG-06 advisory snapshot (/api/eng06/advisory/latest)
     app.include_router(eng06_advisory_router)
+    # Read-only advisory status dashboard (/api/dashboard/advisories, HTML;
+    # bearer- or session-cookie-gated like the JSON advisory routes)
+    app.include_router(advisory_dashboard_router)
 
     return app

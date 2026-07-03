@@ -22,7 +22,10 @@ the other protected API routes.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+import hashlib
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -44,6 +47,9 @@ _BAD_REQUEST_REASONS = frozenset({
     "payload_json_invalid",
     "payload_must_be_object",
 })
+_PUBLIC_SINK_ERROR_RE = re.compile(
+    r"(?:verifier_error|receipt_sink_error):[0-9a-f]{16}"
+)
 
 
 @router.post("/solvers/{case_id}")
@@ -60,7 +66,7 @@ async def run_solver(case_id: str, request: Request) -> JSONResponse:
                 content_length=content_length,
             ),
         ))
-        return JSONResponse(result, status_code=_status_for(result))
+        return _json_response_for(request, result)
     try:
         payload_text = body.decode("utf-8") if body else ""
     except UnicodeDecodeError:
@@ -69,10 +75,10 @@ async def run_solver(case_id: str, request: Request) -> JSONResponse:
             "payload_json_invalid",
             payload_digest=_body_digest(body),
         ))
-        return JSONResponse(result, status_code=_status_for(result))
+        return _json_response_for(request, result)
     result_text = run_v313_solver(case_id, payload_text)
     result = json.loads(result_text)
-    return JSONResponse(result, status_code=_status_for(result))
+    return _json_response_for(request, result)
 
 
 async def _read_bounded_body(request: Request) -> tuple[bytes, bool, int | None]:
@@ -140,6 +146,110 @@ def _status_for(result: dict[str, Any]) -> int:
     # the request was well-formed and the solver was reached; the fail-closed
     # refusal is the deterministic answer, not a transport error.
     return 200
+
+
+def _json_response_for(request: Request, result: dict[str, Any]) -> JSONResponse:
+    _attach_magma_receipt_sink(request, result)
+    return JSONResponse(result, status_code=_status_for(result))
+
+
+def _attach_magma_receipt_sink(request: Request, result: dict[str, Any]) -> None:
+    sink = _v313_solver_receipt_sink(request)
+    if sink is None:
+        return
+    receipt = result.get("magma_receipt")
+    if not isinstance(receipt, Mapping):
+        result["magma_receipt_sink"] = _sink_failure(
+            "v3.13 solver response missing magma_receipt"
+        )
+        return
+    try:
+        result["magma_receipt_sink"] = _public_sink_result(sink(dict(receipt)))
+    except Exception as exc:  # noqa: BLE001 - sink failures must not alter dispatch.
+        result["magma_receipt_sink"] = _sink_failure(exc)
+
+
+def _v313_solver_receipt_sink(
+    request: Request,
+) -> Callable[[dict[str, Any]], object] | None:
+    try:
+        container = getattr(request.app.state, "container", None)
+        sink = (
+            getattr(container, "v313_solver_receipt_sink", None)
+            if container is not None
+            else None
+        )
+    except Exception:
+        return None
+    return sink if callable(sink) else None
+
+
+def _public_sink_result(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return _sink_failure("v3.13 solver receipt sink returned non-object")
+    verifier_report = value.get("verifier_report", {})
+    if not isinstance(verifier_report, Mapping):
+        verifier_report = {}
+    receipt_count = _safe_int(value.get("receipt_count", 0))
+    verifier_receipt_count = _safe_int(verifier_report.get("receipt_count", 0))
+    verifier_ok = verifier_report.get("ok") is True
+    return {
+        "ok": verifier_ok and receipt_count > 0 and verifier_receipt_count > 0,
+        "receipt_count": receipt_count,
+        "verifier_report": {
+            "ok": verifier_ok,
+            "receipt_count": verifier_receipt_count,
+            "errors": _public_sink_errors(verifier_report.get("errors", [])),
+        },
+        "sink": "configured_local_v313_solver_dispatch_receipts",
+        "paths_returned": False,
+        "payloads_returned": False,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+    }
+
+
+def _sink_failure(error: object) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "receipt_count": 0,
+        "verifier_report": {
+            "ok": False,
+            "receipt_count": 0,
+            "errors": [_public_error("receipt_sink_error", error)],
+        },
+        "sink": "configured_local_v313_solver_dispatch_receipts",
+        "paths_returned": False,
+        "payloads_returned": False,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+    }
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _public_sink_errors(errors: object) -> list[str]:
+    if not isinstance(errors, list):
+        return []
+    public_errors: list[str] = []
+    for error in errors:
+        if isinstance(error, str) and _PUBLIC_SINK_ERROR_RE.fullmatch(error):
+            public_errors.append(error)
+        else:
+            public_errors.append(_public_error("verifier_error", error))
+    return public_errors
+
+
+def _public_error(prefix: str, error: object) -> str:
+    digest = hashlib.sha256(
+        str(error).encode("utf-8", errors="replace")
+    ).hexdigest()[:16]
+    return f"{prefix}:{digest}"
 
 
 __all__ = ["router", "run_solver"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -10,19 +11,44 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from waggledance.adapters.http.routes.solvers import router
+from waggledance.adapters.config.settings_loader import WaggleSettings
+from waggledance.bootstrap.container import Container as RuntimeContainer
 from waggledance.core.v3_13_0.chat_dispatch import MAX_PAYLOAD_BYTES, REFUSAL_MARKER
+from tools.verify_magma_receipt import verify_manifest
 
 
-def _client() -> TestClient:
+def _client(container: object | None = None) -> TestClient:
     app = FastAPI()
+    if container is not None:
+        app.state.container = container
     app.include_router(router)
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _post(case_id: str, payload) -> tuple[int, dict]:
+def _post(
+    case_id: str,
+    payload,
+    *,
+    container: object | None = None,
+) -> tuple[int, dict]:
     body = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
-    resp = _client().post(f"/api/solvers/{case_id}", content=body)
+    resp = _client(container=container).post(f"/api/solvers/{case_id}", content=body)
     return resp.status_code, resp.json()
+
+
+def _container_with_solver_receipts(receipt_root: Path) -> RuntimeContainer:
+    return RuntimeContainer(
+        settings=WaggleSettings(
+            profile="TEST",
+            _extras={
+                "runtime_receipts": {
+                    "enabled": True,
+                    "out_dir": str(receipt_root),
+                }
+            },
+        ),
+        stub=True,
+    )
 
 
 def test_runs_registered_solver_and_returns_marker_and_receipt() -> None:
@@ -34,6 +60,7 @@ def test_runs_registered_solver_and_returns_marker_and_receipt() -> None:
     assert body["result_marker"] == "INVALID_OBSERVATION_REFUSED"
     assert body["source"] == "v3_13_0_solver_registry"
     assert "magma_receipt" in body
+    assert "magma_receipt_sink" not in body
 
 
 def test_case_id_is_case_insensitive() -> None:
@@ -131,6 +158,147 @@ def test_no_http_transport_reachable_from_body() -> None:
     receipt = body["magma_receipt"]["summary"]
     assert receipt["network_access"] == "not_permitted"
     assert receipt["transport_modules_used"] == []
+
+
+def test_enabled_receipt_sink_writes_verified_path_free_bundle(
+    tmp_path: Path,
+) -> None:
+    receipt_root = tmp_path / "solver-receipts"
+    container = _container_with_solver_receipts(receipt_root)
+
+    status, body = _post(
+        "AIR-01",
+        {"bogus": "DO_NOT_LEAK"},
+        container=container,
+    )
+
+    assert status == 200
+    sink = body["magma_receipt_sink"]
+    assert sink == {
+        "ok": True,
+        "receipt_count": 1,
+        "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
+        "sink": "configured_local_v313_solver_dispatch_receipts",
+        "paths_returned": False,
+        "payloads_returned": False,
+        "default_runtime_receipt_emission_changed": False,
+        "runtime_authority_changed": False,
+    }
+    assert "out_dir" not in sink
+    assert "manifest" not in sink
+
+    receipt_dirs = list((receipt_root / "v313_solver_dispatch").iterdir())
+    assert len(receipt_dirs) == 1
+    manifest_path = receipt_dirs[0] / "manifest.json"
+    assert verify_manifest(manifest_path)["ok"] is True
+
+    emitted_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(receipt_root.rglob("*.json"))
+    )
+    assert "payload_digest" in emitted_text
+    assert "result_digest" in emitted_text
+    assert "DO_NOT_LEAK" not in emitted_text
+
+
+def test_enabled_receipt_sink_covers_malformed_json_refusal(
+    tmp_path: Path,
+) -> None:
+    receipt_root = tmp_path / "solver-receipts"
+    container = _container_with_solver_receipts(receipt_root)
+
+    status, body = _post("AIR-01", "{not-json DO_NOT_LEAK", container=container)
+
+    assert status == 400
+    assert body["refusal_reason"] == "payload_json_invalid"
+    assert body["magma_receipt_sink"]["ok"] is True
+    receipt_dirs = list((receipt_root / "v313_solver_dispatch").iterdir())
+    assert len(receipt_dirs) == 1
+    emitted_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(receipt_root.rglob("*.json"))
+    )
+    assert "DO_NOT_LEAK" not in emitted_text
+
+
+def test_receipt_sink_errors_reject_prefixed_raw_disclosure() -> None:
+    class ForgedSinkContainer:
+        @staticmethod
+        def v313_solver_receipt_sink(_receipt: dict[str, object]) -> dict[str, object]:
+            return {
+                "ok": True,
+                "receipt_count": 1,
+                "verifier_report": {
+                    "ok": True,
+                    "receipt_count": 1,
+                    "errors": [
+                        "verifier_error:1234567890abcdef",
+                        "receipt_sink_error:abcdef1234567890",
+                        "verifier_error:C:\\secret\\manifest.json DO_NOT_LEAK",
+                        "receipt_sink_error:private payload DO_NOT_LEAK",
+                    ],
+                },
+            }
+
+    status, body = _post(
+        "AIR-01",
+        {"bogus": "DO_NOT_LEAK"},
+        container=ForgedSinkContainer(),
+    )
+
+    assert status == 200
+    sink = body["magma_receipt_sink"]
+    assert sink["paths_returned"] is False
+    assert sink["payloads_returned"] is False
+    errors = sink["verifier_report"]["errors"]
+    assert errors[:2] == [
+        "verifier_error:1234567890abcdef",
+        "receipt_sink_error:abcdef1234567890",
+    ]
+    assert all(
+        error.startswith(("verifier_error:", "receipt_sink_error:"))
+        for error in errors
+    )
+    assert all(len(error.rsplit(":", 1)[1]) == 16 for error in errors)
+    assert all(
+        error.rsplit(":", 1)[1] == error.rsplit(":", 1)[1].lower()
+        for error in errors
+    )
+    assert all(
+        set(error.rsplit(":", 1)[1]) <= set("0123456789abcdef")
+        for error in errors
+    )
+    serialized = json.dumps(sink)
+    assert "C:\\secret\\manifest.json" not in serialized
+    assert "private payload" not in serialized
+    assert "DO_NOT_LEAK" not in serialized
+
+
+def test_receipt_sink_ok_is_rederived_from_verifier_report() -> None:
+    class ForgedSinkContainer:
+        @staticmethod
+        def v313_solver_receipt_sink(_receipt: dict[str, object]) -> dict[str, object]:
+            return {
+                "ok": True,
+                "receipt_count": 1,
+                "verifier_report": {
+                    "ok": False,
+                    "receipt_count": 1,
+                    "errors": [],
+                },
+            }
+
+    status, body = _post(
+        "AIR-01",
+        {"bogus": True},
+        container=ForgedSinkContainer(),
+    )
+
+    assert status == 200
+    sink = body["magma_receipt_sink"]
+    assert sink["ok"] is False
+    assert sink["verifier_report"]["ok"] is False
+    assert sink["receipt_count"] == 1
 
 
 def test_every_registered_solver_is_reachable() -> None:

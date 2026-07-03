@@ -65,13 +65,19 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `docs/architecture/IDLE_CONSENSUS_ARTIFACT_V1.md` (companion charter doc)
 * `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md` (consensus-approval contract — self-modification banned)
 * `tools/idle_consensus_auto_merge.py` (the merge gate itself — self-modification banned)
+* `tools/idle_consensus_to_pr.py` (the promotion gate that applies this charter — self-modification banned)
 * `tools/merge_with_bridge_receipt.py` (receipt-bound merge executor — self-modification banned)
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
 * `tools/check_rco_pass_present.py` (RCO-pass verifier — self-modification banned)
 * `tools/write_bridge_consensus_merge_receipt.py` (bridge-consensus merge receipt writer — self-modification banned)
+* `tools/verify_magma_receipt.py` (MAGMA receipt verifier — self-modification banned)
 * `waggledance/core/idle_consensus_charter.py` (charter allowlist/denylist evaluator — self-modification banned)
 * `waggledance/core/magma/demo_policy.py` (adversarial-corpus reference policy anchor — self-consistent-tamper guarded)
 * `waggledance/core/magma/adversarial_corpus_eval.py` (adversarial-corpus evaluator/re-derivation anchor — self-consistent-tamper guarded)
+* `waggledance/core/magma/adversarial_gate.py` (adversarial-corpus promotion gate re-derivation anchor — self-consistent-tamper guarded)
+* `waggledance/core/magma/canonical.py` (MAGMA canonical digest primitive — self-consistent-tamper guarded)
+* `waggledance/core/magma/receipt.py` (MAGMA receipt primitive — self-consistent-tamper guarded)
+* `waggledance/core/magma/receipt_bundle.py` (MAGMA receipt-bundle primitive — self-consistent-tamper guarded)
 * `tools/validate_synthetic_adversarial_corpus.py` (adversarial-corpus structural validator anchor — self-consistent-tamper guarded)
 <!-- Gate-policy / gate-ops-tooling class (added 2026-06-25 after the #1387
 auto-merge-bypass: an allowlist-clean gate-policy spec auto-merged without the
@@ -135,7 +141,7 @@ Even within allowlisted file paths, an autonomous merge **must refuse** if the d
 * Changes to `verify_manifest` ok-check or canonical digest logic in `tools/verify_magma_receipt.py` or `waggledance/core/magma/`
 * Changes to denylist or allowlist content in `tools/idle_consensus_to_pr.py` (self-modification ban)
 * Changes to the three-identity / RCO-pass / head-binding verification logic in `tools/idle_consensus_auto_merge.py` (consensus-gate self-modification ban)
-* Changes that disable the adversarial-corpus promotion gate (T5b): flipping `require_adversarial_gate` to a `False` default, weakening `ADVERSARIAL_CORPUS_MIN_CASES`, or altering `verify_adversarial_corpus_gate` re-derivation/binding in `waggledance/core/magma/adversarial_gate.py` or `auto_promotion_engine.py` (gate self-modification ban; opt-out is test-only)
+* Changes that disable the adversarial-corpus promotion gate (T5b): flipping `require_adversarial_gate` to a `False` default, weakening `ADVERSARIAL_CORPUS_MIN_CASES`, or altering `verify_adversarial_corpus_gate` re-derivation/binding in `waggledance/core/magma/adversarial_gate.py` or `waggledance/core/autonomy_growth/auto_promotion_engine.py` (gate self-modification ban; opt-out is test-only)
 * Changes to `PRIVATE_MARKER` constant or `_DO_NOT_LEAK` detection logic anywhere
 * Changes that REMOVE existing `write_receipt_bundle` or `verify_manifest` calls
 

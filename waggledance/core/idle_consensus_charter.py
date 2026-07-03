@@ -29,6 +29,14 @@ _PRIVACY_CANARY_MARKERS = frozenset(
     ("PRIVATE" + "_MARKER", "_DO" + "_NOT" + "_LEAK")
 )
 _RECEIPT_GUARD_MARKERS = frozenset(("verify_manifest", "write_receipt_bundle"))
+_ADVERSARIAL_GATE_MARKERS = frozenset(
+    (
+        "require_adversarial_gate",
+        "ADVERSARIAL_CORPUS_MIN_CASES",
+        "verify_adversarial_corpus_gate",
+    )
+)
+_NON_CODE_MARKER_LITERALS = frozenset(("false", "true", "none", "null"))
 
 
 @dataclass(frozen=True)
@@ -159,6 +167,13 @@ def evaluate_diff_content(
                 marker for marker in markers if marker in _RECEIPT_GUARD_MARKERS
             )
             if _receipt_guard_hits(receipt_markers, diff_text):
+                hits.append(pattern)
+            continue
+        if _is_adversarial_gate_pattern(markers):
+            adversarial_markers = tuple(
+                marker for marker in markers if marker in _ADVERSARIAL_GATE_MARKERS
+            )
+            if _adversarial_gate_hits_non_test_diff(adversarial_markers, diff_text):
                 hits.append(pattern)
             continue
         if any(_marker_matches_diff(marker, ordinary_diff_text) for marker in markers):
@@ -312,6 +327,22 @@ def _receipt_guard_hits(markers: Sequence[str], diff_text: str) -> bool:
     return False
 
 
+def _adversarial_gate_hits_non_test_diff(
+    markers: Sequence[str],
+    diff_text: str,
+) -> bool:
+    sections = _diff_file_sections(diff_text)
+    for section in sections:
+        if not any(_marker_matches_diff(marker, section.text) for marker in markers):
+            continue
+        if section.known_paths and all(
+            _is_tests_path(path) for path in section.known_paths
+        ):
+            continue
+        return True
+    return False
+
+
 def _removed_line_matches_marker(section_text: str, marker: str) -> bool:
     for line in section_text.splitlines():
         if line.startswith("--- "):
@@ -405,6 +436,10 @@ def _is_receipt_guard_pattern(markers: Sequence[str]) -> bool:
     return any(marker in _RECEIPT_GUARD_MARKERS for marker in markers)
 
 
+def _is_adversarial_gate_pattern(markers: Sequence[str]) -> bool:
+    return any(marker in _ADVERSARIAL_GATE_MARKERS for marker in markers)
+
+
 def _is_receipt_guard_sensitive_path(path: str) -> bool:
     normalized = _normalize_changed_path(path).casefold()
     return normalized == "tools/verify_magma_receipt.py" or normalized.startswith(
@@ -444,7 +479,23 @@ def _pattern_markers(bullet: str) -> tuple[str, ...]:
     ):
         if known_marker in bullet and known_marker not in markers:
             markers.append(known_marker)
+    stripped = bullet.strip()
+    if not markers and _looks_like_bare_code_marker(stripped):
+        markers.append(stripped)
     return tuple(marker for marker in markers if marker)
+
+
+def _looks_like_bare_code_marker(value: str) -> bool:
+    if not value:
+        return False
+    if "/" in value or "\\" in value or value.endswith(".py"):
+        return False
+    if value.casefold() in _NON_CODE_MARKER_LITERALS:
+        return False
+    return re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+        value,
+    ) is not None
 
 
 def _extract_operator_quotes(text: str) -> list[str]:

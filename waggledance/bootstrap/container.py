@@ -2,6 +2,8 @@
 
 import hashlib
 import logging
+import re
+import shutil
 from datetime import datetime, timezone
 from functools import cached_property
 from itertools import count
@@ -18,6 +20,8 @@ log = logging.getLogger(__name__)
 # be selected as the active profile.
 KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
 DEFAULT_RUNTIME_RECEIPT_OUT_DIR = "data/runtime/runtime_summary_receipts"
+DEFAULT_V313_SOLVER_RECEIPT_MAX_BUNDLES = 1000
+_V313_SOLVER_RECEIPT_BUNDLE_DIR_RE = re.compile(r"^\d{8}T\d{12}Z-\d{6}$")
 
 
 def _public_runtime_receipt_verifier_errors(errors) -> list[str]:
@@ -36,6 +40,40 @@ def _settings_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _settings_positive_int(settings, key: str, default: int) -> int:
+    try:
+        value = int(settings.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _prune_v313_solver_receipt_bundles(root: Path, max_bundles: int) -> None:
+    if max_bundles < 1 or not root.exists():
+        return
+
+    root_resolved = root.resolve()
+    candidates: list[Path] = []
+    for child in root.iterdir():
+        if not _V313_SOLVER_RECEIPT_BUNDLE_DIR_RE.fullmatch(child.name):
+            continue
+        if child.is_symlink() or not child.is_dir():
+            continue
+        try:
+            if child.resolve().parent != root_resolved:
+                continue
+        except OSError:
+            continue
+        candidates.append(child)
+
+    stale = sorted(candidates, key=lambda path: path.name)[:-max_bundles]
+    for child in stale:
+        try:
+            shutil.rmtree(child)
+        except FileNotFoundError:
+            continue
 
 
 class Container:
@@ -375,8 +413,13 @@ class Container:
                     )
                 )
             ) / "v313_solver_dispatch"
+        max_bundles = _settings_positive_int(
+            self._settings,
+            "runtime_receipts.v313_solver_max_bundles",
+            DEFAULT_V313_SOLVER_RECEIPT_MAX_BUNDLES,
+        )
         sequence = count(1)
-        sequence_lock = Lock()
+        sink_lock = Lock()
 
         def sink(dispatch_receipt: dict):
             from tools.verify_magma_receipt import verify_manifest
@@ -384,43 +427,57 @@ class Container:
                 write_v313_solver_dispatch_receipt_bundle,
             )
 
-            now_utc = datetime.now(timezone.utc)
-            with sequence_lock:
+            with sink_lock:
+                now_utc = datetime.now(timezone.utc)
                 ordinal = next(sequence)
-            leaf = f"{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}-{ordinal:06d}"
-            verifier_report: dict = {}
+                leaf = f"{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}-{ordinal:06d}"
+                verifier_report: dict = {}
+                cleanup_errors: list[str] = []
 
-            def public_verify_manifest(manifest_path: Path) -> dict:
-                nonlocal verifier_report
-                verifier_report = verify_manifest(manifest_path)
-                return verifier_report
+                def public_verify_manifest(manifest_path: Path) -> dict:
+                    nonlocal verifier_report
+                    verifier_report = verify_manifest(manifest_path)
+                    return verifier_report
 
-            try:
-                report = write_v313_solver_dispatch_receipt_bundle(
-                    out_dir=out_dir / leaf,
-                    dispatch_receipt=dispatch_receipt,
-                    verify_manifest=public_verify_manifest,
-                )
-                verifier_report = report.get("verifier_report", {})
-                receipt_count = int(report.get("receipt_count", 0) or 0)
-            except Exception as exc:  # noqa: BLE001 - API receipt emission is advisory.
-                verifier_report = verifier_report or {
-                    "ok": False,
-                    "receipt_count": 0,
-                    "errors": [str(exc)],
-                }
-                receipt_count = 0
+                try:
+                    report = write_v313_solver_dispatch_receipt_bundle(
+                        out_dir=out_dir / leaf,
+                        dispatch_receipt=dispatch_receipt,
+                        verify_manifest=public_verify_manifest,
+                    )
+                    raw_verifier_report = report.get("verifier_report", {})
+                    verifier_report = (
+                        dict(raw_verifier_report)
+                        if isinstance(raw_verifier_report, dict)
+                        else {}
+                    )
+                    receipt_count = int(report.get("receipt_count", 0) or 0)
+                except Exception as exc:  # noqa: BLE001 - API receipt emission is advisory.
+                    verifier_report = verifier_report or {
+                        "ok": False,
+                        "receipt_count": 0,
+                        "errors": [str(exc)],
+                    }
+                    receipt_count = 0
 
+                try:
+                    _prune_v313_solver_receipt_bundles(out_dir, max_bundles)
+                except Exception as exc:  # noqa: BLE001 - retain dispatch response.
+                    cleanup_errors.append(str(exc))
+
+            verifier_errors = list(verifier_report.get("errors", []))
+            verifier_errors.extend(cleanup_errors)
+            verifier_ok = bool(verifier_report.get("ok", False)) and not cleanup_errors
             return {
-                "ok": bool(verifier_report.get("ok", False)) and receipt_count > 0,
+                "ok": verifier_ok and receipt_count > 0,
                 "receipt_count": receipt_count,
                 "verifier_report": {
-                    "ok": bool(verifier_report.get("ok", False)),
+                    "ok": verifier_ok,
                     "receipt_count": int(
                         verifier_report.get("receipt_count", 0) or 0
                     ),
                     "errors": _public_runtime_receipt_verifier_errors(
-                        verifier_report.get("errors", [])
+                        verifier_errors
                     ),
                 },
                 "sink": "configured_local_v313_solver_dispatch_receipts",

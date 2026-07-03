@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -10,8 +12,10 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
+from waggledance.adapters.http.routes import solvers as solvers_route
 from waggledance.adapters.http.routes.solvers import router
 from waggledance.adapters.config.settings_loader import WaggleSettings
+from waggledance.bootstrap import container as container_module
 from waggledance.bootstrap.container import Container as RuntimeContainer
 from waggledance.core.v3_13_0.chat_dispatch import MAX_PAYLOAD_BYTES, REFUSAL_MARKER
 from tools.verify_magma_receipt import verify_manifest
@@ -36,16 +40,19 @@ def _post(
     return resp.status_code, resp.json()
 
 
-def _container_with_solver_receipts(receipt_root: Path) -> RuntimeContainer:
+def _container_with_solver_receipts(
+    receipt_root: Path,
+    **runtime_receipts: object,
+) -> RuntimeContainer:
+    config = {
+        "enabled": True,
+        "out_dir": str(receipt_root),
+    }
+    config.update(runtime_receipts)
     return RuntimeContainer(
         settings=WaggleSettings(
             profile="TEST",
-            _extras={
-                "runtime_receipts": {
-                    "enabled": True,
-                    "out_dir": str(receipt_root),
-                }
-            },
+            _extras={"runtime_receipts": config},
         ),
         stub=True,
     )
@@ -219,6 +226,153 @@ def test_enabled_receipt_sink_covers_malformed_json_refusal(
         for path in sorted(receipt_root.rglob("*.json"))
     )
     assert "DO_NOT_LEAK" not in emitted_text
+
+
+@pytest.mark.asyncio
+async def test_receipt_sink_runs_outside_event_loop_thread() -> None:
+    event_loop_thread = threading.get_ident()
+
+    def sink(_receipt: dict[str, object]) -> dict[str, object]:
+        return {"thread_id": threading.get_ident()}
+
+    result = await solvers_route._run_receipt_sink_in_executor(sink, {})
+
+    assert result["thread_id"] != event_loop_thread
+
+
+def test_enabled_receipt_sink_prunes_old_owned_bundles(
+    tmp_path: Path,
+) -> None:
+    receipt_root = tmp_path / "solver-receipts"
+    sink_root = receipt_root / "v313_solver_dispatch"
+    manual_dir = sink_root / "manual-keep"
+    manual_dir.mkdir(parents=True)
+    container = _container_with_solver_receipts(
+        receipt_root,
+        v313_solver_max_bundles=2,
+    )
+
+    for index in range(3):
+        status, body = _post("AIR-01", {"bogus": index}, container=container)
+        assert status == 200
+        assert body["magma_receipt_sink"]["ok"] is True
+
+    owned_dirs = sorted(
+        path
+        for path in sink_root.iterdir()
+        if path.is_dir() and path.name != manual_dir.name
+    )
+    assert len(owned_dirs) == 2
+    assert manual_dir.is_dir()
+    assert all((path / "manifest.json").is_file() for path in owned_dirs)
+
+
+def test_receipt_sink_prune_ignores_concurrent_missing_owned_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_root = tmp_path / "solver-receipts"
+    sink_root = receipt_root / "v313_solver_dispatch"
+    container = _container_with_solver_receipts(
+        receipt_root,
+        v313_solver_max_bundles=1,
+    )
+    real_rmtree = container_module.shutil.rmtree
+    raced = {"seen": False}
+
+    def racing_rmtree(path: Path) -> None:
+        real_rmtree(path)
+        if not raced["seen"]:
+            raced["seen"] = True
+            raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(container_module.shutil, "rmtree", racing_rmtree)
+
+    for index in range(3):
+        status, body = _post("AIR-01", {"bogus": index}, container=container)
+        assert status == 200
+        assert body["magma_receipt_sink"]["ok"] is True
+
+    owned_dirs = sorted(path for path in sink_root.iterdir() if path.is_dir())
+    assert raced["seen"] is True
+    assert len(owned_dirs) == 1
+    assert (owned_dirs[0] / "manifest.json").is_file()
+
+
+def test_receipt_sink_captures_timestamp_after_sink_lock_for_retention_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from waggledance.core.v3_13_0 import solver_receipt_sink
+
+    receipt_root = tmp_path / "solver-receipts"
+    sink_root = receipt_root / "v313_solver_dispatch"
+    container = _container_with_solver_receipts(
+        receipt_root,
+        v313_solver_max_bundles=1,
+    )
+    first_waiting = threading.Event()
+    release_first = threading.Event()
+    lock_guard = threading.Lock()
+    times = iter([
+        datetime(2026, 7, 3, 12, 0, 1, tzinfo=timezone.utc),
+        datetime(2026, 7, 3, 12, 0, 2, tzinfo=timezone.utc),
+    ])
+
+    class InterleavingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._enters = 0
+
+        def __enter__(self):
+            with lock_guard:
+                self._enters += 1
+                is_first = self._enters == 1
+            if is_first:
+                first_waiting.set()
+                assert release_first.wait(timeout=5), "first sink did not resume"
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self._lock.release()
+
+    class SequencedDateTime:
+        @staticmethod
+        def now(_tz):
+            return next(times)
+
+    def write_bundle(*, out_dir: Path, **_kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        return {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
+        }
+
+    monkeypatch.setattr(container_module, "Lock", InterleavingLock)
+    monkeypatch.setattr(container_module, "datetime", SequencedDateTime)
+    monkeypatch.setattr(
+        solver_receipt_sink,
+        "write_v313_solver_dispatch_receipt_bundle",
+        write_bundle,
+    )
+    sink = container.v313_solver_receipt_sink
+    results: list[dict] = []
+
+    first = threading.Thread(target=lambda: results.append(sink({})))
+    first.start()
+    assert first_waiting.wait(timeout=5), "first sink did not reach lock"
+
+    second_result = sink({})
+    release_first.set()
+    first.join(timeout=5)
+    assert not first.is_alive()
+
+    assert second_result["ok"] is True
+    assert [result["ok"] for result in results] == [True]
+    owned_dirs = sorted(path.name for path in sink_root.iterdir() if path.is_dir())
+    assert owned_dirs == ["20260703T120002000000Z-000002"]
 
 
 def test_receipt_sink_errors_reject_prefixed_raw_disclosure() -> None:

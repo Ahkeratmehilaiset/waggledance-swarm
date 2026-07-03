@@ -22,6 +22,7 @@ the other protected API routes.
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 import hashlib
 import json
@@ -66,7 +67,7 @@ async def run_solver(case_id: str, request: Request) -> JSONResponse:
                 content_length=content_length,
             ),
         ))
-        return _json_response_for(request, result)
+        return await _json_response_for(request, result)
     try:
         payload_text = body.decode("utf-8") if body else ""
     except UnicodeDecodeError:
@@ -75,10 +76,10 @@ async def run_solver(case_id: str, request: Request) -> JSONResponse:
             "payload_json_invalid",
             payload_digest=_body_digest(body),
         ))
-        return _json_response_for(request, result)
+        return await _json_response_for(request, result)
     result_text = run_v313_solver(case_id, payload_text)
     result = json.loads(result_text)
-    return _json_response_for(request, result)
+    return await _json_response_for(request, result)
 
 
 async def _read_bounded_body(request: Request) -> tuple[bytes, bool, int | None]:
@@ -148,12 +149,12 @@ def _status_for(result: dict[str, Any]) -> int:
     return 200
 
 
-def _json_response_for(request: Request, result: dict[str, Any]) -> JSONResponse:
-    _attach_magma_receipt_sink(request, result)
+async def _json_response_for(request: Request, result: dict[str, Any]) -> JSONResponse:
+    await _attach_magma_receipt_sink(request, result)
     return JSONResponse(result, status_code=_status_for(result))
 
 
-def _attach_magma_receipt_sink(request: Request, result: dict[str, Any]) -> None:
+async def _attach_magma_receipt_sink(request: Request, result: dict[str, Any]) -> None:
     sink = _v313_solver_receipt_sink(request)
     if sink is None:
         return
@@ -164,9 +165,18 @@ def _attach_magma_receipt_sink(request: Request, result: dict[str, Any]) -> None
         )
         return
     try:
-        result["magma_receipt_sink"] = _public_sink_result(sink(dict(receipt)))
+        sink_result = await _run_receipt_sink_in_executor(sink, dict(receipt))
+        result["magma_receipt_sink"] = _public_sink_result(sink_result)
     except Exception as exc:  # noqa: BLE001 - sink failures must not alter dispatch.
         result["magma_receipt_sink"] = _sink_failure(exc)
+
+
+async def _run_receipt_sink_in_executor(
+    sink: Callable[[dict[str, Any]], object],
+    receipt: dict[str, Any],
+) -> object:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, sink, receipt)
 
 
 def _v313_solver_receipt_sink(

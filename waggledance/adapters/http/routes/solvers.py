@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import hashlib
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -46,6 +47,9 @@ _BAD_REQUEST_REASONS = frozenset({
     "payload_json_invalid",
     "payload_must_be_object",
 })
+_PUBLIC_SINK_ERROR_RE = re.compile(
+    r"(?:verifier_error|receipt_sink_error):[0-9a-f]{16}"
+)
 
 
 @router.post("/solvers/{case_id}")
@@ -186,12 +190,15 @@ def _public_sink_result(value: object) -> dict[str, Any]:
     verifier_report = value.get("verifier_report", {})
     if not isinstance(verifier_report, Mapping):
         verifier_report = {}
+    receipt_count = _safe_int(value.get("receipt_count", 0))
+    verifier_receipt_count = _safe_int(verifier_report.get("receipt_count", 0))
+    verifier_ok = verifier_report.get("ok") is True
     return {
-        "ok": bool(value.get("ok", False)),
-        "receipt_count": _safe_int(value.get("receipt_count", 0)),
+        "ok": verifier_ok and receipt_count > 0 and verifier_receipt_count > 0,
+        "receipt_count": receipt_count,
         "verifier_report": {
-            "ok": bool(verifier_report.get("ok", False)),
-            "receipt_count": _safe_int(verifier_report.get("receipt_count", 0)),
+            "ok": verifier_ok,
+            "receipt_count": verifier_receipt_count,
             "errors": _public_sink_errors(verifier_report.get("errors", [])),
         },
         "sink": "configured_local_v313_solver_dispatch_receipts",
@@ -231,10 +238,7 @@ def _public_sink_errors(errors: object) -> list[str]:
         return []
     public_errors: list[str] = []
     for error in errors:
-        if isinstance(error, str) and (
-            error.startswith("verifier_error:")
-            or error.startswith("receipt_sink_error:")
-        ):
+        if isinstance(error, str) and _PUBLIC_SINK_ERROR_RE.fullmatch(error):
             public_errors.append(error)
         else:
             public_errors.append(_public_error("verifier_error", error))

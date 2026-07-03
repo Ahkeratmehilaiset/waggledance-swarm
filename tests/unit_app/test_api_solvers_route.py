@@ -221,6 +221,86 @@ def test_enabled_receipt_sink_covers_malformed_json_refusal(
     assert "DO_NOT_LEAK" not in emitted_text
 
 
+def test_receipt_sink_errors_reject_prefixed_raw_disclosure() -> None:
+    class ForgedSinkContainer:
+        @staticmethod
+        def v313_solver_receipt_sink(_receipt: dict[str, object]) -> dict[str, object]:
+            return {
+                "ok": True,
+                "receipt_count": 1,
+                "verifier_report": {
+                    "ok": True,
+                    "receipt_count": 1,
+                    "errors": [
+                        "verifier_error:1234567890abcdef",
+                        "receipt_sink_error:abcdef1234567890",
+                        "verifier_error:C:\\secret\\manifest.json DO_NOT_LEAK",
+                        "receipt_sink_error:private payload DO_NOT_LEAK",
+                    ],
+                },
+            }
+
+    status, body = _post(
+        "AIR-01",
+        {"bogus": "DO_NOT_LEAK"},
+        container=ForgedSinkContainer(),
+    )
+
+    assert status == 200
+    sink = body["magma_receipt_sink"]
+    assert sink["paths_returned"] is False
+    assert sink["payloads_returned"] is False
+    errors = sink["verifier_report"]["errors"]
+    assert errors[:2] == [
+        "verifier_error:1234567890abcdef",
+        "receipt_sink_error:abcdef1234567890",
+    ]
+    assert all(
+        error.startswith(("verifier_error:", "receipt_sink_error:"))
+        for error in errors
+    )
+    assert all(len(error.rsplit(":", 1)[1]) == 16 for error in errors)
+    assert all(
+        error.rsplit(":", 1)[1] == error.rsplit(":", 1)[1].lower()
+        for error in errors
+    )
+    assert all(
+        set(error.rsplit(":", 1)[1]) <= set("0123456789abcdef")
+        for error in errors
+    )
+    serialized = json.dumps(sink)
+    assert "C:\\secret\\manifest.json" not in serialized
+    assert "private payload" not in serialized
+    assert "DO_NOT_LEAK" not in serialized
+
+
+def test_receipt_sink_ok_is_rederived_from_verifier_report() -> None:
+    class ForgedSinkContainer:
+        @staticmethod
+        def v313_solver_receipt_sink(_receipt: dict[str, object]) -> dict[str, object]:
+            return {
+                "ok": True,
+                "receipt_count": 1,
+                "verifier_report": {
+                    "ok": False,
+                    "receipt_count": 1,
+                    "errors": [],
+                },
+            }
+
+    status, body = _post(
+        "AIR-01",
+        {"bogus": True},
+        container=ForgedSinkContainer(),
+    )
+
+    assert status == 200
+    sink = body["magma_receipt_sink"]
+    assert sink["ok"] is False
+    assert sink["verifier_report"]["ok"] is False
+    assert sink["receipt_count"] == 1
+
+
 def test_every_registered_solver_is_reachable() -> None:
     from waggledance.core.v3_13_0.solver_registry import load_solver_registry
 

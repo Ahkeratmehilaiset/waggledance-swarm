@@ -12,6 +12,7 @@ from waggledance.adapters.http.routes.advisory_dashboard import router as adviso
 from waggledance.adapters.http.routes.auth_session import router as auth_router
 from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
+from waggledance.adapters.http.routes.solvers import router as solvers_router
 from waggledance.adapters.http.routes.compat_dashboard import router as compat_router
 from waggledance.adapters.http.routes.cross_agent import router as cross_agent_router
 from waggledance.adapters.http.routes.eng01_advisory import router as eng01_advisory_router
@@ -236,6 +237,8 @@ def create_app(container) -> FastAPI:
     app.include_router(metrics_router)
     # Chat route under /api prefix (/api/chat)
     app.include_router(chat_router, prefix="/api")
+    # Programmatic solver execute (/api/solvers/{case_id})
+    app.include_router(solvers_router)
     # Memory routes under /api prefix (/api/memory/ingest, /api/memory/search)
     app.include_router(memory_router, prefix="/api")
     # Autonomy routes under /api prefix (/api/autonomy/*)

@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from unittest import mock
 
+import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from waggledance.adapters.http.routes.solvers import router
-from waggledance.core.v3_13_0.chat_dispatch import MAX_PAYLOAD_BYTES
+from waggledance.core.v3_13_0.chat_dispatch import MAX_PAYLOAD_BYTES, REFUSAL_MARKER
 
 
 def _client() -> TestClient:
@@ -166,3 +167,154 @@ def test_route_registered_in_api_factory_and_auth_gated() -> None:
     )
     assert ok.status_code == 200
     assert ok.json()["result_marker"] == "INVALID_OBSERVATION_REFUSED"
+
+
+# --- Exact request-body size-boundary behavior (locks _read_bounded_body) ---
+# The oversized tests above use MAX+10 (clearly over). These pin the exact
+# off-by-one: a body of EXACTLY MAX passes the size gate, MAX+1 is refused.
+
+
+def _body_of_size(n: int) -> bytes:
+    """Return a JSON object body of EXACTLY ``n`` bytes."""
+    base = len(json.dumps({"x": ""}).encode("utf-8"))
+    body = json.dumps({"x": "a" * (n - base)}).encode("utf-8")
+    assert len(body) == n, f"padding math off: {len(body)} != {n}"
+    return body
+
+
+def test_body_at_exact_max_bytes_is_not_too_large() -> None:
+    # A body of EXACTLY MAX_PAYLOAD_BYTES passes the size gate (never 413);
+    # it reaches the solver, which refuses on the unrecognized shape -> 200.
+    status, body = _post("AIR-01", _body_of_size(MAX_PAYLOAD_BYTES))
+    assert status != 413
+    assert body.get("refusal_reason") != "payload_too_large"
+
+
+def test_body_one_over_max_bytes_is_413() -> None:
+    # One byte past the limit is refused as payload_too_large, receipted.
+    status, body = _post("AIR-01", _body_of_size(MAX_PAYLOAD_BYTES + 1))
+    assert status == 413
+    assert body["refusal_reason"] == "payload_too_large"
+    assert "magma_receipt" in body
+
+
+def test_stream_cap_refuses_oversized_when_content_length_underreports(
+    monkeypatch,
+) -> None:
+    # Defense against a lying-LOW Content-Length: even when the pre-stream
+    # Content-Length check is fooled into seeing a small value, the independent
+    # byte-counting stream cap still refuses a MAX+1 body.
+    monkeypatch.setattr(
+        "waggledance.adapters.http.routes.solvers._content_length",
+        lambda _request: 5,
+    )
+    status, body = _post("AIR-01", _body_of_size(MAX_PAYLOAD_BYTES + 1))
+    assert status == 413
+    assert body["refusal_reason"] == "payload_too_large"
+    assert "magma_receipt" in body
+
+
+# --- Per-solver refusal passthrough THROUGH THE ROUTE (all 8 registered) ---
+# The chat-dispatch path is covered in test_chat_v313_solver_refusal_passthrough
+# (#1473). This locks the same deterministic-first boundary at the HTTP execute
+# surface POST /api/solvers/{case_id}: every solver's refusal surfaces AS a
+# refusal (own marker verbatim, or solver_refused:<ErrorType>) with a MAGMA
+# receipt -- never a silent success or a transport error.
+
+_ROUTE_MARKER_CASES = [
+    pytest.param(
+        "ENG-06",
+        {
+            "burn_log": [{
+                "day_utc": "2026-01-01T00:00:00Z",
+                "fire_event_count": 0,
+                "peak_chimney_temp_c": 20.0,
+                "average_chimney_temp_c": 18.0,
+            }],
+            "horizon_start_utc": "2026-01-01T00:00:00Z",
+            "horizon_end_utc": "2026-01-01T00:00:00Z",
+        },
+        "NO_FIRES_IN_HORIZON_REFUSED",
+        id="eng06-no-fires",
+    ),
+    pytest.param(
+        "AIR-01", {"bogus": True}, "INVALID_OBSERVATION_REFUSED",
+        id="air01-invalid-observation",
+    ),
+    pytest.param(
+        "ENG-01",
+        {
+            "rows": [{"hour_utc": "2026-01-16T00:00:00Z", "price": 1.0}],
+            "fetched_at_utc": "2026-01-10T00:00:00Z",
+            "horizon_start_utc": "2026-01-16T00:00:00Z",
+            "horizon_hours": 1,
+        },
+        "STALE_DATA_REFUSED",
+        id="eng01-stale-feed",
+    ),
+]
+
+_ROUTE_EXCEPTION_CASES = [
+    pytest.param(
+        "PDF-01",
+        {"documents": [{"source_name": "x.pdf", "text": "gibberish"}]},
+        "Pdf01InvoiceFieldExtractorError", id="pdf01",
+    ),
+    pytest.param(
+        "ACCT-01", {"bills": [], "transactions": []},
+        "Acct01UnpaidBillReconcilerError", id="acct01",
+    ),
+    pytest.param(
+        "EMAIL-01", {"messages": []},
+        "Email01InboxPriorityClassifierError", id="email01",
+    ),
+    pytest.param(
+        "EMAIL-02", {"messages": []},
+        "Email02VendorEmailIndexerError", id="email02",
+    ),
+    pytest.param(
+        "FIN-10", {"receipts": []},
+        "Fin10ReceiptClassifierError", id="fin10",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("solver", "payload", "expected_marker"), _ROUTE_MARKER_CASES
+)
+def test_route_solver_marker_refusal_passthrough(
+    solver: str, payload: dict, expected_marker: str
+) -> None:
+    status, body = _post(solver, payload)
+    assert status == 200
+    assert body["result_marker"] == expected_marker
+    assert body["source"] == "v3_13_0_solver_registry"
+    assert "magma_receipt" in body
+
+
+@pytest.mark.parametrize(
+    ("solver", "payload", "error_type"), _ROUTE_EXCEPTION_CASES
+)
+def test_route_solver_typed_error_maps_to_failclosed_refusal(
+    solver: str, payload: dict, error_type: str
+) -> None:
+    status, body = _post(solver, payload)
+    assert status == 200
+    assert body["result_marker"] == REFUSAL_MARKER
+    assert body["refusal_reason"] == f"solver_refused:{error_type}"
+    assert "magma_receipt" in body
+
+
+def test_route_refusal_passthrough_covers_every_registered_solver() -> None:
+    # Completeness guard mirroring the chat-dispatch one: a 9th registered
+    # solver forces this file to grow so route coverage never silently lags.
+    from waggledance.core.v3_13_0.solver_registry import load_solver_registry
+
+    registered = {s.name for s in load_solver_registry()}
+    covered = {
+        c.values[0] for c in _ROUTE_MARKER_CASES + _ROUTE_EXCEPTION_CASES
+    }
+    assert registered == covered, (
+        f"uncovered via route: {registered - covered}; "
+        f"stale cases: {covered - registered}"
+    )

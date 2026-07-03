@@ -363,3 +363,39 @@ def test_trace_smuggled_raw_content_rejected_even_with_matching_digest(
             ordinal=1,
         )
     assert not out.exists()  # nothing persisted -- the marker cannot leak
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("served_path", "ChatService.handle raw query text"),
+        ("route_type", "raw query text"),
+        ("source", "raw source text"),
+        ("language", "raw language text"),
+        ("profile", "raw profile text"),
+        ("world_snapshot_ref", "raw world snapshot text"),
+        ("agent_id", "raw agent text"),
+        ("query_length", "SECRET_RAW_QUERY_LENGTH"),
+        ("response_length", "SECRET_RAW_RESPONSE_LENGTH"),
+        ("latency_ms", "SECRET_RAW_LATENCY"),
+        ("cached", "SECRET_RAW_CACHED"),
+        ("round_table", "SECRET_RAW_ROUND_TABLE"),
+    ],
+)
+def test_direct_scalar_payload_smuggle_rejected_before_write(
+    tmp_path: Path,
+    key: str,
+    value,
+) -> None:
+    payload = _summary()
+    payload[key] = value
+    out = tmp_path / f"cs-scalar-{key}"
+    with pytest.raises(ValueError, match="chat served"):
+        write_chat_served_receipt_bundle(
+            out_dir=out,
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+    assert not out.exists()

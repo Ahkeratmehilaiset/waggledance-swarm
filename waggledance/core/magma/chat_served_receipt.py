@@ -83,6 +83,7 @@ SOLVER_CONTRACT_NA_SENTINEL = sha256_digest(
 # canonical sha256 shape the MAGMA receipt schema enforces, so a malformed or
 # forged provenance digest can never enter the audit trail.
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+_METADATA_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
 
 # route_stage_trace stage events are sanitized to this allowlisted key set.
 _ROUTE_STAGE_ALLOWED_KEYS = frozenset(
@@ -336,6 +337,8 @@ def _build_chat_served_evaluation(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
     if payload.get("payload_version") != PAYLOAD_VERSION:
         raise ValueError("chat served payload_version mismatch")
+    if payload.get("served_path") != "ChatService.handle":
+        raise ValueError("chat served served_path mismatch")
     for key in (
         "route_type",
         "source",
@@ -347,6 +350,25 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
     ):
         if not payload.get(key):
             raise ValueError(f"chat served payload missing required field: {key}")
+    for key in ("route_type", "source", "language", "profile", "world_snapshot_ref"):
+        _validate_metadata_token(payload, key)
+    agent_id = payload.get("agent_id")
+    if agent_id is not None:
+        _validate_metadata_token(payload, "agent_id")
+    for key in ("query_length", "response_length"):
+        value = payload.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"chat served {key} must be a non-negative integer")
+    latency_ms = payload.get("latency_ms")
+    if (
+        not isinstance(latency_ms, (int, float))
+        or isinstance(latency_ms, bool)
+        or float(latency_ms) < 0.0
+    ):
+        raise ValueError("chat served latency_ms must be a non-negative number")
+    for key in ("cached", "round_table"):
+        if not isinstance(payload.get(key), bool):
+            raise ValueError(f"chat served {key} must be a boolean")
     # Provenance digests must be well-formed sha256 (same shape MAGMA receipt
     # fields require), so a malformed/forged digest cannot enter the trail.
     for digest_key in ("query_digest", "response_digest"):
@@ -431,6 +453,14 @@ def _sanitize_route_stage_trace(
                 continue
         sanitized.append(entry)
     return sanitized
+
+
+def _validate_metadata_token(payload: Mapping[str, Any], key: str) -> None:
+    value = payload.get(key)
+    if not isinstance(value, str) or not _METADATA_TOKEN_RE.fullmatch(value):
+        raise ValueError(
+            f"chat served {key} must be a compact metadata token"
+        )
 
 
 def _clamp_unit(value: Any) -> float:

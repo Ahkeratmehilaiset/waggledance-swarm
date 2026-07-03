@@ -64,6 +64,10 @@ CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES = {
     "waggledance/core/magma/adversarial_corpus_eval.py",
     "tools/validate_synthetic_adversarial_corpus.py",
 }
+ADVERSARIAL_GATE_FILE_DENYLIST_ENTRIES = {
+    "waggledance/core/magma/adversarial_gate.py",
+    "tools/idle_consensus_to_pr.py",
+}
 MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES = {
     "tools/merge_with_bridge_receipt.py",
 }
@@ -91,6 +95,13 @@ LEGACY_CODE_PATTERN_MARKERS = {
     "fast_track_grants_runtime_authority=True",
     _PRIVACY_CANARY_MARKER,
     _SECOND_PRIVACY_CANARY_MARKER,
+}
+ADVERSARIAL_GATE_CODE_PATTERN_MARKERS = {
+    "require_adversarial_gate",
+    "ADVERSARIAL_CORPUS_MIN_CASES",
+    "verify_adversarial_corpus_gate",
+    "waggledance/core/magma/adversarial_gate.py",
+    "waggledance/core/autonomy_growth/auto_promotion_engine.py",
 }
 
 
@@ -156,6 +167,11 @@ def test_charter_denylist_contains_corpus_policy_anchors() -> None:
     assert CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
 
 
+def test_charter_denylist_contains_adversarial_gate_self_modification_paths() -> None:
+    charter = load_charter()
+    assert ADVERSARIAL_GATE_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
 def test_charter_denylist_contains_merge_executor_anchor() -> None:
     charter = load_charter()
     assert MERGE_EXECUTOR_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
@@ -178,6 +194,14 @@ def test_charter_preserves_existing_code_pattern_markers() -> None:
     code_patterns = "\n".join(charter.code_pattern_denylist)
     for marker in LEGACY_CODE_PATTERN_MARKERS:
         assert marker in code_patterns
+
+
+def test_charter_preserves_adversarial_gate_code_pattern_markers() -> None:
+    charter = load_charter()
+    code_patterns = "\n".join(charter.code_pattern_denylist)
+    for marker in ADVERSARIAL_GATE_CODE_PATTERN_MARKERS:
+        assert marker in code_patterns
+    assert "waggledance/core/magma/auto_promotion_engine.py" not in code_patterns
 
 
 def test_evaluate_paths_allows_substrate_path() -> None:
@@ -264,6 +288,15 @@ def test_evaluate_paths_keeps_runtime_http_paths_operator_gated() -> None:
 def test_evaluate_paths_blocks_corpus_policy_anchors_despite_broad_allowlist() -> None:
     charter = load_charter()
     for path in sorted(CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False
+        assert decision.blocked_paths == (path,)
+        assert decision.reason == "denylist hit"
+
+
+def test_evaluate_paths_blocks_adversarial_gate_self_modification_paths() -> None:
+    charter = load_charter()
+    for path in sorted(ADVERSARIAL_GATE_FILE_DENYLIST_ENTRIES):
         decision = evaluate_paths(charter, [path])
         assert decision.allowed is False
         assert decision.blocked_paths == (path,)
@@ -472,6 +505,49 @@ def test_evaluate_diff_content_blocks_gate_skip_and_fast_track_authority_claims(
         decision = evaluate_diff_content(charter, diff)
         assert decision.allowed is False
         assert decision.code_pattern_hits
+
+
+def test_evaluate_diff_content_blocks_adversarial_gate_disable_markers() -> None:
+    charter = load_charter()
+    diffs = {
+        "require_adversarial_gate": """diff --git a/waggledance/core/autonomy_growth/auto_promotion_engine.py b/waggledance/core/autonomy_growth/auto_promotion_engine.py
+--- a/waggledance/core/autonomy_growth/auto_promotion_engine.py
++++ b/waggledance/core/autonomy_growth/auto_promotion_engine.py
+@@ -84,2 +84,2 @@
++    require_adversarial_gate: bool = False
+""",
+        "ADVERSARIAL_CORPUS_MIN_CASES": """diff --git a/waggledance/core/autonomy_growth/auto_promotion_engine.py b/waggledance/core/autonomy_growth/auto_promotion_engine.py
+--- a/waggledance/core/autonomy_growth/auto_promotion_engine.py
++++ b/waggledance/core/autonomy_growth/auto_promotion_engine.py
+@@ -70,1 +70,1 @@
++ADVERSARIAL_CORPUS_MIN_CASES = 0
+""",
+        "verify_adversarial_corpus_gate": """diff --git a/waggledance/core/autonomy_growth/auto_promotion_engine.py b/waggledance/core/autonomy_growth/auto_promotion_engine.py
+--- a/waggledance/core/autonomy_growth/auto_promotion_engine.py
++++ b/waggledance/core/autonomy_growth/auto_promotion_engine.py
+@@ -245,1 +245,0 @@
+-            gate = verify_adversarial_corpus_gate(report=report)
+""",
+    }
+
+    for marker, diff in diffs.items():
+        decision = evaluate_diff_content(charter, diff)
+        assert decision.allowed is False, marker
+        assert any(marker in hit for hit in decision.code_pattern_hits)
+
+
+def test_evaluate_diff_content_allows_test_only_adversarial_gate_markers() -> None:
+    charter = load_charter()
+    diff = """diff --git a/tests/autonomy_growth/test_auto_promotion_engine.py b/tests/autonomy_growth/test_auto_promotion_engine.py
+--- a/tests/autonomy_growth/test_auto_promotion_engine.py
++++ b/tests/autonomy_growth/test_auto_promotion_engine.py
+@@ -1,3 +1,7 @@
++request = PromotionRequest(require_adversarial_gate=False)
++assert ADVERSARIAL_CORPUS_MIN_CASES >= 1
++gate = verify_adversarial_corpus_gate(report=report)
+ """
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is True
 
 
 def test_evaluate_diff_content_blocks_second_sequence_marker() -> None:

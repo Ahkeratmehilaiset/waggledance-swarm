@@ -427,8 +427,8 @@ class Container:
                 write_v313_solver_dispatch_receipt_bundle,
             )
 
-            now_utc = datetime.now(timezone.utc)
             with sink_lock:
+                now_utc = datetime.now(timezone.utc)
                 ordinal = next(sequence)
                 leaf = f"{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}-{ordinal:06d}"
                 verifier_report: dict = {}

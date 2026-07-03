@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -296,6 +297,82 @@ def test_receipt_sink_prune_ignores_concurrent_missing_owned_bundle(
     assert raced["seen"] is True
     assert len(owned_dirs) == 1
     assert (owned_dirs[0] / "manifest.json").is_file()
+
+
+def test_receipt_sink_captures_timestamp_after_sink_lock_for_retention_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from waggledance.core.v3_13_0 import solver_receipt_sink
+
+    receipt_root = tmp_path / "solver-receipts"
+    sink_root = receipt_root / "v313_solver_dispatch"
+    container = _container_with_solver_receipts(
+        receipt_root,
+        v313_solver_max_bundles=1,
+    )
+    first_waiting = threading.Event()
+    release_first = threading.Event()
+    lock_guard = threading.Lock()
+    times = iter([
+        datetime(2026, 7, 3, 12, 0, 1, tzinfo=timezone.utc),
+        datetime(2026, 7, 3, 12, 0, 2, tzinfo=timezone.utc),
+    ])
+
+    class InterleavingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._enters = 0
+
+        def __enter__(self):
+            with lock_guard:
+                self._enters += 1
+                is_first = self._enters == 1
+            if is_first:
+                first_waiting.set()
+                assert release_first.wait(timeout=5), "first sink did not resume"
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self._lock.release()
+
+    class SequencedDateTime:
+        @staticmethod
+        def now(_tz):
+            return next(times)
+
+    def write_bundle(*, out_dir: Path, **_kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        return {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
+        }
+
+    monkeypatch.setattr(container_module, "Lock", InterleavingLock)
+    monkeypatch.setattr(container_module, "datetime", SequencedDateTime)
+    monkeypatch.setattr(
+        solver_receipt_sink,
+        "write_v313_solver_dispatch_receipt_bundle",
+        write_bundle,
+    )
+    sink = container.v313_solver_receipt_sink
+    results: list[dict] = []
+
+    first = threading.Thread(target=lambda: results.append(sink({})))
+    first.start()
+    assert first_waiting.wait(timeout=5), "first sink did not reach lock"
+
+    second_result = sink({})
+    release_first.set()
+    first.join(timeout=5)
+    assert not first.is_alive()
+
+    assert second_result["ok"] is True
+    assert [result["ok"] for result in results] == [True]
+    owned_dirs = sorted(path.name for path in sink_root.iterdir() if path.is_dir())
+    assert owned_dirs == ["20260703T120002000000Z-000002"]
 
 
 def test_receipt_sink_errors_reject_prefixed_raw_disclosure() -> None:

@@ -70,7 +70,10 @@ def _prune_v313_solver_receipt_bundles(root: Path, max_bundles: int) -> None:
 
     stale = sorted(candidates, key=lambda path: path.name)[:-max_bundles]
     for child in stale:
-        shutil.rmtree(child)
+        try:
+            shutil.rmtree(child)
+        except FileNotFoundError:
+            continue
 
 
 class Container:

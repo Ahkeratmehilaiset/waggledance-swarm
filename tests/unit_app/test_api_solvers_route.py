@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 from waggledance.adapters.http.routes import solvers as solvers_route
 from waggledance.adapters.http.routes.solvers import router
 from waggledance.adapters.config.settings_loader import WaggleSettings
+from waggledance.bootstrap import container as container_module
 from waggledance.bootstrap.container import Container as RuntimeContainer
 from waggledance.core.v3_13_0.chat_dispatch import MAX_PAYLOAD_BYTES, REFUSAL_MARKER
 from tools.verify_magma_receipt import verify_manifest
@@ -263,6 +264,38 @@ def test_enabled_receipt_sink_prunes_old_owned_bundles(
     assert len(owned_dirs) == 2
     assert manual_dir.is_dir()
     assert all((path / "manifest.json").is_file() for path in owned_dirs)
+
+
+def test_receipt_sink_prune_ignores_concurrent_missing_owned_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_root = tmp_path / "solver-receipts"
+    sink_root = receipt_root / "v313_solver_dispatch"
+    container = _container_with_solver_receipts(
+        receipt_root,
+        v313_solver_max_bundles=1,
+    )
+    real_rmtree = container_module.shutil.rmtree
+    raced = {"seen": False}
+
+    def racing_rmtree(path: Path) -> None:
+        real_rmtree(path)
+        if not raced["seen"]:
+            raced["seen"] = True
+            raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(container_module.shutil, "rmtree", racing_rmtree)
+
+    for index in range(3):
+        status, body = _post("AIR-01", {"bogus": index}, container=container)
+        assert status == 200
+        assert body["magma_receipt_sink"]["ok"] is True
+
+    owned_dirs = sorted(path for path in sink_root.iterdir() if path.is_dir())
+    assert raced["seen"] is True
+    assert len(owned_dirs) == 1
+    assert (owned_dirs[0] / "manifest.json").is_file()
 
 
 def test_receipt_sink_errors_reject_prefixed_raw_disclosure() -> None:

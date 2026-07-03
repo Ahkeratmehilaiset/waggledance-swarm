@@ -295,3 +295,35 @@ def test_smuggled_raw_key_is_rejected_before_any_bundle_is_written(
             ordinal=1,
         )
     assert not out.exists()  # nothing was persisted
+
+
+def test_digest_semantics_rejects_nested_extra_raw_key_before_write(
+    tmp_path: Path,
+) -> None:
+    payload = _summary()
+    payload["digest_semantics"] = dict(payload["digest_semantics"])
+    payload["digest_semantics"]["raw_leak"] = "SECRET_IN_DIGEST_SEMANTICS"
+    out = tmp_path / "cs-digest-semantics-leak"
+    with pytest.raises(ValueError, match="digest_semantics"):
+        write_chat_served_receipt_bundle(
+            out_dir=out,
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+    assert not out.exists()
+
+
+def test_digest_semantics_rejects_tampered_known_value() -> None:
+    payload = _summary()
+    payload["digest_semantics"] = dict(payload["digest_semantics"])
+    payload["digest_semantics"]["rco_decision_digest"] = "real:fake_gate"
+    with pytest.raises(ValueError, match="digest_semantics"):
+        write_chat_served_receipt_bundle(
+            out_dir=Path("unused"),
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )

@@ -131,6 +131,20 @@ _ALLOWED_PAYLOAD_KEYS = frozenset(
     }
 )
 
+# The FIXED digest_semantics declaration. The builder emits this exact dict
+# deterministically (it depends on no input), so the validator requires an exact
+# match -- digest_semantics is the one dict-valued allowlisted key, and pinning
+# it closes the "raw content smuggled one level deeper" gap (a nested value like
+# {"raw_leak": "..."} can never ride into the receipt). Single source of truth
+# for both the builder and the validator.
+_DIGEST_SEMANTICS = {
+    "charter_digest": "real:charter_version",
+    "policy_digest": "real:route_policy_version",
+    "world_snapshot_digest": "real:profile+world_snapshot_ref",
+    "rco_decision_digest": "na:no_rco_decision_gate_for_chat",
+    "solver_contract_digest": "na:no_solver_contract_for_chat",
+}
+
 
 def build_chat_served_summary(
     *,
@@ -182,13 +196,7 @@ def build_chat_served_summary(
         # self-describing declaration emitted by the builder; verifier
         # enforcement of it (verify_magma_receipt REQUIRING the sentinels for
         # risk_class=informational chat receipts) is Phase 1b and NOT wired yet.
-        "digest_semantics": {
-            "charter_digest": "real:charter_version",
-            "policy_digest": "real:route_policy_version",
-            "world_snapshot_digest": "real:profile+world_snapshot_ref",
-            "rco_decision_digest": "na:no_rco_decision_gate_for_chat",
-            "solver_contract_digest": "na:no_solver_contract_for_chat",
-        },
+        "digest_semantics": dict(_DIGEST_SEMANTICS),
     }
 
 
@@ -361,6 +369,10 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
         {"route_stage_trace": trace}
     ):
         raise ValueError("chat served route_stage_trace_digest mismatch")
+    if payload.get("digest_semantics") != _DIGEST_SEMANTICS:
+        raise ValueError(
+            "chat served digest_semantics must match the fixed declaration"
+        )
     # Privacy invariant: the persisted payload is copied wholesale, so its
     # top-level keys must be EXACTLY the allowlist -- no extra field (raw-content
     # or otherwise) may ride along into the audit trail. Named raw keys keep a
@@ -373,6 +385,14 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
                 f"chat served payload has unexpected top-level key '{key}' "
                 "(only allowlisted keys may be persisted)"
             )
+    # digest_semantics is the one dict-valued allowlisted key; its nested values
+    # are otherwise unvalidated, so pin it to the exact fixed declaration -- this
+    # closes the "raw content smuggled one level deeper" gap (a nested value can
+    # never ride into the receipt). The builder emits it deterministically.
+    if payload.get("digest_semantics") != _DIGEST_SEMANTICS:
+        raise ValueError(
+            "chat served digest_semantics must equal the fixed declaration"
+        )
 
 
 def _sanitize_route_stage_trace(

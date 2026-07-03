@@ -369,10 +369,6 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
         {"route_stage_trace": trace}
     ):
         raise ValueError("chat served route_stage_trace_digest mismatch")
-    if payload.get("digest_semantics") != _DIGEST_SEMANTICS:
-        raise ValueError(
-            "chat served digest_semantics must match the fixed declaration"
-        )
     # Privacy invariant: the persisted payload is copied wholesale, so its
     # top-level keys must be EXACTLY the allowlist -- no extra field (raw-content
     # or otherwise) may ride along into the audit trail. Named raw keys keep a

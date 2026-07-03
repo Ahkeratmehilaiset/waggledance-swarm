@@ -348,6 +348,90 @@ class Container:
 
         return sink
 
+    @cached_property
+    def v313_solver_receipt_sink(self):
+        """Optional local MAGMA receipt sink for v3.13 solver-dispatch results.
+
+        Disabled by default. When explicitly enabled through the existing
+        ``runtime_receipts.enabled`` gate, the sink writes sanitized receipt
+        bundles for ``POST /api/solvers/{case_id}`` and returns only path-free
+        verifier metadata to the API caller.
+        """
+        if not _settings_bool(self._settings.get("runtime_receipts.enabled", False)):
+            return None
+
+        configured_out_dir = self._settings.get(
+            "runtime_receipts.v313_solver_out_dir",
+            None,
+        )
+        if configured_out_dir:
+            out_dir = Path(str(configured_out_dir))
+        else:
+            out_dir = Path(
+                str(
+                    self._settings.get(
+                        "runtime_receipts.out_dir",
+                        DEFAULT_RUNTIME_RECEIPT_OUT_DIR,
+                    )
+                )
+            ) / "v313_solver_dispatch"
+        sequence = count(1)
+        sequence_lock = Lock()
+
+        def sink(dispatch_receipt: dict):
+            from tools.verify_magma_receipt import verify_manifest
+            from waggledance.core.v3_13_0.solver_receipt_sink import (
+                write_v313_solver_dispatch_receipt_bundle,
+            )
+
+            now_utc = datetime.now(timezone.utc)
+            with sequence_lock:
+                ordinal = next(sequence)
+            leaf = f"{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}-{ordinal:06d}"
+            verifier_report: dict = {}
+
+            def public_verify_manifest(manifest_path: Path) -> dict:
+                nonlocal verifier_report
+                verifier_report = verify_manifest(manifest_path)
+                return verifier_report
+
+            try:
+                report = write_v313_solver_dispatch_receipt_bundle(
+                    out_dir=out_dir / leaf,
+                    dispatch_receipt=dispatch_receipt,
+                    verify_manifest=public_verify_manifest,
+                )
+                verifier_report = report.get("verifier_report", {})
+                receipt_count = int(report.get("receipt_count", 0) or 0)
+            except Exception as exc:  # noqa: BLE001 - API receipt emission is advisory.
+                verifier_report = verifier_report or {
+                    "ok": False,
+                    "receipt_count": 0,
+                    "errors": [str(exc)],
+                }
+                receipt_count = 0
+
+            return {
+                "ok": bool(verifier_report.get("ok", False)) and receipt_count > 0,
+                "receipt_count": receipt_count,
+                "verifier_report": {
+                    "ok": bool(verifier_report.get("ok", False)),
+                    "receipt_count": int(
+                        verifier_report.get("receipt_count", 0) or 0
+                    ),
+                    "errors": _public_runtime_receipt_verifier_errors(
+                        verifier_report.get("errors", [])
+                    ),
+                },
+                "sink": "configured_local_v313_solver_dispatch_receipts",
+                "paths_returned": False,
+                "payloads_returned": False,
+                "default_runtime_receipt_emission_changed": False,
+                "runtime_authority_changed": False,
+            }
+
+        return sink
+
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
     @cached_property

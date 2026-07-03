@@ -363,6 +363,19 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
     trace = payload.get("route_stage_trace")
     if not isinstance(trace, list):
         raise ValueError("chat served route_stage_trace must be a list")
+    # Re-sanitize in the validation path. The digest check below is only
+    # SELF-CONSISTENCY (the public build path's caller supplies BOTH the trace
+    # AND its digest), and _sanitize_route_stage_trace -- which actually enforces
+    # the privacy invariant (allowlisted keys, scalar-only values) -- otherwise
+    # runs ONLY in the producer build_chat_served_summary. So re-sanitize here
+    # and reject any trace that is not already its sanitized form; otherwise raw
+    # content can be smuggled into a trace entry through the direct build path
+    # with a recomputed matching digest.
+    if _sanitize_route_stage_trace(trace) != trace:
+        raise ValueError(
+            "chat served route_stage_trace has non-allowlisted keys or "
+            "non-scalar values (must be pre-sanitized before persistence)"
+        )
     if payload.get("route_stage_trace_count") != len(trace):
         raise ValueError("chat served route_stage_trace_count mismatch")
     if payload.get("route_stage_trace_digest") != sha256_digest(

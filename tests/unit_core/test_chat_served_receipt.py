@@ -327,3 +327,39 @@ def test_digest_semantics_rejects_tampered_known_value() -> None:
             verify_manifest=verify_manifest,
             ordinal=1,
         )
+
+
+@pytest.mark.parametrize(
+    "tampered_trace",
+    [
+        # a nested extra raw key alongside allowlisted keys
+        [{"stage": "solver", "hit": True, "raw_leak": "SECRET_TRACE_LEAK"}],
+        # a non-allowlisted key carrying a raw prompt
+        [{"stage": "solver", "prompt_text": "USER_PRIVATE_PROMPT_LEAK"}],
+    ],
+)
+def test_trace_smuggled_raw_content_rejected_even_with_matching_digest(
+    tmp_path: Path, tampered_trace
+) -> None:
+    from waggledance.core.magma.canonical import sha256_digest
+
+    # rco-1's finding: the route_stage_trace_digest check is only
+    # self-consistency, so a DIRECT caller can recompute a matching digest for a
+    # tampered trace whose sanitization the producer never ran. The validator
+    # must re-sanitize and reject before persistence.
+    payload = _summary()
+    payload["route_stage_trace"] = tampered_trace
+    payload["route_stage_trace_count"] = len(tampered_trace)
+    payload["route_stage_trace_digest"] = sha256_digest(
+        {"route_stage_trace": tampered_trace}
+    )
+    out = tmp_path / "cs-trace-leak"
+    with pytest.raises(ValueError, match="route_stage_trace"):
+        write_chat_served_receipt_bundle(
+            out_dir=out,
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+    assert not out.exists()  # nothing persisted -- the marker cannot leak

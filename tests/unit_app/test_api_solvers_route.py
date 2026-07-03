@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -10,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
+from waggledance.adapters.http.routes import solvers as solvers_route
 from waggledance.adapters.http.routes.solvers import router
 from waggledance.adapters.config.settings_loader import WaggleSettings
 from waggledance.bootstrap.container import Container as RuntimeContainer
@@ -36,16 +38,19 @@ def _post(
     return resp.status_code, resp.json()
 
 
-def _container_with_solver_receipts(receipt_root: Path) -> RuntimeContainer:
+def _container_with_solver_receipts(
+    receipt_root: Path,
+    **runtime_receipts: object,
+) -> RuntimeContainer:
+    config = {
+        "enabled": True,
+        "out_dir": str(receipt_root),
+    }
+    config.update(runtime_receipts)
     return RuntimeContainer(
         settings=WaggleSettings(
             profile="TEST",
-            _extras={
-                "runtime_receipts": {
-                    "enabled": True,
-                    "out_dir": str(receipt_root),
-                }
-            },
+            _extras={"runtime_receipts": config},
         ),
         stub=True,
     )
@@ -219,6 +224,45 @@ def test_enabled_receipt_sink_covers_malformed_json_refusal(
         for path in sorted(receipt_root.rglob("*.json"))
     )
     assert "DO_NOT_LEAK" not in emitted_text
+
+
+@pytest.mark.asyncio
+async def test_receipt_sink_runs_outside_event_loop_thread() -> None:
+    event_loop_thread = threading.get_ident()
+
+    def sink(_receipt: dict[str, object]) -> dict[str, object]:
+        return {"thread_id": threading.get_ident()}
+
+    result = await solvers_route._run_receipt_sink_in_executor(sink, {})
+
+    assert result["thread_id"] != event_loop_thread
+
+
+def test_enabled_receipt_sink_prunes_old_owned_bundles(
+    tmp_path: Path,
+) -> None:
+    receipt_root = tmp_path / "solver-receipts"
+    sink_root = receipt_root / "v313_solver_dispatch"
+    manual_dir = sink_root / "manual-keep"
+    manual_dir.mkdir(parents=True)
+    container = _container_with_solver_receipts(
+        receipt_root,
+        v313_solver_max_bundles=2,
+    )
+
+    for index in range(3):
+        status, body = _post("AIR-01", {"bogus": index}, container=container)
+        assert status == 200
+        assert body["magma_receipt_sink"]["ok"] is True
+
+    owned_dirs = sorted(
+        path
+        for path in sink_root.iterdir()
+        if path.is_dir() and path.name != manual_dir.name
+    )
+    assert len(owned_dirs) == 2
+    assert manual_dir.is_dir()
+    assert all((path / "manifest.json").is_file() for path in owned_dirs)
 
 
 def test_receipt_sink_errors_reject_prefixed_raw_disclosure() -> None:

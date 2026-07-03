@@ -35,6 +35,18 @@ A_CLASS_PATHS = [
     "tools/check_standing_consensus_sign_class.py",   # self -> no self-activation
     "tools/bridge_event_taxonomy.py",                 # wired into the live consumer
     ".agent-bridge/bin/Write-AgentEvent.ps1",
+    "waggledance/adapters/http/routes/solvers.py",
+    "waggledance/adapters/http/routes/auth_session.py",
+    "waggledance/core/autonomy/scheduler.py",
+    "waggledance/core/v3_13_0/air01_sensor_http_transport.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_http_transport.py",
+    "waggledance/core/v3_13_0/ssrf_host_guard.py",
+    "waggledance/core/v3_13_0/credential_vault.py",
+    "waggledance/core/v3_13_0/secret_markers.py",
+    "waggledance/core/v3_13_0/write_rco_gate.py",
+    "waggledance/core/v3_13_0/solver_provenance.py",
+    "waggledance/core/v3_13_0/sqlite_read_transport.py",
+    "waggledance/core/v3_13_0/doc_ingest.py",
     "tests/tools/test_verify_bridge_consensus_conformance.py",
     "tests/tools/verify_bridge_consensus_conformance_corpus.json",
     "tests/tools/test_standing_consensus_sign_class.py",   # this very file (self)
@@ -82,6 +94,36 @@ B_CLASS_PATHS = [
     "tools/run_hex_parent_child_ring_invariant_proof.py",
     "tools/run_some_offline_proof.py",
     "docs/runs/48h_hex_mesh_autonomy_sprint_board_20260627.md",
+    "docs/benchmarks/local_ollama_model_sweep_2026.json",
+    "waggledance/adapters/http/routes/air01_advisory.py",
+    "waggledance/adapters/http/routes/eng01_advisory.py",
+    "waggledance/adapters/http/routes/eng06_advisory.py",
+    "waggledance/adapters/http/routes/advisory_dashboard.py",
+    "waggledance/adapters/feeds/air01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng01_advisory_refresher.py",
+    "waggledance/adapters/feeds/eng06_advisory_refresher.py",
+    "waggledance/adapters/feeds/advisory_refresh_ticker.py",
+    "waggledance/adapters/cli/acct01_reconcile_bills.py",
+    "waggledance/adapters/cli/air01_advisory.py",
+    "waggledance/adapters/cli/email01_classify_inbox.py",
+    "waggledance/adapters/cli/email02_index_vendor_emails.py",
+    "waggledance/adapters/cli/eng01_recommend.py",
+    "waggledance/adapters/cli/eng06_fireplace.py",
+    "waggledance/adapters/cli/fin10_classify_receipts.py",
+    "waggledance/adapters/cli/pdf01_extract_invoice.py",
+    "waggledance/core/v3_13_0/acct01_unpaid_bill_reconciler.py",
+    "waggledance/core/v3_13_0/air01_air_quality_advisor.py",
+    "waggledance/core/v3_13_0/air01_digheran_adapter.py",
+    "waggledance/core/v3_13_0/email01_inbox_priority_classifier.py",
+    "waggledance/core/v3_13_0/email02_vendor_email_indexer.py",
+    "waggledance/core/v3_13_0/eng01_advisory_card.py",
+    "waggledance/core/v3_13_0/eng01_price_feed_response_parser.py",
+    "waggledance/core/v3_13_0/eng01_spot_electricity.py",
+    "waggledance/core/v3_13_0/eng06_advisory_card.py",
+    "waggledance/core/v3_13_0/eng06_burn_log_adapter.py",
+    "waggledance/core/v3_13_0/eng06_fireplace_advisor.py",
+    "waggledance/core/v3_13_0/fin10_receipt_classifier.py",
+    "waggledance/core/v3_13_0/pdf01_invoice_field_extractor.py",
     "tests/tools/test_hex_foo_proof.py",
     "tests/tools/test_run_bar_proof.py",
     "tests/security/p4c_corpus/case_001.json",
@@ -104,6 +146,14 @@ def test_all_b_paths_together_classify_as_b():
 
 def test_empty_paths_classify_as_a_fail_closed():
     assert classify_ab([])["ab_class"] == "a"
+
+
+def test_a_denylist_precedence_outranks_b_pattern():
+    # docs/benchmarks/*.json is (b), but secret/token/credential paths stay (a)
+    # if future edits accidentally reorder _path_is_a/_path_is_b checks.
+    out = classify_ab(["docs/benchmarks/secret_token_probe.json"])
+    assert out["ab_class"] == "a"
+    assert out["a_hits"] == ["docs/benchmarks/secret_token_probe.json"]
 
 
 @pytest.mark.parametrize("a_path", A_CLASS_PATHS)
@@ -149,6 +199,17 @@ def test_b_class_full_best_consensus_is_admitted():
     assert out["ab_class"] == "b"
     assert out["basis"]["operator_signature"] == "satisfied_by_standing_consensus_sign"
     assert out["basis"]["dual_rco"] == ["claude-rco-1", "claude-rco-2"]
+
+
+def test_target_product_paths_full_best_consensus_is_admitted():
+    out = _eval(changed_paths=[
+        "waggledance/adapters/http/routes/eng01_advisory.py",
+        "waggledance/adapters/http/routes/advisory_dashboard.py",
+        "waggledance/adapters/feeds/eng01_advisory_refresher.py",
+        "docs/benchmarks/local_ollama_model_sweep_2026.json",
+    ])
+    assert out["admitted"] is True
+    assert out["ab_class"] == "b"
 
 
 def test_default_off_refuses_even_with_full_consensus():

@@ -161,6 +161,23 @@ class TestSolverFirstServedStats(unittest.TestCase):
         )
         self.assertEqual(s["solver_first_served_total"], 2)
 
+    def test_ratio_never_exceeds_one_when_denominator_excludes_solver(self):
+        # Claim-safety regression: narrowing served_route_types to EXCLUDE the
+        # solver route must NOT inflate the ratio above 1.0 (was 3/1 = 3.0).
+        # solver-first-served is a subset of served, so excluding solver from
+        # the denominator yields 0 solver-first and ratio 0.0 -- never > 1.0.
+        rt = RouteTelemetry()
+        for _ in range(3):
+            rt.record("solver", 10.0, success=True)
+        rt.record("llm", 20.0, success=True)
+        s = rt.solver_first_served_stats(
+            served_route_types=frozenset({"llm"})
+        )
+        self.assertEqual(s["served_total"], 1)
+        self.assertEqual(s["solver_first_served_total"], 0)
+        self.assertLessEqual(s["solver_first_served_ratio"], 1.0)
+        self.assertEqual(s["solver_first_served_ratio"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

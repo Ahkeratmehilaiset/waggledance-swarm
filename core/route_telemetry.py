@@ -115,16 +115,23 @@ class RouteTelemetry:
         narrow the denominator (e.g. exclude cache hits) via
         ``served_route_types``.
         """
-        solver_total = sum(
-            s.count for rt, s in self._stats.items() if rt in solver_route_types
-        )
+        # The served denominator (default: every recorded route_type).
         if served_route_types is None:
-            served_total = sum(s.count for s in self._stats.values())
+            served_items = list(self._stats.items())
         else:
-            served_total = sum(
-                s.count for rt, s in self._stats.items()
+            served_items = [
+                (rt, s) for rt, s in self._stats.items()
                 if rt in served_route_types
-            )
+            ]
+        served_total = sum(s.count for _, s in served_items)
+        # Claim-safety invariant: solver-first-served is a SUBSET of served, so
+        # the numerator is counted ONLY within the served denominator. This
+        # guarantees the ratio can never exceed 1.0 even when the caller narrows
+        # ``served_route_types`` to exclude a solver route (else an inflated
+        # ratio could spuriously satisfy the S4 claim_safe threshold).
+        solver_total = sum(
+            s.count for rt, s in served_items if rt in solver_route_types
+        )
         ratio = (solver_total / served_total) if served_total else 0.0
         return {
             "solver_first_served_total": solver_total,

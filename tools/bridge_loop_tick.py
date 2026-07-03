@@ -40,7 +40,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -87,6 +87,7 @@ SUBSTANTIVE_IDLE_MINUTES = 30.0
 PEER_ACTIVATION_RECENT_MINUTES = 30.0
 NON_SUBSTANTIVE_TYPES = {"heartbeat", "liveness"}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+IDLE_PROTOCOL_DEFERRED_SOURCE = "docs/architecture/IDLE_PROTOCOL_V1.md#deferred"
 
 # How recently a peer's substantive event must have happened to count as
 # an "active PR-producing claim" for wakeup-anticipation purposes. This keeps
@@ -391,6 +392,85 @@ def _activation_task(
     }
 
 
+def _peer_activation_base(peer: str, reason: str = "") -> dict[str, Any]:
+    return {
+        "needed": False,
+        "peer": peer,
+        "reason": reason,
+        "last_seen_at_utc": "",
+        "last_substantive_at_utc": "",
+        "substantive_age_minutes": None,
+        "bridge_event": None,
+        "ignored_stale_peer_claim_count": 0,
+    }
+
+
+def _claim_value(claim: Any, key: str) -> Any:
+    value = getattr(claim, key, None)
+    if value is None and isinstance(claim, Mapping):
+        return claim.get(key)
+    return value
+
+
+def _claim_is_current(claim: Any, *, now_utc: datetime) -> bool:
+    heartbeat = _parse_ts(str(_claim_value(claim, "last_heartbeat_utc") or ""))
+    claimed_at = _parse_ts(str(_claim_value(claim, "claimed_at_utc") or ""))
+    basis = heartbeat or claimed_at
+    if basis is None:
+        return True
+    try:
+        lease_seconds = max(1, int(_claim_value(claim, "lease_seconds") or 0))
+    except (TypeError, ValueError):
+        lease_seconds = 1
+    effective_expiry = basis + timedelta(seconds=lease_seconds)
+    explicit_expiry = _parse_ts(
+        str(_claim_value(claim, "claim_lease_expires_utc") or "")
+    )
+    if explicit_expiry is not None and explicit_expiry > effective_expiry:
+        effective_expiry = explicit_expiry
+    return now_utc.astimezone(timezone.utc) < effective_expiry
+
+
+def _peer_activation_contract(*, agent: str, peer: str) -> dict[str, Any]:
+    return {
+        "source": IDLE_PROTOCOL_DEFERRED_SOURCE,
+        "identity_binding": {
+            "agent": agent,
+            "peer": peer,
+            "peer_mapping_known": PEER_AGENT.get(agent) == peer,
+        },
+        "open_request_handling": {
+            "incoming_request_priority": "answer_incoming_before_peer_activation_emit",
+        },
+        "stale_claim_suppression": {
+            "expired_peer_claims_ignored": True,
+        },
+        "authority": {
+            "emits_substantive_idle_payloads": False,
+            "claims_work": False,
+            "creates_tasks": False,
+            "creates_pull_requests": False,
+            "merges": False,
+            "skips_gates": False,
+        },
+    }
+
+
+def _peer_activation_blocked_by_open_incoming(
+    *, peer: str, next_action_report: Mapping[str, Any]
+) -> dict[str, Any]:
+    report = _peer_activation_base(
+        peer,
+        reason="open_incoming_request_takes_priority",
+    )
+    report["guard_evidence"] = {
+        "source": IDLE_PROTOCOL_DEFERRED_SOURCE,
+        "next_action": str(next_action_report.get("action", "")),
+        "task_id": str(next_action_report.get("task_id", "")),
+    }
+    return report
+
+
 def peer_activation_recommendation(
     *,
     agent: str,
@@ -402,25 +482,20 @@ def peer_activation_recommendation(
     """Return a read-only recommendation for activating a heartbeat-only peer."""
 
     peer = PEER_AGENT.get(agent, "")
-    base = {
-        "needed": False,
-        "peer": peer,
-        "reason": "",
-        "last_seen_at_utc": "",
-        "last_substantive_at_utc": "",
-        "substantive_age_minutes": None,
-        "bridge_event": None,
-    }
+    base = _peer_activation_base(peer)
     if not peer:
         return base
 
+    ignored_stale_peer_claim_count = 0
     for claim in claims:
-        claim_agent = getattr(claim, "agent", None)
-        if claim_agent is None and isinstance(claim, Mapping):
-            claim_agent = claim.get("agent")
+        claim_agent = _claim_value(claim, "agent")
         if str(claim_agent or "") == peer:
+            if not _claim_is_current(claim, now_utc=now_utc):
+                ignored_stale_peer_claim_count += 1
+                continue
             base["reason"] = "peer_has_active_claim"
             return base
+    base["ignored_stale_peer_claim_count"] = ignored_stale_peer_claim_count
 
     latest = _latest_agent_event(events, agent=peer, substantive_only=False)
     substantive = _latest_agent_event(events, agent=peer, substantive_only=True)
@@ -471,6 +546,10 @@ def peer_activation_recommendation(
             "task_id": task["task_id"],
             "summary": task["summary"],
             "message": task["message"],
+            "deferred_lift_contract": _peer_activation_contract(
+                agent=agent,
+                peer=peer,
+            ),
         },
     }
 
@@ -506,6 +585,9 @@ def materialize_peer_activation_event(
             "source": "bridge_loop_tick.peer_activation",
         },
     }
+    contract = event_spec.get("deferred_lift_contract")
+    if isinstance(contract, Mapping):
+        event["payload"]["deferred_lift_contract"] = dict(contract)
     validate_event(event)
     return event
 
@@ -876,13 +958,19 @@ def build_loop_tick(
 
     packs = scan_inbox(inbox_dir)
     effective_now = now_utc or datetime.now(timezone.utc)
-    peer_activation = peer_activation_recommendation(
-        agent=agent,
-        events=events,
-        claims=claims,
-        open_packs=packs["open"],
-        now_utc=effective_now,
-    )
+    if next_action == "answer_incoming":
+        peer_activation = _peer_activation_blocked_by_open_incoming(
+            peer=PEER_AGENT.get(agent, ""),
+            next_action_report=next_action_report,
+        )
+    else:
+        peer_activation = peer_activation_recommendation(
+            agent=agent,
+            events=events,
+            claims=claims,
+            open_packs=packs["open"],
+            now_utc=effective_now,
+        )
     peer_active_claim = peer_has_active_pr_producing_claim(
         events,
         agent=agent,

@@ -920,6 +920,35 @@ def test_peer_activation_not_needed_when_peer_has_claim():
     assert rec["reason"] == "peer_has_active_claim"
 
 
+def test_peer_activation_ignores_expired_peer_claim():
+    events = [
+        _finding("claude", "2026-05-22T13:00:00Z"),
+        _heartbeat("claude", "2026-05-22T13:55:00Z"),
+    ]
+    claims = [
+        SimpleNamespace(
+            agent="claude",
+            task_id="expired-peer-claim",
+            claimed_at_utc="2026-05-22T13:00:00Z",
+            last_heartbeat_utc="2026-05-22T13:00:00Z",
+            lease_seconds=60,
+            claim_lease_expires_utc="2026-05-22T13:01:00Z",
+        )
+    ]
+
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=claims,
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is True
+    assert rec["ignored_stale_peer_claim_count"] == 1
+    assert rec["reason"] == "peer_heartbeat_only_without_recent_substantive_work"
+
+
 def test_peer_activation_not_duplicated_when_recent_handoff_exists():
     events = [
         _heartbeat("claude", "2026-05-22T13:55:00Z"),
@@ -963,6 +992,9 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
     assert event["type"] == "handoff"
     assert event["status"] == "scout_requested"
     assert event["payload"]["source"] == "bridge_loop_tick.peer_activation"
+    assert event["payload"]["deferred_lift_contract"]["source"] == (
+        "docs/architecture/IDLE_PROTOCOL_V1.md#deferred"
+    )
     assert (tmp_path / "outbox" / "codex" / "2026-05-22.jsonl").exists()
     assert (
         json.loads((tmp_path / "shared" / "last_codex.json").read_text())["task_id"]
@@ -991,10 +1023,23 @@ def test_peer_activation_event_is_handoff_only_without_authority():
     assert event["paths"] == []
     assert event["write_scope"] == []
     assert event["run_id"] == ""
-    assert event["payload"] == {
-        "summary": rec["bridge_event"]["summary"],
-        "source": "bridge_loop_tick.peer_activation",
+    payload = event["payload"]
+    assert payload["summary"] == rec["bridge_event"]["summary"]
+    assert payload["source"] == "bridge_loop_tick.peer_activation"
+    contract = payload["deferred_lift_contract"]
+    assert contract["identity_binding"] == {
+        "agent": "codex",
+        "peer": "claude",
+        "peer_mapping_known": True,
     }
+    assert contract["open_request_handling"] == {
+        "incoming_request_priority": "answer_incoming_before_peer_activation_emit",
+    }
+    assert contract["stale_claim_suppression"] == {
+        "expired_peer_claims_ignored": True,
+    }
+    assert contract["authority"]["emits_substantive_idle_payloads"] is False
+    assert contract["authority"]["claims_work"] is False
     assert "operator_gate_required" not in event
     assert "auto_execute" not in event
     assert "claim" not in event
@@ -1018,6 +1063,37 @@ def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):
     assert report["peer_activation"]["needed"] is True
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
     assert report["wakeup_reason"] == "peer activation needed"
+
+
+def test_loop_tick_suppresses_peer_activation_when_incoming_request_open(tmp_path):
+    events = [
+        _finding("claude", "2026-05-22T13:00:00Z"),
+        _heartbeat("claude", "2026-05-22T13:55:00Z"),
+        _rco_request(
+            "open-request-first",
+            frm="fable-5",
+            to="codex",
+            ts="2026-05-22T13:56:00Z",
+        ),
+    ]
+
+    report = build_loop_tick(
+        agent="codex",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
+    )
+
+    assert report["next_action"] == "answer_incoming"
+    assert report["peer_activation"]["needed"] is False
+    assert report["peer_activation"]["reason"] == "open_incoming_request_takes_priority"
+    assert report["peer_activation"]["bridge_event"] is None
+    assert report["peer_activation"]["guard_evidence"]["task_id"] == (
+        "open-request-first"
+    )
+    assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
 
 
 @pytest.mark.parametrize(

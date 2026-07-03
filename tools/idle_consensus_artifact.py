@@ -772,17 +772,20 @@ def _counterfactual_receipt_binding_summary(
     replay_seed_digest: str,
     candidate_diff_digest: str,
 ) -> dict[str, Any]:
-    binding = (
+    raw_binding = (
         receipt.get("replay_binding")
         if isinstance(receipt, Mapping)
         else None
     )
-    provided = isinstance(binding, Mapping)
+    provided = (
+        isinstance(raw_binding, Mapping)
+        and raw_binding.get("schema_version") == COUNTERFACTUAL_EVAL_BINDING_VERSION
+    )
     replay_seed_matches = (
-        provided and binding.get("replay_seed_digest") == replay_seed_digest
+        provided and raw_binding.get("replay_seed_digest") == replay_seed_digest
     )
     candidate_diff_matches = (
-        provided and binding.get("candidate_diff_digest") == candidate_diff_digest
+        provided and raw_binding.get("candidate_diff_digest") == candidate_diff_digest
     )
     return {
         "schema_version": COUNTERFACTUAL_EVAL_BINDING_VERSION,

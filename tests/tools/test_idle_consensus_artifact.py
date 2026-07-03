@@ -1757,6 +1757,22 @@ def test_receipt_binding_partial_match_wrong_seed_digest_fails(
     assert summary["satisfies_replay_gate"] is False
 
 
+def test_receipt_binding_wrong_schema_fails_even_with_matching_digests(
+    tmp_path: Path,
+) -> None:
+    def _tamper(binding: dict) -> None:
+        binding["schema_version"] = "unexpected.counterfactual_binding.v0"
+
+    summary = _binding_admission_summary(tmp_path, binding_mutator=_tamper)
+    binding = summary["binding"]
+    assert binding["provided"] is False
+    assert binding["replay_seed_digest_matches"] is False
+    assert binding["candidate_diff_digest_matches"] is False
+    assert binding["matches"] is False
+    assert summary["observability_satisfies_replay_gate"] is True
+    assert summary["satisfies_replay_gate"] is False
+
+
 @pytest.mark.parametrize(
     "bad_binding",
     [

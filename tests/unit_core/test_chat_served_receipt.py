@@ -258,3 +258,40 @@ def test_nested_object_trace_value_dropped_no_leak(tmp_path: Path) -> None:
         ordinal=1,
     )
     assert "SECRET_NESTED_LEAK" not in _emitted_text(tmp_path / "cs-1")
+
+
+@pytest.mark.parametrize(
+    "extra_key", ["raw_query_text", "raw_response_text", "prompt", "user_message"]
+)
+def test_payload_rejects_unexpected_top_level_key(extra_key: str) -> None:
+    # A wholesale-copied payload must not smuggle any non-allowlisted top-level
+    # key (raw-content or otherwise) into the persisted receipt.
+    payload = _summary()
+    payload[extra_key] = "SECRET_RAW_SMUGGLED"
+    with pytest.raises(ValueError, match="unexpected top-level key"):
+        write_chat_served_receipt_bundle(
+            out_dir=Path("unused"),
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+
+
+def test_smuggled_raw_key_is_rejected_before_any_bundle_is_written(
+    tmp_path: Path,
+) -> None:
+    # tools' exact repro: raw_query_text previously persisted while
+    # verify_manifest reported ok. It must now be rejected before write.
+    payload = _summary()
+    payload["raw_query_text"] = "SECRET_RAW_SMUGGLED"
+    out = tmp_path / "cs-leak"
+    with pytest.raises(ValueError, match="unexpected top-level key"):
+        write_chat_served_receipt_bundle(
+            out_dir=out,
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+    assert not out.exists()  # nothing was persisted

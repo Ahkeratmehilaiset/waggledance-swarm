@@ -101,6 +101,36 @@ _ROUTE_STAGE_ALLOWED_KEYS = frozenset(
     }
 )
 
+# The COMPLETE set of top-level keys a chat-served payload may carry. The
+# persisted receipt payload is copied wholesale, so anything not on this
+# allowlist is rejected -- otherwise a caller could smuggle a raw-content field
+# (e.g. raw_query_text / prompt) into the audit trail past the digests-only
+# privacy invariant. Keep in exact sync with build_chat_served_summary's return.
+_ALLOWED_PAYLOAD_KEYS = frozenset(
+    {
+        "payload_version",
+        "served_path",
+        "route_type",
+        "source",
+        "confidence",
+        "latency_ms",
+        "cached",
+        "round_table",
+        "agent_id",
+        "language",
+        "profile",
+        "world_snapshot_ref",
+        "query_digest",
+        "query_length",
+        "response_digest",
+        "response_length",
+        "route_stage_trace",
+        "route_stage_trace_count",
+        "route_stage_trace_digest",
+        "digest_semantics",
+    }
+)
+
 
 def build_chat_served_summary(
     *,
@@ -331,10 +361,18 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
         {"route_stage_trace": trace}
     ):
         raise ValueError("chat served route_stage_trace_digest mismatch")
-    # Privacy invariant: no raw-query / raw-response keys may appear.
-    for banned in ("query", "response", "context"):
-        if banned in payload:
-            raise ValueError(f"chat served payload must not carry raw '{banned}'")
+    # Privacy invariant: the persisted payload is copied wholesale, so its
+    # top-level keys must be EXACTLY the allowlist -- no extra field (raw-content
+    # or otherwise) may ride along into the audit trail. Named raw keys keep a
+    # specific message; any other unknown key is rejected fail-closed.
+    for key in payload:
+        if key in ("query", "response", "context"):
+            raise ValueError(f"chat served payload must not carry raw '{key}'")
+        if key not in _ALLOWED_PAYLOAD_KEYS:
+            raise ValueError(
+                f"chat served payload has unexpected top-level key '{key}' "
+                "(only allowlisted keys may be persisted)"
+            )
 
 
 def _sanitize_route_stage_trace(

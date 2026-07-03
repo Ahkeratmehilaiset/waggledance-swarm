@@ -33,6 +33,38 @@ EVALUATION_SCHEMA_BY_VERSION = {
 }
 
 
+# ── Chat-served (informational, no-governance-gate) receipt enforcement ──
+#
+# A chat-served response (waggledance.core.magma.chat_served_receipt) runs NO
+# RCO/approval gate and has NO solver contract, so its rco_decision_digest and
+# solver_contract_digest carry fixed "not-applicable" sentinels rather than a
+# real content digest. Those receipt fields are constrained to
+# ^sha256:[a-f0-9]{64}$, so a forged *real-looking* value is SCHEMA-VALID -- the
+# only thing that stops a chat receipt from masquerading a governed decision is
+# requiring the exact known sentinel here. We RE-DERIVE the expected sentinels
+# INDEPENDENTLY from the same self-describing preimage (we do NOT import the
+# builder's constant), so the verifier recomputes and REQUIRES the value instead
+# of trusting the emitter. An anti-drift test asserts this re-derivation equals
+# the builder's constant.
+_CHAT_SERVED_PAYLOAD_VERSION = "magma.chat_served_receipt_payload.v0"
+_CHAT_RCO_DECISION_NA_SENTINEL = sha256_digest(
+    {
+        "not_applicable": True,
+        "route_class": "chat",
+        "field": "rco_decision_digest",
+        "reason": "no_rco_decision_gate",
+    }
+)
+_CHAT_SOLVER_CONTRACT_NA_SENTINEL = sha256_digest(
+    {
+        "not_applicable": True,
+        "route_class": "chat",
+        "field": "solver_contract_digest",
+        "reason": "no_solver_contract",
+    }
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify an offline MAGMA receipt manifest.",
@@ -146,6 +178,8 @@ def verify_manifest(
         ):
             errors.append(f"{label}: policy_digest mismatch")
 
+        _enforce_chat_served_sentinels(receipt, payload, errors, label)
+
         nodes.append(
             {
                 "node_id": label,
@@ -174,6 +208,41 @@ def _validator(schema_name: str) -> jsonschema.Draft7Validator:
         schema,
         format_checker=jsonschema.FormatChecker(),
     )
+
+
+def _enforce_chat_served_sentinels(
+    receipt: dict[str, Any],
+    payload: dict[str, Any],
+    errors: list[str],
+    label: str,
+) -> None:
+    """Claim-safety: a chat-served receipt must carry the N/A sentinels.
+
+    A chat-served receipt (identified by its digest-bound payload declaring
+    ``payload_version == _CHAT_SERVED_PAYLOAD_VERSION``) runs no RCO/approval
+    gate and has no solver contract. Its ``rco_decision_digest`` and
+    ``solver_contract_digest`` MUST therefore equal the fixed N/A sentinels; any
+    other (real-looking) value would let a chat path masquerade a governed
+    decision/contract and is REJECTED. Receipts of any other payload_version are
+    untouched by this rule (a non-chat receipt legitimately carries real digests
+    there), so enforcement never over-reaches.
+    """
+    if payload.get("payload_version") != _CHAT_SERVED_PAYLOAD_VERSION:
+        return
+    if receipt.get("risk_class") != "informational":
+        errors.append(
+            f"{label}: chat_served receipt must be risk_class=informational"
+        )
+    if receipt.get("rco_decision_digest") != _CHAT_RCO_DECISION_NA_SENTINEL:
+        errors.append(
+            f"{label}: chat_served rco_decision_digest must be the N/A sentinel "
+            "(a chat path runs no RCO/approval gate)"
+        )
+    if receipt.get("solver_contract_digest") != _CHAT_SOLVER_CONTRACT_NA_SENTINEL:
+        errors.append(
+            f"{label}: chat_served solver_contract_digest must be the N/A sentinel "
+            "(a chat path has no solver contract)"
+        )
 
 
 def _validate_evaluation_result(

@@ -30,6 +30,7 @@ Claim-safety (design confirmed with lead A-prime + rco-2):
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -78,6 +79,11 @@ SOLVER_CONTRACT_NA_SENTINEL = sha256_digest(
     }
 )
 
+# Digest-shaped payload fields (query/response provenance) must match the same
+# canonical sha256 shape the MAGMA receipt schema enforces, so a malformed or
+# forged provenance digest can never enter the audit trail.
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+
 # route_stage_trace stage events are sanitized to this allowlisted key set.
 _ROUTE_STAGE_ALLOWED_KEYS = frozenset(
     {
@@ -122,7 +128,9 @@ def build_chat_served_summary(
         "served_path": "ChatService.handle",
         "route_type": str(route_type),
         "source": str(source),
-        "confidence": round(float(confidence), 4),
+        # Clamp to [0,1] so the payload provenance never records an
+        # out-of-range confidence (the evaluation clamps separately).
+        "confidence": round(_clamp_unit(confidence), 4),
         "latency_ms": round(float(latency_ms), 2),
         "cached": bool(cached),
         "round_table": bool(round_table),
@@ -154,16 +162,22 @@ def build_chat_served_summary(
     }
 
 
-def write_chat_served_receipt_bundle(
+def build_chat_served_receipt(
     *,
-    out_dir,
     summary_payload: Mapping[str, Any],
     now_utc: datetime,
-    verify_manifest: Callable[..., dict[str, Any]],
     ordinal: int,
     previous_receipt: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Write and verify a one-entry chat-served receipt bundle (chained)."""
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validate the summary and build one chat-served MAGMA receipt.
+
+    Returns ``(payload, evaluation_result, receipt)`` WITHOUT persisting a
+    bundle. ``previous_receipt`` chains the receipt
+    (``prev_receipt_hash = sha256_digest(previous_receipt)``); pass ``None`` for
+    a genesis receipt. Use this to assemble a multi-entry chain;
+    ``write_chat_served_receipt_bundle`` persists a single self-verified genesis
+    bundle.
+    """
     payload = dict(summary_payload)
     _validate_chat_served_payload(payload)
     now_utc = _coerce_utc(now_utc)
@@ -194,7 +208,32 @@ def write_chat_served_receipt_bundle(
         ),
         solver_contract_digest=SOLVER_CONTRACT_NA_SENTINEL,
     )
-    return write_receipt_bundle(
+    return payload, evaluation, receipt
+
+
+def write_chat_served_receipt_bundle(
+    *,
+    out_dir,
+    summary_payload: Mapping[str, Any],
+    now_utc: datetime,
+    verify_manifest: Callable[..., dict[str, Any]],
+    ordinal: int,
+) -> dict[str, Any]:
+    """Write and self-verify a one-entry (genesis) chat-served receipt bundle.
+
+    Each served response is persisted as its own self-contained genesis bundle.
+    To link receipts into a chain, build them with
+    ``build_chat_served_receipt(..., previous_receipt=...)`` and assemble a
+    multi-entry manifest; a chained (non-genesis) receipt cannot be a standalone
+    single-entry bundle (it would have no genesis). The built receipt is exposed
+    in the return under ``"receipt"``.
+    """
+    payload, evaluation, receipt = build_chat_served_receipt(
+        summary_payload=summary_payload,
+        now_utc=now_utc,
+        ordinal=ordinal,
+    )
+    bundle_report = write_receipt_bundle(
         out_dir=out_dir,
         chain_id=CHAIN_ID,
         entries=[
@@ -207,6 +246,7 @@ def write_chat_served_receipt_bundle(
         ],
         verify_manifest=verify_manifest,
     )
+    return {**bundle_report, "receipt": receipt}
 
 
 def _build_chat_served_evaluation(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -269,6 +309,19 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
     ):
         if not payload.get(key):
             raise ValueError(f"chat served payload missing required field: {key}")
+    # Provenance digests must be well-formed sha256 (same shape MAGMA receipt
+    # fields require), so a malformed/forged digest cannot enter the trail.
+    for digest_key in ("query_digest", "response_digest"):
+        if not _SHA256_DIGEST_RE.fullmatch(str(payload.get(digest_key, ""))):
+            raise ValueError(
+                f"chat served {digest_key} must be a sha256 digest"
+            )
+    # Confidence provenance must be a real number in [0,1].
+    confidence = payload.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        raise ValueError("chat served confidence must be a number")
+    if not (0.0 <= float(confidence) <= 1.0):
+        raise ValueError("chat served confidence must be in [0,1]")
     trace = payload.get("route_stage_trace")
     if not isinstance(trace, list):
         raise ValueError("chat served route_stage_trace must be a list")
@@ -296,12 +349,19 @@ def _sanitize_route_stage_trace(
             if key not in _ROUTE_STAGE_ALLOWED_KEYS:
                 # Drop any non-allowlisted key so raw text can never ride along.
                 continue
-            if isinstance(value, (str, bool, int)) or value is None:
+            if isinstance(value, bool) or value is None:
+                entry[key] = value
+            elif isinstance(value, int):
                 entry[key] = value
             elif isinstance(value, float):
                 entry[key] = round(value, 4)
+            elif isinstance(value, str):
+                entry[key] = value
             else:
-                entry[key] = str(value)
+                # Drop non-scalar values (dict/list/etc.) rather than str()-ing
+                # them -- stringifying a nested object would leak raw text that
+                # the allowlist is meant to keep out of the audit trail.
+                continue
         sanitized.append(entry)
     return sanitized
 
@@ -329,5 +389,6 @@ __all__ = [
     "RCO_DECISION_NA_SENTINEL",
     "SOLVER_CONTRACT_NA_SENTINEL",
     "build_chat_served_summary",
+    "build_chat_served_receipt",
     "write_chat_served_receipt_bundle",
 ]

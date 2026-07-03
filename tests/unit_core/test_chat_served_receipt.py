@@ -2,6 +2,7 @@
 """Tests for the P2 S1b chat-served MAGMA receipt builder."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.chat_served_receipt import (
     RCO_DECISION_NA_SENTINEL,
     SOLVER_CONTRACT_NA_SENTINEL,
+    build_chat_served_receipt,
     build_chat_served_summary,
     write_chat_served_receipt_bundle,
 )
@@ -139,7 +141,7 @@ def test_trace_digest_tamper_rejected() -> None:
         )
 
 
-def test_chain_second_receipt_links_previous(tmp_path: Path) -> None:
+def test_genesis_bundle_exposes_receipt(tmp_path: Path) -> None:
     r1 = write_chat_served_receipt_bundle(
         out_dir=tmp_path / "cs-1",
         summary_payload=_summary(),
@@ -147,15 +149,112 @@ def test_chain_second_receipt_links_previous(tmp_path: Path) -> None:
         verify_manifest=verify_manifest,
         ordinal=1,
     )
-    receipt1 = r1["entries"][0]["receipt"] if "entries" in r1 else None
-    # If the report exposes the receipt, chain the next one on it.
-    if receipt1 is not None:
-        r2 = write_chat_served_receipt_bundle(
-            out_dir=tmp_path / "cs-2",
-            summary_payload=_summary(query="second"),
+    assert r1["verifier_report"]["ok"] is True
+    assert r1["receipt"]["prev_receipt_hash"] is None  # a persisted bundle is genesis
+
+
+def test_chain_second_receipt_links_previous() -> None:
+    from waggledance.core.magma.canonical import sha256_digest
+
+    _, _, receipt1 = build_chat_served_receipt(
+        summary_payload=_summary(), now_utc=_NOW, ordinal=1
+    )
+    assert receipt1["prev_receipt_hash"] is None  # genesis
+
+    _, _, receipt2 = build_chat_served_receipt(
+        summary_payload=_summary(query="second"),
+        now_utc=_NOW,
+        ordinal=2,
+        previous_receipt=receipt1,
+    )
+    # The chain link is REAL: the second receipt binds the first by its hash
+    # (this assertion actually executes now -- the old test gated on a key the
+    # writer never returned, so it never ran).
+    assert receipt2["prev_receipt_hash"] == sha256_digest(receipt1)
+    assert receipt2["prev_receipt_hash"] is not None
+
+
+# ── adversarial edge inputs (lead + rco-1 #1496 blockers) ──
+
+
+def test_malformed_query_digest_rejected() -> None:
+    payload = _summary()
+    payload["query_digest"] = "not-a-sha"  # not a sha256-shaped digest
+    with pytest.raises(ValueError, match="query_digest"):
+        write_chat_served_receipt_bundle(
+            out_dir=Path("unused"),
+            summary_payload=payload,
             now_utc=_NOW,
             verify_manifest=verify_manifest,
-            ordinal=2,
-            previous_receipt=receipt1,
+            ordinal=1,
         )
-        assert r2["verifier_report"]["ok"] is True
+
+
+def test_malformed_response_digest_rejected() -> None:
+    payload = _summary()
+    # correct prefix/length but non-hex characters
+    payload["response_digest"] = "sha256:" + "z" * 64
+    with pytest.raises(ValueError, match="response_digest"):
+        write_chat_served_receipt_bundle(
+            out_dir=Path("unused"),
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+
+
+def test_builder_clamps_out_of_range_confidence() -> None:
+    high = build_chat_served_summary(
+        query="q", response="r", route_type="solver", source="solver",
+        confidence=1.5, latency_ms=1.0, cached=False, round_table=False,
+        agent_id=None, language="en", profile="COTTAGE",
+        world_snapshot_ref="snap-1", route_stage_trace=[],
+    )
+    assert high["confidence"] == 1.0
+    low = build_chat_served_summary(
+        query="q", response="r", route_type="solver", source="solver",
+        confidence=-0.1, latency_ms=1.0, cached=False, round_table=False,
+        agent_id=None, language="en", profile="COTTAGE",
+        world_snapshot_ref="snap-1", route_stage_trace=[],
+    )
+    assert low["confidence"] == 0.0
+
+
+def test_out_of_range_confidence_in_payload_rejected() -> None:
+    payload = _summary()
+    payload["confidence"] = 1.5  # injected out-of-range provenance value
+    with pytest.raises(ValueError, match="confidence"):
+        write_chat_served_receipt_bundle(
+            out_dir=Path("unused"),
+            summary_payload=payload,
+            now_utc=_NOW,
+            verify_manifest=verify_manifest,
+            ordinal=1,
+        )
+
+
+def test_nested_object_trace_value_dropped_no_leak(tmp_path: Path) -> None:
+    summary = build_chat_served_summary(
+        query="q", response="r", route_type="solver", source="solver",
+        confidence=0.9, latency_ms=1.0, cached=False, round_table=False,
+        agent_id=None, language="en", profile="COTTAGE",
+        world_snapshot_ref="snap-1",
+        route_stage_trace=[
+            {
+                "stage": "route_selection",
+                # an ALLOWLISTED key whose value is a NESTED object with raw text
+                "source": {"nested_raw": "SECRET_NESTED_LEAK"},
+            }
+        ],
+    )
+    # the non-scalar value is DROPPED, never str()'d into the payload
+    assert "SECRET_NESTED_LEAK" not in json.dumps(summary)
+    write_chat_served_receipt_bundle(
+        out_dir=tmp_path / "cs-1",
+        summary_payload=summary,
+        now_utc=_NOW,
+        verify_manifest=verify_manifest,
+        ordinal=1,
+    )
+    assert "SECRET_NESTED_LEAK" not in _emitted_text(tmp_path / "cs-1")

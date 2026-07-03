@@ -77,6 +77,33 @@ def test_oversized_body_is_413() -> None:
     assert "magma_receipt" in body
 
 
+def test_route_streams_without_request_body_buffer(monkeypatch) -> None:
+    async def fail_body(_request):
+        raise AssertionError("route must not buffer with request.body()")
+
+    monkeypatch.setattr("starlette.requests.Request.body", fail_body)
+
+    status, body = _post("AIR-01", {"bogus": True})
+
+    assert status == 200
+    assert body["result_marker"] == "INVALID_OBSERVATION_REFUSED"
+
+
+def test_oversized_content_length_refuses_before_streaming(monkeypatch) -> None:
+    async def fail_stream(_request):
+        raise AssertionError("oversized Content-Length should refuse before stream")
+        yield b""
+
+    monkeypatch.setattr("starlette.requests.Request.stream", fail_stream)
+
+    big = json.dumps({"x": "a" * (MAX_PAYLOAD_BYTES + 10)})
+    status, body = _post("AIR-01", big)
+
+    assert status == 413
+    assert body["refusal_reason"] == "payload_too_large"
+    assert "magma_receipt" in body
+
+
 def test_solver_domain_refusal_is_200() -> None:
     # ENG-06 no-fires horizon: the solver ran and returned its own refusal.
     status, body = _post("ENG-06", {

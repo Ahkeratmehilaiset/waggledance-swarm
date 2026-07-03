@@ -28,8 +28,11 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.v3_13_0.chat_dispatch import (
+    MAX_PAYLOAD_BYTES,
     REFUSAL_MARKER,
+    refuse_v313_solver,
     run_v313_solver,
 )
 
@@ -46,14 +49,78 @@ _BAD_REQUEST_REASONS = frozenset({
 @router.post("/solvers/{case_id}")
 async def run_solver(case_id: str, request: Request) -> JSONResponse:
     """Run the registered solver for ``case_id`` over the JSON request body."""
-    body = await request.body()
+    body, too_large, content_length = await _read_bounded_body(request)
+    if too_large:
+        result = json.loads(refuse_v313_solver(
+            case_id,
+            "payload_too_large",
+            payload_digest=_body_digest(
+                body,
+                truncated=True,
+                content_length=content_length,
+            ),
+        ))
+        return JSONResponse(result, status_code=_status_for(result))
     try:
         payload_text = body.decode("utf-8") if body else ""
     except UnicodeDecodeError:
-        payload_text = ""
+        result = json.loads(refuse_v313_solver(
+            case_id,
+            "payload_json_invalid",
+            payload_digest=_body_digest(body),
+        ))
+        return JSONResponse(result, status_code=_status_for(result))
     result_text = run_v313_solver(case_id, payload_text)
     result = json.loads(result_text)
     return JSONResponse(result, status_code=_status_for(result))
+
+
+async def _read_bounded_body(request: Request) -> tuple[bytes, bool, int | None]:
+    """Read at most one byte past the solver payload limit."""
+
+    content_length = _content_length(request)
+    if content_length is not None and content_length > MAX_PAYLOAD_BYTES:
+        return b"", True, content_length
+
+    chunks: list[bytes] = []
+    total = 0
+    for_chunk_limit = MAX_PAYLOAD_BYTES + 1
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        remaining = for_chunk_limit - total
+        if remaining <= 0:
+            return b"".join(chunks), True, content_length
+        chunks.append(chunk[:remaining])
+        total += min(len(chunk), remaining)
+        if len(chunk) > remaining or total > MAX_PAYLOAD_BYTES:
+            return b"".join(chunks), True, content_length
+    return b"".join(chunks), False, content_length
+
+
+def _content_length(request: Request) -> int | None:
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _body_digest(
+    body: bytes,
+    *,
+    truncated: bool = False,
+    content_length: int | None = None,
+) -> str:
+    return sha256_digest({
+        "payload_bytes_hex": body.hex(),
+        "payload_truncated": truncated,
+        "content_length": content_length,
+        "max_payload_bytes": MAX_PAYLOAD_BYTES,
+    })
 
 
 def _status_for(result: dict[str, Any]) -> int:

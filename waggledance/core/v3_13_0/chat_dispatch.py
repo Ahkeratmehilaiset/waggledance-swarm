@@ -99,6 +99,21 @@ def run_v313_solver(solver_ref: str, payload_text: str) -> str:
     return _run_recognized_v313_solver_chat_request(request)
 
 
+def refuse_v313_solver(
+    solver_ref: str,
+    reason: str,
+    *,
+    payload_digest: str,
+) -> str:
+    """Build the same receipted refusal envelope used by solver dispatch."""
+
+    return _json_response(_refusal(
+        str(solver_ref).strip().upper(),
+        reason,
+        payload_digest=payload_digest,
+    ))
+
+
 def _run_recognized_v313_solver_chat_request(
     request: V313SolverChatRequest,
 ) -> str:
@@ -400,6 +415,7 @@ __all__ = [
     "V313SolverChatRequest",
     "detect_v313_solver_chat_request",
     "parse_v313_solver_chat_request",
+    "refuse_v313_solver",
     "run_v313_solver",
     "run_v313_solver_chat_request",
 ]

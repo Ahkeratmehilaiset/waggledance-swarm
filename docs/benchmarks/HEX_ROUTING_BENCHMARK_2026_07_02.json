@@ -1,5 +1,5 @@
 {
-  "benchmark": "hex_routing_enable_benchmark.v1",
+  "benchmark": "hex_routing_enable_benchmark.v2",
   "deterministic_views": {
     "disabled": {
       "efficiency": {
@@ -98,11 +98,62 @@
         "queries_per_category": 6,
         "total_queries": 42
       }
+    },
+    "neighbor_assist": {
+      "efficiency": {
+        "budget_exhaustions": 0,
+        "preflight_passes": 42,
+        "preflight_skips": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "total_hex_queries": 42
+      },
+      "enabled": true,
+      "local_llm_calls": 42,
+      "metrics": {
+        "budget_exhaustions": 0,
+        "cells_loaded": 7,
+        "completed_hex_neighbor_batches": 42,
+        "enabled": true,
+        "global_escalations": 30,
+        "llm_last_resolutions": 0,
+        "local_only_resolutions": 0,
+        "magma_traces_written": 0,
+        "neighbor_assist_resolutions": 12,
+        "neighbors_consulted_total": 84,
+        "origin_cell_resolutions": 42,
+        "preflight_passes": 42,
+        "preflight_skips": 0,
+        "quarantined_cells": 0,
+        "self_heal_events": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "ttl_exhaustions": 0
+      },
+      "neighbor_batches": 42,
+      "outcomes": {
+        "fallback_none": 30,
+        "resolved": 12
+      },
+      "scenario": "neighbor_assist_fixture",
+      "workload": {
+        "categories": [
+          "apiary",
+          "energy",
+          "general",
+          "logistics",
+          "production",
+          "safety",
+          "weather"
+        ],
+        "queries_per_category": 6,
+        "total_queries": 42
+      }
     }
   },
   "modes": {
     "disabled": {
-      "_runtime_seconds": 0.035,
+      "_runtime_seconds": 0.039,
       "efficiency": {
         "budget_exhaustions": 0,
         "cell_success_memory": {},
@@ -207,6 +258,72 @@
         "fallback_none": 30,
         "resolved": 12
       },
+      "workload": {
+        "categories": [
+          "apiary",
+          "energy",
+          "general",
+          "logistics",
+          "production",
+          "safety",
+          "weather"
+        ],
+        "queries_per_category": 6,
+        "total_queries": 42
+      }
+    },
+    "neighbor_assist": {
+      "_runtime_seconds": 0.062,
+      "efficiency": {
+        "budget_exhaustions": 0,
+        "cell_success_memory": {
+          "bee_ops": 1.0,
+          "environment": 0.0,
+          "home_comfort": 1.0,
+          "hub": 0.0,
+          "logistics": 0.0,
+          "production": 0.0,
+          "safety_security": 0.0
+        },
+        "escalation_ratio": 0.7142857142857143,
+        "local_success_ratio": 0.0,
+        "neighbor_success_ratio": 0.2857142857142857,
+        "preflight_passes": 42,
+        "preflight_skip_ratio": 0.0,
+        "preflight_skips": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "total_hex_queries": 42
+      },
+      "enabled": true,
+      "local_llm_calls": 42,
+      "metrics": {
+        "avg_neighbors_per_assist": 7.0,
+        "budget_exhaustions": 0,
+        "cells_loaded": 7,
+        "completed_hex_neighbor_batches": 42,
+        "enabled": true,
+        "global_escalations": 30,
+        "llm_last_resolutions": 0,
+        "local_only_resolutions": 0,
+        "magma_traces_written": 0,
+        "neighbor_assist_resolutions": 12,
+        "neighbors_consulted_total": 84,
+        "origin_cell_resolutions": 42,
+        "preflight_passes": 42,
+        "preflight_skips": 0,
+        "quarantined_cells": 0,
+        "self_heal_events": 0,
+        "skipped_local_attempts": 0,
+        "skipped_neighbor_attempts": 0,
+        "ttl_exhaustions": 0
+      },
+      "neighbor_batches": 42,
+      "outcomes": {
+        "fallback_none": 30,
+        "resolved": 12
+      },
+      "scenario": "neighbor_assist_fixture",
       "workload": {
         "categories": [
           "apiary",

@@ -43,9 +43,21 @@ def test_enabled_mode_actually_routes() -> None:
     assert total == len(WORKLOAD)
 
 
+def test_neighbor_assist_rung_is_exercised() -> None:
+    # v2: the fixture must actually fire the neighbor-assist rung the v1
+    # enabled workload left at 0 (the documented limitation this closes).
+    result = run_benchmark(queries_per_category=1)
+    nbr = result["modes"]["neighbor_assist"]
+    assert nbr["scenario"] == "neighbor_assist_fixture"
+    assert nbr["metrics"]["neighbor_assist_resolutions"] > 0
+    assert nbr["neighbor_batches"] > 0
+    # and the markdown reports the neighbor section
+    assert "Neighbor-assist rung" in render_markdown(result)
+
+
 def test_result_schema_and_markdown_render() -> None:
     result = run_benchmark(queries_per_category=1)
-    assert result["benchmark"] == "hex_routing_enable_benchmark.v1"
+    assert result["benchmark"] == "hex_routing_enable_benchmark.v2"
     for mode in ("disabled", "enabled"):
         view = result["deterministic_views"][mode]
         assert "_runtime_seconds" not in view  # wall-clock excluded
@@ -66,5 +78,5 @@ def test_cli_entrypoint_writes_reports(tmp_path: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(out_json.read_text(encoding="utf-8"))
-    assert payload["benchmark"] == "hex_routing_enable_benchmark.v1"
+    assert payload["benchmark"] == "hex_routing_enable_benchmark.v2"
     assert out_md.read_text(encoding="utf-8").startswith("# Hex routing benchmark")

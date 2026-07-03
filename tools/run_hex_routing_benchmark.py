@@ -160,6 +160,90 @@ def _run_mode(*, enabled: bool, queries_per_category: int) -> dict[str, Any]:
     }
 
 
+class _HedgedLocalLLM:
+    """Local LLM that returns a short/hedged answer -> low local confidence,
+    so the origin cell cannot resolve on its own and the ladder reaches the
+    neighbor-assist rung."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(self, *args: Any, **kwargs: Any) -> str:
+        self.calls += 1
+        return "Maybe. It is unclear and may vary."
+
+
+class _FixedNeighborDispatcher:
+    """A minimal enabled ParallelLLMDispatcher stand-in.
+
+    Its presence makes HexNeighborAssist take the PARALLEL neighbor path
+    (bypassing the sequential low-value skip), and it returns one strong,
+    high-confidence answer per neighbor request so the merged neighbor
+    confidence clears the neighbor threshold. Deterministic, no network.
+    """
+
+    enabled = True
+
+    def __init__(self) -> None:
+        self.batches = 0
+
+    async def dispatch_batch(self, batch: list[Any]) -> list[str]:
+        self.batches += 1
+        strong = (
+            "The definitive answer is 42.0 units, computed precisely from the "
+            "reference dataset with full confidence and no ambiguity; the value "
+            "is exact and verified across every measurement in the window."
+        )
+        return [strong for _ in batch]
+
+
+def _run_neighbor_mode(*, queries_per_category: int) -> dict[str, Any]:
+    """Exercise the neighbor-assist rung the enabled/disabled workload leaves
+    at 0 (the documented v1 limitation): weak local answers + a fixed
+    high-confidence neighbor dispatcher, with preflight gating opened so the
+    ladder reaches neighbors. Isolated fixture, not the production default."""
+    registry = HexTopologyRegistry(
+        config_path=str(REPO_ROOT / "configs" / "hex_cells.yaml"),
+        agents=_synthetic_agents(),
+    )
+    local = _HedgedLocalLLM()
+    dispatcher = _FixedNeighborDispatcher()
+    service = HexNeighborAssist(
+        topology_registry=registry,
+        health_monitor=HexHealthMonitor(),
+        llm_service=local,
+        parallel_dispatcher=dispatcher,
+        enabled=True,
+        magma_trace_enabled=False,
+        preflight_min_score=0.0,  # open the preflight gate so the ladder runs
+    )
+
+    outcomes: dict[str, int] = {"resolved": 0, "fallback_none": 0}
+    started = time.perf_counter()
+    for round_index in range(queries_per_category):
+        for _category, template in sorted(WORKLOAD.items()):
+            result = asyncio.run(service.resolve(f"{template} (round {round_index})"))
+            outcomes["resolved" if result is not None else "fallback_none"] += 1
+    duration_s = time.perf_counter() - started
+
+    metrics = service.get_metrics()
+    return {
+        "enabled": True,
+        "scenario": "neighbor_assist_fixture",
+        "workload": {
+            "categories": sorted(WORKLOAD),
+            "queries_per_category": queries_per_category,
+            "total_queries": queries_per_category * len(WORKLOAD),
+        },
+        "outcomes": outcomes,
+        "local_llm_calls": local.calls,
+        "neighbor_batches": dispatcher.batches,
+        "metrics": metrics,
+        "efficiency": service.get_efficiency_stats(),
+        "_runtime_seconds": round(duration_s, 3),
+    }
+
+
 def _deterministic_view(mode_result: dict[str, Any]) -> dict[str, Any]:
     """The rerun-comparable slice (drops wall-clock and timing averages)."""
     view = {k: v for k, v in mode_result.items() if not k.startswith("_")}
@@ -179,13 +263,19 @@ def _deterministic_view(mode_result: dict[str, Any]) -> dict[str, Any]:
 def run_benchmark(queries_per_category: int = 6) -> dict[str, Any]:
     baseline = _run_mode(enabled=False, queries_per_category=queries_per_category)
     routed = _run_mode(enabled=True, queries_per_category=queries_per_category)
+    neighbor = _run_neighbor_mode(queries_per_category=queries_per_category)
     return {
-        "benchmark": "hex_routing_enable_benchmark.v1",
+        "benchmark": "hex_routing_enable_benchmark.v2",
         "topology_config": "configs/hex_cells.yaml",
-        "modes": {"disabled": baseline, "enabled": routed},
+        "modes": {
+            "disabled": baseline,
+            "enabled": routed,
+            "neighbor_assist": neighbor,
+        },
         "deterministic_views": {
             "disabled": _deterministic_view(baseline),
             "enabled": _deterministic_view(routed),
+            "neighbor_assist": _deterministic_view(neighbor),
         },
     }
 
@@ -193,6 +283,7 @@ def run_benchmark(queries_per_category: int = 6) -> dict[str, Any]:
 def render_markdown(result: dict[str, Any]) -> str:
     dis = result["modes"]["disabled"]
     ena = result["modes"]["enabled"]
+    nbr = result["modes"]["neighbor_assist"]
     lines = [
         "# Hex routing benchmark (sprint seed #11)",
         "",
@@ -216,10 +307,27 @@ def render_markdown(result: dict[str, Any]) -> str:
         "",
         "Disabled mode returns `None` for every query (chat falls through to",
         "the ordinary pipeline), so the enabled column shows what the mesh",
-        "actually adds: local resolution and the escalation ladder. Observed",
-        "fixture limitation: the neighbor-assist rung is not exercised by",
-        "this v1 workload (neighbor counters stay 0); a future fixture with",
-        "cross-domain queries + tuned confidence bands should cover it.",
+        "actually adds: local resolution and the escalation ladder.",
+        "",
+        "## Neighbor-assist rung (v2)",
+        "",
+        "The v1 enabled workload never reached the neighbor-assist rung "
+        "(counter stayed 0) because hedged local answers were low-preflight "
+        "and got skipped straight to global. This fixture opens the preflight "
+        "gate and supplies weak local answers + a fixed high-confidence "
+        "neighbor dispatcher, so the ladder actually runs local → neighbor:",
+        "",
+        "| metric | neighbor-assist fixture |",
+        "|---|---|",
+        f"| resolved via neighbor path | {nbr['outcomes']['resolved']} |",
+        f"| neighbor-assist resolutions | {nbr['metrics'].get('neighbor_assist_resolutions', 0)} |",
+        f"| local-only resolutions | {nbr['metrics'].get('local_only_resolutions', 0)} |",
+        f"| completed neighbor batches | {nbr['metrics'].get('completed_hex_neighbor_batches', 0)} |",
+        f"| global escalations | {nbr['metrics'].get('global_escalations', 0)} |",
+        "",
+        "This is an isolated fixture (not the production default gating); it "
+        "demonstrates the routing path exists and increments its counters, "
+        "closing the v1 limitation.",
         "",
         "Rerun: `python tools/run_hex_routing_benchmark.py` — the",
         "`deterministic_views` block is byte-comparable between runs.",

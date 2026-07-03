@@ -167,14 +167,18 @@ operator review/escalation and still write nothing.
 
 ## Deferred
 
-- Production two-agent activation loop: partially lifted to
-  read-only scheduler-ready status. `tools/idle_loop_once.py`,
+- Production two-agent activation loop: lifted to read-only
+  scheduler-ready status. `tools/idle_loop_once.py`,
   `tools/agent_next_task.py`, `tools/bridge_loop_tick.py`, and
-  `IDLE_LOOP_RUNBOOK.md` can now report the next safe wakeup action, but
-  they do not own peer activation bridge writes. The remaining deferred
-  work is an opt-in peer-activation handoff that proves identity binding,
-  open-request handling, and stale-claim suppression without giving the
-  scheduler authority to emit substantive idle payloads.
+  `IDLE_LOOP_RUNBOOK.md` can report the next safe wakeup action.
+  `bridge_loop_tick.py` also supports an explicit caller-owned
+  `--emit-peer-activation` handoff for heartbeat-only peers. That
+  handoff is limited to a schema-validated `type=handoff`
+  `status=scout_requested` bridge event; active peer claims suppress it,
+  recent activation suppresses duplicates, and open operator packs keep
+  the message fail-closed. It does not give the scheduler authority to
+  claim work, emit substantive idle payloads, resolve operator packs,
+  merge PRs, or skip gates.
 - Automatic payload generation: still deferred. Payload composition remains
   outside tooling until peer-reviewed templates and quality gates can prove
   the WD artifact or decision target before any bridge event is printed or

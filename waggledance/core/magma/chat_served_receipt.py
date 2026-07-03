@@ -11,11 +11,16 @@ Claim-safety (design confirmed with lead A-prime + rco-2):
   verifier walks one chain across all served paths) -- NOT a divergent shape.
 * A chat response does NOT pass an RCO/approval gate and has no solver
   contract. Faking ``rco_decision_digest`` / ``solver_contract_digest`` with a
-  real-looking (hex) value would bake a *governance overclaim* into the
-  receipt. So those two fields carry an explicit, NON-HEX, self-describing
-  ``na:route_class=chat:*`` sentinel that a verifier can positively distinguish
-  from a real 64-hex digest AND from a missing / zero / ``sha256("")`` one, and
-  that can never read as "this gate was evaluated and passed".
+  real-looking content digest would bake a *governance overclaim* into the
+  receipt. So those two fields carry a fixed, well-known N/A sentinel: a
+  ``sha256`` of an explicit not-applicable namespace. (MAGMA receipt v1 requires
+  these fields to match ``^sha256:[a-f0-9]{64}$``, so the sentinel is hex, not a
+  literal.) It is honest-by-construction and re-derivable: a consumer that knows
+  the constant can positively identify it as N/A -- distinct from a real content
+  digest, ``sha256("")`` and a zero-digest -- and it never reads as "this gate
+  was evaluated and passed". NOTE: machine ENFORCEMENT of these sentinels in the
+  verifier is Phase 1b (extends ``verify_magma_receipt``) and is NOT wired yet;
+  until then the sentinels are honest-by-construction, not verifier-rejected.
 * ``charter``/``policy``/``world_snapshot`` are REAL provenance digests
   (version/context binding) -- required for cross-verifiability, not fake.
 * ``evaluation_result`` truthfully encodes the route decision (route_type /
@@ -47,11 +52,15 @@ CHAIN_ID = "magma:chat_service:served:v0"
 # ^sha256:[a-f0-9]{64}$, so the sentinel MUST be hex -- a non-hex literal is
 # NOT schema-valid (contra an early design note). We therefore use a FIXED,
 # WELL-KNOWN sha256 of a self-describing not-applicable namespace: it is
-# schema-valid, and a specific known constant a verifier can positively match
-# to distinguish it from (i) a real content digest, (ii) sha256("") and
-# (iii) a zero-digest. Because it is hex, distinguishability RELIES ON the
-# verifier knowing these constants (see the verify_magma_receipt enforcement),
-# so a chat path can never masquerade a governed rco_decision/solver_contract.
+# schema-valid, and a specific known constant that a consumer which knows the
+# constant can positively match to distinguish it from (i) a real content
+# digest, (ii) sha256("") and (iii) a zero-digest. Because it is hex (opaque),
+# a consumer must KNOW these constants to recognize them as N/A. Machine
+# enforcement in the verifier (making verify_magma_receipt REQUIRE these exact
+# sentinels for chat/informational receipts, so a chat path can never
+# masquerade a governed rco_decision/solver_contract) is Phase 1b and is NOT
+# implemented yet -- until then these values are honest-by-construction
+# (re-derivable N/A hashes), not verifier-rejected.
 RCO_DECISION_NA_SENTINEL = sha256_digest(
     {
         "not_applicable": True,
@@ -131,9 +140,10 @@ def build_chat_served_summary(
             {"route_stage_trace": sanitized_trace}
         ),
         # Machine-readable record of which governance digest fields are real
-        # provenance vs an explicit not-applicable-for-chat sentinel. Backed by
-        # the verifier (verify_magma_receipt enforces the sentinels for
-        # risk_class=informational chat receipts).
+        # provenance vs an explicit not-applicable-for-chat sentinel. This is a
+        # self-describing declaration emitted by the builder; verifier
+        # enforcement of it (verify_magma_receipt REQUIRING the sentinels for
+        # risk_class=informational chat receipts) is Phase 1b and NOT wired yet.
         "digest_semantics": {
             "charter_digest": "real:charter_version",
             "policy_digest": "real:route_policy_version",
@@ -173,7 +183,8 @@ def write_chat_served_receipt_bundle(
             {"charter_version": evaluation["charter_version"]}
         ),
         # Chat has no RCO/approval gate and no solver contract: explicit,
-        # verifier-enforced, non-hex N/A sentinels (never a fake pass).
+        # honest-by-construction (schema-valid hex) N/A sentinels, never a fake
+        # pass. Machine enforcement of the sentinels in the verifier is Phase 1b.
         rco_decision_digest=RCO_DECISION_NA_SENTINEL,
         world_snapshot_digest=sha256_digest(
             {

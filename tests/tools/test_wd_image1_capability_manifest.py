@@ -20,6 +20,12 @@ from tools.wd_image1_capability_manifest import (
     build_per_query_receipt_coverage_aggregate,
 )
 from tools.wd_image1_capability_manifest import (
+    CHAT_SERVED_CLAIM_WINDOW_ENV,
+    _CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS,
+    _safe_chat_served_claim_window_aggregate,
+    build_chat_served_claim_window_aggregate,
+)
+from tools.wd_image1_capability_manifest import (
     FIRST_HOP_COVERAGE_ENV,
     _FIRST_HOP_COVERAGE_SAFE_KEYS,
     _safe_first_hop_coverage_aggregate,
@@ -3541,6 +3547,123 @@ def test_flag_off_manifest_omits_coverage_key() -> None:
         if c["capability_id"] == "magma_audit_log"
     )
     assert "per_query_receipt_coverage" not in magma["proof"]
+
+
+# --- chat-served claim-window aggregate (default-off/on-demand) ---
+def test_chat_served_claim_window_flag_off_returns_none() -> None:
+    prior = os.environ.pop(CHAT_SERVED_CLAIM_WINDOW_ENV, None)
+    try:
+        assert build_chat_served_claim_window_aggregate() is None
+    finally:
+        if prior is not None:
+            os.environ[CHAT_SERVED_CLAIM_WINDOW_ENV] = prior
+
+
+def test_chat_served_claim_window_force_real_aggregate_is_safe(tmp_path) -> None:
+    from waggledance.core.magma import chat_served_ledger as L
+    from waggledance.core.magma.chat_served_accounting import (
+        REQUIRED_CHAT_SERVED_POINTS,
+    )
+
+    path = str(tmp_path / "ledger.jsonl")
+    entry1 = L.new_served_pending(
+        "q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:00Z", {"route_type": "solver"}
+    )
+    entry2 = L.new_receipt_terminal(
+        "q1", entry1["entry_hash"], "2026-07-04T07:00:01Z", "sha256:" + "ab" * 32
+    )
+    L.append_entry(path, entry1, fsync=False)
+    L.append_entry(path, entry2, fsync=False)
+
+    aggregate = build_chat_served_claim_window_aggregate(
+        force=True,
+        ledger_path=path,
+        expected_head=entry2["entry_hash"],
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=REQUIRED_CHAT_SERVED_POINTS,
+    )
+
+    assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
+    assert aggregate["claim_window_eligible"] is True
+    assert aggregate["claim_safe"] is False
+    assert aggregate["receipt_coverage_ratio"] == 1.0
+    blob = json.dumps(aggregate)
+    assert "sha256:" not in blob
+    assert str(tmp_path) not in blob
+
+
+def test_chat_served_claim_window_missing_ledger_is_unavailable() -> None:
+    aggregate = build_chat_served_claim_window_aggregate(force=True)
+    assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
+    assert aggregate["claim_window_eligible"] is False
+    assert aggregate["claim_safe"] is False
+    assert aggregate["reason"] == "missing_ledger_path"
+
+
+def _good_claim_window_report() -> dict:
+    return {
+        "coverage": {
+            "served": 1,
+            "receipts": 1,
+            "gaps": 0,
+            "unresolved_pending": 0,
+            "pending_append_failures": 0,
+            "ratio": 1.0,
+            "chain_ok": True,
+            "lifecycle_ok": True,
+        },
+        "actual_head": "sha256:" + "ab" * 32,
+        "expected_head": "sha256:" + "ab" * 32,
+        "enabled_across_window": True,
+        "clean_shutdown": True,
+        "torn_tail": False,
+        "required_served_points": ("hotcache", "solver"),
+        "instrumented_served_points": ("hotcache", "solver"),
+        "missing_served_points": (),
+        "eligible": True,
+        "reason": None,
+    }
+
+
+def test_safe_chat_served_claim_window_aggregate_is_measurement_only() -> None:
+    aggregate = _safe_chat_served_claim_window_aggregate(
+        _good_claim_window_report()
+    )
+    assert aggregate["claim_window_eligible"] is True
+    assert aggregate["claim_safe"] is False
+    assert aggregate["head_anchor_match"] is True
+
+
+def test_safe_chat_served_claim_window_rederives_head_and_source() -> None:
+    bad_head = _good_claim_window_report()
+    bad_head["actual_head"] = "not-a-ledger-hash"
+    bad_head["expected_head"] = "not-a-ledger-hash"
+    assert (
+        _safe_chat_served_claim_window_aggregate(bad_head)["head_anchor_match"]
+        is False
+    )
+
+    bad_source = _good_claim_window_report()
+    bad_source["instrumented_served_points"] = ("hotcache",)
+    bad_source["missing_served_points"] = ()
+    aggregate = _safe_chat_served_claim_window_aggregate(bad_source)
+    assert aggregate["source_completeness_ok"] is False
+    assert aggregate["missing_served_point_count"] == 1
+
+
+def test_safe_chat_served_claim_window_rejects_unsafe_point() -> None:
+    report = _good_claim_window_report()
+    report["required_served_points"] = ("hotcache", "raw query DO_NOT_LEAK")
+    with pytest.raises(ValueError):
+        _safe_chat_served_claim_window_aggregate(report)
+
+
+def test_safe_chat_served_claim_window_rejects_raw_reason() -> None:
+    report = _good_claim_window_report()
+    report["reason"] = "raw user query DO_NOT_LEAK"
+    with pytest.raises(ValueError):
+        _safe_chat_served_claim_window_aggregate(report)
 
 
 # --- authoritative first-hop coverage aggregate (default-off/on-demand) ---

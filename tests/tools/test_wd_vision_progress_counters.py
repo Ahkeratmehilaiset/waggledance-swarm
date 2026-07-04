@@ -656,6 +656,130 @@ def test_claim_safe_count_unaffected_by_coverage() -> None:
     )
 
 
+# --- chat-served claim-window counter (measurement-only) ---
+def _manifest_with_claim_window(claim_window: object) -> dict:
+    import copy
+
+    manifest = copy.deepcopy(_minimal_manifest())
+    for capability in manifest["capabilities"]:
+        if capability["capability_id"] == "magma_audit_log":
+            if claim_window is not None:
+                capability["proof"]["chat_served_claim_window"] = claim_window
+    return manifest
+
+
+def _claim_window_gate(claim_window: object) -> dict:
+    counters = build_vision_progress_counters(
+        _manifest_with_claim_window(claim_window)
+    )
+    return counters["milestone_counters"]["chat_served_claim_window_gate"]
+
+
+_SAFE_CLAIM_WINDOW = {
+    "claim_window_eligible": True,
+    "claim_safe": False,
+    "reason": None,
+    "served": 1,
+    "receipts": 1,
+    "gaps": 0,
+    "unresolved_pending": 0,
+    "pending_append_failures": 0,
+    "receipt_coverage_ratio": 1.0,
+    "chain_ok": True,
+    "lifecycle_ok": True,
+    "head_anchor_match": True,
+    "enabled_across_window": True,
+    "clean_shutdown": True,
+    "torn_tail": False,
+    "source_completeness_ok": True,
+    "required_served_point_count": 5,
+    "instrumented_served_point_count": 5,
+    "missing_served_point_count": 0,
+}
+
+
+def test_chat_served_claim_window_available_but_never_satisfied() -> None:
+    gate = _claim_window_gate(_SAFE_CLAIM_WINDOW)
+    assert gate["claim_window_measurement_available"] is True
+    assert gate["claim_window_eligible"] is True
+    assert gate["measured_coverage_percent"] == 100.0
+    assert gate["measurement_basis"] == "chat_served_claim_window_report"
+    assert gate["claim_safe"] is False
+    assert gate["current_value"] is False
+    assert gate["satisfied"] is False
+
+
+def test_chat_served_claim_window_unavailable_when_self_claim_safe() -> None:
+    forged = {**_SAFE_CLAIM_WINDOW, "claim_safe": True}
+    gate = _claim_window_gate(forged)
+    assert gate["claim_window_measurement_available"] is False
+    assert gate["claim_safe"] is False
+    assert gate["satisfied"] is False
+
+
+def test_chat_served_claim_window_unavailable_when_shape_missing() -> None:
+    missing_claim_safe = dict(_SAFE_CLAIM_WINDOW)
+    missing_claim_safe.pop("claim_safe")
+    missing_pending = dict(_SAFE_CLAIM_WINDOW)
+    missing_pending.pop("pending_append_failures")
+
+    assert (
+        _claim_window_gate(missing_claim_safe)["claim_window_measurement_available"]
+        is False
+    )
+    assert (
+        _claim_window_gate(missing_pending)["claim_window_measurement_available"]
+        is False
+    )
+
+
+def test_chat_served_claim_window_unavailable_when_missing_or_ineligible() -> None:
+    absent = _claim_window_gate(None)
+    ineligible = _claim_window_gate(
+        {**_SAFE_CLAIM_WINDOW, "claim_window_eligible": False, "reason": "gaps_present"}
+    )
+    assert absent["claim_window_measurement_available"] is False
+    assert ineligible["claim_window_measurement_available"] is False
+    assert ineligible["reason"] == "gaps_present"
+
+
+@pytest.mark.parametrize("patch", [
+    {"served": 0, "receipts": 0},
+    {"receipts": 0},
+    {"gaps": 1},
+    {"unresolved_pending": 1},
+    {"pending_append_failures": 1},
+    {"receipt_coverage_ratio": None},
+    {"chain_ok": False},
+    {"lifecycle_ok": False},
+    {"head_anchor_match": False},
+    {"enabled_across_window": False},
+    {"clean_shutdown": False},
+    {"torn_tail": True},
+    {"source_completeness_ok": False},
+    {"required_served_point_count": 0},
+    {"instrumented_served_point_count": 4},
+    {"missing_served_point_count": 1},
+])
+def test_chat_served_claim_window_consumer_rederives_fail_closed(patch) -> None:
+    gate = _claim_window_gate({**_SAFE_CLAIM_WINDOW, **patch})
+    assert gate["claim_window_measurement_available"] is False, patch
+    assert gate["current_value"] is False
+    assert gate["satisfied"] is False
+    assert gate["claim_safe"] is False
+
+
+def test_claim_safe_count_unaffected_by_claim_window() -> None:
+    base = build_vision_progress_counters(_manifest_with_claim_window(None))
+    with_window = build_vision_progress_counters(
+        _manifest_with_claim_window(_SAFE_CLAIM_WINDOW)
+    )
+    assert (
+        with_window["summary"]["claim_safe_count"]
+        == base["summary"]["claim_safe_count"]
+    )
+
+
 # --- authoritative first-hop coverage counter (default-off/on-demand) ---
 def _manifest_with_first_hop(coverage: object) -> dict:
     import copy

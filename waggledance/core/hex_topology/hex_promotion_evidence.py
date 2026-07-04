@@ -27,9 +27,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from waggledance.core.magma.canonical import sha256_digest
-
 PROMOTION_EVIDENCE_SCHEMA = "magma.hex_shadow_to_candidate_promotion_evidence.v0"
+PROMOTION_TARGET_STATE = "subdivision_in_shadow"
 
 _HASH_PREFIX = "sha256:"
 _HASH_HEX_LEN = 64
@@ -129,10 +128,13 @@ def build_promotion_evidence_record(
     return record
 
 
-def is_valid_promotion_evidence(record: object) -> bool:
-    """True iff ``record`` is a well-formed, tamper-consistent record that attests a
-    CLEAN shadow->candidate preparation: prepared, zero blockers, and EVERY
-    runtime-authority flag False (shadow-only invariant held). Fail-closed."""
+def is_wellformed_promotion_evidence_record(record: object) -> bool:
+    """True iff a record is shape-safe, self-hashed, and carries no raw fields.
+
+    This is intentionally weaker than ``is_valid_promotion_evidence``: a
+    well-formed record may still describe an invariant failure (blocker present,
+    not prepared, authority flag true) and can be retained as red-flag evidence.
+    """
     if not isinstance(record, Mapping):
         return False
     if set(record.keys()) != _ALLOWED_KEYS:                 # exact allowlist, no smuggled field
@@ -145,16 +147,43 @@ def is_valid_promotion_evidence(record: object) -> bool:
         return False
     if not is_conforming_token(record.get("transition_id")):
         return False
+    if not is_conforming_token(record.get("ts_utc")):
+        return False
+    if not is_evidence_hash(record.get("prev_hash")):
+        return False
     if not is_evidence_hash(record.get("application_digest")):
         return False
-    if record.get("commit_candidate_prepared") is not True:
+    if not is_conforming_token(record.get("parent_cell_id")):
         return False
-    if not isinstance(record.get("blocker_count"), int) or record.get("blocker_count") != 0:
+    if not is_conforming_token(record.get("target_state")):
+        return False
+    if not isinstance(record.get("commit_candidate_prepared"), bool):
+        return False
+    blocker_count = record.get("blocker_count")
+    if type(blocker_count) is not int or blocker_count < 0:
         return False
     flags = record.get("runtime_authority_flags")
     if not isinstance(flags, Mapping) or set(flags.keys()) != set(_RUNTIME_AUTHORITY_FLAGS):
         return False
+    return all(isinstance(flags.get(flag), bool) for flag in _RUNTIME_AUTHORITY_FLAGS)
+
+
+def is_valid_promotion_evidence(record: object) -> bool:
+    """True iff ``record`` is a well-formed, tamper-consistent record that attests a
+    CLEAN shadow->candidate preparation: prepared, zero blockers, and EVERY
+    runtime-authority flag False (shadow-only invariant held). Fail-closed."""
+    if not is_wellformed_promotion_evidence_record(record):
+        return False
+    assert isinstance(record, Mapping)
+    if record.get("target_state") != PROMOTION_TARGET_STATE:
+        return False
+    if record.get("commit_candidate_prepared") is not True:
+        return False
+    if record.get("blocker_count") != 0:
+        return False
+    flags = record.get("runtime_authority_flags")
     # shadow-only invariant: EVERY runtime-authority flag must be exactly False.
+    assert isinstance(flags, Mapping)
     return all(flags.get(flag) is False for flag in _RUNTIME_AUTHORITY_FLAGS)
 
 
@@ -167,8 +196,8 @@ def count_shadow_to_candidate_promotions(records: list[Mapping[str, Any]]) -> in
 
 # --- durable, hash-chained ledger (offline evidence channel) ----------------------
 def append_evidence(ledger_path: str, record: Mapping[str, Any]) -> str:
-    if record.get(_HASH_FIELD) != compute_record_hash(record):
-        raise PromotionEvidenceError("record_hash does not match content; refusing to append")
+    if not is_wellformed_promotion_evidence_record(record):
+        raise PromotionEvidenceError("record is not well-formed; refusing to append")
     line = (json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
     fd = os.open(ledger_path, flags, 0o644)
@@ -201,9 +230,7 @@ def verify_chain(records: list[Mapping[str, Any]]) -> bool:
     """Every record self-consistent AND prev_hash-linked from genesis (tamper-evident)."""
     prev = GENESIS_PREV_HASH
     for record in records:
-        if not isinstance(record, Mapping):
-            return False
-        if record.get(_HASH_FIELD) != compute_record_hash(record):
+        if not is_wellformed_promotion_evidence_record(record):
             return False
         if record.get("prev_hash") != prev:
             return False
@@ -216,9 +243,11 @@ def head_hash(records: list[Mapping[str, Any]]) -> str:
 
 
 __all__ = [
-    "PROMOTION_EVIDENCE_SCHEMA", "GENESIS_PREV_HASH", "PromotionEvidenceError",
+    "PROMOTION_EVIDENCE_SCHEMA", "PROMOTION_TARGET_STATE",
+    "GENESIS_PREV_HASH", "PromotionEvidenceError",
     "is_conforming_token", "is_evidence_hash", "compute_record_hash",
-    "build_promotion_evidence_record", "is_valid_promotion_evidence",
+    "build_promotion_evidence_record", "is_wellformed_promotion_evidence_record",
+    "is_valid_promotion_evidence",
     "count_shadow_to_candidate_promotions",
     "append_evidence", "read_evidence", "verify_chain", "head_hash",
 ]

@@ -44,6 +44,11 @@ def _record(app=None, *, transition_id="t1", prev=H.GENESIS_PREV_HASH):
     )
 
 
+def _rehash(record):
+    record[H._HASH_FIELD] = H.compute_record_hash(record)
+    return record
+
+
 # --- honest 0 -> 1 ---------------------------------------------------------------
 def test_empty_is_honest_zero() -> None:
     assert H.count_shadow_to_candidate_promotions([]) == 0
@@ -51,6 +56,7 @@ def test_empty_is_honest_zero() -> None:
 
 def test_clean_shadow_candidate_is_valid_and_counts_one() -> None:
     record = _record()
+    assert H.is_wellformed_promotion_evidence_record(record) is True
     assert H.is_valid_promotion_evidence(record) is True
     assert H.count_shadow_to_candidate_promotions([record]) == 1
 
@@ -65,7 +71,15 @@ def test_not_prepared_is_not_counted() -> None:
 def test_blockers_present_is_not_counted() -> None:
     record = _record(_ready_application(blockers=["envelope_rehearsal_parent_match"]))
     assert record["blocker_count"] == 1
+    assert H.is_wellformed_promotion_evidence_record(record) is True
     assert H.is_valid_promotion_evidence(record) is False
+
+
+def test_non_shadow_target_state_is_wellformed_but_not_counted() -> None:
+    record = _record(_ready_application(target_state="subdivision_planned"))
+    assert H.is_wellformed_promotion_evidence_record(record) is True
+    assert H.is_valid_promotion_evidence(record) is False
+    assert H.count_shadow_to_candidate_promotions([record]) == 0
 
 
 # --- the SHADOW-ONLY INVARIANT: any runtime-authority flag True -> NOT a promotion --
@@ -90,6 +104,25 @@ def test_smuggled_extra_key_is_invalid_even_if_self_hash_consistent() -> None:
     record["raw_leak"] = "SECRET"
     record[H._HASH_FIELD] = H.compute_record_hash(record)     # self-hash consistent...
     assert H.is_valid_promotion_evidence(record) is False     # ...but the allowlist rejects it
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("parent_cell_id", "RAW SECRET topology with spaces"),
+        ("target_state", "RAW SECRET topology with spaces"),
+        ("ts_utc", "raw timestamp with spaces"),
+        ("prev_hash", "not-a-hash"),
+        ("blocker_count", False),
+        ("runtime_authority_flags", {"claim_safe_upgrade": False}),
+    ],
+)
+def test_self_hash_consistent_malformed_shapes_are_invalid(field: str, value) -> None:
+    record = _rehash(dict(_record(), **{field: value}))
+
+    assert H.is_wellformed_promotion_evidence_record(record) is False
+    assert H.is_valid_promotion_evidence(record) is False
+    assert H.count_shadow_to_candidate_promotions([record]) == 0
 
 
 # --- no raw topology leak --------------------------------------------------------
@@ -138,7 +171,36 @@ def test_chain_append_read_verify_and_count(tmp_path) -> None:
     assert H.count_shadow_to_candidate_promotions(records) == 1   # honest: only the clean one counts
 
 
+def test_append_rejects_self_hash_consistent_raw_shape(tmp_path) -> None:
+    path = tmp_path / "promotion_evidence.jsonl"
+    record = _rehash(dict(_record(), parent_cell_id="RAW SECRET topology with spaces"))
+
+    with pytest.raises(H.PromotionEvidenceError):
+        H.append_evidence(str(path), record)
+
+    assert not path.exists()
+
+
+def test_append_keeps_wellformed_authority_violation_as_red_flag(tmp_path) -> None:
+    path = str(tmp_path / "promotion_evidence.jsonl")
+    record = _record(_ready_application(runtime_authority_granted=True))
+
+    H.append_evidence(path, record)
+    records = H.read_evidence(path)
+
+    assert H.verify_chain(records) is True
+    assert H.is_wellformed_promotion_evidence_record(records[0]) is True
+    assert H.is_valid_promotion_evidence(records[0]) is False
+    assert H.count_shadow_to_candidate_promotions(records) == 0
+
+
 def test_chain_detects_a_broken_link() -> None:
     r1 = _record(transition_id="t1")
     r2 = _record(transition_id="t2", prev=H.GENESIS_PREV_HASH)     # wrong prev (not r1)
     assert H.verify_chain([r1, r2]) is False
+
+
+def test_chain_rejects_self_hash_consistent_malformed_shape() -> None:
+    record = _rehash(dict(_record(), ts_utc="raw timestamp with spaces"))
+
+    assert H.verify_chain([record]) is False

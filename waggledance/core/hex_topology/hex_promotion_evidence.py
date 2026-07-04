@@ -126,36 +126,78 @@ def build_promotion_evidence_record(
         },
     }
     record[_HASH_FIELD] = compute_record_hash(record)
+    reason = wellformed_reason(record)                      # anti-drift builder self-check
+    if reason is not None:
+        raise PromotionEvidenceError(f"builder produced a malformed record: {reason}")
     return record
 
 
-def is_valid_promotion_evidence(record: object) -> bool:
-    """True iff ``record`` is a well-formed, tamper-consistent record that attests a
-    CLEAN shadow->candidate preparation: prepared, zero blockers, and EVERY
-    runtime-authority flag False (shadow-only invariant held). Fail-closed."""
+def wellformed_reason(record: object) -> str | None:
+    """Return ``None`` iff ``record`` is a FULLY well-formed promotion-evidence record:
+    exactly the allowed keys, correct schema, a tamper-consistent ``record_hash``, AND
+    every field of the correct shape. Otherwise a short reason string.
+
+    The verifier must ENFORCE the full field shape here -- it must never trust that the
+    builder produced the record. A self-hash-consistent forged record (the caller can
+    always recompute ``record_hash`` over its own fields) would otherwise smuggle a raw
+    value through any un-checked field (e.g. a raw topology string in ``parent_cell_id``,
+    or a malformed ``ts_utc`` / ``prev_hash``) and be counted. This is the
+    producer!=verifier discipline: shape-check EVERY field, not a subset."""
     if not isinstance(record, Mapping):
-        return False
+        return "not_a_mapping"
     if set(record.keys()) != _ALLOWED_KEYS:                 # exact allowlist, no smuggled field
-        return False
+        return "key_set_mismatch"
     if record.get("schema_version") != PROMOTION_EVIDENCE_SCHEMA:
-        return False
+        return "schema_version"
     if not is_evidence_hash(record.get(_HASH_FIELD)):
-        return False
+        return "record_hash_shape"
     if record.get(_HASH_FIELD) != compute_record_hash(record):  # tamper-evident
-        return False
+        return "record_hash_mismatch"
     if not is_conforming_token(record.get("transition_id")):
-        return False
+        return "transition_id_shape"
+    if not is_conforming_token(record.get("ts_utc")):
+        return "ts_utc_shape"
+    if not is_evidence_hash(record.get("prev_hash")):
+        return "prev_hash_shape"
     if not is_evidence_hash(record.get("application_digest")):
-        return False
-    if record.get("commit_candidate_prepared") is not True:
-        return False
-    if not isinstance(record.get("blocker_count"), int) or record.get("blocker_count") != 0:
-        return False
+        return "application_digest_shape"
+    if not is_conforming_token(record.get("parent_cell_id")):  # blocks a raw value smuggled here
+        return "parent_cell_id_shape"
+    if not is_conforming_token(record.get("target_state")):
+        return "target_state_shape"
+    if not isinstance(record.get("commit_candidate_prepared"), bool):
+        return "commit_candidate_prepared_shape"
+    blocker_count = record.get("blocker_count")
+    if not isinstance(blocker_count, int) or isinstance(blocker_count, bool) or blocker_count < 0:
+        return "blocker_count_shape"
     flags = record.get("runtime_authority_flags")
     if not isinstance(flags, Mapping) or set(flags.keys()) != set(_RUNTIME_AUTHORITY_FLAGS):
+        return "runtime_authority_flags_keys"
+    if not all(isinstance(flags.get(flag), bool) for flag in _RUNTIME_AUTHORITY_FLAGS):
+        return "runtime_authority_flags_values"
+    return None
+
+
+def is_wellformed_record(record: object) -> bool:
+    """True iff every field is of the correct shape (full verifier enforcement)."""
+    return wellformed_reason(record) is None
+
+
+def is_valid_promotion_evidence(record: object) -> bool:
+    """True iff ``record`` is a fully well-formed record that attests a CLEAN
+    shadow->candidate preparation: prepared, zero blockers, and EVERY runtime-authority
+    flag False (shadow-only invariant held). Fail-closed. Well-formedness (all field
+    shapes) is enforced in full via ``wellformed_reason`` -- never trusted from the
+    builder -- so a self-hash-consistent record with a raw/malformed field is rejected."""
+    if not is_wellformed_record(record):
         return False
+    flags = record["runtime_authority_flags"]
     # shadow-only invariant: EVERY runtime-authority flag must be exactly False.
-    return all(flags.get(flag) is False for flag in _RUNTIME_AUTHORITY_FLAGS)
+    return (
+        record.get("commit_candidate_prepared") is True
+        and record.get("blocker_count") == 0
+        and all(flags.get(flag) is False for flag in _RUNTIME_AUTHORITY_FLAGS)
+    )
 
 
 def count_shadow_to_candidate_promotions(records: list[Mapping[str, Any]]) -> int:
@@ -167,8 +209,12 @@ def count_shadow_to_candidate_promotions(records: list[Mapping[str, Any]]) -> in
 
 # --- durable, hash-chained ledger (offline evidence channel) ----------------------
 def append_evidence(ledger_path: str, record: Mapping[str, Any]) -> str:
-    if record.get(_HASH_FIELD) != compute_record_hash(record):
-        raise PromotionEvidenceError("record_hash does not match content; refusing to append")
+    # The durable ledger holds ONLY well-formed records. A well-formed record may still be
+    # a non-clean transition (blockers, or a runtime-authority flag True) -- that is an
+    # honest record of a NON-promotion and is persisted; it simply is not counted.
+    reason = wellformed_reason(record)
+    if reason is not None:
+        raise PromotionEvidenceError(f"refusing to append a malformed record: {reason}")
     line = (json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
     fd = os.open(ledger_path, flags, 0o644)
@@ -198,12 +244,11 @@ def read_evidence(ledger_path: str) -> list[dict[str, Any]]:
 
 
 def verify_chain(records: list[Mapping[str, Any]]) -> bool:
-    """Every record self-consistent AND prev_hash-linked from genesis (tamper-evident)."""
+    """Every record fully well-formed AND prev_hash-linked from genesis (tamper-evident).
+    A malformed record anywhere in the chain fails verification (fail-closed)."""
     prev = GENESIS_PREV_HASH
     for record in records:
-        if not isinstance(record, Mapping):
-            return False
-        if record.get(_HASH_FIELD) != compute_record_hash(record):
+        if not is_wellformed_record(record):               # full shape + tamper-consistency
             return False
         if record.get("prev_hash") != prev:
             return False
@@ -218,7 +263,7 @@ def head_hash(records: list[Mapping[str, Any]]) -> str:
 __all__ = [
     "PROMOTION_EVIDENCE_SCHEMA", "GENESIS_PREV_HASH", "PromotionEvidenceError",
     "is_conforming_token", "is_evidence_hash", "compute_record_hash",
-    "build_promotion_evidence_record", "is_valid_promotion_evidence",
-    "count_shadow_to_candidate_promotions",
+    "build_promotion_evidence_record", "wellformed_reason", "is_wellformed_record",
+    "is_valid_promotion_evidence", "count_shadow_to_candidate_promotions",
     "append_evidence", "read_evidence", "verify_chain", "head_hash",
 ]

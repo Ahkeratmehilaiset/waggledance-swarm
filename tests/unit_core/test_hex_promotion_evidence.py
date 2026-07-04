@@ -142,3 +142,70 @@ def test_chain_detects_a_broken_link() -> None:
     r1 = _record(transition_id="t1")
     r2 = _record(transition_id="t2", prev=H.GENESIS_PREV_HASH)     # wrong prev (not r1)
     assert H.verify_chain([r1, r2]) is False
+
+
+# --- verifier shape enforcement (lead finding on #1507): a self-hash-consistent record
+#     with a raw/malformed field in ANY position must NOT be valid or counted -----------
+def _reforge(record: dict, **field_overrides) -> dict:
+    """Mutate fields on a copy and RECOMPUTE record_hash so the record is
+    self-hash-consistent -- exactly the lead's repro (the forger controls record_hash)."""
+    forged = dict(record)
+    forged.update(field_overrides)
+    forged[H._HASH_FIELD] = H.compute_record_hash(forged)
+    return forged
+
+
+@pytest.mark.parametrize("field,bad_value", [
+    ("parent_cell_id", "raw cell with spaces"),          # the lead's exact repro
+    ("parent_cell_id", "cell/with/slashes"),
+    ("parent_cell_id", "line\nbreak"),
+    ("target_state", "raw state with spaces"),
+    ("ts_utc", "not a timestamp with spaces"),
+    ("prev_hash", "not-a-hash"),
+    ("prev_hash", "sha256:" + "0" * 63),                 # wrong length
+    ("transition_id", "has space"),
+    ("application_digest", "not-a-digest"),
+    ("schema_version", "some.other.schema.v0"),
+])
+def test_self_hash_consistent_record_with_malformed_field_is_rejected(field, bad_value) -> None:
+    forged = _reforge(_record(), **{field: bad_value})
+    assert forged[H._HASH_FIELD] == H.compute_record_hash(forged)   # forger IS self-consistent
+    assert H.wellformed_reason(forged) is not None                  # ...but not well-formed
+    assert H.is_valid_promotion_evidence(forged) is False
+    assert H.count_shadow_to_candidate_promotions([forged]) == 0    # NOT counted
+    with pytest.raises(H.PromotionEvidenceError):                    # durable-write refuses it
+        import tempfile, os
+        fd, p = tempfile.mkstemp(); os.close(fd)
+        try:
+            H.append_evidence(p, forged)
+        finally:
+            os.remove(p)
+
+
+@pytest.mark.parametrize("field,bad_value", [
+    ("commit_candidate_prepared", 1),                    # int, not bool (1 == True is a trap)
+    ("blocker_count", True),                             # bool masquerading as int 1
+    ("blocker_count", -1),                               # negative
+])
+def test_non_bool_scalar_shapes_are_rejected(field, bad_value) -> None:
+    forged = _reforge(_record(), **{field: bad_value})
+    assert H.is_valid_promotion_evidence(forged) is False
+    assert H.wellformed_reason(forged) is not None
+
+
+def test_wellformed_but_non_clean_record_is_persisted_but_not_counted(tmp_path) -> None:
+    # a record with blockers is WELL-FORMED (honest record of a non-promotion) -> append
+    # succeeds, verify_chain passes, but it is NOT counted. append must not over-reject.
+    path = str(tmp_path / "evidence.jsonl")
+    non_clean = _record(_ready_application(blockers=["parent_mismatch"]))
+    assert H.wellformed_reason(non_clean) is None            # well-formed
+    assert H.is_valid_promotion_evidence(non_clean) is False  # but not a clean promotion
+    H.append_evidence(path, non_clean)                       # persisted (no raise)
+    records = H.read_evidence(path)
+    assert H.verify_chain(records) is True
+    assert H.count_shadow_to_candidate_promotions(records) == 0
+
+
+def test_verify_chain_rejects_a_malformed_record_in_chain() -> None:
+    forged = _reforge(_record(), parent_cell_id="raw with spaces")
+    assert H.verify_chain([forged]) is False                # malformed -> chain fails

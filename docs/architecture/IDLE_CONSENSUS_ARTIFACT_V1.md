@@ -60,6 +60,19 @@ digest-only reference:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
+  --operator-decision-reference-template `
+  --replay-seed .codex-audit\idle-replay-seed.json `
+  --candidate-diff .codex-audit\candidate.patch `
+  --changed-path docs\architecture\consensus_artifacts\replay.md `
+  --json
+```
+
+The template command prints the exact digest-bound reference object that the
+admission check can later consume. It still writes no artifacts, appends no
+bridge events, and creates no task, branch, PR, or merge.
+
+```powershell
+.\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
   --candidate-diff-replay-admission `
   --replay-seed .codex-audit\idle-replay-seed.json `
   --candidate-diff .codex-audit\candidate.patch `

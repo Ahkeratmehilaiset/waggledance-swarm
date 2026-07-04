@@ -15,10 +15,12 @@ from tools.idle_consensus_artifact import (
     COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION,
+    OPERATOR_DECISION_REFERENCE_TEMPLATE_VERSION,
     OPERATOR_DECISION_REFERENCE_VERSION,
     REPLAY_SEED_REQUIRED_FALSE_KEYS,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_counterfactual_eval_binding_template,
+    build_idle_consensus_operator_decision_reference_template,
     build_idle_consensus_replay_seed,
     write_idle_consensus_artifact,
 )
@@ -809,6 +811,80 @@ def test_counterfactual_eval_binding_template_is_digest_only_and_replay_ready(
     assert "divergences" not in serialized
 
 
+def test_operator_decision_reference_template_is_digest_only_and_gate_ready(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++Operator approval is bound to this exact digest pair.
+"""
+
+    template = build_idle_consensus_operator_decision_reference_template(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+    )
+    reference = template["operator_decision_reference"]
+    receipt = _bind_counterfactual_receipt(
+        _measured_counterfactual_receipt(),
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+    )
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=reference,
+    )
+    serialized = json.dumps(template, sort_keys=True)
+
+    assert template["report_version"] == OPERATOR_DECISION_REFERENCE_TEMPLATE_VERSION
+    assert template["ok"] is True
+    assert template["decision"] == "operator_decision_reference_template_ready"
+    assert template["dry_run"] is True
+    assert template["external_effect"] is False
+    assert template["writes_applied"] is False
+    assert template["would_create_task"] is False
+    assert template["would_create_branch"] is False
+    assert template["would_create_pr"] is False
+    assert template["would_merge"] is False
+    assert template["operator_reference_payload_included"] is True
+    assert template["candidate_diff"]["diff_text_included"] is False
+    assert template["candidate_diff"]["digest"] == _candidate_diff_digest(
+        changed_paths,
+        diff_text,
+    )
+    assert reference == {
+        "schema_version": OPERATOR_DECISION_REFERENCE_VERSION,
+        "decision": "approved_for_draft_pr_creation",
+        "replay_seed_digest": sha256_digest(artifact["replay_seed"]),
+        "candidate_diff_digest": _candidate_diff_digest(changed_paths, diff_text),
+        "operator_gate_required": True,
+        "auto_execute": False,
+        "external_effect": False,
+        "writes_applied": False,
+        "would_create_task": False,
+        "would_create_branch": False,
+        "would_create_pr": False,
+        "would_merge": False,
+        "runtime_authority_granted": False,
+        "external_writes_applied": False,
+    }
+    assert admission["operator_decision_reference"]["satisfies_operator_gate"] is True
+    assert admission["eligible_for_draft_pr_gate"] is True
+    assert admission["draft_pr_gate_blockers"] == []
+    assert "Operator approval is bound" not in serialized
+    assert "diff --git" not in serialized
+
+
 def test_candidate_diff_replay_admission_blocks_unbound_counterfactual_receipt(
     tmp_path: Path,
 ) -> None:
@@ -1233,6 +1309,81 @@ def test_cli_counterfactual_eval_binding_template_reports_without_payloads(
     assert template["receipt_payload_included"] is False
     assert template["candidate_diff"]["diff_text_included"] is False
     assert "CLI binding template omits" not in completed.stdout
+    assert "diff --git" not in completed.stdout
+
+
+def test_cli_operator_decision_reference_template_reports_without_raw_diff(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    report = _write_artifact(tmp_path, _soft_events())
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    seed_path = tmp_path / "replay-seed.json"
+    seed_path.write_text(
+        json.dumps(artifact["replay_seed"], sort_keys=True),
+        encoding="utf-8",
+    )
+    diff_text = """diff --git a/docs/architecture/consensus_artifacts/replay.md b/docs/architecture/consensus_artifacts/replay.md
+--- a/docs/architecture/consensus_artifacts/replay.md
++++ b/docs/architecture/consensus_artifacts/replay.md
+@@ -1 +1,2 @@
+ # Replay
++CLI operator reference omits this raw diff text.
+"""
+    diff_path = tmp_path / "candidate.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+    changed_paths = ["docs/architecture/consensus_artifacts/replay.md"]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_consensus_artifact.py"),
+            "--operator-decision-reference-template",
+            "--replay-seed",
+            str(seed_path),
+            "--candidate-diff",
+            str(diff_path),
+            "--changed-path",
+            changed_paths[0],
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    template = json.loads(completed.stdout)
+    reference = template["operator_decision_reference"]
+    assert template["report_version"] == OPERATOR_DECISION_REFERENCE_TEMPLATE_VERSION
+    assert template["ok"] is True
+    assert template["decision"] == "operator_decision_reference_template_ready"
+    assert template["external_effect"] is False
+    assert template["writes_applied"] is False
+    assert template["would_create_task"] is False
+    assert template["would_create_branch"] is False
+    assert template["would_create_pr"] is False
+    assert template["would_merge"] is False
+    assert template["candidate_diff"]["diff_text_included"] is False
+    assert reference["schema_version"] == OPERATOR_DECISION_REFERENCE_VERSION
+    assert reference["decision"] == "approved_for_draft_pr_creation"
+    assert reference["replay_seed_digest"] == sha256_digest(artifact["replay_seed"])
+    assert reference["candidate_diff_digest"] == _candidate_diff_digest(
+        changed_paths,
+        diff_text,
+    )
+    assert reference["operator_gate_required"] is True
+    assert reference["auto_execute"] is False
+    assert reference["external_effect"] is False
+    assert reference["writes_applied"] is False
+    assert reference["would_create_task"] is False
+    assert reference["would_create_branch"] is False
+    assert reference["would_create_pr"] is False
+    assert reference["would_merge"] is False
+    assert reference["runtime_authority_granted"] is False
+    assert reference["external_writes_applied"] is False
+    assert "CLI operator reference omits" not in completed.stdout
     assert "diff --git" not in completed.stdout
 
 

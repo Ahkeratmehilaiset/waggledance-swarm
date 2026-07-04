@@ -6,6 +6,7 @@ import json
 from tools.idle_consensus_artifact import (
     COUNTERFACTUAL_EVAL_BINDING_VERSION,
     build_idle_consensus_candidate_diff_replay_admission,
+    build_idle_consensus_operator_decision_reference_template,
 )
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -91,6 +92,41 @@ def test_counterfactual_receipt_must_bind_replay_seed_and_candidate_diff() -> No
     assert admission["draft_pr_gate_blockers"] == [
         "operator_review_gate_required",
     ]
+
+
+def test_operator_reference_template_must_bind_replay_seed_and_candidate_diff() -> None:
+    seed = _replay_seed()
+    changed_paths, diff_text = _candidate_diff()
+    receipt = _receipt(
+        replay_seed_digest=sha256_digest(seed),
+        candidate_diff_digest=_diff_digest(changed_paths, diff_text),
+    )
+    template = build_idle_consensus_operator_decision_reference_template(
+        replay_seed=seed,
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+    )
+
+    admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=seed,
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=template["operator_decision_reference"],
+    )
+    serialized = json.dumps(template, sort_keys=True)
+
+    assert template["operator_decision_reference"]["replay_seed_digest"] == (
+        sha256_digest(seed)
+    )
+    assert template["operator_decision_reference"]["candidate_diff_digest"] == (
+        _diff_digest(changed_paths, diff_text)
+    )
+    assert admission["operator_decision_reference"]["satisfies_operator_gate"]
+    assert admission["eligible_for_draft_pr_gate"] is True
+    assert admission["draft_pr_gate_blockers"] == []
+    assert "diff --git" not in serialized
+    assert "Receipt binding must be digest-only" not in serialized
 
 
 def test_mismatched_counterfactual_receipt_binding_blocks_replay_gate() -> None:

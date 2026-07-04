@@ -695,6 +695,8 @@ _SAFE_CLAIM_WINDOW = {
     "required_served_point_count": 5,
     "instrumented_served_point_count": 5,
     "missing_served_point_count": 0,
+    "measurement_not_a_correctness_gate": True,
+    "production_representativeness_claimed": False,
 }
 
 
@@ -704,6 +706,8 @@ def test_chat_served_claim_window_available_but_never_satisfied() -> None:
     assert gate["claim_window_eligible"] is True
     assert gate["measured_coverage_percent"] == 100.0
     assert gate["measurement_basis"] == "chat_served_claim_window_report"
+    assert gate["measurement_not_a_correctness_gate"] is True
+    assert gate["production_representativeness_claimed"] is False
     assert gate["claim_safe"] is False
     assert gate["current_value"] is False
     assert gate["satisfied"] is False
@@ -722,6 +726,8 @@ def test_chat_served_claim_window_unavailable_when_shape_missing() -> None:
     missing_claim_safe.pop("claim_safe")
     missing_pending = dict(_SAFE_CLAIM_WINDOW)
     missing_pending.pop("pending_append_failures")
+    missing_guard = dict(_SAFE_CLAIM_WINDOW)
+    missing_guard.pop("measurement_not_a_correctness_gate")
 
     assert (
         _claim_window_gate(missing_claim_safe)["claim_window_measurement_available"]
@@ -729,6 +735,10 @@ def test_chat_served_claim_window_unavailable_when_shape_missing() -> None:
     )
     assert (
         _claim_window_gate(missing_pending)["claim_window_measurement_available"]
+        is False
+    )
+    assert (
+        _claim_window_gate(missing_guard)["claim_window_measurement_available"]
         is False
     )
 
@@ -760,6 +770,8 @@ def test_chat_served_claim_window_unavailable_when_missing_or_ineligible() -> No
     {"required_served_point_count": 0},
     {"instrumented_served_point_count": 4},
     {"missing_served_point_count": 1},
+    {"measurement_not_a_correctness_gate": False},
+    {"production_representativeness_claimed": True},
 ])
 def test_chat_served_claim_window_consumer_rederives_fail_closed(patch) -> None:
     gate = _claim_window_gate({**_SAFE_CLAIM_WINDOW, **patch})

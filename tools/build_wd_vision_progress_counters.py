@@ -371,6 +371,12 @@ def _extract_milestone_values(
             "chat_served_claim_window_missing_served_point_count": _int_value(
                 claim_window.get("missing_served_point_count")
             ),
+            "chat_served_claim_window_measurement_not_a_correctness_gate": (
+                claim_window.get("measurement_not_a_correctness_gate") is True
+            ),
+            "chat_served_claim_window_production_representativeness_claimed": (
+                claim_window.get("production_representativeness_claimed") is True
+            ),
         }
     if capability_id == "low_risk_autonomy_loop":
         real_loop = _mapping(proof.get("real_loop_dry_run"))
@@ -940,6 +946,12 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and magma.get("chat_served_claim_window_instrumented_served_point_count")
         >= magma.get("chat_served_claim_window_required_served_point_count")
         and magma.get("chat_served_claim_window_missing_served_point_count") == 0
+        and magma.get(
+            "chat_served_claim_window_measurement_not_a_correctness_gate"
+        ) is True
+        and magma.get(
+            "chat_served_claim_window_production_representativeness_claimed"
+        ) is False
         and magma.get("chat_served_claim_window_pending_append_failures_valid")
         is True
         and magma.get("chat_served_claim_window_pending_append_failures") == 0
@@ -1490,6 +1502,12 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
                 if chat_served_claim_window_available
                 else "manifest_claim_gate_flags"
             ),
+            "measurement_not_a_correctness_gate": magma.get(
+                "chat_served_claim_window_measurement_not_a_correctness_gate"
+            ) is True,
+            "production_representativeness_claimed": magma.get(
+                "chat_served_claim_window_production_representativeness_claimed"
+            ) is True,
         },
         "end_to_end_gated_promotions_total": {
             # Fail-closed: count promotions ONLY when the report is ok AND no

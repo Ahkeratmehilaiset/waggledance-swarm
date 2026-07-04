@@ -9740,6 +9740,8 @@ _CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS = (
     "required_served_point_count",
     "instrumented_served_point_count",
     "missing_served_point_count",
+    "measurement_not_a_correctness_gate",
+    "production_representativeness_claimed",
 )
 
 
@@ -9849,42 +9851,73 @@ def _safe_chat_served_claim_window_aggregate(report: object) -> dict:
         and _is_chat_served_ledger_hash(expected_head)
         and actual_head == expected_head
     )
+    reported_eligible = _strict_chat_served_bool(mapped.get("eligible"), "eligible")
+    reason = _safe_reason(mapped.get("reason"))
+    served = _safe_nonnegative_int(coverage.get("served"), "served")
+    receipts = _safe_nonnegative_int(coverage.get("receipts"), "receipts")
+    gaps = _safe_nonnegative_int(coverage.get("gaps"), "gaps")
+    unresolved_pending = _safe_nonnegative_int(
+        coverage.get("unresolved_pending"), "unresolved_pending"
+    )
+    pending_append_failures = _safe_nonnegative_int(
+        coverage.get("pending_append_failures"), "pending_append_failures"
+    )
+    receipt_coverage_ratio = _safe_chat_served_ratio(coverage.get("ratio"))
+    chain_ok = _strict_chat_served_bool(coverage.get("chain_ok"), "chain_ok")
+    lifecycle_ok = _strict_chat_served_bool(
+        coverage.get("lifecycle_ok"), "lifecycle_ok"
+    )
+    enabled_across_window = _strict_chat_served_bool(
+        mapped.get("enabled_across_window"), "enabled_across_window"
+    )
+    clean_shutdown = _strict_chat_served_bool(
+        mapped.get("clean_shutdown"), "clean_shutdown"
+    )
+    torn_tail = _strict_chat_served_bool(mapped.get("torn_tail"), "torn_tail")
+    source_completeness_ok = (
+        bool(required_points)
+        and len(derived_missing_points) == 0
+        and reported_missing_points == derived_missing_points
+    )
+    claim_window_eligible = (
+        served > 0
+        and receipts == served
+        and gaps == 0
+        and unresolved_pending == 0
+        and pending_append_failures == 0
+        and receipt_coverage_ratio == 1.0
+        and chain_ok is True
+        and lifecycle_ok is True
+        and head_anchor_match is True
+        and enabled_across_window is True
+        and clean_shutdown is True
+        and torn_tail is False
+        and source_completeness_ok is True
+        and reason is None
+        and reported_eligible is True
+    )
     aggregate = {
-        "claim_window_eligible": _strict_chat_served_bool(
-            mapped.get("eligible"), "eligible"
-        ),
+        "claim_window_eligible": claim_window_eligible,
         "claim_safe": False,
-        "reason": _safe_reason(mapped.get("reason")),
-        "served": _safe_nonnegative_int(coverage.get("served"), "served"),
-        "receipts": _safe_nonnegative_int(coverage.get("receipts"), "receipts"),
-        "gaps": _safe_nonnegative_int(coverage.get("gaps"), "gaps"),
-        "unresolved_pending": _safe_nonnegative_int(
-            coverage.get("unresolved_pending"), "unresolved_pending"
-        ),
-        "pending_append_failures": _safe_nonnegative_int(
-            coverage.get("pending_append_failures"), "pending_append_failures"
-        ),
-        "receipt_coverage_ratio": _safe_chat_served_ratio(coverage.get("ratio")),
-        "chain_ok": _strict_chat_served_bool(coverage.get("chain_ok"), "chain_ok"),
-        "lifecycle_ok": _strict_chat_served_bool(
-            coverage.get("lifecycle_ok"), "lifecycle_ok"
-        ),
+        "reason": reason,
+        "served": served,
+        "receipts": receipts,
+        "gaps": gaps,
+        "unresolved_pending": unresolved_pending,
+        "pending_append_failures": pending_append_failures,
+        "receipt_coverage_ratio": receipt_coverage_ratio,
+        "chain_ok": chain_ok,
+        "lifecycle_ok": lifecycle_ok,
         "head_anchor_match": head_anchor_match,
-        "enabled_across_window": _strict_chat_served_bool(
-            mapped.get("enabled_across_window"), "enabled_across_window"
-        ),
-        "clean_shutdown": _strict_chat_served_bool(
-            mapped.get("clean_shutdown"), "clean_shutdown"
-        ),
-        "torn_tail": _strict_chat_served_bool(mapped.get("torn_tail"), "torn_tail"),
-        "source_completeness_ok": (
-            bool(required_points)
-            and len(derived_missing_points) == 0
-            and reported_missing_points == derived_missing_points
-        ),
+        "enabled_across_window": enabled_across_window,
+        "clean_shutdown": clean_shutdown,
+        "torn_tail": torn_tail,
+        "source_completeness_ok": source_completeness_ok,
         "required_served_point_count": len(required_points),
         "instrumented_served_point_count": len(instrumented_points),
         "missing_served_point_count": len(derived_missing_points),
+        "measurement_not_a_correctness_gate": True,
+        "production_representativeness_claimed": False,
     }
     if set(aggregate) != set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS):
         raise ValueError("chat_served_claim_window aggregate keyset drift")
@@ -9930,6 +9963,8 @@ def build_chat_served_claim_window_aggregate(
             "required_served_point_count": 0,
             "instrumented_served_point_count": 0,
             "missing_served_point_count": 0,
+            "measurement_not_a_correctness_gate": True,
+            "production_representativeness_claimed": False,
         }
 
     from waggledance.core.magma.chat_served_accounting import claim_window_from_ledger

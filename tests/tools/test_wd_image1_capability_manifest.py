@@ -3587,6 +3587,7 @@ def test_chat_served_claim_window_force_real_aggregate_is_safe(tmp_path) -> None
     assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
     assert aggregate["claim_window_eligible"] is True
     assert aggregate["claim_safe"] is False
+    assert aggregate["input_evidence_derived"] is False
     assert aggregate["measurement_not_a_correctness_gate"] is True
     assert aggregate["production_representativeness_claimed"] is False
     assert aggregate["receipt_coverage_ratio"] == 1.0
@@ -3601,8 +3602,122 @@ def test_chat_served_claim_window_missing_ledger_is_unavailable() -> None:
     assert aggregate["claim_window_eligible"] is False
     assert aggregate["claim_safe"] is False
     assert aggregate["reason"] == "missing_ledger_path"
+    assert aggregate["input_evidence_derived"] is False
     assert aggregate["measurement_not_a_correctness_gate"] is True
     assert aggregate["production_representativeness_claimed"] is False
+
+
+def test_chat_served_claim_window_evidence_inputs_drive_safe_aggregate(tmp_path) -> None:
+    from waggledance.core.magma import chat_served_ledger as L
+    from waggledance.core.magma.chat_served_accounting import (
+        REQUIRED_CHAT_SERVED_POINTS,
+    )
+    from waggledance.core.magma.chat_served_claim_window_evidence import (
+        new_enabled_state_sample,
+        new_served_point_observation,
+        write_clean_shutdown_marker,
+        write_head_anchor_checkpoint,
+    )
+
+    window_id = "window:manifest"
+    ts_utc = "2026-07-04T07:00:00Z"
+    ledger_path = tmp_path / "ledger.jsonl"
+    anchor_path = tmp_path / "anchors" / "heads.jsonl"
+    marker_path = tmp_path / "markers" / "clean.json"
+    entry1 = L.new_served_pending(
+        "q1", L.GENESIS_PREV_HASH, ts_utc, {"route_type": "solver"}
+    )
+    entry2 = L.new_receipt_terminal(
+        "q1", entry1["entry_hash"], "2026-07-04T07:00:01Z", "sha256:" + "ab" * 32
+    )
+    L.append_entry(str(ledger_path), entry1, fsync=False)
+    L.append_entry(str(ledger_path), entry2, fsync=False)
+    write_head_anchor_checkpoint(
+        str(anchor_path),
+        str(ledger_path),
+        window_id=window_id,
+        ts_utc=ts_utc,
+        fsync=False,
+    )
+    write_clean_shutdown_marker(
+        str(marker_path),
+        window_id=window_id,
+        ts_utc=ts_utc,
+        fsync=False,
+    )
+
+    aggregate = build_chat_served_claim_window_aggregate(
+        force=True,
+        ledger_path=str(ledger_path),
+        anchor_store_path=str(anchor_path),
+        window_id=window_id,
+        enabled_samples=[
+            new_enabled_state_sample(window_id=window_id, enabled=True, ts_utc=ts_utc),
+        ],
+        clean_shutdown_marker_path=str(marker_path),
+        served_point_observations=[
+            new_served_point_observation(point=point, wired=True, ts_utc=ts_utc)
+            for point in sorted(REQUIRED_CHAT_SERVED_POINTS)
+        ],
+    )
+
+    assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
+    assert aggregate["claim_window_eligible"] is True
+    assert aggregate["input_evidence_derived"] is True
+    assert aggregate["claim_safe"] is False
+    blob = json.dumps(aggregate)
+    assert "sha256:" not in blob
+    assert str(tmp_path) not in blob
+
+
+def test_chat_served_claim_window_evidence_inputs_fail_closed(tmp_path) -> None:
+    from waggledance.core.magma import chat_served_ledger as L
+    from waggledance.core.magma.chat_served_accounting import (
+        REQUIRED_CHAT_SERVED_POINTS,
+    )
+    from waggledance.core.magma.chat_served_claim_window_evidence import (
+        new_enabled_state_sample,
+        new_served_point_observation,
+    )
+
+    window_id = "window:manifest"
+    ts_utc = "2026-07-04T07:00:00Z"
+    ledger_path = tmp_path / "ledger.jsonl"
+    entry1 = L.new_served_pending(
+        "q1", L.GENESIS_PREV_HASH, ts_utc, {"route_type": "solver"}
+    )
+    entry2 = L.new_receipt_terminal(
+        "q1", entry1["entry_hash"], "2026-07-04T07:00:01Z", "sha256:" + "ab" * 32
+    )
+    L.append_entry(str(ledger_path), entry1, fsync=False)
+    L.append_entry(str(ledger_path), entry2, fsync=False)
+
+    missing_inputs = build_chat_served_claim_window_aggregate(
+        force=True,
+        ledger_path=str(ledger_path),
+        anchor_store_path=str(tmp_path / "anchors.jsonl"),
+    )
+    assert missing_inputs["claim_window_eligible"] is False
+    assert missing_inputs["input_evidence_derived"] is False
+    assert missing_inputs["reason"] == "missing_evidence_inputs"
+
+    self_anchored = build_chat_served_claim_window_aggregate(
+        force=True,
+        ledger_path=str(ledger_path),
+        anchor_store_path=str(ledger_path),
+        window_id=window_id,
+        enabled_samples=[
+            new_enabled_state_sample(window_id=window_id, enabled=True, ts_utc=ts_utc),
+        ],
+        clean_shutdown_marker_path=str(tmp_path / "clean.json"),
+        served_point_observations=[
+            new_served_point_observation(point=point, wired=True, ts_utc=ts_utc)
+            for point in sorted(REQUIRED_CHAT_SERVED_POINTS)
+        ],
+    )
+    assert self_anchored["claim_window_eligible"] is False
+    assert self_anchored["input_evidence_derived"] is True
+    assert self_anchored["reason"] == "head_anchor_not_independent"
 
 
 def _good_claim_window_report() -> dict:
@@ -3637,6 +3752,7 @@ def test_safe_chat_served_claim_window_aggregate_is_measurement_only() -> None:
     assert aggregate["claim_window_eligible"] is True
     assert aggregate["claim_safe"] is False
     assert aggregate["head_anchor_match"] is True
+    assert aggregate["input_evidence_derived"] is False
     assert aggregate["measurement_not_a_correctness_gate"] is True
     assert aggregate["production_representativeness_claimed"] is False
 

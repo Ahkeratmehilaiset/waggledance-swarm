@@ -371,6 +371,9 @@ def _extract_milestone_values(
             "chat_served_claim_window_missing_served_point_count": _int_value(
                 claim_window.get("missing_served_point_count")
             ),
+            "chat_served_claim_window_input_evidence_derived": (
+                claim_window.get("input_evidence_derived") is True
+            ),
             "chat_served_claim_window_measurement_not_a_correctness_gate": (
                 claim_window.get("measurement_not_a_correctness_gate") is True
             ),
@@ -946,6 +949,7 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and magma.get("chat_served_claim_window_instrumented_served_point_count")
         >= magma.get("chat_served_claim_window_required_served_point_count")
         and magma.get("chat_served_claim_window_missing_served_point_count") == 0
+        and magma.get("chat_served_claim_window_input_evidence_derived") is True
         and magma.get(
             "chat_served_claim_window_measurement_not_a_correctness_gate"
         ) is True
@@ -1504,6 +1508,9 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             ),
             "measurement_not_a_correctness_gate": magma.get(
                 "chat_served_claim_window_measurement_not_a_correctness_gate"
+            ) is True,
+            "input_evidence_derived": magma.get(
+                "chat_served_claim_window_input_evidence_derived"
             ) is True,
             "production_representativeness_claimed": magma.get(
                 "chat_served_claim_window_production_representativeness_claimed"

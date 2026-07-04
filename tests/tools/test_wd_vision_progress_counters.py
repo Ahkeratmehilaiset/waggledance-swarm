@@ -146,10 +146,14 @@ def test_panel_counters_expose_measurable_milestones() -> None:
         "first_hop_coverage_present": False,
         "first_hop_coverage_available": False,
         "first_hop_coverage_ratio": None,
+        "first_hop_corpus_provenance_basis": None,
+        "first_hop_corpus_representativeness_scope": None,
         "first_hop_denominator_scope": None,
         "first_hop_denominator_count": 0,
         "first_hop_gap_count": 0,
         "first_hop_denominator_integrity_ok": False,
+        "first_hop_production_representativeness_claimed": False,
+        "first_hop_corpus_representativeness_required_for_claim": False,
         "first_hop_declares_order": False,
     }
     assert by_id["magma_audit_log"]["milestones"]["receipt_count"] == 1
@@ -669,10 +673,16 @@ _SAFE_FIRST_HOP = {
     "coverage_measurement_available": True,
     "authoritative_first_hop_coverage": 0.6667,
     "capsule_declares_authoritative_order": True,
+    "corpus_provenance_basis": "configs_benchmarks_yaml_local_canonical_v1",
+    "corpus_representativeness_scope": (
+        "local_30_record_canonical_probe_not_production_representative"
+    ),
     "first_hop_denominator_scope": "all_non_cached_first_hops",
     "first_hop_denominator_count": 30,
     "authoritative_first_hop_gap_count": 10,
     "denominator_is_all_non_cached_first_hops": True,
+    "production_representativeness_claimed": False,
+    "corpus_representativeness_required_for_claim": True,
     "measurement_basis": "v1_first_hop_authoritative_order",
 }
 
@@ -684,6 +694,14 @@ def test_first_hop_coverage_available_with_safe_measurement() -> None:
     assert gate["measurement_denominator_scope"] == "all_non_cached_first_hops"
     assert gate["measurement_denominator_count"] == 30
     assert gate["measurement_gap_count"] == 10
+    assert gate["measurement_corpus_provenance_basis"] == (
+        "configs_benchmarks_yaml_local_canonical_v1"
+    )
+    assert gate["measurement_corpus_representativeness_scope"] == (
+        "local_30_record_canonical_probe_not_production_representative"
+    )
+    assert gate["production_representativeness_claimed"] is False
+    assert gate["corpus_representativeness_required_for_claim"] is True
     assert gate["measurement_basis"] == "v1_first_hop_authoritative_order"
 
 
@@ -706,6 +724,10 @@ def test_first_hop_unavailable_when_not_declared() -> None:
     assert gate["measurement_denominator_scope"] is None
     assert gate["measurement_denominator_count"] is None
     assert gate["measurement_gap_count"] is None
+    assert gate["measurement_corpus_provenance_basis"] is None
+    assert gate["measurement_corpus_representativeness_scope"] is None
+    assert gate["production_representativeness_claimed"] is False
+    assert gate["corpus_representativeness_required_for_claim"] is False
     assert gate["measurement_basis"] == "manifest_hex_mesh_flags"
 
 

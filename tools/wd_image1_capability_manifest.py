@@ -9727,6 +9727,8 @@ _FIRST_HOP_COVERAGE_SAFE_KEYS = (
     "coverage_measurement_available",
     "authoritative_first_hop_coverage",
     "capsule_declares_authoritative_order",
+    "corpus_provenance_basis",
+    "corpus_representativeness_scope",
     "corpus_size",
     "hot_cache_count",
     "routable_size",
@@ -9736,10 +9738,16 @@ _FIRST_HOP_COVERAGE_SAFE_KEYS = (
     "heuristic_first_hop_count",
     "authoritative_first_hop_gap_count",
     "denominator_is_all_non_cached_first_hops",
+    "production_representativeness_claimed",
+    "corpus_representativeness_required_for_claim",
     "measurement_basis",
 )
 _FIRST_HOP_MEASUREMENT_BASIS = "v1_first_hop_authoritative_order"
 _FIRST_HOP_DENOMINATOR_SCOPE = "all_non_cached_first_hops"
+_FIRST_HOP_CORPUS_PROVENANCE_BASIS = "configs_benchmarks_yaml_local_canonical_v1"
+_FIRST_HOP_CORPUS_SCOPE = (
+    "local_30_record_canonical_probe_not_production_representative"
+)
 
 
 def _first_hop_coverage_enabled() -> bool:
@@ -9792,6 +9800,12 @@ def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
     denominator_scope = report.get("first_hop_denominator_scope")
     if denominator_scope != _FIRST_HOP_DENOMINATOR_SCOPE:
         raise ValueError("unexpected first_hop_coverage denominator scope")
+    corpus_provenance_basis = report.get("corpus_provenance_basis")
+    if corpus_provenance_basis != _FIRST_HOP_CORPUS_PROVENANCE_BASIS:
+        raise ValueError("unexpected first_hop_coverage corpus provenance basis")
+    corpus_scope = report.get("corpus_representativeness_scope")
+    if corpus_scope != _FIRST_HOP_CORPUS_SCOPE:
+        raise ValueError("unexpected first_hop_coverage corpus scope")
     invariants = report.get("invariants") or {}
     corpus_size = _nonneg_int(report.get("corpus_size"), "corpus_size")
     hot_cache_count = _nonneg_int(report.get("hot_cache_count"), "hot_cache_count")
@@ -9814,6 +9828,14 @@ def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
         invariants.get("denominator_is_all_non_cached_first_hops"),
         "denominator_is_all_non_cached_first_hops",
     )
+    production_representativeness_claimed = _strict_bool(
+        invariants.get("production_representativeness_claimed"),
+        "production_representativeness_claimed",
+    )
+    corpus_representativeness_required = _strict_bool(
+        invariants.get("corpus_representativeness_required_for_claim"),
+        "corpus_representativeness_required_for_claim",
+    )
     if (
         denominator_count != routable_size
         or corpus_size - hot_cache_count != routable_size
@@ -9834,6 +9856,8 @@ def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
             invariants.get("capsule_declares_authoritative_order"),
             "capsule_declares_authoritative_order",
         ),
+        "corpus_provenance_basis": corpus_provenance_basis,
+        "corpus_representativeness_scope": corpus_scope,
         "corpus_size": corpus_size,
         "hot_cache_count": hot_cache_count,
         "routable_size": routable_size,
@@ -9843,6 +9867,12 @@ def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
         "heuristic_first_hop_count": heuristic_count,
         "authoritative_first_hop_gap_count": gap_count,
         "denominator_is_all_non_cached_first_hops": denominator_ok,
+        "production_representativeness_claimed": (
+            production_representativeness_claimed
+        ),
+        "corpus_representativeness_required_for_claim": (
+            corpus_representativeness_required
+        ),
         "measurement_basis": basis,
     }
     extra = set(aggregate) - set(_FIRST_HOP_COVERAGE_SAFE_KEYS)

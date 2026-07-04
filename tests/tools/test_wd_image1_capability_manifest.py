@@ -3571,6 +3571,10 @@ def _good_first_hop_report() -> dict:
         "coverage_measurement_available": True,
         "authoritative_first_hop_coverage": 0.6667,
         "measurement_basis": "v1_first_hop_authoritative_order",
+        "corpus_provenance_basis": "configs_benchmarks_yaml_local_canonical_v1",
+        "corpus_representativeness_scope": (
+            "local_30_record_canonical_probe_not_production_representative"
+        ),
         "corpus_size": 30,
         "hot_cache_count": 0,
         "routable_size": 30,
@@ -3582,6 +3586,8 @@ def _good_first_hop_report() -> dict:
         "invariants": {
             "capsule_declares_authoritative_order": True,
             "denominator_is_all_non_cached_first_hops": True,
+            "production_representativeness_claimed": False,
+            "corpus_representativeness_required_for_claim": True,
         },
     }
 
@@ -3594,6 +3600,8 @@ def test_first_hop_aggregate_accepts_none_coverage_when_unavailable() -> None:
               "invariants": {
                   "capsule_declares_authoritative_order": False,
                   "denominator_is_all_non_cached_first_hops": True,
+                  "production_representativeness_claimed": False,
+                  "corpus_representativeness_required_for_claim": True,
               }}
     aggregate = _safe_first_hop_coverage_aggregate(report)
     assert aggregate["authoritative_first_hop_coverage"] is None
@@ -3611,6 +3619,8 @@ def test_first_hop_aggregate_rejects_bad_coverage(bad) -> None:
 
 @pytest.mark.parametrize("field,bad", [
     ("coverage_measurement_available", "true"),
+    ("corpus_provenance_basis", "unknown_corpus"),
+    ("corpus_representativeness_scope", "production_representative"),
     ("corpus_size", -1),
     ("first_hop_denominator_scope", "solver_only_first_hops"),
     ("authoritative_first_hop_count", 1.5),
@@ -3651,6 +3661,19 @@ def test_first_hop_aggregate_rejects_non_bool_denominator_integrity() -> None:
                 },
             }
         )
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("production_representativeness_claimed", "false"),
+    ("corpus_representativeness_required_for_claim", "true"),
+])
+def test_first_hop_aggregate_rejects_non_bool_corpus_invariants(
+    field, bad
+) -> None:
+    report = _good_first_hop_report()
+    report["invariants"] = {**report["invariants"], field: bad}
+    with pytest.raises(ValueError):
+        _safe_first_hop_coverage_aggregate(report)
 
 
 def test_flag_off_manifest_omits_first_hop_key() -> None:

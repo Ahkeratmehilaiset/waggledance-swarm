@@ -22,6 +22,10 @@ narrow itself to only solver-shaped or already-authoritative rows;
 ``authoritative_first_hop_gap_count`` is the complement that must be driven to
 zero before this evidence can support a 1.0 route-order claim.
 
+Corpus scope is explicit: this canonical 30-row local benchmark is a
+measurement probe, not a production first-hop representativeness proof. A future
+claim flip must provide that production-representativeness basis separately.
+
 Provenance, not destination: a query the keyword classifier resolves counts as
 NON-authoritative even if it happens to land on the priority-0 layer.
 
@@ -75,6 +79,10 @@ REPORT_VERSION = "wd.authoritative_first_hop_coverage.v1"
 SAMPLE_PROFILE = "apiary"
 HOT_CACHE_REASON = "hot_cache_hit"
 DENOMINATOR_SCOPE = "all_non_cached_first_hops"
+CORPUS_PROVENANCE_BASIS = "configs_benchmarks_yaml_local_canonical_v1"
+CORPUS_REPRESENTATIVENESS_SCOPE = (
+    "local_30_record_canonical_probe_not_production_representative"
+)
 AUTHORITATIVE_REASONS: frozenset[str] = frozenset({
     "capsule_decision_match",
     "capsule_decision_fallback",
@@ -363,6 +371,8 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
         "ok": measurement_available,
         "profile": profile,
         "corpus_size": total,
+        "corpus_provenance_basis": CORPUS_PROVENANCE_BASIS,
+        "corpus_representativeness_scope": CORPUS_REPRESENTATIVENESS_SCOPE,
         "hot_cache_count": cached,
         "routable_size": routable,
         "first_hop_denominator_scope": DENOMINATOR_SCOPE,
@@ -384,6 +394,8 @@ def diagnose(profile: str, corpus: list[dict[str, Any]]) -> dict[str, Any]:
             "measurement_not_a_correctness_gate": True,
             "no_superiority_claim": True,
             "denominator_is_all_non_cached_first_hops": denominator_integrity_ok,
+            "production_representativeness_claimed": False,
+            "corpus_representativeness_required_for_claim": True,
             "forbidden_vocabulary_excluded": list(FORBIDDEN_VOCABULARY),
         },
     }

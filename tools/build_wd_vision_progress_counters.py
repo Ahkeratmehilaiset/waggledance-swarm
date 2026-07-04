@@ -171,6 +171,12 @@ def _extract_milestone_values(
             "first_hop_coverage_ratio": first_hop.get(
                 "authoritative_first_hop_coverage"
             ),
+            "first_hop_corpus_provenance_basis": first_hop.get(
+                "corpus_provenance_basis"
+            ),
+            "first_hop_corpus_representativeness_scope": first_hop.get(
+                "corpus_representativeness_scope"
+            ),
             "first_hop_denominator_scope": first_hop.get(
                 "first_hop_denominator_scope"
             ),
@@ -185,6 +191,12 @@ def _extract_milestone_values(
             ),
             "first_hop_denominator_integrity_ok": (
                 first_hop.get("denominator_is_all_non_cached_first_hops") is True
+            ),
+            "first_hop_production_representativeness_claimed": (
+                first_hop.get("production_representativeness_claimed") is True
+            ),
+            "first_hop_corpus_representativeness_required_for_claim": (
+                first_hop.get("corpus_representativeness_required_for_claim") is True
             ),
         }
     if capability_id == "deterministic_solver_first":
@@ -785,6 +797,13 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and hex_mesh.get("first_hop_denominator_scope")
         == "all_non_cached_first_hops"
         and hex_mesh.get("first_hop_denominator_integrity_ok") is True
+        and hex_mesh.get("first_hop_corpus_provenance_basis")
+        == "configs_benchmarks_yaml_local_canonical_v1"
+        and hex_mesh.get("first_hop_corpus_representativeness_scope")
+        == "local_30_record_canonical_probe_not_production_representative"
+        and hex_mesh.get("first_hop_corpus_representativeness_required_for_claim")
+        is True
+        and hex_mesh.get("first_hop_production_representativeness_claimed") is False
         and first_hop_ratio_valid
     )
     measured_first_hop_authoritative_percent = (
@@ -1198,6 +1217,28 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
                 hex_mesh.get("first_hop_gap_count")
                 if first_hop_measurement_available
                 else None
+            ),
+            "measurement_corpus_provenance_basis": (
+                hex_mesh.get("first_hop_corpus_provenance_basis")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_corpus_representativeness_scope": (
+                hex_mesh.get("first_hop_corpus_representativeness_scope")
+                if first_hop_measurement_available
+                else None
+            ),
+            "production_representativeness_claimed": bool(
+                first_hop_measurement_available
+                and hex_mesh.get("first_hop_production_representativeness_claimed")
+                is True
+            ),
+            "corpus_representativeness_required_for_claim": bool(
+                first_hop_measurement_available
+                and hex_mesh.get(
+                    "first_hop_corpus_representativeness_required_for_claim"
+                )
+                is True
             ),
             "measurement_basis": (
                 "v1_first_hop_authoritative_order"

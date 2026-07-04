@@ -87,15 +87,48 @@ class ChatServedReceiptSink:
             )
         self._head = head_hash(entries)
         self._torn_tail = torn_tail
+        # Replay the SAME lifecycle state machine as live writes, in chain order, so a
+        # chain-valid but LIFECYCLE-invalid ledger (duplicate pending, terminal without
+        # pending, second terminal) is REJECTED -- not silently collapsed. The loader
+        # must enforce the bc3 denominator on rebuild, not merely trust chain-validity;
+        # otherwise a collision hides across a restart/import.
         for entry in entries:
             served_id = str(entry.get("served_id"))
-            etype = entry.get("entry_type")
-            if etype == SERVED_PENDING:
-                self._state[served_id] = _PENDING
-            elif etype == RECEIPT_TERMINAL:
-                self._state[served_id] = _RECEIPT
-            elif etype == GAP_TERMINAL:
-                self._state[served_id] = _GAP
+            etype = str(entry.get("entry_type"))
+            try:
+                self._check_can_transition(served_id, etype)
+            except (ServedIdCollision, TerminalError) as exc:
+                raise LedgerStateError(
+                    f"lifecycle-invalid ledger at served_id {served_id!r}: {exc}"
+                ) from exc
+            self._set_state(served_id, etype)
+
+    # -- lifecycle state machine (shared by loader replay + live writes) ------
+    def _check_can_transition(self, served_id: str, entry_type: str) -> None:
+        """Raise (no mutation) if applying ``entry_type`` for ``served_id`` would break
+        the bc3 lifecycle against the current state. Shared by ``__init__`` replay and
+        the live mutations so the two enforcement paths can never diverge."""
+        state = self._state.get(served_id)
+        if entry_type == SERVED_PENDING:
+            if state is not None:
+                raise ServedIdCollision(f"served_id already recorded as {state!r}: {served_id!r}")
+        elif entry_type in (RECEIPT_TERMINAL, GAP_TERMINAL):
+            if state is None:
+                raise TerminalError(f"no pending for served_id {served_id!r} (cannot resolve)")
+            if state in _TERMINAL_STATES:
+                raise TerminalError(
+                    f"served_id {served_id!r} already terminal ({state!r}); refuse a second terminal"
+                )
+        else:
+            raise LedgerStateError(f"unknown entry_type {entry_type!r}")
+
+    def _set_state(self, served_id: str, entry_type: str) -> None:
+        if entry_type == SERVED_PENDING:
+            self._state[served_id] = _PENDING
+        elif entry_type == RECEIPT_TERMINAL:
+            self._state[served_id] = _RECEIPT
+        elif entry_type == GAP_TERMINAL:
+            self._state[served_id] = _GAP
 
     # -- properties -----------------------------------------------------------
     @property
@@ -124,13 +157,10 @@ class ChatServedReceiptSink:
         not blocked on disk per request (bc5).
         """
         with self._lock:
-            if served_id in self._state:
-                raise ServedIdCollision(
-                    f"served_id already recorded as {self._state[served_id]!r}: {served_id!r}"
-                )
+            self._check_can_transition(served_id, SERVED_PENDING)  # raises ServedIdCollision
             entry = new_served_pending(served_id, self._head, ts_utc, metadata)
             self._append_locked(entry, fsync)
-            self._state[served_id] = _PENDING
+            self._set_state(served_id, SERVED_PENDING)
             return self._head
 
     def resolve_receipt(
@@ -158,21 +188,13 @@ class ChatServedReceiptSink:
         fsync: bool | None = None,
     ) -> str:
         with self._lock:
-            state = self._state.get(served_id)
-            if state is None:
-                raise TerminalError(f"no pending for served_id {served_id!r} (cannot resolve)")
-            if state in _TERMINAL_STATES:
-                raise TerminalError(
-                    f"served_id {served_id!r} already terminal ({state!r}); refuse a second terminal"
-                )
+            self._check_can_transition(served_id, terminal_type)  # raises TerminalError
             if terminal_type == RECEIPT_TERMINAL:
                 entry = new_receipt_terminal(served_id, self._head, ts_utc, receipt_ref)
-                new_state = _RECEIPT
             else:
                 entry = new_gap_terminal(served_id, self._head, ts_utc, gap_reason)
-                new_state = _GAP
             self._append_locked(entry, fsync)
-            self._state[served_id] = new_state
+            self._set_state(served_id, terminal_type)
             return self._head
 
     def _append_locked(self, entry: Mapping[str, Any], fsync: bool | None) -> None:

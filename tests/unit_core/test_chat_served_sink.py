@@ -182,3 +182,58 @@ def test_flush_is_safe_and_idempotent(tmp_path) -> None:
     sink.flush()
     sink.flush()
     assert sink.counts()["served"] == 1
+
+
+# --- loader replays the lifecycle state machine (lead T3 finding, dual-RCO concur) --
+def _write_chain(path, specs):
+    """Append chain-linked entries directly (bypassing the sink's live guards) to build
+    a chain-VALID ledger with a chosen lifecycle -- so loader tests isolate the
+    lifecycle check from the chain check."""
+    prev = L.GENESIS_PREV_HASH
+    for kind, sid in specs:
+        if kind == "pending":
+            entry = L.new_served_pending(sid, prev, _TS, _META)
+        elif kind == "receipt":
+            entry = L.new_receipt_terminal(sid, prev, _TS, _DIGEST)
+        else:
+            entry = L.new_gap_terminal(sid, prev, _TS, "sink_write_failed")
+        L.append_entry(path, entry, fsync=False)
+        prev = entry["entry_hash"]
+
+
+def test_loader_rejects_duplicate_pending_same_served_id(tmp_path) -> None:
+    # lead's exact repro: two linked served_pending(q1) verify chain-OK but the loader
+    # must NOT collapse them to served=1 (that hides a collision across restart/import).
+    path = str(tmp_path / "l.jsonl")
+    _write_chain(path, [("pending", "q1"), ("pending", "q1")])
+    assert L.verify_chain(L.read_entries(path)[0]).ok is True   # purely lifecycle-invalid
+    with pytest.raises(LedgerStateError):
+        ChatServedReceiptSink(path)
+
+
+def test_loader_rejects_terminal_without_pending(tmp_path) -> None:
+    path = str(tmp_path / "l.jsonl")
+    _write_chain(path, [("receipt", "q1")])
+    assert L.verify_chain(L.read_entries(path)[0]).ok is True
+    with pytest.raises(LedgerStateError):
+        ChatServedReceiptSink(path)
+
+
+def test_loader_rejects_second_terminal(tmp_path) -> None:
+    path = str(tmp_path / "l.jsonl")
+    _write_chain(path, [("pending", "q1"), ("receipt", "q1"), ("gap", "q1")])
+    assert L.verify_chain(L.read_entries(path)[0]).ok is True
+    with pytest.raises(LedgerStateError):
+        ChatServedReceiptSink(path)
+
+
+def test_loader_accepts_valid_multi_query_lifecycle(tmp_path) -> None:
+    # LIVENESS (both directions): a legitimate multi-query chain still loads, no over-reject.
+    path = str(tmp_path / "l.jsonl")
+    _write_chain(path, [
+        ("pending", "q1"), ("receipt", "q1"),
+        ("pending", "q2"), ("gap", "q2"),
+        ("pending", "q3"),
+    ])
+    sink = ChatServedReceiptSink(path)
+    assert sink.counts() == {"served": 3, "receipts": 1, "gaps": 1, "pending_unresolved": 1}

@@ -15,6 +15,7 @@ from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_accounting import coverage_from_ledger
 from waggledance.core.magma.chat_served_emitter import ChatServedEmitter, new_served_id
+from waggledance.core.magma.chat_served_ledger import is_path_safe_token
 from waggledance.core.magma.chat_served_metadata import is_conforming_token
 from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
 
@@ -143,23 +144,22 @@ def test_safe_bundle_name_neutralizes_path_traversal() -> None:
     assert "/" not in name and "\\" not in name and ".." not in name
 
 
-def test_path_traversal_served_id_bundle_stays_in_out_dir(tmp_path) -> None:
+def test_path_traversal_served_id_rejected_at_ingress(tmp_path) -> None:
     emitter, sink, _ledger = _emitter(tmp_path)
-    out_dir = tmp_path / "bundles"
     evil = "x/../../../pwned"
-    assert is_conforming_token(evil)
-    emitter.record_pending(evil, source="solver", route_type="solver", language="fi",
-                           profile="HOME", agent_id=None)
+    assert is_conforming_token(evil) and not is_path_safe_token(evil)   # valid TOKEN, UNSAFE path
+    # INGRESS rejects it: no pending, surfaced (bc4), NEVER a counted receipt.
+    assert emitter.record_pending(evil, source="solver", route_type="solver", language="fi",
+                                  profile="HOME", agent_id=None) is False
+    assert emitter.pending_append_failures == 1
+    assert sink.counts()["served"] == 0
 
     async def run() -> None:
-        await emitter._resolve(evil, query="q", response="a", source="solver", route_type="solver",
-                               confidence=0.9, latency_ms=1.0, cached=False, round_table=False,
-                               agent_id=None, language="fi", profile="HOME", route_stage_trace=None)
+        emitter.schedule_receipt(evil, query="q", response="a", source="solver", route_type="solver",
+                                 confidence=0.9, latency_ms=1.0, cached=False, round_table=False,
+                                 agent_id=None, language="fi", profile="HOME")   # no-op for unsafe id
+        await asyncio.gather(*list(emitter._tasks))
 
     asyncio.run(run())
-    assert sink.counts()["receipts"] == 1                     # still resolves correctly
-    for child in out_dir.iterdir():                           # every bundle stays a safe child
-        assert child.parent == out_dir and ".." not in child.name and "/" not in child.name
-        assert child.resolve().is_relative_to(out_dir.resolve())
-    assert not (tmp_path / "pwned").exists()                  # nothing escaped out_dir
-    assert not (tmp_path.parent / "pwned").exists()
+    assert sink.counts() == {"served": 0, "receipts": 0, "gaps": 0, "pending_unresolved": 0}
+    assert not (tmp_path / "pwned").exists() and not (tmp_path.parent / "pwned").exists()

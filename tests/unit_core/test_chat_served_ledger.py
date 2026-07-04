@@ -102,6 +102,29 @@ def test_pending_rejects_malformed_served_id(bad_id: object) -> None:
         L.new_served_pending(bad_id, L.GENESIS_PREV_HASH, "2026-07-04T07:00:00Z", {"a": "b"})
 
 
+# served_id must be PATH-SAFE (stricter than a general token) -- it becomes a path
+# segment in the emitter, so '/'/'.'/'/':' would be a traversal (tools/rco-2 PR#1500).
+@pytest.mark.parametrize("unsafe_id", ["a/b", "a/../../x", "a.b", "a:b", ".hidden", "/abs", "a" + "x" * 70])
+def test_pending_rejects_path_unsafe_served_id(unsafe_id: str) -> None:
+    with pytest.raises(L.LedgerError):
+        L.new_served_pending(unsafe_id, L.GENESIS_PREV_HASH, "2026-07-04T07:00:00Z", {"a": "b"})
+
+
+def test_verifier_rejects_path_unsafe_served_id() -> None:
+    good = L.new_served_pending("q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:00Z", {"a": "b"})
+    evil = dict(good)
+    evil["served_id"] = "a/../x"                       # a conforming token, but NOT path-safe
+    evil["entry_hash"] = L.compute_entry_hash(evil)
+    assert L.verify_entry_self(evil) is True           # self-hash consistent...
+    assert L.verify_chain([evil]).ok is False          # ...but the verifier rejects it
+
+
+def test_uuid_hex_served_id_is_path_safe() -> None:
+    import uuid
+
+    assert L.is_path_safe_token(uuid.uuid4().hex)      # liveness: real served_ids pass
+
+
 @pytest.mark.parametrize("bad_prev", ["not-a-hash", "sha256:" + "0" * 63, "sha256:" + "AB" * 32, "", None, 7])
 def test_pending_rejects_malformed_prev_hash(bad_prev: object) -> None:
     with pytest.raises(L.LedgerError):

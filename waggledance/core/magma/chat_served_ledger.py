@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import namedtuple
 from collections.abc import Mapping
 from typing import Any
@@ -58,6 +59,12 @@ GAP_REASONS = frozenset({
 
 _HASH_PREFIX = "sha256:"
 _HASH_HEX_LEN = 64
+
+# served_id becomes a filesystem path SEGMENT in the emitter, so it must be
+# path-segment-safe -- STRICTER than a general conforming token (whose charset
+# allows '/', '.', ':' -> path traversal / drive / ADS). No slash, dot, or colon.
+# uuid4().hex conforms, so liveness is preserved. (tools/rco-2 PR #1500 finding.)
+_PATH_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # the genesis predecessor of the first entry (well-formed, self-describing hex)
 GENESIS_PREV_HASH = _HASH_PREFIX + ("0" * _HASH_HEX_LEN)
 
@@ -98,6 +105,14 @@ def is_ledger_hash(value: object) -> bool:
     if len(hexpart) != _HASH_HEX_LEN:
         return False
     return all(c in "0123456789abcdef" for c in hexpart)
+
+
+def is_path_safe_token(value: object) -> bool:
+    """True iff ``value`` is a path-segment-safe token (no '/', '.', ':', ...).
+
+    STRICTER than a general conforming token because served_id becomes a filesystem
+    path segment downstream (the emitter). uuid4().hex satisfies it -> liveness."""
+    return isinstance(value, str) and _PATH_SAFE_TOKEN_RE.fullmatch(value) is not None
 
 
 def _canonical_bytes(entry: Mapping[str, Any]) -> bytes:
@@ -142,8 +157,8 @@ def wellformed_reason(entry: object) -> str | None:
         return f"missing_keys:{sorted(_ALLOWED_KEYS[etype] - keys)}"
     if entry.get("payload_version") != PAYLOAD_VERSION:
         return "bad_payload_version"
-    if not is_conforming_token(entry.get("served_id")):
-        return "bad_served_id"
+    if not is_path_safe_token(entry.get("served_id")):
+        return "bad_served_id"  # served_id must be path-safe (it becomes a path segment)
     if not is_conforming_token(entry.get("ts_utc")):
         return "bad_ts_utc"
     if not is_ledger_hash(entry.get("prev_ledger_hash")):
@@ -170,6 +185,12 @@ def wellformed_reason(entry: object) -> str | None:
 def _require_token(field: str, value: object) -> str:
     if not is_conforming_token(value):
         raise LedgerError(f"{field} is not a conforming token: {value!r}")
+    return value  # type: ignore[return-value]
+
+
+def _require_path_safe_token(field: str, value: object) -> str:
+    if not is_path_safe_token(value):
+        raise LedgerError(f"{field} is not a path-safe token: {value!r}")
     return value  # type: ignore[return-value]
 
 
@@ -217,7 +238,7 @@ def new_served_pending(
     return _finalize({
         "payload_version": PAYLOAD_VERSION,
         "entry_type": SERVED_PENDING,
-        "served_id": _require_token("served_id", served_id),
+        "served_id": _require_path_safe_token("served_id", served_id),
         "ts_utc": _require_token("ts_utc", ts_utc),
         "prev_ledger_hash": _require_ledger_hash("prev_ledger_hash", prev_ledger_hash),
         "metadata": _validated_metadata(metadata),
@@ -234,7 +255,7 @@ def new_receipt_terminal(
     return _finalize({
         "payload_version": PAYLOAD_VERSION,
         "entry_type": RECEIPT_TERMINAL,
-        "served_id": _require_token("served_id", served_id),
+        "served_id": _require_path_safe_token("served_id", served_id),
         "ts_utc": _require_token("ts_utc", ts_utc),
         "prev_ledger_hash": _require_ledger_hash("prev_ledger_hash", prev_ledger_hash),
         "receipt_ref": _require_ledger_hash("receipt_ref", receipt_ref),
@@ -253,7 +274,7 @@ def new_gap_terminal(
     return _finalize({
         "payload_version": PAYLOAD_VERSION,
         "entry_type": GAP_TERMINAL,
-        "served_id": _require_token("served_id", served_id),
+        "served_id": _require_path_safe_token("served_id", served_id),
         "ts_utc": _require_token("ts_utc", ts_utc),
         "prev_ledger_hash": _require_ledger_hash("prev_ledger_hash", prev_ledger_hash),
         "gap_reason": gap_reason,
@@ -359,7 +380,7 @@ __all__ = [
     "SERVED_PENDING", "RECEIPT_TERMINAL", "GAP_TERMINAL",
     "ENTRY_TYPES", "TERMINAL_TYPES", "GAP_REASONS", "GENESIS_PREV_HASH",
     "LedgerError", "LedgerCorruptionError", "ChainResult",
-    "is_ledger_hash", "compute_entry_hash", "verify_entry_self", "wellformed_reason",
+    "is_ledger_hash", "is_path_safe_token", "compute_entry_hash", "verify_entry_self", "wellformed_reason",
     "new_served_pending", "new_receipt_terminal", "new_gap_terminal",
     "append_entry", "read_entries", "head_hash", "verify_chain",
 ]

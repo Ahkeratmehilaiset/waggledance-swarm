@@ -39,6 +39,7 @@ from waggledance.core.magma.chat_served_metadata import (
     normalize_token,
 )
 from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.chat_served_ledger import is_path_safe_token
 from waggledance.core.magma.chat_served_receipt import build_chat_served_summary
 
 log = logging.getLogger(__name__)
@@ -118,6 +119,14 @@ class ChatServedEmitter:
         never swallowed, and the caller still serves the user)."""
         if not self._enabled:
             return False
+        if not is_path_safe_token(served_id):
+            # INGRESS defense (tools/rco-2 PR#1500): an unsafe served_id must NEVER
+            # become a counted receipt -- downstream it is a filesystem path segment,
+            # so '/'/'..' would let the receipt escape out_dir yet still read eligible.
+            # Surface it (bc4) so the claim goes not-eligible; serve the user anyway.
+            self._pending_append_failures += 1
+            log.debug("chat-served pending rejected: served_id not path-safe (serving continues)")
+            return False
         try:
             metadata = self._metadata(
                 source=source, route_type=route_type, language=language,
@@ -142,6 +151,8 @@ class ChatServedEmitter:
         (a crash then leaves the pending unresolved -> a gap on the next walk)."""
         if not self._enabled:
             return
+        if not is_path_safe_token(served_id):
+            return  # never build/resolve a receipt for an unsafe served_id (see record_pending)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -214,6 +225,10 @@ class ChatServedEmitter:
         base = pathlib.Path(self._out_dir)
         base.mkdir(parents=True, exist_ok=True)
         bundle_dir = base / self._safe_bundle_name(served_id)
+        # CONTAINMENT belt (rco-2): the consumer ENFORCES at the path boundary and never
+        # trusts the token shape -- so even a future validator gap cannot re-open traversal.
+        if not bundle_dir.resolve().is_relative_to(base.resolve()):
+            raise ValueError(f"bundle_dir escapes out_dir: {bundle_dir!r}")
         return write_chat_served_receipt_bundle(
             out_dir=bundle_dir, summary_payload=summary, now_utc=now,
             verify_manifest=self._verify_manifest, ordinal=ordinal,

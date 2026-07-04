@@ -278,6 +278,7 @@ def _extract_milestone_values(
         # Surface the safe scalar fields; the claim gate derives
         # measurement_available fail-closed from these (never upgrades satisfied).
         coverage = _mapping(proof.get("per_query_receipt_coverage"))
+        claim_window = _mapping(proof.get("chat_served_claim_window"))
         return {
             "solver_call_trace_receipt_bound": (
                 proof.get("solver_call_trace_receipt_bound") is True
@@ -302,6 +303,73 @@ def _extract_milestone_values(
             ),
             "per_query_receipt_coverage_default_runtime_emission_changed": (
                 coverage.get("default_runtime_receipt_emission_changed") is True
+            ),
+            "chat_served_claim_window_present": bool(
+                proof.get("chat_served_claim_window")
+            ),
+            "chat_served_claim_window_eligible": (
+                claim_window.get("claim_window_eligible") is True
+            ),
+            "chat_served_claim_window_claim_safe": (
+                claim_window.get("claim_safe") is True
+            ),
+            "chat_served_claim_window_claim_safe_false": (
+                claim_window.get("claim_safe") is False
+            ),
+            "chat_served_claim_window_reason": claim_window.get("reason"),
+            "chat_served_claim_window_served": _int_value(
+                claim_window.get("served")
+            ),
+            "chat_served_claim_window_receipts": _int_value(
+                claim_window.get("receipts")
+            ),
+            "chat_served_claim_window_gaps": _int_value(
+                claim_window.get("gaps")
+            ),
+            "chat_served_claim_window_unresolved_pending": _int_value(
+                claim_window.get("unresolved_pending")
+            ),
+            "chat_served_claim_window_pending_append_failures": _int_value(
+                claim_window.get("pending_append_failures")
+            ),
+            "chat_served_claim_window_pending_append_failures_valid": (
+                isinstance(claim_window.get("pending_append_failures"), int)
+                and not isinstance(
+                    claim_window.get("pending_append_failures"), bool
+                )
+            ),
+            "chat_served_claim_window_receipt_coverage_ratio": claim_window.get(
+                "receipt_coverage_ratio"
+            ),
+            "chat_served_claim_window_head_anchor_match": (
+                claim_window.get("head_anchor_match") is True
+            ),
+            "chat_served_claim_window_enabled_across_window": (
+                claim_window.get("enabled_across_window") is True
+            ),
+            "chat_served_claim_window_clean_shutdown": (
+                claim_window.get("clean_shutdown") is True
+            ),
+            "chat_served_claim_window_torn_tail": (
+                claim_window.get("torn_tail") is True
+            ),
+            "chat_served_claim_window_source_completeness_ok": (
+                claim_window.get("source_completeness_ok") is True
+            ),
+            "chat_served_claim_window_chain_ok": (
+                claim_window.get("chain_ok") is True
+            ),
+            "chat_served_claim_window_lifecycle_ok": (
+                claim_window.get("lifecycle_ok") is True
+            ),
+            "chat_served_claim_window_required_served_point_count": _int_value(
+                claim_window.get("required_served_point_count")
+            ),
+            "chat_served_claim_window_instrumented_served_point_count": _int_value(
+                claim_window.get("instrumented_served_point_count")
+            ),
+            "chat_served_claim_window_missing_served_point_count": _int_value(
+                claim_window.get("missing_served_point_count")
             ),
         }
     if capability_id == "low_risk_autonomy_loop":
@@ -841,6 +909,43 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         if coverage_measurement_available
         else None
     )
+    claim_window_ratio = magma.get("chat_served_claim_window_receipt_coverage_ratio")
+    claim_window_ratio_valid = (
+        claim_window_ratio is None
+        or (
+            isinstance(claim_window_ratio, (int, float))
+            and not isinstance(claim_window_ratio, bool)
+            and math.isfinite(claim_window_ratio)
+            and 0.0 <= float(claim_window_ratio) <= 1.0
+        )
+    )
+    chat_served_claim_window_available = (
+        magma.get("chat_served_claim_window_present") is True
+        and magma.get("chat_served_claim_window_eligible") is True
+        and magma.get("chat_served_claim_window_claim_safe") is False
+        and magma.get("chat_served_claim_window_claim_safe_false") is True
+        and magma.get("chat_served_claim_window_served") > 0
+        and magma.get("chat_served_claim_window_receipts")
+        == magma.get("chat_served_claim_window_served")
+        and magma.get("chat_served_claim_window_gaps") == 0
+        and magma.get("chat_served_claim_window_unresolved_pending") == 0
+        and magma.get("chat_served_claim_window_chain_ok") is True
+        and magma.get("chat_served_claim_window_lifecycle_ok") is True
+        and magma.get("chat_served_claim_window_head_anchor_match") is True
+        and magma.get("chat_served_claim_window_enabled_across_window") is True
+        and magma.get("chat_served_claim_window_clean_shutdown") is True
+        and magma.get("chat_served_claim_window_torn_tail") is False
+        and magma.get("chat_served_claim_window_source_completeness_ok") is True
+        and magma.get("chat_served_claim_window_required_served_point_count") > 0
+        and magma.get("chat_served_claim_window_instrumented_served_point_count")
+        >= magma.get("chat_served_claim_window_required_served_point_count")
+        and magma.get("chat_served_claim_window_missing_served_point_count") == 0
+        and magma.get("chat_served_claim_window_pending_append_failures_valid")
+        is True
+        and magma.get("chat_served_claim_window_pending_append_failures") == 0
+        and claim_window_ratio_valid
+        and claim_window_ratio is not None
+    )
     # First-hop authoritative coverage is a LOCAL opt-in measurement (off by
     # default), surfaced as measurement-only evidence and DERIVED fail-closed; it
     # NEVER influences current_value/satisfied (those stay on the existing
@@ -1359,6 +1464,30 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v12_per_query_receipt_coverage_proof"
                 if coverage_measurement_available
+                else "manifest_claim_gate_flags"
+            ),
+        },
+        "chat_served_claim_window_gate": {
+            "current_value": False,
+            "target_value": True,
+            "satisfied": False,
+            "claim_window_measurement_available": (
+                chat_served_claim_window_available
+            ),
+            "claim_window_eligible": (
+                magma.get("chat_served_claim_window_eligible") is True
+            ),
+            "claim_safe": False,
+            "reason": magma.get("chat_served_claim_window_reason"),
+            "measured_coverage_percent": (
+                round(float(claim_window_ratio) * 100.0, 2)
+                if chat_served_claim_window_available
+                and claim_window_ratio is not None
+                else None
+            ),
+            "measurement_basis": (
+                "chat_served_claim_window_report"
+                if chat_served_claim_window_available
                 else "manifest_claim_gate_flags"
             ),
         },

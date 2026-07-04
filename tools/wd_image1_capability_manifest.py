@@ -9718,6 +9718,233 @@ def build_per_query_receipt_coverage_aggregate(
     return _safe_per_query_receipt_coverage_aggregate(report)
 
 
+CHAT_SERVED_CLAIM_WINDOW_ENV = "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW"
+
+_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS = (
+    "claim_window_eligible",
+    "claim_safe",
+    "reason",
+    "served",
+    "receipts",
+    "gaps",
+    "unresolved_pending",
+    "pending_append_failures",
+    "receipt_coverage_ratio",
+    "chain_ok",
+    "lifecycle_ok",
+    "head_anchor_match",
+    "enabled_across_window",
+    "clean_shutdown",
+    "torn_tail",
+    "source_completeness_ok",
+    "required_served_point_count",
+    "instrumented_served_point_count",
+    "missing_served_point_count",
+)
+
+
+def _chat_served_claim_window_enabled() -> bool:
+    return str(
+        os.environ.get(CHAT_SERVED_CLAIM_WINDOW_ENV, "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_mapping(value: object) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    asdict_fn = getattr(value, "_asdict", None)
+    if callable(asdict_fn):
+        mapped = asdict_fn()
+        if isinstance(mapped, Mapping):
+            return mapped
+    raise ValueError("chat_served_claim_window report is not a mapping")
+
+
+def _safe_reason(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) > 96:
+        raise ValueError("chat_served_claim_window reason is too long")
+    if not all(ch.isalnum() or ch in "_:-." for ch in text):
+        raise ValueError("chat_served_claim_window reason is not a safe token")
+    return text
+
+
+def _safe_chat_served_point_sequence(value: object, name: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValueError(f"chat_served_claim_window {name} is not a sequence")
+    points: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"chat_served_claim_window {name} has invalid point")
+        if len(item) > 64 or not all(ch.isalnum() or ch in "_:-." for ch in item):
+            raise ValueError(f"chat_served_claim_window {name} has unsafe point")
+        points.append(item)
+    return tuple(sorted(set(points)))
+
+
+def _is_chat_served_ledger_hash(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(ch in "0123456789abcdef" for ch in value[7:])
+    )
+
+
+def _safe_nonnegative_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"chat_served_claim_window {name} is not a non-negative int")
+    return int(value)
+
+
+def _safe_chat_served_ratio(value: object) -> float | None:
+    if value is None:
+        return None
+    if not (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0.0 <= float(value) <= 1.0
+    ):
+        raise ValueError(
+            "chat_served_claim_window receipt_coverage_ratio is not finite in [0,1]"
+        )
+    return float(value)
+
+
+def _strict_chat_served_bool(value: object, name: str) -> bool:
+    if value is not True and value is not False:
+        raise ValueError(f"chat_served_claim_window {name} is not a strict bool")
+    return bool(value)
+
+
+def _safe_chat_served_claim_window_aggregate(report: object) -> dict:
+    """Reduce a ClaimWindowReport to safe scalar manifest evidence.
+
+    The aggregate intentionally omits ledger paths, actual/expected head digests,
+    and any raw request/response payload. It is measurement-only: ``claim_safe`` is
+    hardcoded False even when ``claim_window_eligible`` is True.
+    """
+    mapped = _as_mapping(report)
+    coverage = _as_mapping(mapped.get("coverage", {}))
+    required_points = _safe_chat_served_point_sequence(
+        mapped.get("required_served_points", ()), "required_served_points"
+    )
+    instrumented_points = _safe_chat_served_point_sequence(
+        mapped.get("instrumented_served_points", ()), "instrumented_served_points"
+    )
+    reported_missing_points = _safe_chat_served_point_sequence(
+        mapped.get("missing_served_points", ()), "missing_served_points"
+    )
+    instrumented_point_set = set(instrumented_points)
+    derived_missing_points = tuple(
+        point for point in required_points if point not in instrumented_point_set
+    )
+    actual_head = mapped.get("actual_head")
+    expected_head = mapped.get("expected_head")
+    head_anchor_match = (
+        _is_chat_served_ledger_hash(actual_head)
+        and _is_chat_served_ledger_hash(expected_head)
+        and actual_head == expected_head
+    )
+    aggregate = {
+        "claim_window_eligible": _strict_chat_served_bool(
+            mapped.get("eligible"), "eligible"
+        ),
+        "claim_safe": False,
+        "reason": _safe_reason(mapped.get("reason")),
+        "served": _safe_nonnegative_int(coverage.get("served"), "served"),
+        "receipts": _safe_nonnegative_int(coverage.get("receipts"), "receipts"),
+        "gaps": _safe_nonnegative_int(coverage.get("gaps"), "gaps"),
+        "unresolved_pending": _safe_nonnegative_int(
+            coverage.get("unresolved_pending"), "unresolved_pending"
+        ),
+        "pending_append_failures": _safe_nonnegative_int(
+            coverage.get("pending_append_failures"), "pending_append_failures"
+        ),
+        "receipt_coverage_ratio": _safe_chat_served_ratio(coverage.get("ratio")),
+        "chain_ok": _strict_chat_served_bool(coverage.get("chain_ok"), "chain_ok"),
+        "lifecycle_ok": _strict_chat_served_bool(
+            coverage.get("lifecycle_ok"), "lifecycle_ok"
+        ),
+        "head_anchor_match": head_anchor_match,
+        "enabled_across_window": _strict_chat_served_bool(
+            mapped.get("enabled_across_window"), "enabled_across_window"
+        ),
+        "clean_shutdown": _strict_chat_served_bool(
+            mapped.get("clean_shutdown"), "clean_shutdown"
+        ),
+        "torn_tail": _strict_chat_served_bool(mapped.get("torn_tail"), "torn_tail"),
+        "source_completeness_ok": (
+            bool(required_points)
+            and len(derived_missing_points) == 0
+            and reported_missing_points == derived_missing_points
+        ),
+        "required_served_point_count": len(required_points),
+        "instrumented_served_point_count": len(instrumented_points),
+        "missing_served_point_count": len(derived_missing_points),
+    }
+    if set(aggregate) != set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS):
+        raise ValueError("chat_served_claim_window aggregate keyset drift")
+    blob = json.dumps(aggregate, default=str)
+    for marker in _per_query_receipt_coverage_forbidden_markers():
+        if marker in blob:
+            raise ValueError("chat_served_claim_window aggregate contains marker")
+    return aggregate
+
+
+def build_chat_served_claim_window_aggregate(
+    *,
+    force: bool | None = None,
+    ledger_path: str | None = None,
+    pending_failure_ledger_path: str | None = None,
+    expected_head: str | None = None,
+    enabled_across_window: bool = False,
+    clean_shutdown: bool = False,
+    instrumented_served_points: Iterable[str] | None = None,
+) -> dict | None:
+    """Build an opt-in safe aggregate for the chat-served claim-window gate."""
+    enabled = _chat_served_claim_window_enabled() if force is None else force
+    if not enabled:
+        return None
+    if not ledger_path:
+        return {
+            "claim_window_eligible": False,
+            "claim_safe": False,
+            "reason": "missing_ledger_path",
+            "served": 0,
+            "receipts": 0,
+            "gaps": 0,
+            "unresolved_pending": 0,
+            "pending_append_failures": 0,
+            "receipt_coverage_ratio": None,
+            "chain_ok": False,
+            "lifecycle_ok": False,
+            "head_anchor_match": False,
+            "enabled_across_window": bool(enabled_across_window),
+            "clean_shutdown": bool(clean_shutdown),
+            "torn_tail": False,
+            "source_completeness_ok": False,
+            "required_served_point_count": 0,
+            "instrumented_served_point_count": 0,
+            "missing_served_point_count": 0,
+        }
+
+    from waggledance.core.magma.chat_served_accounting import claim_window_from_ledger
+
+    report = claim_window_from_ledger(
+        ledger_path,
+        expected_head=expected_head,
+        enabled_across_window=enabled_across_window,
+        clean_shutdown=clean_shutdown,
+        instrumented_served_points=instrumented_served_points,
+        pending_failure_ledger_path=pending_failure_ledger_path,
+    )
+    return _safe_chat_served_claim_window_aggregate(report)
+
+
 FIRST_HOP_COVERAGE_ENV = "WD_IMAGE1_FIRST_HOP_COVERAGE"
 
 # The ONLY keys allowed in the aggregated authoritative-first-hop coverage block.
@@ -11401,6 +11628,9 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
     per_query_receipt_coverage = build_per_query_receipt_coverage_aggregate()
     if per_query_receipt_coverage is not None:
         magma_audit_proof["per_query_receipt_coverage"] = per_query_receipt_coverage
+    chat_served_claim_window = build_chat_served_claim_window_aggregate()
+    if chat_served_claim_window is not None:
+        magma_audit_proof["chat_served_claim_window"] = chat_served_claim_window
     magma_audit_proof["ok"] = bool(
         magma_audit_proof.get("ok") is True
         and magma_metrics_runbook_smoke.get("ok") is True

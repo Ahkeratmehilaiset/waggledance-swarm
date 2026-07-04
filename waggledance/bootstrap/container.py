@@ -519,6 +519,7 @@ class Container:
                 "chat_served_receipts.fsync_every",
                 32,
             )
+            out_dir.mkdir(parents=True, exist_ok=True)
             sink = ChatServedReceiptSink(
                 str(out_dir / "ledger.jsonl"),
                 fsync_every=fsync_every,

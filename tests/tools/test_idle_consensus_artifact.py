@@ -15,6 +15,8 @@ from tools.idle_consensus_artifact import (
     COUNTERFACTUAL_EVAL_ADMISSION_SUMMARY_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_VERSION,
     COUNTERFACTUAL_EVAL_BINDING_TEMPLATE_VERSION,
+    OPERATOR_DECISION_AUTHENTICATION_METHOD,
+    OPERATOR_DECISION_AUTHENTICATION_VERSION,
     OPERATOR_DECISION_REFERENCE_TEMPLATE_VERSION,
     OPERATOR_DECISION_REFERENCE_VERSION,
     REPLAY_SEED_REQUIRED_FALSE_KEYS,
@@ -249,8 +251,9 @@ def _operator_decision_reference(
     changed_paths: list[str],
     diff_text: str,
     decision: str = "approved_for_draft_pr_creation",
+    authenticated: bool = True,
 ) -> dict:
-    return {
+    reference = {
         "schema_version": OPERATOR_DECISION_REFERENCE_VERSION,
         "decision": decision,
         "replay_seed_digest": sha256_digest(replay_seed),
@@ -265,6 +268,24 @@ def _operator_decision_reference(
         "would_merge": False,
         "runtime_authority_granted": False,
         "external_writes_applied": False,
+    }
+    if authenticated:
+        return _authenticate_operator_decision_reference(reference)
+    return reference
+
+
+def _authenticate_operator_decision_reference(reference: dict) -> dict:
+    unsigned_reference = dict(reference)
+    unsigned_reference.pop("operator_authentication", None)
+    return {
+        **unsigned_reference,
+        "operator_authentication": {
+            "schema_version": OPERATOR_DECISION_AUTHENTICATION_VERSION,
+            "authentication_method": OPERATOR_DECISION_AUTHENTICATION_METHOD,
+            "operator_authenticated": True,
+            "operator_signature_digest": "sha256:" + ("a" * 64),
+            "signed_reference_digest": sha256_digest(unsigned_reference),
+        },
     }
 
 
@@ -656,6 +677,9 @@ def test_candidate_diff_replay_admission_accepts_bound_operator_decision_referen
     assert summary["replay_seed_digest_matches"] is True
     assert summary["candidate_diff_digest_matches"] is True
     assert summary["authority_boundary_clear"] is True
+    assert summary["operator_authentication_provided"] is True
+    assert summary["operator_authentication_valid"] is True
+    assert summary["signed_reference_digest_matches"] is True
     assert summary["satisfies_operator_gate"] is True
     assert summary["blocker"] is None
     assert admission["eligible_for_draft_pr_gate"] is True
@@ -811,7 +835,7 @@ def test_counterfactual_eval_binding_template_is_digest_only_and_replay_ready(
     assert "divergences" not in serialized
 
 
-def test_operator_decision_reference_template_is_digest_only_and_gate_ready(
+def test_operator_decision_reference_template_is_digest_only_and_requires_auth(
     tmp_path: Path,
 ) -> None:
     report = _write_artifact(tmp_path, _soft_events())
@@ -857,6 +881,12 @@ def test_operator_decision_reference_template_is_digest_only_and_gate_ready(
     assert template["would_create_pr"] is False
     assert template["would_merge"] is False
     assert template["operator_reference_payload_included"] is True
+    assert template["next_required_gates"] == [
+        "operator_review_gate",
+        "operator_decision_authentication",
+        "counterfactual_eval_receipt",
+        "candidate_diff_replay_admission",
+    ]
     assert template["candidate_diff"]["diff_text_included"] is False
     assert template["candidate_diff"]["digest"] == _candidate_diff_digest(
         changed_paths,
@@ -878,9 +908,29 @@ def test_operator_decision_reference_template_is_digest_only_and_gate_ready(
         "runtime_authority_granted": False,
         "external_writes_applied": False,
     }
-    assert admission["operator_decision_reference"]["satisfies_operator_gate"] is True
-    assert admission["eligible_for_draft_pr_gate"] is True
-    assert admission["draft_pr_gate_blockers"] == []
+    summary = admission["operator_decision_reference"]
+    assert summary["operator_authentication_provided"] is False
+    assert summary["operator_authentication_valid"] is False
+    assert summary["satisfies_operator_gate"] is False
+    assert summary["blocker"] == "operator_decision_reference_authentication_missing"
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authentication_missing"
+    ]
+    authenticated_reference = _authenticate_operator_decision_reference(reference)
+    authenticated_admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=artifact["replay_seed"],
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=authenticated_reference,
+    )
+    authenticated_summary = authenticated_admission["operator_decision_reference"]
+    assert authenticated_summary["operator_authentication_provided"] is True
+    assert authenticated_summary["operator_authentication_valid"] is True
+    assert authenticated_summary["satisfies_operator_gate"] is True
+    assert authenticated_admission["eligible_for_draft_pr_gate"] is True
+    assert authenticated_admission["draft_pr_gate_blockers"] == []
     assert "Operator approval is bound" not in serialized
     assert "diff --git" not in serialized
 
@@ -1248,6 +1298,8 @@ def test_cli_candidate_diff_replay_admission_accepts_operator_reference(
     assert summary["provided"] is True
     assert summary["source_digest"] == sha256_digest(operator_decision)
     assert summary["payload_included"] is False
+    assert summary["operator_authentication_provided"] is True
+    assert summary["operator_authentication_valid"] is True
     assert summary["satisfies_operator_gate"] is True
     assert summary["blocker"] is None
     assert admission["eligible_for_draft_pr_gate"] is True

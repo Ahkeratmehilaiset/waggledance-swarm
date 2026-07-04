@@ -60,6 +60,10 @@ OPERATOR_DECISION_REFERENCE_TEMPLATE_VERSION = (
 OPERATOR_DECISION_REFERENCE_VERSION = (
     "idle_consensus_operator_decision_reference.v0"
 )
+OPERATOR_DECISION_AUTHENTICATION_VERSION = (
+    "idle_consensus_operator_decision_authentication.v0"
+)
+OPERATOR_DECISION_AUTHENTICATION_METHOD = "operator_signed_decision"
 OPERATOR_DECISION_APPROVED_FOR_DRAFT_PR = "approved_for_draft_pr_creation"
 POLICY_VERSION = "policy:idle_consensus_artifact:v1"
 CHARTER_VERSION = "charter:idle_autonomy:v1"
@@ -724,6 +728,8 @@ def build_idle_consensus_operator_decision_reference_template(
         "path_gate": _gate_decision_to_dict(path_gate),
         "diff_gate": _gate_decision_to_dict(diff_gate),
         "next_required_gates": [
+            "operator_review_gate",
+            "operator_decision_authentication",
             "counterfactual_eval_receipt",
             "candidate_diff_replay_admission",
         ],
@@ -964,6 +970,16 @@ def _operator_decision_reference_summary(
         "runtime_authority_granted": None,
         "external_writes_applied": None,
         "authority_boundary_clear": False,
+        "operator_authentication_provided": False,
+        "operator_authentication_schema_matches": False,
+        "operator_authentication_method_matches": False,
+        "operator_authenticated": False,
+        "operator_signature_digest": None,
+        "operator_signature_digest_present": False,
+        "expected_signed_reference_digest": None,
+        "signed_reference_digest": None,
+        "signed_reference_digest_matches": False,
+        "operator_authentication_valid": False,
         "satisfies_operator_gate": False,
         "blocker": "operator_review_gate_required",
     }
@@ -993,6 +1009,46 @@ def _operator_decision_reference_summary(
 
     summary = dict(base)
     decision = str(reference.get("decision", ""))
+    unsigned_reference = {
+        key: value
+        for key, value in reference.items()
+        if key != "operator_authentication"
+    }
+    expected_signed_reference_digest = sha256_digest(unsigned_reference)
+    authentication = reference.get("operator_authentication")
+    authentication_provided = isinstance(authentication, Mapping)
+    authentication_schema_matches = False
+    authentication_method_matches = False
+    operator_authenticated = False
+    operator_signature_digest: Any = None
+    operator_signature_digest_present = False
+    signed_reference_digest: Any = None
+    signed_reference_digest_matches = False
+    if authentication_provided:
+        authentication_schema_matches = (
+            authentication.get("schema_version")
+            == OPERATOR_DECISION_AUTHENTICATION_VERSION
+        )
+        authentication_method_matches = (
+            authentication.get("authentication_method")
+            == OPERATOR_DECISION_AUTHENTICATION_METHOD
+        )
+        operator_authenticated = authentication.get("operator_authenticated") is True
+        operator_signature_digest = authentication.get("operator_signature_digest")
+        operator_signature_digest_present = _is_sha256_digest(
+            operator_signature_digest
+        )
+        signed_reference_digest = authentication.get("signed_reference_digest")
+        signed_reference_digest_matches = (
+            signed_reference_digest == expected_signed_reference_digest
+        )
+    operator_authentication_valid = bool(
+        authentication_schema_matches
+        and authentication_method_matches
+        and operator_authenticated
+        and operator_signature_digest_present
+        and signed_reference_digest_matches
+    )
     summary.update(
         {
             "provided": True,
@@ -1021,6 +1077,22 @@ def _operator_decision_reference_summary(
                 "runtime_authority_granted"
             ),
             "external_writes_applied": reference.get("external_writes_applied"),
+            "operator_authentication_provided": authentication_provided,
+            "operator_authentication_schema_matches": (
+                authentication_schema_matches
+            ),
+            "operator_authentication_method_matches": (
+                authentication_method_matches
+            ),
+            "operator_authenticated": operator_authenticated,
+            "operator_signature_digest": operator_signature_digest,
+            "operator_signature_digest_present": (
+                operator_signature_digest_present
+            ),
+            "expected_signed_reference_digest": expected_signed_reference_digest,
+            "signed_reference_digest": signed_reference_digest,
+            "signed_reference_digest_matches": signed_reference_digest_matches,
+            "operator_authentication_valid": operator_authentication_valid,
         }
     )
     authority_boundary_clear = all(
@@ -1045,6 +1117,7 @@ def _operator_decision_reference_summary(
         and summary["candidate_diff_digest_matches"]
         and summary["operator_gate_required"] is True
         and authority_boundary_clear
+        and operator_authentication_valid
     )
     if summary["satisfies_operator_gate"]:
         summary["blocker"] = None
@@ -1061,7 +1134,18 @@ def _operator_decision_reference_summary(
         summary["blocker"] = "operator_decision_reference_gate_mismatch"
     elif not authority_boundary_clear:
         summary["blocker"] = "operator_decision_reference_authority_boundary_failed"
+    elif not authentication_provided:
+        summary["blocker"] = "operator_decision_reference_authentication_missing"
+    elif not operator_authentication_valid:
+        summary["blocker"] = "operator_decision_reference_authentication_invalid"
     return summary
+
+
+def _is_sha256_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
 
 
 def _counterfactual_observability_satisfies_replay_gate(

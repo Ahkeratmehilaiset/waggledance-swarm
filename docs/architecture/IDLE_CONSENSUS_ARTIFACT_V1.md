@@ -88,10 +88,17 @@ The reference must use
 `candidate_diff_digest`, `operator_gate_required=true`, and false values for
 all authority flags (`auto_execute`, `external_effect`, `writes_applied`,
 `would_create_task`, `would_create_branch`, `would_create_pr`, `would_merge`,
-`runtime_authority_granted`, `external_writes_applied`). A matching reference
-clears only the `operator_review_gate_required` blocker in the report; the tool
-still writes no artifacts, appends no bridge events, and creates no task,
-branch, PR, or merge.
+`runtime_authority_granted`, `external_writes_applied`). The template is not an
+operator approval by itself. Candidate-diff replay admission also requires an
+`operator_authentication` object with
+`schema_version=idle_consensus_operator_decision_authentication.v0`,
+`authentication_method=operator_signed_decision`,
+`operator_authenticated=true`, a `signed_reference_digest` matching the digest
+of the reference without the authentication object, and a sha256
+`operator_signature_digest`. Without that authenticated operator decision, the
+report keeps the `operator_decision_reference_authentication_missing` blocker.
+The tool still writes no artifacts, appends no bridge events, and creates no
+task, branch, PR, or merge.
 
 When a later counterfactual evaluator needs to bind its receipt to the same
 stored consensus and candidate diff, emit the digest-only binding template:

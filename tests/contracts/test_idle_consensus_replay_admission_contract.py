@@ -5,6 +5,8 @@ import json
 
 from tools.idle_consensus_artifact import (
     COUNTERFACTUAL_EVAL_BINDING_VERSION,
+    OPERATOR_DECISION_AUTHENTICATION_METHOD,
+    OPERATOR_DECISION_AUTHENTICATION_VERSION,
     build_idle_consensus_candidate_diff_replay_admission,
     build_idle_consensus_operator_decision_reference_template,
 )
@@ -71,6 +73,21 @@ def _receipt(*, replay_seed_digest: str, candidate_diff_digest: str) -> dict:
     }
 
 
+def _authenticate_operator_decision_reference(reference: dict) -> dict:
+    unsigned_reference = dict(reference)
+    unsigned_reference.pop("operator_authentication", None)
+    return {
+        **unsigned_reference,
+        "operator_authentication": {
+            "schema_version": OPERATOR_DECISION_AUTHENTICATION_VERSION,
+            "authentication_method": OPERATOR_DECISION_AUTHENTICATION_METHOD,
+            "operator_authenticated": True,
+            "operator_signature_digest": "sha256:" + ("a" * 64),
+            "signed_reference_digest": sha256_digest(unsigned_reference),
+        },
+    }
+
+
 def test_counterfactual_receipt_must_bind_replay_seed_and_candidate_diff() -> None:
     seed = _replay_seed()
     changed_paths, diff_text = _candidate_diff()
@@ -122,9 +139,30 @@ def test_operator_reference_template_must_bind_replay_seed_and_candidate_diff() 
     assert template["operator_decision_reference"]["candidate_diff_digest"] == (
         _diff_digest(changed_paths, diff_text)
     )
-    assert admission["operator_decision_reference"]["satisfies_operator_gate"]
-    assert admission["eligible_for_draft_pr_gate"] is True
-    assert admission["draft_pr_gate_blockers"] == []
+    summary = admission["operator_decision_reference"]
+    assert summary["operator_authentication_provided"] is False
+    assert summary["satisfies_operator_gate"] is False
+    assert summary["blocker"] == "operator_decision_reference_authentication_missing"
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authentication_missing",
+    ]
+
+    authenticated_admission = build_idle_consensus_candidate_diff_replay_admission(
+        replay_seed=seed,
+        changed_paths=changed_paths,
+        candidate_diff_text=diff_text,
+        counterfactual_eval_receipt=receipt,
+        operator_decision_reference=_authenticate_operator_decision_reference(
+            template["operator_decision_reference"]
+        ),
+    )
+
+    assert authenticated_admission["operator_decision_reference"][
+        "satisfies_operator_gate"
+    ]
+    assert authenticated_admission["eligible_for_draft_pr_gate"] is True
+    assert authenticated_admission["draft_pr_gate_blockers"] == []
     assert "diff --git" not in serialized
     assert "Receipt binding must be digest-only" not in serialized
 

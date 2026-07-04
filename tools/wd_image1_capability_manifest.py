@@ -9740,6 +9740,7 @@ _CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS = (
     "required_served_point_count",
     "instrumented_served_point_count",
     "missing_served_point_count",
+    "input_evidence_derived",
     "measurement_not_a_correctness_gate",
     "production_representativeness_claimed",
 )
@@ -9822,7 +9823,11 @@ def _strict_chat_served_bool(value: object, name: str) -> bool:
     return bool(value)
 
 
-def _safe_chat_served_claim_window_aggregate(report: object) -> dict:
+def _safe_chat_served_claim_window_aggregate(
+    report: object,
+    *,
+    input_evidence_derived: bool = False,
+) -> dict:
     """Reduce a ClaimWindowReport to safe scalar manifest evidence.
 
     The aggregate intentionally omits ledger paths, actual/expected head digests,
@@ -9916,6 +9921,7 @@ def _safe_chat_served_claim_window_aggregate(report: object) -> dict:
         "required_served_point_count": len(required_points),
         "instrumented_served_point_count": len(instrumented_points),
         "missing_served_point_count": len(derived_missing_points),
+        "input_evidence_derived": bool(input_evidence_derived),
         "measurement_not_a_correctness_gate": True,
         "production_representativeness_claimed": False,
     }
@@ -9937,8 +9943,20 @@ def build_chat_served_claim_window_aggregate(
     enabled_across_window: bool = False,
     clean_shutdown: bool = False,
     instrumented_served_points: Iterable[str] | None = None,
+    anchor_store_path: str | None = None,
+    window_id: str | None = None,
+    enabled_samples: Iterable[Mapping[str, Any]] | None = None,
+    clean_shutdown_marker_path: str | None = None,
+    served_point_observations: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict | None:
-    """Build an opt-in safe aggregate for the chat-served claim-window gate."""
+    """Build an opt-in safe aggregate for the chat-served claim-window gate.
+
+    The preferred path passes the independent evidence producer inputs
+    (anchor-store, enabled samples, shutdown marker, served-point observations).
+    The legacy direct-input path remains for narrow tests but is explicitly
+    surfaced as ``input_evidence_derived=False`` so consumers cannot mistake it
+    for an evidence-backed measurement.
+    """
     enabled = _chat_served_claim_window_enabled() if force is None else force
     if not enabled:
         return None
@@ -9963,9 +9981,76 @@ def build_chat_served_claim_window_aggregate(
             "required_served_point_count": 0,
             "instrumented_served_point_count": 0,
             "missing_served_point_count": 0,
+            "input_evidence_derived": False,
             "measurement_not_a_correctness_gate": True,
             "production_representativeness_claimed": False,
         }
+    evidence_inputs_present = any(
+        value is not None
+        for value in (
+            anchor_store_path,
+            window_id,
+            enabled_samples,
+            clean_shutdown_marker_path,
+            served_point_observations,
+        )
+    )
+    if evidence_inputs_present:
+        if not (
+            anchor_store_path
+            and window_id
+            and enabled_samples is not None
+            and clean_shutdown_marker_path
+            and served_point_observations is not None
+        ):
+            return {
+                "claim_window_eligible": False,
+                "claim_safe": False,
+                "reason": "missing_evidence_inputs",
+                "served": 0,
+                "receipts": 0,
+                "gaps": 0,
+                "unresolved_pending": 0,
+                "pending_append_failures": 0,
+                "receipt_coverage_ratio": None,
+                "chain_ok": False,
+                "lifecycle_ok": False,
+                "head_anchor_match": False,
+                "enabled_across_window": False,
+                "clean_shutdown": False,
+                "torn_tail": False,
+                "source_completeness_ok": False,
+                "required_served_point_count": 0,
+                "instrumented_served_point_count": 0,
+                "missing_served_point_count": 0,
+                "input_evidence_derived": False,
+                "measurement_not_a_correctness_gate": True,
+                "production_representativeness_claimed": False,
+            }
+        from waggledance.core.magma.chat_served_claim_window_evidence import (
+            build_claim_window_evidence,
+            claim_window_from_evidence,
+        )
+
+        evidence = build_claim_window_evidence(
+            anchor_store_path=anchor_store_path,
+            ledger_path=ledger_path,
+            window_id=window_id,
+            enabled_samples=enabled_samples,
+            clean_shutdown_marker_path=clean_shutdown_marker_path,
+            served_point_observations=served_point_observations,
+        )
+        report = claim_window_from_evidence(
+            ledger_path,
+            evidence,
+            pending_failure_ledger_path=pending_failure_ledger_path,
+        )
+        if evidence.reason is not None and not report.eligible:
+            report = report._replace(reason=evidence.reason)
+        return _safe_chat_served_claim_window_aggregate(
+            report,
+            input_evidence_derived=True,
+        )
 
     from waggledance.core.magma.chat_served_accounting import claim_window_from_ledger
 
@@ -9977,7 +10062,10 @@ def build_chat_served_claim_window_aggregate(
         instrumented_served_points=instrumented_served_points,
         pending_failure_ledger_path=pending_failure_ledger_path,
     )
-    return _safe_chat_served_claim_window_aggregate(report)
+    return _safe_chat_served_claim_window_aggregate(
+        report,
+        input_evidence_derived=False,
+    )
 
 
 FIRST_HOP_COVERAGE_ENV = "WD_IMAGE1_FIRST_HOP_COVERAGE"

@@ -3587,6 +3587,8 @@ def test_chat_served_claim_window_force_real_aggregate_is_safe(tmp_path) -> None
     assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
     assert aggregate["claim_window_eligible"] is True
     assert aggregate["claim_safe"] is False
+    assert aggregate["measurement_not_a_correctness_gate"] is True
+    assert aggregate["production_representativeness_claimed"] is False
     assert aggregate["receipt_coverage_ratio"] == 1.0
     blob = json.dumps(aggregate)
     assert "sha256:" not in blob
@@ -3599,6 +3601,8 @@ def test_chat_served_claim_window_missing_ledger_is_unavailable() -> None:
     assert aggregate["claim_window_eligible"] is False
     assert aggregate["claim_safe"] is False
     assert aggregate["reason"] == "missing_ledger_path"
+    assert aggregate["measurement_not_a_correctness_gate"] is True
+    assert aggregate["production_representativeness_claimed"] is False
 
 
 def _good_claim_window_report() -> dict:
@@ -3633,6 +3637,8 @@ def test_safe_chat_served_claim_window_aggregate_is_measurement_only() -> None:
     assert aggregate["claim_window_eligible"] is True
     assert aggregate["claim_safe"] is False
     assert aggregate["head_anchor_match"] is True
+    assert aggregate["measurement_not_a_correctness_gate"] is True
+    assert aggregate["production_representativeness_claimed"] is False
 
 
 def test_safe_chat_served_claim_window_rederives_head_and_source() -> None:
@@ -3643,12 +3649,17 @@ def test_safe_chat_served_claim_window_rederives_head_and_source() -> None:
         _safe_chat_served_claim_window_aggregate(bad_head)["head_anchor_match"]
         is False
     )
+    assert (
+        _safe_chat_served_claim_window_aggregate(bad_head)["claim_window_eligible"]
+        is False
+    )
 
     bad_source = _good_claim_window_report()
     bad_source["instrumented_served_points"] = ("hotcache",)
     bad_source["missing_served_points"] = ()
     aggregate = _safe_chat_served_claim_window_aggregate(bad_source)
     assert aggregate["source_completeness_ok"] is False
+    assert aggregate["claim_window_eligible"] is False
     assert aggregate["missing_served_point_count"] == 1
 
 

@@ -37,9 +37,11 @@ from typing import Any, Callable
 from waggledance.core.magma.chat_served_accounting import (
     PENDING_APPEND_FAILURE_REASONS,
     PENDING_APPEND_FAILURE_SCHEMA,
+    valid_pending_append_failure,
 )
 from waggledance.core.magma.chat_served_metadata import (
     WORLD_SNAPSHOT_NA_MARKER,
+    is_conforming_token,
     normalize_agent_id,
     normalize_language,
     normalize_profile,
@@ -191,17 +193,21 @@ class ChatServedEmitter:
         try:
             path = self._pending_failure_ledger_path
             path.parent.mkdir(parents=True, exist_ok=True)
+            sanitized_metadata: dict[str, str] = {}
+            for key, value in metadata.items():
+                if not is_conforming_token(key) or not is_conforming_token(value):
+                    raise ValueError("invalid pending failure metadata")
+                sanitized_metadata[str(key)] = str(value)
+
             entry = {
                 "schema_version": PENDING_APPEND_FAILURE_SCHEMA,
                 "served_id_hash": sha256_digest({"served_id": str(served_id)}),
                 "ts_utc": ts_utc,
                 "reason": reason,
-                "metadata": {
-                    str(k): str(v)
-                    for k, v in metadata.items()
-                    if isinstance(k, str) and isinstance(v, str)
-                },
+                "metadata": sanitized_metadata,
             }
+            if not valid_pending_append_failure(entry):
+                raise ValueError("invalid chat-served pending failure record")
             payload = json.dumps(
                 entry,
                 sort_keys=True,

@@ -38,6 +38,7 @@ from waggledance.core.magma.chat_served_ledger import (
     read_entries,
     verify_chain,
 )
+from waggledance.core.magma.chat_served_metadata import is_conforming_token
 
 PENDING_APPEND_FAILURE_SCHEMA = "magma.chat_served_pending_append_failure.v0"
 PENDING_APPEND_FAILURE_REASONS = frozenset({
@@ -85,7 +86,12 @@ def valid_pending_append_failure(entry: object) -> bool:
     if not isinstance(ts_utc, str) or not ts_utc:
         return False
     metadata = entry.get("metadata")
-    return isinstance(metadata, Mapping)
+    if not isinstance(metadata, Mapping):
+        return False
+    for key, value in metadata.items():
+        if not is_conforming_token(key) or not is_conforming_token(value):
+            return False
+    return True
 
 
 def read_pending_append_failures(path: str | None) -> int:
@@ -102,7 +108,9 @@ def read_pending_append_failures(path: str | None) -> int:
             except json.JSONDecodeError:
                 count += 1
                 continue
-            count += 1 if valid_pending_append_failure(entry) else 1
+            # Every durable line represents one served query whose sync pending
+            # append failed. Invalid/corrupt content still counts fail-closed.
+            count += 1
     return count
 
 

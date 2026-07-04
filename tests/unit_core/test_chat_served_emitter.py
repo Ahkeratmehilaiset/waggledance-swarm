@@ -9,13 +9,16 @@ response never persisted), and a resolution failure -> GAP (never a silent hole)
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_accounting import (
     coverage_from_ledger,
     read_pending_append_failures,
+    valid_pending_append_failure,
 )
 from waggledance.core.magma.chat_served_emitter import ChatServedEmitter, new_served_id
 from waggledance.core.magma.chat_served_ledger import is_path_safe_token
@@ -82,6 +85,35 @@ def test_record_pending_fail_open_surfaces_not_swallows(tmp_path) -> None:
                                     language="fi", profile="HOME", agent_id=None)
     assert result is False                                     # fail-OPEN: never raises
     assert emitter.pending_append_failures == 1                # bc4: surfaced, not swallowed
+    assert read_pending_append_failures(emitter.pending_failure_ledger_path) == 1
+
+
+def test_pending_failure_writer_rejects_raw_or_nested_metadata(tmp_path) -> None:
+    emitter, _sink, _ = _emitter(tmp_path)
+    emitter._write_pending_append_failure(
+        new_served_id(),
+        "2026-07-04T07:00:00.000000Z",
+        "sink_write_failed",
+        {
+            "route_type": "solver",
+            "profile": "RAW SECRET USER QUERY with spaces",
+            "nested": {"raw": "X"},  # type: ignore[dict-item]
+        },
+    )
+    assert not Path(emitter.pending_failure_ledger_path).exists()
+
+    emitter._write_pending_append_failure(
+        new_served_id(),
+        "2026-07-04T07:00:00.000000Z",
+        "sink_write_failed",
+        {"route_type": "solver"},
+    )
+    raw = open(emitter.pending_failure_ledger_path, "rb").read()
+    assert b"RAW SECRET" not in raw
+    assert b"nested" not in raw
+    entry = json.loads(raw.decode("utf-8"))
+    assert entry["metadata"] == {"route_type": "solver"}
+    assert valid_pending_append_failure(entry) is True
     assert read_pending_append_failures(emitter.pending_failure_ledger_path) == 1
 
 

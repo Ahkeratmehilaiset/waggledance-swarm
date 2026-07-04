@@ -209,3 +209,28 @@ def test_wellformed_but_non_clean_record_is_persisted_but_not_counted(tmp_path) 
 def test_verify_chain_rejects_a_malformed_record_in_chain() -> None:
     forged = _reforge(_record(), parent_cell_id="raw with spaces")
     assert H.verify_chain([forged]) is False                # malformed -> chain fails
+
+
+# --- target_state SEMANTIC gate (lead #1509 review): well-formed token is not enough,
+#     the value must BE the promotion target to be counted ------------------------------
+def test_wrong_target_state_is_wellformed_but_not_a_counted_promotion() -> None:
+    # a clean record whose target_state is a valid token but NOT the promotion target is
+    # honest, well-formed evidence -- but NOT a shadow->candidate promotion (semantic gate).
+    record = _record(_ready_application(target_state="subdivision_planned"))
+    assert H.is_conforming_token("subdivision_planned")     # a valid token (well-formed)
+    assert H.wellformed_reason(record) is None
+    assert H.is_valid_promotion_evidence(record) is False    # value gate, not just shape
+    assert H.count_shadow_to_candidate_promotions([record]) == 0
+
+
+def test_forged_wrong_target_state_self_hash_consistent_is_not_counted() -> None:
+    forged = _reforge(_record(), target_state="subdivision_planned")
+    assert forged[H._HASH_FIELD] == H.compute_record_hash(forged)   # self-hash-consistent
+    assert H.is_valid_promotion_evidence(forged) is False
+    assert H.count_shadow_to_candidate_promotions([forged]) == 0
+
+
+def test_promotion_target_state_matches_subdivision_runtime_commit_gate() -> None:
+    # anti-drift: the counted target_state must equal what subdivision_runtime_commit
+    # requires (it blocks any other value), so the counter can never fire on 0 real events.
+    assert H.PROMOTION_TARGET_STATE == "subdivision_in_shadow"

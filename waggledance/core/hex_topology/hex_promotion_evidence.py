@@ -27,9 +27,14 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from waggledance.core.magma.canonical import sha256_digest
-
 PROMOTION_EVIDENCE_SCHEMA = "magma.hex_shadow_to_candidate_promotion_evidence.v0"
+# The only target_state that represents a valid shadow->candidate subdivision commit
+# candidate -- subdivision_runtime_commit itself blocks any other target_state
+# (subdivision_runtime_commit.py: `target_state != "subdivision_in_shadow"`). A
+# well-formed record carrying a different target_state is honest evidence of a
+# NON-promotion, so it is never counted (the count requires the value, not just a
+# well-formed token). Credit: caught by codex-lead-1's #1509 review.
+PROMOTION_TARGET_STATE = "subdivision_in_shadow"
 
 _HASH_PREFIX = "sha256:"
 _HASH_HEX_LEN = 64
@@ -192,10 +197,13 @@ def is_valid_promotion_evidence(record: object) -> bool:
     if not is_wellformed_record(record):
         return False
     flags = record["runtime_authority_flags"]
-    # shadow-only invariant: EVERY runtime-authority flag must be exactly False.
+    # shadow-only invariant: EVERY runtime-authority flag must be exactly False; AND the
+    # target_state must BE the promotion target (a well-formed record at a different
+    # target_state is honest evidence but not a shadow->candidate promotion).
     return (
         record.get("commit_candidate_prepared") is True
         and record.get("blocker_count") == 0
+        and record.get("target_state") == PROMOTION_TARGET_STATE
         and all(flags.get(flag) is False for flag in _RUNTIME_AUTHORITY_FLAGS)
     )
 
@@ -262,6 +270,7 @@ def head_hash(records: list[Mapping[str, Any]]) -> str:
 
 __all__ = [
     "PROMOTION_EVIDENCE_SCHEMA", "GENESIS_PREV_HASH", "PromotionEvidenceError",
+    "PROMOTION_TARGET_STATE",
     "is_conforming_token", "is_evidence_hash", "compute_record_hash",
     "build_promotion_evidence_record", "wellformed_reason", "is_wellformed_record",
     "is_valid_promotion_evidence", "count_shadow_to_candidate_promotions",

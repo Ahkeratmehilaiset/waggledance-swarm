@@ -134,6 +134,7 @@ class ChatServedEmitter:
             if claim_window_served_point_observations_path is not None
             else None
         )
+        self._observed_served_point_keys: set[tuple[str, bool]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -187,6 +188,9 @@ class ChatServedEmitter:
             or self._claim_window_served_point_observations_path is None
         ):
             return False
+        key = (str(point), bool(wired))
+        if key in self._observed_served_point_keys:
+            return True
         try:
             write_served_point_observation(
                 self._claim_window_served_point_observations_path,
@@ -195,6 +199,7 @@ class ChatServedEmitter:
                 ts_utc=self._claim_window_ts(),
                 fsync=True,
             )
+            self._observed_served_point_keys.add(key)
             return True
         except Exception:  # noqa: BLE001 -- evidence recording is fail-open
             log.debug("chat-served served-point observation write failed", exc_info=True)

@@ -147,6 +147,32 @@ def test_claim_window_recorder_observes_served_points_and_explicit_markers(tmp_p
     assert read_clean_shutdown_marker(str(paths["clean"]), window_id=_WINDOW) is True
 
 
+def test_claim_window_served_point_observation_is_once_per_point(tmp_path) -> None:
+    emitter, sink, _ledger, paths = _emitter_with_claim_window(tmp_path)
+
+    assert emitter.record_pending(
+        new_served_id(),
+        source="solver",
+        route_type="solver",
+        language="fi",
+        profile="HOME",
+        agent_id=None,
+    ) is True
+    assert emitter.record_pending(
+        new_served_id(),
+        source="solver",
+        route_type="solver",
+        language="fi",
+        profile="HOME",
+        agent_id=None,
+    ) is True
+    assert sink.counts()["served"] == 2
+
+    observations = _read_jsonl(paths["served_points"])
+    assert len(observations) == 1
+    assert derive_instrumented_served_points(observations) == ("solver",)
+
+
 def test_claim_window_recorder_does_not_turn_partial_observations_complete(tmp_path) -> None:
     emitter, _sink, _ledger, paths = _emitter_with_claim_window(tmp_path)
 

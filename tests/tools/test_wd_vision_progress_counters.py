@@ -2516,3 +2516,185 @@ def test_low_risk_xcons_template_subtree_exclusion_positive_control(authority_ke
         )
     )
     assert outside_ms[authority_key] is True, authority_key
+
+
+# ---------------- PR bridge wake headRefName evidence summary wiring
+
+def _good_pr_bridge_wake_summary():
+    return {
+        "report_version": "wd.pr_bridge_wake_headsafe_evidence_summary.v1",
+        "evidence_available": True,
+        "wake_request_template_valid": True,
+        "task_id_matches_head_ref": True,
+        "head_ref_safe": True,
+        "target_agent_valid": True,
+        "requester_agent_valid": True,
+        "template_only": True,
+        "manual_review_required": True,
+        "no_wake_request_emitted": True,
+        "no_bridge_event_written": True,
+        "no_github_mutation": True,
+        "no_external_fetch": True,
+        "no_runtime_authority_granted": True,
+        "no_approval_granted": True,
+        "no_merge_decision": True,
+        "no_release_decision": True,
+        "no_local_paths_recorded": True,
+        "no_raw_payloads_included": True,
+        "path_free_verified": True,
+        "claim_safe": False,
+    }
+
+
+def _manifest_with_pr_bridge_wake_summary(summary, *, low_risk_proof_extra=None):
+    proof = {"ok": True, "no_runtime_mutation": True, "runtime_authority_changed": False}
+    if summary is not None:
+        proof["pr_bridge_wake_headsafe_evidence"] = summary
+    if low_risk_proof_extra:
+        proof.update(low_risk_proof_extra)
+    return {
+        "schema_version": "wd_image1_capability_manifest.v1",
+        "summary": {
+            "capability_count": 1,
+            "status_counts": {"partial": 1},
+            "all_literal_claims_safe": False,
+        },
+        "capabilities": [{
+            "capability_id": "low_risk_autonomy_loop",
+            "status": "partial",
+            "claim_safe": False,
+            "evidence": [],
+            "gaps": [],
+            "next_smallest_pr": "x",
+            "proof": proof,
+        }],
+    }
+
+
+def _pr_bridge_wake_counters(summary, **kw):
+    mc = build_vision_progress_counters(
+        _manifest_with_pr_bridge_wake_summary(summary, **kw)
+    )["milestone_counters"]
+    return mc["pr_bridge_wake_headsafe_evidence"]
+
+
+_PR_BRIDGE_WAKE_CLEAN_FIELDS = [
+    "evidence_available",
+    "wake_request_template_valid",
+    "task_id_matches_head_ref",
+    "head_ref_safe",
+    "target_agent_valid",
+    "requester_agent_valid",
+    "template_only",
+    "manual_review_required",
+    "no_wake_request_emitted",
+    "no_bridge_event_written",
+    "no_github_mutation",
+    "no_external_fetch",
+    "no_runtime_authority_granted",
+    "no_approval_granted",
+    "no_merge_decision",
+    "no_release_decision",
+    "no_local_paths_recorded",
+    "no_raw_payloads_included",
+]
+
+
+def test_pr_bridge_wake_counter_available_with_clean_summary():
+    block = _pr_bridge_wake_counters(_good_pr_bridge_wake_summary())
+    assert block["evidence_available"] is True
+    assert block["evidence_clean"] is True
+    assert block["wake_request_template_valid"] is True
+    assert block["task_id_matches_head_ref"] is True
+    assert block["head_ref_safe"] is True
+    assert block["path_free_verified"] is True
+    assert block["no_wake_request_emitted"] is True
+    assert block["no_bridge_event_written"] is True
+    assert block["no_github_mutation"] is True
+    assert block["no_runtime_authority_granted"] is True
+    assert block["measurement_basis"] == "v1_pr_bridge_wake_headsafe_evidence"
+    assert block["claim_safe"] is False
+
+
+def test_pr_bridge_wake_counter_unavailable_when_absent():
+    block = _pr_bridge_wake_counters(None)
+    assert block["evidence_available"] is False
+    assert block["evidence_clean"] is False
+    assert block["measurement_basis"] == "manifest_real_loop_flags"
+    assert block["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bad", [[], "x", 7, 0])
+def test_pr_bridge_wake_counter_non_mapping_not_available(bad):
+    block = _pr_bridge_wake_counters(bad)
+    assert block["evidence_available"] is False
+    assert block["evidence_clean"] is False
+
+
+@pytest.mark.parametrize("field", _PR_BRIDGE_WAKE_CLEAN_FIELDS)
+def test_pr_bridge_wake_counter_consumer_rederives_fail_closed(field):
+    summary = _good_pr_bridge_wake_summary()
+    summary[field] = False
+    block = _pr_bridge_wake_counters(summary)
+    assert block["evidence_clean"] is False, field
+    assert block["claim_safe"] is False, field
+
+
+def test_pr_bridge_wake_counter_self_claim_safe_refuses_to_certify():
+    summary = _good_pr_bridge_wake_summary()
+    summary["claim_safe"] = True
+    block = _pr_bridge_wake_counters(summary)
+    assert block["evidence_available"] is False
+    assert block["evidence_clean"] is False
+
+
+def test_pr_bridge_wake_counter_path_free_false_refuses_to_certify():
+    summary = _good_pr_bridge_wake_summary()
+    summary["path_free_verified"] = False
+    block = _pr_bridge_wake_counters(summary)
+    assert block["evidence_available"] is False
+    assert block["evidence_clean"] is False
+
+
+def test_pr_bridge_wake_counter_claim_safe_hardcoded_false_even_when_clean():
+    assert _pr_bridge_wake_counters(
+        _good_pr_bridge_wake_summary()
+    )["claim_safe"] is False
+
+
+@pytest.mark.parametrize("bare_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_pr_bridge_wake_subtree_excluded_from_recursive_scan(bare_key):
+    summary = _good_pr_bridge_wake_summary()
+    summary["forged_nested"] = {bare_key: True}
+    counters = build_vision_progress_counters(
+        _manifest_with_pr_bridge_wake_summary(summary)
+    )
+    by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+    milestones = by_id["low_risk_autonomy_loop"]["milestones"]
+    assert milestones["runtime_authority_granted"] is False, bare_key
+    assert milestones["external_writes_applied"] is False, bare_key
+
+
+@pytest.mark.parametrize("authority_key", [
+    "runtime_authority_granted", "external_writes_applied",
+])
+def test_pr_bridge_wake_subtree_exclusion_positive_control(authority_key):
+    def _milestones(manifest):
+        counters = build_vision_progress_counters(manifest)
+        by_id = {c["capability_id"]: c for c in counters["panel_counters"]}
+        return by_id["low_risk_autonomy_loop"]["milestones"]
+
+    inside = _good_pr_bridge_wake_summary()
+    inside["forged_nested"] = {authority_key: True}
+    inside_ms = _milestones(_manifest_with_pr_bridge_wake_summary(inside))
+    assert inside_ms[authority_key] is False, f"inside:{authority_key}"
+
+    outside_ms = _milestones(
+        _manifest_with_pr_bridge_wake_summary(
+            _good_pr_bridge_wake_summary(),
+            low_risk_proof_extra={"forged_outside": {authority_key: True}},
+        )
+    )
+    assert outside_ms[authority_key] is True, f"outside:{authority_key}"

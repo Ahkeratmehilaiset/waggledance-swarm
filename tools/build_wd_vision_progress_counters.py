@@ -249,12 +249,17 @@ def _extract_milestone_values(
         cross_tpl = _mapping(
             proof.get("cross_consistency_digest_bridge_event_template")
         )
+        # Path-free PR bridge wake headRefName evidence summary: a curated
+        # content-safe projection of the no-authority wake template proof. The
+        # consumer re-derives clean from components and never emits a wake.
+        pr_wake = _mapping(proof.get("pr_bridge_wake_headsafe_evidence"))
         # The recursive _nested_flag root authority scan MUST exclude the measurement-only
-        # trend, trend-reviewer-summary, cross-consistency-digest AND its bridge-event
-        # template-summary subtrees: otherwise a bare authority key nested anywhere under
-        # them (e.g. a forged per-window authority_boundary) would flip the real low-risk
-        # gate (#1271 tools forge: the renamed surfaced field was not enough - the whole
-        # subtree must be out of scope of the recursive scan).
+        # trend, trend-reviewer-summary, cross-consistency-digest, its bridge-event
+        # template-summary subtree, AND PR bridge-wake evidence subtree: otherwise a bare
+        # authority key nested anywhere under them (e.g. a forged per-window
+        # authority_boundary) would flip the real low-risk gate (#1271 tools forge: the
+        # renamed surfaced field was not enough - the whole subtree must be out of scope
+        # of the recursive scan).
         proof_for_authority = (
             {
                 k: v
@@ -266,6 +271,7 @@ def _extract_milestone_values(
                     "repeat_window_trend_reviewer_summary",
                     "cross_consistency_digest",
                     "cross_consistency_digest_bridge_event_template",
+                    "pr_bridge_wake_headsafe_evidence",
                 )
             }
             if isinstance(proof, Mapping)
@@ -497,6 +503,67 @@ def _extract_milestone_values(
                 cross_tpl.get("path_free_verified") is True
             ),
             "xcons_template_self_claim_safe": cross_tpl.get("claim_safe") is True,
+            # PR headRefName bridge wake evidence: COMPONENT scalars (strict is True)
+            # so the counter can RE-DERIVE clean itself. Refuse-to-certify on
+            # self-claim_safe; measurement-only never upgrades a claim or emits a wake.
+            "pr_bridge_wake_headsafe_evidence_present": isinstance(
+                proof.get("pr_bridge_wake_headsafe_evidence"),
+                Mapping,
+            ),
+            "pr_bridge_wake_evidence_available": (
+                pr_wake.get("evidence_available") is True
+            ),
+            "pr_bridge_wake_template_valid": (
+                pr_wake.get("wake_request_template_valid") is True
+            ),
+            "pr_bridge_wake_task_id_matches_head_ref": (
+                pr_wake.get("task_id_matches_head_ref") is True
+            ),
+            "pr_bridge_wake_head_ref_safe": pr_wake.get("head_ref_safe") is True,
+            "pr_bridge_wake_target_agent_valid": (
+                pr_wake.get("target_agent_valid") is True
+            ),
+            "pr_bridge_wake_requester_agent_valid": (
+                pr_wake.get("requester_agent_valid") is True
+            ),
+            "pr_bridge_wake_template_only": pr_wake.get("template_only") is True,
+            "pr_bridge_wake_manual_review_required": (
+                pr_wake.get("manual_review_required") is True
+            ),
+            "pr_bridge_wake_no_wake_request_emitted": (
+                pr_wake.get("no_wake_request_emitted") is True
+            ),
+            "pr_bridge_wake_no_bridge_event_written": (
+                pr_wake.get("no_bridge_event_written") is True
+            ),
+            "pr_bridge_wake_no_github_mutation": (
+                pr_wake.get("no_github_mutation") is True
+            ),
+            "pr_bridge_wake_no_external_fetch": (
+                pr_wake.get("no_external_fetch") is True
+            ),
+            "pr_bridge_wake_no_runtime_authority_granted": (
+                pr_wake.get("no_runtime_authority_granted") is True
+            ),
+            "pr_bridge_wake_no_approval_granted": (
+                pr_wake.get("no_approval_granted") is True
+            ),
+            "pr_bridge_wake_no_merge_decision": (
+                pr_wake.get("no_merge_decision") is True
+            ),
+            "pr_bridge_wake_no_release_decision": (
+                pr_wake.get("no_release_decision") is True
+            ),
+            "pr_bridge_wake_no_local_paths_recorded": (
+                pr_wake.get("no_local_paths_recorded") is True
+            ),
+            "pr_bridge_wake_no_raw_payloads_included": (
+                pr_wake.get("no_raw_payloads_included") is True
+            ),
+            "pr_bridge_wake_path_free_verified": (
+                pr_wake.get("path_free_verified") is True
+            ),
+            "pr_bridge_wake_self_claim_safe": pr_wake.get("claim_safe") is True,
         }
     if capability_id == "hexagonal_upgrades":
         # Path-free reviewer summary (merged renderer), present only when the
@@ -979,6 +1046,42 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and low_risk.get("xcons_template_reviewer_clean") is True
         and low_risk.get("xcons_template_reviewer_matches_trend") is True
     )
+    # PR bridge wake headRefName evidence: measurement-only no-authority proof that a
+    # wake_request template can bind task_id=headRefName without appending it. Consumer
+    # re-derives clean from COMPONENT booleans and refuses self-claim_safe.
+    pr_wake_present = (
+        low_risk.get("pr_bridge_wake_headsafe_evidence_present") is True
+    )
+    pr_wake_path_free = (
+        low_risk.get("pr_bridge_wake_path_free_verified") is True
+    )
+    pr_wake_self_claim_safe = (
+        low_risk.get("pr_bridge_wake_self_claim_safe") is True
+    )
+    pr_wake_available = (
+        pr_wake_present and pr_wake_path_free and not pr_wake_self_claim_safe
+    )
+    pr_wake_clean = bool(
+        pr_wake_available
+        and low_risk.get("pr_bridge_wake_evidence_available") is True
+        and low_risk.get("pr_bridge_wake_template_valid") is True
+        and low_risk.get("pr_bridge_wake_task_id_matches_head_ref") is True
+        and low_risk.get("pr_bridge_wake_head_ref_safe") is True
+        and low_risk.get("pr_bridge_wake_target_agent_valid") is True
+        and low_risk.get("pr_bridge_wake_requester_agent_valid") is True
+        and low_risk.get("pr_bridge_wake_template_only") is True
+        and low_risk.get("pr_bridge_wake_manual_review_required") is True
+        and low_risk.get("pr_bridge_wake_no_wake_request_emitted") is True
+        and low_risk.get("pr_bridge_wake_no_bridge_event_written") is True
+        and low_risk.get("pr_bridge_wake_no_github_mutation") is True
+        and low_risk.get("pr_bridge_wake_no_external_fetch") is True
+        and low_risk.get("pr_bridge_wake_no_runtime_authority_granted") is True
+        and low_risk.get("pr_bridge_wake_no_approval_granted") is True
+        and low_risk.get("pr_bridge_wake_no_merge_decision") is True
+        and low_risk.get("pr_bridge_wake_no_release_decision") is True
+        and low_risk.get("pr_bridge_wake_no_local_paths_recorded") is True
+        and low_risk.get("pr_bridge_wake_no_raw_payloads_included") is True
+    )
     # Hex-subdivision reviewer summary: a path-free measurement-only surface from
     # the merged renderer. Consumer re-derives each field fail-closed (does NOT
     # blindly trust the manifest aggregate); it NEVER upgrades the hexagonal
@@ -1365,6 +1468,48 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "measurement_basis": (
                 "v1_low_risk_cross_consistency_digest_bridge_event_template"
                 if lr_xcons_tpl_available
+                else "manifest_real_loop_flags"
+            ),
+            "claim_safe": False,
+        },
+        "pr_bridge_wake_headsafe_evidence": {
+            # Measurement-only path-free PR headRefName wake-template evidence. It
+            # NEVER appends a wake_request, mutates GitHub, writes bridge state, grants
+            # runtime authority, or upgrades low-risk claim safety.
+            "evidence_available": pr_wake_available,
+            "evidence_clean": pr_wake_clean,
+            "wake_request_template_valid": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_template_valid") is True
+            ),
+            "task_id_matches_head_ref": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_task_id_matches_head_ref") is True
+            ),
+            "head_ref_safe": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_head_ref_safe") is True
+            ),
+            "path_free_verified": bool(pr_wake_present and pr_wake_path_free),
+            "no_wake_request_emitted": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_no_wake_request_emitted") is True
+            ),
+            "no_bridge_event_written": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_no_bridge_event_written") is True
+            ),
+            "no_github_mutation": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_no_github_mutation") is True
+            ),
+            "no_runtime_authority_granted": bool(
+                pr_wake_available
+                and low_risk.get("pr_bridge_wake_no_runtime_authority_granted") is True
+            ),
+            "measurement_basis": (
+                "v1_pr_bridge_wake_headsafe_evidence"
+                if pr_wake_available
                 else "manifest_real_loop_flags"
             ),
             "claim_safe": False,

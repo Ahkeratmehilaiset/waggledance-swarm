@@ -4493,3 +4493,97 @@ def test_manifest_low_risk_xcons_template_cannot_flip_ok(monkeypatch) -> None:
     proof = _low_risk_proof_for_reviewer()
     assert proof.get("ok") == baseline_ok
     assert proof.get("cross_consistency_digest_bridge_event_template") == forged
+
+
+def test_manifest_stores_pr_bridge_wake_headsafe_evidence_content_safe() -> None:
+    summary = _low_risk_proof_for_reviewer().get(
+        "pr_bridge_wake_headsafe_evidence"
+    )
+    assert isinstance(summary, dict)
+    for key, value in summary.items():
+        if key == "report_version":
+            assert isinstance(value, str)
+        else:
+            assert isinstance(value, bool), key
+    assert summary["evidence_available"] is True
+    assert summary["wake_request_template_valid"] is True
+    assert summary["task_id_matches_head_ref"] is True
+    assert summary["head_ref_safe"] is True
+    assert summary["target_agent_valid"] is True
+    assert summary["requester_agent_valid"] is True
+    assert summary["template_only"] is True
+    assert summary["manual_review_required"] is True
+    assert summary["no_wake_request_emitted"] is True
+    assert summary["no_bridge_event_written"] is True
+    assert summary["no_github_mutation"] is True
+    assert summary["no_external_fetch"] is True
+    assert summary["no_runtime_authority_granted"] is True
+    assert summary["no_approval_granted"] is True
+    assert summary["no_merge_decision"] is True
+    assert summary["no_release_decision"] is True
+    assert summary["no_local_paths_recorded"] is True
+    assert summary["no_raw_payloads_included"] is True
+    assert summary["path_free_verified"] is True
+    assert summary["claim_safe"] is False
+    blob = json.dumps(summary)
+    assert str(ROOT) not in blob
+    assert "ts_utc" not in blob
+    assert "wake template ready" not in blob.lower()
+    assert "headsafe-evidence" not in blob
+
+
+def test_manifest_pr_bridge_wake_headsafe_evidence_measurement_only() -> None:
+    proof = _low_risk_proof_for_reviewer()
+    assert isinstance(proof.get("pr_bridge_wake_headsafe_evidence"), dict)
+    assert proof.get("ok") is True
+    import inspect
+    from tools import wd_image1_capability_manifest as mod
+
+    cap_src = inspect.getsource(mod._capabilities)
+    ok_assign = cap_src.split('low_risk_autonomy_proof["ok"] = bool(', 1)[1].split(
+        ")",
+        1,
+    )[0]
+    assert "pr_bridge_wake_headsafe_evidence" not in ok_assign
+    ok_idx = cap_src.index('low_risk_autonomy_proof["ok"] = bool(')
+    evidence_idx = cap_src.index(
+        'low_risk_autonomy_proof["pr_bridge_wake_headsafe_evidence"]'
+    )
+    assert evidence_idx > ok_idx
+
+
+def test_manifest_pr_bridge_wake_headsafe_evidence_cannot_flip_ok(monkeypatch) -> None:
+    baseline_ok = _low_risk_proof_for_reviewer().get("ok")
+    from tools import wd_image1_capability_manifest as mod
+
+    forged = {
+        "report_version": "forged",
+        "evidence_available": False,
+        "wake_request_template_valid": False,
+        "task_id_matches_head_ref": False,
+        "head_ref_safe": False,
+        "target_agent_valid": False,
+        "requester_agent_valid": False,
+        "template_only": False,
+        "manual_review_required": False,
+        "no_wake_request_emitted": False,
+        "no_bridge_event_written": False,
+        "no_github_mutation": False,
+        "no_external_fetch": False,
+        "no_runtime_authority_granted": False,
+        "no_approval_granted": False,
+        "no_merge_decision": False,
+        "no_release_decision": False,
+        "no_local_paths_recorded": False,
+        "no_raw_payloads_included": False,
+        "path_free_verified": False,
+        "claim_safe": True,
+    }
+    monkeypatch.setattr(
+        mod,
+        "_pr_bridge_wake_headsafe_evidence_summary",
+        lambda: dict(forged),
+    )
+    proof = _low_risk_proof_for_reviewer()
+    assert proof.get("ok") == baseline_ok
+    assert proof.get("pr_bridge_wake_headsafe_evidence") == forged

@@ -10018,6 +10018,55 @@ def _low_risk_cross_consistency_bridge_event_template_summary(
     return summary
 
 
+def _pr_bridge_wake_headsafe_evidence_summary() -> dict[str, Any]:
+    """Content-safe summary of PR headRefName-bound bridge wake evidence."""
+
+    from tools.hex_shadow_subdivision_replay import _contains_path_marker  # noqa: E402
+    from tools.pr_bridge_wake import (  # noqa: E402
+        build_pr_bridge_wake_headsafe_evidence,
+    )
+
+    result = build_pr_bridge_wake_headsafe_evidence(
+        pr_number=1,
+        head_ref_name=(
+            "codex-lead-1/phase2f-headsafe-evidence-manifest-integration-20260704"
+        ),
+        target_agent="codex-tools-1",
+        requester_agent="codex-lead-1",
+    )
+    result = result if isinstance(result, Mapping) else {}
+    summary: dict[str, Any] = {
+        "report_version": "wd.pr_bridge_wake_headsafe_evidence_summary.v1",
+        "evidence_available": result.get("ok") is True,
+        "wake_request_template_valid": (
+            result.get("wake_request_template_valid") is True
+        ),
+        "task_id_matches_head_ref": result.get("task_id_matches_head_ref") is True,
+        "head_ref_safe": result.get("head_ref_safe") is True,
+        "target_agent_valid": result.get("target_agent_valid") is True,
+        "requester_agent_valid": result.get("requester_agent_valid") is True,
+        "template_only": result.get("template_only") is True,
+        "manual_review_required": result.get("manual_review_required") is True,
+        "no_wake_request_emitted": result.get("wake_request_emitted") is False,
+        "no_bridge_event_written": result.get("bridge_event_written") is False,
+        "no_github_mutation": result.get("github_mutation_performed") is False,
+        "no_external_fetch": result.get("external_fetch_performed") is False,
+        "no_runtime_authority_granted": (
+            result.get("runtime_authority_granted") is False
+        ),
+        "no_approval_granted": result.get("approval_granted") is False,
+        "no_merge_decision": result.get("merge_decision_made") is False,
+        "no_release_decision": result.get("release_decision_made") is False,
+        "no_local_paths_recorded": result.get("local_paths_recorded") is False,
+        "no_raw_payloads_included": result.get("raw_payloads_included") is False,
+        "claim_safe": False,
+    }
+    summary["path_free_verified"] = (
+        result.get("path_free_verified") is True and not _contains_path_marker(summary)
+    )
+    return summary
+
+
 def _hex_cross_consistency_bridge_event_template_summary(
     digest: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -10806,6 +10855,14 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
                 "tests/test_verify_low_risk_cross_consistency_digest_bridge_event_template_index_entry.py",
                 "Verifier tests prove matching rebuilds, tamper detection, source-contract failure, path-safe failure output, and no scheduler/runtime authority.",
             ),
+            (
+                "tools/pr_bridge_wake.py",
+                "Read-only PR headRefName bridge wake template evidence; no bridge append, GitHub mutation, wake-file write, or runtime authority.",
+            ),
+            (
+                "tests/tools/test_pr_bridge_wake.py",
+                "PR bridge wake tests prove headRefName task binding, schema-valid wake template output, unsafe head-ref rejection, and no side-effect authority.",
+            ),
         ),
     )
     hex_upgrade_evidence = _evidence(
@@ -11302,6 +11359,13 @@ def _capabilities(root: Path) -> tuple[Capability, ...]:
         _low_risk_cross_consistency_bridge_event_template_summary(
             low_risk_autonomy_proof["cross_consistency_digest"]
         )
+    )
+    # PR headRefName bridge-wake evidence summary. Stored as derived booleans only,
+    # never the raw wake event/template. Measurement-only: not folded into ok and
+    # never emits a wake_request, mutates GitHub, writes bridge state, or grants
+    # runtime authority.
+    low_risk_autonomy_proof["pr_bridge_wake_headsafe_evidence"] = (
+        _pr_bridge_wake_headsafe_evidence_summary()
     )
     hex_entry_proof = build_hex_mesh_entry_proof(root)
     # Optional local opt-in authoritative-first-hop coverage measurement (OFF by

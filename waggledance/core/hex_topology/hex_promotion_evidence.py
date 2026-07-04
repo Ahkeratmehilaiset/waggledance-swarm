@@ -30,6 +30,7 @@ from typing import Any
 from waggledance.core.magma.canonical import sha256_digest
 
 PROMOTION_EVIDENCE_SCHEMA = "magma.hex_shadow_to_candidate_promotion_evidence.v0"
+PROMOTION_TARGET_STATE = "subdivision_in_shadow"
 
 _HASH_PREFIX = "sha256:"
 _HASH_HEX_LEN = 64
@@ -195,6 +196,7 @@ def is_valid_promotion_evidence(record: object) -> bool:
     # shadow-only invariant: EVERY runtime-authority flag must be exactly False.
     return (
         record.get("commit_candidate_prepared") is True
+        and record.get("target_state") == PROMOTION_TARGET_STATE
         and record.get("blocker_count") == 0
         and all(flags.get(flag) is False for flag in _RUNTIME_AUTHORITY_FLAGS)
     )
@@ -261,7 +263,8 @@ def head_hash(records: list[Mapping[str, Any]]) -> str:
 
 
 __all__ = [
-    "PROMOTION_EVIDENCE_SCHEMA", "GENESIS_PREV_HASH", "PromotionEvidenceError",
+    "PROMOTION_EVIDENCE_SCHEMA", "PROMOTION_TARGET_STATE",
+    "GENESIS_PREV_HASH", "PromotionEvidenceError",
     "is_conforming_token", "is_evidence_hash", "compute_record_hash",
     "build_promotion_evidence_record", "wellformed_reason", "is_wellformed_record",
     "is_valid_promotion_evidence", "count_shadow_to_candidate_promotions",

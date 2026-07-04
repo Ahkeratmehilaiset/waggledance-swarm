@@ -68,6 +68,19 @@ def test_blockers_present_is_not_counted() -> None:
     assert H.is_valid_promotion_evidence(record) is False
 
 
+def test_non_shadow_target_state_is_wellformed_but_not_counted(tmp_path) -> None:
+    path = str(tmp_path / "promotion_evidence.jsonl")
+    record = _record(_ready_application(target_state="subdivision_planned"))
+
+    assert H.wellformed_reason(record) is None
+    assert H.is_valid_promotion_evidence(record) is False
+    assert H.count_shadow_to_candidate_promotions([record]) == 0
+    H.append_evidence(path, record)
+    records = H.read_evidence(path)
+    assert H.verify_chain(records) is True
+    assert H.count_shadow_to_candidate_promotions(records) == 0
+
+
 # --- the SHADOW-ONLY INVARIANT: any runtime-authority flag True -> NOT a promotion --
 @pytest.mark.parametrize("flag", list(H._RUNTIME_AUTHORITY_FLAGS))
 def test_any_runtime_authority_flag_true_invalidates(flag: str) -> None:

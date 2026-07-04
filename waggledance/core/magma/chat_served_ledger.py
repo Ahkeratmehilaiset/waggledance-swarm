@@ -63,6 +63,20 @@ GENESIS_PREV_HASH = _HASH_PREFIX + ("0" * _HASH_HEX_LEN)
 
 _HASH_FIELD = "entry_hash"
 
+# Per-entry_type FIELD ALLOWLIST. verify_chain + append_entry enforce that a
+# well-formed entry has EXACTLY these keys -- no unknown key can ride along (the
+# #1496 wholesale-accept class: a self-hash-consistent but over-rich entry would
+# otherwise persist raw content into a "verified" chain). A "valid chain" thus
+# provably holds only clean served/receipt/gap entries.
+_COMMON_KEYS = frozenset({
+    "payload_version", "entry_type", "served_id", "ts_utc", "prev_ledger_hash", _HASH_FIELD,
+})
+_ALLOWED_KEYS = {
+    SERVED_PENDING: _COMMON_KEYS | {"metadata"},
+    RECEIPT_TERMINAL: _COMMON_KEYS | {"receipt_ref"},
+    GAP_TERMINAL: _COMMON_KEYS | {"gap_reason"},
+}
+
 
 class LedgerError(ValueError):
     """Malformed input to a ledger builder/append (fail-closed at construction)."""
@@ -104,6 +118,54 @@ def verify_entry_self(entry: object) -> bool:
     return entry.get(_HASH_FIELD) == compute_entry_hash(entry)
 
 
+def wellformed_reason(entry: object) -> str | None:
+    """None iff ``entry`` is a well-formed served/receipt/gap entry.
+
+    Enforces the per-entry_type KEY ALLOWLIST (exact keys, no smuggled field) AND
+    the value SHAPE of every field (tokens, digests, scalar-only metadata, fixed-set
+    gap reason). This is what makes verify_chain a real claim-safety attestation
+    rather than a mere tamper-check: a self-hash-consistent but over-rich entry (raw
+    content in an extra key, or a non-scalar metadata value) is REJECTED, not attested
+    valid. Shared by the builders (anti-drift self-check), append_entry, and
+    verify_chain so all three agree on "well-formed".
+    """
+    if not isinstance(entry, Mapping):
+        return "not_a_mapping"
+    etype = entry.get("entry_type")
+    if etype not in ENTRY_TYPES:
+        return "unknown_entry_type"
+    keys = set(entry.keys())
+    if keys != _ALLOWED_KEYS[etype]:
+        extra = sorted(keys - _ALLOWED_KEYS[etype])
+        if extra:
+            return f"disallowed_keys:{extra}"
+        return f"missing_keys:{sorted(_ALLOWED_KEYS[etype] - keys)}"
+    if entry.get("payload_version") != PAYLOAD_VERSION:
+        return "bad_payload_version"
+    if not is_conforming_token(entry.get("served_id")):
+        return "bad_served_id"
+    if not is_conforming_token(entry.get("ts_utc")):
+        return "bad_ts_utc"
+    if not is_ledger_hash(entry.get("prev_ledger_hash")):
+        return "bad_prev_ledger_hash"
+    if not is_ledger_hash(entry.get(_HASH_FIELD)):
+        return "bad_entry_hash_format"
+    if etype == SERVED_PENDING:
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, Mapping):
+            return "bad_metadata_type"
+        for key, value in metadata.items():
+            if not is_conforming_token(key) or not is_conforming_token(value):
+                return "bad_metadata_content"  # non-scalar / non-conforming -> reject (#1496)
+    elif etype == RECEIPT_TERMINAL:
+        if not is_ledger_hash(entry.get("receipt_ref")):
+            return "bad_receipt_ref"
+    elif etype == GAP_TERMINAL:
+        if entry.get("gap_reason") not in GAP_REASONS:
+            return "bad_gap_reason"
+    return None
+
+
 # --- validation ------------------------------------------------------------------
 def _require_token(field: str, value: object) -> str:
     if not is_conforming_token(value):
@@ -138,6 +200,9 @@ def _validated_metadata(metadata: object) -> dict[str, str]:
 
 def _finalize(entry: dict[str, Any]) -> dict[str, Any]:
     entry[_HASH_FIELD] = compute_entry_hash(entry)
+    reason = wellformed_reason(entry)  # anti-drift: a builder must never out-produce the verifier
+    if reason is not None:
+        raise LedgerError(f"builder produced a non-well-formed entry: {reason}")
     return entry
 
 
@@ -205,6 +270,9 @@ def append_entry(ledger_path: str, entry: Mapping[str, Any], *, fsync: bool = Tr
     pending append should pass fsync=False (a windowed/boundary fsync discipline lives
     in the S1b wiring), so a per-request fsync never regresses chat latency.
     """
+    reason = wellformed_reason(entry)
+    if reason is not None:
+        raise LedgerError(f"refusing to append a non-well-formed entry: {reason}")
     if not verify_entry_self(entry):
         raise LedgerError("entry_hash does not match content; refusing to append")
     line = (json.dumps(entry, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
@@ -213,7 +281,9 @@ def append_entry(ledger_path: str, entry: Mapping[str, Any], *, fsync: bool = Tr
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
     fd = os.open(ledger_path, flags, 0o644)
     try:
-        os.write(fd, line)
+        remaining = line
+        while remaining:  # os.write may do a short write -> loop until the whole line lands
+            remaining = remaining[os.write(fd, remaining):]
         if fsync:
             os.fsync(fd)
     finally:
@@ -233,23 +303,24 @@ def read_entries(ledger_path: str) -> tuple[list[dict[str, Any]], bool]:
     torn_tail = False
     if not os.path.exists(ledger_path):
         return entries, torn_tail
-    with open(ledger_path, "r", encoding="utf-8") as handle:
-        raw_lines = handle.read().split("\n")
-    # a trailing newline yields a final "" element; find the last NON-empty index
+    # Read BYTES and decode per line: a crash can leave a BYTE-corrupt tail (invalid
+    # UTF-8), which text-mode reads would raise as an uncaught UnicodeDecodeError. We
+    # classify it the same as a JSON-torn tail: tolerated if final, corruption if not.
+    with open(ledger_path, "rb") as handle:
+        byte_lines = handle.read().split(b"\n")
     last_nonempty = -1
-    for idx in range(len(raw_lines) - 1, -1, -1):
-        if raw_lines[idx].strip():
+    for idx in range(len(byte_lines) - 1, -1, -1):
+        if byte_lines[idx].strip():
             last_nonempty = idx
             break
-    for idx, raw in enumerate(raw_lines):
-        text = raw.strip()
-        if not text:
+    for idx, raw in enumerate(byte_lines):
+        if not raw.strip():
             continue
         try:
-            entries.append(json.loads(text))
-        except json.JSONDecodeError as exc:
+            entries.append(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             if idx == last_nonempty:
-                torn_tail = True  # tolerate a crash torn-tail
+                torn_tail = True  # tolerate a crash torn-tail (JSON- or byte-corrupt)
             else:
                 raise LedgerCorruptionError(f"malformed ledger line {idx + 1}") from exc
     return entries, torn_tail
@@ -272,12 +343,13 @@ def verify_chain(entries: list[Mapping[str, Any]]) -> ChainResult:
     """
     prev = GENESIS_PREV_HASH
     for index, entry in enumerate(entries):
+        reason = wellformed_reason(entry)  # key-allowlist + value-shape: no smuggled content in a "valid" chain
+        if reason is not None:
+            return ChainResult(False, index, reason)
         if not verify_entry_self(entry):
             return ChainResult(False, index, "entry_hash_mismatch")
         if entry.get("prev_ledger_hash") != prev:
             return ChainResult(False, index, "prev_hash_broken")
-        if entry.get("entry_type") not in ENTRY_TYPES:
-            return ChainResult(False, index, "unknown_entry_type")
         prev = str(entry.get(_HASH_FIELD))
     return ChainResult(True, None, None)
 
@@ -287,7 +359,7 @@ __all__ = [
     "SERVED_PENDING", "RECEIPT_TERMINAL", "GAP_TERMINAL",
     "ENTRY_TYPES", "TERMINAL_TYPES", "GAP_REASONS", "GENESIS_PREV_HASH",
     "LedgerError", "LedgerCorruptionError", "ChainResult",
-    "is_ledger_hash", "compute_entry_hash", "verify_entry_self",
+    "is_ledger_hash", "compute_entry_hash", "verify_entry_self", "wellformed_reason",
     "new_served_pending", "new_receipt_terminal", "new_gap_terminal",
     "append_entry", "read_entries", "head_hash", "verify_chain",
 ]

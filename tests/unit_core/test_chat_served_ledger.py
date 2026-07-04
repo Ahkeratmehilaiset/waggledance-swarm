@@ -9,6 +9,7 @@ append/read round-trips, and crash torn-tail tolerance vs mid-file corruption.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -211,3 +212,97 @@ def test_written_ledger_is_utf8_no_bom_lf(tmp_path) -> None:
     raw = open(path, "rb").read()
     assert raw[:3] != b"\xef\xbb\xbf"   # no BOM
     assert raw.endswith(b"}\n")          # LF-terminated JSONL
+
+
+# --- F-A (rco-1 T6): verifier enforces a per-entry_type field allowlist -----------
+def _smuggle(entry, **overrides):
+    """A self-hash-CONSISTENT entry with extra/edited fields (hash recomputed)."""
+    smuggled = dict(entry)
+    smuggled.update(overrides)
+    smuggled["entry_hash"] = L.compute_entry_hash(smuggled)
+    return smuggled
+
+
+def test_verifier_rejects_extra_key_even_when_self_hash_consistent() -> None:
+    evil = _smuggle(_pending("q1"), raw_leak="SECRET_USER_QUERY_TEXT")
+    assert L.verify_entry_self(evil) is True          # hash covers it -> tamper-EVIDENT only
+    res = L.verify_chain([evil])
+    assert res.ok is False and res.reason.startswith("disallowed_keys")  # ...not attested valid
+
+
+def test_append_rejects_smuggled_entry_and_persists_no_leak(tmp_path) -> None:
+    path = str(tmp_path / "l.jsonl")
+    evil = _smuggle(_pending("q1"), raw_leak="SECRET_USER_QUERY_TEXT")
+    with pytest.raises(L.LedgerError):
+        L.append_entry(path, evil, fsync=False)
+    persisted = open(path, "rb").read() if os.path.exists(path) else b""
+    assert b"SECRET_USER_QUERY_TEXT" not in persisted   # raw text never touched the durable file
+
+
+def test_verifier_rejects_missing_required_key() -> None:
+    incomplete = dict(_pending("q1"))
+    del incomplete["metadata"]
+    incomplete["entry_hash"] = L.compute_entry_hash(incomplete)
+    res = L.verify_chain([incomplete])
+    assert res.ok is False and res.reason.startswith("missing_keys")
+
+
+def test_verifier_rejects_nonscalar_metadata_in_handbuilt_entry() -> None:
+    # bypass the builder's own validation: hand-built, self-hash valid, but a nested
+    # metadata value must NOT be attested valid (the #1496 value-shape in the verifier).
+    evil = _smuggle(_pending("q1"), metadata={"route_type": {"nested": "leak"}})
+    assert L.verify_entry_self(evil) is True
+    res = L.verify_chain([evil])
+    assert res.ok is False and res.reason == "bad_metadata_content"
+
+
+def test_verifier_rejects_wrong_type_specific_key() -> None:
+    receipt = L.new_receipt_terminal("q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:01Z", _A_DIGEST)
+    evil = _smuggle(receipt, gap_reason="sink_write_failed")  # a receipt carrying a gap field
+    res = L.verify_chain([evil])
+    assert res.ok is False and res.reason.startswith("disallowed_keys")
+
+
+def test_builder_selfcheck_matches_verifier() -> None:
+    # every builder output passes the verifier (anti-drift): the builders and
+    # verify_chain share wellformed_reason, so a builder can never out-produce it.
+    for entry in (
+        _pending("q1"),
+        L.new_receipt_terminal("q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:01Z", _A_DIGEST),
+        L.new_gap_terminal("q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:02Z", "sink_write_failed"),
+    ):
+        assert L.wellformed_reason(entry) is None
+
+
+# --- nit #2: byte-corrupted tail vs mid-file (not just JSON-corrupt) ---------------
+def test_byte_corrupted_tail_is_tolerated(tmp_path) -> None:
+    path = str(tmp_path / "l.jsonl")
+    L.append_entry(path, _pending("q1"), fsync=False)
+    with open(path, "ab") as handle:
+        handle.write(b"\xff\xfe invalid utf-8 partial tail")  # crash byte-corrupt tail, no newline
+    entries, torn = L.read_entries(path)
+    assert torn is True and len(entries) == 1
+
+
+def test_byte_corrupted_midfile_raises(tmp_path) -> None:
+    path = str(tmp_path / "l.jsonl")
+    with open(path, "wb") as handle:
+        handle.write((json.dumps(_pending("q1")) + "\n").encode("utf-8"))
+        handle.write(b"\xff\xfe invalid utf-8 mid-file line\n")
+        handle.write((json.dumps(_pending("q2")) + "\n").encode("utf-8"))
+    with pytest.raises(L.LedgerCorruptionError):
+        L.read_entries(path)
+
+
+def test_verifier_rejects_extra_key_on_receipt_and_gap_types(tmp_path) -> None:
+    # rco-2 extension: the allowlist gap was on ALL THREE types, not just served_pending
+    receipt = L.new_receipt_terminal("q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:01Z", _A_DIGEST)
+    gap = L.new_gap_terminal("q1", L.GENESIS_PREV_HASH, "2026-07-04T07:00:02Z", "sink_write_failed")
+    for base in (receipt, gap):
+        evil = _smuggle(base, raw_leak="SECRET_USER_QUERY_TEXT")
+        assert L.verify_entry_self(evil) is True                 # self-hash consistent
+        assert L.verify_chain([evil]).ok is False                # ...but not attested valid
+        path = str(tmp_path / f"l-{base['entry_type']}.jsonl")
+        with pytest.raises(L.LedgerError):
+            L.append_entry(path, evil, fsync=False)
+        assert (open(path, "rb").read() if os.path.exists(path) else b"").find(b"SECRET_USER_QUERY_TEXT") == -1

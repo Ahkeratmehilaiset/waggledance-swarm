@@ -979,6 +979,8 @@ def _operator_decision_reference_summary(
         "expected_signed_reference_digest": None,
         "signed_reference_digest": None,
         "signed_reference_digest_matches": False,
+        "operator_authentication_shape_valid": False,
+        "operator_authentication_verifier_backed": False,
         "operator_authentication_valid": False,
         "satisfies_operator_gate": False,
         "blocker": "operator_review_gate_required",
@@ -1042,12 +1044,17 @@ def _operator_decision_reference_summary(
         signed_reference_digest_matches = (
             signed_reference_digest == expected_signed_reference_digest
         )
-    operator_authentication_valid = bool(
+    operator_authentication_shape_valid = bool(
         authentication_schema_matches
         and authentication_method_matches
         and operator_authenticated
         and operator_signature_digest_present
         and signed_reference_digest_matches
+    )
+    operator_authentication_verifier_backed = False
+    operator_authentication_valid = bool(
+        operator_authentication_shape_valid
+        and operator_authentication_verifier_backed
     )
     summary.update(
         {
@@ -1092,6 +1099,12 @@ def _operator_decision_reference_summary(
             "expected_signed_reference_digest": expected_signed_reference_digest,
             "signed_reference_digest": signed_reference_digest,
             "signed_reference_digest_matches": signed_reference_digest_matches,
+            "operator_authentication_shape_valid": (
+                operator_authentication_shape_valid
+            ),
+            "operator_authentication_verifier_backed": (
+                operator_authentication_verifier_backed
+            ),
             "operator_authentication_valid": operator_authentication_valid,
         }
     )

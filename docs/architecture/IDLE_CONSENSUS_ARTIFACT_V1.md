@@ -89,14 +89,18 @@ The reference must use
 all authority flags (`auto_execute`, `external_effect`, `writes_applied`,
 `would_create_task`, `would_create_branch`, `would_create_pr`, `would_merge`,
 `runtime_authority_granted`, `external_writes_applied`). The template is not an
-operator approval by itself. Candidate-diff replay admission also requires an
-`operator_authentication` object with
+operator approval by itself. Candidate-diff replay admission records any
+supplied `operator_authentication` object with
 `schema_version=idle_consensus_operator_decision_authentication.v0`,
 `authentication_method=operator_signed_decision`,
 `operator_authenticated=true`, a `signed_reference_digest` matching the digest
 of the reference without the authentication object, and a sha256
-`operator_signature_digest`. Without that authenticated operator decision, the
-report keeps the `operator_decision_reference_authentication_missing` blocker.
+`operator_signature_digest` as shape-valid only. Local JSON cannot authenticate
+the operator gate by self-assertion; `operator_authentication_valid` remains
+false until a verifier-backed operator identity or signature source is wired in.
+Without verifier-backed authentication, the report keeps the
+`operator_decision_reference_authentication_missing` or
+`operator_decision_reference_authentication_invalid` blocker.
 The tool still writes no artifacts, appends no bridge events, and creates no
 task, branch, PR, or merge.
 

@@ -158,11 +158,18 @@ def test_operator_reference_template_must_bind_replay_seed_and_candidate_diff() 
         ),
     )
 
-    assert authenticated_admission["operator_decision_reference"][
-        "satisfies_operator_gate"
+    authenticated_summary = authenticated_admission["operator_decision_reference"]
+    assert authenticated_summary["operator_authentication_shape_valid"] is True
+    assert authenticated_summary["operator_authentication_verifier_backed"] is False
+    assert authenticated_summary["operator_authentication_valid"] is False
+    assert authenticated_summary["satisfies_operator_gate"] is False
+    assert authenticated_summary["blocker"] == (
+        "operator_decision_reference_authentication_invalid"
+    )
+    assert authenticated_admission["eligible_for_draft_pr_gate"] is False
+    assert authenticated_admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authentication_invalid",
     ]
-    assert authenticated_admission["eligible_for_draft_pr_gate"] is True
-    assert authenticated_admission["draft_pr_gate_blockers"] == []
     assert "diff --git" not in serialized
     assert "Receipt binding must be digest-only" not in serialized
 

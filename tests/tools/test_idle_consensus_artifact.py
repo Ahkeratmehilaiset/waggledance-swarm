@@ -635,7 +635,7 @@ def test_candidate_diff_replay_admission_summarizes_counterfactual_receipt(
     assert "divergences" not in serialized
 
 
-def test_candidate_diff_replay_admission_accepts_bound_operator_decision_reference(
+def test_candidate_diff_replay_admission_rejects_self_authenticated_operator_reference(
     tmp_path: Path,
 ) -> None:
     report = _write_artifact(tmp_path, _soft_events())
@@ -678,13 +678,18 @@ def test_candidate_diff_replay_admission_accepts_bound_operator_decision_referen
     assert summary["candidate_diff_digest_matches"] is True
     assert summary["authority_boundary_clear"] is True
     assert summary["operator_authentication_provided"] is True
-    assert summary["operator_authentication_valid"] is True
+    assert summary["operator_authentication_shape_valid"] is True
+    assert summary["operator_authentication_verifier_backed"] is False
+    assert summary["operator_authentication_valid"] is False
     assert summary["signed_reference_digest_matches"] is True
-    assert summary["satisfies_operator_gate"] is True
-    assert summary["blocker"] is None
-    assert admission["eligible_for_draft_pr_gate"] is True
-    assert admission["draft_pr_gate_blockers"] == []
+    assert summary["satisfies_operator_gate"] is False
+    assert summary["blocker"] == "operator_decision_reference_authentication_invalid"
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authentication_invalid"
+    ]
     assert admission["next_required_gates"] == [
+        "operator_review_gate",
         "draft_pr_creation",
         "ci_green",
         "mergeable_clean",
@@ -835,7 +840,7 @@ def test_counterfactual_eval_binding_template_is_digest_only_and_replay_ready(
     assert "divergences" not in serialized
 
 
-def test_operator_decision_reference_template_is_digest_only_and_requires_auth(
+def test_operator_decision_reference_template_is_digest_only_and_requires_verified_auth(
     tmp_path: Path,
 ) -> None:
     report = _write_artifact(tmp_path, _soft_events())
@@ -927,10 +932,17 @@ def test_operator_decision_reference_template_is_digest_only_and_requires_auth(
     )
     authenticated_summary = authenticated_admission["operator_decision_reference"]
     assert authenticated_summary["operator_authentication_provided"] is True
-    assert authenticated_summary["operator_authentication_valid"] is True
-    assert authenticated_summary["satisfies_operator_gate"] is True
-    assert authenticated_admission["eligible_for_draft_pr_gate"] is True
-    assert authenticated_admission["draft_pr_gate_blockers"] == []
+    assert authenticated_summary["operator_authentication_shape_valid"] is True
+    assert authenticated_summary["operator_authentication_verifier_backed"] is False
+    assert authenticated_summary["operator_authentication_valid"] is False
+    assert authenticated_summary["satisfies_operator_gate"] is False
+    assert authenticated_summary["blocker"] == (
+        "operator_decision_reference_authentication_invalid"
+    )
+    assert authenticated_admission["eligible_for_draft_pr_gate"] is False
+    assert authenticated_admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authentication_invalid"
+    ]
     assert "Operator approval is bound" not in serialized
     assert "diff --git" not in serialized
 
@@ -1299,11 +1311,15 @@ def test_cli_candidate_diff_replay_admission_accepts_operator_reference(
     assert summary["source_digest"] == sha256_digest(operator_decision)
     assert summary["payload_included"] is False
     assert summary["operator_authentication_provided"] is True
-    assert summary["operator_authentication_valid"] is True
-    assert summary["satisfies_operator_gate"] is True
-    assert summary["blocker"] is None
-    assert admission["eligible_for_draft_pr_gate"] is True
-    assert admission["draft_pr_gate_blockers"] == []
+    assert summary["operator_authentication_shape_valid"] is True
+    assert summary["operator_authentication_verifier_backed"] is False
+    assert summary["operator_authentication_valid"] is False
+    assert summary["satisfies_operator_gate"] is False
+    assert summary["blocker"] == "operator_decision_reference_authentication_invalid"
+    assert admission["eligible_for_draft_pr_gate"] is False
+    assert admission["draft_pr_gate_blockers"] == [
+        "operator_decision_reference_authentication_invalid"
+    ]
     assert "Operator reference is bound" not in completed.stdout
     assert "diff --git" not in completed.stdout
 

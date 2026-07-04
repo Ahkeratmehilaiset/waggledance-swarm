@@ -146,6 +146,10 @@ def test_panel_counters_expose_measurable_milestones() -> None:
         "first_hop_coverage_present": False,
         "first_hop_coverage_available": False,
         "first_hop_coverage_ratio": None,
+        "first_hop_denominator_scope": None,
+        "first_hop_denominator_count": 0,
+        "first_hop_gap_count": 0,
+        "first_hop_denominator_integrity_ok": False,
         "first_hop_declares_order": False,
     }
     assert by_id["magma_audit_log"]["milestones"]["receipt_count"] == 1

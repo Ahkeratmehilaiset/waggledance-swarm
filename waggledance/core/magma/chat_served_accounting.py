@@ -258,7 +258,6 @@ def derive_claim_window(
     instrumented_served_points: Iterable[str] | None,
     required_served_points: Iterable[str] | None = REQUIRED_CHAT_SERVED_POINTS,
     pending_append_failures: int = 0,
-    actual_head: str | None = None,
     torn_tail: bool = False,
     read_error: str | None = None,
 ) -> ClaimWindowReport:
@@ -273,9 +272,7 @@ def derive_claim_window(
         entries,
         pending_append_failures=pending_append_failures,
     )
-    actual = actual_head
-    if actual is None and read_error is None:
-        actual = head_hash(entries)
+    actual = None if read_error is not None else head_hash(entries)
     required = _normalized_point_set(required_served_points)
     instrumented = _normalized_point_set(instrumented_served_points)
     instrumented_set = set(instrumented)
@@ -328,8 +325,9 @@ def claim_window_from_ledger(
     pending_failure_ledger_path: str | None = None,
 ) -> ClaimWindowReport:
     """Read a ledger and evaluate the complete fail-closed claim-window gate."""
-    pending_failures = read_pending_append_failures(pending_failure_ledger_path)
+    pending_failures: int | None = None
     try:
+        pending_failures = read_pending_append_failures(pending_failure_ledger_path)
         entries, torn_tail = read_entries(ledger_path)
         return derive_claim_window(
             entries,
@@ -342,6 +340,8 @@ def claim_window_from_ledger(
             torn_tail=torn_tail,
         )
     except Exception as exc:  # noqa: BLE001 - claim-window reads fail closed
+        if pending_failures is None:
+            pending_failures = 1
         return derive_claim_window(
             [],
             expected_head=expected_head,
@@ -350,7 +350,6 @@ def claim_window_from_ledger(
             instrumented_served_points=instrumented_served_points,
             required_served_points=required_served_points,
             pending_append_failures=pending_failures,
-            actual_head=None,
             read_error=exc.__class__.__name__,
         )
 

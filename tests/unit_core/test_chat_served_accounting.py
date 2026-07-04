@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from waggledance.core.magma import chat_served_accounting as A
 from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_accounting import (
     PENDING_APPEND_FAILURE_SCHEMA,
@@ -188,6 +189,20 @@ def test_claim_window_requires_external_head_anchor() -> None:
     assert mismatch.reason == "head_anchor_mismatch"
 
 
+def test_claim_window_rejects_actual_head_override() -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+
+    with pytest.raises(TypeError):
+        derive_claim_window(
+            entries,
+            expected_head=L.GENESIS_PREV_HASH,
+            enabled_across_window=True,
+            clean_shutdown=True,
+            instrumented_served_points=_ALL_POINTS,
+            actual_head=L.GENESIS_PREV_HASH,
+        )
+
+
 def test_claim_window_invalidates_unclean_or_torn_window() -> None:
     entries = _chain([("pending", "q1"), ("receipt", "q1")])
     head = L.head_hash(entries)
@@ -293,6 +308,36 @@ def test_claim_window_from_ledger_reports_no_head_on_read_error(tmp_path) -> Non
     assert report.reason.startswith("ledger_read_failed:")
     assert report.actual_head is None
     assert report.read_error
+
+
+def test_claim_window_from_ledger_fails_closed_on_pending_failure_read_error(
+    tmp_path, monkeypatch
+) -> None:
+    path = str(tmp_path / "ledger.jsonl")
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    for entry in entries:
+        L.append_entry(path, entry, fsync=False)
+
+    def _raise(_path):
+        raise OSError("pending failure ledger unavailable")
+
+    monkeypatch.setattr(A, "read_pending_append_failures", _raise)
+
+    report = claim_window_from_ledger(
+        path,
+        expected_head=L.head_hash(entries),
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+        pending_failure_ledger_path=str(tmp_path / "pending_failures.jsonl"),
+    )
+
+    assert report.eligible is False
+    assert report.reason == "ledger_read_failed:OSError"
+    assert report.actual_head is None
+    assert report.read_error == "OSError"
+    assert report.coverage.pending_append_failures == 1
+    assert report.coverage.eligible is False
 
 
 # --- bounded ratio (#1495): numerator subset of denominator ---------------------

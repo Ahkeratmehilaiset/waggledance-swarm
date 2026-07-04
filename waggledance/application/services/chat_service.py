@@ -80,6 +80,10 @@ _TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 
 LOW_CONFIDENCE_GAP_THRESHOLD = 0.6
 
+# P2 S1b Phase 2b: known chat profiles for served-metadata normalization (an odd/
+# unknown profile normalizes to an honest "unknown" token, never a user-triggerable gap).
+_CHAT_SERVED_KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
+
 # v1.18.0: use shared helpers (convergence layer)
 from core.shared_routing_helpers import probe_micromodel as _shared_probe_micromodel
 
@@ -125,6 +129,10 @@ class ChatService:
         # v1.18.0: telemetry + ledger (lazy-init)
         self._telemetry = None
         self._ledger = None
+        # P2 S1b Phase 2b: the chat-served receipt emitter (SEPARATE from _ledger, which
+        # is a LearningLedger). None until first use; stays None while the feature is
+        # config-disabled (chat_served_receipts.enabled, default false) -> fully DORMANT.
+        self._chat_served_emitter = None
 
     async def handle(self, req: ChatRequest) -> ChatResult:
         """Process a chat request through the full pipeline.
@@ -161,6 +169,11 @@ class ChatService:
         if cached is not None:
             elapsed = (time.monotonic() - start) * 1000
             self._record_telemetry("hotcache", 1.0, elapsed, True, req.query)
+            self._emit_served(
+                query=req.query, response=cached, source="hotcache", route_type="hotcache",
+                confidence=1.0, latency_ms=elapsed, cached=True, round_table=False,
+                agent_id=None, language=language, profile=req.profile,
+                route_stage_trace=route_stage_trace)
             return ChatResult(
                 response=cached,
                 language=language,
@@ -233,6 +246,11 @@ class ChatService:
                 self._record_telemetry("solver", 0.95, elapsed, True, req.query)
                 await self._record_case(req.query, solver_result, 0.95,
                                         "solver", "solver", elapsed)
+                self._emit_served(
+                    query=req.query, response=solver_result, source="solver", route_type="solver",
+                    confidence=0.95, latency_ms=elapsed, cached=False, round_table=False,
+                    agent_id=None, language=language, profile=req.profile,
+                    route_stage_trace=route_stage_trace)
                 return ChatResult(
                     response=solver_result,
                     language=language,
@@ -283,6 +301,12 @@ class ChatService:
             if hybrid_trace and hybrid_trace.get("answered"):
                 result = hybrid_trace["result"]
                 result.route_stage_trace = route_stage_trace
+                self._emit_served(
+                    query=req.query, response=result.response, source=result.source,
+                    route_type="hybrid", confidence=result.confidence, latency_ms=result.latency_ms,
+                    cached=result.cached, round_table=result.round_table, agent_id=result.agent_id,
+                    language=result.language, profile=req.profile,
+                    route_stage_trace=route_stage_trace)
                 return result
 
         # v3.5.4: Hex neighbor mesh — after solver/hybrid, before orchestrator
@@ -322,6 +346,12 @@ class ChatService:
                         req.query, hex_result["response"],
                         hex_result["confidence"], hex_result["source"],
                         "hex_mesh", elapsed)
+                    self._emit_served(
+                        query=req.query, response=hex_result["response"],
+                        source=hex_result["source"], route_type="hex_mesh",
+                        confidence=hex_result["confidence"], latency_ms=elapsed, cached=False,
+                        round_table=False, agent_id=None, language=language, profile=req.profile,
+                        route_stage_trace=route_stage_trace)
                     return ChatResult(
                         response=hex_result["response"],
                         language=language,
@@ -403,6 +433,11 @@ class ChatService:
         await self._record_case(
             req.query, result.response, result.confidence,
             result.source, route.route_type, elapsed)
+        self._emit_served(
+            query=req.query, response=result.response, source=result.source,
+            route_type=route.route_type, confidence=result.confidence, latency_ms=elapsed,
+            cached=False, round_table=round_table_used, agent_id=result.agent_id,
+            language=language, profile=req.profile, route_stage_trace=route_stage_trace)
 
         return ChatResult(
             response=result.response,
@@ -495,6 +530,62 @@ class ChatService:
                 )
         except Exception:
             pass
+
+    # ---- P2 S1b Phase 2b: chat-served receipt emission (dormant, fail-open) ----
+    def _chat_served_emitter_or_none(self):
+        """Lazily build the config-gated chat-served emitter, or return None.
+
+        Returns None when ``chat_served_receipts.enabled`` is false (DORMANT default)
+        or on ANY init error -- serving must never be affected. Does NOT flip claim_safe.
+        """
+        if self._chat_served_emitter is not None:
+            return self._chat_served_emitter
+        try:
+            if not bool(self._config.get("chat_served_receipts.enabled", False)):
+                return None
+            import os
+
+            from tools.verify_magma_receipt import verify_manifest
+            from waggledance.core.magma.chat_served_emitter import ChatServedEmitter
+            from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
+
+            out_dir = str(self._config.get(
+                "chat_served_receipts.out_dir", "data/runtime/chat_served_receipts"))
+            os.makedirs(out_dir, exist_ok=True)
+            sink = ChatServedReceiptSink(os.path.join(out_dir, "ledger.jsonl"))
+            self._chat_served_emitter = ChatServedEmitter(
+                sink=sink, out_dir=out_dir, verify_manifest=verify_manifest,
+                known_profiles=_CHAT_SERVED_KNOWN_PROFILES, enabled=True,
+            )
+            return self._chat_served_emitter
+        except Exception:
+            log.debug("chat-served emitter init failed (serving continues)", exc_info=True)
+            self._chat_served_emitter = None
+            return None
+
+    def _emit_served(self, *, query: str, response: str, source: str, route_type: str,
+                     confidence: float, latency_ms: float, cached: bool, round_table: bool,
+                     agent_id: str | None, language: str, profile: str,
+                     route_stage_trace) -> None:
+        """Record the SYNC served_pending denominator + schedule the OFF-loop receipt for
+        one served response. FAIL-OPEN: never raises to the caller; disabled -> no-op.
+        Called at EVERY served return point (all five, incl. hybrid)."""
+        try:
+            emitter = self._chat_served_emitter_or_none()
+            if emitter is None:
+                return
+            from waggledance.core.magma.chat_served_emitter import new_served_id
+
+            served_id = new_served_id()
+            if emitter.record_pending(served_id, source=source, route_type=route_type,
+                                      language=language, profile=profile, agent_id=agent_id):
+                emitter.schedule_receipt(
+                    served_id, query=query, response=response, source=source,
+                    route_type=route_type, confidence=confidence, latency_ms=latency_ms,
+                    cached=cached, round_table=round_table, agent_id=agent_id,
+                    language=language, profile=profile, route_stage_trace=route_stage_trace)
+        except Exception:  # noqa: BLE001 -- serving must never break on receipt emission
+            log.debug("chat-served emit failed (serving continues)", exc_info=True)
 
     async def _record_case(self, query: str, response: str, confidence: float,
                             source: str, route_type: str, elapsed_ms: float):

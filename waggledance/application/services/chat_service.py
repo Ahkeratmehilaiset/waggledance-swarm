@@ -100,6 +100,7 @@ class ChatService:
         hex_neighbor_assist: object | None = None,
         control_plane_db: object | None = None,
         runtime_gap_detector: object | None = None,
+        chat_served_emitter: object | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._memory_service = memory_service
@@ -117,6 +118,7 @@ class ChatService:
         # v3.5.4: hex neighbor mesh
         self._hex_neighbor_assist = hex_neighbor_assist
         self._runtime_gap_detector = runtime_gap_detector
+        self._chat_served_emitter = chat_served_emitter
         if self._runtime_gap_detector is None and control_plane_db is not None:
             from waggledance.core.autonomy_growth.gap_intake import RuntimeGapDetector
 
@@ -160,7 +162,7 @@ class ChatService:
         if cached is not None:
             elapsed = (time.monotonic() - start) * 1000
             self._record_telemetry("hotcache", 1.0, elapsed, True, req.query)
-            return ChatResult(
+            result = ChatResult(
                 response=cached,
                 language=language,
                 source="hotcache",
@@ -171,6 +173,8 @@ class ChatService:
                 cached=True,
                 route_stage_trace=route_stage_trace,
             )
+            await self._record_chat_served(req=req, result=result)
+            return result
 
         memory_context = await self._memory_service.retrieve_context(
             query=req.query,
@@ -238,7 +242,7 @@ class ChatService:
                 self._record_telemetry("solver", 0.95, elapsed, True, req.query)
                 await self._record_case(req.query, solver_result, 0.95,
                                         "solver", "solver", elapsed)
-                return ChatResult(
+                result = ChatResult(
                     response=solver_result,
                     language=language,
                     source="solver",
@@ -249,6 +253,8 @@ class ChatService:
                     cached=False,
                     route_stage_trace=route_stage_trace,
                 )
+                await self._record_chat_served(req=req, result=result)
+                return result
             # Solver miss — fall through to hybrid retrieval or LLM
             route = route.__class__(
                 route_type="llm", confidence=0.6,
@@ -288,6 +294,7 @@ class ChatService:
             if hybrid_trace and hybrid_trace.get("answered"):
                 result = hybrid_trace["result"]
                 result.route_stage_trace = route_stage_trace
+                await self._record_chat_served(req=req, result=result)
                 return result
 
         # v3.5.4: Hex neighbor mesh — after solver/hybrid, before orchestrator
@@ -327,7 +334,7 @@ class ChatService:
                         req.query, hex_result["response"],
                         hex_result["confidence"], hex_result["source"],
                         "hex_mesh", elapsed)
-                    return ChatResult(
+                    result = ChatResult(
                         response=hex_result["response"],
                         language=language,
                         source=hex_result["source"],
@@ -339,6 +346,8 @@ class ChatService:
                         hybrid_trace=hybrid_trace,
                         route_stage_trace=route_stage_trace,
                     )
+                    await self._record_chat_served(req=req, result=result)
+                    return result
                 # v3.5.6: if hex ran but didn't resolve, record the trace for
                 # telemetry (skipped/escalated) — but don't attribute to hex
                 if hex_result and hex_result.get("trace"):
@@ -409,7 +418,7 @@ class ChatService:
             req.query, result.response, result.confidence,
             result.source, route.route_type, elapsed)
 
-        return ChatResult(
+        result = ChatResult(
             response=result.response,
             language=language,
             source=result.source,
@@ -421,6 +430,38 @@ class ChatService:
             hybrid_trace=hybrid_trace,
             route_stage_trace=route_stage_trace,
         )
+        await self._record_chat_served(req=req, result=result)
+        return result
+
+    async def _record_chat_served(
+        self,
+        *,
+        req: ChatRequest,
+        result: ChatResult,
+    ) -> None:
+        """Best-effort sanitized served evidence emission."""
+
+        emitter = self._chat_served_emitter
+        if emitter is None:
+            return
+        emit = getattr(emitter, "emit", None)
+        if not callable(emit):
+            return
+        try:
+            await asyncio.to_thread(
+                emit,
+                query=req.query,
+                language=result.language,
+                profile=req.profile,
+                source=result.source,
+                confidence=result.confidence,
+                latency_ms=result.latency_ms,
+                cached=result.cached,
+                round_table=result.round_table,
+                route_stage_trace=result.route_stage_trace,
+            )
+        except Exception:
+            log.debug("Failed to record chat-served evidence", exc_info=True)
 
     async def _record_low_confidence_gap(
         self,

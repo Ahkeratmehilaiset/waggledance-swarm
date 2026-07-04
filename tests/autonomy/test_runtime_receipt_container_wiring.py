@@ -15,6 +15,10 @@ def _settings_with_runtime_receipts(config: dict | None = None) -> WaggleSetting
     return WaggleSettings(profile="TEST", _extras=extras)
 
 
+def _settings_with_extras(extras: dict | None = None) -> WaggleSettings:
+    return WaggleSettings(profile="TEST", _extras=dict(extras or {}))
+
+
 def _summary_payload() -> dict:
     return build_handle_query_runtime_summary(
         query="private runtime query DO_NOT_LEAK",
@@ -148,3 +152,52 @@ def test_runtime_receipt_sink_returns_path_free_verifier_error_summaries(
     assert "/tmp/private" not in public_text
     assert "query" not in public_text
     assert "DO_NOT_LEAK" not in public_text
+
+
+def test_chat_served_evidence_emitter_is_default_off() -> None:
+    container = Container(settings=_settings_with_extras(), stub=True)
+
+    assert container.chat_served_evidence_emitter is None
+
+
+def test_chat_served_evidence_emitter_writes_sanitized_path_free_record(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "chat-served" / "served.jsonl"
+    container = Container(
+        settings=_settings_with_extras(
+            {
+                "chat_served_evidence": {
+                    "enabled": True,
+                    "path": str(out_path),
+                }
+            }
+        ),
+        stub=True,
+    )
+
+    emitter = container.chat_served_evidence_emitter
+    assert emitter is not None
+    assert container.chat_service._chat_served_emitter is emitter
+
+    report = emitter.emit(
+        query="private served query DO_NOT_LEAK",
+        language="en",
+        profile="TEST",
+        source="llm",
+        confidence=0.8,
+        latency_ms=10.0,
+        cached=False,
+        round_table=False,
+        route_stage_trace=[{"stage": "orchestrator_llm_fallback"}],
+    )
+
+    assert report["emitted"] is True
+    assert report["paths_returned"] is False
+    assert report["payloads_returned"] is False
+    assert str(tmp_path) not in str(report)
+
+    emitted_text = out_path.read_text(encoding="utf-8")
+    assert "query_digest" in emitted_text
+    assert "private served query" not in emitted_text
+    assert "DO_NOT_LEAK" not in emitted_text

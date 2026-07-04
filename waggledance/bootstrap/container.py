@@ -18,6 +18,9 @@ log = logging.getLogger(__name__)
 # be selected as the active profile.
 KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
 DEFAULT_RUNTIME_RECEIPT_OUT_DIR = "data/runtime/runtime_summary_receipts"
+DEFAULT_CHAT_SERVED_EVIDENCE_PATH = (
+    "data/runtime/chat_served_claim_window_evidence.jsonl"
+)
 
 
 def _public_runtime_receipt_verifier_errors(errors) -> list[str]:
@@ -348,6 +351,24 @@ class Container:
 
         return sink
 
+    @cached_property
+    def chat_served_evidence_emitter(self):
+        """Optional local recorder for sanitized ChatService served evidence."""
+
+        cfg = self._settings.get("chat_served_evidence", {}) or {}
+        if not isinstance(cfg, dict) or not _settings_bool(cfg.get("enabled", False)):
+            return None
+
+        path = Path(str(cfg.get("path", DEFAULT_CHAT_SERVED_EVIDENCE_PATH)))
+        from waggledance.core.magma.chat_served_emitter import (
+            ChatServedEvidenceEmitter,
+            JsonlChatServedEvidenceSink,
+        )
+
+        return ChatServedEvidenceEmitter(
+            sink=JsonlChatServedEvidenceSink(path),
+        )
+
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
     @cached_property
@@ -558,6 +579,7 @@ class Container:
             verifier_store=rt.verifier_store,
             hybrid_retrieval=self.hybrid_retrieval,
             hex_neighbor_assist=self.hex_neighbor_assist,
+            chat_served_emitter=self.chat_served_evidence_emitter,
         )
 
     @cached_property

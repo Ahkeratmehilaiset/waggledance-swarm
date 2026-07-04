@@ -132,3 +132,34 @@ def test_resolve_failure_records_gap_not_swallowed(tmp_path) -> None:
     asyncio.run(run())
     assert sink.counts() == {"served": 1, "receipts": 0, "gaps": 1, "pending_unresolved": 0}
     assert coverage_from_ledger(ledger).eligible is False     # a gap -> not eligible
+
+
+# --- path-escape (tools finding): served_id is a token that allows '/' and '.' -----
+def test_safe_bundle_name_neutralizes_path_traversal() -> None:
+    evil = "a/../../../escape"
+    assert is_conforming_token(evil)                          # a VALID ledger token...
+    name = ChatServedEmitter._safe_bundle_name(evil)
+    assert name.startswith("served-")                         # ...but a single SAFE path segment
+    assert "/" not in name and "\\" not in name and ".." not in name
+
+
+def test_path_traversal_served_id_bundle_stays_in_out_dir(tmp_path) -> None:
+    emitter, sink, _ledger = _emitter(tmp_path)
+    out_dir = tmp_path / "bundles"
+    evil = "x/../../../pwned"
+    assert is_conforming_token(evil)
+    emitter.record_pending(evil, source="solver", route_type="solver", language="fi",
+                           profile="HOME", agent_id=None)
+
+    async def run() -> None:
+        await emitter._resolve(evil, query="q", response="a", source="solver", route_type="solver",
+                               confidence=0.9, latency_ms=1.0, cached=False, round_table=False,
+                               agent_id=None, language="fi", profile="HOME", route_stage_trace=None)
+
+    asyncio.run(run())
+    assert sink.counts()["receipts"] == 1                     # still resolves correctly
+    for child in out_dir.iterdir():                           # every bundle stays a safe child
+        assert child.parent == out_dir and ".." not in child.name and "/" not in child.name
+        assert child.resolve().is_relative_to(out_dir.resolve())
+    assert not (tmp_path / "pwned").exists()                  # nothing escaped out_dir
+    assert not (tmp_path.parent / "pwned").exists()

@@ -187,6 +187,20 @@ class ChatServedEmitter:
             except Exception:  # noqa: BLE001 -- pending stays unresolved -> gap on walk anyway
                 log.debug("chat-served gap resolution also failed", exc_info=True)
 
+    @staticmethod
+    def _safe_bundle_name(served_id: str) -> str:
+        """A path-segment-safe, collision-free leaf derived from served_id.
+
+        served_id is a conforming TOKEN whose charset allows '/' and '.', which is
+        UNSAFE as a path component (a '../' would let the bundle escape out_dir while
+        the ledger still reports coverage). Deriving the leaf from a sha256 hex digest
+        makes escape impossible for ANY served_id (hex is always a single safe segment)
+        while staying unique per served_id.
+        """
+        import hashlib
+
+        return "served-" + hashlib.sha256(str(served_id).encode("utf-8")).hexdigest()[:32]
+
     def _write_bundle(
         self, summary: Mapping[str, Any], now: datetime, ordinal: int, served_id: str
     ) -> dict[str, Any]:
@@ -195,11 +209,11 @@ class ChatServedEmitter:
         from waggledance.core.magma.chat_served_receipt import write_chat_served_receipt_bundle
 
         # write_receipt_bundle REQUIRES a non-existent out_dir (it creates it), so each
-        # served receipt gets its own unique leaf (served_id is unique); the parent is
-        # ensured to exist first.
+        # served receipt gets its own unique leaf; the parent is ensured to exist first.
+        # The leaf is HASH-derived so a slash/dot-dot served_id can never escape out_dir.
         base = pathlib.Path(self._out_dir)
         base.mkdir(parents=True, exist_ok=True)
-        bundle_dir = base / f"served-{served_id}"
+        bundle_dir = base / self._safe_bundle_name(served_id)
         return write_chat_served_receipt_bundle(
             out_dir=bundle_dir, summary_payload=summary, now_utc=now,
             verify_manifest=self._verify_manifest, ordinal=ordinal,

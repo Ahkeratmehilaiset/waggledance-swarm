@@ -153,6 +153,72 @@ def _extract_milestone_values(
         # safe scalar fields; the route-order counter derives measurement
         # availability fail-closed and never upgrades the claim from these.
         first_hop = _mapping(proof.get("first_hop_coverage"))
+        first_hop_ratio = first_hop.get("authoritative_first_hop_coverage")
+        first_hop_corpus_size = _optional_non_negative_int(
+            first_hop.get("corpus_size")
+        )
+        first_hop_routable_size = _optional_non_negative_int(
+            first_hop.get("routable_size")
+        )
+        first_hop_hot_cache_count = _optional_non_negative_int(
+            first_hop.get("hot_cache_count")
+        )
+        first_hop_denominator_count = _optional_non_negative_int(
+            first_hop.get("first_hop_denominator_count")
+        )
+        first_hop_authoritative_count = _optional_non_negative_int(
+            first_hop.get("authoritative_first_hop_count")
+        )
+        first_hop_heuristic_count = _optional_non_negative_int(
+            first_hop.get("heuristic_first_hop_count")
+        )
+        first_hop_gap_count = _optional_non_negative_int(
+            first_hop.get("authoritative_first_hop_gap_count")
+        )
+        first_hop_ratio_valid = (
+            isinstance(first_hop_ratio, (int, float))
+            and not isinstance(first_hop_ratio, bool)
+            and math.isfinite(first_hop_ratio)
+            and 0.0 <= float(first_hop_ratio) <= 1.0
+        )
+        first_hop_counts_present = all(
+            _is_non_negative_int(value)
+            for value in (
+                first_hop_corpus_size,
+                first_hop_routable_size,
+                first_hop_hot_cache_count,
+                first_hop_denominator_count,
+                first_hop_authoritative_count,
+                first_hop_heuristic_count,
+                first_hop_gap_count,
+            )
+        )
+        first_hop_counts_consistent = bool(
+            first_hop_counts_present
+            and first_hop_denominator_count > 0
+            and first_hop_hot_cache_count <= first_hop_corpus_size
+            and first_hop_corpus_size - first_hop_hot_cache_count
+            == first_hop_routable_size
+            and first_hop_routable_size == first_hop_denominator_count
+            and first_hop_authoritative_count + first_hop_heuristic_count
+            == first_hop_denominator_count
+            and first_hop_gap_count == first_hop_heuristic_count
+        )
+        first_hop_ratio_matches_counts = bool(
+            first_hop_counts_consistent
+            and first_hop_ratio_valid
+            and abs(
+                float(first_hop_ratio)
+                - (first_hop_authoritative_count / first_hop_denominator_count)
+            )
+            <= 0.0001
+        )
+        first_hop_coverage_available = (
+            first_hop.get("coverage_measurement_available") is True
+            and first_hop.get("denominator_is_all_non_cached_first_hops") is True
+            and first_hop_counts_consistent
+            and first_hop_ratio_matches_counts
+        )
         return {
             "authoritative_first_hop_safe": bool(
                 proof.get("proves_every_query_first_enters_mesh")
@@ -165,14 +231,35 @@ def _extract_milestone_values(
                 config.get("hybrid_retrieval_authoritative") is True
             ),
             "first_hop_coverage_present": bool(proof.get("first_hop_coverage")),
-            "first_hop_coverage_available": (
-                first_hop.get("coverage_measurement_available") is True
+            "first_hop_coverage_available": first_hop_coverage_available,
+            "first_hop_coverage_ratio": first_hop_ratio,
+            "first_hop_corpus_provenance_basis": first_hop.get(
+                "corpus_provenance_basis"
             ),
-            "first_hop_coverage_ratio": first_hop.get(
-                "authoritative_first_hop_coverage"
+            "first_hop_corpus_representativeness_scope": first_hop.get(
+                "corpus_representativeness_scope"
             ),
+            "first_hop_denominator_scope": first_hop.get(
+                "first_hop_denominator_scope"
+            ),
+            "first_hop_corpus_size": first_hop_corpus_size,
+            "first_hop_routable_size": first_hop_routable_size,
+            "first_hop_hot_cache_count": first_hop_hot_cache_count,
+            "first_hop_denominator_count": first_hop_denominator_count,
+            "first_hop_authoritative_count": first_hop_authoritative_count,
+            "first_hop_heuristic_count": first_hop_heuristic_count,
+            "first_hop_gap_count": first_hop_gap_count,
             "first_hop_declares_order": (
                 first_hop.get("capsule_declares_authoritative_order") is True
+            ),
+            "first_hop_denominator_integrity_ok": (
+                first_hop.get("denominator_is_all_non_cached_first_hops") is True
+            ),
+            "first_hop_production_representativeness_claimed": (
+                first_hop.get("production_representativeness_claimed") is True
+            ),
+            "first_hop_corpus_representativeness_required_for_claim": (
+                first_hop.get("corpus_representativeness_required_for_claim") is True
             ),
         }
     if capability_id == "deterministic_solver_first":
@@ -766,11 +853,62 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         and math.isfinite(first_hop_ratio)
         and 0.0 <= float(first_hop_ratio) <= 1.0
     )
+    first_hop_corpus_size = hex_mesh.get("first_hop_corpus_size")
+    first_hop_routable_size = hex_mesh.get("first_hop_routable_size")
+    first_hop_hot_cache_count = hex_mesh.get("first_hop_hot_cache_count")
+    first_hop_denominator_count = hex_mesh.get("first_hop_denominator_count")
+    first_hop_authoritative_count = hex_mesh.get("first_hop_authoritative_count")
+    first_hop_heuristic_count = hex_mesh.get("first_hop_heuristic_count")
+    first_hop_gap_count = hex_mesh.get("first_hop_gap_count")
+    first_hop_counts_present = all(
+        _is_non_negative_int(value)
+        for value in (
+            first_hop_corpus_size,
+            first_hop_routable_size,
+            first_hop_hot_cache_count,
+            first_hop_denominator_count,
+            first_hop_authoritative_count,
+            first_hop_heuristic_count,
+            first_hop_gap_count,
+        )
+    )
+    first_hop_counts_consistent = bool(
+        first_hop_counts_present
+        and first_hop_denominator_count > 0
+        and first_hop_hot_cache_count <= first_hop_corpus_size
+        and first_hop_corpus_size - first_hop_hot_cache_count
+        == first_hop_routable_size
+        and first_hop_routable_size == first_hop_denominator_count
+        and first_hop_authoritative_count + first_hop_heuristic_count
+        == first_hop_denominator_count
+        and first_hop_gap_count == first_hop_heuristic_count
+    )
+    first_hop_ratio_matches_counts = bool(
+        first_hop_counts_consistent
+        and first_hop_ratio_valid
+        and abs(
+            float(first_hop_ratio)
+            - (first_hop_authoritative_count / first_hop_denominator_count)
+        )
+        <= 0.0001
+    )
     first_hop_measurement_available = (
         hex_mesh.get("first_hop_coverage_present") is True
         and hex_mesh.get("first_hop_coverage_available") is True
         and hex_mesh.get("first_hop_declares_order") is True
+        and hex_mesh.get("first_hop_denominator_scope")
+        == "all_non_cached_first_hops"
+        and hex_mesh.get("first_hop_denominator_integrity_ok") is True
+        and hex_mesh.get("first_hop_corpus_provenance_basis")
+        == "configs_benchmarks_yaml_local_canonical_v1"
+        and hex_mesh.get("first_hop_corpus_representativeness_scope")
+        == "local_30_record_canonical_probe_not_production_representative"
+        and hex_mesh.get("first_hop_corpus_representativeness_required_for_claim")
+        is True
+        and hex_mesh.get("first_hop_production_representativeness_claimed") is False
         and first_hop_ratio_valid
+        and first_hop_counts_consistent
+        and first_hop_ratio_matches_counts
     )
     measured_first_hop_authoritative_percent = (
         round(float(first_hop_ratio) * 100.0, 2)
@@ -1168,6 +1306,43 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "coverage_measurement_available": first_hop_measurement_available,
             "measured_first_hop_authoritative_percent": (
                 measured_first_hop_authoritative_percent
+            ),
+            "measurement_denominator_scope": (
+                hex_mesh.get("first_hop_denominator_scope")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_denominator_count": (
+                hex_mesh.get("first_hop_denominator_count")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_gap_count": (
+                hex_mesh.get("first_hop_gap_count")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_corpus_provenance_basis": (
+                hex_mesh.get("first_hop_corpus_provenance_basis")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_corpus_representativeness_scope": (
+                hex_mesh.get("first_hop_corpus_representativeness_scope")
+                if first_hop_measurement_available
+                else None
+            ),
+            "production_representativeness_claimed": bool(
+                first_hop_measurement_available
+                and hex_mesh.get("first_hop_production_representativeness_claimed")
+                is True
+            ),
+            "corpus_representativeness_required_for_claim": bool(
+                first_hop_measurement_available
+                and hex_mesh.get(
+                    "first_hop_corpus_representativeness_required_for_claim"
+                )
+                is True
             ),
             "measurement_basis": (
                 "v1_first_hop_authoritative_order"
@@ -1675,6 +1850,10 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _int_value(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _optional_non_negative_int(value: Any) -> int | None:
+    return value if _is_non_negative_int(value) else None
 
 
 def _is_non_negative_int(value: Any) -> bool:

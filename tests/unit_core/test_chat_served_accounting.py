@@ -15,7 +15,10 @@ import pytest
 from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_accounting import (
     PENDING_APPEND_FAILURE_SCHEMA,
+    REQUIRED_CHAT_SERVED_POINTS,
+    claim_window_from_ledger,
     coverage_from_ledger,
+    derive_claim_window,
     derive_coverage,
     read_pending_append_failures,
     valid_pending_append_failure,
@@ -25,6 +28,7 @@ from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
 _TS = "2026-07-04T07:00:00Z"
 _DIGEST = "sha256:" + "ab" * 32
 _META = {"route_type": "solver"}
+_ALL_POINTS = tuple(sorted(REQUIRED_CHAT_SERVED_POINTS))
 
 
 def _chain(specs):
@@ -126,6 +130,169 @@ def test_empty_ledger_is_ineligible_no_served() -> None:
     report = derive_coverage([])
     assert report.eligible is False and report.reason == "no_served_queries"
     assert report.served == 0 and report.ratio is None
+
+
+# --- outer claim-window gates (FW2/FW3/enabled/source-completeness) -------------
+def test_claim_window_requires_all_outer_gates_to_be_eligible() -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    head = L.head_hash(entries)
+
+    report = derive_claim_window(
+        entries,
+        expected_head=head,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+
+    assert report.eligible is True
+    assert report.reason is None
+    assert report.actual_head == head
+    assert report.coverage.eligible is True
+    assert report.missing_served_points == ()
+
+
+def test_claim_window_requires_external_head_anchor() -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    actual_head = L.head_hash(entries)
+
+    missing = derive_claim_window(
+        entries,
+        expected_head=None,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+    assert missing.eligible is False
+    assert missing.reason == "missing_expected_head_anchor"
+
+    invalid = derive_claim_window(
+        entries,
+        expected_head="not-a-sha",
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+    assert invalid.eligible is False
+    assert invalid.reason == "invalid_expected_head_anchor"
+
+    mismatch = derive_claim_window(
+        entries,
+        expected_head=L.GENESIS_PREV_HASH,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+    assert actual_head != L.GENESIS_PREV_HASH
+    assert mismatch.eligible is False
+    assert mismatch.reason == "head_anchor_mismatch"
+
+
+def test_claim_window_invalidates_unclean_or_torn_window() -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    head = L.head_hash(entries)
+
+    unclean = derive_claim_window(
+        entries,
+        expected_head=head,
+        enabled_across_window=True,
+        clean_shutdown=False,
+        instrumented_served_points=_ALL_POINTS,
+    )
+    assert unclean.eligible is False
+    assert unclean.reason == "unclean_shutdown_window_invalid"
+
+    torn = derive_claim_window(
+        entries,
+        expected_head=head,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+        torn_tail=True,
+    )
+    assert torn.eligible is False
+    assert torn.reason == "ledger_torn_tail"
+
+
+def test_claim_window_requires_enabled_window_and_source_completeness() -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    head = L.head_hash(entries)
+
+    disabled = derive_claim_window(
+        entries,
+        expected_head=head,
+        enabled_across_window=False,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+    assert disabled.eligible is False
+    assert disabled.reason == "not_enabled_across_window"
+
+    incomplete = derive_claim_window(
+        entries,
+        expected_head=head,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=tuple(p for p in _ALL_POINTS if p != "hex_mesh"),
+    )
+    assert incomplete.eligible is False
+    assert incomplete.reason == "served_point_instrumentation_incomplete"
+    assert incomplete.missing_served_points == ("hex_mesh",)
+
+
+def test_claim_window_pending_append_failures_keep_window_ineligible() -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    head = L.head_hash(entries)
+
+    report = derive_claim_window(
+        entries,
+        expected_head=head,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+        pending_append_failures=1,
+    )
+
+    assert report.eligible is False
+    assert report.reason == "coverage_not_eligible:pending_append_failures"
+    assert report.coverage.pending_append_failures == 1
+
+
+def test_claim_window_from_ledger_catches_torn_tail_even_when_coverage_is_clean(tmp_path) -> None:
+    path = str(tmp_path / "ledger.jsonl")
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    for entry in entries:
+        L.append_entry(path, entry, fsync=False)
+    with open(path, "ab") as handle:
+        handle.write(b'{"partial":')
+
+    report = claim_window_from_ledger(
+        path,
+        expected_head=L.head_hash(entries),
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+
+    assert report.coverage.eligible is True
+    assert report.eligible is False
+    assert report.reason == "ledger_torn_tail"
+
+
+def test_claim_window_from_ledger_reports_no_head_on_read_error(tmp_path) -> None:
+    report = claim_window_from_ledger(
+        str(tmp_path),
+        expected_head=L.GENESIS_PREV_HASH,
+        enabled_across_window=True,
+        clean_shutdown=True,
+        instrumented_served_points=_ALL_POINTS,
+    )
+
+    assert report.eligible is False
+    assert report.reason is not None
+    assert report.reason.startswith("ledger_read_failed:")
+    assert report.actual_head is None
+    assert report.read_error
 
 
 # --- bounded ratio (#1495): numerator subset of denominator ---------------------

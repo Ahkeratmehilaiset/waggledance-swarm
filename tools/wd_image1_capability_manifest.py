@@ -9730,11 +9730,16 @@ _FIRST_HOP_COVERAGE_SAFE_KEYS = (
     "corpus_size",
     "hot_cache_count",
     "routable_size",
+    "first_hop_denominator_scope",
+    "first_hop_denominator_count",
     "authoritative_first_hop_count",
     "heuristic_first_hop_count",
+    "authoritative_first_hop_gap_count",
+    "denominator_is_all_non_cached_first_hops",
     "measurement_basis",
 )
 _FIRST_HOP_MEASUREMENT_BASIS = "v1_first_hop_authoritative_order"
+_FIRST_HOP_DENOMINATOR_SCOPE = "all_non_cached_first_hops"
 
 
 def _first_hop_coverage_enabled() -> bool:
@@ -9784,7 +9789,39 @@ def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
     basis = report.get("measurement_basis")
     if basis != _FIRST_HOP_MEASUREMENT_BASIS:
         raise ValueError("unexpected first_hop_coverage measurement_basis")
+    denominator_scope = report.get("first_hop_denominator_scope")
+    if denominator_scope != _FIRST_HOP_DENOMINATOR_SCOPE:
+        raise ValueError("unexpected first_hop_coverage denominator scope")
     invariants = report.get("invariants") or {}
+    corpus_size = _nonneg_int(report.get("corpus_size"), "corpus_size")
+    hot_cache_count = _nonneg_int(report.get("hot_cache_count"), "hot_cache_count")
+    routable_size = _nonneg_int(report.get("routable_size"), "routable_size")
+    denominator_count = _nonneg_int(
+        report.get("first_hop_denominator_count"), "first_hop_denominator_count"
+    )
+    authoritative_count = _nonneg_int(
+        report.get("authoritative_first_hop_count"),
+        "authoritative_first_hop_count",
+    )
+    heuristic_count = _nonneg_int(
+        report.get("heuristic_first_hop_count"), "heuristic_first_hop_count"
+    )
+    gap_count = _nonneg_int(
+        report.get("authoritative_first_hop_gap_count"),
+        "authoritative_first_hop_gap_count",
+    )
+    denominator_ok = _strict_bool(
+        invariants.get("denominator_is_all_non_cached_first_hops"),
+        "denominator_is_all_non_cached_first_hops",
+    )
+    if (
+        denominator_count != routable_size
+        or corpus_size - hot_cache_count != routable_size
+        or authoritative_count + heuristic_count != denominator_count
+        or gap_count != heuristic_count
+        or not denominator_ok
+    ):
+        raise ValueError("first_hop_coverage denominator accounting mismatch")
     aggregate = {
         "coverage_measurement_available": _strict_bool(
             report.get("coverage_measurement_available"),
@@ -9797,16 +9834,15 @@ def _safe_first_hop_coverage_aggregate(report: dict) -> dict:
             invariants.get("capsule_declares_authoritative_order"),
             "capsule_declares_authoritative_order",
         ),
-        "corpus_size": _nonneg_int(report.get("corpus_size"), "corpus_size"),
-        "hot_cache_count": _nonneg_int(report.get("hot_cache_count"), "hot_cache_count"),
-        "routable_size": _nonneg_int(report.get("routable_size"), "routable_size"),
-        "authoritative_first_hop_count": _nonneg_int(
-            report.get("authoritative_first_hop_count"),
-            "authoritative_first_hop_count",
-        ),
-        "heuristic_first_hop_count": _nonneg_int(
-            report.get("heuristic_first_hop_count"), "heuristic_first_hop_count"
-        ),
+        "corpus_size": corpus_size,
+        "hot_cache_count": hot_cache_count,
+        "routable_size": routable_size,
+        "first_hop_denominator_scope": denominator_scope,
+        "first_hop_denominator_count": denominator_count,
+        "authoritative_first_hop_count": authoritative_count,
+        "heuristic_first_hop_count": heuristic_count,
+        "authoritative_first_hop_gap_count": gap_count,
+        "denominator_is_all_non_cached_first_hops": denominator_ok,
         "measurement_basis": basis,
     }
     extra = set(aggregate) - set(_FIRST_HOP_COVERAGE_SAFE_KEYS)

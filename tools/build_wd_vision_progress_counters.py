@@ -171,8 +171,20 @@ def _extract_milestone_values(
             "first_hop_coverage_ratio": first_hop.get(
                 "authoritative_first_hop_coverage"
             ),
+            "first_hop_denominator_scope": first_hop.get(
+                "first_hop_denominator_scope"
+            ),
+            "first_hop_denominator_count": _int_value(
+                first_hop.get("first_hop_denominator_count")
+            ),
+            "first_hop_gap_count": _int_value(
+                first_hop.get("authoritative_first_hop_gap_count")
+            ),
             "first_hop_declares_order": (
                 first_hop.get("capsule_declares_authoritative_order") is True
+            ),
+            "first_hop_denominator_integrity_ok": (
+                first_hop.get("denominator_is_all_non_cached_first_hops") is True
             ),
         }
     if capability_id == "deterministic_solver_first":
@@ -770,6 +782,9 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
         hex_mesh.get("first_hop_coverage_present") is True
         and hex_mesh.get("first_hop_coverage_available") is True
         and hex_mesh.get("first_hop_declares_order") is True
+        and hex_mesh.get("first_hop_denominator_scope")
+        == "all_non_cached_first_hops"
+        and hex_mesh.get("first_hop_denominator_integrity_ok") is True
         and first_hop_ratio_valid
     )
     measured_first_hop_authoritative_percent = (
@@ -1168,6 +1183,21 @@ def _milestone_counters(panel_counters: Sequence[Mapping[str, Any]]) -> dict[str
             "coverage_measurement_available": first_hop_measurement_available,
             "measured_first_hop_authoritative_percent": (
                 measured_first_hop_authoritative_percent
+            ),
+            "measurement_denominator_scope": (
+                hex_mesh.get("first_hop_denominator_scope")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_denominator_count": (
+                hex_mesh.get("first_hop_denominator_count")
+                if first_hop_measurement_available
+                else None
+            ),
+            "measurement_gap_count": (
+                hex_mesh.get("first_hop_gap_count")
+                if first_hop_measurement_available
+                else None
             ),
             "measurement_basis": (
                 "v1_first_hop_authoritative_order"

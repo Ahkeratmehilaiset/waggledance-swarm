@@ -665,6 +665,10 @@ _SAFE_FIRST_HOP = {
     "coverage_measurement_available": True,
     "authoritative_first_hop_coverage": 0.6667,
     "capsule_declares_authoritative_order": True,
+    "first_hop_denominator_scope": "all_non_cached_first_hops",
+    "first_hop_denominator_count": 30,
+    "authoritative_first_hop_gap_count": 10,
+    "denominator_is_all_non_cached_first_hops": True,
     "measurement_basis": "v1_first_hop_authoritative_order",
 }
 
@@ -673,6 +677,9 @@ def test_first_hop_coverage_available_with_safe_measurement() -> None:
     gate = _first_hop_gate(_SAFE_FIRST_HOP)
     assert gate["coverage_measurement_available"] is True
     assert gate["measured_first_hop_authoritative_percent"] == 66.67
+    assert gate["measurement_denominator_scope"] == "all_non_cached_first_hops"
+    assert gate["measurement_denominator_count"] == 30
+    assert gate["measurement_gap_count"] == 10
     assert gate["measurement_basis"] == "v1_first_hop_authoritative_order"
 
 
@@ -692,6 +699,9 @@ def test_first_hop_unavailable_when_not_declared() -> None:
                             "authoritative_first_hop_coverage": None})
     assert gate["coverage_measurement_available"] is False
     assert gate["measured_first_hop_authoritative_percent"] is None
+    assert gate["measurement_denominator_scope"] is None
+    assert gate["measurement_denominator_count"] is None
+    assert gate["measurement_gap_count"] is None
     assert gate["measurement_basis"] == "manifest_hex_mesh_flags"
 
 

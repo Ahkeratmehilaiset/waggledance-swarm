@@ -39,6 +39,14 @@ def test_structure_and_coverage_consistency():
     assert r["routable_size"] == r["corpus_size"] - r["hot_cache_count"]
     assert (r["authoritative_first_hop_count"] + r["heuristic_first_hop_count"]
             == r["routable_size"])
+    assert r["first_hop_denominator_scope"] == "all_non_cached_first_hops"
+    assert r["first_hop_denominator_count"] == r["routable_size"]
+    assert r["authoritative_first_hop_gap_count"] == r["heuristic_first_hop_count"]
+    assert (
+        r["authoritative_first_hop_count"] + r["authoritative_first_hop_gap_count"]
+        == r["first_hop_denominator_count"]
+    )
+    assert r["invariants"]["denominator_is_all_non_cached_first_hops"] is True
     cov = r["authoritative_first_hop_coverage"]
     if r["coverage_measurement_available"]:
         assert cov is not None and 0.0 <= cov <= 1.0

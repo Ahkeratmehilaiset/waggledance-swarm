@@ -3574,9 +3574,15 @@ def _good_first_hop_report() -> dict:
         "corpus_size": 30,
         "hot_cache_count": 0,
         "routable_size": 30,
+        "first_hop_denominator_scope": "all_non_cached_first_hops",
+        "first_hop_denominator_count": 30,
         "authoritative_first_hop_count": 20,
         "heuristic_first_hop_count": 10,
-        "invariants": {"capsule_declares_authoritative_order": True},
+        "authoritative_first_hop_gap_count": 10,
+        "invariants": {
+            "capsule_declares_authoritative_order": True,
+            "denominator_is_all_non_cached_first_hops": True,
+        },
     }
 
 
@@ -3585,7 +3591,10 @@ def test_first_hop_aggregate_accepts_none_coverage_when_unavailable() -> None:
     report = {**_good_first_hop_report(),
               "coverage_measurement_available": False,
               "authoritative_first_hop_coverage": None,
-              "invariants": {"capsule_declares_authoritative_order": False}}
+              "invariants": {
+                  "capsule_declares_authoritative_order": False,
+                  "denominator_is_all_non_cached_first_hops": True,
+              }}
     aggregate = _safe_first_hop_coverage_aggregate(report)
     assert aggregate["authoritative_first_hop_coverage"] is None
     assert aggregate["coverage_measurement_available"] is False
@@ -3603,6 +3612,7 @@ def test_first_hop_aggregate_rejects_bad_coverage(bad) -> None:
 @pytest.mark.parametrize("field,bad", [
     ("coverage_measurement_available", "true"),
     ("corpus_size", -1),
+    ("first_hop_denominator_scope", "solver_only_first_hops"),
     ("authoritative_first_hop_count", 1.5),
     ("measurement_basis", "spoofed_basis"),
 ])
@@ -3611,11 +3621,35 @@ def test_first_hop_aggregate_rejects_bad_scalar(field, bad) -> None:
         _safe_first_hop_coverage_aggregate({**_good_first_hop_report(), field: bad})
 
 
+@pytest.mark.parametrize("field,bad", [
+    ("first_hop_denominator_count", 29),
+    ("heuristic_first_hop_count", 9),
+    ("authoritative_first_hop_gap_count", 9),
+    ("hot_cache_count", 1),
+])
+def test_first_hop_aggregate_rejects_denominator_mismatch(field, bad) -> None:
+    with pytest.raises(ValueError, match="denominator accounting mismatch"):
+        _safe_first_hop_coverage_aggregate({**_good_first_hop_report(), field: bad})
+
+
 def test_first_hop_aggregate_rejects_non_bool_declares_order() -> None:
     with pytest.raises(ValueError):
         _safe_first_hop_coverage_aggregate(
             {**_good_first_hop_report(),
              "invariants": {"capsule_declares_authoritative_order": 1}}
+        )
+
+
+def test_first_hop_aggregate_rejects_non_bool_denominator_integrity() -> None:
+    with pytest.raises(ValueError):
+        _safe_first_hop_coverage_aggregate(
+            {
+                **_good_first_hop_report(),
+                "invariants": {
+                    "capsule_declares_authoritative_order": True,
+                    "denominator_is_all_non_cached_first_hops": "yes",
+                },
+            }
         )
 
 

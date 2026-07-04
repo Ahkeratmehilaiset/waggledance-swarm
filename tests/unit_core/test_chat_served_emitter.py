@@ -17,8 +17,15 @@ from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_accounting import (
     coverage_from_ledger,
+    REQUIRED_CHAT_SERVED_POINTS,
     read_pending_append_failures,
     valid_pending_append_failure,
+)
+from waggledance.core.magma.chat_served_claim_window_evidence import (
+    derive_enabled_across_window,
+    derive_instrumented_served_points,
+    read_clean_shutdown_marker,
+    read_latest_head_anchor,
 )
 from waggledance.core.magma.chat_served_emitter import ChatServedEmitter, new_served_id
 from waggledance.core.magma.chat_served_ledger import is_path_safe_token
@@ -26,6 +33,7 @@ from waggledance.core.magma.chat_served_metadata import is_conforming_token
 from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
 
 _KNOWN = frozenset({"HOME", "FACTORY", "COTTAGE", "GADGET"})
+_WINDOW = "window:phase2g"
 
 
 def _fixed_now() -> datetime:
@@ -42,6 +50,43 @@ def _emitter(tmp_path, *, enabled=True):
         known_profiles=_KNOWN, enabled=enabled, now_fn=_fixed_now,
     )
     return emitter, sink, ledger
+
+
+def _emitter_with_claim_window(tmp_path):
+    ledger = str(tmp_path / "ledger.jsonl")
+    out_dir = tmp_path / "bundles"
+    evidence_dir = tmp_path / "claim-window"
+    out_dir.mkdir(exist_ok=True)
+    sink = ChatServedReceiptSink(ledger, fsync_every=0)
+    paths = {
+        "anchors": evidence_dir / "head-anchors.jsonl",
+        "enabled": evidence_dir / "enabled-samples.jsonl",
+        "clean": evidence_dir / "clean.json",
+        "served_points": evidence_dir / "served-points.jsonl",
+    }
+    emitter = ChatServedEmitter(
+        sink=sink,
+        out_dir=out_dir,
+        verify_manifest=verify_manifest,
+        known_profiles=_KNOWN,
+        enabled=True,
+        now_fn=_fixed_now,
+        ledger_path=ledger,
+        claim_window_window_id=_WINDOW,
+        claim_window_anchor_store_path=paths["anchors"],
+        claim_window_enabled_samples_path=paths["enabled"],
+        claim_window_clean_shutdown_marker_path=paths["clean"],
+        claim_window_served_point_observations_path=paths["served_points"],
+    )
+    return emitter, sink, ledger, paths
+
+
+def _read_jsonl(path: Path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_new_served_id_unique_and_conforming() -> None:
@@ -71,6 +116,52 @@ def test_record_pending_writes_normalized_metadata_no_raw(tmp_path) -> None:
     md = L.read_entries(ledger)[0][0]["metadata"]
     assert md["profile"] == "unknown"                          # normalized honest token
     assert md["source"] == "solver" and md["language"] == "fi" and md["agent_id"] == "round_table"
+
+
+def test_claim_window_recorder_observes_served_points_and_explicit_markers(tmp_path) -> None:
+    emitter, sink, ledger, paths = _emitter_with_claim_window(tmp_path)
+    sid = new_served_id()
+
+    assert emitter.record_pending(
+        sid,
+        source="solver",
+        route_type="solver",
+        language="fi",
+        profile="HOME",
+        agent_id=None,
+    ) is True
+    observations = _read_jsonl(paths["served_points"])
+    assert derive_instrumented_served_points(observations) == ("solver",)
+    assert not paths["clean"].exists()
+
+    assert emitter.record_claim_window_enabled_sample(True) is True
+    samples = _read_jsonl(paths["enabled"])
+    assert derive_enabled_across_window(samples, window_id=_WINDOW) is True
+
+    assert emitter.checkpoint_claim_window_head() is True
+    anchor = read_latest_head_anchor(str(paths["anchors"]), ledger, window_id=_WINDOW)
+    assert anchor.ok is True
+    assert anchor.expected_head == sink.head
+
+    assert emitter.mark_claim_window_clean_shutdown() is True
+    assert read_clean_shutdown_marker(str(paths["clean"]), window_id=_WINDOW) is True
+
+
+def test_claim_window_recorder_does_not_turn_partial_observations_complete(tmp_path) -> None:
+    emitter, _sink, _ledger, paths = _emitter_with_claim_window(tmp_path)
+
+    assert emitter.record_pending(
+        new_served_id(),
+        source="solver",
+        route_type="solver",
+        language="fi",
+        profile="HOME",
+        agent_id=None,
+    ) is True
+    observed = set(derive_instrumented_served_points(_read_jsonl(paths["served_points"])))
+
+    assert observed == {"solver"}
+    assert observed != set(REQUIRED_CHAT_SERVED_POINTS)
 
 
 def test_record_pending_fail_open_surfaces_not_swallows(tmp_path) -> None:

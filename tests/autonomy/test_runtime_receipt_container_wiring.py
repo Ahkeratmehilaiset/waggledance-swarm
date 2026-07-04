@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from waggledance.adapters.config.settings_loader import WaggleSettings
 from waggledance.bootstrap.container import Container
 from waggledance.core.magma.chat_served_accounting import coverage_from_ledger
+from waggledance.core.magma.chat_served_claim_window_evidence import (
+    derive_enabled_across_window,
+    derive_instrumented_served_points,
+    read_clean_shutdown_marker,
+    read_latest_head_anchor,
+)
 from waggledance.core.magma.chat_served_emitter import new_served_id
 from waggledance.core.magma.runtime_summary_receipt import (
     build_handle_query_runtime_summary,
@@ -54,6 +61,14 @@ def _summary_payload() -> dict:
             }
         ],
     )
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_runtime_receipt_sink_is_default_off() -> None:
@@ -111,6 +126,64 @@ def test_chat_served_emitter_opt_in_writes_eligible_chain(tmp_path: Path) -> Non
         for path in sorted(receipt_root.rglob("*.json"))
     )
     assert "DO_NOT_LEAK" not in emitted
+    assert not (receipt_root / "claim_window_served_points.jsonl").exists()
+
+
+def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
+    tmp_path: Path,
+) -> None:
+    receipt_root = tmp_path / "chat-served"
+    claim_root = tmp_path / "claim-window"
+    window_id = "window:container"
+    container = Container(
+        settings=_settings_with_chat_served_receipts(
+            {
+                "enabled": True,
+                "out_dir": str(receipt_root),
+                "claim_window_evidence": {
+                    "enabled": True,
+                    "window_id": window_id,
+                    "anchor_store_path": str(claim_root / "anchors.jsonl"),
+                    "enabled_samples_path": str(claim_root / "enabled.jsonl"),
+                    "clean_shutdown_marker_path": str(claim_root / "clean.json"),
+                    "served_point_observations_path": str(claim_root / "served-points.jsonl"),
+                },
+            }
+        ),
+        stub=True,
+    )
+    emitter = container.chat_served_emitter
+    assert emitter is not None
+    assert emitter.claim_window_evidence_enabled is True
+
+    assert emitter.record_pending(
+        new_served_id(),
+        source="solver",
+        route_type="solver",
+        language="fi",
+        profile="HOME",
+        agent_id=None,
+    ) is True
+    observations = _read_jsonl(claim_root / "served-points.jsonl")
+    assert derive_instrumented_served_points(observations) == ("solver",)
+    assert not (claim_root / "clean.json").exists()
+
+    assert emitter.record_claim_window_enabled_sample(True) is True
+    assert derive_enabled_across_window(
+        _read_jsonl(claim_root / "enabled.jsonl"),
+        window_id=window_id,
+    ) is True
+
+    assert emitter.checkpoint_claim_window_head() is True
+    anchor = read_latest_head_anchor(
+        str(claim_root / "anchors.jsonl"),
+        str(receipt_root / "ledger.jsonl"),
+        window_id=window_id,
+    )
+    assert anchor.ok is True
+
+    assert emitter.mark_claim_window_clean_shutdown() is True
+    assert read_clean_shutdown_marker(str(claim_root / "clean.json"), window_id=window_id)
 
 
 def test_runtime_receipt_sink_treats_string_false_as_disabled() -> None:

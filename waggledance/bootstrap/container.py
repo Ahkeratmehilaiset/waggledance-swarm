@@ -519,17 +519,65 @@ class Container:
                 "chat_served_receipts.fsync_every",
                 32,
             )
+            ledger_path = out_dir / "ledger.jsonl"
             out_dir.mkdir(parents=True, exist_ok=True)
             sink = ChatServedReceiptSink(
-                str(out_dir / "ledger.jsonl"),
+                str(ledger_path),
                 fsync_every=fsync_every,
             )
+            evidence_kwargs = {}
+            if _settings_bool(self._settings.get(
+                "chat_served_receipts.claim_window_evidence.enabled",
+                False,
+            )):
+                evidence_dir = Path(
+                    str(
+                        self._settings.get(
+                            "chat_served_receipts.claim_window_evidence.out_dir",
+                            out_dir,
+                        )
+                    )
+                )
+                evidence_kwargs = {
+                    "ledger_path": str(ledger_path),
+                    "claim_window_window_id": str(
+                        self._settings.get(
+                            "chat_served_receipts.claim_window_evidence.window_id",
+                            "chat_served_runtime_window",
+                        )
+                    ),
+                    "claim_window_anchor_store_path": str(
+                        self._settings.get(
+                            "chat_served_receipts.claim_window_evidence.anchor_store_path",
+                            evidence_dir / "claim_window_head_anchors.jsonl",
+                        )
+                    ),
+                    "claim_window_enabled_samples_path": str(
+                        self._settings.get(
+                            "chat_served_receipts.claim_window_evidence.enabled_samples_path",
+                            evidence_dir / "claim_window_enabled_samples.jsonl",
+                        )
+                    ),
+                    "claim_window_clean_shutdown_marker_path": str(
+                        self._settings.get(
+                            "chat_served_receipts.claim_window_evidence.clean_shutdown_marker_path",
+                            evidence_dir / "claim_window_clean_shutdown.json",
+                        )
+                    ),
+                    "claim_window_served_point_observations_path": str(
+                        self._settings.get(
+                            "chat_served_receipts.claim_window_evidence.served_point_observations_path",
+                            evidence_dir / "claim_window_served_points.jsonl",
+                        )
+                    ),
+                }
             return ChatServedEmitter(
                 sink=sink,
                 out_dir=out_dir,
                 verify_manifest=verify_manifest,
                 known_profiles=KNOWN_PROFILES,
                 enabled=True,
+                **evidence_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - chat serving must fail open.
             log.warning("chat-served emitter unavailable: %s", exc)

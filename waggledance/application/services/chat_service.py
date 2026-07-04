@@ -83,6 +83,16 @@ LOW_CONFIDENCE_GAP_THRESHOLD = 0.6
 # P2 S1b Phase 2b: known chat profiles for served-metadata normalization (an odd/
 # unknown profile normalizes to an honest "unknown" token, never a user-triggerable gap).
 _CHAT_SERVED_KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
+_DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR = "data/runtime/chat_served_receipts"
+_DEFAULT_CHAT_CLAIM_WINDOW_ID = "chat_served_runtime_window"
+
+
+def _config_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 # v1.18.0: use shared helpers (convergence layer)
 from core.shared_routing_helpers import probe_micromodel as _shared_probe_micromodel
@@ -542,7 +552,7 @@ class ChatService:
         if self._chat_served_emitter is not None:
             return self._chat_served_emitter
         try:
-            if not bool(self._config.get("chat_served_receipts.enabled", False)):
+            if not _config_bool(self._config.get("chat_served_receipts.enabled", False)):
                 return None
             import os
 
@@ -551,12 +561,46 @@ class ChatService:
             from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
 
             out_dir = str(self._config.get(
-                "chat_served_receipts.out_dir", "data/runtime/chat_served_receipts"))
+                "chat_served_receipts.out_dir", _DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR))
+            ledger_path = os.path.join(out_dir, "ledger.jsonl")
             os.makedirs(out_dir, exist_ok=True)
-            sink = ChatServedReceiptSink(os.path.join(out_dir, "ledger.jsonl"))
+            sink = ChatServedReceiptSink(ledger_path)
+            evidence_kwargs = {}
+            if _config_bool(self._config.get(
+                "chat_served_receipts.claim_window_evidence.enabled",
+                False,
+            )):
+                evidence_dir = str(self._config.get(
+                    "chat_served_receipts.claim_window_evidence.out_dir",
+                    out_dir,
+                ))
+                evidence_kwargs = {
+                    "ledger_path": ledger_path,
+                    "claim_window_window_id": str(self._config.get(
+                        "chat_served_receipts.claim_window_evidence.window_id",
+                        _DEFAULT_CHAT_CLAIM_WINDOW_ID,
+                    )),
+                    "claim_window_anchor_store_path": str(self._config.get(
+                        "chat_served_receipts.claim_window_evidence.anchor_store_path",
+                        os.path.join(evidence_dir, "claim_window_head_anchors.jsonl"),
+                    )),
+                    "claim_window_enabled_samples_path": str(self._config.get(
+                        "chat_served_receipts.claim_window_evidence.enabled_samples_path",
+                        os.path.join(evidence_dir, "claim_window_enabled_samples.jsonl"),
+                    )),
+                    "claim_window_clean_shutdown_marker_path": str(self._config.get(
+                        "chat_served_receipts.claim_window_evidence.clean_shutdown_marker_path",
+                        os.path.join(evidence_dir, "claim_window_clean_shutdown.json"),
+                    )),
+                    "claim_window_served_point_observations_path": str(self._config.get(
+                        "chat_served_receipts.claim_window_evidence.served_point_observations_path",
+                        os.path.join(evidence_dir, "claim_window_served_points.jsonl"),
+                    )),
+                }
             self._chat_served_emitter = ChatServedEmitter(
                 sink=sink, out_dir=out_dir, verify_manifest=verify_manifest,
                 known_profiles=_CHAT_SERVED_KNOWN_PROFILES, enabled=True,
+                **evidence_kwargs,
             )
             return self._chat_served_emitter
         except Exception:

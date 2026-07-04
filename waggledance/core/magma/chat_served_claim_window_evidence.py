@@ -279,6 +279,50 @@ def write_clean_shutdown_marker(
             os.fsync(handle.fileno())
 
 
+def _append_jsonl(path: str, entry: Mapping[str, Any], *, fsync: bool) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
+        handle.flush()
+        if fsync:
+            os.fsync(handle.fileno())
+
+
+def write_enabled_state_sample(
+    sample_path: str,
+    *,
+    window_id: str,
+    enabled: bool,
+    ts_utc: str,
+    fsync: bool = True,
+) -> None:
+    """Append one hash-validated enabled-state sample to a durable JSONL store."""
+    sample = new_enabled_state_sample(
+        window_id=window_id,
+        enabled=enabled,
+        ts_utc=ts_utc,
+    )
+    _append_jsonl(sample_path, sample, fsync=fsync)
+
+
+def write_served_point_observation(
+    observation_path: str,
+    *,
+    point: str,
+    wired: bool,
+    ts_utc: str,
+    fsync: bool = True,
+) -> None:
+    """Append one hash-validated served-point observation to a JSONL store."""
+    observation = new_served_point_observation(
+        point=point,
+        wired=wired,
+        ts_utc=ts_utc,
+    )
+    _append_jsonl(observation_path, observation, fsync=fsync)
+
+
 def read_clean_shutdown_marker(marker_path: str, *, window_id: str) -> bool:
     try:
         with open(marker_path, "r", encoding="utf-8") as handle:
@@ -473,5 +517,7 @@ __all__ = [
     "valid_head_anchor",
     "valid_served_point_observation",
     "write_clean_shutdown_marker",
+    "write_enabled_state_sample",
     "write_head_anchor_checkpoint",
+    "write_served_point_observation",
 ]

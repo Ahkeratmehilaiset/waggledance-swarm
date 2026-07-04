@@ -49,6 +49,12 @@ from waggledance.core.magma.chat_served_metadata import (
 )
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.chat_served_ledger import is_path_safe_token
+from waggledance.core.magma.chat_served_claim_window_evidence import (
+    write_clean_shutdown_marker,
+    write_enabled_state_sample,
+    write_head_anchor_checkpoint,
+    write_served_point_observation,
+)
 from waggledance.core.magma.chat_served_receipt import build_chat_served_summary
 
 log = logging.getLogger(__name__)
@@ -79,9 +85,20 @@ class ChatServedEmitter:
         known_profiles: Iterable[str],
         enabled: bool = True,
         now_fn: Callable[[], datetime] = _default_now,
+        ledger_path: Any | None = None,
+        claim_window_window_id: str | None = None,
+        claim_window_anchor_store_path: Any | None = None,
+        claim_window_enabled_samples_path: Any | None = None,
+        claim_window_clean_shutdown_marker_path: Any | None = None,
+        claim_window_served_point_observations_path: Any | None = None,
     ) -> None:
         self._sink = sink
         self._out_dir = out_dir
+        self._ledger_path = str(
+            ledger_path
+            if ledger_path is not None
+            else Path(out_dir) / "ledger.jsonl"
+        )
         self._pending_failure_ledger_path = (
             Path(out_dir) / "pending_append_failures.jsonl"
         )
@@ -92,6 +109,31 @@ class ChatServedEmitter:
         self._ordinal = 0
         self._pending_append_failures = 0  # bc4: surfaced so the claim can go not-eligible
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._claim_window_window_id = (
+            str(claim_window_window_id)
+            if is_conforming_token(claim_window_window_id)
+            else None
+        )
+        self._claim_window_anchor_store_path = (
+            str(claim_window_anchor_store_path)
+            if claim_window_anchor_store_path is not None
+            else None
+        )
+        self._claim_window_enabled_samples_path = (
+            str(claim_window_enabled_samples_path)
+            if claim_window_enabled_samples_path is not None
+            else None
+        )
+        self._claim_window_clean_shutdown_marker_path = (
+            str(claim_window_clean_shutdown_marker_path)
+            if claim_window_clean_shutdown_marker_path is not None
+            else None
+        )
+        self._claim_window_served_point_observations_path = (
+            str(claim_window_served_point_observations_path)
+            if claim_window_served_point_observations_path is not None
+            else None
+        )
 
     @property
     def enabled(self) -> bool:
@@ -108,6 +150,99 @@ class ChatServedEmitter:
     @property
     def pending_failure_ledger_path(self) -> str:
         return str(self._pending_failure_ledger_path)
+
+    @property
+    def claim_window_evidence_enabled(self) -> bool:
+        return self._claim_window_window_id is not None
+
+    def _claim_window_ts(self) -> str:
+        return self._now_fn().strftime(_TS_FORMAT)
+
+    def record_claim_window_enabled_sample(self, enabled: bool) -> bool:
+        """Explicitly append one enabled-state sample for the outer claim-window gate."""
+        if (
+            not self._enabled
+            or self._claim_window_window_id is None
+            or self._claim_window_enabled_samples_path is None
+        ):
+            return False
+        try:
+            write_enabled_state_sample(
+                self._claim_window_enabled_samples_path,
+                window_id=self._claim_window_window_id,
+                enabled=bool(enabled),
+                ts_utc=self._claim_window_ts(),
+                fsync=True,
+            )
+            return True
+        except Exception:  # noqa: BLE001 -- evidence recording is fail-open
+            log.debug("chat-served enabled-state sample write failed", exc_info=True)
+            return False
+
+    def record_served_point_observation(self, point: str, *, wired: bool = True) -> bool:
+        """Append one served-point instrumentation observation, when evidence is opt-in."""
+        if (
+            not self._enabled
+            or self._claim_window_window_id is None
+            or self._claim_window_served_point_observations_path is None
+        ):
+            return False
+        try:
+            write_served_point_observation(
+                self._claim_window_served_point_observations_path,
+                point=point,
+                wired=bool(wired),
+                ts_utc=self._claim_window_ts(),
+                fsync=True,
+            )
+            return True
+        except Exception:  # noqa: BLE001 -- evidence recording is fail-open
+            log.debug("chat-served served-point observation write failed", exc_info=True)
+            return False
+
+    def checkpoint_claim_window_head(self) -> bool:
+        """Explicitly anchor the current ledger head into an independent store."""
+        if (
+            not self._enabled
+            or self._claim_window_window_id is None
+            or self._claim_window_anchor_store_path is None
+        ):
+            return False
+        try:
+            flush = getattr(self._sink, "flush", None)
+            if callable(flush):
+                flush()
+            write_head_anchor_checkpoint(
+                self._claim_window_anchor_store_path,
+                self._ledger_path,
+                window_id=self._claim_window_window_id,
+                ts_utc=self._claim_window_ts(),
+                fsync=True,
+            )
+            return True
+        except Exception:  # noqa: BLE001 -- evidence recording is fail-open
+            log.debug("chat-served head-anchor checkpoint failed", exc_info=True)
+            return False
+
+    def mark_claim_window_clean_shutdown(self) -> bool:
+        """Explicitly mark a clean shutdown boundary for the claim-window gate."""
+        if (
+            not self._enabled
+            or self._claim_window_window_id is None
+            or self._claim_window_clean_shutdown_marker_path is None
+        ):
+            return False
+        try:
+            write_clean_shutdown_marker(
+                self._claim_window_clean_shutdown_marker_path,
+                window_id=self._claim_window_window_id,
+                ts_utc=self._claim_window_ts(),
+                fsync=True,
+            )
+            return True
+        except Exception:  # noqa: BLE001 -- evidence recording is fail-open
+            log.debug("chat-served clean-shutdown marker write failed", exc_info=True)
+            return False
 
     def _metadata(
         self, *, source: str, route_type: str, language: str, profile: str, agent_id: str | None
@@ -161,6 +296,7 @@ class ChatServedEmitter:
                 profile=profile, agent_id=agent_id,
             )
             ts = self._now_fn().strftime(_TS_FORMAT)
+            self.record_served_point_observation(metadata["route_type"], wired=True)
             self._sink.record_pending(served_id, ts, metadata, fsync=False)  # windowed (bc5)
             return True
         except Exception:  # noqa: BLE001 -- fail-OPEN: serving must never break on this

@@ -17,7 +17,9 @@ from waggledance.core.magma.chat_served_claim_window_evidence import (
     read_clean_shutdown_marker,
     read_latest_head_anchor,
     write_clean_shutdown_marker,
+    write_enabled_state_sample,
     write_head_anchor_checkpoint,
+    write_served_point_observation,
 )
 
 _TS = "2026-07-04T16:00:00Z"
@@ -50,6 +52,14 @@ def _good_observations():
     return [
         new_served_point_observation(point=point, wired=True, ts_utc=_TS)
         for point in sorted(REQUIRED_CHAT_SERVED_POINTS)
+    ]
+
+
+def _read_jsonl(path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
     ]
 
 
@@ -177,6 +187,30 @@ def test_enabled_samples_are_nonempty_all_true_and_hash_validated() -> None:
     assert derive_enabled_across_window([tampered], window_id=_WINDOW) is False
 
 
+def test_enabled_sample_writer_appends_hash_valid_records(tmp_path) -> None:
+    sample_path = tmp_path / "enabled-samples.jsonl"
+
+    write_enabled_state_sample(
+        str(sample_path),
+        window_id=_WINDOW,
+        enabled=True,
+        ts_utc=_TS,
+        fsync=False,
+    )
+    write_enabled_state_sample(
+        str(sample_path),
+        window_id=_WINDOW,
+        enabled=False,
+        ts_utc=_TS,
+        fsync=False,
+    )
+    samples = _read_jsonl(sample_path)
+
+    assert len(samples) == 2
+    assert derive_enabled_across_window(samples[:1], window_id=_WINDOW) is True
+    assert derive_enabled_across_window(samples, window_id=_WINDOW) is False
+
+
 def test_clean_shutdown_marker_is_hash_validated_and_window_bound(tmp_path) -> None:
     marker_path = tmp_path / "clean.json"
     write_clean_shutdown_marker(
@@ -208,6 +242,28 @@ def test_served_point_observations_are_rederived_from_valid_hashed_records() -> 
 
     assert observations[0]["point"] not in points
     assert len(points) == len(REQUIRED_CHAT_SERVED_POINTS) - 1
+
+
+def test_served_point_writer_appends_hash_valid_records(tmp_path) -> None:
+    observation_path = tmp_path / "served-points.jsonl"
+
+    write_served_point_observation(
+        str(observation_path),
+        point="solver",
+        wired=True,
+        ts_utc=_TS,
+        fsync=False,
+    )
+    write_served_point_observation(
+        str(observation_path),
+        point="hotcache",
+        wired=False,
+        ts_utc=_TS,
+        fsync=False,
+    )
+    observations = _read_jsonl(observation_path)
+
+    assert derive_instrumented_served_points(observations) == ("solver",)
 
 
 def test_evidence_reason_names_first_missing_outer_signal(tmp_path) -> None:

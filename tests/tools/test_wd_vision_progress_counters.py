@@ -149,8 +149,13 @@ def test_panel_counters_expose_measurable_milestones() -> None:
         "first_hop_corpus_provenance_basis": None,
         "first_hop_corpus_representativeness_scope": None,
         "first_hop_denominator_scope": None,
-        "first_hop_denominator_count": 0,
-        "first_hop_gap_count": 0,
+        "first_hop_corpus_size": None,
+        "first_hop_routable_size": None,
+        "first_hop_hot_cache_count": None,
+        "first_hop_denominator_count": None,
+        "first_hop_authoritative_count": None,
+        "first_hop_heuristic_count": None,
+        "first_hop_gap_count": None,
         "first_hop_denominator_integrity_ok": False,
         "first_hop_production_representativeness_claimed": False,
         "first_hop_corpus_representativeness_required_for_claim": False,
@@ -669,6 +674,15 @@ def _first_hop_gate(coverage: object) -> dict:
     ]
 
 
+def _first_hop_panel_milestones(coverage: object) -> dict:
+    counters = build_vision_progress_counters(_manifest_with_first_hop(coverage))
+    by_id = {
+        item["capability_id"]: item
+        for item in counters["panel_counters"]
+    }
+    return by_id["hex_mesh_entry"]["milestones"]
+
+
 _SAFE_FIRST_HOP = {
     "coverage_measurement_available": True,
     "authoritative_first_hop_coverage": 0.6667,
@@ -678,7 +692,12 @@ _SAFE_FIRST_HOP = {
         "local_30_record_canonical_probe_not_production_representative"
     ),
     "first_hop_denominator_scope": "all_non_cached_first_hops",
+    "corpus_size": 30,
+    "routable_size": 30,
+    "hot_cache_count": 0,
     "first_hop_denominator_count": 30,
+    "authoritative_first_hop_count": 20,
+    "heuristic_first_hop_count": 10,
     "authoritative_first_hop_gap_count": 10,
     "denominator_is_all_non_cached_first_hops": True,
     "production_representativeness_claimed": False,
@@ -688,7 +707,9 @@ _SAFE_FIRST_HOP = {
 
 
 def test_first_hop_coverage_available_with_safe_measurement() -> None:
+    panel = _first_hop_panel_milestones(_SAFE_FIRST_HOP)
     gate = _first_hop_gate(_SAFE_FIRST_HOP)
+    assert panel["first_hop_coverage_available"] is True
     assert gate["coverage_measurement_available"] is True
     assert gate["measured_first_hop_authoritative_percent"] == 66.67
     assert gate["measurement_denominator_scope"] == "all_non_cached_first_hops"
@@ -744,6 +765,33 @@ def test_first_hop_unavailable_when_ratio_invalid() -> None:
                                 "authoritative_first_hop_coverage": bad})
         assert gate["coverage_measurement_available"] is False, bad
         assert gate["measured_first_hop_authoritative_percent"] is None, bad
+
+
+def test_first_hop_unavailable_when_counts_missing_or_forged() -> None:
+    cases = [
+        ("missing_denominator", {"first_hop_denominator_count": None}),
+        ("missing_gap", {"authoritative_first_hop_gap_count": None}),
+        ("missing_authoritative", {"authoritative_first_hop_count": None}),
+        ("missing_heuristic", {"heuristic_first_hop_count": None}),
+        ("missing_corpus", {"corpus_size": None}),
+        ("missing_routable", {"routable_size": None}),
+        ("missing_hot_cache", {"hot_cache_count": None}),
+        ("forged_denominator", {"first_hop_denominator_count": 1}),
+        ("forged_gap", {"authoritative_first_hop_gap_count": 0}),
+        ("forged_heuristic", {"heuristic_first_hop_count": 0}),
+        ("forged_corpus", {"corpus_size": 29}),
+        ("forged_hot_cache", {"hot_cache_count": 1}),
+        ("forged_ratio", {"authoritative_first_hop_coverage": 0.5}),
+    ]
+    for label, patch in cases:
+        coverage = {**_SAFE_FIRST_HOP, **patch}
+        panel = _first_hop_panel_milestones(coverage)
+        gate = _first_hop_gate(coverage)
+        assert panel["first_hop_coverage_available"] is False, label
+        assert gate["coverage_measurement_available"] is False, label
+        assert gate["measured_first_hop_authoritative_percent"] is None, label
+        assert gate["measurement_denominator_count"] is None, label
+        assert gate["measurement_gap_count"] is None, label
 
 
 def test_first_hop_unavailable_when_absent() -> None:

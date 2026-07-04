@@ -60,6 +60,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-recent-lines", type=int, default=DEFAULT_MIN_RECENT_LINES)
     parser.add_argument("--now", default=None)
     parser.add_argument(
+        "--protected-task-id",
+        action="append",
+        default=[],
+        help=(
+            "Open/in-flight bridge task_id that must remain in the live recent "
+            "suffix. Repeat for multiple task ids."
+        ),
+    )
+    parser.add_argument(
+        "--protected-pr",
+        action="append",
+        default=[],
+        help=(
+            "Open pull request number whose bridge events must remain in the "
+            "live recent suffix. Repeat for multiple PRs."
+        ),
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Write archive and receipt. The live events file is still preserved.",
@@ -80,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             keep_days=args.keep_days,
             min_recent_lines=args.min_recent_lines,
             now_utc=_parse_now(args.now),
+            protected_task_ids=args.protected_task_id,
+            protected_pr_numbers=args.protected_pr,
             apply=args.apply,
         )
     except (BridgeEventsRotationPlanError, BridgeEventLogRotationError) as exc:
@@ -109,6 +129,8 @@ def stage_bridge_events_rotation(
     keep_days: float = DEFAULT_KEEP_DAYS,
     min_recent_lines: int = DEFAULT_MIN_RECENT_LINES,
     now_utc: datetime | None = None,
+    protected_task_ids: Sequence[str] = (),
+    protected_pr_numbers: Sequence[object] = (),
     apply: bool = False,
 ) -> dict[str, Any]:
     """Return a staging report and optionally write archive+receipt."""
@@ -119,6 +141,8 @@ def stage_bridge_events_rotation(
         keep_days=keep_days,
         min_recent_lines=min_recent_lines,
         now_utc=now_utc,
+        protected_task_ids=protected_task_ids,
+        protected_pr_numbers=protected_pr_numbers,
     )
     report = _base_report(plan=plan, apply=apply)
     if not plan.get("eligible_for_rotation"):

@@ -71,6 +71,41 @@ def test_dry_run_reports_ready_without_writes(tmp_path: Path) -> None:
     assert archive_dir.exists() is False
 
 
+def test_dry_run_protected_task_id_uses_planner_guard(tmp_path: Path) -> None:
+    events_path = _events_file(
+        tmp_path,
+        [
+            _event("2026-06-01T00:00:00Z", task_id="sealed-old"),
+            _event("2026-06-02T00:00:00Z", task_id="open-task"),
+            _event("2026-06-14T00:00:00Z", task_id="new"),
+        ],
+    )
+
+    report = stage_bridge_events_rotation(
+        events_path=events_path,
+        archive_dir=tmp_path / "archive",
+        keep_days=7,
+        min_recent_lines=1,
+        now_utc=_now(),
+        protected_task_ids=["open-task"],
+    )
+
+    assert report["ok"] is True
+    assert report["decision"] == "bridge_events_rotation_stage_ready"
+    assert report["plan"]["counts"]["archive_lines"] == 1
+    assert report["plan"]["blockers"] == [
+        {
+            "line": 2,
+            "reason": "protected_gate_reference",
+            "ts_utc": "2026-06-02T00:00:00Z",
+            "protected_references": [
+                {"kind": "task_id", "value": "open-task"},
+            ],
+        }
+    ]
+    assert (tmp_path / "archive").exists() is False
+
+
 def test_apply_stages_archive_and_receipt_without_rewriting_events(tmp_path: Path) -> None:
     events_path = _events_file(
         tmp_path,

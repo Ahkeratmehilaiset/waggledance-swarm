@@ -125,6 +125,91 @@ def test_min_recent_lines_keeps_old_tail_in_recent_file(tmp_path: Path) -> None:
     assert report["eligible_for_rotation"] is True
 
 
+def test_protected_task_id_blocks_archive_before_in_flight_event(
+    tmp_path: Path,
+) -> None:
+    events_path = _events_file(
+        tmp_path,
+        [
+            _event("2026-06-01T00:00:00Z", task_id="sealed-old"),
+            _event("2026-06-02T00:00:00Z", task_id="open-task"),
+            _event("2026-06-03T00:00:00Z", task_id="sealed-but-after-open"),
+            _event("2026-06-14T00:00:00Z", task_id="new"),
+        ],
+    )
+
+    report = plan_bridge_events_rotation(
+        events_path=events_path,
+        archive_dir=tmp_path / "archive",
+        keep_days=7,
+        min_recent_lines=1,
+        now_utc=_now(),
+        protected_task_ids=["open-task"],
+    )
+
+    assert report["counts"]["archive_lines"] == 1
+    assert report["counts"]["recent_lines"] == 3
+    assert report["protected_references"] == {
+        "task_ids": ["open-task"],
+        "pr_numbers": [],
+    }
+    assert report["blockers"] == [
+        {
+            "line": 2,
+            "reason": "protected_gate_reference",
+            "ts_utc": "2026-06-02T00:00:00Z",
+            "protected_references": [
+                {"kind": "task_id", "value": "open-task"},
+            ],
+        }
+    ]
+
+
+def test_protected_pr_number_blocks_nested_payload_reference(
+    tmp_path: Path,
+) -> None:
+    active_pr_event = _event("2026-06-01T00:00:00Z", task_id="old-pr-event")
+    active_pr_event["paths"] = [
+        "https://github.com/example/repo/pull/1493",
+    ]
+    active_pr_event["payload"] = {"review": {"pr1493": {"state": "OPEN"}}}
+    events_path = _events_file(
+        tmp_path,
+        [
+            active_pr_event,
+            _event("2026-06-02T00:00:00Z", task_id="old-after-pr"),
+            _event("2026-06-14T00:00:00Z", task_id="new"),
+        ],
+    )
+
+    report = plan_bridge_events_rotation(
+        events_path=events_path,
+        archive_dir=tmp_path / "archive",
+        keep_days=7,
+        min_recent_lines=1,
+        now_utc=_now(),
+        protected_pr_numbers=["PR #1493"],
+    )
+
+    assert report["decision"] == "bridge_events_rotation_plan_noop"
+    assert report["eligible_for_rotation"] is False
+    assert report["counts"]["archive_lines"] == 0
+    assert report["protected_references"] == {
+        "task_ids": [],
+        "pr_numbers": [1493],
+    }
+    assert report["blockers"] == [
+        {
+            "line": 1,
+            "reason": "protected_gate_reference",
+            "ts_utc": "2026-06-01T00:00:00Z",
+            "protected_references": [
+                {"kind": "pr", "value": 1493},
+            ],
+        }
+    ]
+
+
 def test_missing_timestamp_blocks_split_before_reordering(tmp_path: Path) -> None:
     events_path = _events_file(
         tmp_path,

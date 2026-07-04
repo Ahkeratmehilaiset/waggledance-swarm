@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import sys
 from typing import Any, Sequence
@@ -27,6 +28,24 @@ from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 DEFAULT_KEEP_DAYS = 7.0
 DEFAULT_MIN_RECENT_LINES = 50000
 PLAN_VERSION = "bridge-events-rotation-plan.v1"
+PR_TEXT_REFERENCE_RE = re.compile(
+    r"(?:\bpr\s*#?\s*|\bpull request\s*#?\s*|/pull/|#)"
+    r"(?P<number>[1-9][0-9]{0,9})\b",
+    re.IGNORECASE,
+)
+PR_KEY_RE = re.compile(r"^pr[_-]?(?P<number>[1-9][0-9]{0,9})$", re.IGNORECASE)
+PR_REFERENCE_KEYS = frozenset(
+    {
+        "pr",
+        "pr_number",
+        "pr_numbers",
+        "pull_request",
+        "pull_request_number",
+        "pull_requests",
+    }
+)
+TASK_REFERENCE_KEYS = frozenset({"task_id", "task_ids"})
+TEXTUAL_PR_REFERENCE_KEYS = frozenset({"html_url", "message", "path", "paths", "url"})
 
 
 class BridgeEventsRotationPlanError(ValueError):
@@ -86,6 +105,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override current UTC time for cutoff evaluation.",
     )
+    parser.add_argument(
+        "--protected-task-id",
+        action="append",
+        default=[],
+        help=(
+            "Open/in-flight bridge task_id that must remain in the live recent "
+            "suffix. Repeat for multiple task ids."
+        ),
+    )
+    parser.add_argument(
+        "--protected-pr",
+        action="append",
+        default=[],
+        help=(
+            "Open pull request number whose bridge events must remain in the "
+            "live recent suffix. Accepts values like 1493, #1493, or PR #1493; "
+            "repeat for multiple PRs."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -102,6 +140,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             keep_days=args.keep_days,
             min_recent_lines=args.min_recent_lines,
             now_utc=_parse_now(args.now),
+            protected_task_ids=args.protected_task_id,
+            protected_pr_numbers=args.protected_pr,
         )
     except BridgeEventsRotationPlanError as exc:
         report = exc.report
@@ -130,6 +170,8 @@ def plan_bridge_events_rotation(
     keep_days: float = DEFAULT_KEEP_DAYS,
     min_recent_lines: int = DEFAULT_MIN_RECENT_LINES,
     now_utc: datetime | None = None,
+    protected_task_ids: Sequence[str] = (),
+    protected_pr_numbers: Sequence[object] = (),
 ) -> dict[str, Any]:
     """Return a read-only archive/recent split plan for a bridge JSONL file."""
     if not math.isfinite(keep_days) or keep_days <= 0:
@@ -162,11 +204,15 @@ def plan_bridge_events_rotation(
     physical_lines = raw.splitlines(keepends=True)
     effective_now = now_utc or _utc_now()
     cutoff = effective_now - timedelta(days=keep_days)
+    protected_tasks = _normalize_task_ids(protected_task_ids)
+    protected_prs = _normalize_pr_numbers(protected_pr_numbers)
 
     split_index, blockers = _safe_prefix_split(
         physical_lines=physical_lines,
         cutoff_utc=cutoff,
         min_recent_lines=min_recent_lines,
+        protected_task_ids=protected_tasks,
+        protected_pr_numbers=protected_prs,
     )
     archive_bytes = b"".join(physical_lines[:split_index])
     recent_bytes = b"".join(physical_lines[split_index:])
@@ -208,8 +254,13 @@ def plan_bridge_events_rotation(
             "effective_now_utc": _format_utc(effective_now),
             "split_policy": (
                 "contiguous_prefix_only; stop before the recent-line floor "
-                "or the first line that is not older than the cutoff"
+                "or the first line that is not older than the cutoff or the "
+                "first protected open PR/task reference"
             ),
+        },
+        "protected_references": {
+            "task_ids": sorted(protected_tasks),
+            "pr_numbers": [int(value) for value in sorted(protected_prs)],
         },
         "counts": {
             "total_lines": len(physical_lines),
@@ -233,6 +284,7 @@ def plan_bridge_events_rotation(
         "blockers": blockers[:10],
         "safety_notes": [
             "This tool is read-only and does not create archive files.",
+            "Pass every open PR and in-flight task as protected references before staging any archive intended for future live compaction.",
             "A future mutating compactor must use temp files plus atomic rename.",
             "A future mutating compactor must keep archive+recent byte reconstruction equal to source.",
         ],
@@ -244,6 +296,8 @@ def _safe_prefix_split(
     physical_lines: Sequence[bytes],
     cutoff_utc: datetime,
     min_recent_lines: int,
+    protected_task_ids: frozenset[str] = frozenset(),
+    protected_pr_numbers: frozenset[int] = frozenset(),
 ) -> tuple[int, list[dict[str, Any]]]:
     split_limit = max(0, len(physical_lines) - min_recent_lines)
     blockers: list[dict[str, Any]] = []
@@ -268,6 +322,16 @@ def _safe_prefix_split(
                 }
             )
             break
+        protected_blocker = _protected_reference_blocker(
+            raw_line=raw_line,
+            line_no=line_no,
+            event_ts=event_ts,
+            protected_task_ids=protected_task_ids,
+            protected_pr_numbers=protected_pr_numbers,
+        )
+        if protected_blocker:
+            blockers.append(protected_blocker)
+            break
         if event_ts >= cutoff_utc:
             blockers.append(
                 {
@@ -281,7 +345,49 @@ def _safe_prefix_split(
     return split_index, blockers
 
 
+def _protected_reference_blocker(
+    *,
+    raw_line: bytes,
+    line_no: int,
+    event_ts: datetime,
+    protected_task_ids: frozenset[str],
+    protected_pr_numbers: frozenset[int],
+) -> dict[str, Any] | None:
+    if not protected_task_ids and not protected_pr_numbers:
+        return None
+    event = _event_payload(raw_line)
+    if event is None:
+        return None
+    references: list[dict[str, object]] = []
+    task_refs = _event_task_ids(event) & protected_task_ids
+    references.extend(
+        {"kind": "task_id", "value": task_id} for task_id in sorted(task_refs)
+    )
+    pr_refs = _event_pr_numbers(event) & protected_pr_numbers
+    references.extend(
+        {"kind": "pr", "value": int(pr_number)} for pr_number in sorted(pr_refs)
+    )
+    if not references:
+        return None
+    return {
+        "line": line_no,
+        "reason": "protected_gate_reference",
+        "ts_utc": _format_utc(event_ts),
+        "protected_references": references,
+    }
+
+
 def _event_timestamp(raw_line: bytes) -> datetime | None:
+    event = _event_payload(raw_line)
+    if event is None:
+        return None
+    value = event.get("ts_utc")
+    if not isinstance(value, str):
+        return None
+    return _parse_utc(value)
+
+
+def _event_payload(raw_line: bytes) -> dict[str, Any] | None:
     stripped = raw_line.strip()
     if not stripped:
         return None
@@ -291,10 +397,104 @@ def _event_timestamp(raw_line: bytes) -> datetime | None:
         return None
     if not isinstance(event, dict):
         return None
-    value = event.get("ts_utc")
-    if not isinstance(value, str):
+    return event
+
+
+def _normalize_task_ids(values: Sequence[str]) -> frozenset[str]:
+    return frozenset(str(value).strip() for value in values if str(value).strip())
+
+
+def _normalize_pr_numbers(values: Sequence[object]) -> frozenset[int]:
+    normalized: set[int] = set()
+    for value in values:
+        number = _coerce_pr_number(value)
+        if number is not None:
+            normalized.add(number)
+    return frozenset(normalized)
+
+
+def _coerce_pr_number(value: object) -> int | None:
+    if isinstance(value, bool):
         return None
-    return _parse_utc(value)
+    if isinstance(value, int):
+        return value if value > 0 else None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        parsed = int(text)
+        return parsed if parsed > 0 else None
+    match = PR_TEXT_REFERENCE_RE.search(text)
+    if not match:
+        return None
+    return int(match.group("number"))
+
+
+def _event_task_ids(value: object) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            key_text = str(child_key)
+            if key_text in TASK_REFERENCE_KEYS:
+                found.update(_task_id_values(child_value))
+            found.update(_event_task_ids(child_value))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_event_task_ids(item))
+    return found
+
+
+def _task_id_values(value: object) -> set[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return {stripped} if stripped else set()
+    if isinstance(value, list):
+        found: set[str] = set()
+        for item in value:
+            found.update(_task_id_values(item))
+        return found
+    return set()
+
+
+def _event_pr_numbers(value: object, *, key: str = "") -> set[int]:
+    found: set[int] = set()
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            key_text = str(child_key)
+            key_match = PR_KEY_RE.fullmatch(key_text)
+            if key_match:
+                found.add(int(key_match.group("number")))
+            if key_text in PR_REFERENCE_KEYS:
+                found.update(_pr_number_values(child_value, key=key_text))
+            found.update(_event_pr_numbers(child_value, key=key_text))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_event_pr_numbers(item, key=key))
+    elif isinstance(value, str) and key in TEXTUAL_PR_REFERENCE_KEYS:
+        found.update(
+            int(match.group("number")) for match in PR_TEXT_REFERENCE_RE.finditer(value)
+        )
+    return found
+
+
+def _pr_number_values(value: object, *, key: str = "") -> set[int]:
+    if isinstance(value, list):
+        found: set[int] = set()
+        for item in value:
+            found.update(_pr_number_values(item, key=key))
+        return found
+    if isinstance(value, dict):
+        found: set[int] = set()
+        for child_key, child_value in value.items():
+            child_key_text = str(child_key)
+            if child_key_text in PR_REFERENCE_KEYS or child_key_text == "number":
+                number = _coerce_pr_number(child_value)
+                if number is not None:
+                    found.add(number)
+            found.update(_event_pr_numbers(child_value, key=child_key_text))
+        return found
+    number = _coerce_pr_number(value)
+    return {number} if number is not None else set()
 
 
 def _parse_now(value: str | None) -> datetime | None:

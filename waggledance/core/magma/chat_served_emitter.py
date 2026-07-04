@@ -25,12 +25,19 @@ methods are no-ops. This module does NOT flip claim_safe.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
+from waggledance.core.magma.chat_served_accounting import (
+    PENDING_APPEND_FAILURE_REASONS,
+    PENDING_APPEND_FAILURE_SCHEMA,
+)
 from waggledance.core.magma.chat_served_metadata import (
     WORLD_SNAPSHOT_NA_MARKER,
     normalize_agent_id,
@@ -73,6 +80,9 @@ class ChatServedEmitter:
     ) -> None:
         self._sink = sink
         self._out_dir = out_dir
+        self._pending_failure_ledger_path = (
+            Path(out_dir) / "pending_append_failures.jsonl"
+        )
         self._verify_manifest = verify_manifest
         self._known_profiles = frozenset(p for p in known_profiles if isinstance(p, str))
         self._enabled = bool(enabled)
@@ -92,6 +102,10 @@ class ChatServedEmitter:
         that the ledger denominator does not contain (an independent, non-swallowed
         surface of the failure)."""
         return self._pending_append_failures
+
+    @property
+    def pending_failure_ledger_path(self) -> str:
+        return str(self._pending_failure_ledger_path)
 
     def _metadata(
         self, *, source: str, route_type: str, language: str, profile: str, agent_id: str | None
@@ -125,6 +139,18 @@ class ChatServedEmitter:
             # so '/'/'..' would let the receipt escape out_dir yet still read eligible.
             # Surface it (bc4) so the claim goes not-eligible; serve the user anyway.
             self._pending_append_failures += 1
+            ts = self._now_fn().strftime(_TS_FORMAT)
+            self._write_pending_append_failure(
+                served_id,
+                ts,
+                "metadata_rejected",
+                {
+                    "source": normalize_token(source),
+                    "route_type": normalize_token(route_type),
+                    "language": normalize_language(language),
+                    "profile": normalize_profile(profile, self._known_profiles),
+                },
+            )
             log.debug("chat-served pending rejected: served_id not path-safe (serving continues)")
             return False
         try:
@@ -137,8 +163,60 @@ class ChatServedEmitter:
             return True
         except Exception:  # noqa: BLE001 -- fail-OPEN: serving must never break on this
             self._pending_append_failures += 1  # bc4: surface, do not swallow
+            try:
+                metadata = self._metadata(
+                    source=source, route_type=route_type, language=language,
+                    profile=profile, agent_id=agent_id,
+                )
+            except Exception:  # noqa: BLE001 -- sanitize best-effort without blocking serve
+                metadata = {"source": "unknown", "route_type": "unknown"}
+            self._write_pending_append_failure(
+                served_id,
+                self._now_fn().strftime(_TS_FORMAT),
+                "sink_write_failed",
+                metadata,
+            )
             log.debug("chat-served pending append failed (serving continues)", exc_info=True)
             return False
+
+    def _write_pending_append_failure(
+        self,
+        served_id: str,
+        ts_utc: str,
+        reason: str,
+        metadata: Mapping[str, str],
+    ) -> None:
+        if reason not in PENDING_APPEND_FAILURE_REASONS:
+            reason = "sink_write_failed"
+        try:
+            path = self._pending_failure_ledger_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "schema_version": PENDING_APPEND_FAILURE_SCHEMA,
+                "served_id_hash": sha256_digest({"served_id": str(served_id)}),
+                "ts_utc": ts_utc,
+                "reason": reason,
+                "metadata": {
+                    str(k): str(v)
+                    for k, v in metadata.items()
+                    if isinstance(k, str) and isinstance(v, str)
+                },
+            }
+            payload = json.dumps(
+                entry,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(payload + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:  # noqa: BLE001 -- fail-open serving still wins
+            log.debug(
+                "chat-served pending failure ledger append failed",
+                exc_info=True,
+            )
 
     def schedule_receipt(
         self, served_id: str, *, query: str, response: str, source: str, route_type: str,

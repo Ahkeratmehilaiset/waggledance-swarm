@@ -105,6 +105,7 @@ class ChatService:
         hex_neighbor_assist: object | None = None,
         control_plane_db: object | None = None,
         runtime_gap_detector: object | None = None,
+        chat_served_emitter: object | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._memory_service = memory_service
@@ -122,6 +123,7 @@ class ChatService:
         # v3.5.4: hex neighbor mesh
         self._hex_neighbor_assist = hex_neighbor_assist
         self._runtime_gap_detector = runtime_gap_detector
+        self._chat_served_emitter = chat_served_emitter
         if self._runtime_gap_detector is None and control_plane_db is not None:
             from waggledance.core.autonomy_growth.gap_intake import RuntimeGapDetector
 
@@ -129,10 +131,9 @@ class ChatService:
         # v1.18.0: telemetry + ledger (lazy-init)
         self._telemetry = None
         self._ledger = None
-        # P2 S1b Phase 2b: the chat-served receipt emitter (SEPARATE from _ledger, which
-        # is a LearningLedger). None until first use; stays None while the feature is
-        # config-disabled (chat_served_receipts.enabled, default false) -> fully DORMANT.
-        self._chat_served_emitter = None
+        # P2 S1b Phase 2b: chat-served receipt emitter (separate from
+        # _ledger, which is a LearningLedger). An injected emitter is used as-is;
+        # otherwise _chat_served_emitter_or_none lazily builds the config-gated one.
 
     async def handle(self, req: ChatRequest) -> ChatResult:
         """Process a chat request through the full pipeline.
@@ -303,7 +304,7 @@ class ChatService:
                 result.route_stage_trace = route_stage_trace
                 self._emit_served(
                     query=req.query, response=result.response, source=result.source,
-                    route_type="hybrid", confidence=result.confidence, latency_ms=result.latency_ms,
+                    route_type="hybrid_retrieval", confidence=result.confidence, latency_ms=result.latency_ms,
                     cached=result.cached, round_table=result.round_table, agent_id=result.agent_id,
                     language=result.language, profile=req.profile,
                     route_stage_trace=route_stage_trace)

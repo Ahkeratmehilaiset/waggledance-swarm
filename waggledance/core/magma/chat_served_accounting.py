@@ -26,6 +26,8 @@ eligible. This module is DORMANT until S1b wires the ledger.
 """
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping
 from typing import Any, NamedTuple
 
@@ -36,6 +38,12 @@ from waggledance.core.magma.chat_served_ledger import (
     read_entries,
     verify_chain,
 )
+
+PENDING_APPEND_FAILURE_SCHEMA = "magma.chat_served_pending_append_failure.v0"
+PENDING_APPEND_FAILURE_REASONS = frozenset({
+    "metadata_rejected",
+    "sink_write_failed",
+})
 
 # derived per-served_id lifecycle states
 _PENDING = "pending"
@@ -48,11 +56,54 @@ class ClaimCoverageReport(NamedTuple):
     receipts: int               # served_ids with pending AND a receipt terminal (numerator)
     gaps: int                   # served_ids with pending AND a gap terminal
     unresolved_pending: int     # served_ids with a pending and no terminal (crash/in-flight)
+    pending_append_failures: int # served queries whose sync pending append failed
     ratio: float | None         # receipts/served, or None when served == 0
     chain_ok: bool
     lifecycle_ok: bool
     eligible: bool              # receipt-coverage half of claim-safety
     reason: str | None          # why not eligible (None when eligible)
+
+
+def valid_pending_append_failure(entry: object) -> bool:
+    """Return True iff ``entry`` is a sanitized durable pending-append failure."""
+    if not isinstance(entry, Mapping):
+        return False
+    if entry.get("schema_version") != PENDING_APPEND_FAILURE_SCHEMA:
+        return False
+    reason = entry.get("reason")
+    if reason not in PENDING_APPEND_FAILURE_REASONS:
+        return False
+    served_id_hash = entry.get("served_id_hash")
+    if not (
+        isinstance(served_id_hash, str)
+        and len(served_id_hash) == 71
+        and served_id_hash.startswith("sha256:")
+        and all(c in "0123456789abcdef" for c in served_id_hash[7:])
+    ):
+        return False
+    ts_utc = entry.get("ts_utc")
+    if not isinstance(ts_utc, str) or not ts_utc:
+        return False
+    metadata = entry.get("metadata")
+    return isinstance(metadata, Mapping)
+
+
+def read_pending_append_failures(path: str | None) -> int:
+    """Count durable pending-append failures. Corrupt lines fail closed as failures."""
+    if not path or not os.path.exists(path):
+        return 0
+    count = 0
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                count += 1
+                continue
+            count += 1 if valid_pending_append_failure(entry) else 1
+    return count
 
 
 def _lifecycle_violation(state: str | None, entry_type: str) -> str | None:
@@ -70,7 +121,11 @@ def _lifecycle_violation(state: str | None, entry_type: str) -> str | None:
     return None
 
 
-def derive_coverage(entries: list[Mapping[str, Any]]) -> ClaimCoverageReport:
+def derive_coverage(
+    entries: list[Mapping[str, Any]],
+    *,
+    pending_append_failures: int = 0,
+) -> ClaimCoverageReport:
     """Derive the claim-coverage report by WALKING the ledger. Fail-closed on any
     chain or lifecycle defect (reported as not-eligible, never raised)."""
     chain = verify_chain(entries)
@@ -94,9 +149,10 @@ def derive_coverage(entries: list[Mapping[str, Any]]) -> ClaimCoverageReport:
         elif etype == GAP_TERMINAL:
             state[served_id] = _GAP
 
-    served = len(state)
+    failure_count = max(0, int(pending_append_failures))
+    served = len(state) + failure_count
     receipts = sum(1 for v in state.values() if v == _RECEIPT)
-    gaps = sum(1 for v in state.values() if v == _GAP)
+    gaps = sum(1 for v in state.values() if v == _GAP) + failure_count
     unresolved = sum(1 for v in state.values() if v == _PENDING)
     ratio = (receipts / served) if served > 0 else None
 
@@ -108,6 +164,8 @@ def derive_coverage(entries: list[Mapping[str, Any]]) -> ClaimCoverageReport:
         reason = f"lifecycle_invalid:{lifecycle_reason}"
     elif served == 0:
         reason = "no_served_queries"
+    elif failure_count > 0:
+        reason = "pending_append_failures"
     elif unresolved > 0:
         reason = "unresolved_pending"
     elif gaps > 0:
@@ -121,6 +179,7 @@ def derive_coverage(entries: list[Mapping[str, Any]]) -> ClaimCoverageReport:
         receipts=receipts,
         gaps=gaps,
         unresolved_pending=unresolved,
+        pending_append_failures=failure_count,
         ratio=ratio,
         chain_ok=chain_ok,
         lifecycle_ok=lifecycle_ok,
@@ -129,11 +188,28 @@ def derive_coverage(entries: list[Mapping[str, Any]]) -> ClaimCoverageReport:
     )
 
 
-def coverage_from_ledger(ledger_path: str) -> ClaimCoverageReport:
+def coverage_from_ledger(
+    ledger_path: str,
+    *,
+    pending_failure_ledger_path: str | None = None,
+) -> ClaimCoverageReport:
     """Read a ledger file and derive its claim-coverage report (a torn tail leaves an
     unresolved pending -> not eligible, correctly)."""
     entries, _torn_tail = read_entries(ledger_path)
-    return derive_coverage(entries)
+    return derive_coverage(
+        entries,
+        pending_append_failures=read_pending_append_failures(
+            pending_failure_ledger_path
+        ),
+    )
 
 
-__all__ = ["ClaimCoverageReport", "derive_coverage", "coverage_from_ledger"]
+__all__ = [
+    "ClaimCoverageReport",
+    "PENDING_APPEND_FAILURE_REASONS",
+    "PENDING_APPEND_FAILURE_SCHEMA",
+    "coverage_from_ledger",
+    "derive_coverage",
+    "read_pending_append_failures",
+    "valid_pending_append_failure",
+]

@@ -26,6 +26,56 @@ def chat_service(mock_orchestrator, mock_memory_service, mock_hot_cache, mock_co
     )
 
 
+class _RecordingChatServedEmitter:
+    def __init__(
+        self,
+        *,
+        enabled=True,
+        record_pending_result=True,
+        pending_error: Exception | None = None,
+        schedule_error: Exception | None = None,
+    ):
+        self.enabled = enabled
+        self.record_pending_result = record_pending_result
+        self.pending_error = pending_error
+        self.schedule_error = schedule_error
+        self.pending = []
+        self.receipts = []
+
+    def record_pending(self, served_id, **kwargs):
+        self.pending.append((served_id, kwargs))
+        if self.pending_error is not None:
+            raise self.pending_error
+        return self.record_pending_result
+
+    def schedule_receipt(self, served_id, **kwargs):
+        self.receipts.append((served_id, kwargs))
+        if self.schedule_error is not None:
+            raise self.schedule_error
+
+
+def _assert_chat_served_emitted(
+    emitter: _RecordingChatServedEmitter,
+    *,
+    route_type: str,
+    source: str,
+    cached: bool,
+) -> None:
+    assert len(emitter.pending) == 1
+    assert len(emitter.receipts) == 1
+    pending_id, pending_kwargs = emitter.pending[0]
+    receipt_id, receipt_kwargs = emitter.receipts[0]
+    assert pending_id == receipt_id
+    assert pending_kwargs["route_type"] == route_type
+    assert pending_kwargs["source"] == source
+    assert "query" not in pending_kwargs
+    assert "response" not in pending_kwargs
+    assert receipt_kwargs["route_type"] == route_type
+    assert receipt_kwargs["source"] == source
+    assert receipt_kwargs["cached"] is cached
+    assert receipt_kwargs["route_stage_trace"]
+
+
 class TestChatService:
     def test_hot_cache_hit_returns_cached(self, chat_service, mock_hot_cache):
         async def _run():
@@ -162,6 +212,216 @@ class TestChatService:
             ]
             assert result.route_stage_trace[-1]["answered"] is True
             assert raw_query not in json.dumps(result.route_stage_trace)
+
+        asyncio.run(_run())
+
+    def test_chat_served_emits_for_hotcache_return(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            emitter = _RecordingChatServedEmitter()
+            mock_hot_cache.get.return_value = "Cached answer"
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                chat_served_emitter=emitter,
+            )
+
+            result = await svc.handle(ChatRequest(query="What is varroa?"))
+
+            assert result.response == "Cached answer"
+            _assert_chat_served_emitted(
+                emitter,
+                route_type="hotcache",
+                source="hotcache",
+                cached=True,
+            )
+
+        asyncio.run(_run())
+
+    def test_chat_served_emits_for_solver_return(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            emitter = _RecordingChatServedEmitter()
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                chat_served_emitter=emitter,
+            )
+
+            result = await svc.handle(ChatRequest(query="what is 15% of 300"))
+
+            assert result.source == "solver"
+            _assert_chat_served_emitted(
+                emitter,
+                route_type="solver",
+                source="solver",
+                cached=False,
+            )
+
+        asyncio.run(_run())
+
+    def test_chat_served_emits_for_authoritative_hybrid_return(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            emitter = _RecordingChatServedEmitter()
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = True
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:authoritative",
+                route_source="cell:math+global",
+                answered_by_layer="local_faiss",
+                hits=[HybridHit(
+                    "d1",
+                    "authoritative stats evidence",
+                    0.93,
+                    "local_faiss",
+                    "math",
+                )],
+                cell_id="math",
+            ))
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+                chat_served_emitter=emitter,
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+
+            result = await svc.handle(ChatRequest(query="statistics summary"))
+
+            assert result.source == "local_faiss"
+            _assert_chat_served_emitted(
+                emitter,
+                route_type="hybrid_retrieval",
+                source="local_faiss",
+                cached=False,
+            )
+
+        asyncio.run(_run())
+
+    def test_chat_served_emits_for_hex_return(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        class HexAssist:
+            enabled = True
+
+            async def resolve(self, *, query, intent, context):
+                return {
+                    "response": "hex answer",
+                    "source": "hex_mesh",
+                    "confidence": 0.88,
+                    "trace": {"cell_count": 7, "answered": True},
+                }
+
+        async def _run():
+            emitter = _RecordingChatServedEmitter()
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hex_neighbor_assist=HexAssist(),
+                chat_served_emitter=emitter,
+            )
+
+            result = await svc.handle(ChatRequest(query="tell me about hive layout"))
+
+            assert result.source == "hex_mesh"
+            _assert_chat_served_emitted(
+                emitter,
+                route_type="hex_mesh",
+                source="hex_mesh",
+                cached=False,
+            )
+
+        asyncio.run(_run())
+
+    def test_chat_served_emits_for_llm_return(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            emitter = _RecordingChatServedEmitter()
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                chat_served_emitter=emitter,
+            )
+
+            result = await svc.handle(ChatRequest(query="explain hive care"))
+
+            assert result.source == "llm"
+            _assert_chat_served_emitted(
+                emitter,
+                route_type="llm",
+                source="llm",
+                cached=False,
+            )
+
+        asyncio.run(_run())
+
+    def test_chat_served_fail_open_when_emitter_raises(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            emitter = _RecordingChatServedEmitter(
+                pending_error=RuntimeError("receipt disk offline")
+            )
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                chat_served_emitter=emitter,
+            )
+
+            result = await svc.handle(ChatRequest(query="explain hive care"))
+
+            assert result.response == "Test answer"
+            assert len(emitter.pending) == 1
+            assert emitter.receipts == []
 
         asyncio.run(_run())
 

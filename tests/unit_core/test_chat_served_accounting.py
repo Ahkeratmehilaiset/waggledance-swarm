@@ -58,6 +58,20 @@ def test_a_gap_makes_ineligible() -> None:
     assert report.ratio == 0.5 and report.gaps == 1
 
 
+def test_pending_append_failure_extends_denominator_and_fails_closed() -> None:
+    report = derive_coverage(
+        _chain([("pending", "q1"), ("receipt", "q1")]),
+        pending_append_failures=1,
+    )
+    assert report.served == 2
+    assert report.receipts == 1
+    assert report.gaps == 1
+    assert report.pending_append_failures == 1
+    assert report.ratio == 0.5
+    assert report.eligible is False
+    assert report.reason == "pending_append_failures"
+
+
 def test_unresolved_pending_makes_ineligible() -> None:
     report = derive_coverage(_chain([("pending", "q1"), ("receipt", "q1"), ("pending", "q2")]))
     assert report.eligible is False and report.reason == "unresolved_pending"

@@ -321,6 +321,14 @@ runtime_receipts:
   out_dir: data/runtime/runtime_summary_receipts
   evaluation_version: magma.evaluation_result.v0
   v313_solver_max_bundles: 1000
+# P2 S1b Phase 2: opt-in chat-served MAGMA receipt chain (default OFF). While
+# disabled, every served chat query is an unwritten chain-head gap -> claim_safe
+# (S4, operator-gated) MUST be false. Enabling it makes ChatService.handle emit a
+# gapless receipt chain; a genuine sink write failure records a visible gap.
+chat_served_receipts:
+  enabled: false
+  out_dir: data/runtime/chat_served_receipts
+  max_bundles: 1000
 continuity:
   heartbeat_seconds: 120
   continuity_floor_enabled: true

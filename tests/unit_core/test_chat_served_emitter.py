@@ -9,11 +9,17 @@ response never persisted), and a resolution failure -> GAP (never a silent hole)
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma import chat_served_ledger as L
-from waggledance.core.magma.chat_served_accounting import coverage_from_ledger
+from waggledance.core.magma.chat_served_accounting import (
+    coverage_from_ledger,
+    read_pending_append_failures,
+    valid_pending_append_failure,
+)
 from waggledance.core.magma.chat_served_emitter import ChatServedEmitter, new_served_id
 from waggledance.core.magma.chat_served_ledger import is_path_safe_token
 from waggledance.core.magma.chat_served_metadata import is_conforming_token
@@ -79,6 +85,36 @@ def test_record_pending_fail_open_surfaces_not_swallows(tmp_path) -> None:
                                     language="fi", profile="HOME", agent_id=None)
     assert result is False                                     # fail-OPEN: never raises
     assert emitter.pending_append_failures == 1                # bc4: surfaced, not swallowed
+    assert read_pending_append_failures(emitter.pending_failure_ledger_path) == 1
+
+
+def test_pending_failure_writer_rejects_raw_or_nested_metadata(tmp_path) -> None:
+    emitter, _sink, _ = _emitter(tmp_path)
+    emitter._write_pending_append_failure(
+        new_served_id(),
+        "2026-07-04T07:00:00.000000Z",
+        "sink_write_failed",
+        {
+            "route_type": "solver",
+            "profile": "RAW SECRET USER QUERY with spaces",
+            "nested": {"raw": "X"},  # type: ignore[dict-item]
+        },
+    )
+    assert not Path(emitter.pending_failure_ledger_path).exists()
+
+    emitter._write_pending_append_failure(
+        new_served_id(),
+        "2026-07-04T07:00:00.000000Z",
+        "sink_write_failed",
+        {"route_type": "solver"},
+    )
+    raw = open(emitter.pending_failure_ledger_path, "rb").read()
+    assert b"RAW SECRET" not in raw
+    assert b"nested" not in raw
+    entry = json.loads(raw.decode("utf-8"))
+    assert entry["metadata"] == {"route_type": "solver"}
+    assert valid_pending_append_failure(entry) is True
+    assert read_pending_append_failures(emitter.pending_failure_ledger_path) == 1
 
 
 def test_schedule_receipt_no_running_loop_is_safe(tmp_path) -> None:
@@ -152,6 +188,7 @@ def test_path_traversal_served_id_rejected_at_ingress(tmp_path) -> None:
     assert emitter.record_pending(evil, source="solver", route_type="solver", language="fi",
                                   profile="HOME", agent_id=None) is False
     assert emitter.pending_append_failures == 1
+    assert read_pending_append_failures(emitter.pending_failure_ledger_path) == 1
     assert sink.counts()["served"] == 0
 
     async def run() -> None:
@@ -163,3 +200,28 @@ def test_path_traversal_served_id_rejected_at_ingress(tmp_path) -> None:
     asyncio.run(run())
     assert sink.counts() == {"served": 0, "receipts": 0, "gaps": 0, "pending_unresolved": 0}
     assert not (tmp_path / "pwned").exists() and not (tmp_path.parent / "pwned").exists()
+
+
+def test_pending_append_failure_ledger_makes_coverage_ineligible(tmp_path) -> None:
+    emitter, sink, ledger = _emitter(tmp_path)
+    sid = new_served_id()
+
+    class _Boom:
+        def record_pending(self, *a, **k):
+            raise RuntimeError("disk full")
+
+    emitter._sink = _Boom()
+    assert emitter.record_pending(sid, source="solver", route_type="solver",
+                                  language="fi", profile="HOME", agent_id=None) is False
+    assert sink.counts()["served"] == 0
+
+    report = coverage_from_ledger(
+        ledger,
+        pending_failure_ledger_path=emitter.pending_failure_ledger_path,
+    )
+    assert report.served == 1
+    assert report.receipts == 0
+    assert report.gaps == 1
+    assert report.pending_append_failures == 1
+    assert report.eligible is False
+    assert report.reason == "pending_append_failures"

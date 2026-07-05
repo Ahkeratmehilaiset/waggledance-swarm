@@ -8,12 +8,17 @@ the T3 sink's derived counts (anti-drift between writer and reader).
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_accounting import (
+    PENDING_APPEND_FAILURE_SCHEMA,
     coverage_from_ledger,
     derive_coverage,
+    read_pending_append_failures,
+    valid_pending_append_failure,
 )
 from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
 
@@ -56,6 +61,59 @@ def test_a_gap_makes_ineligible() -> None:
     ]))
     assert report.eligible is False and report.reason == "gaps_present"
     assert report.ratio == 0.5 and report.gaps == 1
+
+
+def test_pending_append_failure_extends_denominator_and_fails_closed() -> None:
+    report = derive_coverage(
+        _chain([("pending", "q1"), ("receipt", "q1")]),
+        pending_append_failures=1,
+    )
+    assert report.served == 2
+    assert report.receipts == 1
+    assert report.gaps == 1
+    assert report.pending_append_failures == 1
+    assert report.ratio == 0.5
+    assert report.eligible is False
+    assert report.reason == "pending_append_failures"
+
+
+def test_pending_append_failure_validator_rejects_raw_or_nested_metadata() -> None:
+    base = {
+        "schema_version": PENDING_APPEND_FAILURE_SCHEMA,
+        "served_id_hash": "sha256:" + "ab" * 32,
+        "ts_utc": _TS,
+        "reason": "sink_write_failed",
+        "metadata": {"route_type": "solver", "profile": "HOME"},
+    }
+    assert valid_pending_append_failure(base) is True
+
+    raw = dict(base)
+    raw["metadata"] = {"profile": "RAW SECRET USER QUERY with spaces"}
+    assert valid_pending_append_failure(raw) is False
+
+    nested = dict(base)
+    nested["metadata"] = {"route_type": "solver", "nested": {"raw": "X"}}
+    assert valid_pending_append_failure(nested) is False
+
+
+def test_read_pending_append_failures_counts_invalid_and_corrupt_lines(tmp_path) -> None:
+    path = tmp_path / "pending_append_failures.jsonl"
+    valid = {
+        "schema_version": PENDING_APPEND_FAILURE_SCHEMA,
+        "served_id_hash": "sha256:" + "ab" * 32,
+        "ts_utc": _TS,
+        "reason": "sink_write_failed",
+        "metadata": {"route_type": "solver"},
+    }
+    invalid = dict(valid)
+    invalid["metadata"] = {"profile": "RAW SECRET USER QUERY with spaces"}
+    path.write_text(
+        "\n".join([json.dumps(valid), json.dumps(invalid), '{"partial":'])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert read_pending_append_failures(str(path)) == 3
 
 
 def test_unresolved_pending_makes_ineligible() -> None:

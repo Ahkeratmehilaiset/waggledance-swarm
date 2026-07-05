@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 # be selected as the active profile.
 KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
 DEFAULT_RUNTIME_RECEIPT_OUT_DIR = "data/runtime/runtime_summary_receipts"
+DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR = "data/runtime/chat_served_receipts"
 DEFAULT_V313_SOLVER_RECEIPT_MAX_BUNDLES = 1000
 _V313_SOLVER_RECEIPT_BUNDLE_DIR_RE = re.compile(r"^\d{8}T\d{12}Z-\d{6}$")
 
@@ -489,6 +490,51 @@ class Container:
 
         return sink
 
+    @cached_property
+    def chat_served_emitter(self):
+        """Optional ChatService served-receipt emitter.
+
+        Disabled by default. When enabled, ChatService records a synchronous
+        served-pending denominator and resolves it off-loop to a MAGMA receipt.
+        The emitter is fail-open and never flips claim_safe.
+        """
+        if not _settings_bool(self._settings.get("chat_served_receipts.enabled", False)):
+            return None
+
+        try:
+            from tools.verify_magma_receipt import verify_manifest
+            from waggledance.core.magma.chat_served_emitter import ChatServedEmitter
+            from waggledance.core.magma.chat_served_sink import ChatServedReceiptSink
+
+            out_dir = Path(
+                str(
+                    self._settings.get(
+                        "chat_served_receipts.out_dir",
+                        DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR,
+                    )
+                )
+            )
+            fsync_every = _settings_positive_int(
+                self._settings,
+                "chat_served_receipts.fsync_every",
+                32,
+            )
+            out_dir.mkdir(parents=True, exist_ok=True)
+            sink = ChatServedReceiptSink(
+                str(out_dir / "ledger.jsonl"),
+                fsync_every=fsync_every,
+            )
+            return ChatServedEmitter(
+                sink=sink,
+                out_dir=out_dir,
+                verify_manifest=verify_manifest,
+                known_profiles=KNOWN_PROFILES,
+                enabled=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - chat serving must fail open.
+            log.warning("chat-served emitter unavailable: %s", exc)
+            return None
+
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
     @cached_property
@@ -699,6 +745,7 @@ class Container:
             verifier_store=rt.verifier_store,
             hybrid_retrieval=self.hybrid_retrieval,
             hex_neighbor_assist=self.hex_neighbor_assist,
+            chat_served_emitter=self.chat_served_emitter,
         )
 
     @cached_property

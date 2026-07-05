@@ -63,6 +63,7 @@ PINNED_CACHED_PROPERTIES: frozenset[str] = frozenset(
         "autonomy_service",
         "runtime_receipt_sink",
         "v313_solver_receipt_sink",
+        "chat_served_emitter",
         # Application services
         "memory_service",
         "chat_service",

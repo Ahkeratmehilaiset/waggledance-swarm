@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from waggledance.adapters.config.settings_loader import WaggleSettings
 from waggledance.bootstrap.container import Container
+from waggledance.core.magma.chat_served_accounting import coverage_from_ledger
+from waggledance.core.magma.chat_served_emitter import new_served_id
 from waggledance.core.magma.runtime_summary_receipt import (
     build_handle_query_runtime_summary,
 )
@@ -12,6 +15,11 @@ from waggledance.core.magma.runtime_summary_receipt import (
 
 def _settings_with_runtime_receipts(config: dict | None = None) -> WaggleSettings:
     extras = {"runtime_receipts": dict(config or {})} if config is not None else {}
+    return WaggleSettings(profile="TEST", _extras=extras)
+
+
+def _settings_with_chat_served_receipts(config: dict | None = None) -> WaggleSettings:
+    extras = {"chat_served_receipts": dict(config or {})} if config is not None else {}
     return WaggleSettings(profile="TEST", _extras=extras)
 
 
@@ -55,6 +63,54 @@ def test_runtime_receipt_sink_is_default_off() -> None:
     runtime = container.autonomy_service._runtime
     assert runtime.runtime_receipt_sink is None
     assert runtime.runtime_receipt_metrics_snapshot()["sink_configured"] is False
+
+
+def test_chat_served_emitter_is_default_off() -> None:
+    container = Container(settings=_settings_with_chat_served_receipts(), stub=True)
+
+    assert container.chat_served_emitter is None
+
+
+def test_chat_served_emitter_opt_in_writes_eligible_chain(tmp_path: Path) -> None:
+    receipt_root = tmp_path / "chat-served"
+    container = Container(
+        settings=_settings_with_chat_served_receipts(
+            {
+                "enabled": True,
+                "out_dir": str(receipt_root),
+            }
+        ),
+        stub=True,
+    )
+    emitter = container.chat_served_emitter
+    assert emitter is not None
+
+    sid = new_served_id()
+    assert emitter.record_pending(sid, source="solver", route_type="solver",
+                                  language="fi", profile="HOME", agent_id=None) is True
+
+    async def run() -> None:
+        emitter.schedule_receipt(sid, query="private q DO_NOT_LEAK",
+                                 response="private a DO_NOT_LEAK",
+                                 source="solver", route_type="solver",
+                                 confidence=0.95, latency_ms=1.0,
+                                 cached=False, round_table=False, agent_id=None,
+                                 language="fi", profile="HOME")
+        await asyncio.gather(*list(emitter._tasks))
+
+    asyncio.run(run())
+    report = coverage_from_ledger(
+        str(receipt_root / "ledger.jsonl"),
+        pending_failure_ledger_path=emitter.pending_failure_ledger_path,
+    )
+    assert report.eligible is True
+    assert report.served == 1
+    assert report.receipts == 1
+    emitted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(receipt_root.rglob("*.json"))
+    )
+    assert "DO_NOT_LEAK" not in emitted
 
 
 def test_runtime_receipt_sink_treats_string_false_as_disabled() -> None:

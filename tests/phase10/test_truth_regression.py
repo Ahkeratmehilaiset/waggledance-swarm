@@ -157,6 +157,53 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
                 check=False,
                 timeout=10,
             )
+            if contains_proc.returncode != 0:
+                # Later D1 privacy remediation deliberately rewrote main's
+                # commit graph. Preserve the Phase 10 evidence check by
+                # accepting that lineage only when the old squash commit is
+                # still reachable from a remote archive/ref and current main
+                # carries the explicit D1 scrub tooling/runbook.
+                remote_refs_proc = subprocess.run(  # noqa: S603
+                    [
+                        "git",
+                        "for-each-ref",
+                        "--contains",
+                        recorded_sha,
+                        "--format=%(refname:short)",
+                        "refs/remotes",
+                    ],
+                    cwd=str(REPO_ROOT),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=20,
+                )
+                d1_tool_proc = subprocess.run(  # noqa: S603
+                    [
+                        "git",
+                        "cat-file",
+                        "-e",
+                        "origin/main:tools/d1_pii_scrub.py",
+                    ],
+                    cwd=str(REPO_ROOT),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+                d1_runbook = REPO_ROOT / "docs" / "operations" / "D1_PII_SCRUB_RUNBOOK.md"
+                d1_runbook_text = (
+                    d1_runbook.read_text(encoding="utf-8") if d1_runbook.is_file() else ""
+                )
+                d1_scrub_lineage = (
+                    remote_refs_proc.returncode == 0
+                    and bool(remote_refs_proc.stdout.strip())
+                    and d1_tool_proc.returncode == 0
+                    and "full history scrub" in d1_runbook_text.lower()
+                    and "force-push will rewrite every commit SHA" in d1_runbook_text
+                )
+                if d1_scrub_lineage:
+                    return
             assert contains_proc.returncode == 0, (
                 "recorded Phase 10 squash commit "
                 f"{recorded_sha} is not an ancestor of origin/main "

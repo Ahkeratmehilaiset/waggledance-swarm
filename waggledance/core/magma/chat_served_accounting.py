@@ -28,13 +28,15 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any, NamedTuple
 
 from waggledance.core.magma.chat_served_ledger import (
     GAP_TERMINAL,
     RECEIPT_TERMINAL,
     SERVED_PENDING,
+    head_hash,
+    is_ledger_hash,
     read_entries,
     verify_chain,
 )
@@ -44,6 +46,13 @@ PENDING_APPEND_FAILURE_SCHEMA = "magma.chat_served_pending_append_failure.v0"
 PENDING_APPEND_FAILURE_REASONS = frozenset({
     "metadata_rejected",
     "sink_write_failed",
+})
+REQUIRED_CHAT_SERVED_POINTS = frozenset({
+    "hotcache",
+    "solver",
+    "hybrid_retrieval",
+    "hex_mesh",
+    "llm",
 })
 
 # derived per-served_id lifecycle states
@@ -63,6 +72,28 @@ class ClaimCoverageReport(NamedTuple):
     lifecycle_ok: bool
     eligible: bool              # receipt-coverage half of claim-safety
     reason: str | None          # why not eligible (None when eligible)
+
+
+class ClaimWindowReport(NamedTuple):
+    """Fail-closed gate report for a named chat-served claim window.
+
+    This is a measurement/gate object only. It never flips ``claim_safe``; it
+    explains whether a window has enough evidence to be considered eligible by a
+    later operator-signed claim step.
+    """
+
+    coverage: ClaimCoverageReport
+    actual_head: str | None
+    expected_head: str | None
+    enabled_across_window: bool
+    clean_shutdown: bool
+    torn_tail: bool
+    required_served_points: tuple[str, ...]
+    instrumented_served_points: tuple[str, ...]
+    missing_served_points: tuple[str, ...]
+    eligible: bool
+    reason: str | None
+    read_error: str | None
 
 
 def valid_pending_append_failure(entry: object) -> bool:
@@ -212,11 +243,126 @@ def coverage_from_ledger(
     )
 
 
+def _normalized_point_set(points: Iterable[str] | None) -> tuple[str, ...]:
+    if points is None:
+        return ()
+    return tuple(sorted({str(point) for point in points if str(point)}))
+
+
+def derive_claim_window(
+    entries: list[Mapping[str, Any]],
+    *,
+    expected_head: str | None,
+    enabled_across_window: bool,
+    clean_shutdown: bool,
+    instrumented_served_points: Iterable[str] | None,
+    required_served_points: Iterable[str] | None = REQUIRED_CHAT_SERVED_POINTS,
+    pending_append_failures: int = 0,
+    torn_tail: bool = False,
+    read_error: str | None = None,
+) -> ClaimWindowReport:
+    """Evaluate the outer claim-window gates around receipt coverage.
+
+    The inner coverage walk can prove a ledger segment is gapless, but it cannot
+    prove the operator's named window stayed enabled, was cleanly shut down, kept
+    its externally anchored head, or had every ChatService served point wired.
+    Those are explicit inputs to this function and each fails closed.
+    """
+    coverage = derive_coverage(
+        entries,
+        pending_append_failures=pending_append_failures,
+    )
+    actual = None if read_error is not None else head_hash(entries)
+    required = _normalized_point_set(required_served_points)
+    instrumented = _normalized_point_set(instrumented_served_points)
+    instrumented_set = set(instrumented)
+    missing = tuple(point for point in required if point not in instrumented_set)
+
+    reason: str | None = None
+    if read_error:
+        reason = f"ledger_read_failed:{read_error}"
+    elif expected_head is None:
+        reason = "missing_expected_head_anchor"
+    elif not is_ledger_hash(expected_head):
+        reason = "invalid_expected_head_anchor"
+    elif actual != expected_head:
+        reason = "head_anchor_mismatch"
+    elif not enabled_across_window:
+        reason = "not_enabled_across_window"
+    elif not clean_shutdown:
+        reason = "unclean_shutdown_window_invalid"
+    elif torn_tail:
+        reason = "ledger_torn_tail"
+    elif missing:
+        reason = "served_point_instrumentation_incomplete"
+    elif not coverage.eligible:
+        reason = f"coverage_not_eligible:{coverage.reason}"
+
+    return ClaimWindowReport(
+        coverage=coverage,
+        actual_head=actual,
+        expected_head=expected_head,
+        enabled_across_window=bool(enabled_across_window),
+        clean_shutdown=bool(clean_shutdown),
+        torn_tail=bool(torn_tail),
+        required_served_points=required,
+        instrumented_served_points=instrumented,
+        missing_served_points=missing,
+        eligible=reason is None,
+        reason=reason,
+        read_error=read_error,
+    )
+
+
+def claim_window_from_ledger(
+    ledger_path: str,
+    *,
+    expected_head: str | None,
+    enabled_across_window: bool,
+    clean_shutdown: bool,
+    instrumented_served_points: Iterable[str] | None,
+    required_served_points: Iterable[str] | None = REQUIRED_CHAT_SERVED_POINTS,
+    pending_failure_ledger_path: str | None = None,
+) -> ClaimWindowReport:
+    """Read a ledger and evaluate the complete fail-closed claim-window gate."""
+    pending_failures: int | None = None
+    try:
+        pending_failures = read_pending_append_failures(pending_failure_ledger_path)
+        entries, torn_tail = read_entries(ledger_path)
+        return derive_claim_window(
+            entries,
+            expected_head=expected_head,
+            enabled_across_window=enabled_across_window,
+            clean_shutdown=clean_shutdown,
+            instrumented_served_points=instrumented_served_points,
+            required_served_points=required_served_points,
+            pending_append_failures=pending_failures,
+            torn_tail=torn_tail,
+        )
+    except Exception as exc:  # noqa: BLE001 - claim-window reads fail closed
+        if pending_failures is None:
+            pending_failures = 1
+        return derive_claim_window(
+            [],
+            expected_head=expected_head,
+            enabled_across_window=enabled_across_window,
+            clean_shutdown=clean_shutdown,
+            instrumented_served_points=instrumented_served_points,
+            required_served_points=required_served_points,
+            pending_append_failures=pending_failures,
+            read_error=exc.__class__.__name__,
+        )
+
+
 __all__ = [
     "ClaimCoverageReport",
+    "ClaimWindowReport",
     "PENDING_APPEND_FAILURE_REASONS",
     "PENDING_APPEND_FAILURE_SCHEMA",
+    "REQUIRED_CHAT_SERVED_POINTS",
+    "claim_window_from_ledger",
     "coverage_from_ledger",
+    "derive_claim_window",
     "derive_coverage",
     "read_pending_append_failures",
     "valid_pending_append_failure",

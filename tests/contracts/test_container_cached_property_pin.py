@@ -65,6 +65,7 @@ PINNED_CACHED_PROPERTIES: frozenset[str] = frozenset(
         # Application services
         "memory_service",
         "chat_service",
+        "chat_served_evidence_emitter",
         "learning_service",
         "readiness_service",
         "night_pipeline",

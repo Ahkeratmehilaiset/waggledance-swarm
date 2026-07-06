@@ -210,6 +210,46 @@ def test_canonical_exact_head_build_consensus_remains_eligible() -> None:
     assert report["gate_results"]["bridge_consensus"]["ok"] is True
 
 
+def test_status_like_build_decision_after_pass_supersedes_build_approval() -> None:
+    # Informational post-pass updates from build identities must use status/message.
+    # A block-shaped type=decision is an authoritative later verdict and withdraws
+    # that identity's build slot until it explicitly re-posts build_consensus_pass.
+    report = _evaluate(
+        [
+            _event(
+                "codex-lead-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:15:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "build_consensus_pass",
+                ts="2026-06-07T02:16:00Z",
+            ),
+            _event("claude-rco-1", "rco_pass", ts="2026-06-07T02:17:00Z"),
+            _event(
+                "codex-lead-1",
+                "merge_blocked_operator_or_driver",
+                ts="2026-06-07T02:18:00Z",
+                message="status note accidentally emitted as a decision",
+            ),
+        ]
+    )
+
+    assert report["eligible"] is False
+    assert "bridge consensus incomplete" in report["reasons"]
+    consensus = report["gate_results"]["bridge_consensus"]["by_agent"][
+        "claude-rco-1"
+    ]
+    build_lead = consensus["identities"]["build_lead"]
+    assert build_lead["approved"] is False
+    assert build_lead["approval_index"] is not None
+    assert build_lead["block_index"] is not None
+    assert build_lead["block_index"] > build_lead["approval_index"]
+    assert consensus["identities"]["build_tools"]["approved"] is True
+    assert consensus["identities"]["rco"]["approved"] is True
+
+
 def test_lead_authored_promotion_uses_build_author_slot_waiver() -> None:
     report = _evaluate(
         [

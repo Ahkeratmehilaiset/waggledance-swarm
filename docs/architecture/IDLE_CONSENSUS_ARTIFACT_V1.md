@@ -60,6 +60,19 @@ digest-only reference:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
+  --operator-decision-reference-template `
+  --replay-seed .codex-audit\idle-replay-seed.json `
+  --candidate-diff .codex-audit\candidate.patch `
+  --changed-path docs\architecture\consensus_artifacts\replay.md `
+  --json
+```
+
+The template command prints the exact digest-bound reference object that the
+admission check can later consume. It still writes no artifacts, appends no
+bridge events, and creates no task, branch, PR, or merge.
+
+```powershell
+.\.venv\Scripts\python.exe tools\idle_consensus_artifact.py `
   --candidate-diff-replay-admission `
   --replay-seed .codex-audit\idle-replay-seed.json `
   --candidate-diff .codex-audit\candidate.patch `
@@ -75,10 +88,21 @@ The reference must use
 `candidate_diff_digest`, `operator_gate_required=true`, and false values for
 all authority flags (`auto_execute`, `external_effect`, `writes_applied`,
 `would_create_task`, `would_create_branch`, `would_create_pr`, `would_merge`,
-`runtime_authority_granted`, `external_writes_applied`). A matching reference
-clears only the `operator_review_gate_required` blocker in the report; the tool
-still writes no artifacts, appends no bridge events, and creates no task,
-branch, PR, or merge.
+`runtime_authority_granted`, `external_writes_applied`). The template is not an
+operator approval by itself. Candidate-diff replay admission records any
+supplied `operator_authentication` object with
+`schema_version=idle_consensus_operator_decision_authentication.v0`,
+`authentication_method=operator_signed_decision`,
+`operator_authenticated=true`, a `signed_reference_digest` matching the digest
+of the reference without the authentication object, and a sha256
+`operator_signature_digest` as shape-valid only. Local JSON cannot authenticate
+the operator gate by self-assertion; `operator_authentication_valid` remains
+false until a verifier-backed operator identity or signature source is wired in.
+Without verifier-backed authentication, the report keeps the
+`operator_decision_reference_authentication_missing` or
+`operator_decision_reference_authentication_invalid` blocker.
+The tool still writes no artifacts, appends no bridge events, and creates no
+task, branch, PR, or merge.
 
 When a later counterfactual evaluator needs to bind its receipt to the same
 stored consensus and candidate diff, emit the digest-only binding template:

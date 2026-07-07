@@ -83,7 +83,7 @@ Verified against merged main (every claim below = a merged PR, not prose):
 | Follow-up | Advisory snapshot loader consolidation (+ NaN/Inf-500 class closed: #1472/#1468/#1470 guards) | MERGED #1474 / #1472 |
 | Follow-up | In-runtime AdvisoryRefreshTicker (scheduler-written LIVE advisories without OS cron; default OFF) | MERGED #1475 |
 | Seed #11 | Hex ROUTING enable benchmark (first measured baseline; neighbor-rung fixture gap documented) | PR #1481 (dual-RCO, in gate) |
-| Ops (fix-all) | Bridge audit fixes: next-action 4x + meaningful stale count (#1476), gate unverified-veto fail-closed (#1477 — merged in PROCEDURAL BREACH of the (a)-EXPLICIT gate-code carve-out; operator ratification (confirm-or-revert) PENDING, all agents concur on the breach record), write mutex+spool (#1479), nudger idempotency (ops) | MERGED + ops-applied; #1477 ratification pending |
+| Ops (fix-all) | Bridge audit fixes: next-action 4x + meaningful stale count (#1476), gate unverified-veto fail-closed (#1477 — merged in PROCEDURAL BREACH of the (a)-EXPLICIT gate-code carve-out; operator ratified the already-merged fail-closed outcome on 2026-07-07, future gate-code changes remain operator-explicit), write mutex+spool (#1479), nudger idempotency (ops) | MERGED + ops-applied; #1477 ratified |
 | Governance | CLAUDE.md carry-forward doc-truth | PR #1480 held for operator per-PR signature (carve-out) |
 
 Remaining open seeds: #12 sensor-fusion (MQTT/Frigate), #15 memory folder ingestion,

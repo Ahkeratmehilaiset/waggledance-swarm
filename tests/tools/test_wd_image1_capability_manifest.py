@@ -21,6 +21,12 @@ from tools.wd_image1_capability_manifest import (
 )
 from tools.wd_image1_capability_manifest import (
     CHAT_SERVED_CLAIM_WINDOW_ENV,
+    CHAT_SERVED_CLAIM_WINDOW_ANCHOR_STORE_ENV,
+    CHAT_SERVED_CLAIM_WINDOW_CLEAN_SHUTDOWN_MARKER_ENV,
+    CHAT_SERVED_CLAIM_WINDOW_ENABLED_SAMPLES_ENV,
+    CHAT_SERVED_CLAIM_WINDOW_ID_ENV,
+    CHAT_SERVED_CLAIM_WINDOW_LEDGER_ENV,
+    CHAT_SERVED_CLAIM_WINDOW_SERVED_POINT_OBSERVATIONS_ENV,
     _CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS,
     _safe_chat_served_claim_window_aggregate,
     build_chat_served_claim_window_aggregate,
@@ -3668,6 +3674,121 @@ def test_chat_served_claim_window_evidence_inputs_drive_safe_aggregate(tmp_path)
     blob = json.dumps(aggregate)
     assert "sha256:" not in blob
     assert str(tmp_path) not in blob
+
+
+def test_chat_served_claim_window_env_evidence_inputs_drive_safe_aggregate(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from waggledance.core.magma import chat_served_ledger as L
+    from waggledance.core.magma.chat_served_accounting import (
+        REQUIRED_CHAT_SERVED_POINTS,
+    )
+    from waggledance.core.magma.chat_served_claim_window_evidence import (
+        write_clean_shutdown_marker,
+        write_enabled_state_sample,
+        write_head_anchor_checkpoint,
+        write_served_point_observation,
+    )
+
+    window_id = "window:manifest"
+    ts_utc = "2026-07-04T07:00:00Z"
+    ledger_path = tmp_path / "ledger.jsonl"
+    anchor_path = tmp_path / "anchors" / "heads.jsonl"
+    marker_path = tmp_path / "markers" / "clean.json"
+    enabled_samples_path = tmp_path / "samples" / "enabled.jsonl"
+    observations_path = tmp_path / "samples" / "served-points.jsonl"
+    entry1 = L.new_served_pending(
+        "q1", L.GENESIS_PREV_HASH, ts_utc, {"route_type": "solver"}
+    )
+    entry2 = L.new_receipt_terminal(
+        "q1", entry1["entry_hash"], "2026-07-04T07:00:01Z", "sha256:" + "ab" * 32
+    )
+    L.append_entry(str(ledger_path), entry1, fsync=False)
+    L.append_entry(str(ledger_path), entry2, fsync=False)
+    write_head_anchor_checkpoint(
+        str(anchor_path),
+        str(ledger_path),
+        window_id=window_id,
+        ts_utc=ts_utc,
+        fsync=False,
+    )
+    write_clean_shutdown_marker(
+        str(marker_path),
+        window_id=window_id,
+        ts_utc=ts_utc,
+        fsync=False,
+    )
+    write_enabled_state_sample(
+        str(enabled_samples_path),
+        window_id=window_id,
+        enabled=True,
+        ts_utc=ts_utc,
+        fsync=False,
+    )
+    for point in sorted(REQUIRED_CHAT_SERVED_POINTS):
+        write_served_point_observation(
+            str(observations_path),
+            point=point,
+            wired=True,
+            ts_utc=ts_utc,
+            fsync=False,
+        )
+
+    monkeypatch.setenv(CHAT_SERVED_CLAIM_WINDOW_ENV, "1")
+    monkeypatch.setenv(CHAT_SERVED_CLAIM_WINDOW_LEDGER_ENV, str(ledger_path))
+    monkeypatch.setenv(CHAT_SERVED_CLAIM_WINDOW_ANCHOR_STORE_ENV, str(anchor_path))
+    monkeypatch.setenv(CHAT_SERVED_CLAIM_WINDOW_ID_ENV, window_id)
+    monkeypatch.setenv(
+        CHAT_SERVED_CLAIM_WINDOW_ENABLED_SAMPLES_ENV,
+        str(enabled_samples_path),
+    )
+    monkeypatch.setenv(
+        CHAT_SERVED_CLAIM_WINDOW_CLEAN_SHUTDOWN_MARKER_ENV,
+        str(marker_path),
+    )
+    monkeypatch.setenv(
+        CHAT_SERVED_CLAIM_WINDOW_SERVED_POINT_OBSERVATIONS_ENV,
+        str(observations_path),
+    )
+
+    aggregate = build_chat_served_claim_window_aggregate()
+
+    assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
+    assert aggregate["claim_window_eligible"] is True
+    assert aggregate["input_evidence_derived"] is True
+    assert aggregate["claim_safe"] is False
+    assert aggregate["measurement_not_a_correctness_gate"] is True
+    assert aggregate["production_representativeness_claimed"] is False
+    blob = json.dumps(aggregate)
+    assert "sha256:" not in blob
+    assert str(tmp_path) not in blob
+
+
+def test_chat_served_claim_window_env_bad_json_fails_closed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.jsonl"
+    bad_samples_path = tmp_path / "bad-enabled.jsonl"
+    bad_samples_path.write_text("{bad json\n", encoding="utf-8")
+
+    monkeypatch.setenv(CHAT_SERVED_CLAIM_WINDOW_ENV, "1")
+    monkeypatch.setenv(CHAT_SERVED_CLAIM_WINDOW_LEDGER_ENV, str(ledger_path))
+    monkeypatch.setenv(
+        CHAT_SERVED_CLAIM_WINDOW_ENABLED_SAMPLES_ENV,
+        str(bad_samples_path),
+    )
+
+    aggregate = build_chat_served_claim_window_aggregate()
+
+    assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
+    assert aggregate["claim_window_eligible"] is False
+    assert aggregate["claim_safe"] is False
+    assert aggregate["reason"] == "evidence_inputs_unreadable"
+    assert aggregate["input_evidence_derived"] is False
+    assert aggregate["measurement_not_a_correctness_gate"] is True
+    assert aggregate["production_representativeness_claimed"] is False
 
 
 def test_chat_served_claim_window_evidence_inputs_fail_closed(tmp_path) -> None:

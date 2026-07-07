@@ -9719,6 +9719,25 @@ def build_per_query_receipt_coverage_aggregate(
 
 
 CHAT_SERVED_CLAIM_WINDOW_ENV = "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW"
+CHAT_SERVED_CLAIM_WINDOW_LEDGER_ENV = (
+    "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_LEDGER"
+)
+CHAT_SERVED_CLAIM_WINDOW_PENDING_FAILURE_LEDGER_ENV = (
+    "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_PENDING_FAILURE_LEDGER"
+)
+CHAT_SERVED_CLAIM_WINDOW_ANCHOR_STORE_ENV = (
+    "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_ANCHOR_STORE"
+)
+CHAT_SERVED_CLAIM_WINDOW_ID_ENV = "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_ID"
+CHAT_SERVED_CLAIM_WINDOW_ENABLED_SAMPLES_ENV = (
+    "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_ENABLED_SAMPLES"
+)
+CHAT_SERVED_CLAIM_WINDOW_CLEAN_SHUTDOWN_MARKER_ENV = (
+    "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_CLEAN_SHUTDOWN_MARKER"
+)
+CHAT_SERVED_CLAIM_WINDOW_SERVED_POINT_OBSERVATIONS_ENV = (
+    "WD_IMAGE1_CHAT_SERVED_CLAIM_WINDOW_SERVED_POINT_OBSERVATIONS"
+)
 
 _CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS = (
     "claim_window_eligible",
@@ -9750,6 +9769,29 @@ def _chat_served_claim_window_enabled() -> bool:
     return str(
         os.environ.get(CHAT_SERVED_CLAIM_WINDOW_ENV, "")
     ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _chat_served_claim_window_env_text(name: str) -> str | None:
+    text = str(os.environ.get(name, "")).strip()
+    return text or None
+
+
+def _load_chat_served_claim_window_jsonl(
+    path: str,
+) -> tuple[Mapping[str, Any], ...]:
+    entries: list[Mapping[str, Any]] = []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if not isinstance(entry, Mapping):
+                    raise ValueError("jsonl_entry_is_not_mapping")
+                entries.append(entry)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("evidence_inputs_unreadable") from exc
+    return tuple(entries)
 
 
 def _as_mapping(value: object) -> Mapping[str, Any]:
@@ -9821,6 +9863,42 @@ def _strict_chat_served_bool(value: object, name: str) -> bool:
     if value is not True and value is not False:
         raise ValueError(f"chat_served_claim_window {name} is not a strict bool")
     return bool(value)
+
+
+def _empty_chat_served_claim_window_aggregate(
+    reason: str,
+    *,
+    enabled_across_window: bool = False,
+    clean_shutdown: bool = False,
+    input_evidence_derived: bool = False,
+) -> dict:
+    aggregate = {
+        "claim_window_eligible": False,
+        "claim_safe": False,
+        "reason": _safe_reason(reason),
+        "served": 0,
+        "receipts": 0,
+        "gaps": 0,
+        "unresolved_pending": 0,
+        "pending_append_failures": 0,
+        "receipt_coverage_ratio": None,
+        "chain_ok": False,
+        "lifecycle_ok": False,
+        "head_anchor_match": False,
+        "enabled_across_window": bool(enabled_across_window),
+        "clean_shutdown": bool(clean_shutdown),
+        "torn_tail": False,
+        "source_completeness_ok": False,
+        "required_served_point_count": 0,
+        "instrumented_served_point_count": 0,
+        "missing_served_point_count": 0,
+        "input_evidence_derived": bool(input_evidence_derived),
+        "measurement_not_a_correctness_gate": True,
+        "production_representativeness_claimed": False,
+    }
+    if set(aggregate) != set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS):
+        raise ValueError("chat_served_claim_window empty aggregate keyset drift")
+    return aggregate
 
 
 def _safe_chat_served_claim_window_aggregate(
@@ -9960,31 +10038,59 @@ def build_chat_served_claim_window_aggregate(
     enabled = _chat_served_claim_window_enabled() if force is None else force
     if not enabled:
         return None
+    if force is None:
+        ledger_path = ledger_path or _chat_served_claim_window_env_text(
+            CHAT_SERVED_CLAIM_WINDOW_LEDGER_ENV
+        )
+        pending_failure_ledger_path = (
+            pending_failure_ledger_path
+            or _chat_served_claim_window_env_text(
+                CHAT_SERVED_CLAIM_WINDOW_PENDING_FAILURE_LEDGER_ENV
+            )
+        )
+        anchor_store_path = anchor_store_path or _chat_served_claim_window_env_text(
+            CHAT_SERVED_CLAIM_WINDOW_ANCHOR_STORE_ENV
+        )
+        window_id = window_id or _chat_served_claim_window_env_text(
+            CHAT_SERVED_CLAIM_WINDOW_ID_ENV
+        )
+        clean_shutdown_marker_path = (
+            clean_shutdown_marker_path
+            or _chat_served_claim_window_env_text(
+                CHAT_SERVED_CLAIM_WINDOW_CLEAN_SHUTDOWN_MARKER_ENV
+            )
+        )
+        try:
+            if enabled_samples is None:
+                enabled_samples_path = _chat_served_claim_window_env_text(
+                    CHAT_SERVED_CLAIM_WINDOW_ENABLED_SAMPLES_ENV
+                )
+                if enabled_samples_path:
+                    enabled_samples = _load_chat_served_claim_window_jsonl(
+                        enabled_samples_path
+                    )
+            if served_point_observations is None:
+                served_point_observations_path = (
+                    _chat_served_claim_window_env_text(
+                        CHAT_SERVED_CLAIM_WINDOW_SERVED_POINT_OBSERVATIONS_ENV
+                    )
+                )
+                if served_point_observations_path:
+                    served_point_observations = (
+                        _load_chat_served_claim_window_jsonl(
+                            served_point_observations_path
+                        )
+                    )
+        except ValueError:
+            return _empty_chat_served_claim_window_aggregate(
+                "evidence_inputs_unreadable"
+            )
     if not ledger_path:
-        return {
-            "claim_window_eligible": False,
-            "claim_safe": False,
-            "reason": "missing_ledger_path",
-            "served": 0,
-            "receipts": 0,
-            "gaps": 0,
-            "unresolved_pending": 0,
-            "pending_append_failures": 0,
-            "receipt_coverage_ratio": None,
-            "chain_ok": False,
-            "lifecycle_ok": False,
-            "head_anchor_match": False,
-            "enabled_across_window": bool(enabled_across_window),
-            "clean_shutdown": bool(clean_shutdown),
-            "torn_tail": False,
-            "source_completeness_ok": False,
-            "required_served_point_count": 0,
-            "instrumented_served_point_count": 0,
-            "missing_served_point_count": 0,
-            "input_evidence_derived": False,
-            "measurement_not_a_correctness_gate": True,
-            "production_representativeness_claimed": False,
-        }
+        return _empty_chat_served_claim_window_aggregate(
+            "missing_ledger_path",
+            enabled_across_window=enabled_across_window,
+            clean_shutdown=clean_shutdown,
+        )
     evidence_inputs_present = any(
         value is not None
         for value in (
@@ -10003,48 +10109,32 @@ def build_chat_served_claim_window_aggregate(
             and clean_shutdown_marker_path
             and served_point_observations is not None
         ):
-            return {
-                "claim_window_eligible": False,
-                "claim_safe": False,
-                "reason": "missing_evidence_inputs",
-                "served": 0,
-                "receipts": 0,
-                "gaps": 0,
-                "unresolved_pending": 0,
-                "pending_append_failures": 0,
-                "receipt_coverage_ratio": None,
-                "chain_ok": False,
-                "lifecycle_ok": False,
-                "head_anchor_match": False,
-                "enabled_across_window": False,
-                "clean_shutdown": False,
-                "torn_tail": False,
-                "source_completeness_ok": False,
-                "required_served_point_count": 0,
-                "instrumented_served_point_count": 0,
-                "missing_served_point_count": 0,
-                "input_evidence_derived": False,
-                "measurement_not_a_correctness_gate": True,
-                "production_representativeness_claimed": False,
-            }
+            return _empty_chat_served_claim_window_aggregate(
+                "missing_evidence_inputs"
+            )
         from waggledance.core.magma.chat_served_claim_window_evidence import (
             build_claim_window_evidence,
             claim_window_from_evidence,
         )
 
-        evidence = build_claim_window_evidence(
-            anchor_store_path=anchor_store_path,
-            ledger_path=ledger_path,
-            window_id=window_id,
-            enabled_samples=enabled_samples,
-            clean_shutdown_marker_path=clean_shutdown_marker_path,
-            served_point_observations=served_point_observations,
-        )
-        report = claim_window_from_evidence(
-            ledger_path,
-            evidence,
-            pending_failure_ledger_path=pending_failure_ledger_path,
-        )
+        try:
+            evidence = build_claim_window_evidence(
+                anchor_store_path=anchor_store_path,
+                ledger_path=ledger_path,
+                window_id=window_id,
+                enabled_samples=enabled_samples,
+                clean_shutdown_marker_path=clean_shutdown_marker_path,
+                served_point_observations=served_point_observations,
+            )
+            report = claim_window_from_evidence(
+                ledger_path,
+                evidence,
+                pending_failure_ledger_path=pending_failure_ledger_path,
+            )
+        except Exception:  # noqa: BLE001 - evidence-backed CLI opt-in fails closed
+            return _empty_chat_served_claim_window_aggregate(
+                "evidence_inputs_unreadable"
+            )
         if evidence.reason is not None and not report.eligible:
             report = report._replace(reason=evidence.reason)
         return _safe_chat_served_claim_window_aggregate(

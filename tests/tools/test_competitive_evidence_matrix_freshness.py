@@ -52,18 +52,24 @@ def _axis_labels(text: str) -> dict[str, str]:
     return labels
 
 
-def test_freshness_note_marks_20260620_staleness_without_label_upgrade() -> None:
+def test_freshness_note_marks_20260707_staleness_without_label_upgrade() -> None:
     text = _read_matrix()
 
     assert "**Evidence snapshot date:** 2026-05-06" in text
-    assert "2026-06-20 read-only audit" in text
-    assert "following the 2026-06-15, 2026-06-11, 2026-06-06, and 2026-05-27 read-only audits" in text
-    assert "`freshness_audit_date=2026-06-20`" in text
-    assert "`prior_freshness_audit_date=2026-06-15`" in text
+    assert "2026-07-07 read-only public-doc refresh and staleness audit" in text
+    assert "2026-06-20 bridge audit" in text
+    assert "following the 2026-06-20, 2026-06-15, 2026-06-11, 2026-06-06, and 2026-05-27 read-only audits" in text
+    assert "`freshness_audit_date=2026-07-07`" in text
+    assert "`prior_freshness_audit_date=2026-06-20`" in text
     assert "`priority_rows=G,J,L`" in text
-    assert "`priority_rows_freshness_audit_date=2026-06-20`" in text
-    assert "45 days old" in text
+    assert "`priority_rows_freshness_audit_date=2026-07-07`" in text
+    assert "62 days old" in text
     assert "staleness markers only, not reruns" in text
+    assert "public-doc-only" in text
+    assert "https://github.com/microsoft/agent-governance-toolkit" in text
+    assert "https://github.com/preloop/preloop" in text
+    assert "https://github.com/jamjet-labs/jamjet" in text
+    assert "https://www.helpnetsecurity.com/2026/04/09/asqav-ai-agent-audit-trail/" in text
     assert "non-upgrading refresh inputs" in text
     assert "tools/build_v12_ingredient_coverage_rollup.py" in text
     assert "tools/run_v12_memory_palace_shortcut_proof.py" in text

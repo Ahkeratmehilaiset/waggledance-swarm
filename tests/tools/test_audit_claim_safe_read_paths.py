@@ -50,17 +50,20 @@ def test_claim_safe_audit_blocks_production_true_literal(tmp_path) -> None:
     ]
 
 
-def test_claim_safe_audit_blocks_production_subscript_true_assignment(
+def test_claim_safe_audit_blocks_production_true_assignment_forms(
     tmp_path,
 ) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
-    (tools_dir / "bad_subscript.py").write_text(
+    (tools_dir / "bad_assignments.py").write_text(
         "\n".join(
             [
                 "report = {}",
                 "report['claim_safe'] = True",
-                "report['literal_future_claim_safe'] = False",
+                "report.claim_safe = True",
+                "report['claim_safe']: bool = True",
+                "report.setdefault('claim_safe', True)",
+                "setattr(report, 'claim_safe', True)",
             ]
         ),
         encoding="utf-8",
@@ -72,10 +75,17 @@ def test_claim_safe_audit_blocks_production_subscript_true_assignment(
     )
 
     assert audit["ok"] is False
-    assert audit["production_true_literal_count"] == 1
+    assert audit["production_true_literal_count"] == 5
     assert audit["blockers"] == [
-        "production_true_claim_safe_literal:tools/bad_subscript.py:2:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:2:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:3:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:4:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:5:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:6:claim_safe",
     ]
+    assert {
+        item["kind"] for item in audit["production_true_literals"]
+    } == {"assignment", "ann_assignment", "mapping_setdefault", "setattr"}
 
 
 def test_claim_safe_audit_ignores_test_true_fixture(tmp_path) -> None:

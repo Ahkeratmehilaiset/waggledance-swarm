@@ -74,6 +74,11 @@ class _ClaimSafeVisitor(ast.NodeVisitor):
                 if field in CLAIM_SAFE_FIELDS:
                     value_node = node.args[1] if len(node.args) > 1 else node
                     self._record_write(field, value_node, "mapping_setdefault")
+        if isinstance(node.func, ast.Name) and node.func.id == "setattr":
+            if len(node.args) >= 3:
+                field = _constant_string(node.args[1])
+                if field in CLAIM_SAFE_FIELDS:
+                    self._record_write(field, node.args[2], "setattr")
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802

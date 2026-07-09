@@ -72,17 +72,39 @@ class _ClaimSafeVisitor(ast.NodeVisitor):
             if method in {"setdefault"} and node.args:
                 field = _constant_string(node.args[0])
                 if field in CLAIM_SAFE_FIELDS:
-                    self._record_write(field, node, "mapping_setdefault")
+                    value_node = node.args[1] if len(node.args) > 1 else node
+                    self._record_write(field, value_node, "mapping_setdefault")
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        for target in node.targets:
+            self._record_target_write(target, node.value, "assignment")
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        if node.value is not None:
+            self._record_target_write(node.target, node.value, "ann_assignment")
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:  # noqa: N802
+        self._record_target_write(node.target, node, "aug_assignment")
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:  # noqa: N802
         field = _subscript_string(node.slice)
-        if field in CLAIM_SAFE_FIELDS:
-            if isinstance(node.ctx, ast.Load):
-                self._record_read(field, node, "subscript_load")
-            else:
-                self._record_write(field, node, "subscript_store")
+        if field in CLAIM_SAFE_FIELDS and isinstance(node.ctx, ast.Load):
+            self._record_read(field, node, "subscript_load")
         self.generic_visit(node)
+
+    def _record_target_write(
+        self,
+        target: ast.AST,
+        value: ast.AST,
+        kind: str,
+    ) -> None:
+        field = _target_claim_safe_field(target)
+        if field in CLAIM_SAFE_FIELDS:
+            self._record_write(field, value, kind)
 
     def _record_read(self, field: str, node: ast.AST, kind: str) -> None:
         self.reads.append(
@@ -118,6 +140,14 @@ def _constant_string(node: ast.AST | None) -> str | None:
 def _subscript_string(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant):
         return _constant_string(node)
+    return None
+
+
+def _target_claim_safe_field(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Subscript):
+        return _subscript_string(node.slice)
+    if isinstance(node, ast.Attribute):
+        return node.attr
     return None
 
 

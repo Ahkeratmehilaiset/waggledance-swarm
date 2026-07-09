@@ -475,25 +475,6 @@ this section (an edit to this denylisted contract) is itself off-allowlist and
 operator-merged; the standing rule can be withdrawn at any time the same way it
 was granted.
 
-### Gate-code ratification record — PR #1477 (2026-07-07)
-
-PR #1477 (`fix(gate): unverified recognized-RCO vetoes latch fail-closed`) was
-merged on 2026-07-02 at merge commit
-`543f0aefefa1c88d4dd161d418ff7a204a1c7655` from head
-`3e10b3c18fa21cb9e65dec9a3e9a76a052370628`. The change makes unverified
-block-shaped events from a recognized RCO name latch fail-closed as a block,
-while still giving unverified passes no approval credit. This is the safe
-asymmetry for identity-registry drift: honoring a forged veto can cause a
-spurious hold, while dropping a real veto can merge past an active block.
-
-The merge touched live gate code and therefore belonged to the operator-explicit
-gate-governance class. The operator ratified the already-merged fail-closed
-outcome on 2026-07-07 for #1477 only, closing the recorded confirm-or-revert
-item from the 100H last-mile sprint board. This ratification does **not** create
-a standing exception for future gate-code changes: any later edit to the merge
-gate, RCO-veto path, exact-head approval logic, or this contract remains
-operator-explicit under the carve-out above.
-
 ## Versioning
 
 * v1 (this doc): three-agent fail-closed MERGE consensus; cutover explicitly
@@ -504,6 +485,3 @@ operator-explicit under the carve-out above.
   operator signature, except Rule-10/cutover, irreversible/outward-facing
   actions, and the gate-governance class. Bootstrap = explicit operator-sign on
   PR #1393 + the amendment PR.
-* v1.2 (2026-07-07 record): operator ratification recorded for the already
-  merged #1477 fail-closed unverified-recognized-RCO-veto gate-code fix; future
-  gate-code changes remain operator-explicit.

@@ -64,6 +64,8 @@ def test_claim_safe_audit_blocks_production_true_assignment_forms(
                 "report['claim_safe']: bool = True",
                 "report.setdefault('claim_safe', True)",
                 "setattr(report, 'claim_safe', True)",
+                "claim_safe = True",
+                "literal_claim_safe = True",
             ]
         ),
         encoding="utf-8",
@@ -75,13 +77,15 @@ def test_claim_safe_audit_blocks_production_true_assignment_forms(
     )
 
     assert audit["ok"] is False
-    assert audit["production_true_literal_count"] == 5
+    assert audit["production_true_literal_count"] == 7
     assert audit["blockers"] == [
         "production_true_claim_safe_literal:tools/bad_assignments.py:2:claim_safe",
         "production_true_claim_safe_literal:tools/bad_assignments.py:3:claim_safe",
         "production_true_claim_safe_literal:tools/bad_assignments.py:4:claim_safe",
         "production_true_claim_safe_literal:tools/bad_assignments.py:5:claim_safe",
         "production_true_claim_safe_literal:tools/bad_assignments.py:6:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:7:claim_safe",
+        "production_true_claim_safe_literal:tools/bad_assignments.py:8:literal_claim_safe",
     ]
     assert {
         item["kind"] for item in audit["production_true_literals"]

@@ -5,6 +5,10 @@ The audit is intentionally conservative: tests and docs may contain
 ``claim_safe=True`` fixtures, but production paths must not contain literal
 true writes while the WD image manifest is still pre-live. The manifest counters
 remain the authoritative live-state check.
+
+Known scope: this AST scan blocks literal bool writes to claim-safe fields in
+the production prefixes listed below, and ignores tests/docs/audit scratch
+fixtures. It does not resolve aliases or non-literal truthy expressions.
 """
 from __future__ import annotations
 
@@ -153,6 +157,8 @@ def _target_claim_safe_field(node: ast.AST) -> str | None:
         return _subscript_string(node.slice)
     if isinstance(node, ast.Attribute):
         return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
     return None
 
 

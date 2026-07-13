@@ -24,13 +24,20 @@ store + ``waggledance.core.magma.canonical.sha256_digest`` + ``tools.verify_magm
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 SCHEMA_VERSION = "wd.chat_served_per_query_receipt_coverage.v1"
+NORMALIZATION_VERSION = "wd.chat_query_normalization.v1"
 MEASUREMENT_MARKER = "measurement_not_a_correctness_gate"
 
 # Run-header fields that must match the claim context (rco-2 R2 stale/head binding).
-_CONTEXT_KEYS = ("head_commit_sha", "corpus_digest", "schema_version")
+# ALL FIVE are required, shape-validated, AND equal -- a wrong normalization_version or run_id,
+# or a malformed-but-equal value, must reject (tools W1C probes 1+2).
+_CONTEXT_KEYS = ("head_commit_sha", "corpus_digest", "schema_version", "normalization_version", "run_id")
+
+_HEX40 = re.compile(r"^[0-9a-f]{40}$")            # full-40 lowercase-hex commit sha
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")    # canonical digest (corpus_digest, run_id)
 
 # Ledger terminal entry types (mirrors chat_served_ledger; kept local so this pure layer
 # does not import ledger internals just for two string constants).
@@ -48,6 +55,7 @@ class PerQueryCoverageReport(NamedTuple):
     missing: int                 # corpus queries with a served event but no terminal at all
     forged_or_unbound: int       # corpus queries with a receipt that failed MF-1a/MF-1b
     duplicate_terminal: int      # served_ids with >1 terminal (MF-3 lifecycle violation)
+    duplicate_query_terminal: int  # query_digests with >1 terminal across served_ids (MF-3 query scope)
     orphan_terminals: int        # ledger terminals whose served_id is not in the corpus
     context_ok: bool             # run-header matches claim context (R2)
     pending_append_failures: int
@@ -57,12 +65,37 @@ class PerQueryCoverageReport(NamedTuple):
     measurement_marker: str = MEASUREMENT_MARKER
 
 
+def _wellformed_header(h: Mapping[str, Any]) -> bool:
+    """A run-header/claim-context is well-formed only with the EXACT 5-key set and valid shapes.
+
+    Equality alone is not enough (tools probe 2): a malformed-but-equal value (e.g. both
+    head_commit_sha='bad') must reject. Shapes: full-40 lowercase-hex head; sha256 corpus_digest
+    and run_id; schema_version + normalization_version pinned to the exact expected constants.
+    """
+    if not isinstance(h, Mapping) or set(h.keys()) != set(_CONTEXT_KEYS):
+        return False
+    head = h.get("head_commit_sha")
+    corpus = h.get("corpus_digest")
+    run_id = h.get("run_id")
+    if not (isinstance(head, str) and _HEX40.match(head)):
+        return False
+    if not (isinstance(corpus, str) and _SHA256.match(corpus)):
+        return False
+    if not (isinstance(run_id, str) and _SHA256.match(run_id)):
+        return False
+    if h.get("schema_version") != SCHEMA_VERSION:
+        return False
+    if h.get("normalization_version") != NORMALIZATION_VERSION:
+        return False
+    return True
+
+
 def _context_matches(run_header: Mapping[str, Any], claim_context: Mapping[str, Any]) -> bool:
+    # BOTH must be well-formed (rejects malformed-but-equal), then ALL FIVE fields must match.
+    if not _wellformed_header(run_header) or not _wellformed_header(claim_context):
+        return False
     for key in _CONTEXT_KEYS:
-        want = claim_context.get(key)
-        got = run_header.get(key)
-        # fail closed: a missing/None on either side never matches
-        if want is None or got is None or want != got:
+        if run_header.get(key) != claim_context.get(key):
             return False
     return True
 
@@ -121,6 +154,17 @@ def derive_per_query_receipt_coverage(
         terminals_by_served.setdefault(sid, []).append(term)
 
     duplicate_terminal = sum(1 for terms in terminals_by_served.values() if len(terms) > 1)
+
+    # MF-3 at QUERY scope (tools W1C probe 3): the frozen v3 contract requires exactly ONE
+    # terminal per query_digest. Two distinct served_ids for the SAME query, each with a receipt,
+    # is a duplicate terminal for that query -- reject. Project terminals onto their query via the
+    # authoritative served_to_query mapping, not only per served_id.
+    terminals_per_query: dict[str, int] = {}
+    for sid, terms in terminals_by_served.items():
+        q = served_to_query.get(sid)
+        if q is not None:
+            terminals_per_query[q] = terminals_per_query.get(q, 0) + len(terms)
+    duplicate_query_terminal = sum(1 for count in terminals_per_query.values() if count > 1)
 
     # Classify each corpus query by the WORST state across all its served events.
     # A query is verified-bound ONLY if EVERY served event for it is a real, content-addressed,
@@ -207,6 +251,8 @@ def derive_per_query_receipt_coverage(
         reason = "orphan_terminals:%d" % orphan_terminals
     elif duplicate_terminal != 0:
         reason = "duplicate_terminal_per_served_id:%d" % duplicate_terminal
+    elif duplicate_query_terminal != 0:
+        reason = "duplicate_terminal_per_query:%d" % duplicate_query_terminal
     elif verified_bound_set != corpus:
         reason = "bijection_unmet:bound=%d/corpus=%d(gap=%d,missing=%d,forged=%d)" % (
             verified_bound, corpus_size, gapped, missing, forged_or_unbound,
@@ -222,6 +268,7 @@ def derive_per_query_receipt_coverage(
         missing=missing,
         forged_or_unbound=forged_or_unbound,
         duplicate_terminal=duplicate_terminal,
+        duplicate_query_terminal=duplicate_query_terminal,
         orphan_terminals=orphan_terminals,
         context_ok=context_ok,
         pending_append_failures=pending_append_failures,

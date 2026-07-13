@@ -7,11 +7,18 @@ nonexistent / content-mismatched / verify-failing / cross-query receipts directl
 
 from waggledance.core.magma.chat_served_per_query_coverage import (
     MEASUREMENT_MARKER,
+    NORMALIZATION_VERSION,
     SCHEMA_VERSION,
     derive_per_query_receipt_coverage,
 )
 
-CTX = {"head_commit_sha": "a" * 40, "corpus_digest": "sha256:" + "c" * 64, "schema_version": SCHEMA_VERSION}
+CTX = {
+    "head_commit_sha": "a" * 40,
+    "corpus_digest": "sha256:" + "c" * 64,
+    "schema_version": SCHEMA_VERSION,
+    "normalization_version": NORMALIZATION_VERSION,
+    "run_id": "sha256:" + "e" * 64,
+}
 
 
 def _re(served_id, query_digest):
@@ -94,12 +101,25 @@ def test_happy_path_all_bound_is_present():
 # --- rco-2 R1: bijection (duplicate cannot mask a missing) -----------------------------------
 
 def test_duplicate_masks_missing_is_false():
+    # rco-2's keystone case: a duplicate bound entry must NOT mask a missing query. Now caught
+    # by the per-query one-terminal rule (even earlier than the bijection). Either way: NOT present.
     store = _Store()
     store.add_genuine("r1", "qd1")
     store.add_genuine("r2", "qd2")
-    # corpus has THREE distinct queries; ledger binds qd1 (twice, via two served ids) + qd2, qd3 missing
     re = [_re("s1", "qd1"), _re("s1b", "qd1"), _re("s2", "qd2"), _re("s3", "qd3")]
     terms = [_receipt_term("s1", "r1"), _receipt_term("s1b", "r1"), _receipt_term("s2", "r2")]
+    rep = _derive(re, terms, store)
+    assert rep.coverage_present is False       # the duplicate cannot mask the missing qd3
+    assert rep.duplicate_query_terminal >= 1   # qd1 has two terminals -> detected
+
+
+def test_missing_query_bijection_unmet_is_false():
+    # pure bijection: distinct queries, one with NO terminal at all, NO duplicate -> not present.
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    store.add_genuine("r2", "qd2")
+    re = [_re("s1", "qd1"), _re("s2", "qd2"), _re("s3", "qd3")]
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r2")]  # qd3 unbound
     rep = _derive(re, terms, store)
     assert rep.coverage_present is False
     assert "bijection_unmet" in rep.reason
@@ -218,6 +238,61 @@ def test_missing_header_field_fails_closed():
     header = {"head_commit_sha": "a" * 40, "corpus_digest": "sha256:" + "c" * 64}  # no schema_version
     rep = _derive(re, terms, store, run_header=header)
     assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_wrong_normalization_version_is_false():  # tools W1C probe 1
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    re = [_re("s1", "qd1")]
+    terms = [_receipt_term("s1", "r1")]
+    header = dict(CTX)
+    header["normalization_version"] = "wd.chat_query_normalization.vX"
+    rep = _derive(re, terms, store, run_header=header)
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_wrong_run_id_is_false():  # tools W1C probe 1
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    re = [_re("s1", "qd1")]
+    terms = [_receipt_term("s1", "r1")]
+    header = dict(CTX)
+    header["run_id"] = "sha256:" + "9" * 64
+    rep = _derive(re, terms, store, run_header=header)
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_malformed_but_equal_header_is_false():  # tools W1C probe 2
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    re = [_re("s1", "qd1")]
+    terms = [_receipt_term("s1", "r1")]
+    bad = {
+        "head_commit_sha": "bad",             # not full-40 hex
+        "corpus_digest": "bad",               # not sha256
+        "schema_version": SCHEMA_VERSION,
+        "normalization_version": NORMALIZATION_VERSION,
+        "run_id": "bad",                       # not sha256
+    }
+    # both run_header AND claim_context are the same malformed dict -> equality alone would pass
+    rep = derive_per_query_receipt_coverage(
+        route_evidence=re, run_header=bad, claim_context=bad, ledger_terminals=terms,
+        resolve_receipt=store.resolve, verify_receipt=store.verify,
+        content_hash=store.content_hash, receipt_query_digest=store.query_digest,
+    )
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_two_terminals_one_query_is_false():  # tools W1C probe 3 (MF-3 at query scope)
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    store.add_genuine("r2", "qd1")  # a second genuine receipt for the SAME query
+    re = [_re("s1", "qd1"), _re("s2", "qd1")]  # two served events, same query
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r2")]
+    rep = _derive(re, terms, store)
+    assert rep.coverage_present is False
+    assert rep.duplicate_query_terminal == 1
+    assert "duplicate_terminal_per_query" in rep.reason
 
 
 # --- MF-2 no-orphan / chain / empty corpus --------------------------------------------------

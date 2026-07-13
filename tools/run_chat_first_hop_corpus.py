@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
+import subprocess
 import sys
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -28,6 +31,11 @@ from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.orchestration.routing_policy import select_route  # noqa: E402
 
 REPORT_VERSION = "wd.chat_first_hop_corpus.v1"
+SCHEMA_VERSION = "wd.chat_query_route_evidence.v1"
+QUERY_NORMALIZATION_VERSION = "wd.chat_query_normalization.v1"
+QUERY_DIGEST_DOMAIN = b"waggledance.chat_query_digest"
+CORPUS_DIGEST_DOMAIN = "waggledance.chat_first_hop_corpus"
+RUN_ID_DOMAIN = "waggledance.chat_first_hop_measurement_run"
 DENOMINATOR_SCOPE = "all_non_cached_served_first_hops"
 MEASUREMENT_SCOPE = "chatservice_handle_route_stage_trace_with_deterministic_fakes"
 ROUTE_DECISIONS = frozenset({"solver_first", "fallback", "refused"})
@@ -150,8 +158,88 @@ def load_corpus(path: Path) -> list[dict[str, Any]]:
     return [dict(item) for item in data if isinstance(item, dict)]
 
 
+def _normalize_query(query: str) -> str:
+    normalized = unicodedata.normalize("NFC", str(query))
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _query_digest(query: str) -> str:
-    return sha256_digest({"query": str(query)})
+    payload = b"\x00".join(
+        (
+            QUERY_DIGEST_DOMAIN,
+            QUERY_NORMALIZATION_VERSION.encode("utf-8"),
+            _normalize_query(query).encode("utf-8"),
+        )
+    )
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _corpus_digest(corpus: Sequence[Mapping[str, Any]]) -> str:
+    rows = [
+        {
+            "id": str(row.get("id", "")),
+            "query_digest": _query_digest(str(row.get("query", ""))),
+            "profile": str(row.get("profile", "HOME")),
+            "language": str(row.get("language", "auto")),
+            "cached_response_present": row.get("cached_response") is not None,
+        }
+        for row in corpus
+    ]
+    return sha256_digest(
+        {
+            "domain": CORPUS_DIGEST_DOMAIN,
+            "schema_version": SCHEMA_VERSION,
+            "normalization_version": QUERY_NORMALIZATION_VERSION,
+            "rows": rows,
+        }
+    )
+
+
+def _head_commit_sha() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip().lower()
+
+
+def _run_id(head_commit_sha: str, corpus_digest: str) -> str:
+    return sha256_digest(
+        {
+            "domain": RUN_ID_DOMAIN,
+            "head_commit_sha": head_commit_sha,
+            "corpus_digest": corpus_digest,
+            "schema_version": SCHEMA_VERSION,
+            "normalization_version": QUERY_NORMALIZATION_VERSION,
+        }
+    )
+
+
+def _measurement_header_is_bound(header: Mapping[str, Any]) -> bool:
+    digest_re = re.compile(r"^sha256:[a-f0-9]{64}$")
+    head_commit_sha = str(header.get("head_commit_sha", ""))
+    corpus_digest = str(header.get("corpus_digest", ""))
+    return bool(
+        set(header)
+        == {
+            "head_commit_sha",
+            "corpus_digest",
+            "schema_version",
+            "normalization_version",
+            "run_id",
+        }
+        and re.fullmatch(r"[a-f0-9]{40}", head_commit_sha)
+        and digest_re.fullmatch(corpus_digest)
+        and header.get("schema_version") == SCHEMA_VERSION
+        and header.get("normalization_version") == QUERY_NORMALIZATION_VERSION
+        and header.get("run_id") == _run_id(head_commit_sha, corpus_digest)
+    )
 
 
 def _candidate_ref(record: Mapping[str, Any]) -> str:
@@ -371,6 +459,15 @@ def _validate_records(records: Sequence[Mapping[str, Any]], gaps: Sequence[Mappi
 
 def diagnose(corpus: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     rows = list(DEFAULT_CORPUS if corpus is None else corpus)
+    head_commit_sha = _head_commit_sha()
+    corpus_digest = _corpus_digest(rows)
+    measurement_run = {
+        "head_commit_sha": head_commit_sha,
+        "corpus_digest": corpus_digest,
+        "schema_version": SCHEMA_VERSION,
+        "normalization_version": QUERY_NORMALIZATION_VERSION,
+        "run_id": _run_id(head_commit_sha, corpus_digest),
+    }
     records, gaps, cached_count = asyncio.run(_run_rows(rows))
     class_counts = Counter(str(record["first_hop_class"]) for record in records)
     class_counts.update(str(gap["first_hop_class"]) for gap in gaps)
@@ -379,7 +476,9 @@ def diagnose(corpus: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any
 
     report: dict[str, Any] = {
         "report_version": REPORT_VERSION,
+        "measurement_run": measurement_run,
         "measurement_scope": MEASUREMENT_SCOPE,
+        "measurement_not_a_correctness_gate": True,
         "denominator_scope": DENOMINATOR_SCOPE,
         "served_query_count": len([row for row in rows if row.get("id") and row.get("query")]),
         "cached_count": cached_count,
@@ -412,6 +511,11 @@ def diagnose(corpus: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any
         "counts_sum_to_denominator": sum(report["first_hop_counts"].values())
         == denominator,
         "measurement_only_no_claim_safe": report["claim_safe"] is False,
+        "measurement_header_bound": _measurement_header_is_bound(measurement_run),
+        "measurement_not_a_correctness_gate": report[
+            "measurement_not_a_correctness_gate"
+        ]
+        is True,
         "runtime_authority_not_granted": report["runtime_authority_granted"] is False,
     }
     report["ok"] = bool(
@@ -419,6 +523,8 @@ def diagnose(corpus: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any
         and report["invariants"]["raw_query_not_emitted"]
         and report["invariants"]["records_allowlisted"]
         and report["invariants"]["counts_sum_to_denominator"]
+        and report["invariants"]["measurement_header_bound"]
+        and report["invariants"]["measurement_not_a_correctness_gate"]
         and report["first_hop_counts"]["gap"] == 0
     )
     return report

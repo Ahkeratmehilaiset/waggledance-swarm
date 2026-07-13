@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +80,46 @@ def test_records_are_w1a_schema_compatible_and_privacy_safe() -> None:
         assert record["query_digest"].startswith("sha256:")
         assert record["candidate_receipt_ref"].startswith("sha256:")
         assert isinstance(record["emitted_at_seq"], int)
+
+
+def test_query_digest_is_domain_separated_and_normalization_versioned() -> None:
+    normalized = "Caf\u00e9 Hive"
+    expected = "sha256:" + hashlib.sha256(
+        b"waggledance.chat_query_digest\x00"
+        + mod.QUERY_NORMALIZATION_VERSION.encode("utf-8")
+        + b"\x00"
+        + normalized.encode("utf-8")
+    ).hexdigest()
+
+    assert mod._query_digest("  Cafe\u0301\tHive  ") == expected
+    assert mod._query_digest(normalized) == expected
+    assert mod._query_digest("Caf\u00e9 Hives") != expected
+    assert mod._query_digest(normalized) != mod.sha256_digest({"query": normalized})
+
+
+def test_report_binds_measurement_run_to_head_corpus_and_schema() -> None:
+    report = mod.diagnose(SAMPLE)
+    expected_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert report["measurement_run"] == {
+        "head_commit_sha": expected_head,
+        "corpus_digest": mod._corpus_digest(SAMPLE),
+        "schema_version": mod.SCHEMA_VERSION,
+        "normalization_version": mod.QUERY_NORMALIZATION_VERSION,
+        "run_id": mod._run_id(expected_head, mod._corpus_digest(SAMPLE)),
+    }
+    assert len(report["measurement_run"]["head_commit_sha"]) == 40
+    assert report["measurement_run"]["corpus_digest"].startswith("sha256:")
+    assert report["measurement_run"]["run_id"].startswith("sha256:")
+    assert report["measurement_not_a_correctness_gate"] is True
+    assert report["invariants"]["measurement_header_bound"] is True
+    assert report["invariants"]["measurement_not_a_correctness_gate"] is True
 
 
 def test_cached_rows_are_excluded_from_denominator_but_counted() -> None:

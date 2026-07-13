@@ -24,13 +24,24 @@ store + ``waggledance.core.magma.canonical.sha256_digest`` + ``tools.verify_magm
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 SCHEMA_VERSION = "wd.chat_served_per_query_receipt_coverage.v1"
+NORMALIZATION_VERSION = "wd.chat_query_normalization.v1"
 MEASUREMENT_MARKER = "measurement_not_a_correctness_gate"
 
 # Run-header fields that must match the claim context (rco-2 R2 stale/head binding).
-_CONTEXT_KEYS = ("head_commit_sha", "corpus_digest", "schema_version")
+_CONTEXT_KEYS = (
+    "head_commit_sha",
+    "corpus_digest",
+    "schema_version",
+    "normalization_version",
+    "run_id",
+)
+_CONTEXT_KEYSET = frozenset(_CONTEXT_KEYS)
+_FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # Ledger terminal entry types (mirrors chat_served_ledger; kept local so this pure layer
 # does not import ledger internals just for two string constants).
@@ -47,7 +58,7 @@ class PerQueryCoverageReport(NamedTuple):
     gapped: int                  # corpus queries with a served gap
     missing: int                 # corpus queries with a served event but no terminal at all
     forged_or_unbound: int       # corpus queries with a receipt that failed MF-1a/MF-1b
-    duplicate_terminal: int      # served_ids with >1 terminal (MF-3 lifecycle violation)
+    duplicate_terminal: int      # query digests with >1 terminal (MF-3 violation)
     orphan_terminals: int        # ledger terminals whose served_id is not in the corpus
     context_ok: bool             # run-header matches claim context (R2)
     pending_append_failures: int
@@ -58,6 +69,23 @@ class PerQueryCoverageReport(NamedTuple):
 
 
 def _context_matches(run_header: Mapping[str, Any], claim_context: Mapping[str, Any]) -> bool:
+    if frozenset(run_header) != _CONTEXT_KEYSET:
+        return False
+    head_commit_sha = run_header.get("head_commit_sha")
+    corpus_digest = run_header.get("corpus_digest")
+    run_id = run_header.get("run_id")
+    if not isinstance(head_commit_sha, str) or not _FULL_COMMIT_RE.fullmatch(
+        head_commit_sha
+    ):
+        return False
+    if not isinstance(corpus_digest, str) or not _SHA256_RE.fullmatch(corpus_digest):
+        return False
+    if not isinstance(run_id, str) or not _SHA256_RE.fullmatch(run_id):
+        return False
+    if run_header.get("schema_version") != SCHEMA_VERSION:
+        return False
+    if run_header.get("normalization_version") != NORMALIZATION_VERSION:
+        return False
     for key in _CONTEXT_KEYS:
         want = claim_context.get(key)
         got = run_header.get(key)
@@ -120,7 +148,17 @@ def derive_per_query_receipt_coverage(
             continue
         terminals_by_served.setdefault(sid, []).append(term)
 
-    duplicate_terminal = sum(1 for terms in terminals_by_served.values() if len(terms) > 1)
+    # MF-3 is query-scoped, not served-id-scoped. Multiple served events for the same
+    # authoritative query still represent multiple terminal states for that query.
+    terminal_count_by_query: dict[str, int] = {}
+    for sid, terms in terminals_by_served.items():
+        query_digest = served_to_query[sid]
+        terminal_count_by_query[query_digest] = (
+            terminal_count_by_query.get(query_digest, 0) + len(terms)
+        )
+    duplicate_terminal = sum(
+        1 for count in terminal_count_by_query.values() if count > 1
+    )
 
     # Classify each corpus query by the WORST state across all its served events.
     # A query is verified-bound ONLY if EVERY served event for it is a real, content-addressed,
@@ -206,7 +244,7 @@ def derive_per_query_receipt_coverage(
     elif orphan_terminals != 0:
         reason = "orphan_terminals:%d" % orphan_terminals
     elif duplicate_terminal != 0:
-        reason = "duplicate_terminal_per_served_id:%d" % duplicate_terminal
+        reason = "duplicate_terminal_per_query_digest:%d" % duplicate_terminal
     elif verified_bound_set != corpus:
         reason = "bijection_unmet:bound=%d/corpus=%d(gap=%d,missing=%d,forged=%d)" % (
             verified_bound, corpus_size, gapped, missing, forged_or_unbound,

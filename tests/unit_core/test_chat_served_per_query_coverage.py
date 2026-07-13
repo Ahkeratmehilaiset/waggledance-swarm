@@ -7,11 +7,18 @@ nonexistent / content-mismatched / verify-failing / cross-query receipts directl
 
 from waggledance.core.magma.chat_served_per_query_coverage import (
     MEASUREMENT_MARKER,
+    NORMALIZATION_VERSION,
     SCHEMA_VERSION,
     derive_per_query_receipt_coverage,
 )
 
-CTX = {"head_commit_sha": "a" * 40, "corpus_digest": "sha256:" + "c" * 64, "schema_version": SCHEMA_VERSION}
+CTX = {
+    "head_commit_sha": "a" * 40,
+    "corpus_digest": "sha256:" + "c" * 64,
+    "schema_version": SCHEMA_VERSION,
+    "normalization_version": NORMALIZATION_VERSION,
+    "run_id": "sha256:" + "d" * 64,
+}
 
 
 def _re(served_id, query_digest):
@@ -102,7 +109,7 @@ def test_duplicate_masks_missing_is_false():
     terms = [_receipt_term("s1", "r1"), _receipt_term("s1b", "r1"), _receipt_term("s2", "r2")]
     rep = _derive(re, terms, store)
     assert rep.coverage_present is False
-    assert "bijection_unmet" in rep.reason
+    assert rep.reason == "duplicate_terminal_per_query_digest:1"
     assert rep.missing == 1  # qd3
 
 
@@ -177,6 +184,18 @@ def test_gap_then_bound_duplicate_terminal_is_false():
     assert rep.duplicate_terminal == 1
 
 
+def test_two_served_ids_for_one_query_are_duplicate_terminals():
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    store.add_genuine("r2", "qd1")
+    re = [_re("s1", "qd1"), _re("s2", "qd1")]
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r2")]
+    rep = _derive(re, terms, store)
+    assert rep.coverage_present is False
+    assert rep.duplicate_terminal == 1
+    assert rep.reason == "duplicate_terminal_per_query_digest:1"
+
+
 def test_plain_gap_is_false():
     store = _Store()
     re = [_re("s1", "qd1")]
@@ -217,6 +236,44 @@ def test_missing_header_field_fails_closed():
     terms = [_receipt_term("s1", "r1")]
     header = {"head_commit_sha": "a" * 40, "corpus_digest": "sha256:" + "c" * 64}  # no schema_version
     rep = _derive(re, terms, store, run_header=header)
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_wrong_normalization_version_is_false():
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    header = dict(CTX)
+    header["normalization_version"] = "wd.chat_query_normalization.v999"
+    rep = _derive([_re("s1", "qd1")], [_receipt_term("s1", "r1")], store, run_header=header)
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_wrong_run_id_is_false():
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    header = dict(CTX)
+    header["run_id"] = "sha256:" + "e" * 64
+    rep = _derive([_re("s1", "qd1")], [_receipt_term("s1", "r1")], store, run_header=header)
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_invalid_but_equal_header_shapes_fail_closed():
+    store = _Store()
+    store.add_genuine("r1", "qd1")
+    invalid_context = dict(CTX)
+    invalid_context["head_commit_sha"] = "bad"
+    invalid_context["corpus_digest"] = "bad"
+    invalid_context["run_id"] = "bad"
+    rep = derive_per_query_receipt_coverage(
+        route_evidence=[_re("s1", "qd1")],
+        run_header=invalid_context,
+        claim_context=invalid_context,
+        ledger_terminals=[_receipt_term("s1", "r1")],
+        resolve_receipt=store.resolve,
+        verify_receipt=store.verify,
+        content_hash=store.content_hash,
+        receipt_query_digest=store.query_digest,
+    )
     assert rep.coverage_present is False and rep.context_ok is False
 
 

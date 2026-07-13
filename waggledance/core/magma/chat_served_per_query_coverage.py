@@ -58,6 +58,7 @@ class PerQueryCoverageReport(NamedTuple):
     duplicate_query_terminal: int  # query_digests with >1 terminal across served_ids (MF-3 query scope)
     orphan_terminals: int        # ledger terminals whose served_id is not in the corpus
     context_ok: bool             # run-header matches claim context (R2)
+    corpus_bound: bool           # run-header corpus_digest == recompute(route_evidence) (RCO-1-C)
     pending_append_failures: int
     chain_ok: bool
     reason: Optional[str]        # first shortfall, or None when coverage_present
@@ -110,6 +111,7 @@ def derive_per_query_receipt_coverage(
     verify_receipt: Callable[[Mapping[str, Any]], bool],
     content_hash: Callable[[Mapping[str, Any]], str],
     receipt_query_digest: Callable[[Mapping[str, Any]], Optional[str]],
+    corpus_content_digest: Callable[[Sequence[Mapping[str, Any]]], str],
     pending_append_failures: int = 0,
     chain_ok: bool = True,
 ) -> PerQueryCoverageReport:
@@ -130,6 +132,14 @@ def derive_per_query_receipt_coverage(
     corpus_size = len(corpus)
 
     context_ok = _context_matches(run_header, claim_context)
+
+    # RCO-1-C: bind the header's corpus_digest to the ACTUAL route_evidence content, not just to
+    # claim_context. Without this, a favorable/subset corpus can be measured while the header claims
+    # a different (blessed) corpus_digest. Recompute the digest from the real data (MF-1a applied to
+    # the corpus) and require equality; fail-closed. `context_ok` already forced corpus_digest to a
+    # well-formed sha256 == claim_context, so this is the header<->actual-data leg.
+    actual_corpus_digest = corpus_content_digest(route_evidence)
+    corpus_bound = context_ok and actual_corpus_digest == run_header.get("corpus_digest")
 
     # served_id -> query_digest from the corpus (the ONLY authoritative binding of a served
     # event to a query; a gap terminal carries no query_digest of its own).
@@ -241,6 +251,8 @@ def derive_per_query_receipt_coverage(
     reason: Optional[str] = None
     if not context_ok:
         reason = "stale_or_wrong_measurement_context"
+    elif not corpus_bound:
+        reason = "corpus_digest_unbound_from_route_evidence"
     elif corpus_size == 0:
         reason = "empty_corpus"
     elif pending_append_failures != 0:
@@ -271,6 +283,7 @@ def derive_per_query_receipt_coverage(
         duplicate_query_terminal=duplicate_query_terminal,
         orphan_terminals=orphan_terminals,
         context_ok=context_ok,
+        corpus_bound=corpus_bound,
         pending_append_failures=pending_append_failures,
         chain_ok=chain_ok,
         reason=reason,

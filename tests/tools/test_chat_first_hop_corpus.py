@@ -132,6 +132,24 @@ def test_cached_rows_are_excluded_from_denominator_but_counted() -> None:
     assert report["ok"] is False
 
 
+def test_dropped_served_row_fails_conservation(monkeypatch) -> None:
+    original_run_rows = mod._run_rows
+
+    async def drop_one_record(rows):
+        records, gaps, cached_count = await original_run_rows(rows)
+        return records[:-1], gaps, cached_count
+
+    monkeypatch.setattr(mod, "_run_rows", drop_one_record)
+    report = mod.diagnose(SAMPLE)
+
+    assert report["served_query_count"] == 4
+    assert len(report["first_hop_records"]) == 2
+    assert len(report["gap_records"]) == 0
+    assert report["cached_count"] == 1
+    assert report["invariants"]["served_query_conservation"] is False
+    assert report["ok"] is False
+
+
 def test_empty_corpus_is_fail_closed_unavailable() -> None:
     report = mod.diagnose([])
 

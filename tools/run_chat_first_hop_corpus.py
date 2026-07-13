@@ -510,6 +510,12 @@ def diagnose(corpus: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any
         "records_allowlisted": _validate_records(records, gaps),
         "counts_sum_to_denominator": sum(report["first_hop_counts"].values())
         == denominator,
+        "served_query_conservation": (
+            len(report["first_hop_records"])
+            + len(report["gap_records"])
+            + report["cached_count"]
+            == report["served_query_count"]
+        ),
         "measurement_only_no_claim_safe": report["claim_safe"] is False,
         "measurement_header_bound": _measurement_header_is_bound(measurement_run),
         "measurement_not_a_correctness_gate": report[
@@ -523,6 +529,7 @@ def diagnose(corpus: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any
         and report["invariants"]["raw_query_not_emitted"]
         and report["invariants"]["records_allowlisted"]
         and report["invariants"]["counts_sum_to_denominator"]
+        and report["invariants"]["served_query_conservation"]
         and report["invariants"]["measurement_header_bound"]
         and report["invariants"]["measurement_not_a_correctness_gate"]
         and report["first_hop_counts"]["gap"] == 0

@@ -338,6 +338,46 @@ def test_cli_rejects_chat_payload_version_downgrade(
     assert marker not in combined
 
 
+def test_cli_rejects_unknown_chat_shape_when_all_markers_are_relabelled(
+    tmp_path: Path,
+) -> None:
+    marker = "SECRET_FULL_RELABEL_RAW_PAYLOAD"
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_json["chain_id"] = "magma:fixture:attacker_reclassified"
+    entry = manifest_json["entries"][0]
+    payload_path = manifest.parent / entry["payload"]
+    evaluation_path = manifest.parent / entry["evaluation_result"]
+    receipt_path = manifest.parent / entry["receipt"]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["payload_version"] = "attacker.unknown.v9"
+    payload["served_path"] = "Attacker.handle"
+    payload["raw_private_extra"] = marker
+    payload_digest = sha256_digest(payload)
+    evaluation["case_id"] = "case:attacker:fixture"
+    evaluation["target_digest"] = payload_digest
+    evaluation["verifier_path"] = ["attacker_verifier"]
+    evaluation["reason_codes"] = ["attacker_reclassified"]
+    receipt["event_id"] = "magma:receipt:attacker:001"
+    receipt["canonical_payload_digest"] = payload_digest
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    receipt["rco_decision_digest"] = sha256_digest({"attacker": "rco"})
+    receipt["solver_contract_digest"] = sha256_digest({"attacker": "solver"})
+    _write_json(manifest, manifest_json)
+    _write_json(payload_path, payload)
+    _write_json(evaluation_path, evaluation)
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "invalid or unsupported chat_served payload" in combined
+    assert marker not in combined
+
+
 def test_cli_rejects_huge_chat_number_without_crashing(tmp_path: Path) -> None:
     manifest = _write_chat_chain(tmp_path / "chat-chain")
     manifest_json = json.loads(manifest.read_text(encoding="utf-8"))

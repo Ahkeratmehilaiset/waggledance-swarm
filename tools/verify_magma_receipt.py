@@ -10,6 +10,7 @@ a successor receipt or a future signature verifier.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
@@ -59,7 +60,16 @@ _CHAT_SERVED_CHAIN_ID = "magma:chat_service:served:v0"
 _CHAT_SERVED_EVENT_PREFIX = "magma:chat_served:"
 _CHAT_SERVED_CASE_PREFIX = "case:chat_served:"
 _CHAT_SERVED_EVENT_RE = re.compile(
-    r"^magma:chat_served:[0-9]{8}T[0-9]{12}Z-[0-9]{6}$"
+    r"^magma:chat_served:(?P<timestamp>[0-9]{8}T[0-9]{12}Z)-[0-9]{6}$"
+)
+_CHAT_PAYLOAD_FINGERPRINT_KEYS = frozenset(
+    {
+        "query_digest",
+        "response_digest",
+        "route_stage_trace",
+        "route_stage_trace_digest",
+        "digest_semantics",
+    }
 )
 _MANIFEST_KEYS = frozenset({"chain_id", "entries"})
 _ENTRY_KEYS = frozenset({"receipt", "payload", "evaluation_result"})
@@ -372,8 +382,17 @@ def _enforce_chat_served_receipt(
     label: str,
 ) -> None:
     event_id = receipt.get("event_id")
-    if not isinstance(event_id, str) or not _CHAT_SERVED_EVENT_RE.fullmatch(event_id):
+    event_match = (
+        _CHAT_SERVED_EVENT_RE.fullmatch(event_id)
+        if isinstance(event_id, str)
+        else None
+    )
+    if event_match is None:
         errors.append(f"{label}: invalid chat_served event_id")
+    elif not _chat_timestamp_matches(
+        event_match.group("timestamp"), receipt.get("ts_utc")
+    ):
+        errors.append(f"{label}: chat_served event_id timestamp mismatch")
     if receipt.get("risk_class") != "informational":
         errors.append(
             f"{label}: chat_served receipt must be risk_class=informational"
@@ -459,6 +478,8 @@ def _looks_like_chat_served(
     if manifest_chain_id == _CHAT_SERVED_CHAIN_ID:
         return True
     if isinstance(payload, dict):
+        if _CHAT_PAYLOAD_FINGERPRINT_KEYS.issubset(payload):
+            return True
         if payload.get("payload_version") in _CHAT_SERVED_PAYLOAD_VERSIONS:
             return True
         if payload.get("served_path") == "ChatService.handle":
@@ -486,6 +507,23 @@ def _looks_like_chat_served(
         if isinstance(reason_codes, list) and "chat_served" in reason_codes:
             return True
     return False
+
+
+def _chat_timestamp_matches(event_timestamp: str, receipt_timestamp: Any) -> bool:
+    if not isinstance(receipt_timestamp, str):
+        return False
+    try:
+        event_time = datetime.strptime(
+            event_timestamp, "%Y%m%dT%H%M%S%fZ"
+        ).replace(tzinfo=timezone.utc)
+        receipt_time = datetime.fromisoformat(
+            receipt_timestamp.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if receipt_time.tzinfo is None:
+        return False
+    return event_time == receipt_time.astimezone(timezone.utc)
 
 
 def _validate_evaluation_result(

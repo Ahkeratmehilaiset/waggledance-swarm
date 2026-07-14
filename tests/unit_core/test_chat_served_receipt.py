@@ -352,6 +352,25 @@ def test_payload_rejects_huge_number_without_overflow() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("query_length", 10_001),
+        ("response_length", 1_000_001),
+        ("latency_ms", 86_400_000.01),
+        ("latency_ms", 1e308),
+    ],
+)
+def test_payload_rejects_operationally_impossible_numbers(
+    field: str, value: int | float
+) -> None:
+    payload = _summary()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        validate_chat_served_payload(payload)
+
+
+@pytest.mark.parametrize(
     "trace",
     [
         [

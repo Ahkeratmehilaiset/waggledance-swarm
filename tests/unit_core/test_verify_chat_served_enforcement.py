@@ -18,6 +18,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tools.verify_magma_receipt import (
     _CHAT_RCO_DECISION_NA_SENTINEL,
     _CHAT_SOLVER_CONTRACT_NA_SENTINEL,
@@ -192,6 +194,29 @@ def test_chat_receipt_cannot_add_free_form_anchor(tmp_path: Path) -> None:
     assert report["ok"] is False
     assert any("invalid chat_served receipt envelope" in e for e in report["errors"])
     assert marker not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("ts_utc", "2026-01-01T00:00:01Z"),
+        ("event_id", "magma:chat_served:20260101T000001000000Z-000001"),
+    ],
+)
+def test_chat_receipt_event_and_timestamp_must_match(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    out = tmp_path / "chat"
+    _write_genuine_chat(out)
+    rp = _entry_file(out, "receipt")
+    receipt = _load(rp)
+    receipt[field] = value
+    _dump(rp, receipt)
+
+    report = verify_manifest(out / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("timestamp mismatch" in e for e in report["errors"])
 
 
 # ── tamper the self-describing declaration -> payload-binding fail ──

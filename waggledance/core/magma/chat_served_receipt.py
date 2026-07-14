@@ -168,6 +168,9 @@ _ROUTE_COUNT_FIELDS = frozenset({"limit", "result_count", "hit_count"})
 _ROUTE_UNIT_FIELDS = frozenset({"memory_score", "confidence"})
 _MAX_ROUTE_STAGE_EVENTS = len(_ROUTE_STAGE_ORDER)
 _MAX_ROUTE_COUNT = 1_000_000
+_MAX_QUERY_LENGTH = 10_000
+_MAX_RESPONSE_LENGTH = 1_000_000
+_MAX_LATENCY_MS = 86_400_000.0
 
 # The COMPLETE set of top-level keys a chat-served payload may carry. The
 # persisted receipt payload is copied wholesale, so anything not on this
@@ -423,14 +426,23 @@ def validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
     agent_id = payload.get("agent_id")
     if agent_id is not None:
         _validate_metadata_token(payload, "agent_id")
-    for key in ("query_length", "response_length"):
+    for key, maximum in (
+        ("query_length", _MAX_QUERY_LENGTH),
+        ("response_length", _MAX_RESPONSE_LENGTH),
+    ):
         value = payload.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ValueError(f"chat served {key} must be a non-negative integer")
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value <= maximum
+        ):
+            raise ValueError(
+                f"chat served {key} must be a bounded non-negative integer"
+            )
     latency_ms = payload.get("latency_ms")
     latency_value = _finite_number(latency_ms)
-    if latency_value is None or latency_value < 0.0:
-        raise ValueError("chat served latency_ms must be a finite non-negative number")
+    if latency_value is None or not 0.0 <= latency_value <= _MAX_LATENCY_MS:
+        raise ValueError("chat served latency_ms must be a finite bounded number")
     for key in ("cached", "round_table"):
         if not isinstance(payload.get(key), bool):
             raise ValueError(f"chat served {key} must be a boolean")

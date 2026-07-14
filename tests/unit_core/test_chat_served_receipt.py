@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.chat_query_route_evidence import canonical_query_digest
 from waggledance.core.magma.chat_served_receipt import (
     RCO_DECISION_NA_SENTINEL,
     SOLVER_CONTRACT_NA_SENTINEL,
@@ -113,6 +114,18 @@ def test_privacy_no_raw_query_response_or_trace_text(tmp_path: Path) -> None:
     # non-allowlisted trace keys (which could carry raw text) are dropped
     assert "raw_query_text" not in text
     assert "SECRET_RAW_QUERY" not in text
+
+
+def test_query_digest_matches_route_evidence_canonical_contract() -> None:
+    decomposed = "  Cafe\u0301 Hive  "
+    composed = "Caf\u00e9 Hive"
+    expected = "sha256:785a11d0df4e7c9fd91fc63608666e4b02913bd0d525fcf9cd7f011371944f48"
+
+    assert _summary(query=decomposed)["query_digest"] == expected
+    assert _summary(query=composed)["query_digest"] == expected
+    assert _summary(query=decomposed)["query_digest"] == canonical_query_digest(
+        decomposed
+    )
 
 
 def test_payload_rejects_raw_query_key() -> None:

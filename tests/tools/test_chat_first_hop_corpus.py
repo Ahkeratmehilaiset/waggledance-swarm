@@ -158,6 +158,7 @@ def test_query_digest_uses_pinned_domain_and_nfc_strip_normalization() -> None:
     assert mod._query_digest("Caf\u00e9\tHive") != expected
     assert mod._query_digest("caf\u00e9 Hive") != expected
     assert mod._query_digest("Caf\u00e9 Hives") != expected
+    assert mod._query_digest is mod.canonical_query_digest
 
 
 def test_corpus_digest_has_shared_non_cached_query_set_golden_vector() -> None:

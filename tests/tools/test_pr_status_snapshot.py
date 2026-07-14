@@ -165,7 +165,6 @@ def test_snapshot_uses_structured_gh_json_fields() -> None:
             "pr",
             "diff",
             "479",
-            "--patch",
             "--repo",
             "Ahkeratmehilaiset/waggledance-swarm",
         ],

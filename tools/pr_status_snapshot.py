@@ -270,7 +270,8 @@ def _gh_pr_view_command(*, pr_number: int, repo: str) -> list[str]:
 
 
 def _gh_pr_diff_command(*, pr_number: int, repo: str) -> list[str]:
-    command = ["gh", "pr", "diff", str(pr_number), "--patch"]
+    # Policy gates inspect changed code, not format-patch commit-message prose.
+    command = ["gh", "pr", "diff", str(pr_number)]
     if repo:
         command.extend(["--repo", repo])
     return command

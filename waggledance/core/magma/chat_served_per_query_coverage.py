@@ -120,10 +120,10 @@ def _validate_route_evidence(
     route_evidence: Sequence[Mapping[str, Any]],
 ) -> tuple[bool, Optional[str], dict]:
     """Strict, fail-closed validation (blocker 3): exact row shape, nonempty UNIQUE served_ids,
-    valid UNIQUE sha256 query_digests, matching per-row normalization_version. Any malformed /
-    duplicate / missing row -> (False, reason, {}). Never silently filter."""
+    valid sha256 query_digests, matching per-row normalization_version. Repeated queries are
+    distinct served events when their served_ids differ. Any malformed / duplicate served_id /
+    missing row -> (False, reason, {}). Never silently filter."""
     served_seen: set[str] = set()
-    query_seen: set[str] = set()
     served_to_query: dict[str, str] = {}
     for item in route_evidence:
         if not isinstance(item, Mapping) or set(item.keys()) != ROUTE_EVIDENCE_ROW_KEYS:
@@ -139,10 +139,7 @@ def _validate_route_evidence(
             return False, "normalization_version", {}
         if sid in served_seen:
             return False, "duplicate_served_id", {}
-        if qd in query_seen:
-            return False, "duplicate_query_digest", {}
         served_seen.add(sid)
-        query_seen.add(qd)
         served_to_query[sid] = qd
     return True, None, served_to_query
 
@@ -189,13 +186,22 @@ def derive_per_query_receipt_coverage(
 
     duplicate_terminal = sum(1 for terms in terminals_by_served.values() if len(terms) > 1)
 
-    # MF-3 at QUERY scope: exactly one terminal per query_digest.
+    # A repeated query may have multiple served events. Count query-level duplicates only when
+    # terminals exceed the number of distinct served_ids for that query; one terminal per served
+    # event is valid and is checked independently below.
+    served_events_per_query: dict[str, int] = {}
+    for q in served_to_query.values():
+        served_events_per_query[q] = served_events_per_query.get(q, 0) + 1
     terminals_per_query: dict[str, int] = {}
     for sid, terms in terminals_by_served.items():
         q = served_to_query.get(sid)
         if q is not None:
             terminals_per_query[q] = terminals_per_query.get(q, 0) + len(terms)
-    duplicate_query_terminal = sum(1 for count in terminals_per_query.values() if count > 1)
+    duplicate_query_terminal = sum(
+        1
+        for q, count in terminals_per_query.items()
+        if count > served_events_per_query.get(q, 0)
+    )
 
     served_ids_for_query: dict[str, list[str]] = {}
     for sid, q in served_to_query.items():

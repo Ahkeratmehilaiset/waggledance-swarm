@@ -162,11 +162,30 @@ def test_duplicate_served_id_is_false():
     assert rep.coverage_present is False and rep.evidence_ok is False
 
 
-def test_duplicate_query_digest_is_false():
+def test_repeated_query_digest_with_one_receipt_per_served_event_is_true():
     store = _Store()
-    re = [_re("s1", _q("a")), _re("s2", _q("a"))]  # duplicate query_digest (subset/dup masking)
-    rep = _derive(re, [], store)
-    assert rep.coverage_present is False and rep.evidence_ok is False
+    store.add_genuine("r1", _q("a"))
+    store.add_genuine("r2", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r2")]
+
+    rep = _derive(re, terms, store)
+
+    assert rep.coverage_present is True and rep.evidence_ok is True
+    assert rep.corpus_size == 1 and rep.verified_bound == 1
+    assert rep.duplicate_terminal == 0 and rep.duplicate_query_terminal == 0
+
+
+def test_repeated_query_digest_missing_one_served_event_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+
+    rep = _derive(re, [_receipt_term("s1", "r1")], store)
+
+    assert rep.coverage_present is False and rep.evidence_ok is True
+    assert rep.reason is not None and "bijection_unmet" in rep.reason
+    assert rep.missing == 1
 
 
 # --- rco-2 R1 bijection: missing query ------------------------------------------------------

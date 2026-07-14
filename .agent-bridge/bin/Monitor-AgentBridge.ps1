@@ -4,7 +4,7 @@
     Cursor-based bridge event monitor for active agent sessions.
 
 .DESCRIPTION
-    Tails shared/events.jsonl by line-count cursor and prints only new
+    Tails shared/events.jsonl by durable byte-offset cursor and prints only new
     substantive events. This is the chat/terminal-facing companion to the
     wake-file substrate: Watch-Bridge.ps1 tells an agent that something
     arrived, while this script shows exactly what arrived without replaying
@@ -73,6 +73,11 @@ if (-not (Test-Path -LiteralPath $sharedDir -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $sharedDir -Force -ErrorAction Stop)
 }
 $eventsPath = Join-Path $sharedDir 'events.jsonl'
+$incrementalReader = Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1'
+if (-not (Test-Path -LiteralPath $incrementalReader -PathType Leaf)) {
+    throw "incremental bridge reader missing: $incrementalReader"
+}
+. $incrementalReader
 
 if (-not $StatePath) {
     $suffix = if ($FromAgent) { "_from_$FromAgent" } else { '' }
@@ -153,33 +158,38 @@ function Format-MonitorLine {
         $ts, $from, $to, $type, $status, $taskId, $message
 }
 
-function Get-EventLines {
-    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) { return @() }
-    return @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 -ErrorAction Stop)
-}
-
 function Get-InitialCursor {
     if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
         try {
             $state = Get-Content -Raw -LiteralPath $StatePath -Encoding UTF8 | ConvertFrom-Json
-            if ($state.PSObject.Properties['line_count']) {
-                return [int64]$state.line_count
+            if ($state.PSObject.Properties['byte_offset']) {
+                return [int64]$state.byte_offset
             }
-        } catch {}
+            # One-time migration from the legacy line-count cursor. This may
+            # scan historical bytes once, but every steady-state poll after
+            # migration reads only the append delta.
+            if ($state.PSObject.Properties['line_count']) {
+                return Resolve-BridgeByteOffsetForLineCount `
+                    -Path $eventsPath -LineCount ([int]$state.line_count)
+            }
+        } catch {
+            Write-Warning "Monitor-AgentBridge: cursor state unreadable; starting from a safe baseline: $($_.Exception.Message)"
+        }
     }
     if ($ReplayExisting) { return [int64]0 }
-    return [int64]@(Get-EventLines).Count
+    return Get-BridgeEventFileLength -Path $eventsPath
 }
 
 function Save-Cursor {
-    param([Parameter(Mandatory)] [int64] $LineCount)
+    param([Parameter(Mandatory)] [int64] $ByteOffset)
 
     $parent = Split-Path -Parent $StatePath
     if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
         [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
     }
     $state = [ordered]@{
-        line_count      = $LineCount
+        cursor_version  = 'byte_offset_v1'
+        byte_offset     = $ByteOffset
         updated_at_utc  = (Get-Date).ToUniversalTime().ToString('o')
         agent           = $Agent
         from_agent      = $FromAgent
@@ -194,25 +204,34 @@ function Save-Cursor {
 }
 
 $cursor = Get-InitialCursor
-Save-Cursor -LineCount $cursor
+Save-Cursor -ByteOffset $cursor
 
 $iteration = 0
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
 
-    $lines = @(Get-EventLines)
-    $count = [int64]$lines.Count
-
-    if ($count -lt $cursor) {
+    $delta = Read-BridgeEventDelta -Path $eventsPath -Offset $cursor
+    if (-not $delta.exists) {
+        if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }
+        Start-Sleep -Milliseconds $PollIntervalMs
+        continue
+    }
+    if ($delta.truncated) {
         # events.jsonl was truncated or rotated. Avoid flooding replay on
         # the replacement file unless the caller explicitly asked for replay.
-        $cursor = if ($ReplayExisting) { [int64]0 } else { $count }
-        Save-Cursor -LineCount $cursor
+        $cursor = if ($ReplayExisting) { [int64]0 } else { [int64]$delta.file_length }
+        Save-Cursor -ByteOffset $cursor
+        if ($ReplayExisting) {
+            $delta = Read-BridgeEventDelta -Path $eventsPath -Offset $cursor
+        } else {
+            if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }
+            Start-Sleep -Milliseconds $PollIntervalMs
+            continue
+        }
     }
 
-    if ($count -gt $cursor) {
-        $skip = [int]$cursor
-        foreach ($line in @($lines | Select-Object -Skip $skip)) {
+    if ([int64]$delta.next_offset -gt $cursor) {
+        foreach ($line in @($delta.lines)) {
             if (-not $line) { continue }
             try {
                 $event = $line | ConvertFrom-Json -ErrorAction Stop
@@ -232,8 +251,8 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
                 Write-Output (Format-MonitorLine -Event $event)
             }
         }
-        $cursor = $count
-        Save-Cursor -LineCount $cursor
+        $cursor = [int64]$delta.next_offset
+        Save-Cursor -ByteOffset $cursor
     }
 
     if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }

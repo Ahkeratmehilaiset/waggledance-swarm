@@ -47,11 +47,12 @@ param(
     [int] $DebounceMs = 250,
     [int] $MaxIterations = 0,
 
-    # Test/diagnostic hook: force the initial line-count baseline.
+    # Test/diagnostic hook: force the initial legacy line-count baseline.
     # -1 (default) = auto-detect from the current events.jsonl size, so
     # the watcher fires only on appends made AFTER it starts. >=0 lets
     # the smoke test inject events before the watcher and still observe
-    # detection by setting the baseline below those rows.
+    # detection by setting the baseline below those rows. Conversion to a
+    # byte offset happens once at startup; the poll loop is incremental.
     [int] $StartLineCount = -1,
 
     [string] $RuntimeRoot = ''
@@ -80,6 +81,11 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 
 $eventsPath = Join-Path $bridgeRoot 'shared\events.jsonl'
 $wakePath = Join-Path $bridgeRoot ("wake_{0}" -f $Agent)
+$incrementalReader = Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1'
+if (-not (Test-Path -LiteralPath $incrementalReader -PathType Leaf)) {
+    throw "incremental bridge reader missing: $incrementalReader"
+}
+. $incrementalReader
 
 function Test-IsTargeted {
     param(
@@ -105,12 +111,12 @@ function Test-IsTargeted {
     return $targets -contains $WatchedAgent
 }
 
-# Establish baseline so we don't wake for pre-existing history.
-$lastLineCount = 0
+# Establish an O(1) baseline so we don't wake for pre-existing history.
 if ($StartLineCount -ge 0) {
-    $lastLineCount = $StartLineCount
-} elseif (Test-Path -LiteralPath $eventsPath) {
-    $lastLineCount = @(Get-Content -LiteralPath $eventsPath -ErrorAction SilentlyContinue).Count
+    $byteOffset = Resolve-BridgeByteOffsetForLineCount `
+        -Path $eventsPath -LineCount $StartLineCount
+} else {
+    $byteOffset = Get-BridgeEventFileLength -Path $eventsPath
 }
 
 $iteration = 0
@@ -118,22 +124,22 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
     Start-Sleep -Milliseconds $PollIntervalMs
 
-    if (-not (Test-Path -LiteralPath $eventsPath)) { continue }
-
-    $lines = @(Get-Content -LiteralPath $eventsPath -ErrorAction SilentlyContinue)
-    $count = $lines.Count
-    if ($count -le $lastLineCount) {
-        # File may have been rotated/truncated; resync baseline so we
-        # don't miss future appends and don't double-fire on rotation.
-        if ($count -lt $lastLineCount) { $lastLineCount = $count }
+    $delta = Read-BridgeEventDelta -Path $eventsPath -Offset $byteOffset
+    if (-not $delta.exists) {
+        # A rename/rotation can make the path disappear for one poll. Keep
+        # the prior cursor until a concrete replacement file is observable.
         continue
     }
-
-    $newLines = $lines | Select-Object -Skip $lastLineCount
-    $lastLineCount = $count
+    if ($delta.truncated) {
+        # Preserve the prior no-replay rotation policy. New rows appended
+        # after this replacement baseline will be observed normally.
+        $byteOffset = [int64]$delta.file_length
+        continue
+    }
+    $byteOffset = [int64]$delta.next_offset
 
     $shouldWake = $false
-    foreach ($line in $newLines) {
+    foreach ($line in @($delta.lines)) {
         if (-not $line) { continue }
         try {
             $ev = $line | ConvertFrom-Json -ErrorAction Stop

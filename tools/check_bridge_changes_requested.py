@@ -381,7 +381,7 @@ def check_bridge_clear_to_merge(
             event,
             registry=registry,
         )
-        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+        if binding_status in {"missing_uuid", "mismatch_uuid", "uuid_alias"}:
             status = str(event.get("status", "")).lower()
             event_type = str(event.get("type", "")).lower()
             # Fail-closed veto asymmetry: identity binding exists to stop

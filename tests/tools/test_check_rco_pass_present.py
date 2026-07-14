@@ -661,6 +661,31 @@ def test_registered_rco_uuid_mismatch_does_not_count() -> None:
     )
 
 
+def test_registered_uuid_alias_rco_pass_does_not_count() -> None:
+    aliased_pass = _rco_event(
+        agent="claude-rco-1",
+        status="rco_pass",
+        type_="decision",
+        message=f"aliased RCO_PASS at exact head {HEAD}",
+    )
+    aliased_pass["agent_uuid"] = AGENT_UUIDS["codex-tools-1"]
+
+    result = check_rco_pass_present(
+        events=[aliased_pass],
+        task_id=TASK,
+        head=HEAD,
+        identity_registry={"codex-tools-1": AGENT_UUIDS["codex-tools-1"]},
+    )
+
+    assert result["ok"] is False
+    assert result["has_qualifying_rco_pass_at_head"] is False
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == "claude-rco-1"
+    assert (
+        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        == "uuid_alias"
+    )
+
+
 def test_registered_rco_missing_uuid_veto_latches_fail_closed() -> None:
     # Contract fix (bridge audit 2026-07-02): an unverified VETO-shaped event
     # from a recognized-RCO name now latches instead of being dropped. The

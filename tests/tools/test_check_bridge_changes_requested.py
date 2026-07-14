@@ -181,6 +181,34 @@ def test_unverified_rco_pass_still_gets_no_credit() -> None:
     assert result["ignored_identity_mismatch_events"][0]["agent"] == "claude-rco-2"
 
 
+def test_registered_uuid_alias_approval_gets_no_credit() -> None:
+    events = [
+        _event(
+            "2026-06-11T16:00:00Z",
+            "alias-probe",
+            "decision",
+            "rco_pass",
+        )
+        | {"agent_uuid": AGENT_UUIDS["codex-tools-1"]},
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="codex-lead-1"
+    )
+
+    assert result["latest_approval_event"] is None
+    assert result["ignored_identity_mismatch_events"] == [
+        {
+            "ts_utc": "2026-06-11T16:00:00Z",
+            "agent": "alias-probe",
+            "agent_uuid": AGENT_UUIDS["codex-tools-1"],
+            "type": "decision",
+            "status": "rco_pass",
+            "identity_binding_status": "uuid_alias",
+        }
+    ]
+
+
 def test_unverified_clear_cannot_lift_verified_rco_veto() -> None:
     # Asymmetry: an unverified CLEAR must never lift a real veto.
     events = [

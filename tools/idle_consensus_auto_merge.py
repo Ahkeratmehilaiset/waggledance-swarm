@@ -1029,7 +1029,7 @@ def verify_bridge_consensus(
             registry=registry,
             restricted_agents=watched_agents,
         )
-        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+        if binding_status in {"missing_uuid", "mismatch_uuid", "uuid_alias"}:
             ignored_identity_mismatch_events.append(
                 {
                     "ts_utc": str(event.get("ts_utc", "")),

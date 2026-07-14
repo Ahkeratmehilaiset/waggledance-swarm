@@ -25,7 +25,7 @@ from waggledance.core.work_queue import resolve_bridge_root
 
 
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
-IDENTITY_AUDIT_VERSION = "bridge-identity-registry-audit.v1"
+IDENTITY_AUDIT_VERSION = "bridge-identity-registry-audit.v2"
 EVENT_HYGIENE_AUDIT_VERSION = "bridge-event-hygiene-audit.v1"
 GATE_RELEVANT_STATUSES = frozenset({
     "autonomous_merge_receipt",
@@ -304,6 +304,7 @@ def _load_identity_registry_uuids(path: Path | None) -> dict[str, str]:
     if not isinstance(identities, dict):
         raise ValueError(f"{path}: identities must be an object")
     registry: dict[str, str] = {}
+    uuid_owners: dict[str, str] = {}
     for agent_id, agent_uuid in sorted(identities.items()):
         if not isinstance(agent_id, str) or not re.fullmatch(
             AGENT_ID_PATTERN,
@@ -315,6 +316,13 @@ def _load_identity_registry_uuids(path: Path | None) -> dict[str, str]:
             agent_uuid,
         ):
             raise ValueError(f"{path}: {agent_id} value must be a UUID")
+        normalized_uuid = agent_uuid.casefold()
+        prior_owner = uuid_owners.get(normalized_uuid)
+        if prior_owner is not None:
+            raise ValueError(
+                f"{path}: UUID reused by {prior_owner} and {agent_id}"
+            )
+        uuid_owners[normalized_uuid] = agent_id
         registry[agent_id] = agent_uuid
     return registry
 
@@ -333,14 +341,20 @@ def _audit_identity_registry_uuids(
     non_registry = 0
     missing = 0
     mismatched = 0
+    aliased = 0
     gate_missing = 0
     gate_mismatched = 0
+    gate_aliased = 0
     skipped_unreadable = 0
     examples: list[dict[str, Any]] = []
     lines = _select_event_lines(
         events_path.read_text(encoding="utf-8").splitlines(),
         tail=tail,
     )
+    uuid_owners = {
+        registered_uuid.casefold(): registered_agent
+        for registered_agent, registered_uuid in registry.items()
+    }
     for line_no, line in lines:
         if not line.strip():
             continue
@@ -357,11 +371,6 @@ def _audit_identity_registry_uuids(
         if not isinstance(agent, str):
             skipped_unreadable += 1
             continue
-        expected_uuid = registry.get(agent)
-        if not expected_uuid:
-            non_registry += 1
-            continue
-        registered += 1
         observed_uuid = event.get("agent_uuid")
         status = event.get("status")
         event_type = event.get("type")
@@ -369,6 +378,31 @@ def _audit_identity_registry_uuids(
             isinstance(status, str)
             and status in GATE_RELEVANT_STATUSES
         )
+        expected_uuid = registry.get(agent)
+        if not expected_uuid:
+            non_registry += 1
+            registered_uuid_owner = (
+                uuid_owners.get(observed_uuid.casefold())
+                if isinstance(observed_uuid, str)
+                else None
+            )
+            if registered_uuid_owner is not None:
+                aliased += 1
+                if gate_relevant:
+                    gate_aliased += 1
+                _append_identity_example(
+                    examples,
+                    max_examples=max_examples,
+                    line_no=line_no,
+                    agent=agent,
+                    status=status,
+                    event_type=event_type,
+                    reason="registered_uuid_alias",
+                    gate_relevant=gate_relevant,
+                    registered_uuid_owner=registered_uuid_owner,
+                )
+            continue
+        registered += 1
         if not observed_uuid:
             missing += 1
             if gate_relevant:
@@ -398,7 +432,7 @@ def _audit_identity_registry_uuids(
                 reason="mismatched_uuid",
                 gate_relevant=gate_relevant,
             )
-    issue_count = missing + mismatched
+    issue_count = missing + mismatched + aliased
     return {
         "schema_version": IDENTITY_AUDIT_VERSION,
         "mode": mode,
@@ -410,8 +444,10 @@ def _audit_identity_registry_uuids(
         "skipped_unreadable_event_count": skipped_unreadable,
         "missing_uuid_registered_events": missing,
         "mismatched_uuid_registered_events": mismatched,
+        "registered_uuid_alias_events": aliased,
         "gate_relevant_missing_uuid": gate_missing,
         "gate_relevant_mismatched_uuid": gate_mismatched,
+        "gate_relevant_registered_uuid_alias": gate_aliased,
         "ok": issue_count == 0,
         "issue_count": issue_count,
         "examples": examples,
@@ -554,17 +590,21 @@ def _append_identity_example(
     event_type: object,
     reason: str,
     gate_relevant: bool,
+    registered_uuid_owner: str = "",
 ) -> None:
     if len(examples) >= max_examples:
         return
-    examples.append({
+    example = {
         "line_no": line_no,
         "agent": agent,
         "type": event_type if isinstance(event_type, str) else "",
         "status": status if isinstance(status, str) else "",
         "reason": reason,
         "gate_relevant": gate_relevant,
-    })
+    }
+    if registered_uuid_owner:
+        example["registered_uuid_owner"] = registered_uuid_owner
+    examples.append(example)
 
 
 def _append_hygiene_example(

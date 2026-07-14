@@ -3,8 +3,9 @@
 
 The bridge event stream carries both a human-readable ``agent`` id and an
 ``agent_uuid``. Gate-critical readers must bind those two fields together:
-an event that claims a registered identity with a missing or different UUID
-is ignored for gate purposes.
+an event that claims a registered identity with a missing or different UUID,
+or an unregistered identity that reuses a registered UUID, is ignored for
+gate purposes.
 """
 
 from __future__ import annotations
@@ -51,11 +52,19 @@ def load_bridge_identity_registry(
     if not isinstance(identities, Mapping):
         raise ValueError(f"{registry_path}: expected identities object")
     registry: dict[str, str] = {}
+    uuid_owners: dict[str, str] = {}
     for agent, agent_uuid in identities.items():
         if not isinstance(agent, str) or not AGENT_ID_PATTERN.fullmatch(agent):
             raise ValueError(f"{registry_path}: invalid agent id: {agent!r}")
         if not isinstance(agent_uuid, str) or not AGENT_UUID_PATTERN.fullmatch(agent_uuid):
             raise ValueError(f"{registry_path}: invalid agent_uuid for {agent}")
+        normalized_uuid = agent_uuid.casefold()
+        prior_owner = uuid_owners.get(normalized_uuid)
+        if prior_owner is not None:
+            raise ValueError(
+                f"{registry_path}: agent_uuid reused by {prior_owner} and {agent}"
+            )
+        uuid_owners[normalized_uuid] = agent
         registry[agent] = agent_uuid
     return registry
 
@@ -66,14 +75,25 @@ def bridge_identity_binding_status(
     registry: Mapping[str, str],
     restricted_agents: set[str] | frozenset[str] | None = None,
 ) -> str:
-    """Return ``valid``, ``unregistered``, ``missing_uuid``, or ``mismatch_uuid``."""
+    """Return the event's forward and reverse registry binding status."""
     agent = str(event.get("agent", ""))
-    if restricted_agents is not None and agent not in restricted_agents:
-        return "unregistered"
-    expected_uuid = registry.get(agent)
-    if not expected_uuid:
-        return "unregistered"
     event_uuid = str(event.get("agent_uuid", "") or "")
+    expected_uuid = registry.get(agent)
+    if restricted_agents is not None and agent not in restricted_agents:
+        if event_uuid and any(
+            event_uuid.casefold() == registered_uuid.casefold()
+            and registered_agent != agent
+            for registered_agent, registered_uuid in registry.items()
+        ):
+            return "uuid_alias"
+        return "unregistered"
+    if not expected_uuid:
+        if event_uuid and any(
+            event_uuid.casefold() == registered_uuid.casefold()
+            for registered_uuid in registry.values()
+        ):
+            return "uuid_alias"
+        return "unregistered"
     if not event_uuid:
         return "missing_uuid"
     if event_uuid != expected_uuid:

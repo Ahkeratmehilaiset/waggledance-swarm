@@ -57,6 +57,7 @@ class _RecordingChatServedEmitter:
 def _assert_chat_served_emitted(
     emitter: _RecordingChatServedEmitter,
     *,
+    query: str,
     route_type: str,
     source: str,
     cached: bool,
@@ -68,7 +69,9 @@ def _assert_chat_served_emitted(
     assert pending_id == receipt_id
     assert pending_kwargs["route_type"] == route_type
     assert pending_kwargs["source"] == source
-    assert "query" not in pending_kwargs
+    assert pending_kwargs["query"] == query
+    assert receipt_kwargs["query"] == query
+    assert "query_digest" not in pending_kwargs
     assert "response" not in pending_kwargs
     assert receipt_kwargs["route_type"] == route_type
     assert receipt_kwargs["source"] == source
@@ -239,6 +242,7 @@ class TestChatService:
             assert result.response == "Cached answer"
             _assert_chat_served_emitted(
                 emitter,
+                query="What is varroa?",
                 route_type="hotcache",
                 source="hotcache",
                 cached=True,
@@ -269,6 +273,7 @@ class TestChatService:
             assert result.source == "solver"
             _assert_chat_served_emitted(
                 emitter,
+                query="what is 15% of 300",
                 route_type="solver",
                 source="solver",
                 cached=False,
@@ -318,6 +323,7 @@ class TestChatService:
             assert result.source == "local_faiss"
             _assert_chat_served_emitted(
                 emitter,
+                query="statistics summary",
                 route_type="hybrid_retrieval",
                 source="local_faiss",
                 cached=False,
@@ -360,6 +366,7 @@ class TestChatService:
             assert result.source == "hex_mesh"
             _assert_chat_served_emitted(
                 emitter,
+                query="tell me about hive layout",
                 route_type="hex_mesh",
                 source="hex_mesh",
                 cached=False,
@@ -390,6 +397,7 @@ class TestChatService:
             assert result.source == "llm"
             _assert_chat_served_emitted(
                 emitter,
+                query="explain hive care",
                 route_type="llm",
                 source="llm",
                 cached=False,

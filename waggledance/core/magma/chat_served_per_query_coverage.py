@@ -233,6 +233,16 @@ def derive_per_query_receipt_coverage(
         terminals_by_served.setdefault(sid, []).append(term)
 
     duplicate_terminal = sum(1 for terms in terminals_by_served.values() if len(terms) > 1)
+    served_ids_by_receipt_ref: dict[str, set[str]] = {}
+    for term in validated_terminals:
+        if term["entry_type"] == _RECEIPT_TERMINAL:
+            served_ids_by_receipt_ref.setdefault(term["receipt_ref"], set()).add(
+                term["served_id"]
+            )
+    duplicate_receipt_refs = {
+        ref for ref, served_ids in served_ids_by_receipt_ref.items()
+        if len(served_ids) > 1
+    }
 
     # A repeated query may have multiple served events. Count query-level duplicates only when
     # terminals exceed the number of distinct served_ids for that query; one terminal per served
@@ -270,6 +280,9 @@ def derive_per_query_receipt_coverage(
                 gapped_served_ids.add(sid)
                 continue
             ref = term["receipt_ref"]
+            if ref in duplicate_receipt_refs:
+                forged_served_ids.add(sid)
+                continue
             try:
                 receipt = resolve_receipt(ref)
             except Exception:
@@ -319,6 +332,8 @@ def derive_per_query_receipt_coverage(
         reason = "orphan_terminals:%d" % orphan_terminals
     elif duplicate_terminal != 0:
         reason = "duplicate_terminal_per_served_id:%d" % duplicate_terminal
+    elif duplicate_receipt_refs:
+        reason = "duplicate_receipt_ref:%d" % len(duplicate_receipt_refs)
     elif duplicate_query_terminal != 0:
         reason = "duplicate_terminal_per_query:%d" % duplicate_query_terminal
     elif bound_served_ids != corpus_served_ids:

@@ -206,6 +206,19 @@ def test_repeated_query_digest_with_one_receipt_per_served_event_is_true():
     assert rep.duplicate_terminal == 0 and rep.duplicate_query_terminal == 0
 
 
+def test_repeated_query_digest_cannot_reuse_receipt_across_served_events():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r1")]
+
+    rep = _derive(re, terms, store)
+
+    assert rep.coverage_present is False
+    assert rep.verified_bound == 0 and rep.forged_or_unbound == 2
+    assert rep.reason == "duplicate_receipt_ref:1"
+
+
 def test_repeated_query_digest_missing_one_served_event_is_false():
     store = _Store()
     store.add_genuine("r1", _q("a"))

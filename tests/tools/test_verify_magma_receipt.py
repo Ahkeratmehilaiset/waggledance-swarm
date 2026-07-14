@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,6 +10,11 @@ import sys
 import pytest
 
 from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
+from waggledance.core.magma.chat_served_receipt import (
+    build_chat_served_summary,
+    write_chat_served_receipt_bundle,
+)
+from tools.verify_magma_receipt import verify_manifest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,6 +120,39 @@ def _write_chain(root: Path) -> Path:
     return root / "manifest.json"
 
 
+def _write_chat_chain(root: Path) -> Path:
+    summary = build_chat_served_summary(
+        query="private query",
+        response="private response",
+        route_type="solver",
+        source="solver",
+        confidence=0.95,
+        latency_ms=12.3,
+        cached=False,
+        round_table=False,
+        agent_id=None,
+        language="en",
+        profile="COTTAGE",
+        world_snapshot_ref="snap-1",
+        route_stage_trace=[
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "math",
+                "memory_score": 0.0,
+            }
+        ],
+    )
+    write_chat_served_receipt_bundle(
+        out_dir=root,
+        summary_payload=summary,
+        now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        verify_manifest=verify_manifest,
+        ordinal=1,
+    )
+    return root / "manifest.json"
+
+
 def _write_policy_surface(root: Path) -> Path:
     policy = json.loads(POLICY_SURFACE_FIXTURE.read_text(encoding="utf-8"))
     _write_json(root / "policy_surface_v0.json", policy)
@@ -183,6 +222,212 @@ def test_cli_verifies_manifest_entries_out_of_chain_order(tmp_path: Path) -> Non
     result = _run_verify(manifest)
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("target", ["manifest", "entry"])
+def test_cli_rejects_extra_manifest_or_entry_keys(
+    tmp_path: Path, target: str
+) -> None:
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    if target == "manifest":
+        manifest_json["extra"] = "ignored-before-c0"
+    else:
+        manifest_json["entries"][0]["extra"] = "ignored-before-c0"
+    _write_json(manifest, manifest_json)
+
+    result = _run_verify(manifest, "--json")
+
+    assert result.returncode == 1
+    assert "exactly" in result.stdout + result.stderr
+
+
+def test_cli_keeps_generic_manifest_extra_key_compatibility(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_json["generic_extension"] = {"version": 1}
+    manifest_json["entries"][0]["generic_extension"] = True
+    _write_json(manifest, manifest_json)
+
+    result = _run_verify(manifest, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cli_rejects_wrong_chain_id_for_chat_payload(tmp_path: Path) -> None:
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_json["chain_id"] = "magma:fixture:wrong_chat_chain"
+    _write_json(manifest, manifest_json)
+
+    result = _run_verify(manifest, "--json")
+
+    assert result.returncode == 1
+    assert "chat_served chain_id mismatch" in result.stdout + result.stderr
+
+
+def test_cli_rejects_rebound_chat_payload_with_raw_extra(tmp_path: Path) -> None:
+    marker = "SECRET_REBOUND_RAW_PAYLOAD_DO_NOT_LEAK"
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    entry = manifest_json["entries"][0]
+    payload_path = manifest.parent / entry["payload"]
+    evaluation_path = manifest.parent / entry["evaluation_result"]
+    receipt_path = manifest.parent / entry["receipt"]
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["raw_private_extra"] = marker
+    payload_digest = sha256_digest(payload)
+    evaluation["target_digest"] = payload_digest
+    receipt["canonical_payload_digest"] = payload_digest
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    _write_json(payload_path, payload)
+    _write_json(evaluation_path, evaluation)
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "invalid or unsupported chat_served payload" in combined
+    assert marker not in combined
+
+
+@pytest.mark.parametrize(
+    ("downgraded_version", "change_chain_id"),
+    [
+        ("magma.chat_served_receipt_payload.v0", False),
+        ("attacker.unknown.v9", False),
+        ("magma.chat_served_receipt_payload.v0", True),
+    ],
+)
+def test_cli_rejects_chat_payload_version_downgrade(
+    tmp_path: Path, downgraded_version: str, change_chain_id: bool
+) -> None:
+    marker = "SECRET_DOWNGRADE_RAW_PAYLOAD_DO_NOT_LEAK"
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    if change_chain_id:
+        manifest_json["chain_id"] = "magma:fixture:attacker_reclassified"
+        _write_json(manifest, manifest_json)
+    entry = manifest_json["entries"][0]
+    payload_path = manifest.parent / entry["payload"]
+    evaluation_path = manifest.parent / entry["evaluation_result"]
+    receipt_path = manifest.parent / entry["receipt"]
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["payload_version"] = downgraded_version
+    payload["raw_private_extra"] = marker
+    payload_digest = sha256_digest(payload)
+    evaluation["target_digest"] = payload_digest
+    receipt["canonical_payload_digest"] = payload_digest
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    _write_json(payload_path, payload)
+    _write_json(evaluation_path, evaluation)
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "invalid or unsupported chat_served payload" in combined
+    assert marker not in combined
+
+
+def test_cli_rejects_huge_chat_number_without_crashing(tmp_path: Path) -> None:
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    entry = manifest_json["entries"][0]
+    payload_path = manifest.parent / entry["payload"]
+    evaluation_path = manifest.parent / entry["evaluation_result"]
+    receipt_path = manifest.parent / entry["receipt"]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["latency_ms"] = 10**400
+    payload_digest = sha256_digest(payload)
+    evaluation["target_digest"] = payload_digest
+    receipt["canonical_payload_digest"] = payload_digest
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    _write_json(payload_path, payload)
+    _write_json(evaluation_path, evaluation)
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert any("invalid or unsupported chat_served payload" in e for e in report["errors"])
+
+
+@pytest.mark.parametrize(
+    "nonfinite",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_cli_rejects_noncanonical_chat_number_without_crashing(
+    tmp_path: Path, nonfinite: float
+) -> None:
+    manifest = _write_chat_chain(tmp_path / "chat-chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    entry = manifest_json["entries"][0]
+    payload_path = manifest.parent / entry["payload"]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    payload["latency_ms"] = nonfinite
+    _write_json(payload_path, payload)
+
+    result = _run_verify(manifest, "--json")
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert any("invalid JSON non-finite" in e for e in report["errors"])
+
+
+def test_cli_rejects_evaluation_target_rebinding(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    entry = manifest_json["entries"][-1]
+    evaluation_path = manifest.parent / entry["evaluation_result"]
+    receipt_path = manifest.parent / entry["receipt"]
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    evaluation["target_digest"] = sha256_digest({"unbound": True})
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    _write_json(evaluation_path, evaluation)
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+
+    assert result.returncode == 1
+    assert "evaluation target_digest mismatch" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("artifact_key", "filename_prefix"),
+    [
+        ("receipt", "receipt"),
+        ("payload", "payload"),
+        ("evaluation_result", "evaluation"),
+    ],
+)
+def test_cli_rejects_non_object_bundle_artifacts(
+    tmp_path: Path, artifact_key: str, filename_prefix: str
+) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    artifact_path = manifest.parent / manifest_json["entries"][0][artifact_key]
+    _write_json(artifact_path, [f"{filename_prefix}_must_not_be_an_array"])
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert f"{artifact_key} must be a JSON object" in combined
 
 
 def test_cli_rejects_manifest_entry_path_escape(tmp_path: Path) -> None:

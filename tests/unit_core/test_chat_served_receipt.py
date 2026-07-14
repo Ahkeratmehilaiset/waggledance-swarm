@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.chat_query_route_evidence import canonical_query_digest
 from waggledance.core.magma.chat_served_receipt import (
     RCO_DECISION_NA_SENTINEL,
     SOLVER_CONTRACT_NA_SENTINEL,
     build_chat_served_receipt,
     build_chat_served_summary,
+    validate_chat_served_payload,
     write_chat_served_receipt_bundle,
 )
 
@@ -45,11 +48,13 @@ def _summary(
             {
                 "stage": "route_selection",
                 "route_type": route_type,
+                "solver_intent": "math",
+                "memory_score": 0.0,
                 "source": source,
                 # a non-allowlisted key carrying raw text must be dropped:
                 "raw_query_text": "SECRET_RAW_QUERY",
             },
-            {"stage": "deterministic_solver", "intent": "eng01", "answered": True},
+            {"stage": "deterministic_solver", "intent": "math", "answered": True},
         ],
     )
 
@@ -256,6 +261,9 @@ def test_nested_object_trace_value_dropped_no_leak(tmp_path: Path) -> None:
         route_stage_trace=[
             {
                 "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "math",
+                "memory_score": 0.0,
                 # an ALLOWLISTED key whose value is a NESTED object with raw text
                 "source": {"nested_raw": "SECRET_NESTED_LEAK"},
             }
@@ -271,6 +279,112 @@ def test_nested_object_trace_value_dropped_no_leak(tmp_path: Path) -> None:
         ordinal=1,
     )
     assert "SECRET_NESTED_LEAK" not in _emitted_text(tmp_path / "cs-1")
+
+
+def test_allowlisted_trace_string_is_dropped_and_direct_payload_rejected() -> None:
+    marker = "SECRET_ALLOWLISTED_RAW_STRING"
+    summary = build_chat_served_summary(
+        query="q", response="r", route_type="solver", source="solver",
+        confidence=0.9, latency_ms=1.0, cached=False, round_table=False,
+        agent_id=None, language="en", profile="COTTAGE",
+        world_snapshot_ref="snap-1",
+        route_stage_trace=[
+            {
+                "stage": "route_selection",
+                # source was globally allowlisted and accepted any raw string.
+                "source": marker,
+                "route_type": "solver",
+            }
+        ],
+    )
+    assert marker not in json.dumps(summary)
+    assert summary["route_stage_trace"] == [
+        {"stage": "route_selection", "route_type": "solver"}
+    ]
+
+    tampered = _summary()
+    tampered_trace = [
+        {"stage": "route_selection", "route_type": "solver", "source": marker}
+    ]
+    tampered["route_stage_trace"] = tampered_trace
+    tampered["route_stage_trace_count"] = 1
+    tampered["route_stage_trace_digest"] = sha256_digest(
+        {"route_stage_trace": tampered_trace}
+    )
+    with pytest.raises(ValueError, match="route_stage_trace"):
+        validate_chat_served_payload(tampered)
+
+
+@pytest.mark.parametrize("unsafe_value", [float("nan"), float("inf"), -0.01, 1.01])
+def test_trace_unit_number_must_be_finite_and_bounded(unsafe_value: float) -> None:
+    trace = [
+        {
+            "stage": "route_selection",
+            "route_type": "solver",
+            "memory_score": unsafe_value,
+        }
+    ]
+    payload = _summary()
+    payload["route_stage_trace"] = trace
+    payload["route_stage_trace_count"] = 1
+    if math.isfinite(unsafe_value):
+        payload["route_stage_trace_digest"] = sha256_digest(
+            {"route_stage_trace": trace}
+        )
+    with pytest.raises(ValueError, match="route_stage_trace"):
+        validate_chat_served_payload(payload)
+
+
+def test_payload_requires_exact_v1_keyset() -> None:
+    payload = _summary()
+    del payload["agent_id"]
+
+    with pytest.raises(ValueError, match="exact v1 keyset"):
+        validate_chat_served_payload(payload)
+
+
+def test_payload_rejects_huge_number_without_overflow() -> None:
+    payload = _summary()
+    payload["latency_ms"] = 10**400
+
+    with pytest.raises(ValueError, match="latency_ms"):
+        validate_chat_served_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        [
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "math",
+                "memory_score": 0.0,
+            },
+            {"stage": "route_selection", "route_type": "solver"},
+        ],
+        [
+            {"stage": "hot_cache", "hit": False},
+            {
+                "stage": "language_detection",
+                "explicit_hint": False,
+                "detected_language": "en",
+            },
+        ],
+    ],
+)
+def test_trace_requires_unique_ordered_stages(
+    trace: list[dict[str, object]],
+) -> None:
+    payload = _summary()
+    payload["route_stage_trace"] = trace
+    payload["route_stage_trace_count"] = len(trace)
+    payload["route_stage_trace_digest"] = sha256_digest(
+        {"route_stage_trace": trace}
+    )
+
+    with pytest.raises(ValueError, match="route_stage_trace"):
+        validate_chat_served_payload(payload)
 
 
 @pytest.mark.parametrize(

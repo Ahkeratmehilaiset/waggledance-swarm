@@ -18,9 +18,8 @@ Claim-safety (design confirmed with lead A-prime + rco-2):
   literal.) It is honest-by-construction and re-derivable: a consumer that knows
   the constant can positively identify it as N/A -- distinct from a real content
   digest, ``sha256("")`` and a zero-digest -- and it never reads as "this gate
-  was evaluated and passed". NOTE: machine ENFORCEMENT of these sentinels in the
-  verifier is Phase 1b (extends ``verify_magma_receipt``) and is NOT wired yet;
-  until then the sentinels are honest-by-construction, not verifier-rejected.
+  was evaluated and passed". The offline verifier independently re-derives and
+  requires these exact sentinels for every chat-served payload.
 * ``charter``/``policy``/``world_snapshot`` are REAL provenance digests
   (version/context binding) -- required for cross-verifiability, not fake.
 * ``evaluation_result`` truthfully encodes the route decision (route_type /
@@ -30,6 +29,7 @@ Claim-safety (design confirmed with lead A-prime + rco-2):
 """
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -45,7 +45,7 @@ from waggledance.core.magma.receipt_bundle import (
 )
 
 
-PAYLOAD_VERSION = "magma.chat_served_receipt_payload.v0"
+PAYLOAD_VERSION = "magma.chat_served_receipt_payload.v1"
 CHAIN_ID = "magma:chat_service:served:v0"
 
 # Explicit "not-applicable for route_class=chat" sentinels for the RCO-decision
@@ -58,11 +58,9 @@ CHAIN_ID = "magma:chat_service:served:v0"
 # constant can positively match to distinguish it from (i) a real content
 # digest, (ii) sha256("") and (iii) a zero-digest. Because it is hex (opaque),
 # a consumer must KNOW these constants to recognize them as N/A. Machine
-# enforcement in the verifier (making verify_magma_receipt REQUIRE these exact
-# sentinels for chat/informational receipts, so a chat path can never
-# masquerade a governed rco_decision/solver_contract) is Phase 1b and is NOT
-# implemented yet -- until then these values are honest-by-construction
-# (re-derivable N/A hashes), not verifier-rejected.
+# The verifier independently re-derives and requires these exact sentinels for
+# chat/informational receipts, so a chat path cannot masquerade a governed
+# rco_decision or solver_contract.
 RCO_DECISION_NA_SENTINEL = sha256_digest(
     {
         "not_applicable": True,
@@ -86,22 +84,90 @@ SOLVER_CONTRACT_NA_SENTINEL = sha256_digest(
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 _METADATA_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
 
-# route_stage_trace stage events are sanitized to this allowlisted key set.
-_ROUTE_STAGE_ALLOWED_KEYS = frozenset(
+# Route trace strings are finite enums only. Arbitrary strings such as source,
+# cell_id, or exception names are intentionally omitted even when the live
+# trace carries them: they are not needed to prove the route and could contain
+# caller-controlled text. Numeric fields are bounded and finite, and every
+# stage has an exact field schema matching ChatService's live trace.
+_ROUTE_STAGE_ORDER = (
+    "language_detection",
+    "hot_cache",
+    "memory_context",
+    "route_selection",
+    "deterministic_solver",
+    "hybrid_retrieval_8_cell",
+    "hex_neighbor_assist_7_cell",
+    "orchestrator_llm_fallback",
+)
+_ROUTE_STAGES = frozenset(_ROUTE_STAGE_ORDER)
+_ROUTE_STAGE_INDEX = {
+    stage: index for index, stage in enumerate(_ROUTE_STAGE_ORDER)
+}
+_ROUTE_TYPES = frozenset(
+    {"hotcache", "memory", "micromodel", "solver", "llm", "swarm"}
+)
+_SOLVER_INTENTS = frozenset(
     {
-        "stage",
-        "route_type",
-        "source",
-        "intent",
-        "answered",
-        "hit",
-        "detected_language",
-        "explicit_hint",
-        "result_count",
-        "memory_score",
-        "solver_intent",
+        "math",
+        "symbolic",
+        "constraint",
+        "seasonal",
+        "stats",
+        "thermal",
+        "optimization",
+        "retrieval",
+        "causal",
+        "anomaly",
+        "chat",
+        "v3_13_0_solver",
     }
 )
+_RETRIEVAL_MODES = frozenset(
+    {
+        "global_only",
+        "hybrid:shadow",
+        "hybrid:candidate",
+        "hybrid:authoritative",
+    }
+)
+_ROUTE_STAGE_FIELDS = {
+    "language_detection": frozenset({"explicit_hint", "detected_language"}),
+    "hot_cache": frozenset({"hit"}),
+    "memory_context": frozenset({"limit", "result_count", "memory_score"}),
+    "route_selection": frozenset(
+        {"route_type", "solver_intent", "memory_score"}
+    ),
+    "deterministic_solver": frozenset({"intent", "answered"}),
+    "hybrid_retrieval_8_cell": frozenset(
+        {
+            "enabled",
+            "authoritative",
+            "answered",
+            "retrieval_mode",
+            "hit_count",
+        }
+    ),
+    "hex_neighbor_assist_7_cell": frozenset(
+        {"enabled", "answered", "confidence"}
+    ),
+    "orchestrator_llm_fallback": frozenset(
+        {"route_type", "confidence", "round_table_used"}
+    ),
+}
+_ROUTE_BOOLEAN_FIELDS = frozenset(
+    {
+        "explicit_hint",
+        "hit",
+        "answered",
+        "enabled",
+        "authoritative",
+        "round_table_used",
+    }
+)
+_ROUTE_COUNT_FIELDS = frozenset({"limit", "result_count", "hit_count"})
+_ROUTE_UNIT_FIELDS = frozenset({"memory_score", "confidence"})
+_MAX_ROUTE_STAGE_EVENTS = len(_ROUTE_STAGE_ORDER)
+_MAX_ROUTE_COUNT = 1_000_000
 
 # The COMPLETE set of top-level keys a chat-served payload may carry. The
 # persisted receipt payload is copied wholesale, so anything not on this
@@ -195,9 +261,9 @@ def build_chat_served_summary(
         ),
         # Machine-readable record of which governance digest fields are real
         # provenance vs an explicit not-applicable-for-chat sentinel. This is a
-        # self-describing declaration emitted by the builder; verifier
-        # enforcement of it (verify_magma_receipt REQUIRING the sentinels for
-        # risk_class=informational chat receipts) is Phase 1b and NOT wired yet.
+        # self-describing declaration emitted by the builder. The offline
+        # verifier also requires the matching sentinels for informational chat
+        # receipts.
         "digest_semantics": dict(_DIGEST_SEMANTICS),
     }
 
@@ -219,7 +285,7 @@ def build_chat_served_receipt(
     bundle.
     """
     payload = dict(summary_payload)
-    _validate_chat_served_payload(payload)
+    validate_chat_served_payload(payload)
     now_utc = _coerce_utc(now_utc)
     evaluation = _build_chat_served_evaluation(payload)
     receipt = build_magma_receipt(
@@ -238,7 +304,7 @@ def build_chat_served_receipt(
         ),
         # Chat has no RCO/approval gate and no solver contract: explicit,
         # honest-by-construction (schema-valid hex) N/A sentinels, never a fake
-        # pass. Machine enforcement of the sentinels in the verifier is Phase 1b.
+        # pass. The offline verifier independently enforces both sentinels.
         rco_decision_digest=RCO_DECISION_NA_SENTINEL,
         world_snapshot_digest=sha256_digest(
             {
@@ -311,7 +377,7 @@ def _build_chat_served_evaluation(payload: Mapping[str, Any]) -> dict[str, Any]:
         actual_gate="allow",
         verifier_path=[
             "chat_service_handle",
-            "chat_served_payload_v0",
+            "chat_served_payload_v1",
             "magma_receipt_v1",
             "offline_receipt_verifier",
         ],
@@ -335,7 +401,8 @@ def _build_chat_served_evaluation(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
+def validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
+    """Validate a persisted chat-served payload without trusting its emitter."""
     if payload.get("payload_version") != PAYLOAD_VERSION:
         raise ValueError("chat served payload_version mismatch")
     if payload.get("served_path") != "ChatService.handle":
@@ -361,28 +428,31 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"chat served {key} must be a non-negative integer")
     latency_ms = payload.get("latency_ms")
-    if (
-        not isinstance(latency_ms, (int, float))
-        or isinstance(latency_ms, bool)
-        or float(latency_ms) < 0.0
-    ):
-        raise ValueError("chat served latency_ms must be a non-negative number")
+    latency_value = _finite_number(latency_ms)
+    if latency_value is None or latency_value < 0.0:
+        raise ValueError("chat served latency_ms must be a finite non-negative number")
     for key in ("cached", "round_table"):
         if not isinstance(payload.get(key), bool):
             raise ValueError(f"chat served {key} must be a boolean")
     # Provenance digests must be well-formed sha256 (same shape MAGMA receipt
     # fields require), so a malformed/forged digest cannot enter the trail.
-    for digest_key in ("query_digest", "response_digest"):
-        if not _SHA256_DIGEST_RE.fullmatch(str(payload.get(digest_key, ""))):
+    for digest_key in (
+        "query_digest",
+        "response_digest",
+        "route_stage_trace_digest",
+    ):
+        digest = payload.get(digest_key)
+        if not isinstance(digest, str) or not _SHA256_DIGEST_RE.fullmatch(digest):
             raise ValueError(
                 f"chat served {digest_key} must be a sha256 digest"
             )
     # Confidence provenance must be a real number in [0,1].
     confidence = payload.get("confidence")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+    confidence_value = _finite_number(confidence)
+    if confidence_value is None:
         raise ValueError("chat served confidence must be a number")
-    if not (0.0 <= float(confidence) <= 1.0):
-        raise ValueError("chat served confidence must be in [0,1]")
+    if not 0.0 <= confidence_value <= 1.0:
+        raise ValueError("chat served confidence must be finite and in [0,1]")
     trace = payload.get("route_stage_trace")
     if not isinstance(trace, list):
         raise ValueError("chat served route_stage_trace must be a list")
@@ -394,12 +464,19 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
     # and reject any trace that is not already its sanitized form; otherwise raw
     # content can be smuggled into a trace entry through the direct build path
     # with a recomputed matching digest.
-    if _sanitize_route_stage_trace(trace) != trace:
+    sanitized_trace = _sanitize_route_stage_trace(trace)
+    if not _route_stage_trace_matches_schema(trace, sanitized_trace):
         raise ValueError(
             "chat served route_stage_trace has non-allowlisted keys or "
-            "non-scalar values (must be pre-sanitized before persistence)"
+            "non-canonical values (must be pre-sanitized before persistence)"
         )
-    if payload.get("route_stage_trace_count") != len(trace):
+    _validate_route_stage_sequence(sanitized_trace)
+    trace_count = payload.get("route_stage_trace_count")
+    if (
+        not isinstance(trace_count, int)
+        or isinstance(trace_count, bool)
+        or trace_count != len(trace)
+    ):
         raise ValueError("chat served route_stage_trace_count mismatch")
     if payload.get("route_stage_trace_digest") != sha256_digest(
         {"route_stage_trace": trace}
@@ -417,6 +494,9 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
                 f"chat served payload has unexpected top-level key '{key}' "
                 "(only allowlisted keys may be persisted)"
             )
+    missing_keys = _ALLOWED_PAYLOAD_KEYS.difference(payload)
+    if missing_keys:
+        raise ValueError("chat served payload must contain the exact v1 keyset")
     # digest_semantics is the one dict-valued allowlisted key; its nested values
     # are otherwise unvalidated, so pin it to the exact fixed declaration -- this
     # closes the "raw content smuggled one level deeper" gap (a nested value can
@@ -430,30 +510,82 @@ def _validate_chat_served_payload(payload: Mapping[str, Any]) -> None:
 def _sanitize_route_stage_trace(
     trace: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
+    if len(trace) > _MAX_ROUTE_STAGE_EVENTS:
+        raise ValueError(
+            f"route_stage_trace must contain at most {_MAX_ROUTE_STAGE_EVENTS} events"
+        )
     sanitized: list[dict[str, Any]] = []
     for item in trace:
         if not isinstance(item, Mapping):
             raise ValueError("route_stage_trace entries must be mappings")
-        entry: dict[str, Any] = {}
-        for key, value in item.items():
-            if key not in _ROUTE_STAGE_ALLOWED_KEYS:
-                # Drop any non-allowlisted key so raw text can never ride along.
+        stage = item.get("stage")
+        if not isinstance(stage, str) or stage not in _ROUTE_STAGES:
+            continue
+        entry: dict[str, Any] = {"stage": stage}
+        for key in _ROUTE_STAGE_FIELDS[stage]:
+            if key not in item:
                 continue
-            if isinstance(value, bool) or value is None:
-                entry[key] = value
-            elif isinstance(value, int):
-                entry[key] = value
-            elif isinstance(value, float):
-                entry[key] = round(value, 4)
-            elif isinstance(value, str):
-                entry[key] = value
-            else:
-                # Drop non-scalar values (dict/list/etc.) rather than str()-ing
-                # them -- stringifying a nested object would leak raw text that
-                # the allowlist is meant to keep out of the audit trail.
-                continue
+            normalized = _sanitize_route_stage_value(key, item[key])
+            if normalized is not None:
+                entry[key] = normalized
         sanitized.append(entry)
     return sanitized
+
+
+def _sanitize_route_stage_value(key: str, value: Any) -> Any | None:
+    if key in _ROUTE_BOOLEAN_FIELDS:
+        return value if isinstance(value, bool) else None
+    if key in _ROUTE_COUNT_FIELDS:
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _MAX_ROUTE_COUNT
+        ):
+            return value
+        return None
+    if key in _ROUTE_UNIT_FIELDS:
+        number = _finite_number(value)
+        if number is not None and 0.0 <= number <= 1.0:
+            return round(number, 4)
+        return None
+    if key == "detected_language":
+        return (
+            value
+            if isinstance(value, str) and value in {"en", "fi", "custom"}
+            else None
+        )
+    if key == "route_type":
+        return value if isinstance(value, str) and value in _ROUTE_TYPES else None
+    if key in {"solver_intent", "intent"}:
+        return value if isinstance(value, str) and value in _SOLVER_INTENTS else None
+    if key == "retrieval_mode":
+        return value if isinstance(value, str) and value in _RETRIEVAL_MODES else None
+    return None
+
+
+def _route_stage_trace_matches_schema(
+    trace: Sequence[Mapping[str, Any]],
+    sanitized: Sequence[Mapping[str, Any]],
+) -> bool:
+    if len(trace) != len(sanitized):
+        return False
+    for raw, clean in zip(trace, sanitized, strict=True):
+        if set(raw) != set(clean):
+            return False
+        for key, clean_value in clean.items():
+            raw_value = raw[key]
+            if type(raw_value) is not type(clean_value) or raw_value != clean_value:
+                return False
+    return True
+
+
+def _validate_route_stage_sequence(trace: Sequence[Mapping[str, Any]]) -> None:
+    stages = [str(entry["stage"]) for entry in trace]
+    if len(stages) != len(set(stages)):
+        raise ValueError("chat served route_stage_trace stages must be unique")
+    indexes = [_ROUTE_STAGE_INDEX[stage] for stage in stages]
+    if indexes != sorted(indexes):
+        raise ValueError("chat served route_stage_trace stages are out of order")
 
 
 def _validate_metadata_token(payload: Mapping[str, Any], key: str) -> None:
@@ -467,8 +599,18 @@ def _validate_metadata_token(payload: Mapping[str, Any], key: str) -> None:
 def _clamp_unit(value: Any) -> float:
     try:
         return min(1.0, max(0.0, float(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
+
+
+def _finite_number(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _coerce_utc(value: datetime) -> datetime:
@@ -488,5 +630,6 @@ __all__ = [
     "SOLVER_CONTRACT_NA_SENTINEL",
     "build_chat_served_summary",
     "build_chat_served_receipt",
+    "validate_chat_served_payload",
     "write_chat_served_receipt_bundle",
 ]

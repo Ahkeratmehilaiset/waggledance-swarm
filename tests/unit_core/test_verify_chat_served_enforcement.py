@@ -52,7 +52,14 @@ def _chat_summary():
         language="en",
         profile="COTTAGE",
         world_snapshot_ref="snap-1",
-        route_stage_trace=[{"stage": "route_selection", "route_type": "solver"}],
+        route_stage_trace=[
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "math",
+                "memory_score": 0.0,
+            }
+        ],
     )
 
 
@@ -146,6 +153,45 @@ def test_chat_receipt_non_informational_risk_class_rejected(tmp_path: Path) -> N
     report = verify_manifest(out / "manifest.json")
     assert report["ok"] is False
     assert any("risk_class=informational" in e for e in report["errors"])
+
+
+def test_chat_evaluation_cannot_claim_pass_or_carry_raw_text(tmp_path: Path) -> None:
+    marker = "SECRET_RAW_EVALUATION_DETAIL"
+    out = tmp_path / "chat"
+    _write_genuine_chat(out)
+    ep = _entry_file(out, "evaluation_result")
+    rp = _entry_file(out, "receipt")
+    evaluation = _load(ep)
+    receipt = _load(rp)
+    evaluation["verdict"] = "pass"
+    evaluation["uncertainty_sources"] = [
+        {"kind": "unknown", "detail": marker}
+    ]
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    _dump(ep, evaluation)
+    _dump(rp, receipt)
+
+    report = verify_manifest(out / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("invalid chat_served evaluation_result" in e for e in report["errors"])
+    assert marker not in json.dumps(report)
+
+
+def test_chat_receipt_cannot_add_free_form_anchor(tmp_path: Path) -> None:
+    marker = "SECRET_RAW_RECEIPT_ANCHOR"
+    out = tmp_path / "chat"
+    _write_genuine_chat(out)
+    rp = _entry_file(out, "receipt")
+    receipt = _load(rp)
+    receipt["anchored_at"] = marker
+    _dump(rp, receipt)
+
+    report = verify_manifest(out / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("invalid chat_served receipt envelope" in e for e in report["errors"])
+    assert marker not in json.dumps(report)
 
 
 # ── tamper the self-describing declaration -> payload-binding fail ──

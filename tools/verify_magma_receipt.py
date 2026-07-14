@@ -64,8 +64,6 @@ _CHAT_SERVED_EVENT_RE = re.compile(
 )
 _CHAT_PAYLOAD_FINGERPRINT_KEYS = frozenset(
     {
-        "query_digest",
-        "response_digest",
         "route_stage_trace",
         "route_stage_trace_digest",
         "digest_semantics",
@@ -478,7 +476,11 @@ def _looks_like_chat_served(
     if manifest_chain_id == _CHAT_SERVED_CHAIN_ID:
         return True
     if isinstance(payload, dict):
-        if _CHAT_PAYLOAD_FINGERPRINT_KEYS.issubset(payload):
+        # One surviving chat-specific field is enough to prevent a partially
+        # stripped v1 payload from being downgraded into the generic verifier.
+        # Generic MAGMA payloads also use query/response digests, so those are
+        # intentionally excluded from this discriminator.
+        if not _CHAT_PAYLOAD_FINGERPRINT_KEYS.isdisjoint(payload):
             return True
         if payload.get("payload_version") in _CHAT_SERVED_PAYLOAD_VERSIONS:
             return True

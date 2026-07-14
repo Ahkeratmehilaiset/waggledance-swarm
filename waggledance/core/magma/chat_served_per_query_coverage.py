@@ -28,6 +28,7 @@ import re
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.chat_query_route_evidence import NORMALIZATION_VERSION
 from waggledance.core.magma.chat_served_ledger import GAP_REASONS, is_path_safe_token
 
 # The W1C coverage-report schema (this module's output shape).
@@ -35,7 +36,6 @@ SCHEMA_VERSION = "wd.chat_served_per_query_receipt_coverage.v1"
 # The S1 run-context / route-evidence schema (what a W1B header carries) -- pinned SEPARATELY
 # from the coverage-report schema (lead/operator cross-contract blocker 1).
 RUN_CONTEXT_SCHEMA_VERSION = "wd.chat_query_route_evidence.v1"
-NORMALIZATION_VERSION = "wd.chat_query_normalization.v1"
 # Domain separator for the canonical corpus digest (must equal W1B; golden vectors in PR #1518).
 CORPUS_DIGEST_DOMAIN = "wd.chat_query_route_evidence.corpus_digest.v1"
 MEASUREMENT_MARKER = "measurement_not_a_correctness_gate"
@@ -214,6 +214,12 @@ def derive_per_query_receipt_coverage(
     terminal_evidence_ok, terminal_reason, validated_terminals = (
         _validate_ledger_terminals(ledger_terminals)
     )
+    pending_failures_ok = (
+        type(pending_append_failures) is int and pending_append_failures >= 0
+    )
+    validated_pending_append_failures = (
+        pending_append_failures if pending_failures_ok else 0
+    )
     validated_chain_ok = type(chain_ok) is bool and chain_ok
 
     # served_id -> terminal entries (catch >1 terminal / gap-then-bound: MF-3 per served_id).
@@ -264,17 +270,25 @@ def derive_per_query_receipt_coverage(
                 gapped_served_ids.add(sid)
                 continue
             ref = term["receipt_ref"]
-            receipt = resolve_receipt(ref)
+            try:
+                receipt = resolve_receipt(ref)
+            except Exception:
+                forged_served_ids.add(sid)
+                continue
             if not isinstance(receipt, Mapping):             # MF-1: nonexistent / not durable
                 forged_served_ids.add(sid)
                 continue
-            if content_hash(receipt) != ref:                 # MF-1a: not content-addressed
-                forged_served_ids.add(sid)
-                continue
-            if verify_receipt(receipt) is not True:          # MF-1a: fails verify_magma_receipt
-                forged_served_ids.add(sid)
-                continue
-            if receipt_query_digest(receipt) != q:           # MF-1b: bound to a DIFFERENT query
+            try:
+                if content_hash(receipt) != ref:             # MF-1a: not content-addressed
+                    forged_served_ids.add(sid)
+                    continue
+                if verify_receipt(receipt) is not True:      # MF-1a: fails verify_magma_receipt
+                    forged_served_ids.add(sid)
+                    continue
+                if receipt_query_digest(receipt) != q:       # MF-1b: wrong query binding
+                    forged_served_ids.add(sid)
+                    continue
+            except Exception:
                 forged_served_ids.add(sid)
                 continue
             bound_served_ids.add(sid)
@@ -293,8 +307,10 @@ def derive_per_query_receipt_coverage(
         reason = "corpus_digest_unbound_from_route_evidence"
     elif corpus_size == 0:
         reason = "empty_corpus"
-    elif pending_append_failures != 0:
-        reason = "pending_append_failures:%d" % pending_append_failures
+    elif not pending_failures_ok:
+        reason = "malformed_pending_append_failures"
+    elif validated_pending_append_failures != 0:
+        reason = "pending_append_failures:%d" % validated_pending_append_failures
     elif not validated_chain_ok:
         reason = "ledger_chain_broken"
     elif not terminal_evidence_ok:
@@ -325,7 +341,7 @@ def derive_per_query_receipt_coverage(
         evidence_ok=evidence_ok,
         context_ok=context_ok,
         corpus_bound=corpus_bound,
-        pending_append_failures=pending_append_failures,
+        pending_append_failures=validated_pending_append_failures,
         chain_ok=validated_chain_ok,
         reason=reason,
     )

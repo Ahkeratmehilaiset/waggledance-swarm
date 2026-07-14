@@ -6,6 +6,8 @@ return True (liveness). The corpus digest is recomputed internally, so the happy
 the module's own canonical_corpus_digest; route-evidence rows are the strict 3-key shape.
 """
 
+import pytest
+
 from waggledance.core.magma.chat_served_per_query_coverage import (
     MEASUREMENT_MARKER,
     NORMALIZATION_VERSION,
@@ -82,17 +84,21 @@ class _Store:
 
 
 def _derive(route_evidence, terminals, store, *, run_header=None, claim_context=None,
-            pending_append_failures=0, chain_ok=True):
+            pending_append_failures=0, chain_ok=True, callback_overrides=None):
     ctx = _ctx_for(route_evidence)
+    callbacks = {
+        "resolve_receipt": store.resolve,
+        "verify_receipt": store.verify,
+        "content_hash": store.content_hash,
+        "receipt_query_digest": store.query_digest,
+    }
+    callbacks.update(callback_overrides or {})
     return derive_per_query_receipt_coverage(
         route_evidence=route_evidence,
         run_header=run_header if run_header is not None else dict(ctx),
         claim_context=claim_context if claim_context is not None else dict(ctx),
         ledger_terminals=terminals,
-        resolve_receipt=store.resolve,
-        verify_receipt=store.verify,
-        content_hash=store.content_hash,
-        receipt_query_digest=store.query_digest,
+        **callbacks,
         pending_append_failures=pending_append_failures,
         chain_ok=chain_ok,
     )
@@ -278,6 +284,41 @@ def test_forged_persisted_verify_fail_is_false():
     assert rep.coverage_present is False and rep.forged_or_unbound == 1
 
 
+def test_truthy_non_bool_verifier_result_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    rep = _derive(
+        [_re("s1", _q("a"))],
+        [_receipt_term("s1", "r1")],
+        store,
+        callback_overrides={"verify_receipt": lambda _: "true"},
+    )
+    assert rep.coverage_present is False and rep.forged_or_unbound == 1
+
+
+@pytest.mark.parametrize(
+    "callback_name",
+    ["resolve_receipt", "content_hash", "verify_receipt", "receipt_query_digest"],
+)
+def test_callback_exception_fails_closed_for_served_event(callback_name):
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+
+    def raise_callback(*_args):
+        raise RuntimeError("injected callback failure")
+
+    rep = _derive(
+        [_re("s1", _q("a"))],
+        [_receipt_term("s1", "r1")],
+        store,
+        callback_overrides={callback_name: raise_callback},
+    )
+
+    assert rep.coverage_present is False
+    assert rep.verified_bound == 0 and rep.forged_or_unbound == 1
+    assert rep.reason == "bijection_unmet:bound=0/corpus=1(gap=0,missing=0,forged=1)"
+
+
 # --- rco-1 MF-2 / MF-3 ----------------------------------------------------------------------
 
 def test_corpus_missing_entry_is_false():
@@ -296,6 +337,21 @@ def test_pending_append_failure_is_false():
     terms = [_receipt_term("s1", "r1")]
     rep = _derive(re, terms, store, pending_append_failures=1)
     assert rep.coverage_present is False and "pending_append_failures" in rep.reason
+
+
+@pytest.mark.parametrize("malformed", [True, -1, "1", 1.0, None])
+def test_malformed_pending_append_failures_is_false(malformed):
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    rep = _derive(
+        [_re("s1", _q("a"))],
+        [_receipt_term("s1", "r1")],
+        store,
+        pending_append_failures=malformed,
+    )
+    assert rep.coverage_present is False
+    assert rep.reason == "malformed_pending_append_failures"
+    assert rep.pending_append_failures == 0
 
 
 def test_gap_then_bound_duplicate_terminal_is_false():

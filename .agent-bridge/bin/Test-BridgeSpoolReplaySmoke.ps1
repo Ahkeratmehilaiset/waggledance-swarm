@@ -113,6 +113,60 @@ try {
     Add-Check -Name 'dry run lists but keeps file' -Passed (
         (($out -match 'would archive as duplicate') -or ($out -match 'would replay')) -and (Test-Path -LiteralPath $spoolFile)
     )
+
+    # 8. A large dedup scan must not deny concurrent bridge writers. The
+    # production events log is large enough for a File.ReadLines scan to hold
+    # a deny-write handle for many seconds, spooling every live event.
+    Remove-Item -LiteralPath $spoolFile -Force
+    $bulkEvent = '{"ts_utc":"2026-07-02T10:00:00Z","agent":"fable-5","type":"message","task_id":"bulk","status":"info","message":"existing"}'
+    $bulkWriter = New-Object System.IO.StreamWriter($eventsPath, $false, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        for ($i = 0; $i -lt 25000; $i++) { $bulkWriter.WriteLine($bulkEvent) }
+    } finally {
+        $bulkWriter.Dispose()
+    }
+    $concurrentSpool = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-codex-tools-1-20260702T130000000-8.jsonl'
+    Set-Content -LiteralPath $concurrentSpool -Value '{"ts_utc":"2026-07-02T13:00:00Z","agent":"codex-tools-1","type":"message","task_id":"concurrent-replay","status":"info","message":"replay"}' -Encoding UTF8 -NoNewline
+
+    $job = Start-Job -ScriptBlock {
+        param($ScriptPath, $Root)
+        & $ScriptPath -BridgeRoot $Root
+    } -ArgumentList $replayScript, $tempRoot
+    $readerObserved = $false
+    for ($i = 0; $i -lt 500 -and $job.State -eq 'Running'; $i++) {
+        $exclusive = $null
+        try {
+            $exclusive = New-Object System.IO.FileStream(
+                $eventsPath,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+        } catch [System.IO.IOException] {
+            $readerObserved = $true
+            break
+        } finally {
+            if ($null -ne $exclusive) { $exclusive.Dispose() }
+        }
+        Start-Sleep -Milliseconds 10
+    }
+
+    $concurrentAppendOk = $false
+    if ($readerObserved) {
+        try {
+            $liveEvent = '{"ts_utc":"2026-07-02T13:00:01Z","agent":"fable-5","type":"message","task_id":"concurrent-live","status":"info","message":"live"}' + [Environment]::NewLine
+            [System.IO.File]::AppendAllText($eventsPath, $liveEvent, (New-Object System.Text.UTF8Encoding($false)))
+            $concurrentAppendOk = $true
+        } catch [System.IO.IOException] {}
+    }
+    [void](Wait-Job -Job $job -Timeout 60)
+    $jobOut = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    Add-Check -Name 'dedup scan permits concurrent append' -Passed (
+        $readerObserved -and $concurrentAppendOk -and
+        ($jobOut -match 'replayed=1 deduped=0 failed=0') -and
+        (-not (Test-Path -LiteralPath $concurrentSpool))
+    ) -Detail "readerObserved=$readerObserved appendOk=$concurrentAppendOk out=$jobOut"
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

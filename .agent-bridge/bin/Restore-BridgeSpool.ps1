@@ -155,14 +155,30 @@ function Get-BridgeEventDedupKey {
 try {
     $existingKeys = New-Object 'System.Collections.Generic.HashSet[string]'
     if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
-        foreach ($line in [System.IO.File]::ReadLines($eventsPath)) {
-            if (-not $line) { continue }
-            try {
-                $obj = $line | ConvertFrom-Json -ErrorAction Stop
-                if ($null -ne $obj -and $null -ne $obj.PSObject.Properties['type']) {
-                    [void]$existingKeys.Add((Get-BridgeEventDedupKey -EventObject $obj))
-                }
-            } catch {}
+        # The production log can be tens of megabytes. File.ReadLines opens it
+        # with FileShare.Read, which blocks every bridge append for the duration
+        # of this full scan. Use an explicit shared reader so replay never turns
+        # routine deduplication into a global writer outage.
+        $stream = New-Object System.IO.FileStream(
+            $eventsPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite
+        )
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true)
+        try {
+            while ($null -ne ($line = $reader.ReadLine())) {
+                if (-not $line) { continue }
+                try {
+                    $obj = $line | ConvertFrom-Json -ErrorAction Stop
+                    if ($null -ne $obj -and $null -ne $obj.PSObject.Properties['type']) {
+                        [void]$existingKeys.Add((Get-BridgeEventDedupKey -EventObject $obj))
+                    }
+                } catch {}
+            }
+        } finally {
+            $reader.Dispose()
+            $stream.Dispose()
         }
     }
 

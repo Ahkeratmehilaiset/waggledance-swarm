@@ -14,7 +14,6 @@ import json
 import re
 import subprocess
 import sys
-import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -27,17 +26,20 @@ from waggledance.application.dto.chat_dto import ChatRequest  # noqa: E402
 from waggledance.application.services.chat_service import ChatService  # noqa: E402
 from waggledance.core.domain.agent import AgentResult  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
+from waggledance.core.magma.chat_query_route_evidence import (  # noqa: E402
+    NORMALIZATION_VERSION,
+    QUERY_DIGEST_DOMAIN,
+    canonical_query_digest,
+)
 from waggledance.core.orchestration.routing_policy import select_route  # noqa: E402
 
 REPORT_VERSION = "wd.chat_first_hop_corpus.v1"
 SCHEMA_VERSION = "wd.chat_query_route_evidence.v1"
-NORMALIZATION_VERSION = "wd.chat_query_normalization.v1"
 DENOMINATOR_SCOPE = "all_non_cached_served_first_hops"
 MEASUREMENT_SCOPE = "chatservice_handle_route_stage_trace_with_deterministic_fakes"
 REPRESENTATIVENESS_SCOPE = "non_production_representative_deterministic_corpus"
 CORPUS_DIGEST_DOMAIN = "wd.chat_query_route_evidence.corpus_digest.v1"
 ROW_ID_DOMAIN = "wd.chat_first_hop_row_id.v1"
-QUERY_DIGEST_DOMAIN = "wd.chat_query_route_evidence.query_digest.v1"
 CANDIDATE_REF_SCHEMA_VERSION = "wd.chat_query_candidate_receipt_ref.v1"
 GAP_REF_SCHEMA_VERSION = "wd.chat_query_gap_candidate_receipt_ref.v1"
 RUN_ID_DOMAIN = "wd.chat_first_hop_run.v1"
@@ -192,15 +194,9 @@ def load_corpus(path: Path) -> list[Any]:
     return list(data)
 
 
-def _query_digest(query: str) -> str:
-    normalized_query = unicodedata.normalize("NFC", query).strip()
-    return sha256_digest(
-        {
-            "domain": QUERY_DIGEST_DOMAIN,
-            "normalization_version": NORMALIZATION_VERSION,
-            "normalized_query": normalized_query,
-        }
-    )
+# Compatibility name for existing harness callers. The algorithm lives in core so
+# every route-evidence producer consumes the same versioned preimage contract.
+_query_digest = canonical_query_digest
 
 
 def _opaque_row_id(row_id: str) -> str:

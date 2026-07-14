@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.chat_query_route_evidence import canonical_query_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
 from waggledance.core.magma.receipt_bundle import (
@@ -183,7 +184,7 @@ def build_chat_served_summary(
         "language": str(language),
         "profile": str(profile),
         "world_snapshot_ref": str(world_snapshot_ref),
-        "query_digest": sha256_digest({"query": str(query)}),
+        "query_digest": canonical_query_digest(str(query)),
         "query_length": len(str(query)),
         "response_digest": sha256_digest({"response": str(response)}),
         "response_length": len(str(response)),

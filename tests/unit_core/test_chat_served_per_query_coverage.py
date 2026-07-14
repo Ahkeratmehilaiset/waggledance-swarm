@@ -6,6 +6,8 @@ return True (liveness). The corpus digest is recomputed internally, so the happy
 the module's own canonical_corpus_digest; route-evidence rows are the strict 3-key shape.
 """
 
+import pytest
+
 from waggledance.core.magma.chat_served_per_query_coverage import (
     MEASUREMENT_MARKER,
     NORMALIZATION_VERSION,
@@ -20,12 +22,16 @@ def _q(c):  # a valid sha256 query digest
     return "sha256:" + (c * 64)
 
 
+def _ref(value):
+    return value if value.startswith("sha256:") else _q(value[-1])
+
+
 def _re(served_id, query_digest, normalization_version=NORMALIZATION_VERSION):
     return {"served_id": served_id, "query_digest": query_digest, "normalization_version": normalization_version}
 
 
 def _receipt_term(served_id, receipt_ref):
-    return {"entry_type": "receipt", "served_id": served_id, "receipt_ref": receipt_ref}
+    return {"entry_type": "receipt", "served_id": served_id, "receipt_ref": _ref(receipt_ref)}
 
 
 def _gap_term(served_id, gap_reason="receipt_build_failed"):
@@ -48,10 +54,12 @@ class _Store:
         self._r = {}
 
     def add_genuine(self, ref, query_digest):
+        ref = _ref(ref)
         self._r[ref] = {"_content_hash": ref, "_verify_ok": True, "_query_digest": query_digest}
         return ref
 
     def add_forged(self, ref, query_digest, *, content_hash=None, verify_ok=True):
+        ref = _ref(ref)
         self._r[ref] = {
             "_content_hash": content_hash if content_hash is not None else ref,
             "_verify_ok": verify_ok,
@@ -76,17 +84,21 @@ class _Store:
 
 
 def _derive(route_evidence, terminals, store, *, run_header=None, claim_context=None,
-            pending_append_failures=0, chain_ok=True):
+            pending_append_failures=0, chain_ok=True, callback_overrides=None):
     ctx = _ctx_for(route_evidence)
+    callbacks = {
+        "resolve_receipt": store.resolve,
+        "verify_receipt": store.verify,
+        "content_hash": store.content_hash,
+        "receipt_query_digest": store.query_digest,
+    }
+    callbacks.update(callback_overrides or {})
     return derive_per_query_receipt_coverage(
         route_evidence=route_evidence,
         run_header=run_header if run_header is not None else dict(ctx),
         claim_context=claim_context if claim_context is not None else dict(ctx),
         ledger_terminals=terminals,
-        resolve_receipt=store.resolve,
-        verify_receipt=store.verify,
-        content_hash=store.content_hash,
-        receipt_query_digest=store.query_digest,
+        **callbacks,
         pending_append_failures=pending_append_failures,
         chain_ok=chain_ok,
     )
@@ -141,10 +153,28 @@ def test_invalid_query_digest_is_false():
     assert rep.coverage_present is False and rep.evidence_ok is False
 
 
+def test_query_digest_with_trailing_newline_is_false():
+    store = _Store()
+    rep = _derive([_re("s1", _q("a") + "\n")], [], store)
+    assert rep.coverage_present is False and rep.evidence_ok is False
+
+
 def test_empty_served_id_is_false():
     store = _Store()
     re = [_re("", _q("a"))]
     rep = _derive(re, [], store)
+    assert rep.coverage_present is False and rep.evidence_ok is False
+
+
+def test_numeric_served_id_is_false():
+    store = _Store()
+    rep = _derive([_re(7, _q("a"))], [], store)
+    assert rep.coverage_present is False and rep.evidence_ok is False
+
+
+def test_path_unsafe_served_id_is_false():
+    store = _Store()
+    rep = _derive([_re("s1\n", _q("a"))], [], store)
     assert rep.coverage_present is False and rep.evidence_ok is False
 
 
@@ -162,11 +192,60 @@ def test_duplicate_served_id_is_false():
     assert rep.coverage_present is False and rep.evidence_ok is False
 
 
-def test_duplicate_query_digest_is_false():
+def test_repeated_query_digest_with_one_receipt_per_served_event_is_true():
     store = _Store()
-    re = [_re("s1", _q("a")), _re("s2", _q("a"))]  # duplicate query_digest (subset/dup masking)
-    rep = _derive(re, [], store)
-    assert rep.coverage_present is False and rep.evidence_ok is False
+    store.add_genuine("r1", _q("a"))
+    store.add_genuine("r2", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r2")]
+
+    rep = _derive(re, terms, store)
+
+    assert rep.coverage_present is True and rep.evidence_ok is True
+    assert rep.corpus_size == 2 and rep.verified_bound == 2
+    assert rep.duplicate_terminal == 0 and rep.duplicate_query_terminal == 0
+
+
+def test_repeated_query_digest_cannot_reuse_receipt_across_served_events():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+    terms = [_receipt_term("s1", "r1"), _receipt_term("s2", "r1")]
+
+    rep = _derive(re, terms, store)
+
+    assert rep.coverage_present is False
+    assert rep.verified_bound == 0 and rep.forged_or_unbound == 2
+    assert rep.reason == "duplicate_receipt_ref:1"
+
+
+def test_repeated_query_digest_missing_one_served_event_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+
+    rep = _derive(re, [_receipt_term("s1", "r1")], store)
+
+    assert rep.coverage_present is False and rep.evidence_ok is True
+    assert rep.reason is not None and "bijection_unmet" in rep.reason
+    assert rep.missing == 1
+
+
+def test_repeated_query_digest_duplicate_terminal_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    store.add_genuine("r2", _q("a"))
+    re = [_re("s1", _q("a")), _re("s2", _q("a"))]
+    terms = [
+        _receipt_term("s1", "r1"),
+        _gap_term("s1"),
+        _receipt_term("s2", "r2"),
+    ]
+
+    rep = _derive(re, terms, store)
+
+    assert rep.coverage_present is False
+    assert rep.duplicate_terminal == 1
 
 
 # --- rco-2 R1 bijection: missing query ------------------------------------------------------
@@ -218,6 +297,41 @@ def test_forged_persisted_verify_fail_is_false():
     assert rep.coverage_present is False and rep.forged_or_unbound == 1
 
 
+def test_truthy_non_bool_verifier_result_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    rep = _derive(
+        [_re("s1", _q("a"))],
+        [_receipt_term("s1", "r1")],
+        store,
+        callback_overrides={"verify_receipt": lambda _: "true"},
+    )
+    assert rep.coverage_present is False and rep.forged_or_unbound == 1
+
+
+@pytest.mark.parametrize(
+    "callback_name",
+    ["resolve_receipt", "content_hash", "verify_receipt", "receipt_query_digest"],
+)
+def test_callback_exception_fails_closed_for_served_event(callback_name):
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+
+    def raise_callback(*_args):
+        raise RuntimeError("injected callback failure")
+
+    rep = _derive(
+        [_re("s1", _q("a"))],
+        [_receipt_term("s1", "r1")],
+        store,
+        callback_overrides={callback_name: raise_callback},
+    )
+
+    assert rep.coverage_present is False
+    assert rep.verified_bound == 0 and rep.forged_or_unbound == 1
+    assert rep.reason == "bijection_unmet:bound=0/corpus=1(gap=0,missing=0,forged=1)"
+
+
 # --- rco-1 MF-2 / MF-3 ----------------------------------------------------------------------
 
 def test_corpus_missing_entry_is_false():
@@ -238,6 +352,21 @@ def test_pending_append_failure_is_false():
     assert rep.coverage_present is False and "pending_append_failures" in rep.reason
 
 
+@pytest.mark.parametrize("malformed", [True, -1, "1", 1.0, None])
+def test_malformed_pending_append_failures_is_false(malformed):
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    rep = _derive(
+        [_re("s1", _q("a"))],
+        [_receipt_term("s1", "r1")],
+        store,
+        pending_append_failures=malformed,
+    )
+    assert rep.coverage_present is False
+    assert rep.reason == "malformed_pending_append_failures"
+    assert rep.pending_append_failures == 0
+
+
 def test_gap_then_bound_duplicate_terminal_is_false():
     store = _Store()
     store.add_genuine("r1", _q("a"))
@@ -245,6 +374,49 @@ def test_gap_then_bound_duplicate_terminal_is_false():
     terms = [_gap_term("s1"), _receipt_term("s1", "r1")]  # gap not papered by a later bound
     rep = _derive(re, terms, store)
     assert rep.coverage_present is False and rep.duplicate_terminal == 1
+
+
+def test_terminal_must_be_a_mapping_with_exact_keyset():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a"))]
+    malformed = _receipt_term("s1", "r1")
+    malformed["extra"] = "smuggled"
+
+    not_mapping = _derive(re, ["receipt"], store)
+    extra_key = _derive(re, [malformed], store)
+
+    assert not_mapping.coverage_present is False
+    assert not_mapping.reason == "malformed_ledger_terminal:row_0_not_mapping"
+    assert extra_key.coverage_present is False
+    assert extra_key.reason == "malformed_ledger_terminal:row_0_receipt_keyset"
+
+
+def test_terminal_rejects_numeric_or_path_unsafe_served_id():
+    store = _Store()
+    re = [_re("s1", _q("a"))]
+    numeric = {"entry_type": "gap", "served_id": 7, "gap_reason": "receipt_build_failed"}
+    newline = {"entry_type": "gap", "served_id": "s1\n", "gap_reason": "receipt_build_failed"}
+
+    numeric_rep = _derive(re, [numeric], store)
+    newline_rep = _derive(re, [newline], store)
+
+    assert numeric_rep.reason == "malformed_ledger_terminal:row_0_served_id"
+    assert newline_rep.reason == "malformed_ledger_terminal:row_0_served_id"
+
+
+def test_terminal_rejects_malformed_receipt_ref_and_gap_reason():
+    store = _Store()
+    re = [_re("s1", _q("a"))]
+    bad_ref = {"entry_type": "receipt", "served_id": "s1", "receipt_ref": 7}
+    bad_gap = {"entry_type": "gap", "served_id": "s1", "gap_reason": "free-form"}
+
+    assert _derive(re, [bad_ref], store).reason == (
+        "malformed_ledger_terminal:row_0_receipt_ref"
+    )
+    assert _derive(re, [bad_gap], store).reason == (
+        "malformed_ledger_terminal:row_0_gap_reason"
+    )
 
 
 def test_plain_gap_is_false():
@@ -270,6 +442,33 @@ def test_broken_chain_is_false():
     re = [_re("s1", _q("a"))]
     terms = [_receipt_term("s1", "r1")]
     rep = _derive(re, terms, store, chain_ok=False)
+    assert rep.coverage_present is False and rep.reason == "ledger_chain_broken"
+
+
+def test_truthy_string_chain_state_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a"))]
+    rep = _derive(re, [_receipt_term("s1", "r1")], store, chain_ok="true")
+    assert rep.coverage_present is False and rep.reason == "ledger_chain_broken"
+    assert rep.chain_ok is False
+
+
+def test_chain_state_defaults_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a"))]
+    ctx = _ctx_for(re)
+    rep = derive_per_query_receipt_coverage(
+        route_evidence=re,
+        run_header=ctx,
+        claim_context=dict(ctx),
+        ledger_terminals=[_receipt_term("s1", "r1")],
+        resolve_receipt=store.resolve,
+        verify_receipt=store.verify,
+        content_hash=store.content_hash,
+        receipt_query_digest=store.query_digest,
+    )
     assert rep.coverage_present is False and rep.reason == "ledger_chain_broken"
 
 
@@ -312,6 +511,16 @@ def test_wrong_run_id_is_false():
     header = _ctx_for(re)
     header["run_id"] = "sha256:" + "9" * 64
     rep = _derive(re, terms, store, run_header=header)
+    assert rep.coverage_present is False and rep.context_ok is False
+
+
+def test_header_digest_with_trailing_newline_is_false():
+    store = _Store()
+    store.add_genuine("r1", _q("a"))
+    re = [_re("s1", _q("a"))]
+    header = _ctx_for(re)
+    header["run_id"] += "\n"
+    rep = _derive(re, [_receipt_term("s1", "r1")], store, run_header=header)
     assert rep.coverage_present is False and rep.context_ok is False
 
 

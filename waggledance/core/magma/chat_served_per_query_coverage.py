@@ -12,9 +12,9 @@ Frozen W1A v3 contract (dual-RCO PASS) + rco-1 MF-1a + the W1B cross-contract am
 Every clause is re-derived from primitive fields; NO producer-supplied value is a trust
 boundary: the `bound` flag is never counted, the corpus digest is recomputed INTERNALLY with
 the canonical W1B algorithm (not a caller-supplied function), and malformed route-evidence
-fails CLOSED (never silently filtered). It NEVER reads or writes claim_safe: coverage_present
-is EVIDENCE, necessary-not-sufficient, tagged ``measurement_not_a_correctness_gate``. Any
-claim_safe flip is a separate (a)-class operator-EXPLICIT step, not anything this module can do.
+fails CLOSED (never silently filtered). It NEVER reads or writes the claim-safety flag:
+coverage_present is EVIDENCE, necessary-not-sufficient, tagged ``measurement_not_a_correctness_gate``.
+Any claim-safety flip is a separate (a)-class operator-EXPLICIT step, not anything this module can do.
 
 The receipt resolution is still via injected seams (``resolve_receipt`` / ``verify_receipt`` /
 ``content_hash`` / ``receipt_query_digest``) so the forgery matrix is exercised directly; the
@@ -53,7 +53,7 @@ _GAP_TERMINAL = "gap"
 
 
 class PerQueryCoverageReport(NamedTuple):
-    """Re-derived, measurement-only per-query receipt coverage. Never a claim_safe trigger."""
+    """Re-derived, measurement-only per-query receipt coverage. Never a claim-safety trigger."""
 
     coverage_present: bool
     corpus_size: int

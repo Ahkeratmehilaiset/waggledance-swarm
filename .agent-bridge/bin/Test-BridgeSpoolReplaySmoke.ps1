@@ -167,6 +167,64 @@ try {
         ($jobOut -match 'replayed=1 deduped=0 failed=0') -and
         (-not (Test-Path -LiteralPath $concurrentSpool))
     ) -Detail "readerObserved=$readerObserved appendOk=$concurrentAppendOk out=$jobOut"
+
+    # 9. A live retry that lands after the historical scan but before its
+    # spool file is processed must still dedup atomically (post-scan TOCTOU).
+    $replayedDir = Join-Path (Join-Path $tempRoot 'spool') 'replayed'
+    $archiveCountBefore = @(Get-ChildItem -LiteralPath $replayedDir -File).Count
+    for ($i = 0; $i -lt 150; $i++) {
+        $fillerPath = Join-Path (Join-Path $tempRoot 'spool') ('failed-append-race-a-{0:D4}-1.jsonl' -f $i)
+        $filler = ('{{"ts_utc":"2026-07-02T14:00:00Z","agent":"fable-5","type":"message","task_id":"race-filler-{0:D4}","status":"info","message":"filler"}}' -f $i)
+        [System.IO.File]::WriteAllText($fillerPath, $filler, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    $raceTarget = '{"ts_utc":"2026-07-02T14:00:01Z","agent":"fable-5","type":"decision","task_id":"postscan-race-target","status":"rco_pass","message":"same semantic signal"}'
+    $raceSpool = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-race-z-target-1.jsonl'
+    [System.IO.File]::WriteAllText($raceSpool, $raceTarget, (New-Object System.Text.UTF8Encoding($false)))
+
+    $raceJob = Start-Job -ScriptBlock {
+        param($ScriptPath, $Root)
+        & $ScriptPath -BridgeRoot $Root
+    } -ArgumentList $replayScript, $tempRoot
+    $processingObserved = $false
+    for ($i = 0; $i -lt 1000 -and $raceJob.State -eq 'Running'; $i++) {
+        $archiveCount = @(Get-ChildItem -LiteralPath $replayedDir -File -ErrorAction SilentlyContinue).Count
+        if ($archiveCount -gt $archiveCountBefore) { $processingObserved = $true; break }
+        Start-Sleep -Milliseconds 2
+    }
+
+    $liveRetryAppended = $false
+    $appendMutex = $null
+    $appendAcquired = $false
+    try {
+        $appendMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeAppendV1')
+        try { $appendAcquired = $appendMutex.WaitOne(10000) }
+        catch [System.Threading.AbandonedMutexException] { $appendAcquired = $true }
+        if ($processingObserved -and $appendAcquired) {
+            [System.IO.File]::AppendAllText(
+                $eventsPath,
+                $raceTarget + [Environment]::NewLine,
+                (New-Object System.Text.UTF8Encoding($false))
+            )
+            $liveRetryAppended = $true
+        }
+    } finally {
+        if ($null -ne $appendMutex) {
+            if ($appendAcquired) { try { $appendMutex.ReleaseMutex() } catch {} }
+            $appendMutex.Dispose()
+        }
+    }
+    [void](Wait-Job -Job $raceJob -Timeout 120)
+    $raceOut = @(Receive-Job -Job $raceJob -ErrorAction SilentlyContinue)
+    Remove-Job -Job $raceJob -Force -ErrorAction SilentlyContinue
+    $targetCount = @(
+        Get-Content -LiteralPath $eventsPath -Encoding UTF8 |
+            Where-Object { $_ -match '"task_id":"postscan-race-target"' }
+    ).Count
+    Add-Check -Name 'post-scan live retry dedup is atomic' -Passed (
+        $processingObserved -and $liveRetryAppended -and $targetCount -eq 1 -and
+        ($raceOut -match 'replayed=150 deduped=1 failed=0') -and
+        (-not (Test-Path -LiteralPath $raceSpool))
+    ) -Detail "processingObserved=$processingObserved liveRetry=$liveRetryAppended targetCount=$targetCount out=$raceOut"
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

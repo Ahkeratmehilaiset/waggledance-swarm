@@ -154,6 +154,15 @@ def test_explicit_sprint_proof_mapping_selects_importlib_loaded_tool_test(tmp_pa
     assert r["tests"] == ["tests/test_low_risk_autogrowth_real_loop_proof.py"]
 
 
+def test_explicit_w1b_chat_first_hop_mapping_selects_tool_test(tmp_path):
+    _mkrepo(tmp_path)
+    mapped = tmp_path / "tests" / "tools" / "test_chat_first_hop_corpus.py"
+    mapped.write_text("def test_chat_first_hop():\n    assert True\n", encoding="utf-8")
+    r = select_affected_tests(["tools/run_chat_first_hop_corpus.py"], tmp_path)
+    assert r["full_suite"] is False
+    assert r["tests"] == ["tests/tools/test_chat_first_hop_corpus.py"]
+
+
 def test_explicit_sprint_proof_mapping_missing_test_fails_safe(tmp_path):
     _mkrepo(tmp_path)
     r = select_affected_tests(

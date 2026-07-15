@@ -12,6 +12,9 @@ from waggledance.core.game_theory_contracts import (
     FiniteGame,
     ForwardGameRequest,
     GameTheoryValidationError,
+    MAX_ACTIONS_PER_PLAYER,
+    MAX_JOINT_PROFILES,
+    MAX_PLAYERS,
     MixedStrategy,
     PayoffEntry,
     Rational,
@@ -35,6 +38,11 @@ def _matching_pennies(*, structure: str = "zero_sum") -> FiniteGame:
         )),
         structure=structure,
     )
+
+
+def _sentinel_after(values):
+    yield from values
+    raise AssertionError("bounded materializer over-read its input")
 
 
 def _prisoners_dilemma() -> FiniteGame:
@@ -280,3 +288,38 @@ def test_magma_summary_rejects_mutable_forward_result_collections() -> None:
 
     with pytest.raises(GameTheoryValidationError, match="verification failed"):
         forged.magma_summary(request)
+
+
+def test_finite_game_rejects_players_without_overreading() -> None:
+    players = tuple(f"p{index}" for index in range(MAX_PLAYERS + 1))
+
+    with pytest.raises(GameTheoryValidationError, match="players exceeds bound"):
+        FiniteGame(
+            players=_sentinel_after(players),
+            actions=(),
+            payoffs=(),
+        )
+
+
+def test_finite_game_rejects_actions_without_overreading() -> None:
+    actions = tuple(
+        f"a{index}" for index in range(MAX_ACTIONS_PER_PLAYER + 1)
+    )
+
+    with pytest.raises(GameTheoryValidationError, match=r"actions\[0\] exceeds"):
+        FiniteGame(
+            players=("p1", "p2"),
+            actions=(_sentinel_after(actions), ("a",)),
+            payoffs=(),
+        )
+
+
+def test_finite_game_rejects_payoffs_without_overreading() -> None:
+    entry = PayoffEntry(("a", "a"), (0, 0))
+
+    with pytest.raises(GameTheoryValidationError, match="payoffs exceeds bound"):
+        FiniteGame(
+            players=("p1", "p2"),
+            actions=(("a",), ("a",)),
+            payoffs=_sentinel_after((entry,) * (MAX_JOINT_PROFILES + 1)),
+        )

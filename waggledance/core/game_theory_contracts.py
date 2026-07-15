@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from itertools import product
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, TypeVar
 
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -41,6 +41,7 @@ _FORWARD_CONCEPTS = frozenset({
     "zero_sum_fictitious_play",
 })
 _STRUCTURES = frozenset({"general_sum", "zero_sum"})
+_T = TypeVar("_T")
 
 
 class GameTheoryValidationError(ValueError):
@@ -63,6 +64,28 @@ def _bounded_int(value: int, label: str, *, magnitude: int) -> int:
             f"{label} exceeds magnitude bound {magnitude}"
         )
     return value
+
+
+def _bounded_tuple(
+    values: Iterable[_T],
+    *,
+    limit: int,
+    label: str,
+) -> tuple[_T, ...]:
+    try:
+        iterator = iter(values)
+    except TypeError as exc:
+        raise GameTheoryValidationError(f"{label} must be iterable") from exc
+
+    items: list[_T] = []
+    for _ in range(limit + 1):
+        try:
+            items.append(next(iterator))
+        except StopIteration:
+            break
+    if len(items) > limit:
+        raise GameTheoryValidationError(f"{label} exceeds bound {limit}")
+    return tuple(items)
 
 
 @dataclass(frozen=True, order=True)
@@ -116,8 +139,16 @@ class PayoffEntry:
     utilities: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "profile", tuple(self.profile))
-        object.__setattr__(self, "utilities", tuple(self.utilities))
+        object.__setattr__(
+            self,
+            "profile",
+            _bounded_tuple(self.profile, limit=MAX_PLAYERS, label="profile"),
+        )
+        object.__setattr__(
+            self,
+            "utilities",
+            _bounded_tuple(self.utilities, limit=MAX_PLAYERS, label="utilities"),
+        )
         for index, utility in enumerate(self.utilities):
             _bounded_int(
                 utility,
@@ -148,11 +179,12 @@ class FiniteGame:
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        players = tuple(self.players)
-        actions = tuple(tuple(player_actions) for player_actions in self.actions)
-        payoffs = tuple(self.payoffs)
+        players = _bounded_tuple(
+            self.players,
+            limit=MAX_PLAYERS,
+            label="players",
+        )
         object.__setattr__(self, "players", players)
-        object.__setattr__(self, "actions", actions)
 
         if self.schema_version != SCHEMA_VERSION:
             raise GameTheoryValidationError("finite-game schema_version refused")
@@ -169,6 +201,20 @@ class FiniteGame:
         for index, player_id in enumerate(players):
             _token(player_id, f"players[{index}]")
 
+        action_rows = _bounded_tuple(
+            self.actions,
+            limit=MAX_PLAYERS,
+            label="actions",
+        )
+        actions = tuple(
+            _bounded_tuple(
+                player_actions,
+                limit=MAX_ACTIONS_PER_PLAYER,
+                label=f"actions[{player_index}]",
+            )
+            for player_index, player_actions in enumerate(action_rows)
+        )
+        object.__setattr__(self, "actions", actions)
         if len(actions) != len(players):
             raise GameTheoryValidationError(
                 "actions must contain one action tuple per player"
@@ -186,11 +232,19 @@ class FiniteGame:
             for action_index, action_id in enumerate(player_actions):
                 _token(action_id, f"actions[{player_index}][{action_index}]")
 
-        expected_profiles = tuple(product(*actions))
-        if len(expected_profiles) > MAX_JOINT_PROFILES:
+        profile_count = 1
+        for player_actions in actions:
+            profile_count *= len(player_actions)
+        if profile_count > MAX_JOINT_PROFILES:
             raise GameTheoryValidationError(
                 f"joint profiles exceed bound {MAX_JOINT_PROFILES}"
             )
+        expected_profiles = tuple(product(*actions))
+        payoffs = _bounded_tuple(
+            self.payoffs,
+            limit=MAX_JOINT_PROFILES,
+            label="payoffs",
+        )
         by_profile: dict[tuple[str, ...], PayoffEntry] = {}
         for entry in payoffs:
             if not isinstance(entry, PayoffEntry):
@@ -317,7 +371,11 @@ class MixedStrategy:
         object.__setattr__(
             self,
             "probabilities",
-            tuple((action, probability) for action, probability in self.probabilities),
+            _bounded_tuple(
+                self.probabilities,
+                limit=MAX_ACTIONS_PER_PLAYER,
+                label="probabilities",
+            ),
         )
 
     def to_mapping(self) -> dict[str, Any]:
@@ -450,7 +508,15 @@ class DecisionObservation:
 
     def __post_init__(self) -> None:
         _token(self.acting_player, "acting_player")
-        object.__setattr__(self, "joint_profile", tuple(self.joint_profile))
+        object.__setattr__(
+            self,
+            "joint_profile",
+            _bounded_tuple(
+                self.joint_profile,
+                limit=MAX_PLAYERS,
+                label="joint_profile",
+            ),
+        )
         if self.information_state != "opponents_observed_before_choice":
             raise GameTheoryValidationError(
                 "inverse v1 requires opponents_observed_before_choice"
@@ -471,8 +537,19 @@ class InverseGameRequest:
     regret_tolerance: Rational = Rational(0)
 
     def __post_init__(self) -> None:
-        hypotheses = tuple(sorted(self.hypotheses, key=lambda item: item.hypothesis_id))
-        observations = tuple(self.observations)
+        hypotheses = tuple(sorted(
+            _bounded_tuple(
+                self.hypotheses,
+                limit=MAX_HYPOTHESES,
+                label="hypotheses",
+            ),
+            key=lambda item: item.hypothesis_id,
+        ))
+        observations = _bounded_tuple(
+            self.observations,
+            limit=MAX_OBSERVATIONS,
+            label="observations",
+        )
         object.__setattr__(self, "hypotheses", hypotheses)
         object.__setattr__(self, "observations", observations)
 
@@ -642,8 +719,15 @@ def make_payoffs(
     """Small convenience constructor for solver and test call sites."""
 
     return tuple(
-        PayoffEntry(tuple(profile), tuple(utilities))
-        for profile, utilities in entries
+        PayoffEntry(
+            _bounded_tuple(profile, limit=MAX_PLAYERS, label="profile"),
+            _bounded_tuple(utilities, limit=MAX_PLAYERS, label="utilities"),
+        )
+        for profile, utilities in _bounded_tuple(
+            entries,
+            limit=MAX_JOINT_PROFILES,
+            label="payoff entries",
+        )
     )
 
 

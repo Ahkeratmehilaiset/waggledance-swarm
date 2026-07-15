@@ -12,6 +12,8 @@ from waggledance.core.game_theory_contracts import (
     GameHypothesis,
     GameTheoryValidationError,
     InverseGameRequest,
+    MAX_HYPOTHESES,
+    MAX_OBSERVATIONS,
     Rational,
     make_payoffs,
 )
@@ -54,6 +56,11 @@ def _observations() -> tuple[DecisionObservation, ...]:
             "p2", ("C", "C"), "opponents_observed_before_choice"
         ),
     )
+
+
+def _sentinel_after(values):
+    yield from values
+    raise AssertionError("bounded materializer over-read its input")
 
 
 def _rescale_player(
@@ -341,3 +348,31 @@ def test_inverse_magma_summary_rejects_mutable_result_collections() -> None:
 
     with pytest.raises(GameTheoryValidationError, match="verification failed"):
         forged.magma_summary(request)
+
+
+def test_inverse_request_rejects_hypotheses_without_overreading() -> None:
+    game = _game(cooperative=True)
+    hypotheses = tuple(
+        GameHypothesis(f"h{index}", game)
+        for index in range(MAX_HYPOTHESES + 1)
+    )
+
+    with pytest.raises(GameTheoryValidationError, match="hypotheses exceeds bound"):
+        InverseGameRequest(
+            hypotheses=_sentinel_after(hypotheses),
+            observations=_observations(),
+        )
+
+
+def test_inverse_request_rejects_observations_without_overreading() -> None:
+    observations = (DecisionObservation(
+        "p1",
+        ("C", "C"),
+        "opponents_observed_before_choice",
+    ),) * (MAX_OBSERVATIONS + 1)
+
+    with pytest.raises(GameTheoryValidationError, match="observations exceeds bound"):
+        InverseGameRequest(
+            hypotheses=(GameHypothesis("candidate", _game(cooperative=True)),),
+            observations=_sentinel_after(observations),
+        )

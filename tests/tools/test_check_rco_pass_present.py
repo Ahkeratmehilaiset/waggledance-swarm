@@ -1016,6 +1016,37 @@ def test_unrelated_task_exact_head_pass_is_reported_without_counting() -> None:
     ]
 
 
+def test_canonical_pass_clears_earlier_task_mismatch_reemit_guidance() -> None:
+    target_task = "codex-lead-1-promotion-canonical-consensus-regressions-20260607"
+    unrelated_task = "codex-tools-1/promotion-canonical-consensus-regressions-20260607"
+    events = [
+        _rco_event(
+            ts="2026-06-07T18:10:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=unrelated_task,
+        ),
+        _rco_event(
+            ts="2026-06-07T18:11:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS re-emitted at exact head {HEAD}",
+            task_id=target_task,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=target_task, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert result["task_id_mismatch_rco_events"][0]["task_id"] == unrelated_task
+    assert result["rco_reemit_guidance"] is None
+
+
 def test_other_task_self_rco_pass_is_not_reported_as_mismatch() -> None:
     other_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
     events = [

@@ -541,6 +541,10 @@ def check_rco_pass_present(
     base["rco_pass_event"] = _summarize_event(latest_pass_ev)
     base["satisfying_rco_agent"] = str(latest_pass_ev.get("agent", ""))
     base["has_qualifying_rco_pass_at_head"] = True
+    # A valid pass on the accepted task-id scope satisfies the requested
+    # re-emit. Keep mismatch diagnostics for auditability, but do not tell
+    # dispatchers that another RCO_PASS is still required.
+    base["rco_reemit_guidance"] = None
 
     # Check for vetoes that supersede the satisfying pass. An older veto from a
     # different RCO belongs to the peer-veto preflight; this tool verifies the

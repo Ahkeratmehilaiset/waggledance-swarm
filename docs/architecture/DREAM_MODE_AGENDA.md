@@ -21,9 +21,10 @@ When the idle-loop substrate fires a tick, the bridge has no incoming work, and
 no unblocked P0/P1 task is queued, agents (Claude and Codex - not the operator)
 need strategic options beyond tactical bug-fix smoke runs. This file is the
 canonical Dream side-lane backlog, not the production-convergence scheduler.
-`tools/agent_next_task.py` currently selects only this side lane; the
-lead/operator-owned bridge task queue owns P0/P1 scheduling until a dedicated
-production picker is implemented.
+`tools/agent_next_task.py` schedules maintenance, smoke, operational, and Dream
+side-lane work, but it does not schedule the P0/P1 production-convergence
+critical path. The lead/operator-owned bridge task queue owns P0/P1 scheduling
+until a dedicated production picker is implemented.
 
 Operator framing 2026-05-20 (verbatim, paraphrased to English):
 

@@ -299,6 +299,7 @@ meta-learner remains propose-never-enact.
 6. Let #1530 finish independently; it does not satisfy a production phase gate.
 
 Until a production picker is implemented, the lead/operator-owned bridge task
-queue schedules unblocked P0/P1 work. `tools/agent_next_task.py` is Dream-only
-and must not be treated as the production-convergence scheduler; Dream tasks use
-only surplus capacity.
+queue schedules unblocked P0/P1 work. `tools/agent_next_task.py` schedules
+maintenance, smoke, operational, and Dream side-lane work, but it does not
+schedule the P0/P1 production-convergence critical path; Dream tasks use only
+surplus capacity.

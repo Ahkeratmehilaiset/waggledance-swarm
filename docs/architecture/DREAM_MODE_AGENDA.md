@@ -1,5 +1,11 @@
 # Dream Mode Agenda
 
+> **Production priority and authority:** idle strategy is subordinate to
+> `WD_PRODUCTION_CONVERGENCE_PLAN_V1.md`. Dream output has no runtime,
+> promotion, merge, or claim authority. The production `apply_dream_hints`
+> edge must remain off until an independent review proves it cannot change
+> authoritative dispatch.
+
 **Status:** operator-authorized 2026-05-20
 **Companion docs:** `IDLE_PROTOCOL_V1.md`, `IDLE_AUTONOMY_CHARTER.md`,
 `IDLE_LOOP_RUNBOOK.md`, `IDLE_CONSENSUS_ARTIFACT_V1.md`.
@@ -11,11 +17,13 @@
 
 ## Purpose
 
-When the idle-loop substrate fires a tick and the bridge has no
-incoming work, agents (Claude and Codex — not the operator) must have
-*strategic* options to pick from, not only tactical bug-fix smoke
-runs. This file is the canonical strategic backlog the agents poll
-during dream-mode deliberation cycles.
+When the idle-loop substrate fires a tick, the bridge has no incoming work, and
+no unblocked P0/P1 task is queued, agents (Claude and Codex - not the operator)
+need strategic options beyond tactical bug-fix smoke runs. This file is the
+canonical Dream side-lane backlog, not the production-convergence scheduler.
+`tools/agent_next_task.py` currently selects only this side lane; the
+lead/operator-owned bridge task queue owns P0/P1 scheduling until a dedicated
+production picker is implemented.
 
 Operator framing 2026-05-20 (verbatim, paraphrased to English):
 
@@ -28,9 +36,9 @@ Operator framing 2026-05-20 (verbatim, paraphrased to English):
   forgotten"* — referring to
   `docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`
 
-This agenda exists so that the LLM↔LLM dream-mode cycle does not drift
-back into bug fixes; every idle round should advance one entry in
-this file.
+This agenda exists so that a surplus-capacity dream-mode cycle does not drift
+back into unrelated bug fixes. A Dream entry advances only after the critical
+path has no queued, unblocked work.
 
 ## Out of scope
 
@@ -234,8 +242,9 @@ the enumeration and current per-ingredient status). Allowed seeds:
   security-audit seed per week minimum.
 * **Sub-area rotation:** §C seeds rotate through the sub-area map
   table at most once per UTC day (no sub-area visited twice in 24h).
-* **5-ingredient drive:** at least one §D seed per UTC day until
-  ingredients 2–5 reach SHIPPED parity with ingredient 1.
+* **5-ingredient drive:** when surplus capacity exists, target one section D
+  seed per UTC day until ingredients 2-5 reach SHIPPED parity with ingredient
+  1. This cadence never displaces an unblocked P0/P1 task.
 
 ## Charter alignment
 

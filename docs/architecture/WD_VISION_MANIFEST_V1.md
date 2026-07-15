@@ -1,5 +1,9 @@
 # WD Vision Manifest V1 (6-panel grading reference)
 
+**Execution companion:** `WD_PRODUCTION_CONVERGENCE_PLAN_V1.md` defines the
+current phase order. This manifest remains the target rubric, not the backlog
+or runtime truth source.
+
 Status: reference for Grok plan-vs-vision grading and the scheduled vision-axis
 delta (see `GROK_DEPLOYMENT_V1.md`). Author: claude-rco-1. Date: 2026-06-05.
 

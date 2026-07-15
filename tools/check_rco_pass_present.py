@@ -608,7 +608,28 @@ def _find_task_id_mismatch_rco_pass_events(
     mismatches: list[dict[str, Any]] = []
     restricted_agents = set(eligible_rco_agents)
     task_id_scope = frozenset((task_id, *task_id_aliases))
-    for event in events:
+    latest_accepted_pass_index: dict[str, int] = {}
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping):
+            continue
+        agent = str(event.get("agent", ""))
+        if agent not in eligible_rco_agents:
+            continue
+        if str(event.get("task_id", "")) not in task_id_scope:
+            continue
+        if bridge_identity_binding_status(
+            event,
+            registry=identity_registry,
+            restricted_agents=restricted_agents,
+        ) in {"missing_uuid", "mismatch_uuid"}:
+            continue
+        if _is_qualifying_rco_pass(event, head, agent):
+            latest_accepted_pass_index[agent] = index
+
+    # Resolve by physical append order, not ts_utc: spool replay can append an
+    # older timestamp after a newer event. A canonical pass only clears an
+    # earlier mismatch from the same RCO.
+    for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
         if str(event.get("task_id", "")) in task_id_scope:
@@ -622,7 +643,10 @@ def _find_task_id_mismatch_rco_pass_events(
             restricted_agents=restricted_agents,
         ) in {"missing_uuid", "mismatch_uuid"}:
             continue
-        if _is_qualifying_rco_pass(event, head, agent):
+        if (
+            _is_qualifying_rco_pass(event, head, agent)
+            and index > latest_accepted_pass_index.get(agent, -1)
+        ):
             summary = _summarize_event(event)
             if summary is not None:
                 mismatches.append(summary)

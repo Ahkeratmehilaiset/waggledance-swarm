@@ -8,7 +8,11 @@ from itertools import product
 from collections import defaultdict
 
 from waggledance.core.game_theory_contracts import (
+    BACKEND_ID,
+    BACKEND_VERSION,
     FiniteGame,
+    ForwardGameRequest,
+    ForwardGameResult,
     GameTheoryValidationError,
     HypothesisScore,
     InverseGameRequest,
@@ -16,6 +20,20 @@ from waggledance.core.game_theory_contracts import (
     MixedStrategy,
     PureEquilibrium,
     Rational,
+)
+
+
+_FORWARD_ASSUMPTIONS = (
+    "finite_complete_information_normal_form",
+    "utilities_are_cardinal_within_the_supplied_model",
+    "recommendation_is_advisory_only",
+)
+_INVERSE_ASSUMPTIONS = (
+    "true_model_if_any_is_in_the_supplied_catalog",
+    "opponents_actions_were_observed_before_each_choice",
+    "regret_is_normalized_by_each_acting_players_utility_range",
+    "no_hidden_intent_is_asserted",
+    "result_cannot_change_runtime_authority",
 )
 
 
@@ -185,78 +203,248 @@ def verify_zero_sum_mixed_strategy(
     )
 
 
+def verify_forward_result(
+    request: ForwardGameRequest,
+    result: ForwardGameResult,
+) -> bool:
+    """Fail closed unless a forward result is fully rederived and canonical."""
+
+    try:
+        if not isinstance(request, ForwardGameRequest) or not isinstance(
+            result, ForwardGameResult
+        ):
+            return False
+        if not _has_canonical_result_metadata(
+            result,
+            assumptions=_FORWARD_ASSUMPTIONS,
+        ):
+            return False
+        if result.verifier_status != "verified":
+            return False
+        if result.request_digest != request.digest:
+            return False
+        game = request.game
+        if result.game_digest != game.digest:
+            return False
+        if (
+            type(result.pure_equilibria) is not tuple
+            or type(result.mixed_strategies) is not tuple
+            or not all(
+                isinstance(item, PureEquilibrium)
+                for item in result.pure_equilibria
+            )
+            or not all(
+                isinstance(item, MixedStrategy)
+                for item in result.mixed_strategies
+            )
+            or type(result.iterations) is not int
+            or not 0 <= result.iterations <= request.max_iterations
+        ):
+            return False
+
+        pure_equilibria = enumerate_pure_nash(game)
+        if result.pure_equilibria != pure_equilibria:
+            return False
+
+        if request.concept == "pure_nash" or (
+            request.concept == "auto" and pure_equilibria
+        ):
+            return (
+                result.status == "exact_verified"
+                and result.concept == "pure_nash"
+                and result.mixed_strategies == ()
+                and result.value_lower is None
+                and result.value_upper is None
+                and result.exploitability is None
+                and result.iterations == 0
+                and result.abstain_reason is None
+            )
+
+        if game.structure != "zero_sum" or len(game.players) != 2:
+            return (
+                result.status == "unsupported"
+                and result.concept == request.concept
+                and result.mixed_strategies == ()
+                and result.value_lower is None
+                and result.value_upper is None
+                and result.exploitability is None
+                and result.iterations == 0
+                and result.abstain_reason
+                == "mixed_general_sum_not_supported_in_v1"
+            )
+
+        if (
+            request.concept not in {"auto", "zero_sum_fictitious_play"}
+            or result.concept != "zero_sum_fictitious_play"
+            or result.iterations < 1
+        ):
+            return False
+        verification = verify_zero_sum_mixed_strategy(
+            game,
+            result.mixed_strategies,
+        )
+        if not _strategies_match_iteration_counts(
+            result.mixed_strategies,
+            result.iterations,
+        ):
+            return False
+        converged = (
+            verification.exploitability.as_fraction()
+            <= request.epsilon.as_fraction()
+        )
+        if not converged and result.iterations != request.max_iterations:
+            return False
+        return (
+            result.value_lower == verification.value_lower
+            and result.value_upper == verification.value_upper
+            and result.exploitability == verification.exploitability
+            and result.status
+            == ("epsilon_verified" if converged else "budget_exhausted")
+            and result.abstain_reason
+            == (None if converged else "epsilon_not_reached")
+        )
+    except (
+        AttributeError,
+        GameTheoryValidationError,
+        IndexError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+
 def verify_inverse_result(
     request: InverseGameRequest,
     result: InverseGameResult,
+    *,
+    require_verified: bool = False,
 ) -> bool:
     """Independently rederive finite-catalog inverse scores and identity."""
 
-    if result.request_digest != request.digest:
-        return False
-    regret_vectors: dict[str, tuple[Fraction, ...]] = {}
-    score_rows: list[HypothesisScore] = []
-    tolerance = request.regret_tolerance.as_fraction()
-    for hypothesis in request.hypotheses:
-        game = hypothesis.game
-        player_indexes = {
-            player_id: index for index, player_id in enumerate(game.players)
-        }
-        evaluator = UnilateralRegretEvaluator(game)
-        regrets = tuple(
-            evaluator.normalized_regret(
-                observation.joint_profile,
-                player_indexes[observation.acting_player],
+    try:
+        if not isinstance(request, InverseGameRequest) or not isinstance(
+            result, InverseGameResult
+        ):
+            return False
+        if not _has_canonical_result_metadata(
+            result,
+            assumptions=_INVERSE_ASSUMPTIONS,
+        ):
+            return False
+        if result.verifier_status not in {"pending", "verified"}:
+            return False
+        if require_verified and result.verifier_status != "verified":
+            return False
+        if (
+            result.request_digest != request.digest
+            or type(result.compatible_hypothesis_ids) is not tuple
+            or type(result.scores) is not tuple
+            or type(result.equivalence_classes) is not tuple
+            or not all(isinstance(score, HypothesisScore) for score in result.scores)
+            or not all(
+                type(group) is tuple for group in result.equivalence_classes
             )
-            for observation in request.observations
-        )
-        regret_vectors[hypothesis.hypothesis_id] = regrets
-        mean = sum(regrets, Fraction(0)) / len(regrets)
-        maximum = max(regrets)
-        score_rows.append(HypothesisScore(
-            hypothesis_id=hypothesis.hypothesis_id,
-            mean_regret=Rational.from_fraction(mean),
-            max_regret=Rational.from_fraction(maximum),
-            compatible=maximum <= tolerance,
+        ):
+            return False
+
+        regret_vectors: dict[str, tuple[Fraction, ...]] = {}
+        score_rows: list[HypothesisScore] = []
+        tolerance = request.regret_tolerance.as_fraction()
+        for hypothesis in request.hypotheses:
+            game = hypothesis.game
+            player_indexes = {
+                player_id: index for index, player_id in enumerate(game.players)
+            }
+            evaluator = UnilateralRegretEvaluator(game)
+            regrets = tuple(
+                evaluator.normalized_regret(
+                    observation.joint_profile,
+                    player_indexes[observation.acting_player],
+                )
+                for observation in request.observations
+            )
+            regret_vectors[hypothesis.hypothesis_id] = regrets
+            mean = sum(regrets, Fraction(0)) / len(regrets)
+            maximum = max(regrets)
+            score_rows.append(HypothesisScore(
+                hypothesis_id=hypothesis.hypothesis_id,
+                mean_regret=Rational.from_fraction(mean),
+                max_regret=Rational.from_fraction(maximum),
+                compatible=maximum <= tolerance,
+            ))
+
+        scores = tuple(sorted(
+            score_rows,
+            key=lambda score: (
+                score.mean_regret.as_fraction(),
+                score.max_regret.as_fraction(),
+                score.hypothesis_id,
+            ),
         ))
+        compatible = tuple(
+            score.hypothesis_id for score in scores if score.compatible
+        )
+        if not compatible:
+            identifiability = "inconsistent"
+        elif len(compatible) == 1:
+            identifiability = "catalog_identified"
+        elif len(compatible) < len(request.hypotheses):
+            identifiability = "set_identified"
+        else:
+            identifiability = "not_identified"
 
-    scores = tuple(sorted(
-        score_rows,
-        key=lambda score: (
-            score.mean_regret.as_fraction(),
-            score.max_regret.as_fraction(),
-            score.hypothesis_id,
-        ),
-    ))
-    compatible = tuple(
-        score.hypothesis_id for score in scores if score.compatible
-    )
-    if not compatible:
-        identifiability = "inconsistent"
-    elif len(compatible) == 1:
-        identifiability = "catalog_identified"
-    elif len(compatible) < len(request.hypotheses):
-        identifiability = "set_identified"
-    else:
-        identifiability = "not_identified"
+        grouped: defaultdict[tuple[Fraction, ...], list[str]] = defaultdict(list)
+        for hypothesis_id, vector in regret_vectors.items():
+            grouped[vector].append(hypothesis_id)
+        equivalence_classes = tuple(sorted(
+            (tuple(sorted(group)) for group in grouped.values()),
+            key=lambda group: group[0],
+        ))
+        return (
+            result.status == "exact_verified"
+            and result.identification_scope
+            == "finite_supplied_catalog_with_observed_opponents"
+            and result.identifiability == identifiability
+            and result.compatible_hypothesis_ids == compatible
+            and result.scores == scores
+            and result.equivalence_classes == equivalence_classes
+        )
+    except (
+        AttributeError,
+        GameTheoryValidationError,
+        IndexError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return False
 
-    grouped: defaultdict[tuple[Fraction, ...], list[str]] = defaultdict(list)
-    for hypothesis_id, vector in regret_vectors.items():
-        grouped[vector].append(hypothesis_id)
-    equivalence_classes = tuple(sorted(
-        (tuple(sorted(group)) for group in grouped.values()),
-        key=lambda group: group[0],
-    ))
+
+def _has_canonical_result_metadata(
+    result: ForwardGameResult | InverseGameResult,
+    *,
+    assumptions: tuple[str, ...],
+) -> bool:
     return (
-        result.status == "exact_verified"
-        and result.identification_scope
-        == "finite_supplied_catalog_with_observed_opponents"
-        and result.identifiability == identifiability
-        and result.compatible_hypothesis_ids == compatible
-        and result.scores == scores
-        and result.equivalence_classes == equivalence_classes
+        result.backend_id == BACKEND_ID
+        and result.backend_version == BACKEND_VERSION
         and result.advisory_only is True
         and result.runtime_authority_granted is False
         and result.external_writes_applied is False
+        and type(result.assumptions) is tuple
+        and result.assumptions == assumptions
+    )
+
+
+def _strategies_match_iteration_counts(
+    strategies: tuple[MixedStrategy, ...],
+    iterations: int,
+) -> bool:
+    return all(
+        (probability.as_fraction() * iterations).denominator == 1
+        for strategy in strategies
+        for _, probability in strategy.probabilities
     )
 
 

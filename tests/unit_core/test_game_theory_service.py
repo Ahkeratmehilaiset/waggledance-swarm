@@ -1,6 +1,7 @@
 """Forward game-theory contract and verifier coverage."""
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from fractions import Fraction
 
@@ -245,3 +246,37 @@ def test_magma_summary_rejects_a_different_forward_request() -> None:
 
     with pytest.raises(GameTheoryValidationError, match="digest mismatch"):
         result.magma_summary(altered)
+
+
+def test_magma_summary_rejects_forged_verified_forward_result() -> None:
+    game = _matching_pennies()
+    request = ForwardGameRequest(
+        game,
+        concept="zero_sum_fictitious_play",
+        max_iterations=10,
+    )
+    result = BoundedGameTheoryService().solve_forward(request)
+    forged_strategy = MixedStrategy(
+        player_id=game.players[0],
+        probabilities=(
+            (game.actions[0][0], Rational(2)),
+            (game.actions[0][1], Rational(-1)),
+        ),
+    )
+    forged = replace(
+        result,
+        mixed_strategies=(forged_strategy, result.mixed_strategies[1]),
+        verifier_status="verified",
+    )
+
+    with pytest.raises(GameTheoryValidationError, match="verification failed"):
+        forged.magma_summary(request)
+
+
+def test_magma_summary_rejects_mutable_forward_result_collections() -> None:
+    request = ForwardGameRequest(_matching_pennies(), concept="pure_nash")
+    result = BoundedGameTheoryService().solve_forward(request)
+    forged = replace(result, pure_equilibria=list(result.pure_equilibria))
+
+    with pytest.raises(GameTheoryValidationError, match="verification failed"):
+        forged.magma_summary(request)

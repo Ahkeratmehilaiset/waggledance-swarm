@@ -311,3 +311,33 @@ def test_inverse_magma_summary_rejects_a_different_request() -> None:
 
     with pytest.raises(GameTheoryValidationError, match="digest mismatch"):
         result.magma_summary(altered)
+
+
+def test_inverse_magma_summary_rejects_forged_verified_result() -> None:
+    request = InverseGameRequest(
+        hypotheses=(GameHypothesis("candidate", _game(cooperative=True)),),
+        observations=_observations(),
+    )
+    result = BoundedGameTheoryService().infer_inverse(request)
+    forged = replace(
+        result,
+        compatible_hypothesis_ids=("not-in-catalog",),
+        scores=(),
+        equivalence_classes=(),
+        verifier_status="verified",
+    )
+
+    with pytest.raises(GameTheoryValidationError, match="verification failed"):
+        forged.magma_summary(request)
+
+
+def test_inverse_magma_summary_rejects_mutable_result_collections() -> None:
+    request = InverseGameRequest(
+        hypotheses=(GameHypothesis("candidate", _game(cooperative=True)),),
+        observations=_observations(),
+    )
+    result = BoundedGameTheoryService().infer_inverse(request)
+    forged = replace(result, scores=list(result.scores))
+
+    with pytest.raises(GameTheoryValidationError, match="verification failed"):
+        forged.magma_summary(request)

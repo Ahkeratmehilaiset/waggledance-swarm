@@ -387,6 +387,10 @@ class ForwardGameResult:
         game = request.game
         if game.digest != self.game_digest:
             raise GameTheoryValidationError("forward game digest mismatch")
+        from waggledance.core.game_theory_verifier import verify_forward_result
+
+        if not verify_forward_result(request, self):
+            raise GameTheoryValidationError("forward result verification failed")
         strategy_payload = {
             "pure_equilibria": [
                 item.to_mapping() for item in self.pure_equilibria
@@ -609,6 +613,10 @@ class InverseGameResult:
     def magma_summary(self, request: InverseGameRequest) -> dict[str, Any]:
         if request.digest != self.request_digest:
             raise GameTheoryValidationError("inverse request digest mismatch")
+        from waggledance.core.game_theory_verifier import verify_inverse_result
+
+        if not verify_inverse_result(request, self, require_verified=True):
+            raise GameTheoryValidationError("inverse result verification failed")
         return {
             "schema_version": SCHEMA_VERSION,
             "operation": "inverse_game_theory",

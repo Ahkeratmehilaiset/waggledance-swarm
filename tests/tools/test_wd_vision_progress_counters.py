@@ -12,7 +12,10 @@ from tools.build_wd_vision_progress_counters import (
     SCHEMA_VERSION,
     build_vision_progress_counters,
 )
-from tools.wd_image1_capability_manifest import build_manifest
+from tools.wd_image1_capability_manifest import (
+    build_canonical_target,
+    build_manifest,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,7 +107,18 @@ def test_build_counters_from_manifest_without_claim_mutation() -> None:
 
     assert counters["schema_version"] == SCHEMA_VERSION
     assert counters["ok"] is True
+    assert counters["capability_counters_ok"] is True
     assert counters["blockers"] == []
+    assert counters["canonical_target_contract"] == {
+        "present": False,
+        "status": "legacy_missing",
+        "ok": False,
+        "blockers": ["canonical_target_missing"],
+        "contract_version": None,
+        "target_id": None,
+        "routine_user_actions_required_target": None,
+        "authority_boundary_enforced": False,
+    }
     assert counters["generated_at_utc"] == "2026-06-05T18:40:00Z"
     assert counters["summary"]["capability_count"] == 3
     assert counters["summary"]["claim_safe_count"] == 1
@@ -202,6 +216,18 @@ def test_receipt_claim_gate_uses_same_condition_for_value_and_satisfied() -> Non
 def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:
     counters = build_vision_progress_counters(build_manifest(ROOT))
 
+    assert counters["ok"] is True
+    assert counters["capability_counters_ok"] is True
+    assert counters["canonical_target_contract"] == {
+        "present": True,
+        "status": "valid",
+        "ok": True,
+        "blockers": [],
+        "contract_version": "wd.zero_touch_collective_solver_target.v1",
+        "target_id": "zero_touch_collective_solver_swarm",
+        "routine_user_actions_required_target": 0,
+        "authority_boundary_enforced": True,
+    }
     assert counters["source_schema_version"] == "wd_image1_capability_manifest.v1"
     assert counters["summary"]["capability_count"] == 6
     assert counters["summary"]["status_counts"] == {
@@ -264,6 +290,34 @@ def test_current_manifest_counters_do_not_upgrade_image_claims() -> None:
     assert (
         counters["milestone_counters"]["future_claim_gate_satisfied"]["satisfied"]
         is False
+    )
+
+
+def test_present_forged_canonical_target_fails_closed_without_claim_upgrade() -> None:
+    manifest = _minimal_manifest()
+    manifest["canonical_target"] = build_canonical_target()
+    manifest["canonical_target"]["authority_boundary"][
+        "self_expands_authority"
+    ] = True
+
+    counters = build_vision_progress_counters(manifest)
+
+    assert counters["ok"] is False
+    assert counters["capability_counters_ok"] is True
+    assert counters["canonical_target_contract"]["status"] == "invalid"
+    assert counters["canonical_target_contract"]["ok"] is False
+    assert counters["canonical_target_contract"][
+        "authority_boundary_enforced"
+    ] is False
+    assert "canonical_target_contract_mismatch" in counters["blockers"]
+    assert (
+        "canonical_target_authority_boundary_not_enforced"
+        in counters["blockers"]
+    )
+    assert counters["summary"]["claim_safe_count"] == 0
+    assert counters["summary"]["all_literal_claims_safe"] is False
+    assert all(
+        panel["claim_safe"] is False for panel in counters["panel_counters"]
     )
 
 

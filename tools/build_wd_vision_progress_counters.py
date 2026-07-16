@@ -22,7 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.wd_image1_capability_manifest import build_manifest  # noqa: E402
+from tools.wd_image1_capability_manifest import (  # noqa: E402
+    build_canonical_target,
+    build_manifest,
+)
 
 
 SCHEMA_VERSION = "wd_image1_vision_progress_counters.v1"
@@ -43,8 +46,17 @@ def build_vision_progress_counters(
 ) -> dict[str, Any]:
     """Build stable operator counters from a capability manifest mapping."""
 
-    blockers = _manifest_blockers(manifest)
+    capability_blockers = _manifest_blockers(manifest)
     manifest_mapping = manifest if isinstance(manifest, Mapping) else {}
+    canonical_target_contract = _canonical_target_contract_status(
+        manifest_mapping
+    )
+    target_blockers = (
+        canonical_target_contract["blockers"]
+        if canonical_target_contract["present"]
+        else []
+    )
+    blockers = [*capability_blockers, *target_blockers]
     raw_capabilities = manifest_mapping.get("capabilities", [])
     capabilities = (
         [item for item in raw_capabilities if isinstance(item, Mapping)]
@@ -75,7 +87,7 @@ def build_vision_progress_counters(
         ]
 
     panel_counters = [
-        _capability_counter(capability)
+        _capability_counter(capability, claims_valid=not blockers)
         for capability in capabilities
     ]
     milestone_counters = _milestone_counters(panel_counters)
@@ -85,7 +97,9 @@ def build_vision_progress_counters(
         "generated_at_utc": generated_at_utc or _utc_now(),
         "source_schema_version": manifest_mapping.get("schema_version"),
         "ok": not blockers,
+        "capability_counters_ok": not capability_blockers,
         "blockers": blockers,
+        "canonical_target_contract": canonical_target_contract,
         "summary": {
             "capability_count": capability_count,
             "status_counts": status_counts,
@@ -121,7 +135,11 @@ def build_vision_progress_counters(
     }
 
 
-def _capability_counter(capability: Mapping[str, Any]) -> dict[str, Any]:
+def _capability_counter(
+    capability: Mapping[str, Any],
+    *,
+    claims_valid: bool = True,
+) -> dict[str, Any]:
     capability_id = str(capability.get("capability_id") or "unknown")
     proof = capability.get("proof")
     proof = proof if isinstance(proof, Mapping) else {}
@@ -129,7 +147,7 @@ def _capability_counter(capability: Mapping[str, Any]) -> dict[str, Any]:
         "capability_id": capability_id,
         "panel": CAPABILITY_PANEL_ORDER.get(capability_id),
         "status": str(capability.get("status") or "unknown"),
-        "claim_safe": capability.get("claim_safe") is True,
+        "claim_safe": claims_valid and capability.get("claim_safe") is True,
         "proof_ok": _proof_ok(capability),
         "evidence_present_count": _evidence_present_count(capability),
         "evidence_total_count": _evidence_total_count(capability),
@@ -1945,6 +1963,67 @@ def _manifest_blockers(manifest: Any) -> list[str]:
         if not isinstance(evidence, list):
             blockers.append(f"{prefix}_evidence_not_list")
     return blockers
+
+
+def _canonical_target_contract_status(
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the additive target contract without breaking legacy v1 input."""
+
+    target = manifest.get("canonical_target")
+    if target is None:
+        return {
+            "present": False,
+            "status": "legacy_missing",
+            "ok": False,
+            "blockers": ["canonical_target_missing"],
+            "contract_version": None,
+            "target_id": None,
+            "routine_user_actions_required_target": None,
+            "authority_boundary_enforced": False,
+        }
+    if not isinstance(target, Mapping):
+        return {
+            "present": True,
+            "status": "invalid",
+            "ok": False,
+            "blockers": ["canonical_target_not_mapping"],
+            "contract_version": None,
+            "target_id": None,
+            "routine_user_actions_required_target": None,
+            "authority_boundary_enforced": False,
+        }
+
+    expected = build_canonical_target()
+    blockers: list[str] = []
+    if target.get("contract_version") != expected["contract_version"]:
+        blockers.append("canonical_target_unexpected_contract_version")
+    if dict(target) != expected:
+        blockers.append("canonical_target_contract_mismatch")
+
+    authority = target.get("authority_boundary")
+    authority = authority if isinstance(authority, Mapping) else {}
+    authority_boundary_enforced = (
+        authority.get("self_expands_authority") is False
+        and authority.get("does_not_grant_runtime_authority") is True
+        and authority.get("does_not_flip_claim_safe") is True
+    )
+    if not authority_boundary_enforced:
+        blockers.append("canonical_target_authority_boundary_not_enforced")
+
+    ok = not blockers
+    return {
+        "present": True,
+        "status": "valid" if ok else "invalid",
+        "ok": ok,
+        "blockers": blockers,
+        "contract_version": target.get("contract_version"),
+        "target_id": target.get("target_id"),
+        "routine_user_actions_required_target": target.get(
+            "routine_user_actions_required_target"
+        ),
+        "authority_boundary_enforced": authority_boundary_enforced,
+    }
 
 
 def _proof_ok(capability: Mapping[str, Any]) -> bool:

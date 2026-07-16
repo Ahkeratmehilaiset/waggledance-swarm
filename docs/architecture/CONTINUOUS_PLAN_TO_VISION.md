@@ -1,5 +1,10 @@
 # Continuous Plan to Vision — storyboard WaggleDance, consensus-gated
 
+> **Historical plan:** retain this file as the 2026-05-29 authorization and
+> backlog record. `WD_PRODUCTION_CONVERGENCE_PLAN_V1.md` supersedes its
+> current-state claims and execution order. In particular, panels 1-3 are not
+> production-complete while `production_safe_capability_count=0/6`.
+
 **Status:** operator-authorized 2026-05-29 (plan approval).
 **Authorization source:** operator directive 2026-05-29 — build the full system
 shown in the `WaggleDanceSwarmAi.png` storyboard (not just substrate/shadow),
@@ -10,18 +15,20 @@ without per-action operator queries; approvals via bridge consensus.
 
 ## Purpose
 
-This is the tracked, versioned backlog the three bridge agents poll each idle
-round (via `tools/agent_next_task.py`) to drive WaggleDance from its current
-state to the storyboard end-state. It complements `DREAM_MODE_AGENDA.md` (which
-keeps idle rounds on strategy) with an explicit gap-closing track structure and
-per-panel definition-of-done.
+This was the original tracked, versioned backlog for driving WaggleDance toward
+the storyboard end-state. `tools/agent_next_task.py` currently selects Dream
+candidates and does not schedule the production critical path. Until a
+dedicated picker is wired, the lead/operator-owned bridge task queue schedules
+P0/P1 from `WD_PRODUCTION_CONVERGENCE_PLAN_V1.md`; Dream work uses only surplus
+capacity.
 
-## Where we are vs. the storyboard (honest gap, refreshed 2026-06-07)
+## Historical 2026-06-07 storyboard snapshot (superseded)
 
-The codebase is **ahead of the image's "v3.8.0" caption — it is v3.12.0 /
-v3.13.0**. Panels 1–3 are essentially done; the frontier is panel 4 flowing
-into the panel 5–6 "future". The dominant remaining gap is **substrate/shadow →
-runtime activation**, plus closing the V12 learning loop.
+At the time, this plan described the codebase as ahead of the image's "v3.8.0"
+caption and treated panels 1-3 as essentially done. That assessment is retained
+only as history. Current machine truth and production status are defined by
+`WD_PRODUCTION_CONVERGENCE_PLAN_V1.md`; no panel is production-complete while
+`production_safe_capability_count=0/6`.
 
 | Storyboard element | Roadmap chip | Status | Evidence |
 |---|---|---|---|

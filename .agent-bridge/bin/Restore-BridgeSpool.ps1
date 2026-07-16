@@ -192,7 +192,12 @@ function Test-BridgeEventShape {
 
     if (-not (Test-BridgeObject -Value $EventObject)) { return $false }
 
-    foreach ($fieldName in @('ts_utc', 'agent', 'type', 'task_id', 'status')) {
+    # These fields are unconditional in Write-AgentEvent.ps1. Requiring them
+    # here prevents replay from becoming a weaker alternate writer path.
+    foreach ($fieldName in @(
+        'ts_utc', 'agent', 'type', 'task_id', 'status', 'severity', 'to',
+        'message', 'run_id', 'cwd'
+    )) {
         $property = $EventObject.PSObject.Properties[$fieldName]
         if ($null -eq $property -or -not ($property.Value -is [string])) {
             return $false
@@ -214,30 +219,33 @@ function Test-BridgeEventShape {
 
     if ($knownEventTypes -cnotcontains [string]$EventObject.type) { return $false }
 
-    foreach ($fieldName in @(
-        'severity', 'to', 'message', 'run_id', 'cwd', 'role',
-        'agent_uuid', 'session_id'
-    )) {
+    foreach ($fieldName in @('role', 'agent_uuid', 'session_id')) {
         $property = $EventObject.PSObject.Properties[$fieldName]
         if ($null -ne $property -and -not ($property.Value -is [string])) {
             return $false
         }
     }
 
-    foreach ($fieldName in @('paths', 'write_scope', 'capabilities')) {
+    foreach ($fieldName in @('paths', 'write_scope')) {
         $property = $EventObject.PSObject.Properties[$fieldName]
-        if ($null -ne $property -and -not (Test-BridgeStringArray -Value $property.Value)) {
+        if ($null -eq $property -or -not (Test-BridgeStringArray -Value $property.Value)) {
             return $false
         }
     }
 
+    $capabilitiesProperty = $EventObject.PSObject.Properties['capabilities']
+    if (
+        $null -ne $capabilitiesProperty -and
+        -not (Test-BridgeStringArray -Value $capabilitiesProperty.Value)
+    ) { return $false }
+
     $payloadProperty = $EventObject.PSObject.Properties['payload']
-    if ($null -ne $payloadProperty -and -not (Test-BridgeObject -Value $payloadProperty.Value)) {
+    if ($null -eq $payloadProperty -or -not (Test-BridgeObject -Value $payloadProperty.Value)) {
         return $false
     }
 
     $pidProperty = $EventObject.PSObject.Properties['pid']
-    if ($null -ne $pidProperty -and -not (
+    if ($null -eq $pidProperty -or -not (
         $pidProperty.Value -is [byte] -or
         $pidProperty.Value -is [int16] -or
         $pidProperty.Value -is [int32] -or

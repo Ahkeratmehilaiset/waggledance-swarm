@@ -16,6 +16,42 @@ function Add-Check {
     else { Write-Host "  FAIL $Name :: $Detail" -ForegroundColor Red; $script:failures++ }
 }
 
+function New-SmokeEventJson {
+    param(
+        [string] $Timestamp = '2026-07-02T10:00:00Z',
+        [string] $Agent = 'fable-5',
+        [string] $Type = 'message',
+        [string] $TaskId = 'spool-replay-smoke',
+        [AllowNull()] [object] $Status = 'info',
+        [string] $Message = 'recovered',
+        [AllowNull()] [object[]] $Paths = @(),
+        [AllowNull()] [object[]] $WriteScope = @(),
+        [int] $EventPid = 1234,
+        [AllowNull()] [object] $Payload = ([ordered]@{}),
+        [string[]] $Omit = @()
+    )
+    $eventObject = [ordered]@{
+        ts_utc = $Timestamp
+        agent = $Agent
+        type = $Type
+        task_id = $TaskId
+        status = $Status
+        severity = ''
+        to = ''
+        message = $Message
+        paths = @($Paths)
+        write_scope = @($WriteScope)
+        run_id = 'spool-replay-smoke-run'
+        pid = $EventPid
+        cwd = 'C:\bridge-spool-smoke'
+        payload = $Payload
+    }
+    foreach ($fieldName in $Omit) {
+        [void]$eventObject.Remove($fieldName)
+    }
+    return ($eventObject | ConvertTo-Json -Compress -Depth 10)
+}
+
 $tempRoot = Join-Path $env:TEMP "bridge-spool-replay-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $replayScript = Join-Path $PSScriptRoot 'Restore-BridgeSpool.ps1'
 
@@ -30,7 +66,7 @@ try {
     Add-Check -Name 'empty spool is a no-op' -Passed ($out -match 'nothing to replay')
 
     # 2. A valid spooled event replays into the shared log and archives
-    $event = '{"ts_utc":"2026-07-02T10:00:00Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"recovered"}'
+    $event = New-SmokeEventJson
     $spoolFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-fable-5-20260702T100000000-1234.jsonl'
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
 
@@ -61,11 +97,12 @@ try {
     #    append (rco-2 #1483 finding 1: the caller-retried-and-succeeded case;
     #    retry copies differ by ts_utc, so the dedup key is semantic).
     Remove-Item -LiteralPath $badFile -Force
-    $retryCopy = '{"ts_utc":"2026-07-02T10:00:05Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}'
+    $retryCopy = New-SmokeEventJson -Timestamp '2026-07-02T10:00:05Z' -Message 'dup-signal'
     Add-Content -LiteralPath $eventsPath -Value $retryCopy -Encoding UTF8
     $dupSpool = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-fable-5-20260702T100001000-77.jsonl'
     # The spooled FAILED attempt: same signal, OLDER ts + different pid.
-    Set-Content -LiteralPath $dupSpool -Value '{"ts_utc":"2026-07-02T10:00:01Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}' -Encoding UTF8 -NoNewline
+    $spooledRetry = New-SmokeEventJson -Timestamp '2026-07-02T10:00:01Z' -Message 'dup-signal' -EventPid 77
+    Set-Content -LiteralPath $dupSpool -Value $spooledRetry -Encoding UTF8 -NoNewline
     $before = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     $out = & $replayScript -BridgeRoot $tempRoot
     $after = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
@@ -76,14 +113,53 @@ try {
 
     # 6. Spool line missing core fields (no agent) is skipped and kept
     $noAgent = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-x-20260702T120000000-5.jsonl'
-    Set-Content -LiteralPath $noAgent -Value '{"ts_utc":"2026-07-02T12:00:00Z","type":"message","task_id":"t","status":"info"}' -Encoding UTF8 -NoNewline
+    $missingAgent = New-SmokeEventJson -Timestamp '2026-07-02T12:00:00Z' -TaskId 't' -Omit @('agent')
+    Set-Content -LiteralPath $noAgent -Value $missingAgent -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot 3>$null
     Add-Check -Name 'missing-core-field line skipped and kept' -Passed (
         ($out -match 'failed=1') -and (Test-Path -LiteralPath $noAgent)
     )
     Remove-Item -LiteralPath $noAgent -Force
 
-    # 7. Concurrent replay guard exits without consuming spool files.
+    # 7. Schema-invalid JSON objects are rejected before append/archive.
+    $invalidCases = [ordered]@{
+        'null-payload' = New-SmokeEventJson -TaskId 'bad-null-payload' -Payload $null
+        'bad-ts' = New-SmokeEventJson -Timestamp '2026-07-09T12.34.00.4267792Z' -TaskId 'bad-ts'
+        'unknown-type' = New-SmokeEventJson -Type 'not_a_bridge_event' -TaskId 'bad-type'
+        'non-scalar-status' = New-SmokeEventJson -TaskId 'bad-status' -Status ([ordered]@{ nested = $true })
+        'non-string-path' = New-SmokeEventJson -TaskId 'bad-path' -Paths @(42)
+    }
+    $requiredWriterFields = @(
+        'severity', 'to', 'message', 'paths', 'write_scope', 'run_id', 'pid',
+        'cwd', 'payload'
+    )
+    foreach ($fieldName in $requiredWriterFields) {
+        $invalidCases["missing-$fieldName"] = New-SmokeEventJson `
+            -TaskId "missing-$fieldName" -Omit @($fieldName)
+    }
+    $invalidFiles = @()
+    $invalidIndex = 0
+    foreach ($caseName in $invalidCases.Keys) {
+        $invalidIndex++
+        $invalidPath = Join-Path (Join-Path $tempRoot 'spool') (
+            'failed-append-schema-{0:D2}-{1}.jsonl' -f $invalidIndex, $caseName
+        )
+        Set-Content -LiteralPath $invalidPath -Value $invalidCases[$caseName] -Encoding UTF8 -NoNewline
+        $invalidFiles += $invalidPath
+    }
+    $before = (Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8)
+    $out = & $replayScript -BridgeRoot $tempRoot 3>$null
+    $after = (Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8)
+    Add-Check -Name 'schema-invalid rows skipped and kept' -Passed (
+        ($out -match "replayed=0 deduped=0 failed=$($invalidCases.Count)") -and
+        (@($invalidFiles | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $invalidCases.Count) -and
+        ($before -eq $after)
+    ) -Detail "out=$out"
+    foreach ($invalidPath in $invalidFiles) {
+        Remove-Item -LiteralPath $invalidPath -Force
+    }
+
+    # 8. Concurrent replay guard exits without consuming spool files.
     $guardFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-guard-20260702T130000000-6.jsonl'
     Set-Content -LiteralPath $guardFile -Value $event -Encoding UTF8 -NoNewline
     $guardMutex = $null
@@ -107,18 +183,18 @@ try {
     }
     Remove-Item -LiteralPath $guardFile -Force -ErrorAction SilentlyContinue
 
-    # 8. DryRun neither appends nor archives
+    # 9. DryRun neither appends nor archives
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (
         (($out -match 'would archive as duplicate') -or ($out -match 'would replay')) -and (Test-Path -LiteralPath $spoolFile)
     )
 
-    # 8. A large dedup scan must not deny concurrent bridge writers. The
+    # 10. A large dedup scan must not deny concurrent bridge writers. The
     # production events log is large enough for a File.ReadLines scan to hold
     # a deny-write handle for many seconds, spooling every live event.
     Remove-Item -LiteralPath $spoolFile -Force
-    $bulkEvent = '{"ts_utc":"2026-07-02T10:00:00Z","agent":"fable-5","type":"message","task_id":"bulk","status":"info","message":"existing"}'
+    $bulkEvent = New-SmokeEventJson -TaskId 'bulk' -Message 'existing'
     $bulkWriter = New-Object System.IO.StreamWriter($eventsPath, $false, (New-Object System.Text.UTF8Encoding($false)))
     try {
         for ($i = 0; $i -lt 25000; $i++) { $bulkWriter.WriteLine($bulkEvent) }
@@ -126,7 +202,9 @@ try {
         $bulkWriter.Dispose()
     }
     $concurrentSpool = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-codex-tools-1-20260702T130000000-8.jsonl'
-    Set-Content -LiteralPath $concurrentSpool -Value '{"ts_utc":"2026-07-02T13:00:00Z","agent":"codex-tools-1","type":"message","task_id":"concurrent-replay","status":"info","message":"replay"}' -Encoding UTF8 -NoNewline
+    $concurrentEvent = New-SmokeEventJson -Timestamp '2026-07-02T13:00:00Z' `
+        -Agent 'codex-tools-1' -TaskId 'concurrent-replay' -Message 'replay' -EventPid 8
+    Set-Content -LiteralPath $concurrentSpool -Value $concurrentEvent -Encoding UTF8 -NoNewline
 
     $job = Start-Job -ScriptBlock {
         param($ScriptPath, $Root)
@@ -154,7 +232,8 @@ try {
     $concurrentAppendOk = $false
     if ($readerObserved) {
         try {
-            $liveEvent = '{"ts_utc":"2026-07-02T13:00:01Z","agent":"fable-5","type":"message","task_id":"concurrent-live","status":"info","message":"live"}' + [Environment]::NewLine
+            $liveEvent = (New-SmokeEventJson -Timestamp '2026-07-02T13:00:01Z' `
+                -TaskId 'concurrent-live' -Message 'live') + [Environment]::NewLine
             [System.IO.File]::AppendAllText($eventsPath, $liveEvent, (New-Object System.Text.UTF8Encoding($false)))
             $concurrentAppendOk = $true
         } catch [System.IO.IOException] {}
@@ -168,16 +247,19 @@ try {
         (-not (Test-Path -LiteralPath $concurrentSpool))
     ) -Detail "readerObserved=$readerObserved appendOk=$concurrentAppendOk out=$jobOut"
 
-    # 9. A live retry that lands after the historical scan but before its
+    # 11. A live retry that lands after the historical scan but before its
     # spool file is processed must still dedup atomically (post-scan TOCTOU).
     $replayedDir = Join-Path (Join-Path $tempRoot 'spool') 'replayed'
     $archiveCountBefore = @(Get-ChildItem -LiteralPath $replayedDir -File).Count
     for ($i = 0; $i -lt 150; $i++) {
         $fillerPath = Join-Path (Join-Path $tempRoot 'spool') ('failed-append-race-a-{0:D4}-1.jsonl' -f $i)
-        $filler = ('{{"ts_utc":"2026-07-02T14:00:00Z","agent":"fable-5","type":"message","task_id":"race-filler-{0:D4}","status":"info","message":"filler"}}' -f $i)
+        $filler = New-SmokeEventJson -Timestamp '2026-07-02T14:00:00Z' `
+            -TaskId ('race-filler-{0:D4}' -f $i) -Message 'filler' -EventPid 1
         [System.IO.File]::WriteAllText($fillerPath, $filler, (New-Object System.Text.UTF8Encoding($false)))
     }
-    $raceTarget = '{"ts_utc":"2026-07-02T14:00:01Z","agent":"fable-5","type":"decision","task_id":"postscan-race-target","status":"rco_pass","message":"same semantic signal"}'
+    $raceTarget = New-SmokeEventJson -Timestamp '2026-07-02T14:00:01Z' `
+        -Type 'decision' -TaskId 'postscan-race-target' -Status 'rco_pass' `
+        -Message 'same semantic signal'
     $raceSpool = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-race-z-target-1.jsonl'
     [System.IO.File]::WriteAllText($raceSpool, $raceTarget, (New-Object System.Text.UTF8Encoding($false)))
 

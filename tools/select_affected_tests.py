@@ -71,6 +71,9 @@ EXPLICIT_AFFECTED_TESTS: dict[str, frozenset[str]] = {
     "tools/run_low_risk_autogrowth_real_loop_proof.py": frozenset(
         {"tests/test_low_risk_autogrowth_real_loop_proof.py"}
     ),
+    "tools/run_chat_first_hop_corpus.py": frozenset(
+        {"tests/tools/test_chat_first_hop_corpus.py"}
+    ),
     "waggledance/core/hex_topology/parent_child_relations.py": frozenset(
         {"tests/test_ring_messaging_hierarchy_proof.py"}
     ),

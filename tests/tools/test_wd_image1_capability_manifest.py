@@ -3613,7 +3613,7 @@ def test_chat_served_claim_window_missing_ledger_is_unavailable() -> None:
     assert aggregate["production_representativeness_claimed"] is False
 
 
-def test_chat_served_claim_window_evidence_inputs_drive_safe_aggregate(tmp_path) -> None:
+def test_chat_served_legacy_evidence_inputs_remain_ineligible(tmp_path) -> None:
     from waggledance.core.magma import chat_served_ledger as L
     from waggledance.core.magma.chat_served_accounting import (
         REQUIRED_CHAT_SERVED_POINTS,
@@ -3668,15 +3668,16 @@ def test_chat_served_claim_window_evidence_inputs_drive_safe_aggregate(tmp_path)
     )
 
     assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
-    assert aggregate["claim_window_eligible"] is True
+    assert aggregate["claim_window_eligible"] is False
     assert aggregate["input_evidence_derived"] is True
     assert aggregate["claim_safe"] is False
+    assert aggregate["reason"] == "lifecycle_binding_missing"
     blob = json.dumps(aggregate)
     assert "sha256:" not in blob
     assert str(tmp_path) not in blob
 
 
-def test_chat_served_claim_window_env_evidence_inputs_drive_safe_aggregate(
+def test_chat_served_legacy_env_evidence_inputs_remain_ineligible(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -3755,9 +3756,10 @@ def test_chat_served_claim_window_env_evidence_inputs_drive_safe_aggregate(
     aggregate = build_chat_served_claim_window_aggregate()
 
     assert set(aggregate) == set(_CHAT_SERVED_CLAIM_WINDOW_SAFE_KEYS)
-    assert aggregate["claim_window_eligible"] is True
+    assert aggregate["claim_window_eligible"] is False
     assert aggregate["input_evidence_derived"] is True
     assert aggregate["claim_safe"] is False
+    assert aggregate["reason"] == "lifecycle_binding_missing"
     assert aggregate["measurement_not_a_correctness_gate"] is True
     assert aggregate["production_representativeness_claimed"] is False
     blob = json.dumps(aggregate)

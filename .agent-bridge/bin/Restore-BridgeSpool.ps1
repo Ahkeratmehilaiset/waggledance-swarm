@@ -44,6 +44,11 @@ if (-not $BridgeRoot) {
 $spoolDir   = Join-Path $BridgeRoot 'spool'
 $eventsPath = Join-Path (Join-Path $BridgeRoot 'shared') 'events.jsonl'
 $archiveDir = Join-Path $spoolDir 'replayed'
+$knownEventTypes = @(
+    'status', 'intent', 'claim', 'release', 'message', 'finding',
+    'decision', 'test', 'blocked', 'handoff', 'done', 'heartbeat',
+    'wake_request', 'liveness'
+)
 
 if (-not (Test-Path -LiteralPath $spoolDir -PathType Container)) {
     Write-Output 'no spool directory; nothing to replay'
@@ -252,6 +257,104 @@ function Add-UniqueLinesWithMutex {
     }
 }
 
+function Test-BridgeObject {
+    param([AllowNull()] $Value)
+    return (
+        $null -ne $Value -and
+        (
+            $Value -is [System.Management.Automation.PSCustomObject] -or
+            $Value -is [System.Collections.IDictionary]
+        )
+    )
+}
+
+function ConvertFrom-BridgeJson {
+    param([Parameter(Mandatory)] [string] $Json)
+    # PowerShell 7.5+ otherwise converts ISO timestamps to DateTime using the
+    # local timezone, which destroys the original offset before validation.
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        return ($Json | ConvertFrom-Json -DateKind String -ErrorAction Stop)
+    }
+    return ($Json | ConvertFrom-Json -ErrorAction Stop)
+}
+
+function Test-BridgeStringArray {
+    param([AllowNull()] $Value)
+    if (-not ($Value -is [array])) { return $false }
+    foreach ($item in @($Value)) {
+        if (-not ($item -is [string])) { return $false }
+    }
+    return $true
+}
+
+function Test-BridgeEventShape {
+    param([AllowNull()] $EventObject)
+
+    if (-not (Test-BridgeObject -Value $EventObject)) { return $false }
+
+    # These fields are unconditional in Write-AgentEvent.ps1. Requiring them
+    # here prevents replay from becoming a weaker alternate writer path.
+    foreach ($fieldName in @(
+        'ts_utc', 'agent', 'type', 'task_id', 'status', 'severity', 'to',
+        'message', 'run_id', 'cwd'
+    )) {
+        $property = $EventObject.PSObject.Properties[$fieldName]
+        if ($null -eq $property -or -not ($property.Value -is [string])) {
+            return $false
+        }
+    }
+
+    $timestamp = [string]$EventObject.ts_utc
+    if ($timestamp -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)$') {
+        return $false
+    }
+    $parsedTimestamp = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        $timestamp,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$parsedTimestamp
+    )) { return $false }
+    if ($parsedTimestamp.Offset -ne [TimeSpan]::Zero) { return $false }
+
+    if ($knownEventTypes -cnotcontains [string]$EventObject.type) { return $false }
+
+    foreach ($fieldName in @('role', 'agent_uuid', 'session_id')) {
+        $property = $EventObject.PSObject.Properties[$fieldName]
+        if ($null -ne $property -and -not ($property.Value -is [string])) {
+            return $false
+        }
+    }
+
+    foreach ($fieldName in @('paths', 'write_scope')) {
+        $property = $EventObject.PSObject.Properties[$fieldName]
+        if ($null -eq $property -or -not (Test-BridgeStringArray -Value $property.Value)) {
+            return $false
+        }
+    }
+
+    $capabilitiesProperty = $EventObject.PSObject.Properties['capabilities']
+    if (
+        $null -ne $capabilitiesProperty -and
+        -not (Test-BridgeStringArray -Value $capabilitiesProperty.Value)
+    ) { return $false }
+
+    $payloadProperty = $EventObject.PSObject.Properties['payload']
+    if ($null -eq $payloadProperty -or -not (Test-BridgeObject -Value $payloadProperty.Value)) {
+        return $false
+    }
+
+    $pidProperty = $EventObject.PSObject.Properties['pid']
+    if ($null -eq $pidProperty -or -not (
+        $pidProperty.Value -is [byte] -or
+        $pidProperty.Value -is [int16] -or
+        $pidProperty.Value -is [int32] -or
+        $pidProperty.Value -is [int64]
+    )) { return $false }
+
+    return $true
+}
+
 try {
     # Capture a newline-aligned cursor while canonical writers are excluded.
     # The long historical scan remains shared; each later append refreshes only
@@ -306,20 +409,18 @@ try {
             }
             continue
         }
-        # Fail-closed shape check (rco-2 finding 2: mirror the reader guard) -
-        # every line must be a JSON object carrying the writer's core fields.
+        # Fail closed before a spooled row can bypass the canonical writer's
+        # timestamp, event-type, payload, and scalar/array shape guarantees.
         $ok = $true
         $parsedLines = @()
         foreach ($line in ($raw -split "`r?`n" | Where-Object { $_ })) {
             try {
-                $obj = $line | ConvertFrom-Json -ErrorAction Stop
-                if (
-                    $null -eq $obj -or
-                    $null -eq $obj.PSObject.Properties['type'] -or
-                    $null -eq $obj.PSObject.Properties['agent'] -or
-                    $null -eq $obj.PSObject.Properties['task_id'] -or
-                    $null -eq $obj.PSObject.Properties['status']
-                ) { $ok = $false } else { $parsedLines += [pscustomobject]@{ Line = $line; Obj = $obj } }
+                $obj = ConvertFrom-BridgeJson -Json $line
+                if (-not (Test-BridgeEventShape -EventObject $obj)) {
+                    $ok = $false
+                } else {
+                    $parsedLines += [pscustomobject]@{ Line = $line; Obj = $obj }
+                }
             } catch { $ok = $false }
         }
         if (-not $ok) {

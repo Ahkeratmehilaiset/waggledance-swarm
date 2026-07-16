@@ -83,7 +83,37 @@ try {
     )
     Remove-Item -LiteralPath $noAgent -Force
 
-    # 7. Concurrent replay guard exits without consuming spool files.
+    # 7. Schema-invalid JSON objects are rejected before append/archive.
+    $invalidCases = [ordered]@{
+        'null-payload' = '{"ts_utc":"2026-07-02T12:00:01Z","agent":"fable-5","type":"message","task_id":"bad-null-payload","status":"info","message":"bad","payload":null}'
+        'bad-ts' = '{"ts_utc":"2026-07-09T12.34.00.4267792Z","agent":"fable-5","type":"test","task_id":"bad-ts","status":"pass","message":"bad","payload":{}}'
+        'unknown-type' = '{"ts_utc":"2026-07-02T12:00:03Z","agent":"fable-5","type":"not_a_bridge_event","task_id":"bad-type","status":"info","message":"bad","payload":{}}'
+        'non-scalar-status' = '{"ts_utc":"2026-07-02T12:00:04Z","agent":"fable-5","type":"message","task_id":"bad-status","status":{"nested":true},"message":"bad","payload":{}}'
+        'non-string-path' = '{"ts_utc":"2026-07-02T12:00:05Z","agent":"fable-5","type":"message","task_id":"bad-path","status":"info","message":"bad","paths":[42],"payload":{}}'
+    }
+    $invalidFiles = @()
+    $invalidIndex = 0
+    foreach ($caseName in $invalidCases.Keys) {
+        $invalidIndex++
+        $invalidPath = Join-Path (Join-Path $tempRoot 'spool') (
+            'failed-append-schema-{0:D2}-{1}.jsonl' -f $invalidIndex, $caseName
+        )
+        Set-Content -LiteralPath $invalidPath -Value $invalidCases[$caseName] -Encoding UTF8 -NoNewline
+        $invalidFiles += $invalidPath
+    }
+    $before = (Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8)
+    $out = & $replayScript -BridgeRoot $tempRoot 3>$null
+    $after = (Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8)
+    Add-Check -Name 'schema-invalid rows skipped and kept' -Passed (
+        ($out -match 'replayed=0 deduped=0 failed=5') -and
+        (@($invalidFiles | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 5) -and
+        ($before -eq $after)
+    ) -Detail "out=$out"
+    foreach ($invalidPath in $invalidFiles) {
+        Remove-Item -LiteralPath $invalidPath -Force
+    }
+
+    # 8. Concurrent replay guard exits without consuming spool files.
     $guardFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-guard-20260702T130000000-6.jsonl'
     Set-Content -LiteralPath $guardFile -Value $event -Encoding UTF8 -NoNewline
     $guardMutex = $null
@@ -107,7 +137,7 @@ try {
     }
     Remove-Item -LiteralPath $guardFile -Force -ErrorAction SilentlyContinue
 
-    # 8. DryRun neither appends nor archives
+    # 9. DryRun neither appends nor archives
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (

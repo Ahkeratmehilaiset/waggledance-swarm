@@ -251,7 +251,12 @@ try {
     # spool file is processed must still dedup atomically (post-scan TOCTOU).
     $replayedDir = Join-Path (Join-Path $tempRoot 'spool') 'replayed'
     $archiveCountBefore = @(Get-ChildItem -LiteralPath $replayedDir -File).Count
-    for ($i = 0; $i -lt 150; $i++) {
+    # Keep a deterministic processing window after the first archive move.
+    # With 150 files Windows PowerShell 5.1 can finish the entire child job
+    # before the parent is scheduled to observe that move, making the race
+    # harness itself flaky instead of exercising the intended TOCTOU window.
+    $raceFillerCount = 1000
+    for ($i = 0; $i -lt $raceFillerCount; $i++) {
         $fillerPath = Join-Path (Join-Path $tempRoot 'spool') ('failed-append-race-a-{0:D4}-1.jsonl' -f $i)
         $filler = New-SmokeEventJson -Timestamp '2026-07-02T14:00:00Z' `
             -TaskId ('race-filler-{0:D4}' -f $i) -Message 'filler' -EventPid 1
@@ -304,9 +309,9 @@ try {
     ).Count
     Add-Check -Name 'post-scan live retry dedup is atomic' -Passed (
         $processingObserved -and $liveRetryAppended -and $targetCount -eq 1 -and
-        ($raceOut -match 'replayed=150 deduped=1 failed=0') -and
+        ($raceOut -match "replayed=$raceFillerCount deduped=1 failed=0") -and
         (-not (Test-Path -LiteralPath $raceSpool))
-    ) -Detail "processingObserved=$processingObserved liveRetry=$liveRetryAppended targetCount=$targetCount out=$raceOut"
+    ) -Detail "fillers=$raceFillerCount processingObserved=$processingObserved liveRetry=$liveRetryAppended targetCount=$targetCount out=$raceOut"
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

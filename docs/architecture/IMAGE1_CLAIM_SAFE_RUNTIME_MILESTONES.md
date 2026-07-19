@@ -1,5 +1,9 @@
 # WD Image #1 — Claim-Safe Runtime Milestones
 
+**Execution companion:** `WD_PRODUCTION_CONVERGENCE_PLAN_V1.md` is the
+canonical phase order. This file remains the claim-language and counter
+contract; it is not the backlog.
+
 Status: design spec (measurement-only; defines the language + counter contracts for
 flipping `claim_safe` per panel). Produced by **fable-5** for the 100h production sprint
 (`wd-production-image1-100h-sprint-20260620`), architecture/synthesis lane. This document

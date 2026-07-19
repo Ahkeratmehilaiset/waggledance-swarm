@@ -138,15 +138,23 @@ try {
     # ── 6: end-to-end <2 s with Start-Job ─────────────────────────────
     Write-Host '6. background watcher reacts to event in < 2 s:'
     Reset-State
+    $readyPath = Join-Path $tempRoot 'watcher_ready'
     $job = Start-Job -Name 'r23-smoke-watcher' -ScriptBlock {
-        param($s, $a, $r)
-        & $s -Agent $a -RuntimeRoot $r -PollIntervalMs 50 -DebounceMs 0
-    } -ArgumentList $watch, 'claude', $tempRoot
+        param($s, $a, $r, $ready)
+        & $s -Agent $a -RuntimeRoot $r -PollIntervalMs 50 -DebounceMs 0 `
+            -StartLineCount 0 -ReadyPath $ready
+    } -ArgumentList $watch, 'claude', $tempRoot, $readyPath
     try {
-        # Wait for the watcher's PowerShell host to come up + read its
-        # baseline. Job-start overhead on Windows can swallow up to 1 s
-        # of the budget; we measure latency only after warm-up.
-        Start-Sleep -Milliseconds 1500
+        # Windows PowerShell job startup can take several seconds under load.
+        # Measure only the watcher's polling latency after its cursor is ready.
+        $readyDeadline = [datetime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $readyPath) -and
+               [datetime]::UtcNow -lt $readyDeadline) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not (Test-Path -LiteralPath $readyPath)) {
+            throw 'background watcher did not become ready within 10 seconds'
+        }
         $emitTime = [datetime]::UtcNow
         & $writeEvent -Agent codex -To claude -Type message -Status open `
             -TaskId 'r23-smoke-6' -Message 'live ping' | Out-Null

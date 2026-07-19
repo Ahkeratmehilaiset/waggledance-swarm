@@ -55,6 +55,11 @@ param(
     # byte offset happens once at startup; the poll loop is incremental.
     [int] $StartLineCount = -1,
 
+    # Test/diagnostic hook: write this sentinel after the initial cursor is
+    # established so background-job tests can measure polling latency without
+    # including PowerShell host startup time.
+    [string] $ReadyPath = '',
+
     [string] $RuntimeRoot = ''
 )
 
@@ -117,6 +122,11 @@ if ($StartLineCount -ge 0) {
         -Path $eventsPath -LineCount $StartLineCount
 } else {
     $byteOffset = Get-BridgeEventFileLength -Path $eventsPath
+}
+
+if ($ReadyPath) {
+    Set-Content -LiteralPath $ReadyPath -Value 'ready' -Encoding UTF8 `
+        -NoNewline -Force -ErrorAction Stop
 }
 
 $iteration = 0

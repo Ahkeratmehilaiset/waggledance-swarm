@@ -2279,7 +2279,9 @@ def _completed_rco_lane_failover_task_ids(
         task_id = str(event.get("task_id", ""))
         if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             continue
-        if _is_successful_completion_event(event):
+        if _is_successful_completion_event(event) or str(
+            event.get("type", "")
+        ).lower() in {"finding", "handoff"}:
             completed.add(task_id)
 
     done_dir = bridge_root / "work_queue" / "done"
@@ -2302,7 +2304,7 @@ def _completed_rco_lane_failover_task_ids(
             or payload.get("release_message")
             or ""
         )
-        if _status_is_successful(status):
+        if _status_is_successful(status) or status.lower() == "handoff":
             completed.add(task_id)
 
     return completed

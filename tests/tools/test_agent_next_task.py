@@ -785,6 +785,96 @@ def test_completed_stalled_rco_lane_failover_advances_to_smoke(
     _assert_deferred_lift_state(report["deferred_lift_state"])
 
 
+def test_handed_off_stalled_rco_lane_failover_advances_to_smoke(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+    task_id = (
+        "rco-lane-failover-scout-2026-05-20-"
+        "claude-rco-2-since-20260520t112000z-repeat-1"
+    )
+    claim_task(
+        agent="codex-lead-1",
+        task_id=task_id,
+        summary="same-day RCO lane failover scout handed off",
+        mode="read-only",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    release_task(
+        agent="codex-lead-1",
+        task_id=task_id,
+        release_status="handoff",
+        release_message="operator should restart or verify the inactive lane",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+
+
+def test_rco_lane_failover_finding_advances_to_smoke(tmp_path: Path) -> None:
+    task_id = (
+        "rco-lane-failover-scout-2026-05-20-"
+        "claude-rco-2-since-20260520t112000z-repeat-1"
+    )
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:20:00Z",
+                "agent": "claude-rco-2",
+                "type": "decision",
+                "task_id": "rco-backup-work",
+                "status": "active",
+                "message": "backup review lane activity",
+            },
+            {
+                "ts_utc": "2026-05-20T11:50:00Z",
+                "agent": "codex-lead-1",
+                "type": "finding",
+                "task_id": task_id,
+                "status": "open",
+                "message": "lane remains inactive; restart or verify it",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+
+
 def test_active_stalled_rco_lane_failover_advances_to_smoke(
     tmp_path: Path,
 ) -> None:

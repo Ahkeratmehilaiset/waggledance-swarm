@@ -29,6 +29,7 @@ from tools.wd_image1_capability_manifest import (  # noqa: E402
 
 
 SCHEMA_VERSION = "wd_image1_vision_progress_counters.v1"
+_ABSENT = object()
 CAPABILITY_PANEL_ORDER = {
     "hex_mesh_entry": 1,
     "deterministic_solver_first": 2,
@@ -1970,8 +1971,8 @@ def _canonical_target_contract_status(
 ) -> dict[str, Any]:
     """Validate the additive target contract without breaking legacy v1 input."""
 
-    target = manifest.get("canonical_target")
-    if target is None:
+    target = manifest.get("canonical_target", _ABSENT)
+    if target is _ABSENT:
         return {
             "present": False,
             "status": "legacy_missing",

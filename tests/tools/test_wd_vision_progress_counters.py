@@ -321,6 +321,32 @@ def test_present_forged_canonical_target_fails_closed_without_claim_upgrade() ->
     )
 
 
+def test_explicit_null_canonical_target_is_invalid_not_legacy_missing() -> None:
+    absent = build_vision_progress_counters(_minimal_manifest())
+    manifest = _minimal_manifest()
+    manifest["canonical_target"] = None
+
+    counters = build_vision_progress_counters(manifest)
+
+    assert absent["canonical_target_contract"]["status"] == "legacy_missing"
+    assert counters["canonical_target_contract"] == {
+        "present": True,
+        "status": "invalid",
+        "ok": False,
+        "blockers": ["canonical_target_not_mapping"],
+        "contract_version": None,
+        "target_id": None,
+        "routine_user_actions_required_target": None,
+        "authority_boundary_enforced": False,
+    }
+    assert counters["ok"] is False
+    assert counters["blockers"] == ["canonical_target_not_mapping"]
+    assert counters["summary"]["claim_safe_count"] == 0
+    assert all(
+        panel["claim_safe"] is False for panel in counters["panel_counters"]
+    )
+
+
 def test_empty_capability_manifest_blocks_and_keeps_zero_ratios() -> None:
     counters = build_vision_progress_counters(
         {

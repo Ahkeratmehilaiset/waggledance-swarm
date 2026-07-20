@@ -111,6 +111,18 @@ class _ContainedFileSnapshot(NamedTuple):
     raw_bytes: bytes
 
 
+class _VerifiedReceiptBundle(NamedTuple):
+    snapshots: tuple[_ContainedFileSnapshot, ...]
+
+
+class _VerifiedReceiptWindow(NamedTuple):
+    receipts: dict[str, Mapping[str, Any]]
+    root_lexical: Path
+    root_resolved: Path
+    root_identity: tuple[int, int]
+    bundles: tuple[_VerifiedReceiptBundle, ...]
+
+
 class PerQueryCoverageReport(NamedTuple):
     """Re-derived, measurement-only per-query receipt coverage. Never a claim-safety trigger."""
 
@@ -508,17 +520,17 @@ def derive_per_query_receipt_coverage_from_artifacts(
         if terminal["entry_type"] == _RECEIPT_TERMINAL
     }
     try:
-        receipt_store = _load_window_receipt_index(
+        receipt_window = _load_window_receipt_index(
             receipt_root=normalized_receipt_root,
             manifest_paths=normalized_index.manifest_paths,
             expected_receipt_refs=expected_receipt_refs,
             verify_manifest=verify_manifest,
         )
     except Exception:  # noqa: BLE001 -- injected verifier/artifact I/O is evidence
-        receipt_store = None
+        receipt_window = None
     # The index is atomic evidence: one poisoned/missing/orphan artifact invalidates
     # every resolution rather than letting a caller selectively retain a passing row.
-    resolved = receipt_store if receipt_store is not None else {}
+    resolved = receipt_window.receipts if receipt_window is not None else {}
 
     # Receipt verification can run arbitrary injected code.  Re-read and fully
     # revalidate the exact selected ledger bytes after it finishes, immediately
@@ -539,6 +551,21 @@ def derive_per_query_receipt_coverage_from_artifacts(
         or final_ledger_snapshot.digest != ledger_snapshot.digest
         or final_ledger_snapshot.raw_bytes != ledger_snapshot.raw_bytes
         or final_ledger_snapshot.entries != ledger_snapshot.entries
+    ):
+        return _adapter_failure_report(
+            run_header=run_header,
+            claim_context=claim_context,
+            pending_append_failures=pending_append_failures,
+        )
+
+    # The ledger read above cannot invoke injected code.  Revalidate the retained
+    # evidence for EVERY bundle one final time after all supplied callbacks and
+    # immediately before the pure reducer.  This pass never calls the supplied
+    # verifier seam; it relies only on the exact bytes canonically verified earlier
+    # plus live no-follow containment and OS identity.
+    if (
+        receipt_window is not None
+        and not _verified_receipt_window_still_exact(receipt_window)
     ):
         return _adapter_failure_report(
             run_header=run_header,
@@ -706,11 +733,12 @@ def _load_window_receipt_index(
     manifest_paths: tuple[str | os.PathLike[str], ...],
     expected_receipt_refs: set[str],
     verify_manifest: Callable[[Path], Mapping[str, Any]],
-) -> dict[str, Mapping[str, Any]] | None:
+) -> _VerifiedReceiptWindow | None:
     root_lexical, root_resolved = _receipt_root(receipt_root)
     root_identity = _stable_file_identity(os.lstat(root_lexical))
     manifests_seen: set[Path] = set()
     receipts: dict[str, Mapping[str, Any]] = {}
+    verified_bundles: list[_VerifiedReceiptBundle] = []
 
     for indexed_path in manifest_paths:
         manifest_snapshot = _read_contained_file_snapshot(
@@ -774,14 +802,15 @@ def _load_window_receipt_index(
             verify_manifest=verify_manifest,
         ):
             return None
+        bundle_snapshots = (
+            manifest_snapshot,
+            *artifact_snapshots.values(),
+        )
         if not _bundle_snapshot_still_exact(
             root_lexical=root_lexical,
             root_resolved=root_resolved,
             root_identity=root_identity,
-            snapshots=(
-                manifest_snapshot,
-                *artifact_snapshots.values(),
-            ),
+            snapshots=bundle_snapshots,
         ):
             return None
 
@@ -817,10 +846,24 @@ def _load_window_receipt_index(
             "query_digest": query_digest,
             "verified": True,
         }
+        verified_bundles.append(
+            _VerifiedReceiptBundle(snapshots=bundle_snapshots)
+        )
 
     if set(receipts) != expected_receipt_refs:
         return None
-    return receipts
+    window = _VerifiedReceiptWindow(
+        receipts=receipts,
+        root_lexical=root_lexical,
+        root_resolved=root_resolved,
+        root_identity=root_identity,
+        bundles=tuple(verified_bundles),
+    )
+    # A later verifier callback can mutate an earlier, already-checked bundle.
+    # Close that cross-bundle gap before handing retained evidence to the caller.
+    if not _verified_receipt_window_still_exact(window):
+        return None
+    return window
 
 
 def _verify_exact_bundle_snapshot(
@@ -1009,6 +1052,22 @@ def _bundle_snapshot_still_exact(
     except Exception:  # noqa: BLE001 -- any revalidation failure is evidence failure
         return False
     return True
+
+
+def _verified_receipt_window_still_exact(
+    window: _VerifiedReceiptWindow,
+) -> bool:
+    """Revalidate every canonically verified live bundle without callbacks."""
+    return _bundle_snapshot_still_exact(
+        root_lexical=window.root_lexical,
+        root_resolved=window.root_resolved,
+        root_identity=window.root_identity,
+        snapshots=tuple(
+            snapshot
+            for bundle in window.bundles
+            for snapshot in bundle.snapshots
+        ),
+    )
 
 
 def _stable_file_identity(value: os.stat_result) -> tuple[int, int]:

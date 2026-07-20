@@ -1451,3 +1451,96 @@ def test_artifact_adapter_rejects_callback_time_identical_byte_identity_swap(
     assert replaced_identity != original_identity
     assert live_path.read_bytes() == original_bytes
     assert report.coverage_present is False
+
+
+def test_artifact_adapter_revalidates_earlier_manifest_after_later_callback(
+    tmp_path,
+):
+    case = _artifact_case(
+        tmp_path,
+        [
+            ("s1", "query one", "query one"),
+            ("s2", "query two", "query two"),
+        ],
+    )
+    earlier_manifest = case["index"].manifest_paths[0]
+    original_bytes = earlier_manifest.read_bytes()
+    callback_count = 0
+
+    def verify_then_mutate_earlier(isolated_manifest: Path):
+        nonlocal callback_count
+        report = verify_manifest(isolated_manifest)
+        callback_count += 1
+        if callback_count == 2:
+            earlier_manifest.write_bytes(original_bytes + b" ")
+        return report
+
+    report = _artifact_report(case, verifier=verify_then_mutate_earlier)
+
+    assert callback_count == 2
+    assert earlier_manifest.read_bytes() != original_bytes
+    assert report.coverage_present is False
+
+
+def test_artifact_adapter_revalidates_earlier_artifact_identity_after_later_callback(
+    tmp_path,
+):
+    case = _artifact_case(
+        tmp_path,
+        [
+            ("s1", "query one", "query one"),
+            ("s2", "query two", "query two"),
+        ],
+    )
+    earlier_payload = _live_bundle_artifact_path(case, "payload")
+    original_bytes = earlier_payload.read_bytes()
+    original_identity = (
+        earlier_payload.stat().st_dev,
+        earlier_payload.stat().st_ino,
+    )
+    callback_count = 0
+
+    def verify_then_replace_earlier(isolated_manifest: Path):
+        nonlocal callback_count
+        report = verify_manifest(isolated_manifest)
+        callback_count += 1
+        if callback_count == 2:
+            replacement = earlier_payload.with_name(
+                earlier_payload.name + ".replacement"
+            )
+            replacement.write_bytes(original_bytes)
+            os.replace(replacement, earlier_payload)
+        return report
+
+    report = _artifact_report(case, verifier=verify_then_replace_earlier)
+    replaced_identity = (
+        earlier_payload.stat().st_dev,
+        earlier_payload.stat().st_ino,
+    )
+
+    assert callback_count == 2
+    assert replaced_identity != original_identity
+    assert earlier_payload.read_bytes() == original_bytes
+    assert report.coverage_present is False
+
+
+def test_artifact_adapter_two_receipt_final_revalidation_liveness(tmp_path):
+    case = _artifact_case(
+        tmp_path,
+        [
+            ("s1", "query one", "query one"),
+            ("s2", "query two", "query two"),
+        ],
+    )
+    callback_count = 0
+
+    def observing_veto(isolated_manifest: Path):
+        nonlocal callback_count
+        callback_count += 1
+        return verify_manifest(isolated_manifest)
+
+    report = _artifact_report(case, verifier=observing_veto)
+
+    assert callback_count == 2
+    assert report.coverage_present is True
+    assert report.verified_bound == report.corpus_size == 2

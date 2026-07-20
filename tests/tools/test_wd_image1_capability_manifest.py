@@ -119,6 +119,128 @@ def test_manifest_reports_six_image_capabilities() -> None:
     assert report["summary"]["capability_count"] == 6
 
 
+def test_manifest_encodes_zero_touch_collective_solver_target_without_claim_upgrade(
+) -> None:
+    report = build_manifest(ROOT)
+    target = report["canonical_target"]
+
+    assert set(target) == {
+        "contract_version",
+        "target_id",
+        "semantics",
+        "primary_product_surface",
+        "primary_intelligence",
+        "shared_memory",
+        "routine_user_actions_required_target",
+        "user_prompt_is_primary_trigger",
+        "user_interface_role",
+        "closed_loop",
+        "routing_contract",
+        "topology_target",
+        "growth_contract",
+        "collective_contract",
+        "success_metrics",
+        "historical_baseline",
+        "authority_boundary",
+    }
+    assert target["contract_version"] == (
+        "wd.zero_touch_collective_solver_target.v1"
+    )
+    assert target["target_id"] == "zero_touch_collective_solver_swarm"
+    assert target["semantics"] == "target_contract_not_current_proof"
+    assert target["primary_product_surface"] == (
+        "event_and_state_driven_autonomous_workflows"
+    )
+    assert target["primary_intelligence"] == "collective_solver_swarm"
+    assert target["shared_memory"] == "vectorized_collective_memory"
+    assert target["routine_user_actions_required_target"] == 0
+    assert target["user_prompt_is_primary_trigger"] is False
+    assert target["user_interface_role"] == (
+        "observability_exception_handling_and_emergency_stop"
+    )
+    assert target["closed_loop"] == [
+        "observe",
+        "detect_work",
+        "assemble_specialist_solver_swarm",
+        "solve",
+        "cross_verify",
+        "record_magma_intent_and_admission",
+        "execute",
+        "record_magma_effect_transition",
+        "verify_and_reconcile_effect",
+        "append_magma_reconciliation_receipt",
+        "update_vectorized_collective_memory",
+        "learn_and_grow",
+    ]
+    assert target["routing_contract"] == {
+        "primary_ingress": "event_state_schedule_or_gap_to_work_detector",
+        "optional_query_ingress": "user_query_to_smart_router",
+        "work_routing": "detected_work_to_hex_mesh",
+        "priority": [
+            "authoritative_deterministic_solver",
+            "specialist_models",
+            "llm_advisory_fallback",
+        ],
+        "llm_role": "advisory_or_fallback_only",
+    }
+    assert target["topology_target"] == [
+        "eight_cell_hex_mesh",
+        "self_organizing_hex_mesh",
+        "dynamic_subdivision",
+        "elastic_cell_split_and_merge",
+        "ring_messaging",
+        "parent_child_hierarchy",
+    ]
+    assert target["growth_contract"] == {
+        "trigger": "runtime_gap_or_measured_weakness",
+        "scope": "preauthorized_low_risk_capabilities",
+        "requires_independent_verification": True,
+        "automatic_rollback_required": True,
+        "promotion_lineage_bound_to_workflow_receipt": True,
+    }
+    assert target["collective_contract"] == {
+        "specialist_contributions_receipted": True,
+        "cross_verification_receipted": True,
+        "single_solver_allowed_when_declared_sufficient": True,
+        "collective_gain_measured_on_eligible_multi_solver_work": True,
+    }
+    assert target["success_metrics"] == [
+        "eligible_zero_touch_workflow_completion_ratio",
+        "routine_user_actions_per_completed_workflow",
+        "verified_real_world_outcome_ratio",
+        "external_effect_lifecycle_magma_coverage_ratio",
+        "collective_gain_over_best_single_solver",
+        "autogrowth_marginal_verified_coverage_gain",
+        "autogrowth_rollback_correctness_ratio",
+        "latency_per_completed_workflow",
+        "cost_per_completed_workflow",
+        "memory_per_completed_workflow",
+        "energy_per_completed_workflow",
+    ]
+    assert target["historical_baseline"] == {
+        "classification": "operator_attested_not_current_machine_proof",
+        "workload_classes": [
+            "organization_specific_domain_solver_workflows",
+            "end_to_end_solver_bookkeeping",
+            "real_invoice_payment_workflows",
+            "large_database_vectorization_and_retrieval",
+        ],
+        "private_execution_artifacts_included": False,
+    }
+    assert target["authority_boundary"] == {
+        "normal_operation": "preauthorized_policy_and_connector_envelopes",
+        "self_expands_authority": False,
+        "does_not_grant_runtime_authority": True,
+        "does_not_flip_claim_safe": True,
+    }
+    assert report["summary"]["capability_count"] == 6
+    assert report["summary"]["all_literal_claims_safe"] is False
+    assert all(
+        capability["claim_safe"] is False
+        for capability in report["capabilities"]
+    )
+
+
 def test_manifest_keeps_literal_image_overclaims_unsafe() -> None:
     report = build_manifest(ROOT)
     capabilities = _by_id(report)

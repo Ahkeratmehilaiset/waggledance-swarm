@@ -132,6 +132,99 @@ HEX_MESH_CHAT_ROUTE_ORDER = (
 )
 
 
+def build_canonical_target() -> dict[str, object]:
+    """Return the non-authorizing Image #1 product target contract."""
+
+    return {
+        "contract_version": "wd.zero_touch_collective_solver_target.v1",
+        "target_id": "zero_touch_collective_solver_swarm",
+        "semantics": "target_contract_not_current_proof",
+        "primary_product_surface": "event_and_state_driven_autonomous_workflows",
+        "primary_intelligence": "collective_solver_swarm",
+        "shared_memory": "vectorized_collective_memory",
+        "routine_user_actions_required_target": 0,
+        "user_prompt_is_primary_trigger": False,
+        "user_interface_role": (
+            "observability_exception_handling_and_emergency_stop"
+        ),
+        "closed_loop": [
+            "observe",
+            "detect_work",
+            "assemble_specialist_solver_swarm",
+            "solve",
+            "cross_verify",
+            "record_magma_intent_and_admission",
+            "execute",
+            "record_magma_effect_transition",
+            "verify_and_reconcile_effect",
+            "append_magma_reconciliation_receipt",
+            "update_vectorized_collective_memory",
+            "learn_and_grow",
+        ],
+        "routing_contract": {
+            "primary_ingress": "event_state_schedule_or_gap_to_work_detector",
+            "optional_query_ingress": "user_query_to_smart_router",
+            "work_routing": "detected_work_to_hex_mesh",
+            "priority": [
+                "authoritative_deterministic_solver",
+                "specialist_models",
+                "llm_advisory_fallback",
+            ],
+            "llm_role": "advisory_or_fallback_only",
+        },
+        "topology_target": [
+            "eight_cell_hex_mesh",
+            "self_organizing_hex_mesh",
+            "dynamic_subdivision",
+            "elastic_cell_split_and_merge",
+            "ring_messaging",
+            "parent_child_hierarchy",
+        ],
+        "growth_contract": {
+            "trigger": "runtime_gap_or_measured_weakness",
+            "scope": "preauthorized_low_risk_capabilities",
+            "requires_independent_verification": True,
+            "automatic_rollback_required": True,
+            "promotion_lineage_bound_to_workflow_receipt": True,
+        },
+        "collective_contract": {
+            "specialist_contributions_receipted": True,
+            "cross_verification_receipted": True,
+            "single_solver_allowed_when_declared_sufficient": True,
+            "collective_gain_measured_on_eligible_multi_solver_work": True,
+        },
+        "success_metrics": [
+            "eligible_zero_touch_workflow_completion_ratio",
+            "routine_user_actions_per_completed_workflow",
+            "verified_real_world_outcome_ratio",
+            "external_effect_lifecycle_magma_coverage_ratio",
+            "collective_gain_over_best_single_solver",
+            "autogrowth_marginal_verified_coverage_gain",
+            "autogrowth_rollback_correctness_ratio",
+            "latency_per_completed_workflow",
+            "cost_per_completed_workflow",
+            "memory_per_completed_workflow",
+            "energy_per_completed_workflow",
+        ],
+        "historical_baseline": {
+            "classification": "operator_attested_not_current_machine_proof",
+            "workload_classes": [
+                "organization_specific_domain_solver_workflows",
+                "end_to_end_solver_bookkeeping",
+                "real_invoice_payment_workflows",
+                "large_database_vectorization_and_retrieval",
+            ],
+            "private_execution_artifacts_included": False,
+        },
+        "authority_boundary": {
+            "normal_operation": "preauthorized_policy_and_connector_envelopes",
+            "self_expands_authority": False,
+            "does_not_grant_runtime_authority": True,
+            "does_not_flip_claim_safe": True,
+        },
+    }
+
+
 @dataclass(frozen=True)
 class Evidence:
     path: str
@@ -12297,6 +12390,7 @@ def build_manifest(root: Path | str = ROOT) -> dict:
             "Literal image claims are unsafe unless claim_safe=true; use "
             "safe_statement for docs and user-facing copy."
         ),
+        "canonical_target": build_canonical_target(),
         "capabilities": [capability.to_dict() for capability in capabilities],
         "summary": {
             "capability_count": len(capabilities),

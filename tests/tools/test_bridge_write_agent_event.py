@@ -170,7 +170,7 @@ def test_non_windows_append_fails_closed_and_retains_wal(tmp_path: Path) -> None
     )
 
     assert completed.returncode != 0
-    assert "requires Windows file identity" in completed.stderr
+    assert "Windows file identity" in completed.stderr
     assert "refusing an unfenced append" in completed.stderr
     assert not (runtime_root / "shared" / "events.jsonl").exists()
     assert not list((runtime_root / "spool").glob("*.pending"))

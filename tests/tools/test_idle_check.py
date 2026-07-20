@@ -562,6 +562,276 @@ def _canonical_rco_request(
             },
         },
     )
+
+
+def _canonical_tools_review_request(
+    *,
+    task_id: str,
+    head: str,
+    ts_utc: str = "2026-05-17T11:00:00Z",
+    to: str = "codex-tools-1",
+) -> dict[str, object]:
+    return _event(
+        ts_utc=ts_utc,
+        agent="codex-lead-1",
+        type="wake_request",
+        task_id=task_id,
+        status="review_requested",
+        to=to,
+        message=f"Exact-head Tools review requested at {head}.",
+        payload={
+            "pr": 1551,
+            "branch": task_id,
+            "schema": "wd.exact_head_tools_review_request.v1",
+            "base_ref": "main",
+            "deployment_authority": False,
+            "request_only": True,
+            "base_head": "66a6ca1fb1d1b0501a0c0ed92b1870685d746e72",
+            "approval_asserted": False,
+            "canonical_task_id": task_id,
+            "merge_authority": False,
+            "head": head,
+            "operator_gated": True,
+        },
+    )
+
+
+def test_valid_canonical_tools_review_is_not_an_rco_lock(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/idle-tools-review-20260720"
+    head = "23ea44bcb5070821bfcfdde84c1b314b48dc17dc"
+    request = _canonical_tools_review_request(task_id=task_id, head=head)
+    response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-tools-1",
+        type="decision",
+        task_id=task_id,
+        status="build_consensus_pass",
+        to="codex-lead-1",
+        message=f"Tools build consensus PASS at exact head {head}.",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+    blocker_response = _event(
+        ts_utc="2026-05-17T11:06:00Z",
+        agent="codex-tools-1",
+        type="decision",
+        task_id=task_id,
+        status="changes_requested",
+        to="codex-lead-1",
+        message=f"Tools changes requested at exact head {head}.",
+        payload={
+            "schema": "wd.exact_head_consensus_response.v1",
+            "request_only": True,
+            "head": head,
+            "canonical_task_id": task_id,
+            "decision": "changes_requested",
+            "operator_gated": True,
+            "required_signals": {
+                "rco": {"type": "decision", "status": "rco_pass"}
+            },
+        },
+    )
+    echoed_pass_response = _event(
+        ts_utc="2026-05-17T11:07:00Z",
+        agent="codex-tools-1",
+        type="decision",
+        task_id=task_id,
+        status="build_consensus_pass",
+        to="codex-lead-1",
+        message=f"Tools build consensus PASS at exact head {head}.",
+        payload={
+            "schema": "wd.exact_head_consensus_response.v1",
+            "request_only": True,
+            "head": head,
+            "canonical_task_id": task_id,
+            "required_signals": "rco",
+        },
+    )
+    echoed_done_response = _event(
+        ts_utc="2026-05-17T11:08:00Z",
+        agent="codex-tools-1",
+        type="done",
+        task_id=task_id,
+        status="completed",
+        to="codex-lead-1",
+        message=f"Tools review completed at exact head {head}.",
+        payload={
+            "schema": "wd.exact_head_consensus_response.v1",
+            "request_only": True,
+            "head": head,
+            "canonical_task_id": task_id,
+            "required_signals": [{"RCO": {}}],
+        },
+    )
+
+    request_report = _run(tmp_path, _base_idle_events() + [request])
+    response_report = _run(
+        tmp_path,
+        _base_idle_events() + [request, response],
+    )
+    echoed_response_reports = [
+        _run(tmp_path, _base_idle_events() + [request, echoed_response])
+        for echoed_response in (
+            blocker_response,
+            echoed_pass_response,
+            echoed_done_response,
+        )
+    ]
+
+    assert request_report["criteria"]["open_rco_requests"] == {
+        "ok": True,
+        "task_ids": [],
+    }
+    assert response_report["criteria"]["open_rco_requests"] == {
+        "ok": True,
+        "task_ids": [],
+    }
+    assert all(
+        report["criteria"]["open_rco_requests"]
+        == {"ok": True, "task_ids": []}
+        for report in echoed_response_reports
+    )
+
+
+def test_tools_review_controls_without_rco_evidence_do_not_route_to_rco(
+    tmp_path: Path,
+) -> None:
+    head = "23ea44bcb5070821bfcfdde84c1b314b48dc17dc"
+    requests: list[dict[str, object]] = []
+
+    def add_request(suffix: str) -> tuple[dict[str, object], dict[str, object]]:
+        task_id = f"malformed-tools-review-{suffix}"
+        request = _canonical_tools_review_request(task_id=task_id, head=head)
+        payload = request["payload"]
+        assert isinstance(payload, dict)
+        requests.append(request)
+        return request, payload
+
+    _, payload = add_request("merge-authority")
+    payload["merge_authority"] = True
+    _, payload = add_request("deployment-authority")
+    payload["deployment_authority"] = 0
+    _, payload = add_request("approval-type")
+    payload["approval_asserted"] = 0
+    _, payload = add_request("request-only-type")
+    payload["request_only"] = 1
+    _, payload = add_request("operator-gated-type")
+    payload["operator_gated"] = "true"
+    _, payload = add_request("pr-type")
+    payload["pr"] = True
+    _, payload = add_request("base-head")
+    payload["base_head"] = "not-a-head"
+    _, payload = add_request("task-binding")
+    payload["canonical_task_id"] = "different-task"
+    request, _ = add_request("message-binding")
+    request["message"] = "Tools review requested without the exact head."
+    _, payload = add_request("extra-build-signal")
+    payload["required_signals"] = {
+        "build_tools": {"type": "decision", "status": "build_consensus_pass"}
+    }
+    _, payload = add_request("build-values-mention-rco")
+    payload["required_signals"] = {
+        "build_tools": {
+            "task_id": "bridge/rco-delivery-fix",
+            "agent": "claude-rco-1",
+            "message": "RCO review remains a separate lane.",
+        }
+    }
+    _, payload = add_request("build-list-rco-value")
+    payload["required_signals"] = {"build_tools": ["rco"]}
+    _, payload = add_request("schema-container")
+    payload["schema"] = ["wd.exact_head_tools_review_request.v1"]
+
+    for request in requests:
+        task_id = str(request["task_id"])
+        tools_response = _event(
+            ts_utc="2026-05-17T11:05:00Z",
+            agent="codex-tools-1",
+            type="decision",
+            task_id=task_id,
+            status="build_consensus_pass",
+            to="codex-lead-1",
+            message=f"Tools build consensus PASS at exact head {head}.",
+            payload={"head": head, "canonical_task_id": task_id},
+        )
+        report = _run(
+            tmp_path,
+            _base_idle_events() + [request, tools_response],
+        )
+        assert report["criteria"]["open_rco_requests"] == {
+            "ok": True,
+            "task_ids": [],
+        }
+
+
+def test_tools_schema_preserves_explicit_rco_recipient_and_status_routing(
+    tmp_path: Path,
+) -> None:
+    head = "23ea44bcb5070821bfcfdde84c1b314b48dc17dc"
+    recipient_task = "tools-schema-explicit-rco-recipient"
+    recipient_request = _canonical_tools_review_request(
+        task_id=recipient_task,
+        head=head,
+        to="codex-tools-1,claude-rco-1",
+    )
+    tools_response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-tools-1",
+        type="decision",
+        task_id=recipient_task,
+        status="build_consensus_pass",
+        to="codex-lead-1",
+        message=f"Tools build consensus PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": recipient_task},
+    )
+    rco_response = _event(
+        ts_utc="2026-05-17T11:06:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=recipient_task,
+        status="rco_pass",
+        to="codex-lead-1",
+        message=f"RCO PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": recipient_task},
+    )
+
+    tools_only_report = _run(
+        tmp_path,
+        _base_idle_events() + [recipient_request, tools_response],
+    )
+    rco_report = _run(
+        tmp_path,
+        _base_idle_events()
+        + [recipient_request, tools_response, rco_response],
+    )
+    assert tools_only_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        recipient_task
+    ]
+    assert rco_report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+    status_task = "tools-recipient-explicit-rco-status"
+    status_request = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="handoff",
+        task_id=status_task,
+        status="rco_requested",
+        to="codex-tools-1",
+        message="Explicit RCO status remains an RCO request.",
+    )
+    status_report = _run(
+        tmp_path,
+        _base_idle_events() + [status_request],
+    )
+    assert status_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        status_task
+    ]
+
+
 def test_canonical_rco_response_must_be_fresh_same_task_identity_and_head(
     tmp_path: Path,
 ) -> None:
@@ -992,38 +1262,6 @@ def test_near_canonical_requests_hold_unresolved_without_false_legacy_target(
     )
     near_requests.append(bundled_tools_contract)
 
-    type_confused_task_binding = _event(
-        ts_utc="2026-05-17T11:00:00Z",
-        type="wake_request",
-        task_id="near-canonical-type-confused-task-binding",
-        status="review_requested",
-        to="codex-tools-1",
-        message="Canonical control bundle has a type-confused task binding.",
-        payload={
-            "request_only": True,
-            "approval_asserted": False,
-            "canonical_task_id": 7,
-            "head": head,
-        },
-    )
-    near_requests.append(type_confused_task_binding)
-
-    type_confused_head_binding = _event(
-        ts_utc="2026-05-17T11:00:00Z",
-        type="wake_request",
-        task_id="near-canonical-type-confused-head-binding",
-        status="review_requested",
-        to="codex-tools-1",
-        message="Canonical control bundle has a type-confused head binding.",
-        payload={
-            "request_only": True,
-            "approval_asserted": False,
-            "canonical_task_id": "near-canonical-type-confused-head-binding",
-            "head": 7,
-        },
-    )
-    near_requests.append(type_confused_head_binding)
-
     malformed_schema_rco_target = _event(
         ts_utc="2026-05-17T11:00:00Z",
         type="wake_request",
@@ -1052,13 +1290,23 @@ def test_near_canonical_requests_hold_unresolved_without_false_legacy_target(
             status="review_requested",
             to="codex-tools-1",
             message="Tools-only request carries a malformed RCO signal.",
-            payload={"required_signals": required_rco},
+            payload={
+                "schema": "wd.exact_head_tools_review_request.v1",
+                "required_signals": required_rco,
+            },
         )
         near_requests.append(malformed_required_rco)
 
     for suffix, schema_value in (
         ("list-token", ["wd.exact_head_consensus_request.v1"]),
         ("mapping-token", {"value": "wd.exact_head_consensus_request.v1"}),
+        (
+            "mixed-tools-rco-token",
+            [
+                "wd.exact_head_tools_review_request.v1",
+                "wd.exact_head_consensus_request.v1",
+            ],
+        ),
     ):
         schema_container_request = _event(
             ts_utc="2026-05-17T11:00:00Z",
@@ -1124,6 +1372,31 @@ def test_near_canonical_requests_hold_unresolved_without_false_legacy_target(
         {"schema": ["third.party.tools.review.v1"]},
         {"request_only": True},
         {"approval_asserted": False},
+        {
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": "ordinary-tools-control-bundle",
+            "head": head,
+        },
+        {
+            "schema": "third.party.exact_head_tools_review.v1",
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": "ordinary-third-party-tools-review",
+            "head": head,
+        },
+        {
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": 7,
+            "head": head,
+        },
+        {
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": "ordinary-tools-type-confused-head",
+            "head": 7,
+        },
         {
             "required_signals": {
                 "build_tools": {"type": "decision", "status": "pass"}

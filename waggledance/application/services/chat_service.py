@@ -622,8 +622,10 @@ class ChatService:
             from waggledance.core.magma.chat_served_emitter import new_served_id
 
             served_id = new_served_id()
-            if emitter.record_pending(served_id, source=source, route_type=route_type,
-                                      language=language, profile=profile, agent_id=agent_id):
+            if emitter.record_pending(
+                served_id, query=query, source=source, route_type=route_type,
+                language=language, profile=profile, agent_id=agent_id,
+            ):
                 emitter.schedule_receipt(
                     served_id, query=query, response=response, source=source,
                     route_type=route_type, confidence=confidence, latency_ms=latency_ms,

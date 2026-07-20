@@ -162,7 +162,7 @@ try {
     [void](New-Item -ItemType Directory -Path $isolatedBin -Force)
     $isolatedAppendName = "Local\WaggleDanceBridgeAppendV1-$isolationId"
     $isolatedAppendV2Name = "Local\WaggleDanceBridgeAppendV2-$isolationId"
-    $isolatedReplayName = "Local\WaggleDanceBridgeReplayV1-$isolationId"
+    $isolatedReplayName = "Local\WaggleDanceBridgeSpoolReplayV1-$isolationId"
     $isolatedWriter = Join-Path $isolatedBin 'Write-AgentEvent.ps1'
     $auxiliaryBarrierWriter = Join-Path `
         $isolatedBin 'Write-AgentEvent-AuxiliaryBarrier.ps1'
@@ -189,7 +189,7 @@ try {
         $isolatedAppendV2Name
     )
     $replaySource = $replaySource.Replace(
-        'Global\WaggleDanceBridgeReplayV1',
+        'Global\WaggleDanceBridgeSpoolReplayV1',
         $isolatedReplayName
     )
     [System.IO.File]::WriteAllText($isolatedWriter, $writerSource, $utf8)
@@ -453,7 +453,7 @@ Start-Sleep -Seconds 60
     $guardMutex = $null
     $guardAcquired = $false
     try {
-        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeReplayV1')
+        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeSpoolReplayV1')
         $guardAcquired = $guardMutex.WaitOne(0)
         if (-not $guardAcquired) {
             Add-Check -Name 'concurrent replay guard setup' -Passed $false -Detail 'could not acquire replay mutex'

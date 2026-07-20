@@ -717,7 +717,7 @@ try {
     $replayMutexSet = Enter-BridgeMutexSet -TimeoutMilliseconds 0 `
         -Specifications @(
         [pscustomobject]@{
-            Name = 'Global\WaggleDanceBridgeReplayV1'
+            Name = 'Global\WaggleDanceBridgeSpoolReplayV1'
             Purpose = 'SpoolReplay'
         }
     )

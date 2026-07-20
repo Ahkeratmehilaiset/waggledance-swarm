@@ -76,8 +76,8 @@ machine-wide mutexes `Global\WaggleDanceBridgeAppendV1` followed by
 V1-then-V2 set after canonical durability; it does not reuse the canonical
 leases. Ordinary writers never acquire the replay mutex.
 
-The spool replayer acquires
-`Global\WaggleDanceBridgeReplayV1`, then AppendV1, then AppendV2, and keeps all
+The spool replayer acquires the established compatibility guard
+`Global\WaggleDanceBridgeSpoolReplayV1`, then AppendV1, then AppendV2, and keeps all
 three through discovery, exact-record deduplication, any WAL-bound torn-tail
 repair, canonical append, and archival. ReplayV1 preserves the non-blocking
 single-replayer guard: a busy guard remains an immediate compatible no-op.

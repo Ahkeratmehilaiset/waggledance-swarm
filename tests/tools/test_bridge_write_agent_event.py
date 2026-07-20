@@ -120,6 +120,7 @@ def test_writer_source_has_exact_dual_lock_sets_and_no_generation_artifacts() ->
     assert "$mutex.WaitOne($remaining)" in source
     assert "WaitOne(10000)" not in source
     assert source.count("AppendV2 ownership") >= 2
+    assert "WaggleDanceBridgeSpoolReplayV1" not in source
     assert "WaggleDanceBridgeReplayV1" not in source
     assert "AppendV2Generation" not in source
 
@@ -133,7 +134,7 @@ def test_replayer_source_has_exact_lock_order_budget_reverse_release_and_gate() 
     outer = source.index("$replayMutexSet = $null")
     gate = source.index("Initialize-BridgeAppendV1Native", outer)
     replay_enter = source.index("$replayMutexSet = Enter-BridgeMutexSet", outer)
-    replay = source.index("Global\\WaggleDanceBridgeReplayV1", replay_enter)
+    replay = source.index("Global\\WaggleDanceBridgeSpoolReplayV1", replay_enter)
     append_enter = source.index("$appendMutexSet = Enter-BridgeMutexSet", replay)
     append_v1 = source.index("Global\\WaggleDanceBridgeAppendV1", append_enter)
     append_v2 = source.index("Global\\WaggleDanceBridgeAppendV2", append_enter)
@@ -149,7 +150,7 @@ def test_replayer_source_has_exact_lock_order_budget_reverse_release_and_gate() 
         < append_v2
         < discovery
     )
-    assert source.count("Global\\WaggleDanceBridgeReplayV1") == 1
+    assert source.count("Global\\WaggleDanceBridgeSpoolReplayV1") == 1
     assert source.count("Global\\WaggleDanceBridgeAppendV1") == 1
     assert source.count("Global\\WaggleDanceBridgeAppendV2") == 1
     assert "[Diagnostics.Stopwatch]::StartNew()" in source
@@ -164,7 +165,7 @@ def test_replayer_source_has_exact_lock_order_budget_reverse_release_and_gate() 
     release_append = source.index("$appendMutexSet.Entries", final_release)
     release_replay = source.index("$replayMutexSet.Entries", final_release)
     assert final_release < release_append < release_replay
-    assert "Global\\WaggleDanceBridgeSpoolReplayV1" not in source
+    assert "Global\\WaggleDanceBridgeReplayV1" not in source
     assert "AppendV2Generation" not in source
 
 

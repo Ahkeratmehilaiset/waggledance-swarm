@@ -823,6 +823,7 @@ def test_git_indirections_are_refused(tmp_path: Path, kind: str) -> None:
 
 
 @pytest.mark.parametrize("location", ["refs", "objects"])
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction test")
 def test_git_metadata_reparse_junctions_are_refused(
     tmp_path: Path, location: str
 ) -> None:

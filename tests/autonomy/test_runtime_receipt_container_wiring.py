@@ -5,8 +5,13 @@ import asyncio
 import json
 from pathlib import Path
 
+from tools.verify_magma_receipt import verify_manifest
 from waggledance.adapters.config.settings_loader import WaggleSettings
 from waggledance.bootstrap.container import Container
+from waggledance.core.magma.chat_query_route_evidence import (
+    NORMALIZATION_VERSION,
+    canonical_query_digest,
+)
 from waggledance.core.magma.chat_served_accounting import coverage_from_ledger
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     derive_enabled_across_window,
@@ -15,6 +20,17 @@ from waggledance.core.magma.chat_served_claim_window_evidence import (
     read_latest_head_anchor,
 )
 from waggledance.core.magma.chat_served_emitter import new_served_id
+from waggledance.core.magma.chat_served_ledger import (
+    GENESIS_PREV_HASH,
+    head_hash,
+    read_entries,
+)
+from waggledance.core.magma.chat_served_per_query_coverage import (
+    RUN_CONTEXT_SCHEMA_VERSION,
+    ReceiptManifestIndex,
+    canonical_corpus_digest,
+    derive_per_query_receipt_coverage_from_artifacts,
+)
 from waggledance.core.magma.runtime_summary_receipt import (
     build_handle_query_runtime_summary,
 )
@@ -129,6 +145,93 @@ def test_chat_served_emitter_opt_in_writes_eligible_chain(tmp_path: Path) -> Non
     )
     assert "DO_NOT_LEAK" not in emitted
     assert not (receipt_root / "claim_window_served_points.jsonl").exists()
+
+
+def test_chat_served_artifact_adapter_manual_window_requires_query_identity(
+    tmp_path: Path,
+) -> None:
+    # This exercises real emitter + verifier artifacts through a manually anchored
+    # index.  It is not evidence of a trusted P0 wrapper or production wiring.
+    pending_query = "private pending query DO_NOT_LEAK"
+
+    def run_case(case_name: str, receipt_query: str):
+        receipt_root = tmp_path / case_name
+        container = Container(
+            settings=_settings_with_chat_served_receipts(
+                {"enabled": True, "out_dir": str(receipt_root)}
+            ),
+            stub=True,
+        )
+        emitter = container.chat_served_emitter
+        assert emitter is not None
+        served_id = new_served_id()
+        assert emitter.record_pending(
+            served_id,
+            query=pending_query,
+            source="solver",
+            route_type="solver",
+            language="fi",
+            profile="HOME",
+            agent_id=None,
+        ) is True
+
+        async def resolve() -> None:
+            emitter.schedule_receipt(
+                served_id,
+                query=receipt_query,
+                response="private answer DO_NOT_LEAK",
+                source="solver",
+                route_type="solver",
+                confidence=0.95,
+                latency_ms=1.0,
+                cached=False,
+                round_table=False,
+                agent_id=None,
+                language="fi",
+                profile="HOME",
+            )
+            await asyncio.gather(*list(emitter._tasks))
+
+        asyncio.run(resolve())
+        ledger_path = receipt_root / "ledger.jsonl"
+        ledger_entries, torn_tail = read_entries(str(ledger_path))
+        assert torn_tail is False
+        query_digest = canonical_query_digest(pending_query)
+        context = {
+            "head_commit_sha": "a" * 40,
+            "corpus_digest": canonical_corpus_digest([query_digest]),
+            "schema_version": RUN_CONTEXT_SCHEMA_VERSION,
+            "normalization_version": NORMALIZATION_VERSION,
+            "run_id": "sha256:" + "e" * 64,
+        }
+        manifests = tuple(sorted(receipt_root.glob("served-*/manifest.json")))
+        assert len(manifests) == 1
+        return derive_per_query_receipt_coverage_from_artifacts(
+            ledger_path=ledger_path,
+            receipt_root=receipt_root,
+            receipt_manifest_index=ReceiptManifestIndex(
+                ledger_start_offset=0,
+                ledger_final_offset=ledger_path.stat().st_size,
+                ledger_start_prev_hash=GENESIS_PREV_HASH,
+                ledger_final_head=head_hash(ledger_entries),
+                manifest_paths=manifests,
+            ),
+            run_header=context,
+            claim_context=dict(context),
+            verify_manifest=verify_manifest,
+        )
+
+    matching = run_case("matching", pending_query)
+    cross_bound = run_case("cross-bound", "different receipt query")
+
+    assert matching.coverage_present is True
+    assert matching.verified_bound == 1
+    assert cross_bound.coverage_present is False
+    assert cross_bound.verified_bound == 0
+    assert cross_bound.forged_or_unbound == 1
+    public = json.dumps(cross_bound._asdict(), sort_keys=True)
+    assert "DO_NOT_LEAK" not in public
+    assert str(tmp_path) not in public
 
 
 def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(

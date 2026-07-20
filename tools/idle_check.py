@@ -20,12 +20,56 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN
-from waggledance.core.work_queue import resolve_bridge_root
+from waggledance.core.work_queue import TASK_ID_PATTERN, resolve_bridge_root
+from tools.bridge_next_action import (
+    _event_agent,
+    _event_recipients,
+    _event_status,
+    _event_type,
+    _is_answer_like,
+    _is_request_like,
+    _task_id,
+)
 
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_CLAIMS_DIR = Path(".agent-bridge") / "work_queue" / "claims"
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
+CANONICAL_RCO_SCHEMA = "wd.exact_head_consensus_request.v1"
+REQUESTER_TERMINAL_STATUS_STEMS = (
+    "done",
+    "closed",
+    "superseded",
+    "merged",
+    "abandoned",
+    "completed",
+    "approved",
+    "cancelled",
+    "canceled",
+)
+REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS = (
+    "closed",
+    "superseded",
+    "cancelled",
+    "canceled",
+)
+NONTERMINAL_STATUS_TOKENS = frozenset(
+    {
+        "cannot",
+        "failed",
+        "failure",
+        "incomplete",
+        "never",
+        "not",
+        "notyet",
+        "open",
+        "pending",
+        "progress",
+        "unresolved",
+        "working",
+    }
+)
+UNRESOLVED_TARGET = "__unresolved_deliberation_target__"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -248,21 +292,89 @@ def _line_sha256(line: str) -> str:
 
 
 def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:
-    open_by_key: dict[tuple[str, str], dict[str, str]] = {}
+    """Return open scout/RCO requests using bridge-next-action semantics.
+
+    The idle detector is a global HOLD gate, so a multi-recipient RCO request
+    remains open until every addressed RCO identity emits its own later,
+    answer-like event (or the requester explicitly closes/withdraws it).
+    Exact-head requests additionally require the response payload to bind the
+    same head. This mirrors agent-facing request routing instead of treating
+    any same-task event as a response.
+    """
+
+    open_by_key: dict[tuple[str, str, str], dict[str, str]] = {}
     for event in events:
-        task_id = str(event.get("task_id", ""))
-        kind = _request_kind(event)
-        if kind and task_id:
-            open_by_key[(kind, task_id)] = {
+        canonical_schema = _event_schema(event) == CANONICAL_RCO_SCHEMA
+        strict_contract = canonical_schema or _is_near_canonical_rco_request(event)
+        raw_task_id = _literal_task_id(event) if strict_contract else _task_id(event)
+        task_id = (
+            raw_task_id
+            if raw_task_id.strip()
+            else _invalid_canonical_task_id(event)
+        )
+        canonical_contract_valid = _valid_canonical_rco_contract(event)
+        required_signal = (
+            _required_rco_signal(event) if canonical_contract_valid else {}
+        )
+        required_response_payload = required_signal.get("payload")
+        if not isinstance(required_response_payload, Mapping):
+            required_response_payload = {}
+        for kind, target_agent in _request_targets(event):
+            if not task_id:
+                continue
+            open_by_key[(kind, task_id, target_agent)] = {
                 "kind": kind,
                 "task_id": task_id,
+                "target_agent": target_agent,
+                "request_agent": (
+                    _literal_event_agent(event)
+                    if strict_contract
+                    else _event_agent(event)
+                ),
+                "request_head": _event_head(event),
+                "canonical_schema": "true" if strict_contract else "false",
+                "canonical_contract": (
+                    "valid" if canonical_contract_valid else "absent_or_invalid"
+                ),
+                "required_response_type": str(
+                    required_signal.get("type") or ""
+                ).lower(),
+                "required_response_status": str(
+                    required_signal.get("status") or ""
+                ).lower(),
+                "required_message_token": str(
+                    required_signal.get("message_must_contain_head") or ""
+                ).lower(),
+                "required_response_payload_json": json.dumps(
+                    dict(required_response_payload),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "persistent_hold": (
+                    "true"
+                    if kind == "rco"
+                    and (
+                        target_agent == UNRESOLVED_TARGET
+                        or _event_head(event)
+                        or canonical_schema
+                    )
+                    else "false"
+                ),
                 "opened_at_utc": _iso(event["_ts"]),
             }
-            continue
-        for key in list(open_by_key):
-            if key[1] == task_id and _closes_request(key[0], event):
+        for key, request in list(open_by_key.items()):
+            if _closes_request(request, event):
                 del open_by_key[key]
     return list(open_by_key.values())
+
+
+def _invalid_canonical_task_id(event: Mapping[str, Any]) -> str:
+    if (
+        _event_schema(event) != CANONICAL_RCO_SCHEMA
+        and not _is_near_canonical_rco_request(event)
+    ):
+        return ""
+    return f"invalid-canonical-request-line-{event.get('_line_no', 'unknown')}"
 
 
 def _fresh_and_stale_requests(
@@ -273,6 +385,9 @@ def _fresh_and_stale_requests(
     fresh: list[dict[str, str]] = []
     stale: list[dict[str, str]] = []
     for request in requests:
+        if request.get("persistent_hold") == "true":
+            fresh.append(request)
+            continue
         opened_at = _parse_utc(request["opened_at_utc"])
         (stale if now_utc - opened_at > max_age else fresh).append(request)
     return fresh, stale
@@ -346,33 +461,502 @@ def _claim_kind(claim: dict[str, Any]) -> str | None:
     return "scout" if "scout" in text else "rco" if "rco" in text else None
 
 
-def _request_kind(event: dict[str, Any]) -> str | None:
-    status = str(event.get("status", "")).lower()
+def _request_targets(event: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Classify deliberation targets without broad ``*claude*`` matching."""
+
+    canonical_schema = _event_schema(event) == CANONICAL_RCO_SCHEMA
+    requester = (
+        _literal_event_agent(event) if canonical_schema else _event_agent(event)
+    )
+    raw_recipients = (
+        _literal_recipients(event)
+        if canonical_schema
+        else _event_recipients(event)
+    )
+    recipients = tuple(
+        dict.fromkeys(
+            recipient
+            for recipient in raw_recipients
+            if recipient not in {requester, "operator", "system"}
+        )
+    )
+    if canonical_schema:
+        if not _valid_canonical_rco_contract(event):
+            return [("rco", UNRESOLVED_TARGET)]
+        eligible_rco_agents = _eligible_rco_agents(event)
+        targets = [
+            ("rco", recipient)
+            for recipient in recipients
+            if recipient in eligible_rco_agents
+        ]
+        return targets or [("rco", UNRESOLVED_TARGET)]
+    if _is_near_canonical_rco_request(event):
+        return [("rco", UNRESOLVED_TARGET)]
+
+    if not _is_request_like(event):
+        return []
+    status = _event_status(event)
     if status in {"request_scout", "scout_requested"}:
-        return "scout"
+        return _deliberation_targets("scout", recipients)
     if status == "rco_requested":
-        return "rco"
-    return None
+        return _deliberation_targets("rco", recipients)
+
+    if _event_type(event) not in {"wake_request", "peer_review_request"}:
+        return []
+    targets = [
+        ("rco", recipient)
+        for recipient in recipients
+        if "rco" in _identity_tokens(recipient)
+    ]
+    if targets:
+        return targets
+    return []
 
 
-def _closes_request(kind: str, event: dict[str, Any]) -> bool:
-    status = str(event.get("status", "")).lower()
-    if _request_kind(event) is not None:
+def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
         return False
-    if str(event.get("type", "")).lower() in {"decision", "done", "blocked", "release"}:
+    request_intent = _is_request_like(event) or payload.get("request_only") is True
+    if not request_intent:
+        return False
+    required_signals = payload.get("required_signals")
+    if (
+        "required_signals" in payload
+        and _has_rco_required_signal_marker(required_signals)
+    ):
+        return True
+    addressed_to_rco = any(
+        "rco" in _identity_tokens(recipient)
+        for recipient in _event_recipients(event)
+    )
+    canonical_task_id = payload.get("canonical_task_id")
+    head = payload.get("head")
+    control_evidence = any(
+        field in payload
+        for field in (
+            "schema",
+            "request_only",
+            "approval_asserted",
+            "required_signals",
+        )
+    )
+    bundled_contract = (
+        isinstance(canonical_task_id, str)
+        and bool(canonical_task_id)
+        and isinstance(head, str)
+        and bool(re.fullmatch(r"[0-9a-f]{40}", head))
+        and control_evidence
+    )
+    schema_value = payload.get("schema")
+    schema_text = str(schema_value).lower()
+    canonical_like_schema = (
+        "consensus" in schema_text or "exact_head" in schema_text
+    )
+    full_schema_token_present = CANONICAL_RCO_SCHEMA in schema_text
+    independent_canonical_evidence = addressed_to_rco or any(
+        field in payload
+        for field in (
+            "approval_asserted",
+            "canonical_task_id",
+            "head",
+            "request_only",
+            "required_signals",
+        )
+    )
+    malformed_schema_evidence = "schema" in payload and (
+        full_schema_token_present
+        or (canonical_like_schema and independent_canonical_evidence)
+    )
+    strong_bundle_presence = {
+        "approval_asserted",
+        "canonical_task_id",
+        "head",
+        "request_only",
+    }.issubset(payload)
+    return bundled_contract or strong_bundle_presence or malformed_schema_evidence
+
+
+def _has_rco_required_signal_marker(
+    value: object,
+    *,
+    scalar_allowed: bool = True,
+) -> bool:
+    if isinstance(value, str):
+        return scalar_allowed and value.strip().casefold() == "rco"
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if isinstance(key, str) and key.strip().casefold() == "rco":
+                return True
+            if isinstance(nested, Mapping) and _has_rco_required_signal_marker(
+                nested,
+                scalar_allowed=False,
+            ):
+                return True
+            if (
+                isinstance(nested, Sequence)
+                and not isinstance(nested, (str, bytes))
+                and _has_rco_required_signal_marker(
+                    nested,
+                    scalar_allowed=False,
+                )
+            ):
+                return True
+        return False
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(
+            _has_rco_required_signal_marker(
+                item,
+                scalar_allowed=(
+                    scalar_allowed
+                    and not isinstance(item, Mapping)
+                ),
+            )
+            for item in value
+        )
+    return False
+
+
+def _deliberation_targets(
+    kind: str,
+    recipients: Sequence[str],
+) -> list[tuple[str, str]]:
+    if recipients:
+        return [(kind, recipient) for recipient in recipients]
+    return [(kind, UNRESOLVED_TARGET)]
+
+
+def _eligible_rco_agents(event: Mapping[str, Any]) -> set[str]:
+    rco = _required_rco_signal(event)
+    eligible = rco.get("eligible_agents")
+    if not isinstance(eligible, Sequence) or isinstance(eligible, (str, bytes)):
+        return set()
+    return {
+        str(agent).strip().lower()
+        for agent in eligible
+        if str(agent).strip()
+    }
+
+
+def _required_rco_signal(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return {}
+    required_signals = payload.get("required_signals")
+    if not isinstance(required_signals, Mapping):
+        return {}
+    rco = required_signals.get("rco")
+    if not isinstance(rco, Mapping):
+        return {}
+    return rco
+
+
+def _valid_canonical_rco_contract(event: Mapping[str, Any]) -> bool:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    if payload.get("schema") != CANONICAL_RCO_SCHEMA:
+        return False
+    if event.get("type") != "wake_request" or event.get("status") != "review_requested":
+        return False
+    task_id = _literal_task_id(event)
+    request_agent = _literal_event_agent(event)
+    head = _literal_canonical_head(event)
+    if (
+        not task_id
+        or task_id != task_id.strip()
+        or not _is_safe_task_id(task_id)
+        or not request_agent
+        or not head
+    ):
+        return False
+    message = event.get("message")
+    if not isinstance(message, str) or head not in message:
+        return False
+    if payload.get("canonical_task_id") != task_id:
+        return False
+    if payload.get("request_only") is not True:
+        return False
+    if payload.get("approval_asserted") is not False:
+        return False
+
+    rco = _required_rco_signal(event)
+    eligible = rco.get("eligible_agents")
+    if not isinstance(eligible, Sequence) or isinstance(eligible, (str, bytes)):
+        return False
+    eligible_agents = list(eligible)
+    if not eligible_agents or any(
+        not isinstance(agent, str)
+        or agent != agent.strip().lower()
+        or not re.fullmatch(AGENT_ID_PATTERN, agent)
+        or "rco" not in _identity_tokens(agent)
+        for agent in eligible_agents
+    ):
+        return False
+    if len(set(eligible_agents)) != len(eligible_agents):
+        return False
+    literal_recipients = _literal_recipients(event)
+    if not literal_recipients:
+        return False
+    addressed_rco_agents = {
+        recipient
+        for recipient in literal_recipients
+        if recipient not in {request_agent, "operator", "system"}
+        and "rco" in _identity_tokens(recipient)
+    }
+    if addressed_rco_agents != set(eligible_agents):
+        return False
+    if rco.get("type") != "decision":
+        return False
+    if rco.get("status") != "rco_pass":
+        return False
+    if rco.get("task_id") != task_id:
+        return False
+    if rco.get("message_must_contain_head") != head:
+        return False
+    response_payload = rco.get("payload")
+    return (
+        _is_safe_response_payload_template(response_payload)
+        and response_payload.get("head") == head
+        and response_payload.get("canonical_task_id") == task_id
+        and response_payload.get("operator_gated") is True
+    )
+
+
+def _is_safe_response_payload_template(value: object) -> bool:
+    if not isinstance(value, Mapping) or not value:
+        return False
+    return all(
+        isinstance(key, str)
+        and bool(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key))
+        and type(item) in {str, bool, int}
+        for key, item in value.items()
+    )
+
+
+def _identity_tokens(agent: str) -> set[str]:
+    return {token for token in re.split(r"[^a-z0-9]+", agent.lower()) if token}
+
+
+def _event_head(event: Mapping[str, Any]) -> str:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return ""
+    return str(payload.get("head") or "").strip().lower()
+
+
+def _literal_canonical_head(event: Mapping[str, Any]) -> str:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return ""
+    head = payload.get("head")
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+        return ""
+    return head
+
+
+def _literal_task_id(event: Mapping[str, Any]) -> str:
+    task_id = event.get("task_id")
+    return task_id if isinstance(task_id, str) else ""
+
+
+def _is_safe_task_id(task_id: str) -> bool:
+    return bool(TASK_ID_PATTERN.fullmatch(task_id)) and all(
+        segment not in {"", ".", ".."} for segment in task_id.split("/")
+    )
+
+
+def _literal_event_agent(event: Mapping[str, Any]) -> str:
+    agent = event.get("agent")
+    if (
+        not isinstance(agent, str)
+        or agent != agent.strip().lower()
+        or not re.fullmatch(AGENT_ID_PATTERN, agent)
+    ):
+        return ""
+    return agent
+
+
+def _literal_recipients(event: Mapping[str, Any]) -> tuple[str, ...]:
+    raw_to = event.get("to")
+    if not isinstance(raw_to, str) or not raw_to:
+        return ()
+    recipients = tuple(raw_to.split(","))
+    if len(set(recipients)) != len(recipients) or any(
+        recipient != recipient.lower()
+        or not re.fullmatch(AGENT_ID_PATTERN, recipient)
+        for recipient in recipients
+    ):
+        return ()
+    return recipients
+
+
+def _event_schema(event: Mapping[str, Any]) -> str:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return ""
+    return str(payload.get("schema") or "").strip().lower()
+
+
+def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> bool:
+    canonical_schema = request.get("canonical_schema") == "true"
+    event_task_id = (
+        _literal_task_id(event) if canonical_schema else _task_id(event)
+    )
+    if event_task_id != request["task_id"]:
+        return False
+    if event["_ts"] <= _parse_utc(request["opened_at_utc"]):
+        return False
+    target_event_agent = (
+        _literal_event_agent(event) if canonical_schema else _event_agent(event)
+    )
+    target_answer = (
+        request["target_agent"] != UNRESOLVED_TARGET
+        and target_event_agent == request["target_agent"]
+    )
+    requester_closure = (
+        _literal_event_agent(event) == request["request_agent"]
+        and _is_requester_closure_event(event)
+    )
+    if requester_closure:
+        return True
+    if not target_answer:
+        return False
+    answer_like = (
+        _is_answer_like(event)
+        if canonical_schema
+        else _is_legacy_target_answer(request, event)
+    )
+    if not answer_like:
+        return False
+    request_head = request.get("request_head", "")
+    response_head = (
+        _literal_canonical_head(event) if canonical_schema else _event_head(event)
+    )
+    if request_head and response_head != request_head:
+        return False
+    if target_answer and request_head and request["kind"] == "rco":
+        return _is_valid_exact_head_rco_response(request, event)
+    return True
+
+
+def _is_requester_closure_event(event: Mapping[str, Any]) -> bool:
+    event_type = event.get("type")
+    status = event.get("status")
+    if not isinstance(event_type, str) or not isinstance(status, str):
+        return False
+    if event_type != event_type.lower() or status != status.lower():
+        return False
+    stems = (
+        REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS
+        if event_type == "message"
+        else REQUESTER_TERMINAL_STATUS_STEMS
+    )
+    if event_type not in {"message", "done", "release", "decision"}:
+        return False
+    normalized_status = status
+    status_tokens = _identity_tokens(normalized_status)
+    if status_tokens & NONTERMINAL_STATUS_TOKENS:
+        return False
+    # Preserve the tracked close helper's explicit requester receipt contract.
+    if event_type == "decision" and normalized_status == "rco_closed_postmerge":
+        return True
+    return any(
+        normalized_status == stem or normalized_status.startswith(f"{stem}_")
+        for stem in stems
+    )
+
+
+def _is_legacy_target_answer(
+    request: Mapping[str, str],
+    event: Mapping[str, Any],
+) -> bool:
+    event_type = _event_type(event)
+    status = _event_status(event)
+    if event_type == "message" and (
+        _identity_tokens(status) & NONTERMINAL_STATUS_TOKENS
+    ):
+        return False
+    if _request_targets(event):
+        return False
+    if _is_answer_like(event):
+        return True
+    if event_type in {"decision", "done", "blocked", "release"}:
         return True
     markers = {
         "scout": ("scout_", "answered", "recommend", "blocked", "done"),
         "rco": ("rco_", "source_review", "pass", "blocked", "done"),
     }
-    return any(marker in status for marker in markers[kind])
+    return any(marker in status for marker in markers[request["kind"]])
+
+
+def _is_valid_exact_head_rco_response(
+    request: Mapping[str, str],
+    event: Mapping[str, Any],
+) -> bool:
+    if request.get("canonical_contract") == "valid":
+        payload = event.get("payload")
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("canonical_task_id") != request["task_id"]
+            or event.get("to") != request["request_agent"]
+        ):
+            return False
+        try:
+            required_payload = json.loads(
+                request.get("required_response_payload_json") or "{}"
+            )
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(required_payload, dict) or any(
+            key not in payload
+            or type(payload[key]) is not type(expected)
+            or payload[key] != expected
+            for key, expected in required_payload.items()
+        ):
+            return False
+
+    strict_canonical = request.get("canonical_contract") == "valid"
+    event_type = (
+        str(event.get("type") or "") if strict_canonical else _event_type(event)
+    )
+    status = (
+        str(event.get("status") or "")
+        if strict_canonical
+        else _event_status(event)
+    )
+    required_message_token = (
+        request.get("required_message_token") or request["request_head"]
+    )
+    raw_message = event.get("message")
+    if strict_canonical and not isinstance(raw_message, str):
+        return False
+    message = str(raw_message or "")
+    if not strict_canonical:
+        message = message.lower()
+    if required_message_token not in message:
+        return False
+    if event_type == "finding" and status == "changes_requested":
+        return True
+
+    required_type = request.get("required_response_type") or "decision"
+    required_status = request.get("required_response_status") or "rco_pass"
+    if event_type != required_type or status != required_status:
+        return False
+    return True
 
 
 def _request_criterion(
     requests: list[dict[str, str]],
     kind: str,
 ) -> dict[str, Any]:
-    task_ids = [request["task_id"] for request in requests if request["kind"] == kind]
+    task_ids = list(
+        dict.fromkeys(
+            request["task_id"]
+            for request in requests
+            if request["kind"] == kind
+        )
+    )
     return {"ok": not task_ids, "task_ids": task_ids}
 
 

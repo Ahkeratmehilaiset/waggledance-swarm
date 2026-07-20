@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 from contextlib import redirect_stdout
+from typing import Any
 
 import pytest
 
@@ -26,6 +27,7 @@ def _event(
     status: str = "note",
     to: str = "claude",
     message: str = "Substantive bridge content that should count as agent activity.",
+    payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "ts_utc": ts_utc,
@@ -41,7 +43,7 @@ def _event(
         "run_id": "",
         "pid": 1234,
         "cwd": "C:\\Python\\project2-master",
-        "payload": {},
+        "payload": payload or {},
     }
 
 
@@ -311,6 +313,18 @@ def test_open_scout_or_rco_request_keeps_bridge_active_until_answered(tmp_path: 
     payload = _run(tmp_path, answered_scout)
     assert payload["decision"] == "idle"
 
+    recommended_scout = open_scout + [
+        _event(
+            ts_utc="2026-05-17T10:10:00Z",
+            agent="claude",
+            task_id="claude-scout-idle-dreaming",
+            status="scout_recommendation",
+            message="Scout recommends the smallest safe implementation slice.",
+        )
+    ]
+    payload = _run(tmp_path, recommended_scout)
+    assert payload["decision"] == "idle"
+
     open_rco = _base_idle_events() + [
         _event(
             ts_utc="2026-05-17T10:00:00Z",
@@ -323,6 +337,1358 @@ def test_open_scout_or_rco_request_keeps_bridge_active_until_answered(tmp_path: 
     payload = _run(tmp_path, open_rco)
     assert payload["decision"] == "active"
     assert "open_rco_requests" in payload["blockers"]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("decision", "completed"),
+        ("blocked", "note"),
+        ("release", "released"),
+    ],
+)
+def test_legacy_rco_target_terminal_reply_shapes_still_close(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
+    task_id = f"legacy-rco-{event_type}-{status}"
+    request = _event(
+        ts_utc="2026-05-17T10:00:00Z",
+        agent="claude",
+        type="handoff",
+        task_id=task_id,
+        status="rco_requested",
+        to="codex",
+        message="Legacy RCO review requested.",
+    )
+    response = _event(
+        ts_utc="2026-05-17T10:10:00Z",
+        agent="codex",
+        type=event_type,
+        task_id=task_id,
+        status=status,
+        to="claude",
+        message="Legacy target emitted a substantive terminal reply.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, response])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "status"),
+    [
+        ("rco", "not_done"),
+        ("rco", "never_done"),
+        ("rco", "rco_not_pass"),
+        ("rco", "rco_pass_failed"),
+        ("rco", "rco_pass_failure"),
+        ("rco", "cannot_pass"),
+        ("rco", "working_done"),
+        ("rco", "pending_done"),
+        ("rco", "unresolved_done"),
+        ("rco", "incomplete_done"),
+        ("scout", "scout_not_answered"),
+    ],
+)
+def test_legacy_target_message_with_negated_status_does_not_close(
+    tmp_path: Path,
+    kind: str,
+    status: str,
+) -> None:
+    task_id = f"legacy-{kind}-negative-{status}"
+    request_status = "request_scout" if kind == "scout" else "rco_requested"
+    request = _event(
+        ts_utc="2026-05-17T10:00:00Z",
+        agent="codex",
+        type="handoff",
+        task_id=task_id,
+        status=request_status,
+        to="claude",
+        message=f"Legacy {kind} request.",
+    )
+    negated_reply = _event(
+        ts_utc="2026-05-17T10:10:00Z",
+        agent="claude",
+        type="message",
+        task_id=task_id,
+        status=status,
+        to="codex",
+        message="This status explicitly negates completion.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, negated_reply])
+
+    criterion = f"open_{kind}_requests"
+    assert report["criteria"][criterion]["task_ids"] == [task_id]
+
+
+def test_legacy_rco_pass_message_can_close_without_message_body(
+    tmp_path: Path,
+) -> None:
+    task_id = "legacy-rco-empty-pass-message"
+    request = _event(
+        ts_utc="2026-05-17T10:00:00Z",
+        agent="codex",
+        type="handoff",
+        task_id=task_id,
+        status="rco_requested",
+        to="claude",
+        message="Legacy RCO request.",
+    )
+    response = _event(
+        ts_utc="2026-05-17T10:10:00Z",
+        agent="claude",
+        type="message",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex",
+        message="",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, response])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_canonical_wake_review_request_blocks_for_each_addressed_rco(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/bridge-reader-c0-20260720"
+    head = "d0a8b4ce8b13ae4c6a0548df0990deee2c41af91"
+    request = _canonical_rco_request(
+        task_id=task_id,
+        head=head,
+        to="codex-tools-1,claude-rco-1,claude-rco-2",
+        eligible_agents=("claude-rco-1", "claude-rco-2"),
+    )
+    rco_1_pass = _event(
+        ts_utc="2026-05-17T11:10:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message=f"RCO PASS at exact head {head}.",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+    rco_2_changes = _event(
+        ts_utc="2026-05-17T11:11:00Z",
+        agent="claude-rco-2",
+        type="finding",
+        task_id=task_id,
+        status="changes_requested",
+        to="codex-lead-1",
+        message=f"RCO changes requested at exact head {head}.",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+
+    open_report = _run(tmp_path, _base_idle_events() + [request])
+    one_response_report = _run(
+        tmp_path,
+        _base_idle_events() + [request, rco_1_pass],
+    )
+    closed_report = _run(
+        tmp_path,
+        _base_idle_events() + [request, rco_1_pass, rco_2_changes],
+    )
+
+    assert open_report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert one_response_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        task_id
+    ]
+    assert closed_report["criteria"]["open_rco_requests"] == {
+        "ok": True,
+        "task_ids": [],
+    }
+    assert closed_report["decision"] == "idle"
+
+
+def _canonical_rco_request(
+    *,
+    task_id: str,
+    head: str,
+    ts_utc: str = "2026-05-17T11:00:00Z",
+    to: str = "codex-tools-1,claude-rco-1",
+    eligible_agents: tuple[str, ...] = ("claude-rco-1",),
+    pr: int = 1544,
+) -> dict[str, object]:
+    return _event(
+        ts_utc=ts_utc,
+        agent="codex-lead-1",
+        type="wake_request",
+        task_id=task_id,
+        status="review_requested",
+        to=to,
+        message=f"Exact-head formal consensus review requested at {head}.",
+        payload={
+            "schema": "wd.exact_head_consensus_request.v1",
+            "request_only": True,
+            "approval_asserted": False,
+            "pr": pr,
+            "canonical_task_id": task_id,
+            "head": head,
+            "operator_review_required": True,
+            "required_signals": {
+                "build_tools": {
+                    "agent": "codex-tools-1",
+                    "type": "decision",
+                    "status": "build_consensus_pass",
+                    "task_id": task_id,
+                    "payload_head": head,
+                },
+                "rco": {
+                    "eligible_agents": list(eligible_agents),
+                    "type": "decision",
+                    "status": "rco_pass",
+                    "task_id": task_id,
+                    "message_must_contain_head": head,
+                    "payload": {
+                        "head": head,
+                        "canonical_task_id": task_id,
+                        "operator_gated": True,
+                    },
+                },
+            },
+        },
+    )
+def test_canonical_rco_response_must_be_fresh_same_task_identity_and_head(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/python-v1-writer-migration-20260720"
+    head = "599de71a93bfd46ca133e3fbf7eae1f37d21f149"
+    request = _canonical_rco_request(
+        task_id=task_id,
+        head=head,
+        to="codex-tools-1,claude-rco-1",
+        pr=1546,
+    )
+    invalid_responses = [
+        _event(
+            ts_utc="2026-05-17T10:59:59Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            payload={"head": head},
+        ),
+        _event(
+            ts_utc="2026-05-17T11:02:00Z",
+            agent="codex-tools-1",
+            type="decision",
+            task_id=task_id,
+            status="build_consensus_pass",
+            payload={"head": head},
+        ),
+        _event(
+            ts_utc="2026-05-17T11:03:00Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id="codex-lead-1/different-review-task",
+            status="rco_pass",
+            payload={"head": head},
+        ),
+        _event(
+            ts_utc="2026-05-17T11:04:00Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            payload={"head": "0000000000000000000000000000000000000000"},
+        ),
+        _event(
+            ts_utc="2026-05-17T11:05:00Z",
+            agent="claude-rco-1",
+            type="message",
+            task_id=task_id,
+            status="received",
+            message=f"Received exact-head request {head}.",
+            payload={"head": head},
+        ),
+        _event(
+            ts_utc="2026-05-17T11:06:00Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            message=f"RCO PASS at exact head {head}.",
+            payload={"head": head, "canonical_task_id": "different-task"},
+        ),
+    ]
+
+    report = _run(tmp_path, _base_idle_events() + invalid_responses + [request])
+
+    assert report["decision"] == "active"
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+def test_rco_target_contract_mismatch_holds_fail_closed(tmp_path: Path) -> None:
+    targetless = _event(
+        ts_utc="2026-05-16T10:00:00Z",
+        type="handoff",
+        task_id="targetless-rco-request",
+        status="rco_requested",
+        to="",
+        message="RCO review requested, but the target is missing.",
+    )
+    mismatch_task = "canonical-rco-target-mismatch"
+    mismatch_head = "1111111111111111111111111111111111111111"
+    canonical_mismatch = _canonical_rco_request(
+        task_id=mismatch_task,
+        head=mismatch_head,
+        to="codex-tools-1",
+    )
+    partial_task = "canonical-rco-partial-target-mismatch"
+    partial_mismatch = _canonical_rco_request(
+        task_id=partial_task,
+        head=mismatch_head,
+        to="codex-tools-1,claude-rco-1,claude-rco-2",
+        eligible_agents=("claude-rco-1",),
+    )
+    partial_response = _event(
+        ts_utc="2026-05-17T11:10:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=partial_task,
+        status="rco_pass",
+        message=f"RCO PASS at exact head {mismatch_head}.",
+        payload={"head": mismatch_head, "canonical_task_id": partial_task},
+    )
+
+    targetless_report = _run(tmp_path, _base_idle_events() + [targetless])
+    mismatch_report = _run(tmp_path, _base_idle_events() + [canonical_mismatch])
+    partial_report = _run(
+        tmp_path,
+        _base_idle_events() + [partial_mismatch, partial_response],
+    )
+
+    assert targetless_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        "targetless-rco-request"
+    ]
+    assert "targetless-rco-request" not in targetless_report["criteria"][
+        "stale_open_requests_ignored"
+    ]["task_ids"]
+    assert mismatch_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        mismatch_task
+    ]
+    assert partial_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        partial_task
+    ]
+
+
+def test_malformed_canonical_rco_contracts_hold_unresolved(tmp_path: Path) -> None:
+    head = "6666666666666666666666666666666666666666"
+
+    def request(task_id: str) -> dict[str, Any]:
+        return json.loads(
+            json.dumps(_canonical_rco_request(task_id=task_id, head=head))
+        )
+
+    missing_head = request("canonical-missing-head")
+    missing_head["payload"].pop("head")
+
+    tools_as_rco = request("canonical-tools-as-rco")
+    tools_as_rco["to"] = "codex-tools-1"
+    tools_as_rco["payload"]["required_signals"]["rco"]["eligible_agents"] = [
+        "codex-tools-1"
+    ]
+
+    duplicate_eligible = request("canonical-duplicate-eligible")
+    duplicate_eligible["payload"]["required_signals"]["rco"][
+        "eligible_agents"
+    ] = ["claude-rco-1", "claude-rco-1"]
+
+    weak_signal = request("canonical-weak-signal")
+    weak_rco = weak_signal["payload"]["required_signals"]["rco"]
+    weak_rco["type"] = "message"
+    weak_rco["status"] = "acknowledged"
+    weak_rco["message_must_contain_head"] = "ack"
+
+    non_mapping_template = request("canonical-non-mapping-template")
+    non_mapping_template["payload"]["required_signals"]["rco"]["payload"] = [
+        head
+    ]
+    missing_operator_template = request("canonical-missing-operator-template")
+    missing_operator_template["payload"]["required_signals"]["rco"][
+        "payload"
+    ].pop("operator_gated")
+    false_operator_template = request("canonical-false-operator-template")
+    false_operator_template["payload"]["required_signals"]["rco"]["payload"][
+        "operator_gated"
+    ] = False
+    unsafe_template_value = request("canonical-unsafe-template-value")
+    unsafe_template_value["payload"]["required_signals"]["rco"]["payload"][
+        "review_scope"
+    ] = ["source", "tests"]
+
+    mismatched_task = request("canonical-event-task")
+    mismatch_payload = mismatched_task["payload"]
+    mismatch_payload["canonical_task_id"] = "canonical-different-task"
+    mismatch_rco = mismatch_payload["required_signals"]["rco"]
+    mismatch_rco["task_id"] = "canonical-different-task"
+    mismatch_rco["payload"]["canonical_task_id"] = "canonical-different-task"
+
+    wrong_type = request("canonical-wrong-type")
+    wrong_type["type"] = "finding"
+    wrong_status = request("canonical-wrong-status")
+    wrong_status["status"] = "note"
+
+    missing_message = request("canonical-missing-message")
+    missing_message.pop("message")
+    non_string_message = request("canonical-non-string-message")
+    non_string_message["message"] = 42
+    list_message = request("canonical-list-message")
+    list_message["message"] = [head]
+    message_without_head = request("canonical-message-without-head")
+    message_without_head["message"] = "Exact-head consensus review requested."
+
+    missing_agent = request("canonical-missing-agent")
+    missing_agent.pop("agent")
+    missing_agent["author"] = "codex-lead-1"
+
+    uppercase_schema = request("canonical-uppercase-schema")
+    uppercase_schema["payload"]["schema"] = "WD.EXACT_HEAD_CONSENSUS_REQUEST.V1"
+
+    unsafe_task = request("../unsafe")
+
+    uppercase_to = request("canonical-uppercase-to")
+    uppercase_to["to"] = "codex-tools-1,CLAUDE-RCO-1"
+    spaced_to = request("canonical-spaced-to")
+    spaced_to["to"] = "codex-tools-1, claude-rco-1"
+
+    alpha_head = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    uppercase_head = _canonical_rco_request(
+        task_id="canonical-uppercase-head",
+        head=alpha_head.upper(),
+    )
+    wrapped_head = _canonical_rco_request(
+        task_id="canonical-wrapped-head",
+        head=alpha_head,
+    )
+    wrapped_head["payload"]["head"] = f" {alpha_head} "
+
+    uppercase_signal = _canonical_rco_request(
+        task_id="canonical-uppercase-signal",
+        head=alpha_head,
+    )
+    uppercase_signal_rco = uppercase_signal["payload"]["required_signals"][
+        "rco"
+    ]
+    uppercase_signal_rco["type"] = "DECISION"
+    uppercase_signal_rco["status"] = "RCO_PASS"
+    uppercase_signal_rco["message_must_contain_head"] = alpha_head.upper()
+    uppercase_signal_rco["payload"]["head"] = alpha_head.upper()
+
+    wrapped_task = request(" canonical-wrapped-task ")
+
+    for malformed in (
+        missing_head,
+        tools_as_rco,
+        duplicate_eligible,
+        weak_signal,
+        non_mapping_template,
+        missing_operator_template,
+        false_operator_template,
+        unsafe_template_value,
+        mismatched_task,
+        wrong_type,
+        wrong_status,
+        missing_message,
+        non_string_message,
+        list_message,
+        message_without_head,
+        missing_agent,
+        uppercase_schema,
+        unsafe_task,
+        uppercase_to,
+        spaced_to,
+        uppercase_head,
+        wrapped_head,
+        uppercase_signal,
+        wrapped_task,
+    ):
+        task_id = str(malformed["task_id"])
+        ack = _event(
+            ts_utc="2026-05-17T11:05:00Z",
+            agent="claude-rco-1",
+            type="message",
+            task_id=task_id,
+            status="acknowledged",
+            message=f"Acknowledged request at {head}.",
+            payload={"head": head, "canonical_task_id": task_id},
+        )
+        tools_pass = _event(
+            ts_utc="2026-05-17T11:06:00Z",
+            agent="codex-tools-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            message=f"RCO PASS at exact head {head}.",
+            payload={"head": head, "canonical_task_id": task_id},
+        )
+
+        report = _run(
+            tmp_path,
+            _base_idle_events() + [malformed, ack, tools_pass],
+        )
+
+        assert report["decision"] == "active"
+        assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+    missing_task = request("canonical-missing-event-task")
+    missing_task["task_id"] = ""
+    missing_task_report = _run(tmp_path, _base_idle_events() + [missing_task])
+    missing_task_ids = missing_task_report["criteria"]["open_rco_requests"][
+        "task_ids"
+    ]
+    assert missing_task_report["decision"] == "active"
+    assert len(missing_task_ids) == 1
+    assert missing_task_ids[0].startswith("invalid-canonical-request-line-")
+
+    whitespace_task = request("canonical-whitespace-event-task")
+    whitespace_task["task_id"] = "   "
+    whitespace_task_report = _run(
+        tmp_path,
+        _base_idle_events() + [whitespace_task],
+    )
+    whitespace_task_ids = whitespace_task_report["criteria"][
+        "open_rco_requests"
+    ]["task_ids"]
+    assert whitespace_task_report["decision"] == "active"
+    assert len(whitespace_task_ids) == 1
+    assert whitespace_task_ids[0].startswith("invalid-canonical-request-line-")
+
+
+def test_canonical_aliases_cannot_supply_task_or_agent_identity(
+    tmp_path: Path,
+) -> None:
+    head = "7777777777777777777777777777777777777777"
+
+    request_with_id_alias = _canonical_rco_request(
+        task_id="canonical-request-id-alias",
+        head=head,
+    )
+    request_with_id_alias["task_id"] = ""
+    request_with_id_alias["id"] = "canonical-request-id-alias"
+    request_alias_report = _run(
+        tmp_path,
+        _base_idle_events() + [request_with_id_alias],
+    )
+    alias_task_ids = request_alias_report["criteria"]["open_rco_requests"][
+        "task_ids"
+    ]
+    assert request_alias_report["decision"] == "active"
+    assert len(alias_task_ids) == 1
+    assert alias_task_ids[0].startswith("invalid-canonical-request-line-")
+
+    request_with_author_alias = _canonical_rco_request(
+        task_id="canonical-request-author-alias",
+        head=head,
+    )
+    request_with_author_alias["author"] = request_with_author_alias.pop("agent")
+    request_author_report = _run(
+        tmp_path,
+        _base_idle_events() + [request_with_author_alias],
+    )
+    assert request_author_report["criteria"]["open_rco_requests"][
+        "task_ids"
+    ] == ["canonical-request-author-alias"]
+
+    task_id = "canonical-response-aliases"
+    valid_request = _canonical_rco_request(task_id=task_id, head=head)
+    id_alias_response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id="",
+        status="rco_pass",
+        message=f"RCO PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+    id_alias_response["id"] = task_id
+    author_alias_response = _event(
+        ts_utc="2026-05-17T11:06:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        message=f"RCO PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+    author_alias_response["author"] = author_alias_response.pop("agent")
+
+    response_alias_report = _run(
+        tmp_path,
+        _base_idle_events()
+        + [valid_request, id_alias_response, author_alias_response],
+    )
+    assert response_alias_report["criteria"]["open_rco_requests"][
+        "task_ids"
+    ] == [task_id]
+
+
+def test_near_canonical_requests_hold_unresolved_without_false_legacy_target(
+    tmp_path: Path,
+) -> None:
+    head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    near_requests: list[dict[str, Any]] = []
+
+    misspelled_schema = _canonical_rco_request(
+        task_id="near-canonical-misspelled-schema",
+        head=head,
+    )
+    misspelled_schema["payload"]["schema"] = (
+        "wd.exact_head_consensus_requset.v1"
+    )
+    near_requests.append(misspelled_schema)
+
+    non_string_schema = _canonical_rco_request(
+        task_id="near-canonical-non-string-schema",
+        head=head,
+    )
+    non_string_schema["payload"]["schema"] = [
+        "wd.exact_head_consensus_request.v1"
+    ]
+    near_requests.append(non_string_schema)
+
+    missing_schema = _canonical_rco_request(
+        task_id="near-canonical-missing-schema",
+        head=head,
+    )
+    missing_schema["payload"].pop("schema")
+    near_requests.append(missing_schema)
+
+    tools_only_contract = _canonical_rco_request(
+        task_id="near-canonical-tools-only",
+        head=head,
+        to="codex-tools-1",
+    )
+    tools_only_contract["payload"]["schema"] = "wd.exact_head_consensus.v1"
+    near_requests.append(tools_only_contract)
+
+    bundled_tools_contract = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id="near-canonical-bundled-tools-only",
+        status="review_requested",
+        to="codex-tools-1",
+        message="Tools-only request carries a bundled canonical contract.",
+        payload={
+            "schema": "wd.exact_head_consensus_requset.v1",
+            "request_only": True,
+            "canonical_task_id": "near-canonical-bundled-tools-only",
+            "head": head,
+        },
+    )
+    near_requests.append(bundled_tools_contract)
+
+    type_confused_task_binding = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id="near-canonical-type-confused-task-binding",
+        status="review_requested",
+        to="codex-tools-1",
+        message="Canonical control bundle has a type-confused task binding.",
+        payload={
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": 7,
+            "head": head,
+        },
+    )
+    near_requests.append(type_confused_task_binding)
+
+    type_confused_head_binding = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id="near-canonical-type-confused-head-binding",
+        status="review_requested",
+        to="codex-tools-1",
+        message="Canonical control bundle has a type-confused head binding.",
+        payload={
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": "near-canonical-type-confused-head-binding",
+            "head": 7,
+        },
+    )
+    near_requests.append(type_confused_head_binding)
+
+    malformed_schema_rco_target = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id="near-canonical-malformed-schema-rco-target",
+        status="review_requested",
+        to="claude-rco-1",
+        message="RCO-targeted wake carries a malformed schema marker.",
+        payload={"schema": "wd.exact_head_consensus_requset.v1"},
+    )
+    near_requests.append(malformed_schema_rco_target)
+
+    for suffix, required_rco in (
+        ("lowercase-list", {"rco": []}),
+        ("lowercase-string", {"rco": "bad"}),
+        ("uppercase-mapping", {"RCO": {}}),
+        ("spaced-list", {" rco ": []}),
+        ("scalar-string", "rco"),
+        ("list-token", ["rco"]),
+        ("list-mapping-key", [{"RCO": {}}]),
+        ("nested-mapping-key", {"build_tools": {"RCO": {}}}),
+    ):
+        malformed_required_rco = _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            type="wake_request",
+            task_id=f"near-canonical-required-rco-{suffix}",
+            status="review_requested",
+            to="codex-tools-1",
+            message="Tools-only request carries a malformed RCO signal.",
+            payload={"required_signals": required_rco},
+        )
+        near_requests.append(malformed_required_rco)
+
+    for suffix, schema_value in (
+        ("list-token", ["wd.exact_head_consensus_request.v1"]),
+        ("mapping-token", {"value": "wd.exact_head_consensus_request.v1"}),
+    ):
+        schema_container_request = _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            type="wake_request",
+            task_id=f"near-canonical-schema-{suffix}",
+            status="review_requested",
+            to="codex-tools-1",
+            message="Tools-only request carries a canonical schema token.",
+            payload={"schema": schema_value},
+        )
+        near_requests.append(schema_container_request)
+
+    for request in near_requests:
+        task_id = str(request["task_id"])
+        apparent_response = _event(
+            ts_utc="2026-05-17T11:05:00Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            to="codex-lead-1",
+            message=f"RCO PASS at exact head {head}.",
+            payload={"head": head, "canonical_task_id": task_id},
+        )
+        report = _run(
+            tmp_path,
+            _base_idle_events() + [request, apparent_response],
+        )
+        assert report["criteria"]["open_rco_requests"]["task_ids"] == [
+            task_id
+        ]
+
+    legacy_rco_task = "legacy-explicit-rco-target"
+    legacy_rco_request = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id=legacy_rco_task,
+        status="review_requested",
+        to="claude-rco-1",
+        message="Genuine legacy RCO-targeted wake has no canonical evidence.",
+        payload={},
+    )
+    legacy_rco_response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=legacy_rco_task,
+        status="completed",
+        to="codex",
+        message="Legacy RCO target completed the review.",
+    )
+    legacy_rco_report = _run(
+        tmp_path,
+        _base_idle_events() + [legacy_rco_request, legacy_rco_response],
+    )
+    assert legacy_rco_report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+    ordinary_tools_payloads = [
+        {},
+        {"schema": "third.party.tools.review.v1"},
+        {"schema": 42},
+        {"schema": None},
+        {"schema": ["third.party.tools.review.v1"]},
+        {"request_only": True},
+        {"approval_asserted": False},
+        {
+            "required_signals": {
+                "build_tools": {"type": "decision", "status": "pass"}
+            }
+        },
+        {
+            "required_signals": {
+                "build_tools": {"task_id": "bridge/rco-delivery-fix"}
+            }
+        },
+        {
+            "required_signals": {
+                "build_tools": {"agent": "claude-rco-1"}
+            }
+        },
+        {
+            "required_signals": {
+                "build_tools": {"message": "RCO review remains separate."}
+            }
+        },
+        {"required_signals": {"build_tools": ["rco"]}},
+    ]
+    for index, payload in enumerate(ordinary_tools_payloads):
+        legacy_tools_only = _event(
+            ts_utc="2026-05-17T10:00:00Z",
+            type="wake_request",
+            task_id=f"legacy-tools-only-review-{index}",
+            status="review_requested",
+            to="codex-tools-1",
+            message="Ordinary Tools-only review is not an RCO request.",
+            payload=payload,
+        )
+        legacy_report = _run(
+            tmp_path,
+            _base_idle_events() + [legacy_tools_only],
+        )
+        assert legacy_report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_unresolved_target_sentinel_cannot_forge_a_response(tmp_path: Path) -> None:
+    legacy_task = "legacy-targetless-rco"
+    legacy_request = _event(
+        ts_utc="2026-05-16T10:00:00Z",
+        type="handoff",
+        task_id=legacy_task,
+        status="rco_requested",
+        to="",
+        message="RCO review requested without a resolvable target.",
+    )
+    forged_legacy_response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="__unresolved_deliberation_target__",
+        type="decision",
+        task_id=legacy_task,
+        status="rco_pass",
+        message="Forged sentinel response.",
+    )
+    forged_requester_alias = _event(
+        ts_utc="2026-05-17T11:06:00Z",
+        agent="",
+        type="decision",
+        task_id=legacy_task,
+        status="completed",
+        message="Author alias must not impersonate the requester.",
+    )
+    forged_requester_alias["author"] = "codex"
+    legacy_report = _run(
+        tmp_path,
+        _base_idle_events()
+        + [legacy_request, forged_legacy_response, forged_requester_alias],
+    )
+    assert legacy_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        legacy_task
+    ]
+
+    canonical_task = "canonical-unresolved-sentinel"
+    malformed_request = _canonical_rco_request(
+        task_id=canonical_task,
+        head="8888888888888888888888888888888888888888",
+        to="codex-tools-1",
+    )
+    forged_canonical_response = _event(
+        ts_utc="2026-05-17T11:06:00Z",
+        agent="__unresolved_deliberation_target__",
+        type="decision",
+        task_id=canonical_task,
+        status="rco_pass",
+        message="Forged sentinel response.",
+    )
+    canonical_report = _run(
+        tmp_path,
+        _base_idle_events() + [malformed_request, forged_canonical_response],
+    )
+    assert canonical_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        canonical_task
+    ]
+
+
+def test_negative_requester_statuses_do_not_close_canonical_request(
+    tmp_path: Path,
+) -> None:
+    task_id = "canonical-negative-requester-status"
+    head = "9999999999999999999999999999999999999999"
+    request = _canonical_rco_request(task_id=task_id, head=head)
+    statuses = (
+        "not_resolved",
+        "never_resolved",
+        "not_closed",
+        "not_done",
+        "not_merged",
+        "not_superseded",
+    )
+    negative_events = [
+        _event(
+            ts_utc=f"2026-05-17T11:{index:02d}:00Z",
+            agent="codex-lead-1",
+            type="decision",
+            task_id=task_id,
+            status=status,
+            message=f"Negative requester state: {status}.",
+        )
+        for index, status in enumerate(statuses, start=1)
+    ]
+    negative_events.extend(
+        [
+            _event(
+                ts_utc="2026-05-17T11:10:00Z",
+                agent="codex-lead-1",
+                type="release",
+                task_id=task_id,
+                status="not_done",
+                message="Release is explicitly not done.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:11:00Z",
+                agent="codex-lead-1",
+                type="done",
+                task_id=task_id,
+                status="never_resolved",
+                message="Done marker is explicitly negated.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:12:00Z",
+                agent="codex-lead-1",
+                type="done",
+                task_id=task_id,
+                status="working",
+                message="Done type alone is not a closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:13:00Z",
+                agent="codex-lead-1",
+                type="release",
+                task_id=task_id,
+                status="working",
+                message="Release type alone is not a closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:14:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="cannot_be_resolved",
+                message="This request cannot be resolved.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:15:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="notyet_resolved",
+                message="This request is not yet resolved.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:16:00Z",
+                agent="codex-lead-1",
+                type="message",
+                task_id=task_id,
+                status="resolved",
+                message="Message/resolved is not an approved requester closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:17:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="done_not",
+                message="A terminal stem with a negative suffix is not closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:18:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="completed_working",
+                message="A working suffix contradicts terminal completion.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:19:00Z",
+                agent="codex-lead-1",
+                type="message",
+                task_id=task_id,
+                status="cancelled_not",
+                message="A negative cancellation suffix is not closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:20:00Z",
+                agent="codex-lead-1",
+                type="DECISION",
+                task_id=task_id,
+                status="completed",
+                message="Uppercase event types are not canonical closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:21:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="COMPLETED",
+                message="Uppercase statuses are not canonical closure.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:22:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="done_cannot_complete",
+                message="Cannot-complete suffix contradicts done.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:23:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="completed_in_progress",
+                message="In-progress suffix contradicts completed.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:24:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="completed_failed",
+                message="Failed suffix contradicts completed.",
+            ),
+            _event(
+                ts_utc="2026-05-17T11:25:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="approved_failure",
+                message="Failure suffix contradicts approved.",
+            ),
+        ]
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request] + negative_events)
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("decision", "completed"),
+        ("decision", "cancelled"),
+        ("decision", "superseded_requested"),
+        ("message", "cancelled_by_requester"),
+    ],
+)
+def test_exact_positive_requester_closure_shapes_close_canonical_request(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
+    task_id = f"canonical-requester-{event_type}-{status}"
+    head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    request = _canonical_rco_request(task_id=task_id, head=head)
+    closure = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-lead-1",
+        type=event_type,
+        task_id=task_id,
+        status=status,
+        message="Requester emitted an approved terminal closure shape.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, closure])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_canonical_response_requires_strict_raw_head_type_and_status(
+    tmp_path: Path,
+) -> None:
+    task_id = "canonical-strict-response-fields"
+    head = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    request = _canonical_rco_request(task_id=task_id, head=head)
+    uppercase_head_response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        message=f"RCO PASS at exact head {head.upper()}.",
+        payload={"head": head.upper(), "canonical_task_id": task_id},
+    )
+    uppercase_signal_response = _event(
+        ts_utc="2026-05-17T11:06:00Z",
+        agent="claude-rco-1",
+        type="DECISION",
+        task_id=task_id,
+        status="RCO_PASS",
+        message=f"RCO PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+    wrapped_task_response = _event(
+        ts_utc="2026-05-17T11:07:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=f" {task_id} ",
+        status="rco_pass",
+        message=f"RCO PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+    non_string_message_response = _event(
+        ts_utc="2026-05-17T11:08:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message="placeholder",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+    non_string_message_response["message"] = [head]
+    empty_message_response = _event(
+        ts_utc="2026-05-17T11:08:30Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message="",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+    invalid_to_responses = [
+        _event(
+            ts_utc=f"2026-05-17T11:{minute:02d}:00Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            to=recipient,
+            message=f"RCO PASS at exact head {head}.",
+            payload={
+                "head": head,
+                "canonical_task_id": task_id,
+                "operator_gated": True,
+            },
+        )
+        for minute, recipient in enumerate(
+            ("", "operator", "CODEX-LEAD-1", "codex-lead-1,operator"),
+            start=9,
+        )
+    ]
+
+    report = _run(
+        tmp_path,
+        _base_idle_events()
+        + [
+            request,
+            uppercase_head_response,
+            uppercase_signal_response,
+            wrapped_task_response,
+            non_string_message_response,
+            empty_message_response,
+            *invalid_to_responses,
+        ],
+    )
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+def test_canonical_response_binds_every_required_payload_literal(
+    tmp_path: Path,
+) -> None:
+    task_id = "canonical-response-payload-template"
+    head = "cccccccccccccccccccccccccccccccccccccccc"
+    request = _canonical_rco_request(task_id=task_id, head=head)
+    template = request["payload"]["required_signals"]["rco"]["payload"]
+    template["review_tier"] = 1
+    template["review_label"] = "formal"
+
+    invalid_payloads = [
+        {
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+            "review_tier": 1,
+        },
+        {
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+            "review_tier": True,
+            "review_label": "formal",
+        },
+        {
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+            "review_tier": 1,
+            "review_label": "informal",
+        },
+        {
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": False,
+            "review_tier": 1,
+            "review_label": "formal",
+        },
+    ]
+    for index, payload in enumerate(invalid_payloads, start=1):
+        response = _event(
+            ts_utc=f"2026-05-17T11:{index:02d}:00Z",
+            agent="claude-rco-1",
+            type="decision",
+            task_id=task_id,
+            status="rco_pass",
+            to="codex-lead-1",
+            message=f"RCO PASS at exact head {head}.",
+            payload=payload,
+        )
+        report = _run(tmp_path, _base_idle_events() + [request, response])
+        assert report["criteria"]["open_rco_requests"]["task_ids"] == [
+            task_id
+        ]
+
+    valid_response = _event(
+        ts_utc="2026-05-17T11:10:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message=f"RCO PASS at exact head {head}.",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+            "review_tier": 1,
+            "review_label": "formal",
+        },
+    )
+    valid_report = _run(
+        tmp_path,
+        _base_idle_events() + [request, valid_response],
+    )
+    assert valid_report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_exact_head_rco_request_does_not_age_out(tmp_path: Path) -> None:
+    task_id = "canonical-rco-sticky-hold"
+    head = "2222222222222222222222222222222222222222"
+    request = _canonical_rco_request(
+        ts_utc="2026-05-16T10:00:00Z",
+        task_id=task_id,
+        head=head,
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request])
+
+    assert report["decision"] == "active"
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert task_id not in report["criteria"]["stale_open_requests_ignored"][
+        "task_ids"
+    ]
+
+
+def test_resolved_finding_is_not_reopened_as_rco_request(tmp_path: Path) -> None:
+    resolved = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        agent="claude-rco-2",
+        type="finding",
+        task_id="rco-lane-failover-scout-resolved",
+        status="rco1_active_no_failover_needed_resolved",
+        to="claude-rco-1",
+        message="RCO1 is active; no failover is needed and the scout is resolved.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [resolved])
+
+    assert report["decision"] == "idle"
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_requester_can_cancel_exact_head_rco_without_repeating_head(
+    tmp_path: Path,
+) -> None:
+    task_id = "canonical-rco-cancelled"
+    head = "3333333333333333333333333333333333333333"
+    request = _canonical_rco_request(
+        task_id=task_id,
+        head=head,
+    )
+    cancellation = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-lead-1",
+        type="decision",
+        task_id=task_id,
+        status="cancelled_by_requester",
+        to="claude-rco-1",
+        message="The formal review request is explicitly cancelled.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, cancellation])
+
+    assert report["decision"] == "idle"
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_new_exact_head_request_invalidates_prior_same_task_response(
+    tmp_path: Path,
+) -> None:
+    task_id = "canonical-rco-reissued"
+    first_head = "4444444444444444444444444444444444444444"
+    second_head = "5555555555555555555555555555555555555555"
+
+    first_pass = _event(
+        ts_utc="2026-05-17T10:55:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message=f"RCO PASS at exact head {first_head}.",
+        payload={
+            "head": first_head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+    events = _base_idle_events() + [
+        _canonical_rco_request(
+            task_id=task_id,
+            head=first_head,
+            ts_utc="2026-05-17T10:50:00Z",
+        ),
+        first_pass,
+        _canonical_rco_request(task_id=task_id, head=second_head),
+    ]
+
+    report = _run(tmp_path, events)
+
+    assert report["decision"] == "active"
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
 
 
 def test_retroactive_stale_rco_closure_does_not_count_as_recent_merge(

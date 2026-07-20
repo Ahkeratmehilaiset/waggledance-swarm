@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import stat
 import subprocess
@@ -676,7 +676,23 @@ def test_hold_manifest_skips_collector(tmp_path: Path) -> None:
 def test_repository_manifest_is_intentionally_hashless_hold() -> None:
     manifest = json.loads((ROOT / MANIFEST_PATH).read_text(encoding="utf-8"))
 
-    _validate_manifest(manifest)
+    source_root = PureWindowsPath(r"C:\Python\project2")
+    assert manifest["canonical"] == {
+        "source_root": str(source_root),
+        "git_common_dir": str(source_root / ".git"),
+        "runtime_root": str(
+            PureWindowsPath(r"C:\Python\project2-master\.agent-bridge")
+        ),
+    }
+
+    validation_manifest = deepcopy(manifest)
+    if os.name != "nt":
+        validation_manifest["canonical"] = {
+            "source_root": str(ROOT.resolve()),
+            "git_common_dir": str((ROOT / ".git").resolve()),
+            "runtime_root": str((ROOT / ".agent-bridge").resolve()),
+        }
+    _validate_manifest(validation_manifest)
 
     assert manifest["activation_state"] == ACTIVATION_HOLD
     assert manifest["host_policy"]["expected_host_identity_sha256"] is None

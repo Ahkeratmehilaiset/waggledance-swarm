@@ -62,6 +62,7 @@ def _run_bridge_script(
     runtime_root: Path,
     script_name: str,
     *args: str,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for name in (
@@ -70,9 +71,12 @@ def _run_bridge_script(
         "AGENT_BRIDGE_ROLE",
         "AGENT_BRIDGE_RUN_ID",
         "AGENT_BRIDGE_SESSION_ID",
+        "AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE",
     ):
         env.pop(name, None)
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         [
             _powershell(),
@@ -89,6 +93,144 @@ def _run_bridge_script(
         capture_output=True,
         text=True,
     )
+
+
+def test_writer_source_has_exact_dual_lock_sets_and_no_generation_artifacts() -> None:
+    root = Path(__file__).resolve().parents[2]
+    source = (root / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    canonical = source.index("function Add-CanonicalLineWithWal")
+    auxiliary = source.index("function Add-AuxiliaryLineBestEffort")
+    canonical_v1 = source.index("Global\\WaggleDanceBridgeAppendV1", canonical)
+    canonical_v2 = source.index("Global\\WaggleDanceBridgeAppendV2", canonical)
+    auxiliary_v1 = source.index("Global\\WaggleDanceBridgeAppendV1", auxiliary)
+    auxiliary_v2 = source.index("Global\\WaggleDanceBridgeAppendV2", auxiliary)
+
+    assert canonical_v1 < canonical_v2 < auxiliary
+    assert auxiliary_v1 < auxiliary_v2
+    assert source.count("Global\\WaggleDanceBridgeAppendV1") == 2
+    assert source.count("Global\\WaggleDanceBridgeAppendV2") == 2
+    assert "Purpose = 'Append'" in source[canonical:auxiliary]
+    assert "Purpose = 'AppendV2'" in source[canonical:auxiliary]
+    assert "Purpose = 'AppendAuxiliary'" in source[auxiliary:]
+    assert "Purpose = 'AppendAuxiliaryV2'" in source[auxiliary:]
+    assert "[Diagnostics.Stopwatch]::StartNew()" in source
+    assert "$mutex.WaitOne($remaining)" in source
+    assert "WaitOne(10000)" not in source
+    assert source.count("AppendV2 ownership") >= 2
+    assert "WaggleDanceBridgeReplayV1" not in source
+    assert "AppendV2Generation" not in source
+
+
+def test_replayer_source_has_exact_lock_order_budget_reverse_release_and_gate() -> None:
+    root = Path(__file__).resolve().parents[2]
+    source = (root / ".agent-bridge" / "bin" / "Restore-BridgeSpool.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    outer = source.index("$replayMutexSet = $null")
+    gate = source.index("Initialize-BridgeAppendV1Native", outer)
+    replay_enter = source.index("$replayMutexSet = Enter-BridgeMutexSet", outer)
+    replay = source.index("Global\\WaggleDanceBridgeReplayV1", replay_enter)
+    append_enter = source.index("$appendMutexSet = Enter-BridgeMutexSet", replay)
+    append_v1 = source.index("Global\\WaggleDanceBridgeAppendV1", append_enter)
+    append_v2 = source.index("Global\\WaggleDanceBridgeAppendV2", append_enter)
+    discovery = source.index("$pendingFiles = @(", append_enter)
+
+    assert (
+        outer
+        < gate
+        < replay_enter
+        < replay
+        < append_enter
+        < append_v1
+        < append_v2
+        < discovery
+    )
+    assert source.count("Global\\WaggleDanceBridgeReplayV1") == 1
+    assert source.count("Global\\WaggleDanceBridgeAppendV1") == 1
+    assert source.count("Global\\WaggleDanceBridgeAppendV2") == 1
+    assert "[Diagnostics.Stopwatch]::StartNew()" in source
+    assert "$mutex.WaitOne($remaining)" in source
+    assert "for ($index = $Entries.Count - 1; $index -ge 0; $index--)" in source
+    assert "TimeoutMilliseconds 0" in source[replay_enter:append_enter]
+    assert "Purpose = 'SpoolReplay'" in source[replay_enter:append_enter]
+    assert "Purpose = 'Append'" in source[append_enter:discovery]
+    assert "Purpose = 'AppendV2'" in source[append_enter:discovery]
+    assert "AppendV1Owned $true -AppendV2Owned $true" in source
+    final_release = source.rindex("} finally {")
+    release_append = source.index("$appendMutexSet.Entries", final_release)
+    release_replay = source.index("$replayMutexSet.Entries", final_release)
+    assert final_release < release_append < release_replay
+    assert "Global\\WaggleDanceBridgeSpoolReplayV1" not in source
+    assert "AppendV2Generation" not in source
+
+
+def test_append_v2_construction_failure_spools_without_canonical_mutation(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_bridge_script(
+        root,
+        runtime_root,
+        "Write-AgentEvent.ps1",
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-TaskId",
+        "append-v2-construction",
+        "-Status",
+        "note",
+        "-Message",
+        "AppendV2 construction must fail closed",
+        env_overrides={"AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE": "AppendV2"},
+    )
+
+    assert completed.returncode != 0
+    assert "AppendV2" in completed.stderr
+    assert "construction failure" in completed.stderr
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+    spools = list((runtime_root / "spool").glob("failed-append-*.jsonl"))
+    assert len(spools) == 1
+    assert "append-v2-construction" in spools[0].read_text(encoding="utf-8")
+
+
+@WINDOWS_APPEND_V1
+def test_append_auxiliary_v2_construction_failure_is_durable_success(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_bridge_script(
+        root,
+        runtime_root,
+        "Write-AgentEvent.ps1",
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-TaskId",
+        "append-auxiliary-v2-construction",
+        "-Status",
+        "note",
+        "-Message",
+        "canonical remains durable",
+        env_overrides={
+            "AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE": "AppendAuxiliaryV2"
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    events = runtime_root / "shared" / "events.jsonl"
+    assert "append-auxiliary-v2-construction" in events.read_text(encoding="utf-8")
+    assert not (runtime_root / "outbox").exists()
+    assert (runtime_root / "shared" / "last_codex.json").is_file()
 
 
 def _grok_freshness_payload(**overrides: object) -> str:

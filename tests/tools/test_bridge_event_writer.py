@@ -15,12 +15,17 @@ import pytest
 import tools.bridge_event_writer as bridge_writer
 from tools.bridge_event_writer import (
     APPEND_MUTEX_NAME,
+    APPEND_MUTEX_NAMES,
     APPEND_MUTEX_TIMEOUT_MS,
+    APPEND_V1_MUTEX_NAME,
+    APPEND_V2_MUTEX_NAME,
     CHECKPOINT_SUFFIX,
     BridgeEventWriteError,
     WindowsAppendV1Backend,
     _PortableTestBackend,
+    _acquire_mutex_bundle,
     _checkpoint_bytes,
+    _close_mutex_bundle,
     write_bridge_event,
 )
 
@@ -145,11 +150,26 @@ def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
     )
 
     assert backend.saw_durable_pending_before_wait is True
-    assert backend.mutex_requests == [
-        (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
-        (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
+    assert [name for name, _timeout in backend.mutex_requests] == [
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
     ]
+    assert all(
+        0 <= timeout <= APPEND_MUTEX_TIMEOUT_MS
+        for _name, timeout in backend.mutex_requests
+    )
+    assert backend.mutex_releases == [
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+    ]
+    assert APPEND_MUTEX_NAMES == (APPEND_V1_MUTEX_NAME, APPEND_V2_MUTEX_NAME)
     assert APPEND_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
+    assert APPEND_V1_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
+    assert APPEND_V2_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV2"
     assert APPEND_MUTEX_TIMEOUT_MS == 10_000
     assert result.canonical_durable is True
     assert result.checkpoint_advanced is True
@@ -162,6 +182,70 @@ def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
     assert "ääkkönen".encode() in raw
     outbox = root / "outbox" / "codex" / "2026-07-20.jsonl"
     assert not Path(os.fspath(outbox) + CHECKPOINT_SUFFIX).exists()
+
+
+def test_mutex_bundle_uses_one_monotonic_budget_and_releases_reverse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter([1_000_000_000, 1_000_000_000, 3_500_000_000])
+    monkeypatch.setattr(bridge_writer.time, "monotonic_ns", lambda: next(ticks))
+    backend = _PortableTestBackend()
+
+    bundle = _acquire_mutex_bundle(backend=backend)
+    _close_mutex_bundle(bundle, warning_messages=[], context="test")
+
+    assert backend.mutex_requests == [
+        (APPEND_V1_MUTEX_NAME, 10_000),
+        (APPEND_V2_MUTEX_NAME, 7_500),
+    ]
+    assert backend.mutex_releases == [
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+    ]
+    assert backend.mutex_closes == [
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+    ]
+
+
+@pytest.mark.parametrize(
+    "outcome", ["error", "timeout", "abandoned", "unexpected"]
+)
+def test_v2_failure_releases_v1_promotes_wal_and_never_mutates_canonical(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    root = tmp_path / outcome
+    backend = _PortableTestBackend(mutex_outcomes=["clean", outcome])
+
+    with pytest.raises(BridgeEventWriteError) as excinfo:
+        write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            write_sidecars=False,
+            backend=backend,
+        )
+
+    assert not _canonical(root).exists()
+    assert not (root / "shared").exists()
+    assert excinfo.value.wal_path is not None
+    assert excinfo.value.wal_path.read_bytes().endswith(b"\n")
+    assert [name for name, _timeout in backend.mutex_requests] == [
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+    ]
+    assert all(0 <= timeout <= 10_000 for _name, timeout in backend.mutex_requests)
+    expected_releases = [APPEND_V1_MUTEX_NAME]
+    if outcome == "abandoned":
+        expected_releases.insert(0, APPEND_V2_MUTEX_NAME)
+    assert backend.mutex_releases == expected_releases
+    if outcome == "error":
+        assert backend.mutex_closes == [APPEND_V1_MUTEX_NAME]
+    else:
+        assert backend.mutex_closes == [
+            APPEND_V2_MUTEX_NAME,
+            APPEND_V1_MUTEX_NAME,
+        ]
 
 
 @pytest.mark.parametrize("outcome", ["timeout", "abandoned"])
@@ -524,7 +608,9 @@ def test_sidecar_uses_fresh_clean_mutex_and_failure_is_best_effort(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "bridge"
-    backend = _PortableTestBackend(mutex_outcomes=["clean", "abandoned"])
+    backend = _PortableTestBackend(
+        mutex_outcomes=["clean", "clean", "clean", "abandoned"]
+    )
 
     with pytest.warns(RuntimeWarning, match="auxiliary outbox append was skipped"):
         result = write_bridge_event(
@@ -536,7 +622,19 @@ def test_sidecar_uses_fresh_clean_mutex_and_failure_is_best_effort(
     assert result.canonical_durable is True
     assert result.outbox_written is False
     assert result.last_file_written is True
-    assert backend.mutex_acquisitions == 2
+    assert backend.mutex_acquisitions == 4
+    assert [name for name, _timeout in backend.mutex_requests] == [
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+    ]
+    assert backend.mutex_releases == [
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+    ]
     assert not (root / "outbox").exists()
     assert json.loads((root / "shared" / "last_codex.json").read_text("utf-8")) == _event()
 
@@ -554,9 +652,43 @@ def test_sidecars_can_be_disabled_for_canonical_only_callers(tmp_path: Path) -> 
 
     assert result.outbox_written is False
     assert result.last_file_written is False
-    assert backend.mutex_acquisitions == 1
+    assert backend.mutex_acquisitions == 2
     assert not (root / "outbox").exists()
     assert not (root / "shared" / "last_codex.json").exists()
+
+
+@pytest.mark.parametrize(
+    "outcome", ["error", "timeout", "abandoned", "unexpected"]
+)
+def test_auxiliary_v2_failure_is_best_effort_and_releases_partial_set(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    root = tmp_path / outcome
+    backend = _PortableTestBackend(
+        mutex_outcomes=["clean", "clean", "clean", outcome]
+    )
+
+    with pytest.warns(RuntimeWarning, match="auxiliary outbox append was skipped"):
+        result = write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            backend=backend,
+        )
+
+    assert result.canonical_durable is True
+    assert result.outbox_written is False
+    assert _rows(_canonical(root)) == [_event()]
+    assert not (root / "outbox").exists()
+    # Canonical V2/V1, followed by the auxiliary partial-set unwind.
+    expected_tail = [APPEND_V1_MUTEX_NAME]
+    if outcome == "abandoned":
+        expected_tail.insert(0, APPEND_V2_MUTEX_NAME)
+    assert backend.mutex_releases == [
+        APPEND_V2_MUTEX_NAME,
+        APPEND_V1_MUTEX_NAME,
+        *expected_tail,
+    ]
 
 
 def test_mutex_release_failure_warns_without_negating_durable_success(
@@ -596,8 +728,18 @@ def test_portable_injected_backend_serializes_concurrent_rows(tmp_path: Path) ->
     assert {row["task_id"] for row in rows} == {f"python-append-v1-{i}" for i in range(1, 9)}
 
 
+class _RecordingWindowsBackend(WindowsAppendV1Backend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[tuple[str, int]] = []
+
+    def acquire_mutex(self, name: str, timeout_ms: int):
+        self.requests.append((name, timeout_ms))
+        return super().acquire_mutex(name, timeout_ms)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows kernel32 integration probe")
-def test_windows_python_and_powershell_writers_handoff_on_same_contract(
+def test_windows_python_and_powershell_handoff_uses_both_append_names(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -605,12 +747,17 @@ def test_windows_python_and_powershell_writers_handoff_on_same_contract(
     if shell is None:
         pytest.skip("PowerShell is unavailable")
     root = tmp_path / "bridge"
+    first_backend = _RecordingWindowsBackend()
     write_bridge_event(
         bridge_root=root,
         event=_event(1),
         write_sidecars=False,
-        backend=WindowsAppendV1Backend(),
+        backend=first_backend,
     )
+    assert [name for name, _timeout in first_backend.requests] == [
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+    ]
     script = Path(__file__).resolve().parents[2] / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)
@@ -650,12 +797,17 @@ def test_windows_python_and_powershell_writers_handoff_on_same_contract(
         "_assert_strict_utf8_target",
         refuse_python_full_scan,
     )
+    return_backend = _RecordingWindowsBackend()
     write_bridge_event(
         bridge_root=root,
         event=_event(2),
         write_sidecars=False,
-        backend=WindowsAppendV1Backend(),
+        backend=return_backend,
     )
+    assert [name for name, _timeout in return_backend.requests] == [
+        APPEND_V1_MUTEX_NAME,
+        APPEND_V2_MUTEX_NAME,
+    ]
     rows = _rows(_canonical(root))
     assert [row["task_id"] for row in rows] == [
         "python-append-v1-1",

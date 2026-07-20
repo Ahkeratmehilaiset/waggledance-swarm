@@ -78,6 +78,34 @@ function Get-BridgeTestFileLength {
     return [int64](Get-Item -LiteralPath $Path).Length
 }
 
+function Get-BridgeTreeSnapshot {
+    param([Parameter(Mandatory)] [string] $Root)
+    $snapshot = @{}
+    $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    foreach ($file in @(
+        Get-ChildItem -LiteralPath $Root -File -Force -Recurse -ErrorAction Stop
+    )) {
+        $relative = $file.FullName.Substring($rootPath.Length).TrimStart('\', '/')
+        $snapshot[$relative] = [Convert]::ToBase64String(
+            [System.IO.File]::ReadAllBytes($file.FullName)
+        )
+    }
+    return $snapshot
+}
+
+function Test-BridgeTreeSnapshotsEqual {
+    param(
+        [Parameter(Mandatory)] [hashtable] $Left,
+        [Parameter(Mandatory)] [hashtable] $Right
+    )
+    if ($Left.Count -ne $Right.Count) { return $false }
+    foreach ($key in $Left.Keys) {
+        if (-not $Right.ContainsKey($key)) { return $false }
+        if ([string]$Left[$key] -cne [string]$Right[$key]) { return $false }
+    }
+    return $true
+}
+
 function Write-TestWal {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -126,15 +154,18 @@ try {
     [void](New-Item -ItemType Directory -Path (Join-Path $tempRoot 'spool') -Force)
     $eventsPath = Join-Path (Join-Path $tempRoot 'shared') 'events.jsonl'
 
-    # Long-hold and abandonment cases use exact script copies whose V1 names
+    # Long-hold and abandonment cases use exact script copies whose lock names
     # carry a unique Local namespace suffix. This exercises the same fence
     # without blocking the live machine-wide bridge mutex for ten seconds.
     $isolationId = [guid]::NewGuid().ToString('N')
     $isolatedBin = Join-Path $tempRoot 'isolated-bin'
     [void](New-Item -ItemType Directory -Path $isolatedBin -Force)
     $isolatedAppendName = "Local\WaggleDanceBridgeAppendV1-$isolationId"
-    $isolatedReplayName = "Local\WaggleDanceBridgeSpoolReplayV1-$isolationId"
+    $isolatedAppendV2Name = "Local\WaggleDanceBridgeAppendV2-$isolationId"
+    $isolatedReplayName = "Local\WaggleDanceBridgeReplayV1-$isolationId"
     $isolatedWriter = Join-Path $isolatedBin 'Write-AgentEvent.ps1'
+    $auxiliaryBarrierWriter = Join-Path `
+        $isolatedBin 'Write-AgentEvent-AuxiliaryBarrier.ps1'
     $isolatedReplay = Join-Path $isolatedBin 'Restore-BridgeSpool.ps1'
     $raceReplay = Join-Path $isolatedBin 'Restore-BridgeSpool-Race.ps1'
     $enumerationReplay = Join-Path $isolatedBin 'Restore-BridgeSpool-Enumeration.ps1'
@@ -144,20 +175,60 @@ try {
         'Global\WaggleDanceBridgeAppendV1',
         $isolatedAppendName
     )
+    $writerSource = $writerSource.Replace(
+        'Global\WaggleDanceBridgeAppendV2',
+        $isolatedAppendV2Name
+    )
     $replaySource = [System.IO.File]::ReadAllText($replayScript)
     $replaySource = $replaySource.Replace(
         'Global\WaggleDanceBridgeAppendV1',
         $isolatedAppendName
     )
     $replaySource = $replaySource.Replace(
-        'Global\WaggleDanceBridgeSpoolReplayV1',
+        'Global\WaggleDanceBridgeAppendV2',
+        $isolatedAppendV2Name
+    )
+    $replaySource = $replaySource.Replace(
+        'Global\WaggleDanceBridgeReplayV1',
         $isolatedReplayName
     )
     [System.IO.File]::WriteAllText($isolatedWriter, $writerSource, $utf8)
     [System.IO.File]::WriteAllText($isolatedReplay, $replaySource, $utf8)
-    $appendWaitNeedle = 'try { $appendAcquired = $appendMutex.WaitOne(10000) }'
+    $auxiliaryBarrierNeedle = 'Add-AuxiliaryLineBestEffort -Path $outboxPath -Line $line'
+    if (-not $writerSource.Contains($auxiliaryBarrierNeedle)) {
+        throw 'auxiliary lock smoke could not locate the auxiliary boundary'
+    }
+    $auxiliaryBarrierSource = @'
+$auxiliaryReadyPath = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_TEST_BEFORE_AUXILIARY_READY', 'Process'
+)
+if ($auxiliaryReadyPath) {
+    [System.IO.File]::WriteAllText($auxiliaryReadyPath, 'ready')
+    $auxiliaryReleased = $false
+    for ($auxiliaryAttempt = 0; $auxiliaryAttempt -lt 400; $auxiliaryAttempt++) {
+        if (Test-Path -LiteralPath "$auxiliaryReadyPath.release" -PathType Leaf) {
+            $auxiliaryReleased = $true
+            break
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not $auxiliaryReleased) {
+        throw 'auxiliary lock smoke timed out before outbox boundary'
+    }
+}
+'@
+    $writerAuxiliaryBarrierSource = $writerSource.Replace(
+        $auxiliaryBarrierNeedle,
+        ($auxiliaryBarrierSource + [Environment]::NewLine + $auxiliaryBarrierNeedle)
+    )
+    [System.IO.File]::WriteAllText(
+        $auxiliaryBarrierWriter,
+        $writerAuxiliaryBarrierSource,
+        $utf8
+    )
+    $appendWaitNeedle = '    $appendMutexSet = Enter-BridgeMutexSet -Specifications @('
     if (-not $replaySource.Contains($appendWaitNeedle)) {
-        throw 'race smoke could not locate the outer append mutex wait'
+        throw 'race smoke could not locate the ordered replay lock set'
     }
     $appendWaitSignal = (
         "[System.IO.File]::WriteAllText(" +
@@ -166,7 +237,7 @@ try {
     )
     $raceReplaySource = $replaySource.Replace(
         $appendWaitNeedle,
-        ($appendWaitSignal + [Environment]::NewLine + '        ' + $appendWaitNeedle)
+        ($appendWaitSignal + [Environment]::NewLine + $appendWaitNeedle)
     )
     [System.IO.File]::WriteAllText($raceReplay, $raceReplaySource, $utf8)
     $enumerationNeedle = '    $pendingFiles = @('
@@ -187,9 +258,9 @@ try {
         $utf8
     )
     $leaseBarrierNeedle = `
-        '    # AppendV1 remains owned across WAL discovery/recovery, live-log scan,'
+        '    # ReplayV1, AppendV1, and AppendV2 remain owned across WAL discovery,'
     if (-not $replaySource.Contains($leaseBarrierNeedle)) {
-        throw 'lease smoke could not locate the post-AppendV1 acquisition point'
+        throw 'lease smoke could not locate the post-lock-set acquisition point'
     }
     $leaseBarrier = @'
     $leaseReadyPath = [Environment]::GetEnvironmentVariable(
@@ -206,7 +277,7 @@ try {
             Start-Sleep -Milliseconds 25
         }
         if (-not $leaseReleased) {
-            throw 'lease smoke timed out while owning AppendV1'
+            throw 'lease smoke timed out while owning the replay lock set'
         }
     }
 '@
@@ -382,7 +453,7 @@ Start-Sleep -Seconds 60
     $guardMutex = $null
     $guardAcquired = $false
     try {
-        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeSpoolReplayV1')
+        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeReplayV1')
         $guardAcquired = $guardMutex.WaitOne(0)
         if (-not $guardAcquired) {
             Add-Check -Name 'concurrent replay guard setup' -Passed $false -Detail 'could not acquire replay mutex'
@@ -446,6 +517,32 @@ Start-Sleep -Seconds 60
         $constructionSpoolText -match 'construction-failure-writer'
     ) -Detail "error=$writerConstructionError spools=$($constructionWriterSpools.Count)"
 
+    $constructionWriterV2Root = New-TestBridgeRoot -Name 'construction-writer-v2'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $constructionWriterV2Root, 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'AppendV2', 'Process'
+    )
+    $writerV2ConstructionError = ''
+    try {
+        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
+            -Message 'construction-failure-writer-v2' -PayloadJson '{}' | Out-Null
+    } catch { $writerV2ConstructionError = $_.Exception.Message }
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
+    )
+    $constructionWriterV2Spools = @(
+        Get-ChildItem -LiteralPath (Join-Path $constructionWriterV2Root 'spool') `
+            -Filter 'failed-append-*.jsonl' -File -ErrorAction SilentlyContinue
+    )
+    Add-Check -Name 'writer AppendV2 construction failure unwinds and spools' -Passed (
+        ($writerV2ConstructionError -match 'construction failure') -and
+        $constructionWriterV2Spools.Count -eq 1 -and
+        (Get-BridgeTestFileLength -Path `
+            (Join-Path $constructionWriterV2Root 'shared/events.jsonl')) -eq 0
+    ) -Detail "error=$writerV2ConstructionError"
+
     $constructionReplayRoot = New-TestBridgeRoot -Name 'construction-replay'
     $constructionReplaySpool = Join-Path `
         (Join-Path $constructionReplayRoot 'spool') `
@@ -481,6 +578,21 @@ Start-Sleep -Seconds 60
         (Test-Path -LiteralPath $constructionReplaySpool) -and
         (Get-BridgeTestFileLength -Path $constructionReplayEvents) -eq 0
     ) -Detail "error=$innerConstructionError"
+
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'AppendV2', 'Process'
+    )
+    $innerV2ConstructionError = ''
+    try { & $isolatedReplay -BridgeRoot $constructionReplayRoot 3>$null | Out-Null }
+    catch { $innerV2ConstructionError = $_.Exception.Message }
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
+    )
+    Add-Check -Name 'replayer AppendV2 construction failure keeps every byte' -Passed (
+        ($innerV2ConstructionError -match 'construction failure') -and
+        (Test-Path -LiteralPath $constructionReplaySpool) -and
+        (Get-BridgeTestFileLength -Path $constructionReplayEvents) -eq 0
+    ) -Detail "error=$innerV2ConstructionError"
 
     # 10. Enumeration and live-log validation failures are loud and leave both
     #     canonical bytes and every spool untouched.
@@ -556,8 +668,8 @@ Start-Sleep -Seconds 60
         -Passed $liveLogValidationPassed `
         -Detail ($liveLogValidationDetails -join ' | ')
 
-    # 11. Hold the isolated append V1 mutex beyond the production ten-second
-    #     budget. Writer and replayer run concurrently and both fail closed.
+    # 11. Hold both append names, then release V1 after part of the budget.
+    #     V2 gets only the monotonic remainder, so total time stays near 10s.
     $timeoutWriterRoot = New-TestBridgeRoot -Name 'timeout-writer'
     $timeoutReplayRoot = New-TestBridgeRoot -Name 'timeout-replay'
     $timeoutReplaySpool = Join-Path `
@@ -565,16 +677,21 @@ Start-Sleep -Seconds 60
         'failed-append-smoke-1-timeout-1.jsonl'
     $timeoutEvent = '{"ts_utc":"2026-07-02T14:00:00Z","agent":"smoke-1","type":"message","task_id":"timeout-fence","status":"info","message":"timeout-replay"}'
     Write-TestWal -Path $timeoutReplaySpool -Text $timeoutEvent
-    $holdMutex = New-Object System.Threading.Mutex($false, $isolatedAppendName)
-    $holdAcquired = $false
+    $holdV1Mutex = New-Object System.Threading.Mutex($false, $isolatedAppendName)
+    $holdV2Mutex = New-Object System.Threading.Mutex($false, $isolatedAppendV2Name)
+    $holdV1Acquired = $false
+    $holdV2Acquired = $false
+    $holdSetAcquired = $false
     $writerJob = $null
     $replayJob = $null
     $timeoutElapsed = [TimeSpan]::Zero
     $timeoutWriterOutput = ''
     $timeoutReplayOutput = ''
     try {
-        $holdAcquired = $holdMutex.WaitOne(0)
-        if ($holdAcquired) {
+        $holdV1Acquired = $holdV1Mutex.WaitOne(0)
+        if ($holdV1Acquired) { $holdV2Acquired = $holdV2Mutex.WaitOne(0) }
+        $holdSetAcquired = $holdV1Acquired -and $holdV2Acquired
+        if ($holdSetAcquired) {
             $clock = [Diagnostics.Stopwatch]::StartNew()
             $writerJob = Start-Job -ScriptBlock {
                 param($ScriptPath, $Root)
@@ -594,6 +711,9 @@ Start-Sleep -Seconds 60
                 try { & $ScriptPath -BridgeRoot $Root 3>$null | Out-String }
                 catch { $_.Exception.Message }
             } -ArgumentList $isolatedReplay, $timeoutReplayRoot
+            Start-Sleep -Milliseconds 2500
+            $holdV1Mutex.ReleaseMutex()
+            $holdV1Acquired = $false
             @($writerJob, $replayJob) | Wait-Job | Out-Null
             $clock.Stop()
             $timeoutElapsed = $clock.Elapsed
@@ -601,8 +721,10 @@ Start-Sleep -Seconds 60
             $timeoutReplayOutput = @(Receive-Job -Job $replayJob) -join ' '
         }
     } finally {
-        if ($holdAcquired) { try { $holdMutex.ReleaseMutex() } catch {} }
-        $holdMutex.Dispose()
+        if ($holdV2Acquired) { try { $holdV2Mutex.ReleaseMutex() } catch {} }
+        if ($holdV1Acquired) { try { $holdV1Mutex.ReleaseMutex() } catch {} }
+        $holdV2Mutex.Dispose()
+        $holdV1Mutex.Dispose()
         foreach ($job in @($writerJob, $replayJob)) {
             if ($null -ne $job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
         }
@@ -611,8 +733,10 @@ Start-Sleep -Seconds 60
         Get-ChildItem -LiteralPath (Join-Path $timeoutWriterRoot 'spool') `
             -Filter 'failed-append-*.jsonl' -File -ErrorAction SilentlyContinue
     )
-    Add-Check -Name 'append mutex held over ten seconds is fail closed' -Passed (
-        $holdAcquired -and $timeoutElapsed.TotalSeconds -ge 9.5 -and
+    Add-Check -Name 'dual append waits share one cumulative ten-second budget' -Passed (
+        $holdSetAcquired -and
+        $timeoutElapsed.TotalSeconds -ge 9.5 -and
+        $timeoutElapsed.TotalSeconds -lt 14 -and
         (Get-BridgeTestFileLength -Path (Join-Path $timeoutWriterRoot 'shared/events.jsonl')) -eq 0 -and
         $timeoutWriterSpools.Count -eq 1 -and
         $timeoutWriterOutput -match 'mutex timeout' -and
@@ -624,9 +748,9 @@ Start-Sleep -Seconds 60
         "replay=$timeoutReplayOutput"
     )
 
-    # 12. Deterministic TOCTOU regression: the parent owns AppendV1, the
-    #     replayer reaches its outer wait, and a same-semantic live event is
-    #     appended before ownership transfers. The scan must occur afterward.
+    # 12. Deterministic TOCTOU regression: the parent owns both append names,
+    #     the replayer reaches its ordered set wait, and a same-semantic live
+    #     event is appended before ownership transfers. The scan occurs later.
     $raceRoot = New-TestBridgeRoot -Name 'scan-dedup-race'
     $raceEvents = Join-Path $raceRoot 'shared/events.jsonl'
     $raceSpool = Join-Path `
@@ -636,15 +760,18 @@ Start-Sleep -Seconds 60
     $raceLiveEvent = $raceSpooledEvent
     Write-TestWal -Path $raceSpool -Text $raceSpooledEvent
     $raceReady = Join-Path $tempRoot 'scan-dedup-race.ready'
-    $raceMutex = New-Object System.Threading.Mutex($false, $isolatedAppendName)
-    $raceMutexAcquired = $false
-    $raceMutexReleased = $false
+    $raceV1Mutex = New-Object System.Threading.Mutex($false, $isolatedAppendName)
+    $raceV2Mutex = New-Object System.Threading.Mutex($false, $isolatedAppendV2Name)
+    $raceV1Acquired = $false
+    $raceV2Acquired = $false
+    $raceMutexesReleased = $false
     $raceJob = $null
     $raceOutput = ''
     $raceReachedWait = $false
     try {
-        $raceMutexAcquired = $raceMutex.WaitOne(0)
-        if ($raceMutexAcquired) {
+        $raceV1Acquired = $raceV1Mutex.WaitOne(0)
+        if ($raceV1Acquired) { $raceV2Acquired = $raceV2Mutex.WaitOne(0) }
+        if ($raceV1Acquired -and $raceV2Acquired) {
             $raceJob = Start-Job -ScriptBlock {
                 param($ScriptPath, $Root, $ReadyPath)
                 $env:AGENT_BRIDGE_TEST_APPEND_WAIT_READY = $ReadyPath
@@ -668,16 +795,23 @@ Start-Sleep -Seconds 60
                     $utf8
                 )
             }
-            $raceMutex.ReleaseMutex()
-            $raceMutexReleased = $true
+            $raceV2Mutex.ReleaseMutex()
+            $raceV2Acquired = $false
+            $raceV1Mutex.ReleaseMutex()
+            $raceV1Acquired = $false
+            $raceMutexesReleased = $true
             $raceJob | Wait-Job | Out-Null
             $raceOutput = @(Receive-Job -Job $raceJob) -join ' '
         }
     } finally {
-        if ($raceMutexAcquired -and -not $raceMutexReleased) {
-            try { $raceMutex.ReleaseMutex() } catch {}
+        if ($raceV2Acquired -and -not $raceMutexesReleased) {
+            try { $raceV2Mutex.ReleaseMutex() } catch {}
         }
-        $raceMutex.Dispose()
+        if ($raceV1Acquired -and -not $raceMutexesReleased) {
+            try { $raceV1Mutex.ReleaseMutex() } catch {}
+        }
+        $raceV2Mutex.Dispose()
+        $raceV1Mutex.Dispose()
         if ($null -ne $raceJob) {
             Remove-Job -Job $raceJob -Force -ErrorAction SilentlyContinue
         }
@@ -690,29 +824,29 @@ Start-Sleep -Seconds 60
         (Join-Path (Join-Path $raceRoot 'spool') 'replayed') `
         (Split-Path -Leaf $raceSpool)
     Add-Check -Name 'append lock covers scan dedup append and archive' -Passed (
-        $raceMutexAcquired -and $raceReachedWait -and
+        $raceMutexesReleased -and $raceReachedWait -and
         ($raceOutput -match 'replayed=0 deduped=1 failed=0') -and
         $raceLines.Count -eq 1 -and
         ($raceLines[0] -match 'same-semantic-event') -and
         (-not (Test-Path -LiteralPath $raceSpool)) -and
         (Test-Path -LiteralPath $raceArchived)
     ) -Detail (
-        "setup=$raceMutexAcquired wait=$raceReachedWait lines=$($raceLines.Count) " +
+        "setup=$raceMutexesReleased wait=$raceReachedWait lines=$($raceLines.Count) " +
         "out=$raceOutput"
     )
 
-    # 13. Abandoned AppendV1 ownership is dirty. The writer publishes its WAL
-    #     and the replayer skips without mutation; the next clean owner recovers.
+    # 13. Abandoned AppendV2 ownership is dirty. V1 partial acquisition is
+    #     unwound; the writer spools and the next clean replayer recovers.
     $appendReady = Join-Path $tempRoot 'abandoned-append-writer.ready'
     $abandonedWriterRoot = New-TestBridgeRoot -Name 'abandoned-writer'
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_RUNTIME_ROOT', $abandonedWriterRoot, 'Process'
     )
     $abandonedWriterError = ''
-    $appendSentinel = New-Object System.Threading.Mutex($false, $isolatedAppendName)
+    $appendSentinel = New-Object System.Threading.Mutex($false, $isolatedAppendV2Name)
     try {
         $appendAbandoned = Stop-ProcessAfterMutexAcquisition `
-            -Name $isolatedAppendName -HelperPath $abandonHelper `
+            -Name $isolatedAppendV2Name -HelperPath $abandonHelper `
             -ReadyPath $appendReady
         if ($appendAbandoned) {
             try {
@@ -734,7 +868,7 @@ Start-Sleep -Seconds 60
     if ($abandonedWriterSpools.Count -eq 1) {
         $abandonedWriterRecovered = & $isolatedReplay -BridgeRoot $abandonedWriterRoot
     }
-    Add-Check -Name 'writer rejects dirty abandoned append ownership then recovers' -Passed (
+    Add-Check -Name 'writer rejects dirty abandoned AppendV2 then recovers' -Passed (
         $appendAbandoned -and
         ($abandonedWriterError -match 'dirty ownership') -and
         (-not $abandonedWriterDirtyCheckpoint) -and
@@ -754,10 +888,10 @@ Start-Sleep -Seconds 60
         'failed-append-smoke-1-abandoned-append.jsonl'
     $abandonedAppendEvent = '{"ts_utc":"2026-07-02T15:00:00Z","agent":"smoke-1","type":"message","task_id":"abandoned-append","status":"info","message":"abandoned-append-replay"}'
     Write-TestWal -Path $abandonedAppendSpool -Text $abandonedAppendEvent
-    $replayAppendSentinel = New-Object System.Threading.Mutex($false, $isolatedAppendName)
+    $replayAppendSentinel = New-Object System.Threading.Mutex($false, $isolatedAppendV2Name)
     try {
         $replayAppendAbandoned = Stop-ProcessAfterMutexAcquisition `
-            -Name $isolatedAppendName -HelperPath $abandonHelper `
+            -Name $isolatedAppendV2Name -HelperPath $abandonHelper `
             -ReadyPath $replayAppendReady
         $abandonedAppendDirtyOut = if ($replayAppendAbandoned) {
             & $isolatedReplay -BridgeRoot $abandonedAppendReplayRoot
@@ -773,7 +907,7 @@ Start-Sleep -Seconds 60
     $abandonedAppendCleanOut = if ($replayAppendAbandoned) {
         & $isolatedReplay -BridgeRoot $abandonedAppendReplayRoot
     } else { '' }
-    Add-Check -Name 'replayer rejects dirty abandoned append ownership then recovers' -Passed (
+    Add-Check -Name 'replayer rejects dirty abandoned AppendV2 then recovers' -Passed (
         $replayAppendAbandoned -and
         ($abandonedAppendDirtyOut -match 'dirty abandoned') -and
         $abandonedAppendDirtyBytes -eq 0 -and
@@ -791,8 +925,29 @@ Start-Sleep -Seconds 60
     $abandonedReplaySpool = Join-Path `
         (Join-Path $abandonedReplayRoot 'spool') `
         'failed-append-smoke-1-abandoned-replay.jsonl'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $abandonedReplayRoot, 'Process'
+    )
+    & $isolatedWriter -Agent 'smoke-1' -Type message -Status info `
+        -TaskId 'abandoned-replay-seed' -Message 'abandoned-replay-seed' `
+        -PayloadJson '{}' | Out-Null
+    $abandonedReplayQuarantine = Join-Path `
+        (Join-Path $abandonedReplayRoot 'spool') 'quarantine'
+    $abandonedReplayArchive = Join-Path `
+        (Join-Path $abandonedReplayRoot 'spool') 'replayed'
+    [void](New-Item -ItemType Directory -Path $abandonedReplayQuarantine -Force)
+    [void](New-Item -ItemType Directory -Path $abandonedReplayArchive -Force)
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $abandonedReplayQuarantine 'sentinel.bin'),
+        [byte[]](1, 2, 3, 4)
+    )
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $abandonedReplayArchive 'sentinel.bin'),
+        [byte[]](5, 6, 7, 8)
+    )
     $abandonedReplayEvent = '{"ts_utc":"2026-07-02T16:00:00Z","agent":"smoke-1","type":"message","task_id":"abandoned-replay","status":"info","message":"abandoned-replay"}'
     Write-TestWal -Path $abandonedReplaySpool -Text $abandonedReplayEvent
+    $abandonedReplayBefore = Get-BridgeTreeSnapshot -Root $abandonedReplayRoot
     $replaySentinel = New-Object System.Threading.Mutex($false, $isolatedReplayName)
     try {
         $replayAbandoned = Stop-ProcessAfterMutexAcquisition `
@@ -804,11 +959,26 @@ Start-Sleep -Seconds 60
     } finally {
         $replaySentinel.Dispose()
     }
-    Add-Check -Name 'replayer accepts abandoned replay mutex ownership' -Passed (
-        $replayAbandoned -and ($abandonedReplayOut -match 'replayed=1') -and
+    $abandonedReplayAfterDirty = Get-BridgeTreeSnapshot -Root $abandonedReplayRoot
+    $abandonedReplayEvents = Join-Path $abandonedReplayRoot 'shared/events.jsonl'
+    $abandonedReplayDirtyLength = Get-BridgeTestFileLength -Path $abandonedReplayEvents
+    $abandonedReplayCleanOut = if ($replayAbandoned) {
+        & $isolatedReplay -BridgeRoot $abandonedReplayRoot
+    } else { '' }
+    Add-Check -Name 'abandoned ReplayV1 is dirty byte-stable then recovers cleanly' -Passed (
+        $replayAbandoned -and
+        ($abandonedReplayOut -match 'dirty abandoned') -and
+        (Test-BridgeTreeSnapshotsEqual `
+            -Left $abandonedReplayBefore -Right $abandonedReplayAfterDirty) -and
+        $abandonedReplayDirtyLength -gt 0 -and
+        ($abandonedReplayCleanOut -match 'replayed=1') -and
         (-not (Test-Path -LiteralPath $abandonedReplaySpool)) -and
-        (Get-BridgeTestFileLength -Path (Join-Path $abandonedReplayRoot 'shared/events.jsonl')) -gt 0
-    ) -Detail "setup=$replayAbandoned out=$abandonedReplayOut"
+        ([System.IO.File]::ReadAllText($abandonedReplayEvents) -match
+            'abandoned-replay"')
+    ) -Detail (
+        "setup=$replayAbandoned dirty=$abandonedReplayOut " +
+        "clean=$abandonedReplayCleanOut"
+    )
 
     # 14. Orphan pending WALs are recovered only after strict validation.
     $pendingRoot = New-TestBridgeRoot -Name 'pending-recovery'
@@ -1849,6 +2019,167 @@ Start-Sleep -Seconds 60
         "outbox=$($auxiliaryOutboxLines.Count) replay=$auxiliaryReplayOutput"
     )
 
+    $auxiliaryV2Root = New-TestBridgeRoot -Name 'auxiliary-v2-construction'
+    $auxiliaryV2Events = Join-Path $auxiliaryV2Root 'shared/events.jsonl'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $auxiliaryV2Root, 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE',
+        'AppendAuxiliaryV2',
+        'Process'
+    )
+    $auxiliaryV2Error = ''
+    try {
+        & $isolatedWriter -Agent 'smoke-1' -Type message -Status info `
+            -TaskId 'auxiliary-v2-construction' `
+            -Message 'auxiliary-v2-construction' -PayloadJson '{}' 3>$null |
+            Out-Null
+    } catch { $auxiliaryV2Error = $_.Exception.Message }
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
+    )
+    Add-Check -Name 'AppendAuxiliaryV2 construction failure is best effort' -Passed (
+        (-not $auxiliaryV2Error) -and
+        ([System.IO.File]::ReadAllText($auxiliaryV2Events) -match
+            'auxiliary-v2-construction') -and
+        (-not (Test-Path -LiteralPath (Join-Path $auxiliaryV2Root 'outbox'))) -and
+        (Test-Path -LiteralPath `
+            (Join-Path $auxiliaryV2Root 'shared/last_smoke-1.json'))
+    ) -Detail "error=$auxiliaryV2Error"
+
+    $auxiliaryTimeoutRoot = New-TestBridgeRoot -Name 'auxiliary-v2-timeout'
+    $auxiliaryTimeoutReady = Join-Path $tempRoot 'auxiliary-v2-timeout.ready'
+    $auxiliaryTimeoutJob = Start-Job -ScriptBlock {
+        param($ScriptPath, $Root, $ReadyPath)
+        $env:AGENT_BRIDGE_RUNTIME_ROOT = $Root
+        $env:AGENT_BRIDGE_TEST_BEFORE_AUXILIARY_READY = $ReadyPath
+        Remove-Item Env:AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE `
+            -ErrorAction SilentlyContinue
+        try {
+            $text = & $ScriptPath -Agent 'smoke-1' -Type message -Status info `
+                -TaskId 'auxiliary-v2-timeout' -Message 'auxiliary-v2-timeout' `
+                -PayloadJson '{}' 3>&1 | Out-String
+            "SUCCESS $text"
+        } catch { "ERROR $($_.Exception.Message)" }
+    } -ArgumentList `
+        $auxiliaryBarrierWriter, $auxiliaryTimeoutRoot, $auxiliaryTimeoutReady
+    $auxiliaryTimeoutReached = $false
+    $auxiliaryTimeoutMutex = New-Object `
+        System.Threading.Mutex($false, $isolatedAppendV2Name)
+    $auxiliaryTimeoutOwned = $false
+    $auxiliaryTimeoutOutput = ''
+    $auxiliaryTimeoutElapsed = [TimeSpan]::Zero
+    try {
+        for ($attempt = 0; $attempt -lt 400; $attempt++) {
+            if (Test-Path -LiteralPath $auxiliaryTimeoutReady -PathType Leaf) {
+                $auxiliaryTimeoutReached = $true
+                break
+            }
+            if ($auxiliaryTimeoutJob.State -in @('Completed', 'Failed', 'Stopped')) {
+                break
+            }
+            Start-Sleep -Milliseconds 25
+        }
+        if ($auxiliaryTimeoutReached) {
+            $auxiliaryTimeoutOwned = $auxiliaryTimeoutMutex.WaitOne(0)
+        }
+        if ($auxiliaryTimeoutOwned) {
+            $auxiliaryClock = [Diagnostics.Stopwatch]::StartNew()
+            [System.IO.File]::WriteAllText("$auxiliaryTimeoutReady.release", 'go')
+            $auxiliaryTimeoutJob | Wait-Job | Out-Null
+            $auxiliaryClock.Stop()
+            $auxiliaryTimeoutElapsed = $auxiliaryClock.Elapsed
+            $auxiliaryTimeoutOutput = @(
+                Receive-Job -Job $auxiliaryTimeoutJob
+            ) -join ' '
+        }
+    } finally {
+        if (-not (Test-Path -LiteralPath "$auxiliaryTimeoutReady.release")) {
+            [System.IO.File]::WriteAllText("$auxiliaryTimeoutReady.release", 'go')
+        }
+        if ($auxiliaryTimeoutOwned) {
+            try { $auxiliaryTimeoutMutex.ReleaseMutex() } catch {}
+        }
+        $auxiliaryTimeoutMutex.Dispose()
+        Remove-Job -Job $auxiliaryTimeoutJob -Force -ErrorAction SilentlyContinue
+    }
+    $auxiliaryTimeoutEvents = Join-Path `
+        $auxiliaryTimeoutRoot 'shared/events.jsonl'
+    Add-Check -Name 'AppendAuxiliaryV2 timeout skips only auxiliary bytes' -Passed (
+        $auxiliaryTimeoutReached -and $auxiliaryTimeoutOwned -and
+        $auxiliaryTimeoutElapsed.TotalSeconds -ge 9.5 -and
+        $auxiliaryTimeoutElapsed.TotalSeconds -lt 12 -and
+        ($auxiliaryTimeoutOutput -match 'SUCCESS') -and
+        ([System.IO.File]::ReadAllText($auxiliaryTimeoutEvents) -match
+            'auxiliary-v2-timeout') -and
+        (-not (Test-Path -LiteralPath (Join-Path $auxiliaryTimeoutRoot 'outbox')))
+    ) -Detail (
+        "elapsed=$($auxiliaryTimeoutElapsed.TotalSeconds) " +
+        "out=$auxiliaryTimeoutOutput"
+    )
+
+    $auxiliaryAbandonedRoot = New-TestBridgeRoot -Name 'auxiliary-v2-abandoned'
+    $auxiliaryAbandonedReady = Join-Path $tempRoot 'auxiliary-v2-abandoned.ready'
+    $auxiliaryAbandonedJob = Start-Job -ScriptBlock {
+        param($ScriptPath, $Root, $ReadyPath)
+        $env:AGENT_BRIDGE_RUNTIME_ROOT = $Root
+        $env:AGENT_BRIDGE_TEST_BEFORE_AUXILIARY_READY = $ReadyPath
+        Remove-Item Env:AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE `
+            -ErrorAction SilentlyContinue
+        try {
+            $text = & $ScriptPath -Agent 'smoke-1' -Type message -Status info `
+                -TaskId 'auxiliary-v2-abandoned' `
+                -Message 'auxiliary-v2-abandoned' -PayloadJson '{}' 3>&1 |
+                Out-String
+            "SUCCESS $text"
+        } catch { "ERROR $($_.Exception.Message)" }
+    } -ArgumentList `
+        $auxiliaryBarrierWriter, $auxiliaryAbandonedRoot, $auxiliaryAbandonedReady
+    $auxiliaryAbandonedReached = $false
+    $auxiliaryAbandonedSetup = $false
+    $auxiliaryAbandonedOutput = ''
+    $auxiliaryAbandonedSentinel = New-Object `
+        System.Threading.Mutex($false, $isolatedAppendV2Name)
+    try {
+        for ($attempt = 0; $attempt -lt 400; $attempt++) {
+            if (Test-Path -LiteralPath $auxiliaryAbandonedReady -PathType Leaf) {
+                $auxiliaryAbandonedReached = $true
+                break
+            }
+            if ($auxiliaryAbandonedJob.State -in @('Completed', 'Failed', 'Stopped')) {
+                break
+            }
+            Start-Sleep -Milliseconds 25
+        }
+        if ($auxiliaryAbandonedReached) {
+            $auxiliaryAbandonedSetup = Stop-ProcessAfterMutexAcquisition `
+                -Name $isolatedAppendV2Name -HelperPath $abandonHelper `
+                -ReadyPath (Join-Path $tempRoot 'auxiliary-v2-owner.ready')
+        }
+        [System.IO.File]::WriteAllText("$auxiliaryAbandonedReady.release", 'go')
+        $auxiliaryAbandonedJob | Wait-Job | Out-Null
+        $auxiliaryAbandonedOutput = @(
+            Receive-Job -Job $auxiliaryAbandonedJob
+        ) -join ' '
+    } finally {
+        if (-not (Test-Path -LiteralPath "$auxiliaryAbandonedReady.release")) {
+            [System.IO.File]::WriteAllText("$auxiliaryAbandonedReady.release", 'go')
+        }
+        $auxiliaryAbandonedSentinel.Dispose()
+        Remove-Job -Job $auxiliaryAbandonedJob -Force -ErrorAction SilentlyContinue
+    }
+    $auxiliaryAbandonedEvents = Join-Path `
+        $auxiliaryAbandonedRoot 'shared/events.jsonl'
+    Add-Check -Name 'abandoned AppendAuxiliaryV2 is dirty auxiliary no-op' -Passed (
+        $auxiliaryAbandonedReached -and $auxiliaryAbandonedSetup -and
+        ($auxiliaryAbandonedOutput -match 'SUCCESS') -and
+        ($auxiliaryAbandonedOutput -match 'dirty ownership') -and
+        ([System.IO.File]::ReadAllText($auxiliaryAbandonedEvents) -match
+            'auxiliary-v2-abandoned') -and
+        (-not (Test-Path -LiteralPath (Join-Path $auxiliaryAbandonedRoot 'outbox')))
+    ) -Detail "out=$auxiliaryAbandonedOutput"
+
     # Unsupported-platform refusal must occur before either implementation can
     # create shared/ or OpenOrCreate the canonical file. This Windows-hosted
     # static ordering assertion covers the otherwise unreachable platform path.
@@ -1884,6 +2215,23 @@ Start-Sleep -Seconds 60
         '[System.IO.FileMode]::OpenOrCreate',
         $replayAppendStart
     )
+    $replayOuterStart = $replayGateSource.IndexOf('$replayMutexSet = $null')
+    $replayOuterGate = $replayGateSource.IndexOf(
+        '    Initialize-BridgeAppendV1Native',
+        $replayOuterStart
+    )
+    $replayOuterLockSet = $replayGateSource.IndexOf(
+        '    $replayMutexSet = Enter-BridgeMutexSet -TimeoutMilliseconds 0',
+        $replayOuterStart
+    )
+    $replayAppendLockSet = $replayGateSource.IndexOf(
+        '    $appendMutexSet = Enter-BridgeMutexSet -Specifications @(',
+        $replayOuterStart
+    )
+    $replayFirstRepair = $replayGateSource.IndexOf(
+        '    [void](Repair-BridgeTornTailIfBound',
+        $replayOuterStart
+    )
     Add-Check -Name 'native gate precedes canonical parent and file creation' -Passed (
         $writerCanonicalStart -ge 0 -and
         $writerNativeGate -gt $writerCanonicalStart -and
@@ -1893,9 +2241,16 @@ Start-Sleep -Seconds 60
         $replayNativeGate -gt $replayAppendStart -and
         $replayNativeGate -lt $replayParentCreate -and
         $replayParentCreate -lt $replayOpenCreate -and
+        $replayOuterStart -ge 0 -and
+        $replayOuterGate -gt $replayOuterStart -and
+        $replayOuterGate -lt $replayOuterLockSet -and
+        $replayOuterLockSet -lt $replayAppendLockSet -and
+        $replayAppendLockSet -lt $replayFirstRepair -and
         -not $writerGateSource.Contains(
             'foreach ($dir in @($sharedDir, $outboxDir))'
         ) -and
+        -not $writerGateSource.Contains('AppendV2Generation') -and
+        -not $replayGateSource.Contains('AppendV2Generation') -and
         $writerGateSource.Contains('Add-CanonicalLineWithWal -Line $line') -and
         $writerGateSource.Contains(
             'Add-AuxiliaryLineBestEffort -Path $outboxPath -Line $line'
@@ -1903,7 +2258,9 @@ Start-Sleep -Seconds 60
     ) -Detail (
         "writer=$writerCanonicalStart/$writerNativeGate/" +
         "$writerParentCreate/$writerOpenCreate replay=$replayAppendStart/" +
-        "$replayNativeGate/$replayParentCreate/$replayOpenCreate"
+        "$replayNativeGate/$replayParentCreate/$replayOpenCreate outer=" +
+        "$replayOuterStart/$replayOuterGate/$replayOuterLockSet/" +
+        "$replayAppendLockSet/$replayFirstRepair"
     )
 
     # 22. Kill a writer after canonical Flush(true) but before checkpoint

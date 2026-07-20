@@ -517,6 +517,8 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
         return False
+    if _is_answer_like(event):
+        return False
     request_intent = _is_request_like(event) or payload.get("request_only") is True
     if not request_intent:
         return False
@@ -526,55 +528,8 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
         and _has_rco_required_signal_marker(required_signals)
     ):
         return True
-    addressed_to_rco = any(
-        "rco" in _identity_tokens(recipient)
-        for recipient in _event_recipients(event)
-    )
-    canonical_task_id = payload.get("canonical_task_id")
-    head = payload.get("head")
-    control_evidence = any(
-        field in payload
-        for field in (
-            "schema",
-            "request_only",
-            "approval_asserted",
-            "required_signals",
-        )
-    )
-    bundled_contract = (
-        isinstance(canonical_task_id, str)
-        and bool(canonical_task_id)
-        and isinstance(head, str)
-        and bool(re.fullmatch(r"[0-9a-f]{40}", head))
-        and control_evidence
-    )
-    schema_value = payload.get("schema")
-    schema_text = str(schema_value).lower()
-    canonical_like_schema = (
-        "consensus" in schema_text or "exact_head" in schema_text
-    )
-    full_schema_token_present = CANONICAL_RCO_SCHEMA in schema_text
-    independent_canonical_evidence = addressed_to_rco or any(
-        field in payload
-        for field in (
-            "approval_asserted",
-            "canonical_task_id",
-            "head",
-            "request_only",
-            "required_signals",
-        )
-    )
-    malformed_schema_evidence = "schema" in payload and (
-        full_schema_token_present
-        or (canonical_like_schema and independent_canonical_evidence)
-    )
-    strong_bundle_presence = {
-        "approval_asserted",
-        "canonical_task_id",
-        "head",
-        "request_only",
-    }.issubset(payload)
-    return bundled_contract or strong_bundle_presence or malformed_schema_evidence
+    schema_text = str(payload.get("schema")).casefold()
+    return "wd.exact_head_consensus" in schema_text
 
 
 def _has_rco_required_signal_marker(

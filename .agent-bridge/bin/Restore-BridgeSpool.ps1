@@ -1,12 +1,12 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Replay spooled bridge events into the shared log (durability completion).
+    Replay durable failed-append-<agent>-<utc>-<pid>-<nonce>.jsonl bridge spools.
 
 .DESCRIPTION
     Write-AgentEvent.ps1 spools an event to <bridgeRoot>/spool/
-    failed-append-<agent>-<utc>-<pid>.jsonl when the shared-log append
-    exhausts its retry budget (bridge audit item E, PR #1479). This script
+    failed-append-<agent>-<utc>-<pid>-<nonce>.jsonl when the V1-protected
+    shared-log append cannot complete. This script
     closes the loop: it re-appends every spooled event line to
     shared/events.jsonl using the same named mutex the writer uses, and
     archives the spool file to spool/replayed/ on success. Idempotent and
@@ -44,28 +44,47 @@ if (-not $BridgeRoot) {
 $spoolDir   = Join-Path $BridgeRoot 'spool'
 $eventsPath = Join-Path (Join-Path $BridgeRoot 'shared') 'events.jsonl'
 $archiveDir = Join-Path $spoolDir 'replayed'
+$knownEventTypes = @(
+    'status', 'intent', 'claim', 'release', 'message', 'finding',
+    'decision', 'test', 'blocked', 'handoff', 'done', 'heartbeat',
+    'wake_request', 'liveness'
+)
 
 if (-not (Test-Path -LiteralPath $spoolDir -PathType Container)) {
     Write-Output 'no spool directory; nothing to replay'
     return
 }
 
-$spoolFiles = @(
-    Get-ChildItem -Path $spoolDir -Filter 'failed-append-*.jsonl' -File -ErrorAction SilentlyContinue |
-        Sort-Object Name
-)
-if ($spoolFiles.Count -eq 0) {
-    Write-Output 'spool empty; nothing to replay'
-    return
+function New-BridgeV1Mutex {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Purpose
+    )
+
+    # A fail-closed test hook: forcing construction failure can only keep a
+    # spool in place; it can never authorize an unlocked append.
+    $forcedFailure = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE',
+        'Process'
+    )
+    if ($forcedFailure -in @('All', $Purpose)) {
+        throw "simulated bridge $Purpose mutex construction failure"
+    }
+    return New-Object System.Threading.Mutex($false, $Name)
 }
 
 $replayMutex = $null
 $replayAcquired = $false
 try {
-    $replayMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeSpoolReplayV1')
+    $replayMutex = New-BridgeV1Mutex `
+        -Name 'Global\WaggleDanceBridgeSpoolReplayV1' -Purpose SpoolReplay
+    if ($null -eq $replayMutex) {
+        throw 'bridge spool replay mutex construction returned null'
+    }
     try { $replayAcquired = $replayMutex.WaitOne(0) }
     catch [System.Threading.AbandonedMutexException] { $replayAcquired = $true }
 } catch {
+    if ($null -ne $replayMutex) { $replayMutex.Dispose() }
     throw "could not acquire bridge spool replay mutex: $($_.Exception.Message)"
 }
 if (-not $replayAcquired) {
@@ -74,38 +93,76 @@ if (-not $replayAcquired) {
     return
 }
 
-function Add-LineWithMutex {
-    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Line)
+function Invoke-BridgeTransactionalAppend {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [bool] $AppendMutexOwned
+    )
+    if (-not $AppendMutexOwned) {
+        throw 'refusing transactional replay append without AppendV1 ownership'
+    }
+    # Fail closed before creating shared/ or opening/creating events.jsonl.
+    Initialize-BridgeAppendV1Native
     $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent)) {
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
         [void](New-Item -ItemType Directory -Path $parent -Force)
     }
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    if (-not $Line.EndsWith("`n")) { $Line = $Line + [Environment]::NewLine }
-
-    $mutex = $null
-    $acquired = $false
+    $stream = $null
+    $preAppendLength = [int64]0
     try {
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::Read
+        )
+        $preAppendLength = [int64]$stream.Length
+        # Atomically replace any valid writer checkpoint with a durable invalid
+        # marker before canonical mutation. This remains necessary even when a
+        # truncate+replay happens to restore the same identity, length, and tail.
+        Invalidate-BridgeAppendValidationCheckpoint `
+            -CanonicalPath $Path -Reason 'spool-replay-append'
+        [void]$stream.Seek($preAppendLength, [System.IO.SeekOrigin]::Begin)
         try {
-            $mutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeAppendV1')
-            try { $acquired = $mutex.WaitOne(10000) }
-            catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-        } catch { $mutex = $null }
-
-        for ($i = 0; $i -lt 40; $i++) {
-            try {
-                [System.IO.File]::AppendAllText($Path, $Line, $encoding)
-                return $true
-            } catch {
-                Start-Sleep -Milliseconds (25 + ($i * 10))
+            $forcedCountText = [Environment]::GetEnvironmentVariable(
+                'AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES',
+                'Process'
+            )
+            if ($forcedCountText) {
+                $forcedCount = 0
+                if (-not [int]::TryParse($forcedCountText, [ref]$forcedCount)) {
+                    throw 'invalid test partial-append byte count'
+                }
+                if ($forcedCount -lt 0 -or $forcedCount -ge $Bytes.Length) {
+                    throw 'test partial-append byte count is outside the replay payload'
+                }
+                if ($forcedCount -gt 0) {
+                    $stream.Write($Bytes, 0, $forcedCount)
+                }
+                throw 'simulated transactional replay failure after partial write'
             }
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            $stream.Flush($true)
+            return [pscustomobject]@{
+                PreAppendLength = $preAppendLength
+                AppendedLength = [int64]$Bytes.Length
+            }
+        } catch {
+            $appendError = $_.Exception.Message
+            try {
+                $stream.SetLength($preAppendLength)
+                $stream.Flush($true)
+            } catch {
+                throw (
+                    "transactional replay append failed ($appendError); " +
+                    "ROLLBACK FAILED: $($_.Exception.Message)"
+                )
+            }
+            throw "transactional replay append failed and rolled back: $appendError"
         }
-        return $false
     } finally {
-        if ($null -ne $mutex) {
-            if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }
-            $mutex.Dispose()
-        }
+        if ($null -ne $stream) { $stream.Dispose() }
     }
 }
 
@@ -121,8 +178,18 @@ function Move-SpoolToArchive {
     if (-not (Test-Path -LiteralPath $ArchiveDir)) {
         [void](New-Item -ItemType Directory -Path $ArchiveDir -Force)
     }
+    $destination = Join-Path $ArchiveDir $File.Name
+    if (Test-Path -LiteralPath $destination) {
+        $destination = Join-Path $ArchiveDir (
+            '{0}.archive-collision.{1}' -f
+            $File.Name,
+            [guid]::NewGuid().ToString('N')
+        )
+    }
     try {
-        Move-Item -LiteralPath $File.FullName -Destination (Join-Path $ArchiveDir $File.Name) -Force
+        # File.Move never replaces an existing destination. If an external
+        # actor wins the destination race, fail closed with the WAL retained.
+        [System.IO.File]::Move($File.FullName, $destination)
         return $true
     } catch {
         if (-not (Test-Path -LiteralPath $File.FullName -PathType Leaf)) {
@@ -133,121 +200,600 @@ function Move-SpoolToArchive {
     }
 }
 
-function Get-BridgeEventDedupKey {
-    param([Parameter(Mandatory)] $EventObject)
-    # Semantic duplicate key (rco-2 #1483 finding 1): a caller that retried
-    # after spooling produced a LIVE copy with a NEW ts_utc/pid, so identity
-    # fields alone or byte-equality would miss it. Same agent+task+type+
-    # status+message = the same signal; replaying it would double count-based
-    # logic and could resurrect an old signal as latest-by-position.
-    # Total under StrictMode: events in the live log may lack fields.
-    # Select-Object projects missing properties as $null without throwing.
-    $proj = $EventObject | Select-Object agent, task_id, type, status, message
-    return (@(
-        [string]$proj.agent,
-        [string]$proj.task_id,
-        [string]$proj.type,
-        [string]$proj.status,
-        [string]$proj.message
-    ) -join "`u{1}")
+function Get-BridgeSha256Hex {
+    param([Parameter(Mandatory)] [byte[]] $Bytes)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
 }
 
-try {
-    $existingKeys = New-Object 'System.Collections.Generic.HashSet[string]'
-    if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
-        foreach ($line in [System.IO.File]::ReadLines($eventsPath)) {
-            if (-not $line) { continue }
-            try {
-                $obj = $line | ConvertFrom-Json -ErrorAction Stop
-                if ($null -ne $obj -and $null -ne $obj.PSObject.Properties['type']) {
-                    [void]$existingKeys.Add((Get-BridgeEventDedupKey -EventObject $obj))
-                }
-            } catch {}
+function Test-BridgeBytesEqual {
+    param(
+        [Parameter(Mandatory)] [byte[]] $Left,
+        [Parameter(Mandatory)] [byte[]] $Right
+    )
+    if ($Left.Length -ne $Right.Length) { return $false }
+    for ($index = 0; $index -lt $Left.Length; $index++) {
+        if ($Left[$index] -ne $Right[$index]) { return $false }
+    }
+    return $true
+}
+
+function Test-BridgeBytesStartWith {
+    param(
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [byte[]] $Prefix
+    )
+    if ($Prefix.Length -gt $Bytes.Length) { return $false }
+    for ($index = 0; $index -lt $Prefix.Length; $index++) {
+        if ($Bytes[$index] -ne $Prefix[$index]) { return $false }
+    }
+    return $true
+}
+
+function Test-BridgeSharingViolation {
+    param([Parameter(Mandatory)] [System.Exception] $Exception)
+    $current = $Exception
+    while ($null -ne $current) {
+        $nativeCode = ([int64]$current.HResult -band 0xFFFF)
+        if ($nativeCode -in @(32, 33)) { return $true }
+        $current = $current.InnerException
+    }
+    return $false
+}
+
+function Write-NewBridgeFileDurably {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes
+    )
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Initialize-BridgeAppendV1Native {
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw (
+            'AppendV1 checkpoint invalidation requires Windows write-through ' +
+            'atomic replacement; refusing canonical replay mutation'
+        )
+    }
+    if ('WaggleDance.BridgeAppendV1Native' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace WaggleDance {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BridgeByHandleFileInformation {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    public static class BridgeAppendV1Native {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetFileInformationByHandle(
+            IntPtr fileHandle,
+            out BridgeByHandleFileInformation fileInformation
+        );
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool MoveFileExW(
+            string existingPath,
+            string destinationPath,
+            uint flags
+        );
+    }
+}
+'@
+}
+
+function Invalidate-BridgeAppendValidationCheckpoint {
+    param(
+        [Parameter(Mandatory)] [string] $CanonicalPath,
+        [Parameter(Mandatory)] [string] $Reason
+    )
+
+    if ([Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_CHECKPOINT_INVALIDATION_FAILURE',
+        'Process'
+    ) -eq '1') {
+        throw 'simulated validation checkpoint invalidation failure'
+    }
+    Initialize-BridgeAppendV1Native
+    $checkpointPath = "$CanonicalPath.append-v1-validation.json"
+    $marker = [ordered]@{
+        schema = 'waggledance.bridge.append-v1-validation-invalidated'
+        version = [int64]1
+        reason = $Reason
+        nonce = [guid]::NewGuid().ToString('N')
+    }
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    [byte[]]$markerBytes = $strictUtf8.GetBytes(
+        (($marker | ConvertTo-Json -Compress) + [char]10)
+    )
+    $temporaryPath = "$checkpointPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+    try {
+        Write-NewBridgeFileDurably -Path $temporaryPath -Bytes $markerBytes
+        if (-not [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
+            $temporaryPath,
+            $checkpointPath,
+            [uint32]0x00000009
+        )) {
+            $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+            throw "write-through checkpoint invalidation failed: $nativeCode ($($nativeError.Message))"
         }
+        [byte[]]$publishedBytes = [System.IO.File]::ReadAllBytes($checkpointPath)
+        if (-not (Test-BridgeBytesEqual -Left $publishedBytes -Right $markerBytes)) {
+            throw 'published validation checkpoint invalidation marker verification failed'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Assert-BridgeEventObjectShape {
+    param(
+        [AllowNull()] $Object,
+        [Parameter(Mandatory)] [string] $Label
+    )
+    if (-not ($Object -is [System.Management.Automation.PSCustomObject])) {
+        throw "$Label is not a JSON object"
+    }
+    foreach ($field in @('type', 'agent', 'task_id', 'status')) {
+        $property = $Object.PSObject.Properties[$field]
+        if ($null -eq $property) {
+            throw "$Label is missing core field '$field'"
+        }
+        if (-not ($property.Value -is [string])) {
+            throw "$Label core field '$field' is not a string"
+        }
+    }
+    if ($knownEventTypes -cnotcontains [string]$Object.type) {
+        throw "$Label has an unknown event type"
+    }
+    if ([string]$Object.agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+        throw "$Label has an invalid agent id"
+    }
+}
+
+function Read-BridgeWalFile {
+    param([Parameter(Mandatory)] [System.IO.FileInfo] $File)
+
+    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($File.FullName)
+    if ($bytes.Length -eq 0 -or $bytes[$bytes.Length - 1] -ne 10) {
+        throw "WAL is empty or does not end with LF: $($File.Name)"
+    }
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try { $text = $strictUtf8.GetString($bytes) }
+    catch { throw "WAL is not strict UTF-8: $($File.Name) ($($_.Exception.Message))" }
+    $lines = $text.Split([char]10)
+    if ($lines.Count -lt 2 -or $lines[$lines.Count - 1] -cne '') {
+        throw "WAL is not complete JSONL: $($File.Name)"
+    }
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    for ($index = 0; $index -lt $lines.Count - 1; $index++) {
+        $exactLine = [string]$lines[$index]
+        $jsonLine = $exactLine
+        if ($jsonLine.EndsWith([string][char]13)) {
+            $jsonLine = $jsonLine.Substring(0, $jsonLine.Length - 1)
+        }
+        if ([string]::IsNullOrWhiteSpace($jsonLine)) {
+            throw "WAL contains a blank row at line $($index + 1): $($File.Name)"
+        }
+        try { $eventObject = $jsonLine | ConvertFrom-Json -ErrorAction Stop }
+        catch {
+            throw "WAL has malformed JSON at line $($index + 1): $($File.Name) ($($_.Exception.Message))"
+        }
+        Assert-BridgeEventObjectShape `
+            -Object $eventObject -Label "WAL row $($index + 1) in $($File.Name)"
+        [byte[]]$rowBytes = $strictUtf8.GetBytes($exactLine + [char]10)
+        $rows.Add([pscustomobject]@{
+            Obj = $eventObject
+            Bytes = $rowBytes
+            Key = Get-BridgeSha256Hex -Bytes $rowBytes
+        })
+    }
+    if ($rows.Count -eq 0) { throw "WAL has no event rows: $($File.Name)" }
+    return [pscustomobject]@{
+        File = $File
+        Bytes = $bytes
+        Rows = $rows.ToArray()
+    }
+}
+
+function Join-BridgeWalRowBytes {
+    param([Parameter(Mandatory)] [object[]] $Rows)
+    $memory = New-Object System.IO.MemoryStream
+    try {
+        foreach ($row in $Rows) {
+            [byte[]]$rowBytes = $row.Bytes
+            $memory.Write($rowBytes, 0, $rowBytes.Length)
+        }
+        return ,$memory.ToArray()
+    } finally {
+        $memory.Dispose()
+    }
+}
+
+function Add-BridgeCanonicalKeysFromBytes {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [string] $Label,
+        [Parameter(Mandatory)] [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]] $Keys
+    )
+
+    if ($Bytes.Length -eq 0) { return }
+    if ($Bytes[$Bytes.Length - 1] -ne 10) {
+        throw "$Label has an unterminated tail"
+    }
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try { $text = $strictUtf8.GetString($Bytes) }
+    catch { throw "$Label is not strict UTF-8: $($_.Exception.Message)" }
+    $lines = $text.Split([char]10)
+    for ($index = 0; $index -lt $lines.Count - 1; $index++) {
+        $exactLine = [string]$lines[$index]
+        $jsonLine = $exactLine
+        if ($jsonLine.EndsWith([string][char]13)) {
+            $jsonLine = $jsonLine.Substring(0, $jsonLine.Length - 1)
+        }
+        if ([string]::IsNullOrWhiteSpace($jsonLine)) {
+            throw "$Label has a blank or whitespace-only row at line $($index + 1)"
+        }
+        try { $eventObject = $jsonLine | ConvertFrom-Json -ErrorAction Stop }
+        catch {
+            throw "$Label has malformed JSON at line $($index + 1): $($_.Exception.Message)"
+        }
+        Assert-BridgeEventObjectShape `
+            -Object $eventObject -Label "$Label row $($index + 1)"
+        [byte[]]$rowBytes = $strictUtf8.GetBytes($exactLine + [char]10)
+        [void]$Keys.Add((Get-BridgeSha256Hex -Bytes $rowBytes))
+    }
+}
+
+function Get-BridgeCanonicalKeys {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $keys = New-Object 'System.Collections.Generic.HashSet[string]'
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return ,$keys }
+    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($Path)
+    Add-BridgeCanonicalKeysFromBytes `
+        -Bytes $bytes -Label 'canonical bridge log' -Keys $keys
+    return ,$keys
+}
+
+function Repair-BridgeTornTailIfBound {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $WalRecords
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    [byte[]]$canonicalBytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($canonicalBytes.Length -eq 0 -or $canonicalBytes[$canonicalBytes.Length - 1] -eq 10) {
+        return ''
+    }
+    $lastLf = -1
+    for ($index = $canonicalBytes.Length - 1; $index -ge 0; $index--) {
+        if ($canonicalBytes[$index] -eq 10) { $lastLf = $index; break }
+    }
+    $tailStart = $lastLf + 1
+    $tailLength = $canonicalBytes.Length - $tailStart
+    $tailBytes = New-Object byte[] $tailLength
+    [Array]::Copy($canonicalBytes, $tailStart, $tailBytes, 0, $tailLength)
+
+    # A bound torn tail is recoverable only when every already-terminated row
+    # is independently valid. Never hide an interior corruption by repairing
+    # a later tail.
+    if ($tailStart -gt 0) {
+        $prefixBytes = New-Object byte[] $tailStart
+        [Array]::Copy($canonicalBytes, 0, $prefixBytes, 0, $tailStart)
+        $prefixKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+        Add-BridgeCanonicalKeysFromBytes `
+            -Bytes $prefixBytes -Label 'canonical bridge log prefix' `
+            -Keys $prefixKeys
+    }
+
+    $bound = $false
+    foreach ($wal in $WalRecords) {
+        foreach ($row in $wal.Rows) {
+            if (Test-BridgeBytesStartWith -Bytes $row.Bytes -Prefix $tailBytes) {
+                $bound = $true
+                break
+            }
+        }
+        if ($bound) { break }
+    }
+    if (-not $bound) {
+        throw 'canonical bridge log has an unbound unterminated tail; no changes made'
+    }
+    if ($DryRun) {
+        throw 'dry run found a WAL-bound torn tail; no repair was performed'
+    }
+    $quarantineDir = Join-Path $spoolDir 'quarantine'
+    if (-not (Test-Path -LiteralPath $quarantineDir -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $quarantineDir -Force)
+    }
+    $quarantinePath = Join-Path $quarantineDir (
+        'canonical-torn-tail-{0}-{1}-{2}.bin' -f
+        [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff'),
+        $PID,
+        [guid]::NewGuid().ToString('N')
+    )
+    Write-NewBridgeFileDurably -Path $quarantinePath -Bytes $tailBytes
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::Read
+        )
+        if ([int64]$stream.Length -ne [int64]$canonicalBytes.Length) {
+            throw 'canonical bridge log changed before torn-tail truncation'
+        }
+        Invalidate-BridgeAppendValidationCheckpoint `
+            -CanonicalPath $Path -Reason 'wal-bound-torn-tail-truncate'
+        $stream.SetLength([int64]$tailStart)
+        $stream.Flush($true)
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    Write-Warning "repaired WAL-bound torn canonical tail; quarantine retained: $quarantinePath"
+    return $quarantinePath
+}
+
+function Clear-BridgeHiddenAttribute {
+    param([Parameter(Mandatory)] [string] $Path)
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $attributes = [System.IO.File]::GetAttributes($Path)
+        [System.IO.File]::SetAttributes(
+            $Path,
+            ($attributes -band (-bnot [System.IO.FileAttributes]::Hidden))
+        )
+    }
+}
+
+$appendMutex = $null
+$appendAcquired = $false
+$appendDirtyAbandoned = $false
+try {
+    try {
+        $appendMutex = New-BridgeV1Mutex `
+            -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
+        if ($null -eq $appendMutex) {
+            throw 'bridge append mutex construction returned null'
+        }
+        try { $appendAcquired = $appendMutex.WaitOne(10000) }
+        catch [System.Threading.AbandonedMutexException] {
+            $appendAcquired = $true
+            $appendDirtyAbandoned = $true
+        }
+    } catch {
+        throw "could not acquire bridge append mutex: $($_.Exception.Message)"
+    }
+    if (-not $appendAcquired) {
+        Write-Warning 'bridge append mutex timeout; all spool files kept'
+        Write-Output 'spool replay skipped: append mutex unavailable; no changes'
+        return
+    }
+    if ($appendDirtyAbandoned) {
+        Write-Warning 'AppendV1 was abandoned; dirty ownership cannot replay or mutate canonical bytes'
+        Write-Output 'spool replay skipped: dirty abandoned AppendV1 ownership; no changes'
+        return
+    }
+
+    # AppendV1 remains owned across WAL discovery/recovery, live-log scan,
+    # exact-record dedup, transactional append, and archive.
+    $pendingFiles = @(
+        Get-ChildItem -LiteralPath $spoolDir `
+            -Filter '.failed-append-*.jsonl.pending' -File -Force `
+            -ErrorAction Stop |
+            Sort-Object Name
+    )
+    $finalFiles = @(
+        Get-ChildItem -LiteralPath $spoolDir `
+            -Filter 'failed-append-*.jsonl' -File -Force `
+            -ErrorAction Stop |
+            Sort-Object Name
+    )
+    if ($pendingFiles.Count -eq 0 -and $finalFiles.Count -eq 0) {
+        Write-Output 'spool empty; nothing to replay'
+        return
+    }
+
+    $finalRecords = New-Object 'System.Collections.Generic.List[object]'
+    $finalByPath = @{}
+    foreach ($file in $finalFiles) {
+        $record = Read-BridgeWalFile -File $file
+        $finalRecords.Add($record)
+        $finalByPath[$file.FullName.ToUpperInvariant()] = $record
+    }
+
+    $pendingPlans = New-Object 'System.Collections.Generic.List[object]'
+    $bindingRecords = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($record in $finalRecords) { $bindingRecords.Add($record) }
+    foreach ($pendingFile in $pendingFiles) {
+        try {
+            $pendingRecord = Read-BridgeWalFile -File $pendingFile
+        } catch {
+            if (Test-BridgeSharingViolation -Exception $_.Exception) {
+                Write-Output "active pending WAL lease skipped: $($pendingFile.Name)"
+                continue
+            }
+            throw
+        }
+        $bindingRecords.Add($pendingRecord)
+        if (-not $pendingFile.Name.EndsWith('.pending')) {
+            throw "pending WAL name is malformed: $($pendingFile.Name)"
+        }
+        $finalName = $pendingFile.Name.Substring(
+            1,
+            $pendingFile.Name.Length - 1 - '.pending'.Length
+        )
+        $finalPath = Join-Path $spoolDir $finalName
+        if (Test-Path -LiteralPath $finalPath -PathType Leaf) {
+            $key = ([System.IO.Path]::GetFullPath($finalPath)).ToUpperInvariant()
+            $finalRecord = $finalByPath[$key]
+            if ($null -eq $finalRecord) {
+                $finalRecord = Read-BridgeWalFile -File (Get-Item -LiteralPath $finalPath -Force)
+            }
+            if (-not (Test-BridgeBytesEqual `
+                -Left $pendingRecord.Bytes -Right $finalRecord.Bytes)) {
+                throw "pending WAL collides with different final spool: $($pendingFile.Name)"
+            }
+            $pendingPlans.Add([pscustomobject]@{
+                Action = 'ExactCollision'
+                Record = $pendingRecord
+                FinalPath = $finalPath
+            })
+        } else {
+            $pendingPlans.Add([pscustomobject]@{
+                Action = 'Promote'
+                Record = $pendingRecord
+                FinalPath = $finalPath
+            })
+        }
+    }
+
+    [void](Repair-BridgeTornTailIfBound `
+        -Path $eventsPath -WalRecords $bindingRecords.ToArray())
+
+    # Validate the canonical stream before promoting or archiving pending WALs.
+    # Strict decoding failures therefore leave every spool path unchanged.
+    $existingKeys = Get-BridgeCanonicalKeys -Path $eventsPath
+
+    $recordsToProcess = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($record in $finalRecords) { $recordsToProcess.Add($record) }
+    foreach ($plan in $pendingPlans) {
+        $pendingRecord = $plan.Record
+        if ($plan.Action -eq 'ExactCollision') {
+            if ($DryRun) {
+                Write-Output "would archive exact pending/final collision: $($pendingRecord.File.Name)"
+            } else {
+                if (-not (Test-Path -LiteralPath $archiveDir -PathType Container)) {
+                    [void](New-Item -ItemType Directory -Path $archiveDir -Force)
+                }
+                $collisionPath = Join-Path $archiveDir (
+                    '{0}.exact-duplicate.{1}' -f
+                    $pendingRecord.File.Name,
+                    [guid]::NewGuid().ToString('N')
+                )
+                Clear-BridgeHiddenAttribute -Path $pendingRecord.File.FullName
+                [System.IO.File]::Move($pendingRecord.File.FullName, $collisionPath)
+            }
+            continue
+        }
+        if ($DryRun) {
+            Write-Output "would promote pending WAL: $($pendingRecord.File.Name)"
+        } else {
+            Clear-BridgeHiddenAttribute -Path $pendingRecord.File.FullName
+            [System.IO.File]::Move($pendingRecord.File.FullName, $plan.FinalPath)
+            $pendingRecord.File = Get-Item -LiteralPath $plan.FinalPath -Force
+        }
+        $recordsToProcess.Add($pendingRecord)
     }
 
     $replayed = 0
     $failed = 0
     $deduped = 0
-    foreach ($file in $spoolFiles) {
-        try {
-            $raw = (Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop)
-        } catch {
-            if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) {
-                Write-Warning "spool file disappeared before replay (skipped): $($file.Name)"
-                continue
-            }
-            throw
-        }
-        if ([string]::IsNullOrWhiteSpace($raw)) {
-            # Empty spool file: archive without appending.
-            if (-not $DryRun) {
-                [void](Move-SpoolToArchive -File $file -ArchiveDir $archiveDir)
-            }
-            continue
-        }
-        # Fail-closed shape check (rco-2 finding 2: mirror the reader guard) -
-        # every line must be a JSON object carrying the writer's core fields.
-        $ok = $true
-        $parsedLines = @()
-        foreach ($line in ($raw -split "`r?`n" | Where-Object { $_ })) {
-            try {
-                $obj = $line | ConvertFrom-Json -ErrorAction Stop
-                if (
-                    $null -eq $obj -or
-                    $null -eq $obj.PSObject.Properties['type'] -or
-                    $null -eq $obj.PSObject.Properties['agent'] -or
-                    $null -eq $obj.PSObject.Properties['task_id'] -or
-                    $null -eq $obj.PSObject.Properties['status']
-                ) { $ok = $false } else { $parsedLines += [pscustomobject]@{ Line = $line; Obj = $obj } }
-            } catch { $ok = $false }
-        }
-        if (-not $ok) {
-            Write-Warning "skipping malformed spool file (left in place): $($file.Name)"
-            $failed++
-            continue
-        }
-
-        # Dedup (rco-2 finding 1): drop lines whose signal is already live in
-        # events.jsonl (the common case: the caller retried after spooling and
-        # the retry succeeded). Archive-without-append when everything deduped.
-        $linesToAppend = @()
-        foreach ($pair in $parsedLines) {
-            $key = Get-BridgeEventDedupKey -EventObject $pair.Obj
-            if ($existingKeys.Contains($key)) { $deduped++ } else { $linesToAppend += $pair }
-        }
-        if ($linesToAppend.Count -eq 0) {
-            if (-not $DryRun) {
-                [void](Move-SpoolToArchive -File $file -ArchiveDir $archiveDir)
+    foreach ($wal in $recordsToProcess) {
+        $rowsToAppend = New-Object 'System.Collections.Generic.List[object]'
+        $walNewKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($row in $wal.Rows) {
+            if (
+                $existingKeys.Contains([string]$row.Key) -or
+                -not $walNewKeys.Add([string]$row.Key)
+            ) {
+                $deduped++
             } else {
-                Write-Output "would archive as duplicate: $($file.Name)"
+                $rowsToAppend.Add($row)
+            }
+        }
+        if ($rowsToAppend.Count -eq 0) {
+            if ($DryRun) {
+                Write-Output "would archive as exact duplicate: $($wal.File.Name)"
+            } else {
+                [void](Move-SpoolToArchive -File $wal.File -ArchiveDir $archiveDir)
             }
             continue
         }
-
         if ($DryRun) {
-            Write-Output "would replay: $($file.Name)"
+            Write-Output "would replay: $($wal.File.Name)"
             $replayed++
             continue
         }
-
-        $joined = (@($linesToAppend | ForEach-Object { $_.Line }) -join [Environment]::NewLine)
-        if (Add-LineWithMutex -Path $eventsPath -Line $joined) {
-            foreach ($pair in $linesToAppend) {
-                [void]$existingKeys.Add((Get-BridgeEventDedupKey -EventObject $pair.Obj))
-            }
-            [void](Move-SpoolToArchive -File $file -ArchiveDir $archiveDir)
-            $replayed++
-        } else {
-            Write-Warning "append still failing; spool file kept: $($file.Name)"
+        [byte[]]$appendBytes = Join-BridgeWalRowBytes -Rows $rowsToAppend.ToArray()
+        try {
+            [void](Invoke-BridgeTransactionalAppend `
+                -Path $eventsPath -Bytes $appendBytes `
+                -AppendMutexOwned $appendAcquired)
+        } catch {
+            if ($_.Exception.Message -match 'ROLLBACK FAILED') { throw }
+            Write-Warning "append failed and WAL was kept: $($wal.File.Name) ($($_.Exception.Message))"
             $failed++
+            continue
         }
+        foreach ($row in $rowsToAppend) {
+            [void]$existingKeys.Add([string]$row.Key)
+        }
+        [void](Move-SpoolToArchive -File $wal.File -ArchiveDir $archiveDir)
+        $replayed++
     }
 
-    Write-Output ("spool replay complete: replayed={0} deduped={1} failed={2} dryRun={3}" -f $replayed, $deduped, $failed, $DryRun.IsPresent)
+    Write-Output (
+        'spool replay complete: replayed={0} deduped={1} failed={2} dryRun={3}' -f
+        $replayed, $deduped, $failed, $DryRun.IsPresent
+    )
 } finally {
+    if ($null -ne $appendMutex) {
+        if ($appendAcquired) {
+            try { $appendMutex.ReleaseMutex() }
+            catch {
+                Write-Warning -WarningAction Continue -Message (
+                    "AppendV1 release failed: $($_.Exception.Message)"
+                )
+            }
+        }
+        $appendMutex.Dispose()
+    }
     if ($null -ne $replayMutex) {
-        if ($replayAcquired) { try { $replayMutex.ReleaseMutex() } catch {} }
+        if ($replayAcquired) {
+            try { $replayMutex.ReleaseMutex() }
+            catch {
+                Write-Warning -WarningAction Continue -Message (
+                    "SpoolReplayV1 release failed: $($_.Exception.Message)"
+                )
+            }
+        }
         $replayMutex.Dispose()
     }
 }

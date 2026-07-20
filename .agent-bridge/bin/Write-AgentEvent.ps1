@@ -643,6 +643,139 @@ function New-BridgeV1Mutex {
     return New-Object System.Threading.Mutex($false, $Name)
 }
 
+function Exit-BridgeMutexSet {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Entries,
+        [string] $WarningContext = ''
+    )
+
+    $cleanupErrors = New-Object 'System.Collections.Generic.List[string]'
+    for ($index = $Entries.Count - 1; $index -ge 0; $index--) {
+        $entry = $Entries[$index]
+        if ([bool]$entry.Acquired) {
+            try { $entry.Mutex.ReleaseMutex() }
+            catch {
+                $cleanupErrors.Add(
+                    "$WarningContext $($entry.Name) release failed: $($_.Exception.Message)".Trim()
+                )
+            }
+        }
+        try { $entry.Mutex.Dispose() }
+        catch {
+            $cleanupErrors.Add(
+                "$WarningContext $($entry.Name) dispose failed: $($_.Exception.Message)".Trim()
+            )
+        }
+    }
+    if ($WarningContext) {
+        foreach ($cleanupError in $cleanupErrors) {
+            Write-Warning -WarningAction Continue -Message $cleanupError
+        }
+    }
+    return ,$cleanupErrors.ToArray()
+}
+
+function Enter-BridgeMutexSet {
+    param(
+        [Parameter(Mandatory)] [object[]] $Specifications,
+        [int] $TimeoutMilliseconds = 10000
+    )
+
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $failureKind = ''
+    $failureName = ''
+    $failureMessage = ''
+    try {
+        foreach ($specification in $Specifications) {
+            $name = [string]$specification.Name
+            $purpose = [string]$specification.Purpose
+            $mutex = $null
+            try {
+                $mutex = New-BridgeV1Mutex -Name $name -Purpose $purpose
+                if ($null -eq $mutex) {
+                    throw "$name mutex construction returned null"
+                }
+            } catch {
+                $failureKind = 'construction'
+                $failureName = $name
+                $failureMessage = $_.Exception.Message
+                break
+            }
+            $entry = [pscustomobject]@{
+                Name = $name
+                Purpose = $purpose
+                Mutex = $mutex
+                Acquired = $false
+            }
+            $entries.Add($entry)
+            $remaining = [int][Math]::Max(
+                0,
+                ([int64]$TimeoutMilliseconds - [int64]$clock.ElapsedMilliseconds)
+            )
+            try {
+                $waitResult = $mutex.WaitOne($remaining)
+            } catch [System.Threading.AbandonedMutexException] {
+                $entry.Acquired = $true
+                $failureKind = 'abandoned'
+                $failureName = $name
+                $failureMessage = (
+                    "$name was abandoned; dirty ownership cannot mutate bridge bytes"
+                )
+                break
+            } catch {
+                $failureKind = 'unexpected_wait'
+                $failureName = $name
+                $failureMessage = (
+                    "$name wait failed unexpectedly: $($_.Exception.Message)"
+                )
+                break
+            }
+            if (-not ($waitResult -is [bool])) {
+                $failureKind = 'unexpected_wait'
+                $failureName = $name
+                $failureMessage = "$name returned an unexpected mutex wait result"
+                break
+            }
+            if (-not [bool]$waitResult) {
+                $failureKind = 'timeout'
+                $failureName = $name
+                $failureMessage = (
+                    "$name mutex timeout within the shared ${TimeoutMilliseconds}ms budget"
+                )
+                break
+            }
+            $entry.Acquired = $true
+        }
+    } finally {
+        $clock.Stop()
+    }
+
+    if ($failureKind) {
+        [string[]]$cleanupErrors = @(
+            Exit-BridgeMutexSet -Entries $entries.ToArray() |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+        )
+        if ($cleanupErrors.Count -gt 0) {
+            $failureMessage += '; cleanup errors: ' + ($cleanupErrors -join '; ')
+        }
+        return [pscustomobject]@{
+            Succeeded = $false
+            FailureKind = $failureKind
+            FailureName = $failureName
+            Error = $failureMessage
+            Entries = @()
+        }
+    }
+    return [pscustomobject]@{
+        Succeeded = $true
+        FailureKind = ''
+        FailureName = ''
+        Error = ''
+        Entries = @($entries.ToArray())
+    }
+}
+
 function New-BridgeCanonicalSpoolPaths {
     $spoolDir = Join-Path $bridgeRoot 'spool'
     if (-not (Test-Path -LiteralPath $spoolDir -PathType Container)) {
@@ -1136,11 +1269,15 @@ function Invoke-BridgeCanonicalTransactionalAppend {
     param(
         [Parameter(Mandatory)] [string] $Path,
         [Parameter(Mandatory)] [byte[]] $Bytes,
-        [Parameter(Mandatory)] [bool] $AppendMutexOwned
+        [Parameter(Mandatory)] [bool] $AppendV1Owned,
+        [Parameter(Mandatory)] [bool] $AppendV2Owned
     )
 
-    if (-not $AppendMutexOwned) {
-        throw 'refusing transactional bridge append without AppendV1 ownership'
+    if (-not $AppendV1Owned -or -not $AppendV2Owned) {
+        throw (
+            'refusing transactional bridge append without AppendV1 and ' +
+            'AppendV2 ownership'
+        )
     }
     # Gate the platform before creating shared/ or opening/creating the
     # canonical path. On unsupported platforms the already-durable pending WAL
@@ -1233,50 +1370,40 @@ $script:bridgeWalCleanupFailureInjected = $false
 function Add-CanonicalLineWithWal {
     param([Parameter(Mandatory)] [string] $Line)
 
-    # DEPLOYMENT FENCE: every direct canonical writer must acquire AppendV1 and
-    # use this pending-WAL/checkpoint protocol before this path is enabled in
-    # production. A bypass writer can invalidate the cache, but cannot provide
-    # the same crash/ordering guarantees while racing this critical section.
+    # DEPLOYMENT FENCE: every direct canonical writer must acquire AppendV1
+    # then AppendV2 under one deadline and use this pending-WAL/checkpoint
+    # protocol before this path is enabled in production.
     $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
     [byte[]]$lineBytes = $strictUtf8.GetBytes($Line)
     if ($lineBytes.Length -eq 0 -or $lineBytes[$lineBytes.Length - 1] -ne 10) {
         throw 'bridge WAL row must be non-empty strict UTF-8 ending in LF'
     }
-    $mutex = $null
-    $acquired = $false
-    $dirtyAbandoned = $false
+    $mutexSet = $null
     $Path = $eventsPath
     $wal = Open-PendingCanonicalWalLease -Bytes $lineBytes
-    $mutexError = ''
     try {
-        try {
-            $mutex = New-BridgeV1Mutex `
-                -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
-            if ($null -eq $mutex) { throw 'bridge append mutex construction returned null' }
-            try { $acquired = $mutex.WaitOne(10000) }
-            catch [System.Threading.AbandonedMutexException] {
-                $acquired = $true
-                $dirtyAbandoned = $true
+        $mutexSet = Enter-BridgeMutexSet -Specifications @(
+            [pscustomobject]@{
+                Name = 'Global\WaggleDanceBridgeAppendV1'
+                Purpose = 'Append'
+            },
+            [pscustomobject]@{
+                Name = 'Global\WaggleDanceBridgeAppendV2'
+                Purpose = 'AppendV2'
             }
-        } catch {
-            $mutexError = $_.Exception.Message
-        }
-
-        if (-not $acquired -or $dirtyAbandoned) {
-            if (-not $mutexError) { $mutexError = 'bridge append mutex timeout' }
-            if ($dirtyAbandoned) {
-                $mutexError = 'AppendV1 was abandoned; dirty ownership cannot mutate canonical bytes'
-            }
+        )
+        if (-not $mutexSet.Succeeded) {
+            $mutexError = [string]$mutexSet.Error
             Close-PendingCanonicalWalLease -Wal $wal
             try { $spoolPath = Promote-PendingCanonicalWal -Wal $wal }
             catch {
                 throw (
-                    "could not acquire clean AppendV1 ($mutexError); pending WAL " +
+                    "could not acquire clean AppendV1/AppendV2 ($mutexError); pending WAL " +
                     "retained at $($wal.PendingPath): $($_.Exception.Message)"
                 )
             }
             throw (
-                "could not acquire clean AppendV1 for bridge event: $Path " +
+                "could not acquire clean AppendV1/AppendV2 for bridge event: $Path " +
                 "(reason: $mutexError; event durably spooled to $spoolPath)"
             )
         }
@@ -1285,7 +1412,8 @@ function Add-CanonicalLineWithWal {
             Close-PendingCanonicalWalLease -Wal $wal
             Invoke-BridgeBeforeAppendTestHook -PendingPath $wal.PendingPath
             $appendResult = Invoke-BridgeCanonicalTransactionalAppend `
-                -Path $Path -Bytes $lineBytes -AppendMutexOwned $acquired
+                -Path $Path -Bytes $lineBytes `
+                -AppendV1Owned $true -AppendV2Owned $true
         } catch {
             $appendError = $_.Exception.Message
             try { Close-PendingCanonicalWalLease -Wal $wal }
@@ -1361,16 +1489,9 @@ function Add-CanonicalLineWithWal {
             $wal.Lease.Dispose()
             $wal.Lease = $null
         }
-        if ($null -ne $mutex) {
-            if ($acquired) {
-                try { $mutex.ReleaseMutex() }
-                catch {
-                    Write-Warning -WarningAction Continue -Message (
-                        "canonical AppendV1 release failed: $($_.Exception.Message)"
-                    )
-                }
-            }
-            $mutex.Dispose()
+        if ($null -ne $mutexSet -and $mutexSet.Succeeded) {
+            [void](Exit-BridgeMutexSet `
+                -Entries $mutexSet.Entries -WarningContext 'canonical')
         }
     }
 }
@@ -1379,11 +1500,15 @@ function Invoke-BridgeAuxiliaryTransactionalAppend {
     param(
         [Parameter(Mandatory)] [string] $Path,
         [Parameter(Mandatory)] [byte[]] $Bytes,
-        [Parameter(Mandatory)] [bool] $AppendMutexOwned
+        [Parameter(Mandatory)] [bool] $AppendV1Owned,
+        [Parameter(Mandatory)] [bool] $AppendV2Owned
     )
 
-    if (-not $AppendMutexOwned) {
-        throw 'refusing auxiliary bridge append without AppendV1 ownership'
+    if (-not $AppendV1Owned -or -not $AppendV2Owned) {
+        throw (
+            'refusing auxiliary bridge append without AppendV1 and ' +
+            'AppendV2 ownership'
+        )
     }
     if ($Bytes.Length -eq 0 -or $Bytes[$Bytes.Length - 1] -ne 10) {
         throw 'auxiliary bridge row must be non-empty strict UTF-8 ending in LF'
@@ -1466,36 +1591,28 @@ function Add-AuxiliaryLineBestEffort {
         return
     }
 
-    $mutex = $null
-    $acquired = $false
-    $dirtyAbandoned = $false
-    $mutexError = ''
+    $mutexSet = $null
     try {
-        try {
-            $mutex = New-BridgeV1Mutex `
-                -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose AppendAuxiliary
-            if ($null -eq $mutex) { throw 'auxiliary append mutex construction returned null' }
-            try { $acquired = $mutex.WaitOne(10000) }
-            catch [System.Threading.AbandonedMutexException] {
-                $acquired = $true
-                $dirtyAbandoned = $true
+        $mutexSet = Enter-BridgeMutexSet -Specifications @(
+            [pscustomobject]@{
+                Name = 'Global\WaggleDanceBridgeAppendV1'
+                Purpose = 'AppendAuxiliary'
+            },
+            [pscustomobject]@{
+                Name = 'Global\WaggleDanceBridgeAppendV2'
+                Purpose = 'AppendAuxiliaryV2'
             }
-        } catch {
-            $mutexError = $_.Exception.Message
-        }
-        if (-not $acquired -or $dirtyAbandoned) {
-            if (-not $mutexError) { $mutexError = 'AppendV1 timeout' }
-            if ($dirtyAbandoned) {
-                $mutexError = 'AppendV1 was abandoned; dirty ownership cannot mutate the outbox'
-            }
+        )
+        if (-not $mutexSet.Succeeded) {
             Write-Warning -WarningAction Continue -Message (
-                "auxiliary outbox append was skipped: $mutexError"
+                "auxiliary outbox append was skipped: $($mutexSet.Error)"
             )
             return
         }
         try {
             Invoke-BridgeAuxiliaryTransactionalAppend `
-                -Path $Path -Bytes $lineBytes -AppendMutexOwned $acquired
+                -Path $Path -Bytes $lineBytes `
+                -AppendV1Owned $true -AppendV2Owned $true
         } catch {
             Write-Warning -WarningAction Continue -Message (
                 'canonical bridge event is durable; auxiliary outbox append ' +
@@ -1504,21 +1621,9 @@ function Add-AuxiliaryLineBestEffort {
             return
         }
     } finally {
-        if ($null -ne $mutex) {
-            if ($acquired) {
-                try { $mutex.ReleaseMutex() }
-                catch {
-                    Write-Warning -WarningAction Continue -Message (
-                        "auxiliary AppendV1 release failed: $($_.Exception.Message)"
-                    )
-                }
-            }
-            try { $mutex.Dispose() }
-            catch {
-                Write-Warning -WarningAction Continue -Message (
-                    "auxiliary AppendV1 dispose failed: $($_.Exception.Message)"
-                )
-            }
+        if ($null -ne $mutexSet -and $mutexSet.Succeeded) {
+            [void](Exit-BridgeMutexSet `
+                -Entries $mutexSet.Entries -WarningContext 'auxiliary')
         }
     }
 }

@@ -68,6 +68,36 @@ env var there, exercises Write/Read/Claim/Release/Status, and
 verifies state lands under the temp dir (NOT under the worktree).
 10/10 pass on a healthy bridge.
 
+### Canonical append and replay lock transition
+
+Bridge writers fence every canonical `shared/events.jsonl` append with the
+machine-wide mutexes `Global\WaggleDanceBridgeAppendV1` followed by
+`Global\WaggleDanceBridgeAppendV2`. The per-agent outbox append uses a fresh
+V1-then-V2 set after canonical durability; it does not reuse the canonical
+leases. Ordinary writers never acquire the replay mutex.
+
+The spool replayer acquires the established compatibility guard
+`Global\WaggleDanceBridgeSpoolReplayV1`, then AppendV1, then AppendV2, and keeps all
+three through discovery, exact-record deduplication, any WAL-bound torn-tail
+repair, canonical append, and archival. ReplayV1 preserves the non-blocking
+single-replayer guard: a busy guard remains an immediate compatible no-op.
+Each V1-then-V2 append set has one monotonic 10-second deadline, so V2 receives
+only the time remaining after V1. Every acquired subset is released strictly
+in reverse order.
+
+Construction errors, timeouts, unexpected waits, and abandoned ownership are
+dirty failures. They authorize no canonical, checkpoint, quarantine, spool,
+archive, or auxiliary mutation. A writer may still close and promote the
+pending WAL that it durably created before waiting. Replay is gated to the
+supported Windows primitives before any replay filesystem mutation. Readers
+remain lock-free.
+
+AppendV2 is a transition fence, not a new storage generation. The canonical
+file, pending-WAL names, replay archive layout, and
+`.append-v1-validation.json` checkpoint schema remain V1. This transition
+does not create generation files, rotate the log, or truncate it except for
+the existing WAL-bound torn-tail recovery.
+
 ### Dedicated worktrees (R23.2)
 
 Wake files and heartbeat events make the bridge responsive, but they do not

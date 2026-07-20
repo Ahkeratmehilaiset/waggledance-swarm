@@ -5,10 +5,10 @@
 
 .DESCRIPTION
     Write-AgentEvent.ps1 spools an event to <bridgeRoot>/spool/
-    failed-append-<agent>-<utc>-<pid>-<nonce>.jsonl when the V1-protected
+    failed-append-<agent>-<utc>-<pid>-<nonce>.jsonl when the dual-lock
     shared-log append cannot complete. This script
     closes the loop: it re-appends every spooled event line to
-    shared/events.jsonl using the same named mutex the writer uses, and
+    shared/events.jsonl under ReplayV1, AppendV1, and AppendV2, and
     archives the spool file to spool/replayed/ on success. Idempotent and
     safe to run on a schedule (no spool files -> exit 0, no writes).
 
@@ -73,34 +73,151 @@ function New-BridgeV1Mutex {
     return New-Object System.Threading.Mutex($false, $Name)
 }
 
-$replayMutex = $null
-$replayAcquired = $false
-try {
-    $replayMutex = New-BridgeV1Mutex `
-        -Name 'Global\WaggleDanceBridgeSpoolReplayV1' -Purpose SpoolReplay
-    if ($null -eq $replayMutex) {
-        throw 'bridge spool replay mutex construction returned null'
+function Exit-BridgeMutexSet {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Entries,
+        [string] $WarningContext = ''
+    )
+
+    $cleanupErrors = New-Object 'System.Collections.Generic.List[string]'
+    for ($index = $Entries.Count - 1; $index -ge 0; $index--) {
+        $entry = $Entries[$index]
+        if ([bool]$entry.Acquired) {
+            try { $entry.Mutex.ReleaseMutex() }
+            catch {
+                $cleanupErrors.Add(
+                    "$WarningContext $($entry.Name) release failed: $($_.Exception.Message)".Trim()
+                )
+            }
+        }
+        try { $entry.Mutex.Dispose() }
+        catch {
+            $cleanupErrors.Add(
+                "$WarningContext $($entry.Name) dispose failed: $($_.Exception.Message)".Trim()
+            )
+        }
     }
-    try { $replayAcquired = $replayMutex.WaitOne(0) }
-    catch [System.Threading.AbandonedMutexException] { $replayAcquired = $true }
-} catch {
-    if ($null -ne $replayMutex) { $replayMutex.Dispose() }
-    throw "could not acquire bridge spool replay mutex: $($_.Exception.Message)"
+    if ($WarningContext) {
+        foreach ($cleanupError in $cleanupErrors) {
+            Write-Warning -WarningAction Continue -Message $cleanupError
+        }
+    }
+    return ,$cleanupErrors.ToArray()
 }
-if (-not $replayAcquired) {
-    if ($null -ne $replayMutex) { $replayMutex.Dispose() }
-    Write-Output 'spool replay already running; exiting without changes'
-    return
+
+function Enter-BridgeMutexSet {
+    param(
+        [Parameter(Mandatory)] [object[]] $Specifications,
+        [int] $TimeoutMilliseconds = 10000
+    )
+
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $failureKind = ''
+    $failureName = ''
+    $failureMessage = ''
+    try {
+        foreach ($specification in $Specifications) {
+            $name = [string]$specification.Name
+            $purpose = [string]$specification.Purpose
+            $mutex = $null
+            try {
+                $mutex = New-BridgeV1Mutex -Name $name -Purpose $purpose
+                if ($null -eq $mutex) {
+                    throw "$name mutex construction returned null"
+                }
+            } catch {
+                $failureKind = 'construction'
+                $failureName = $name
+                $failureMessage = $_.Exception.Message
+                break
+            }
+            $entry = [pscustomobject]@{
+                Name = $name
+                Purpose = $purpose
+                Mutex = $mutex
+                Acquired = $false
+            }
+            $entries.Add($entry)
+            $remaining = [int][Math]::Max(
+                0,
+                ([int64]$TimeoutMilliseconds - [int64]$clock.ElapsedMilliseconds)
+            )
+            try {
+                $waitResult = $mutex.WaitOne($remaining)
+            } catch [System.Threading.AbandonedMutexException] {
+                $entry.Acquired = $true
+                $failureKind = 'abandoned'
+                $failureName = $name
+                $failureMessage = (
+                    "$name was abandoned; dirty ownership cannot mutate bridge bytes"
+                )
+                break
+            } catch {
+                $failureKind = 'unexpected_wait'
+                $failureName = $name
+                $failureMessage = (
+                    "$name wait failed unexpectedly: $($_.Exception.Message)"
+                )
+                break
+            }
+            if (-not ($waitResult -is [bool])) {
+                $failureKind = 'unexpected_wait'
+                $failureName = $name
+                $failureMessage = "$name returned an unexpected mutex wait result"
+                break
+            }
+            if (-not [bool]$waitResult) {
+                $failureKind = 'timeout'
+                $failureName = $name
+                $failureMessage = (
+                    "$name mutex timeout within the shared ${TimeoutMilliseconds}ms budget"
+                )
+                break
+            }
+            $entry.Acquired = $true
+        }
+    } finally {
+        $clock.Stop()
+    }
+
+    if ($failureKind) {
+        [string[]]$cleanupErrors = @(
+            Exit-BridgeMutexSet -Entries $entries.ToArray() |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+        )
+        if ($cleanupErrors.Count -gt 0) {
+            $failureMessage += '; cleanup errors: ' + ($cleanupErrors -join '; ')
+        }
+        return [pscustomobject]@{
+            Succeeded = $false
+            FailureKind = $failureKind
+            FailureName = $failureName
+            Error = $failureMessage
+            Entries = @()
+        }
+    }
+    return [pscustomobject]@{
+        Succeeded = $true
+        FailureKind = ''
+        FailureName = ''
+        Error = ''
+        Entries = @($entries.ToArray())
+    }
 }
 
 function Invoke-BridgeTransactionalAppend {
     param(
         [Parameter(Mandatory)] [string] $Path,
         [Parameter(Mandatory)] [byte[]] $Bytes,
-        [Parameter(Mandatory)] [bool] $AppendMutexOwned
+        [Parameter(Mandatory)] [bool] $AppendV1Owned,
+        [Parameter(Mandatory)] [bool] $AppendV2Owned
     )
-    if (-not $AppendMutexOwned) {
-        throw 'refusing transactional replay append without AppendV1 ownership'
+    if (-not $AppendV1Owned -or -not $AppendV2Owned) {
+        throw (
+            'refusing transactional replay append without AppendV1 and ' +
+            'AppendV2 ownership'
+        )
     }
     # Fail closed before creating shared/ or opening/creating events.jsonl.
     Initialize-BridgeAppendV1Native
@@ -493,7 +610,9 @@ function Get-BridgeCanonicalKeys {
 function Repair-BridgeTornTailIfBound {
     param(
         [Parameter(Mandatory)] [string] $Path,
-        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $WalRecords
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $WalRecords,
+        [Parameter(Mandatory)] [bool] $AppendV1Owned,
+        [Parameter(Mandatory)] [bool] $AppendV2Owned
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -537,6 +656,11 @@ function Repair-BridgeTornTailIfBound {
     }
     if ($DryRun) {
         throw 'dry run found a WAL-bound torn tail; no repair was performed'
+    }
+    if (-not $AppendV1Owned -or -not $AppendV2Owned) {
+        throw (
+            'refusing torn-tail repair without AppendV1 and AppendV2 ownership'
+        )
     }
     $quarantineDir = Join-Path $spoolDir 'quarantine'
     if (-not (Test-Path -LiteralPath $quarantineDir -PathType Container)) {
@@ -582,37 +706,66 @@ function Clear-BridgeHiddenAttribute {
     }
 }
 
-$appendMutex = $null
-$appendAcquired = $false
-$appendDirtyAbandoned = $false
+$replayMutexSet = $null
+$appendMutexSet = $null
 try {
-    try {
-        $appendMutex = New-BridgeV1Mutex `
-            -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
-        if ($null -eq $appendMutex) {
-            throw 'bridge append mutex construction returned null'
+    # Unsupported replay platforms are rejected before any replay filesystem
+    # mutation, including pending-WAL promotion, quarantine, or archive work.
+    Initialize-BridgeAppendV1Native
+    # Preserve the existing non-blocking "already running" replay guard. The
+    # append pair below owns the single monotonic ten-second wait budget.
+    $replayMutexSet = Enter-BridgeMutexSet -TimeoutMilliseconds 0 `
+        -Specifications @(
+        [pscustomobject]@{
+            Name = 'Global\WaggleDanceBridgeSpoolReplayV1'
+            Purpose = 'SpoolReplay'
         }
-        try { $appendAcquired = $appendMutex.WaitOne(10000) }
-        catch [System.Threading.AbandonedMutexException] {
-            $appendAcquired = $true
-            $appendDirtyAbandoned = $true
+    )
+    if (-not $replayMutexSet.Succeeded) {
+        if ($replayMutexSet.FailureKind -in @('construction', 'unexpected_wait')) {
+            throw "could not acquire bridge replay mutex: $($replayMutexSet.Error)"
         }
-    } catch {
-        throw "could not acquire bridge append mutex: $($_.Exception.Message)"
-    }
-    if (-not $appendAcquired) {
-        Write-Warning 'bridge append mutex timeout; all spool files kept'
-        Write-Output 'spool replay skipped: append mutex unavailable; no changes'
-        return
-    }
-    if ($appendDirtyAbandoned) {
-        Write-Warning 'AppendV1 was abandoned; dirty ownership cannot replay or mutate canonical bytes'
-        Write-Output 'spool replay skipped: dirty abandoned AppendV1 ownership; no changes'
+        if ($replayMutexSet.FailureKind -eq 'timeout') {
+            Write-Output 'spool replay already running; exiting without changes'
+            return
+        }
+        Write-Warning "$($replayMutexSet.Error); all spool files kept"
+        Write-Output (
+            "spool replay skipped: dirty abandoned $($replayMutexSet.FailureName) " +
+            'ownership; no changes'
+        )
         return
     }
 
-    # AppendV1 remains owned across WAL discovery/recovery, live-log scan,
-    # exact-record dedup, transactional append, and archive.
+    $appendMutexSet = Enter-BridgeMutexSet -Specifications @(
+        [pscustomobject]@{
+            Name = 'Global\WaggleDanceBridgeAppendV1'
+            Purpose = 'Append'
+        },
+        [pscustomobject]@{
+            Name = 'Global\WaggleDanceBridgeAppendV2'
+            Purpose = 'AppendV2'
+        }
+    )
+    if (-not $appendMutexSet.Succeeded) {
+        if ($appendMutexSet.FailureKind -in @('construction', 'unexpected_wait')) {
+            throw "could not acquire bridge append lock set: $($appendMutexSet.Error)"
+        }
+        if ($appendMutexSet.FailureKind -eq 'abandoned') {
+            Write-Warning "$($appendMutexSet.Error); all spool files kept"
+            Write-Output (
+                "spool replay skipped: dirty abandoned $($appendMutexSet.FailureName) " +
+                'ownership; no changes'
+            )
+            return
+        }
+        Write-Warning "$($appendMutexSet.Error); all spool files kept"
+        Write-Output 'spool replay skipped: append mutex unavailable; no changes'
+        return
+    }
+
+    # ReplayV1, AppendV1, and AppendV2 remain owned across WAL discovery,
+    # recovery, live-log scan, exact-record dedup, append, and archive.
     $pendingFiles = @(
         Get-ChildItem -LiteralPath $spoolDir `
             -Filter '.failed-append-*.jsonl.pending' -File -Force `
@@ -685,7 +838,8 @@ try {
     }
 
     [void](Repair-BridgeTornTailIfBound `
-        -Path $eventsPath -WalRecords $bindingRecords.ToArray())
+        -Path $eventsPath -WalRecords $bindingRecords.ToArray() `
+        -AppendV1Owned $true -AppendV2Owned $true)
 
     # Validate the canonical stream before promoting or archiving pending WALs.
     # Strict decoding failures therefore leave every spool path unchanged.
@@ -755,7 +909,7 @@ try {
         try {
             [void](Invoke-BridgeTransactionalAppend `
                 -Path $eventsPath -Bytes $appendBytes `
-                -AppendMutexOwned $appendAcquired)
+                -AppendV1Owned $true -AppendV2Owned $true)
         } catch {
             if ($_.Exception.Message -match 'ROLLBACK FAILED') { throw }
             Write-Warning "append failed and WAL was kept: $($wal.File.Name) ($($_.Exception.Message))"
@@ -774,26 +928,12 @@ try {
         $replayed, $deduped, $failed, $DryRun.IsPresent
     )
 } finally {
-    if ($null -ne $appendMutex) {
-        if ($appendAcquired) {
-            try { $appendMutex.ReleaseMutex() }
-            catch {
-                Write-Warning -WarningAction Continue -Message (
-                    "AppendV1 release failed: $($_.Exception.Message)"
-                )
-            }
-        }
-        $appendMutex.Dispose()
+    if ($null -ne $appendMutexSet -and $appendMutexSet.Succeeded) {
+        [void](Exit-BridgeMutexSet `
+            -Entries $appendMutexSet.Entries -WarningContext 'replayer append')
     }
-    if ($null -ne $replayMutex) {
-        if ($replayAcquired) {
-            try { $replayMutex.ReleaseMutex() }
-            catch {
-                Write-Warning -WarningAction Continue -Message (
-                    "SpoolReplayV1 release failed: $($_.Exception.Message)"
-                )
-            }
-        }
-        $replayMutex.Dispose()
+    if ($null -ne $replayMutexSet -and $replayMutexSet.Succeeded) {
+        [void](Exit-BridgeMutexSet `
+            -Entries $replayMutexSet.Entries -WarningContext 'replayer guard')
     }
 }

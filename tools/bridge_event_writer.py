@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Fail-closed Python implementation of the bridge AppendV1 writer.
+"""Fail-closed Python implementation of the bridge dual-lock writer.
 
 The canonical bridge stream is exactly ``<bridge_root>/shared/events.jsonl``.
 Every canonical append uses the same durable pending-WAL, named-mutex, file
@@ -25,12 +25,17 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 from typing import Any, Mapping, Protocol
 import uuid
 import warnings
 
 
-APPEND_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
+APPEND_V1_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
+APPEND_V2_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV2"
+# Compatibility alias retained for callers and tests that imported the V1 name.
+APPEND_MUTEX_NAME = APPEND_V1_MUTEX_NAME
+APPEND_MUTEX_NAMES = (APPEND_V1_MUTEX_NAME, APPEND_V2_MUTEX_NAME)
 APPEND_MUTEX_TIMEOUT_MS = 10_000
 CHECKPOINT_SCHEMA = "waggledance.bridge.append-v1-validation"
 CHECKPOINT_SUFFIX = ".append-v1-validation.json"
@@ -159,6 +164,99 @@ class _PendingWal:
     lease: AppendV1File | None
 
 
+@dataclass
+class _AppendMutexBundle:
+    entries: list[tuple[str, AppendV1Mutex]]
+
+
+def _remaining_mutex_wait_ms(deadline_ns: int, timeout_ms: int) -> int:
+    remaining_ns = deadline_ns - time.monotonic_ns()
+    if remaining_ns <= 0:
+        return 0
+    # Round a fractional millisecond up, then cap at the original budget. The
+    # cap keeps the first wait exactly 10000ms while every later wait receives
+    # only the monotonic remainder of the same deadline.
+    return min(timeout_ms, (remaining_ns + 999_999) // 1_000_000)
+
+
+def _close_mutex_bundle(
+    bundle: _AppendMutexBundle,
+    *,
+    warning_messages: list[str] | None,
+    context: str,
+) -> tuple[str, ...]:
+    errors: list[str] = []
+    for name, mutex in reversed(bundle.entries):
+        if mutex.acquired:
+            try:
+                mutex.release()
+            except Exception as exc:  # noqa: BLE001 - preserve primary outcome
+                errors.append(f"{context} {name} release failed: {exc}")
+        try:
+            mutex.close()
+        except Exception as exc:  # noqa: BLE001 - preserve primary outcome
+            errors.append(f"{context} {name} close failed: {exc}")
+    if warning_messages is not None:
+        for message in errors:
+            _record_warning(warning_messages, message)
+    return tuple(errors)
+
+
+def _acquire_mutex_bundle(
+    *,
+    backend: AppendV1Backend,
+    names: tuple[str, ...] = APPEND_MUTEX_NAMES,
+    timeout_ms: int = APPEND_MUTEX_TIMEOUT_MS,
+) -> _AppendMutexBundle:
+    """Acquire a clean ordered mutex set under one monotonic deadline."""
+
+    deadline_ns = time.monotonic_ns() + timeout_ms * 1_000_000
+    bundle = _AppendMutexBundle(entries=[])
+    current_name = ""
+    try:
+        for current_name in names:
+            remaining_ms = _remaining_mutex_wait_ms(deadline_ns, timeout_ms)
+            try:
+                mutex = backend.acquire_mutex(current_name, remaining_ms)
+            except Exception as exc:  # noqa: BLE001 - platform boundary
+                raise BridgeEventWriteError(
+                    f"{current_name} mutex construction/acquisition failed: {exc}"
+                ) from exc
+            bundle.entries.append((current_name, mutex))
+            acquired = mutex.acquired
+            abandoned = mutex.abandoned
+            if not isinstance(acquired, bool) or not isinstance(abandoned, bool):
+                raise BridgeEventWriteError(
+                    f"{current_name} returned an unexpected mutex wait state"
+                )
+            if abandoned:
+                raise BridgeEventWriteError(
+                    f"{current_name} was abandoned; dirty ownership cannot mutate bridge bytes"
+                )
+            if not acquired:
+                raise BridgeEventWriteError(
+                    f"{current_name} mutex timeout within the shared {timeout_ms}ms budget"
+                )
+        return bundle
+    except Exception as exc:
+        cleanup_errors = _close_mutex_bundle(
+            bundle,
+            warning_messages=None,
+            context="failed acquisition",
+        )
+        if isinstance(exc, BridgeEventWriteError):
+            if cleanup_errors:
+                raise BridgeEventWriteError(
+                    f"{exc}; cleanup errors: {'; '.join(cleanup_errors)}"
+                ) from exc
+            raise
+        detail = f" for {current_name}" if current_name else ""
+        message = f"append mutex bundle acquisition failed{detail}: {exc}"
+        if cleanup_errors:
+            message += f"; cleanup errors: {'; '.join(cleanup_errors)}"
+        raise BridgeEventWriteError(message) from exc
+
+
 def write_bridge_event(
     *,
     bridge_root: Path,
@@ -167,7 +265,7 @@ def write_bridge_event(
     write_sidecars: bool = True,
     backend: AppendV1Backend | None = None,
 ) -> BridgeWriteResult:
-    """Durably append one bridge event under the AppendV1 contract.
+    """Durably append one bridge event under the AppendV1/AppendV2 contract.
 
     The lexical target guard and platform gate run before any directory or file
     creation.  ``backend`` is dependency injection for tests only; production
@@ -201,44 +299,24 @@ def write_bridge_event(
         agent=agent,
         row=row,
     )
-    mutex: AppendV1Mutex | None = None
+    mutex_bundle: _AppendMutexBundle | None = None
     canonical_result: _CanonicalAppendResult | None = None
     retained_wal: Path | None = None
     primary_error: BridgeEventWriteError | None = None
     try:
         try:
-            mutex = active_backend.acquire_mutex(
-                APPEND_MUTEX_NAME,
-                APPEND_MUTEX_TIMEOUT_MS,
+            mutex_bundle = _acquire_mutex_bundle(
+                backend=active_backend,
             )
         except Exception as exc:  # noqa: BLE001 - fail closed at platform edge
             retained_wal = _close_and_promote_for_failure(
                 active_backend,
                 wal,
-                reason=f"AppendV1 mutex acquisition failed: {exc}",
+                reason=f"append mutex bundle acquisition failed: {exc}",
             )
             primary_error = BridgeEventWriteError(
-                "could not acquire clean AppendV1 for bridge event "
+                "could not acquire clean AppendV1/AppendV2 for bridge event "
                 f"{target}: {exc}; event durably spooled to {retained_wal}",
-                wal_path=retained_wal,
-            )
-            raise primary_error
-
-        if not mutex.acquired or mutex.abandoned:
-            reason = (
-                "AppendV1 was abandoned; dirty ownership cannot mutate canonical bytes"
-                if mutex.abandoned
-                else "bridge append mutex timeout"
-            )
-            retained_wal = _close_and_promote_for_failure(
-                active_backend,
-                wal,
-                reason=reason,
-            )
-            primary_error = BridgeEventWriteError(
-                "could not acquire clean AppendV1 for bridge event "
-                f"{target} (reason: {reason}; event durably spooled to "
-                f"{retained_wal})",
                 wal_path=retained_wal,
             )
             raise primary_error
@@ -249,6 +327,8 @@ def write_bridge_event(
                 backend=active_backend,
                 path=target,
                 row=row,
+                append_v1_owned=True,
+                append_v2_owned=True,
             )
         except Exception as exc:  # noqa: BLE001 - preserve the durable WAL
             retained_wal = _promote_wal(active_backend, wal)
@@ -297,22 +377,12 @@ def write_bridge_event(
                         f"success; retained at {wal.pending_path} ({exc})",
                         wal_path=wal.pending_path,
                     ) from exc
-        if mutex is not None:
-            if mutex.acquired:
-                try:
-                    mutex.release()
-                except Exception as exc:  # noqa: BLE001 - do not negate durability
-                    _record_warning(
-                        warning_messages,
-                        f"canonical AppendV1 release failed: {exc}",
-                    )
-            try:
-                mutex.close()
-            except Exception as exc:  # noqa: BLE001
-                _record_warning(
-                    warning_messages,
-                    f"canonical AppendV1 close failed: {exc}",
-                )
+        if mutex_bundle is not None:
+            _close_mutex_bundle(
+                mutex_bundle,
+                warning_messages=warning_messages,
+                context="canonical",
+            )
 
     if canonical_result is None or not canonical_result.durable:
         raise BridgeEventWriteError(
@@ -533,9 +603,15 @@ def _append_canonical_transactionally(
     backend: AppendV1Backend,
     path: Path,
     row: bytes,
+    append_v1_owned: bool,
+    append_v2_owned: bool,
 ) -> _CanonicalAppendResult:
+    if not append_v1_owned or not append_v2_owned:
+        raise BridgeEventWriteError(
+            "refusing canonical bridge append without AppendV1 and AppendV2 ownership"
+        )
     # ``ensure_supported`` already ran before WAL creation.  The canonical
-    # parent is deliberately created only after a clean mutex acquisition.
+    # parent is deliberately created only after both clean mutex acquisitions.
     backend.mkdir(path.parent)
     stream: AppendV1File | None = None
     durable = False
@@ -801,29 +877,25 @@ def _append_auxiliary_best_effort(
     row: bytes,
     warning_messages: list[str],
 ) -> bool:
-    mutex: AppendV1Mutex | None = None
+    mutex_bundle: _AppendMutexBundle | None = None
     try:
         try:
-            mutex = backend.acquire_mutex(APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS)
+            mutex_bundle = _acquire_mutex_bundle(backend=backend)
         except Exception as exc:  # noqa: BLE001
             _record_warning(
                 warning_messages,
-                f"auxiliary outbox append was skipped: mutex acquisition failed: {exc}",
-            )
-            return False
-        if not mutex.acquired or mutex.abandoned:
-            reason = (
-                "AppendV1 was abandoned; dirty ownership cannot mutate the outbox"
-                if mutex.abandoned
-                else "AppendV1 timeout"
-            )
-            _record_warning(
-                warning_messages,
-                f"auxiliary outbox append was skipped: {reason}",
+                "auxiliary outbox append was skipped: append mutex bundle "
+                f"acquisition failed: {exc}",
             )
             return False
         try:
-            _append_auxiliary_transactionally(backend=backend, path=path, row=row)
+            _append_auxiliary_transactionally(
+                backend=backend,
+                path=path,
+                row=row,
+                append_v1_owned=True,
+                append_v2_owned=True,
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             _record_warning(
@@ -833,22 +905,12 @@ def _append_auxiliary_best_effort(
             )
             return False
     finally:
-        if mutex is not None:
-            if mutex.acquired:
-                try:
-                    mutex.release()
-                except Exception as exc:  # noqa: BLE001
-                    _record_warning(
-                        warning_messages,
-                        f"auxiliary AppendV1 release failed: {exc}",
-                    )
-            try:
-                mutex.close()
-            except Exception as exc:  # noqa: BLE001
-                _record_warning(
-                    warning_messages,
-                    f"auxiliary AppendV1 close failed: {exc}",
-                )
+        if mutex_bundle is not None:
+            _close_mutex_bundle(
+                mutex_bundle,
+                warning_messages=warning_messages,
+                context="auxiliary",
+            )
 
 
 def _append_auxiliary_transactionally(
@@ -856,7 +918,13 @@ def _append_auxiliary_transactionally(
     backend: AppendV1Backend,
     path: Path,
     row: bytes,
+    append_v1_owned: bool,
+    append_v2_owned: bool,
 ) -> None:
+    if not append_v1_owned or not append_v2_owned:
+        raise BridgeEventWriteError(
+            "refusing auxiliary bridge append without AppendV1 and AppendV2 ownership"
+        )
     backend.mkdir(path.parent)
     stream: AppendV1File | None = None
     try:
@@ -1086,7 +1154,7 @@ class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
 
 
 class WindowsAppendV1Backend:
-    """Dependency-free Windows kernel32 backend for the AppendV1 protocol."""
+    """Compatibility-named Windows kernel32 backend for the dual-lock protocol."""
 
     GENERIC_READ = 0x80000000
     GENERIC_WRITE = 0x40000000
@@ -1114,7 +1182,7 @@ class WindowsAppendV1Backend:
     def ensure_supported(self) -> None:
         if not self._supported or self._kernel32 is None:
             raise BridgeEventWriteError(
-                "AppendV1 production writes require Windows file identity, "
+                "AppendV1/AppendV2 production writes require Windows file identity, "
                 "named mutexes, shared-read handles, and write-through replacement; "
                 "refusing an unfenced append"
             )
@@ -1364,12 +1432,16 @@ class _PortableFile:
 class _PortableMutex:
     def __init__(
         self,
+        backend: "_PortableTestBackend",
+        name: str,
         lock: threading.Lock | None,
         *,
         acquired: bool,
         abandoned: bool,
         fail_release: bool,
     ) -> None:
+        self._backend = backend
+        self._name = name
         self._lock = lock
         self.acquired = acquired
         self.abandoned = abandoned
@@ -1384,8 +1456,10 @@ class _PortableMutex:
         if self._lock is not None:
             self._lock.release()
         self._released = True
+        self._backend.mutex_releases.append(self._name)
 
     def close(self) -> None:
+        self._backend.mutex_closes.append(self._name)
         return
 
 
@@ -1402,6 +1476,8 @@ class _PortableTestBackend:
         self.fail_release = fail_release
         self.mutex_acquisitions = 0
         self.mutex_requests: list[tuple[str, int]] = []
+        self.mutex_releases: list[str] = []
+        self.mutex_closes: list[str] = []
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
 
@@ -1435,13 +1511,40 @@ class _PortableTestBackend:
         if outcome == "error":
             raise OSError("simulated mutex construction failure")
         if outcome == "timeout":
-            return _PortableMutex(None, acquired=False, abandoned=False, fail_release=False)
+            return _PortableMutex(
+                self,
+                name,
+                None,
+                acquired=False,
+                abandoned=False,
+                fail_release=False,
+            )
         if outcome == "abandoned":
-            return _PortableMutex(None, acquired=True, abandoned=True, fail_release=False)
+            return _PortableMutex(
+                self,
+                name,
+                None,
+                acquired=True,
+                abandoned=True,
+                fail_release=False,
+            )
+        if outcome == "unexpected":
+            mutex = _PortableMutex(
+                self,
+                name,
+                None,
+                acquired=False,
+                abandoned=False,
+                fail_release=False,
+            )
+            mutex.abandoned = "unexpected"  # type: ignore[assignment]
+            return mutex
         with self._locks_guard:
             lock = self._locks.setdefault(name, threading.Lock())
         acquired = lock.acquire(timeout=max(0.0, timeout_ms / 1000.0))
         return _PortableMutex(
+            self,
+            name,
             lock if acquired else None,
             acquired=acquired,
             abandoned=False,
@@ -1480,7 +1583,10 @@ class _PortableTestBackend:
 
 __all__ = [
     "APPEND_MUTEX_NAME",
+    "APPEND_MUTEX_NAMES",
     "APPEND_MUTEX_TIMEOUT_MS",
+    "APPEND_V1_MUTEX_NAME",
+    "APPEND_V2_MUTEX_NAME",
     "BridgeEventWriteError",
     "BridgeWriteResult",
     "V1_EVENT_TYPES",

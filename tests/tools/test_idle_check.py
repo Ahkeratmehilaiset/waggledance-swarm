@@ -16,6 +16,12 @@ import pytest
 
 
 NOW = "2026-05-17T12:00:00Z"
+BRIDGE_AGENT_UUIDS = {
+    "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+}
 
 
 def _event(
@@ -594,6 +600,633 @@ def _canonical_tools_review_request(
             "operator_gated": True,
         },
     )
+
+
+def _direct_rco_request(
+    *,
+    task_id: str,
+    head: str,
+    ts_utc: str = "2026-05-17T11:00:00Z",
+    to: str = "claude-rco-1,claude-rco-2",
+    pr: int = 1551,
+    base_head: str = "main",
+    agent: str = "codex-lead-1",
+) -> dict[str, object]:
+    event = _event(
+        ts_utc=ts_utc,
+        agent=agent,
+        type="message",
+        task_id=task_id,
+        status="rco_pass_or_block_requested",
+        to=to,
+        message=f"Direct RCO pass-or-block review required at exact head {head}.",
+        payload={
+            "schema": "wd.rco_direct_pass_block_request.v1",
+            "request": "rco pass or block required",
+            "request_only": True,
+            "approval_asserted": False,
+            "canonical_task_id": task_id,
+            "pr": pr,
+            "head": head,
+            "base_head": base_head,
+            "operator_gated": True,
+            "merge_authority_granted": False,
+            "deployment_authority_granted": False,
+        },
+    )
+    event["agent_uuid"] = BRIDGE_AGENT_UUIDS[agent]
+    return event
+
+
+def _direct_rco_response(
+    *,
+    task_id: str,
+    head: str,
+    agent: str,
+    ts_utc: str,
+    type: str = "decision",
+    status: str = "rco_pass",
+    to: str = "codex-lead-1",
+    pr: int = 1551,
+) -> dict[str, object]:
+    event = _event(
+        ts_utc=ts_utc,
+        agent=agent,
+        type=type,
+        task_id=task_id,
+        status=status,
+        to=to,
+        message=f"RCO verdict for exact head {head}.",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "pr": pr,
+            "operator_gated": True,
+        },
+    )
+    event["agent_uuid"] = BRIDGE_AGENT_UUIDS.get(agent, "")
+    return event
+
+
+def test_direct_rco_contract_tracks_each_target_until_exact_head_response(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/direct-rco-contract"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    request = _direct_rco_request(task_id=task_id, head=head)
+    rco_1_pass = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:05:00Z",
+    )
+    rco_2_changes = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-2",
+        ts_utc="2026-05-17T11:06:00Z",
+        type="finding",
+        status="changes_requested",
+    )
+
+    open_report = _run(tmp_path, _base_idle_events() + [request])
+    one_response_report = _run(
+        tmp_path, _base_idle_events() + [request, rco_1_pass]
+    )
+    closed_report = _run(
+        tmp_path, _base_idle_events() + [request, rco_1_pass, rco_2_changes]
+    )
+
+    assert open_report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert one_response_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        task_id
+    ]
+    assert closed_report["criteria"]["open_rco_requests"] == {
+        "ok": True,
+        "task_ids": [],
+    }
+
+
+def test_direct_rco_contract_enforces_identity_head_order_and_reopen(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/direct-rco-ordering"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    new_head = "1" * 40
+    wrong_head = "0" * 40
+    early_responses = [
+        _direct_rco_response(
+            task_id=task_id,
+            head=head,
+            agent=agent,
+            ts_utc=f"2026-05-17T10:5{index}:00Z",
+        )
+        for index, agent in enumerate(("claude-rco-1", "claude-rco-2"))
+    ]
+    request = _direct_rco_request(task_id=task_id, head=head)
+    wrong_head_response = _direct_rco_response(
+        task_id=task_id,
+        head=wrong_head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:02:00Z",
+    )
+    wrong_recipient_response = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-2",
+        ts_utc="2026-05-17T11:03:00Z",
+        to="someone-else",
+    )
+    valid_responses = [
+        _direct_rco_response(
+            task_id=task_id,
+            head=head,
+            agent=agent,
+            ts_utc=f"2026-05-17T11:1{index}:00Z",
+        )
+        for index, agent in enumerate(("claude-rco-1", "claude-rco-2"))
+    ]
+    reopened = _direct_rco_request(
+        task_id=task_id,
+        head=new_head,
+        ts_utc="2026-05-17T11:20:00Z",
+    )
+    duplicate_old_request = _direct_rco_request(
+        task_id=task_id,
+        head=head,
+        ts_utc="2026-05-17T11:21:00Z",
+    )
+
+    still_open = _run(
+        tmp_path,
+        _base_idle_events()
+        + early_responses
+        + [request, wrong_head_response, wrong_recipient_response],
+    )
+    closed = _run(
+        tmp_path,
+        _base_idle_events() + [request] + valid_responses,
+    )
+    reopened_report = _run(
+        tmp_path,
+        _base_idle_events()
+        + [request]
+        + valid_responses
+        + [reopened, duplicate_old_request],
+    )
+
+    assert still_open["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert closed["criteria"]["open_rco_requests"]["task_ids"] == []
+    assert reopened_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        task_id
+    ]
+
+
+def test_direct_rco_contract_rejects_spoofed_or_authoritative_responses(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/direct-rco-response-security"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    request = _direct_rco_request(task_id=task_id, head=head)
+    wrong_uuid = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:05:00Z",
+    )
+    wrong_uuid["agent_uuid"] = "00000000-0000-0000-0000-000000000000"
+    authority_response = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-2",
+        ts_utc="2026-05-17T11:06:00Z",
+    )
+    authority_payload = authority_response["payload"]
+    assert isinstance(authority_payload, dict)
+    authority_payload["merge_authority_granted"] = True
+    authority_payload["deployment_authority_granted"] = True
+    aliased_authority = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:06:30Z",
+    )
+    aliased_authority_payload = aliased_authority["payload"]
+    assert isinstance(aliased_authority_payload, dict)
+    aliased_authority_payload["merge_allowed"] = True
+    aliased_authority_payload["operator_approved"] = True
+    missing_pr = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-2",
+        ts_utc="2026-05-17T11:06:45Z",
+    )
+    missing_pr_payload = missing_pr["payload"]
+    assert isinstance(missing_pr_payload, dict)
+    del missing_pr_payload["pr"]
+    requester_done = _event(
+        ts_utc="2026-05-17T11:07:00Z",
+        agent="codex-lead-1",
+        type="done",
+        task_id=task_id,
+        status="completed",
+        to="claude-rco-1,claude-rco-2",
+        message=f"Implementation completed at {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+    requester_done["agent_uuid"] = BRIDGE_AGENT_UUIDS["codex-lead-1"]
+
+    report = _run(
+        tmp_path,
+        _base_idle_events()
+        + [
+            request,
+            wrong_uuid,
+            authority_response,
+            aliased_authority,
+            missing_pr,
+            requester_done,
+        ],
+    )
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+def test_direct_rco_contract_binds_requester_identity(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/direct-rco-correlation"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    lead_request = _direct_rco_request(
+        task_id=task_id,
+        head=head,
+        to="claude-rco-1",
+        pr=1551,
+    )
+    tools_request = _direct_rco_request(
+        task_id=task_id,
+        head=head,
+        ts_utc="2026-05-17T11:01:00Z",
+        to="claude-rco-1",
+        pr=1551,
+        agent="codex-tools-1",
+    )
+    lead_pass = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:02:00Z",
+        pr=1551,
+    )
+    tools_pass = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:03:00Z",
+        to="codex-tools-1",
+        pr=1551,
+    )
+
+    one_open = _run(
+        tmp_path,
+        _base_idle_events() + [lead_request, tools_request, lead_pass],
+    )
+    closed = _run(
+        tmp_path,
+        _base_idle_events()
+        + [lead_request, tools_request, lead_pass, tools_pass],
+    )
+
+    assert one_open["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert closed["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_direct_rco_contract_binds_response_pr(tmp_path: Path) -> None:
+    task_id = "codex-lead-1/direct-rco-pr-correlation"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    first_request = _direct_rco_request(
+        task_id=task_id,
+        head=head,
+        to="claude-rco-1",
+        pr=1551,
+    )
+    second_request = _direct_rco_request(
+        task_id=task_id,
+        head=head,
+        ts_utc="2026-05-17T11:01:00Z",
+        to="claude-rco-1",
+        pr=1552,
+    )
+    first_pass = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:02:00Z",
+        pr=1551,
+    )
+    second_pass = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:03:00Z",
+        pr=1552,
+    )
+
+    one_open = _run(
+        tmp_path,
+        _base_idle_events() + [first_request, second_request, first_pass],
+    )
+    closed = _run(
+        tmp_path,
+        _base_idle_events()
+        + [first_request, second_request, first_pass, second_pass],
+    )
+
+    assert one_open["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert closed["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_direct_rco_contract_uses_append_order_not_untrusted_timestamps(
+    tmp_path: Path,
+) -> None:
+    task_id = "codex-lead-1/direct-rco-append-order"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    earlier_line_future_response = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:30:00Z",
+    )
+    request = _direct_rco_request(task_id=task_id, head=head)
+    later_line_backdated_response = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-2",
+        ts_utc="2026-05-17T10:00:00Z",
+    )
+    rco_1_after_request = _direct_rco_response(
+        task_id=task_id,
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T10:01:00Z",
+    )
+
+    one_open = _run(
+        tmp_path,
+        _base_idle_events()
+        + [earlier_line_future_response, request, later_line_backdated_response],
+    )
+    closed = _run(
+        tmp_path,
+        _base_idle_events()
+        + [
+            earlier_line_future_response,
+            request,
+            later_line_backdated_response,
+            rco_1_after_request,
+        ],
+    )
+
+    assert one_open["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+    assert closed["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_direct_append_order_does_not_change_canonical_replay_order(
+    tmp_path: Path,
+) -> None:
+    task_id = "canonical-rco-append-replay"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    request = _canonical_rco_request(task_id=task_id, head=head)
+    response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message=f"RCO PASS at exact head {head}.",
+        payload={
+            "head": head,
+            "canonical_task_id": task_id,
+            "operator_gated": True,
+        },
+    )
+    appended_old_replay = _canonical_rco_request(task_id=task_id, head=head)
+
+    report = _run(
+        tmp_path,
+        _base_idle_events() + [request, response, appended_old_replay],
+    )
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_direct_rco_contract_is_fail_closed_without_capturing_third_party(
+    tmp_path: Path,
+) -> None:
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    malformed: list[dict[str, object]] = []
+
+    def add_malformed(suffix: str) -> dict[str, object]:
+        event = _direct_rco_request(task_id=f"direct-invalid-{suffix}", head=head)
+        malformed.append(event)
+        payload = event["payload"]
+        assert isinstance(payload, dict)
+        return payload
+
+    add_malformed("extra")["unexpected"] = False
+    add_malformed("request")["request"] = "review requested"
+    add_malformed("request-only")["request_only"] = 1
+    add_malformed("approval")["approval_asserted"] = 0
+    add_malformed("task")["canonical_task_id"] = "other-task"
+    add_malformed("pr")["pr"] = True
+    add_malformed("head")["head"] = head.upper()
+    add_malformed("base")["base_head"] = "refs/heads/main"
+    add_malformed("operator")["operator_gated"] = False
+    add_malformed("merge")["merge_authority_granted"] = True
+    add_malformed("deploy")["deployment_authority_granted"] = True
+
+    bad_message = _direct_rco_request(task_id="direct-invalid-message", head=head)
+    bad_message["message"] = "Direct RCO request without an exact head."
+    malformed.append(bad_message)
+    bad_type = _direct_rco_request(task_id="direct-invalid-type", head=head)
+    bad_type["type"] = "MESSAGE"
+    malformed.append(bad_type)
+    bad_status = _direct_rco_request(task_id="direct-invalid-status", head=head)
+    bad_status["status"] = "rco_pass_or_block_request"
+    malformed.append(bad_status)
+    missing_schema = _direct_rco_request(
+        task_id="direct-invalid-missing-schema", head=head
+    )
+    missing_schema_payload = missing_schema["payload"]
+    assert isinstance(missing_schema_payload, dict)
+    del missing_schema_payload["schema"]
+    malformed.append(missing_schema)
+    null_schema = _direct_rco_request(
+        task_id="direct-invalid-null-schema", head=head
+    )
+    null_schema_payload = null_schema["payload"]
+    assert isinstance(null_schema_payload, dict)
+    null_schema_payload["schema"] = None
+    malformed.append(null_schema)
+    misspelled_schema = _direct_rco_request(
+        task_id="direct-invalid-misspelled-schema", head=head
+    )
+    misspelled_schema_payload = misspelled_schema["payload"]
+    assert isinstance(misspelled_schema_payload, dict)
+    misspelled_schema_payload["schema"] = (
+        "wd.rco_direct_pass_block_requset.v1"
+    )
+    malformed.append(misspelled_schema)
+    for index, schema in enumerate(
+        (
+            "wd.rco_direct_pass_blok_request.v1",
+            "wd.rco_direct_pas_block_request.v1",
+            "wd.rco_direct_passblock_request.v1",
+        )
+    ):
+        internal_schema_typo = _direct_rco_request(
+            task_id=f"direct-invalid-internal-schema-{index}",
+            head=head,
+        )
+        internal_schema_payload = internal_schema_typo["payload"]
+        assert isinstance(internal_schema_payload, dict)
+        internal_schema_payload["schema"] = schema
+        malformed.append(internal_schema_typo)
+    missing_payload = _direct_rco_request(
+        task_id="direct-invalid-missing-payload", head=head
+    )
+    del missing_payload["payload"]
+    malformed.append(missing_payload)
+    bad_recipient = _direct_rco_request(
+        task_id="direct-invalid-recipient",
+        head=head,
+        to="claude-rco-1,codex-tools-1",
+    )
+    malformed.append(bad_recipient)
+    duplicate_recipient = _direct_rco_request(
+        task_id="direct-invalid-duplicate",
+        head=head,
+        to="claude-rco-1,claude-rco-1",
+    )
+    malformed.append(duplicate_recipient)
+    wrong_requester_uuid = _direct_rco_request(
+        task_id="direct-invalid-requester-uuid", head=head
+    )
+    wrong_requester_uuid["agent_uuid"] = (
+        "00000000-0000-0000-0000-000000000000"
+    )
+    malformed.append(wrong_requester_uuid)
+    unregistered_recipient = _direct_rco_request(
+        task_id="direct-invalid-unregistered-rco",
+        head=head,
+        to="mallory-rco",
+    )
+    malformed.append(unregistered_recipient)
+
+    for event in malformed:
+        report = _run(tmp_path, _base_idle_events() + [event])
+        assert report["criteria"]["open_rco_requests"]["task_ids"] == [
+            event["task_id"]
+        ]
+
+    compound_malformed = []
+    for schema_variant in ("missing", "null", "misspelled"):
+        event = _direct_rco_request(
+            task_id=f"direct-invalid-compound-{schema_variant}",
+            head=head,
+        )
+        del event["task_id"]
+        payload = event["payload"]
+        assert isinstance(payload, dict)
+        if schema_variant == "missing":
+            del payload["schema"]
+        elif schema_variant == "null":
+            payload["schema"] = None
+        else:
+            payload["schema"] = "wd.rco_direct_pass_blok_request.v1"
+        compound_malformed.append(event)
+    no_task_or_payload = _direct_rco_request(
+        task_id="direct-invalid-compound-payload", head=head
+    )
+    del no_task_or_payload["task_id"]
+    del no_task_or_payload["payload"]
+    compound_malformed.append(no_task_or_payload)
+
+    for event in compound_malformed:
+        report = _run(tmp_path, _base_idle_events() + [event])
+        task_ids = report["criteria"]["open_rco_requests"]["task_ids"]
+        assert len(task_ids) == 1
+        assert task_ids[0].startswith("invalid-canonical-request-line-")
+
+    requester_done = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-lead-1",
+        type="done",
+        task_id="direct-invalid-extra",
+        status="completed",
+        to="claude-rco-1,claude-rco-2",
+        message=f"Requester work completed at {head}.",
+        payload={"head": head, "canonical_task_id": "direct-invalid-extra"},
+    )
+    requester_done["agent_uuid"] = BRIDGE_AGENT_UUIDS["codex-lead-1"]
+    sticky_report = _run(
+        tmp_path,
+        _base_idle_events() + [malformed[0], requester_done],
+    )
+    assert sticky_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        "direct-invalid-extra"
+    ]
+
+    for malformed_envelope in (bad_type, bad_status):
+        task_id = str(malformed_envelope["task_id"])
+        apparent_responses = [
+            _direct_rco_response(
+                task_id=task_id,
+                head=head,
+                agent=agent,
+                ts_utc=f"2026-05-17T11:1{index}:00Z",
+            )
+            for index, agent in enumerate(("claude-rco-1", "claude-rco-2"))
+        ]
+        unresolved_report = _run(
+            tmp_path,
+            _base_idle_events() + [malformed_envelope] + apparent_responses,
+        )
+        assert unresolved_report["criteria"]["open_rco_requests"][
+            "task_ids"
+        ] == [task_id]
+
+    mallory_pass = _direct_rco_response(
+        task_id="direct-invalid-unregistered-rco",
+        head=head,
+        agent="mallory-rco",
+        ts_utc="2026-05-17T11:05:00Z",
+    )
+    mallory_pass["agent_uuid"] = "00000000-0000-0000-0000-000000000000"
+    mallory_report = _run(
+        tmp_path,
+        _base_idle_events() + [unregistered_recipient, mallory_pass],
+    )
+    assert mallory_report["criteria"]["open_rco_requests"]["task_ids"] == [
+        "direct-invalid-unregistered-rco"
+    ]
+
+    third_party = _direct_rco_request(task_id="third-party-direct", head=head)
+    third_party_payload = third_party["payload"]
+    assert isinstance(third_party_payload, dict)
+    third_party_payload["schema"] = "third.party.rco_direct_pass_block_request.v1"
+    response_echo = _direct_rco_response(
+        task_id="direct-response-echo",
+        head=head,
+        agent="claude-rco-1",
+        ts_utc="2026-05-17T11:05:00Z",
+    )
+    response_echo_payload = response_echo["payload"]
+    assert isinstance(response_echo_payload, dict)
+    response_echo_payload["schema"] = "wd.rco_direct_pass_block_request.v1"
+
+    report = _run(tmp_path, _base_idle_events() + [third_party, response_echo])
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
 
 
 def test_valid_canonical_tools_review_is_not_an_rco_lock(

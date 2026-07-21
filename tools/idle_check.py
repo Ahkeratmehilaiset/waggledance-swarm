@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN
+from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
 from waggledance.core.work_queue import TASK_ID_PATTERN, resolve_bridge_root
 from tools.bridge_next_action import (
     _event_agent,
@@ -36,6 +37,25 @@ DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_CLAIMS_DIR = Path(".agent-bridge") / "work_queue" / "claims"
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
 CANONICAL_RCO_SCHEMA = "wd.exact_head_consensus_request.v1"
+DIRECT_RCO_SCHEMA = "wd.rco_direct_pass_block_request.v1"
+DIRECT_RCO_REQUEST_STATUS = "rco_pass_or_block_requested"
+DIRECT_RCO_REQUEST_TEXT = "rco pass or block required"
+DIRECT_RCO_REQUESTERS = frozenset({"codex-lead-1", "codex-tools-1"})
+DIRECT_RCO_PAYLOAD_KEYS = frozenset(
+    {
+        "schema",
+        "request",
+        "request_only",
+        "approval_asserted",
+        "canonical_task_id",
+        "pr",
+        "head",
+        "base_head",
+        "operator_gated",
+        "merge_authority_granted",
+        "deployment_authority_granted",
+    }
+)
 REQUESTER_TERMINAL_STATUS_STEMS = (
     "done",
     "closed",
@@ -70,6 +90,16 @@ NONTERMINAL_STATUS_TOKENS = frozenset(
     }
 )
 UNRESOLVED_TARGET = "__unresolved_deliberation_target__"
+DIRECT_RCO_RESPONSE_PAYLOAD_KEYS = frozenset(
+    {"head", "canonical_task_id", "pr", "operator_gated"}
+)
+
+try:
+    BRIDGE_IDENTITY_REGISTRY = load_bridge_identity_registry()
+except (OSError, ValueError):
+    # Direct RCO contracts become unresolved sticky holds when the
+    # operator-maintained identity registry cannot be trusted.
+    BRIDGE_IDENTITY_REGISTRY = {}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -302,10 +332,36 @@ def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:
     any same-task event as a response.
     """
 
-    open_by_key: dict[tuple[str, str, str], dict[str, str]] = {}
+    # Preserve the established timestamp reducer for canonical and legacy
+    # contracts.  Direct contracts use a separate append-order reducer because
+    # their responses are explicitly bound to the JSONL request position.
+    legacy_requests = _reduce_event_requests(events, direct_only=False)
+    direct_events = sorted(
+        events,
+        key=lambda event: int(event.get("_line_no") or 0),
+    )
+    direct_requests = _reduce_event_requests(direct_events, direct_only=True)
+    return legacy_requests + direct_requests
+
+
+def _reduce_event_requests(
+    events: Sequence[dict[str, Any]],
+    *,
+    direct_only: bool,
+) -> list[dict[str, str]]:
+    """Reduce one request family without changing another family's ordering."""
+
+    open_by_key: dict[tuple[str, str, str, str], dict[str, str]] = {}
+    seen_direct_keys: set[tuple[str, str, str, str]] = set()
     for event in events:
         canonical_schema = _event_schema(event) == CANONICAL_RCO_SCHEMA
-        strict_contract = canonical_schema or _is_near_canonical_rco_request(event)
+        direct_schema = _is_direct_rco_request_candidate(event)
+        opens_in_reducer = (
+            direct_schema if direct_only else not direct_schema
+        )
+        strict_contract = direct_schema if direct_only else (
+            canonical_schema or _is_near_canonical_rco_request(event)
+        )
         raw_task_id = _literal_task_id(event) if strict_contract else _task_id(event)
         task_id = (
             raw_task_id
@@ -313,16 +369,36 @@ def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:
             else _invalid_canonical_task_id(event)
         )
         canonical_contract_valid = _valid_canonical_rco_contract(event)
+        direct_contract_valid = _valid_direct_rco_contract(event)
+        strict_contract_valid = canonical_contract_valid or direct_contract_valid
         required_signal = (
-            _required_rco_signal(event) if canonical_contract_valid else {}
+            _required_rco_signal(event)
+            if canonical_contract_valid
+            else _direct_rco_response_signal(event)
+            if direct_contract_valid
+            else {}
         )
         required_response_payload = required_signal.get("payload")
         if not isinstance(required_response_payload, Mapping):
             required_response_payload = {}
-        for kind, target_agent in _request_targets(event):
+        request_targets = _request_targets(event) if opens_in_reducer else []
+        for kind, target_agent in request_targets:
             if not task_id:
                 continue
-            open_by_key[(kind, task_id, target_agent)] = {
+            direct_discriminator = (
+                f"{_literal_event_agent(event)}:"
+                f"{event['payload']['pr']}:{_event_head(event)}"
+                if direct_contract_valid
+                else f"invalid:{event.get('_line_no')}"
+                if direct_schema
+                else ""
+            )
+            key = (kind, task_id, target_agent, direct_discriminator)
+            if direct_contract_valid and key in seen_direct_keys:
+                continue
+            if direct_contract_valid:
+                seen_direct_keys.add(key)
+            open_by_key[key] = {
                 "kind": kind,
                 "task_id": task_id,
                 "target_agent": target_agent,
@@ -331,10 +407,30 @@ def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:
                     if strict_contract
                     else _event_agent(event)
                 ),
+                "request_agent_uuid": (
+                    str(event.get("agent_uuid") or "")
+                    if direct_contract_valid
+                    else ""
+                ),
+                "target_agent_uuid": (
+                    BRIDGE_IDENTITY_REGISTRY.get(target_agent, "")
+                    if direct_contract_valid
+                    else ""
+                ),
                 "request_head": _event_head(event),
+                "request_pr": (
+                    str(event["payload"]["pr"]) if direct_contract_valid else ""
+                ),
                 "canonical_schema": "true" if strict_contract else "false",
+                "direct_contract": (
+                    "valid"
+                    if direct_contract_valid
+                    else "invalid"
+                    if direct_schema
+                    else "absent"
+                ),
                 "canonical_contract": (
-                    "valid" if canonical_contract_valid else "absent_or_invalid"
+                    "valid" if strict_contract_valid else "absent_or_invalid"
                 ),
                 "required_response_type": str(
                     required_signal.get("type") or ""
@@ -357,10 +453,12 @@ def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:
                         target_agent == UNRESOLVED_TARGET
                         or _event_head(event)
                         or canonical_schema
+                        or direct_schema
                     )
                     else "false"
                 ),
                 "opened_at_utc": _iso(event["_ts"]),
+                "opened_line_no": str(event.get("_line_no") or ""),
             }
         for key, request in list(open_by_key.items()):
             if _closes_request(request, event):
@@ -370,7 +468,8 @@ def _open_event_requests(events: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 def _invalid_canonical_task_id(event: Mapping[str, Any]) -> str:
     if (
-        _event_schema(event) != CANONICAL_RCO_SCHEMA
+        _event_schema(event) not in {CANONICAL_RCO_SCHEMA, DIRECT_RCO_SCHEMA}
+        and not _is_direct_rco_request_candidate(event)
         and not _is_near_canonical_rco_request(event)
     ):
         return ""
@@ -465,12 +564,15 @@ def _request_targets(event: Mapping[str, Any]) -> list[tuple[str, str]]:
     """Classify deliberation targets without broad ``*claude*`` matching."""
 
     canonical_schema = _event_schema(event) == CANONICAL_RCO_SCHEMA
+    direct_schema = _is_direct_rco_request_candidate(event)
     requester = (
-        _literal_event_agent(event) if canonical_schema else _event_agent(event)
+        _literal_event_agent(event)
+        if canonical_schema or direct_schema
+        else _event_agent(event)
     )
     raw_recipients = (
         _literal_recipients(event)
-        if canonical_schema
+        if canonical_schema or direct_schema
         else _event_recipients(event)
     )
     recipients = tuple(
@@ -488,6 +590,15 @@ def _request_targets(event: Mapping[str, Any]) -> list[tuple[str, str]]:
             ("rco", recipient)
             for recipient in recipients
             if recipient in eligible_rco_agents
+        ]
+        return targets or [("rco", UNRESOLVED_TARGET)]
+    if direct_schema:
+        if not _valid_direct_rco_contract(event):
+            return [("rco", UNRESOLVED_TARGET)]
+        targets = [
+            ("rco", recipient)
+            for recipient in recipients
+            if "rco" in _identity_tokens(recipient)
         ]
         return targets or [("rco", UNRESOLVED_TARGET)]
     if _is_near_canonical_rco_request(event):
@@ -517,6 +628,13 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
         return False
+    schema_text = str(payload.get("schema")).casefold()
+    if (
+        "wd.rco_direct_pass_block_request" in schema_text
+        and event.get("type") == "message"
+        and event.get("status") == DIRECT_RCO_REQUEST_STATUS
+    ):
+        return True
     if _is_answer_like(event):
         return False
     request_intent = _is_request_like(event) or payload.get("request_only") is True
@@ -528,7 +646,6 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
         and _has_rco_required_signal_marker(required_signals)
     ):
         return True
-    schema_text = str(payload.get("schema")).casefold()
     return "wd.exact_head_consensus" in schema_text
 
 
@@ -604,6 +721,122 @@ def _required_rco_signal(event: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(rco, Mapping):
         return {}
     return rco
+
+
+def _is_direct_rco_request_candidate(event: Mapping[str, Any]) -> bool:
+    """Return whether an event declares the exact direct-RCO request surface.
+
+    Response events may legitimately echo the request schema in diagnostic
+    payloads.  Exact request type/status or explicit request-only fields are
+    therefore required so an answer cannot reopen its own request.
+    """
+
+    exact_envelope = (
+        event.get("type") == "message"
+        and event.get("status") == DIRECT_RCO_REQUEST_STATUS
+    )
+    schema = _event_schema(event)
+    if schema == DIRECT_RCO_SCHEMA and exact_envelope:
+        return True
+    payload = event.get("payload")
+    if schema == DIRECT_RCO_SCHEMA:
+        return isinstance(payload, Mapping) and (
+            payload.get("request_only") is True
+            or payload.get("request") == DIRECT_RCO_REQUEST_TEXT
+        )
+    if not exact_envelope or _literal_event_agent(event) not in DIRECT_RCO_REQUESTERS:
+        return False
+    if not isinstance(payload, Mapping):
+        return True
+    raw_schema = payload.get("schema")
+    if raw_schema is None or not isinstance(raw_schema, str):
+        return True
+    schema_text = raw_schema.strip().casefold()
+    return not schema_text or schema_text.startswith("wd.")
+
+
+def _valid_direct_rco_contract(event: Mapping[str, Any]) -> bool:
+    """Validate the compact direct pass/block request contract fail closed."""
+
+    if (
+        not _is_direct_rco_request_candidate(event)
+        or event.get("type") != "message"
+        or event.get("status") != DIRECT_RCO_REQUEST_STATUS
+    ):
+        return False
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping) or set(payload) != DIRECT_RCO_PAYLOAD_KEYS:
+        return False
+    task_id = _literal_task_id(event)
+    request_agent = _literal_event_agent(event)
+    head = _literal_canonical_head(event)
+    if (
+        not task_id
+        or task_id != task_id.strip()
+        or not _is_safe_task_id(task_id)
+        or not request_agent
+        or not head
+    ):
+        return False
+    if request_agent not in DIRECT_RCO_REQUESTERS:
+        return False
+    if event.get("agent_uuid") != BRIDGE_IDENTITY_REGISTRY.get(request_agent):
+        return False
+    line_no = event.get("_line_no")
+    if type(line_no) is not int or line_no <= 0:
+        return False
+    message = event.get("message")
+    if not isinstance(message, str) or head not in message:
+        return False
+    if payload.get("schema") != DIRECT_RCO_SCHEMA:
+        return False
+    if payload.get("request") != DIRECT_RCO_REQUEST_TEXT:
+        return False
+    if payload.get("canonical_task_id") != task_id:
+        return False
+    if payload.get("request_only") is not True:
+        return False
+    if payload.get("approval_asserted") is not False:
+        return False
+    if payload.get("operator_gated") is not True:
+        return False
+    if payload.get("merge_authority_granted") is not False:
+        return False
+    if payload.get("deployment_authority_granted") is not False:
+        return False
+    pr = payload.get("pr")
+    if type(pr) is not int or pr <= 0:
+        return False
+    base_head = payload.get("base_head")
+    if not isinstance(base_head, str) or not (
+        base_head == "main" or re.fullmatch(r"[0-9a-f]{40}", base_head)
+    ):
+        return False
+    recipients = _literal_recipients(event)
+    return bool(recipients) and all(
+        recipient not in {request_agent, "operator", "system"}
+        and "rco" in _identity_tokens(recipient)
+        and recipient in BRIDGE_IDENTITY_REGISTRY
+        for recipient in recipients
+    )
+
+
+def _direct_rco_response_signal(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Derive, rather than trust, the exact response contract for a request."""
+
+    task_id = _literal_task_id(event)
+    head = _literal_canonical_head(event)
+    return {
+        "type": "decision",
+        "status": "rco_pass",
+        "message_must_contain_head": head,
+        "payload": {
+            "head": head,
+            "canonical_task_id": task_id,
+            "pr": event["payload"]["pr"],
+            "operator_gated": True,
+        },
+    }
 
 
 def _valid_canonical_rco_contract(event: Mapping[str, Any]) -> bool:
@@ -755,12 +988,21 @@ def _event_schema(event: Mapping[str, Any]) -> str:
 
 def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> bool:
     canonical_schema = request.get("canonical_schema") == "true"
+    direct_contract = request.get("direct_contract") in {"valid", "invalid"}
     event_task_id = (
         _literal_task_id(event) if canonical_schema else _task_id(event)
     )
     if event_task_id != request["task_id"]:
         return False
-    if event["_ts"] <= _parse_utc(request["opened_at_utc"]):
+    if direct_contract:
+        event_line = event.get("_line_no")
+        try:
+            opened_line = int(request.get("opened_line_no") or "")
+        except ValueError:
+            return False
+        if type(event_line) is not int or event_line <= opened_line:
+            return False
+    elif event["_ts"] <= _parse_utc(request["opened_at_utc"]):
         return False
     target_event_agent = (
         _literal_event_agent(event) if canonical_schema else _event_agent(event)
@@ -770,7 +1012,8 @@ def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> boo
         and target_event_agent == request["target_agent"]
     )
     requester_closure = (
-        _literal_event_agent(event) == request["request_agent"]
+        not direct_contract
+        and _literal_event_agent(event) == request["request_agent"]
         and _is_requester_closure_event(event)
     )
     if requester_closure:
@@ -849,6 +1092,7 @@ def _is_valid_exact_head_rco_response(
     request: Mapping[str, str],
     event: Mapping[str, Any],
 ) -> bool:
+    direct_contract = request.get("direct_contract") == "valid"
     if request.get("canonical_contract") == "valid":
         payload = event.get("payload")
         if (
@@ -857,6 +1101,17 @@ def _is_valid_exact_head_rco_response(
             or event.get("to") != request["request_agent"]
         ):
             return False
+        if direct_contract:
+            if event.get("agent_uuid") != request.get("target_agent_uuid"):
+                return False
+            if set(payload) != DIRECT_RCO_RESPONSE_PAYLOAD_KEYS:
+                return False
+            if (
+                type(payload["pr"]) is not int
+                or payload["pr"] <= 0
+                or str(payload["pr"]) != request.get("request_pr")
+            ):
+                return False
         try:
             required_payload = json.loads(
                 request.get("required_response_payload_json") or "{}"

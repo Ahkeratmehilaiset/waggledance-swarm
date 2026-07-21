@@ -1,0 +1,176 @@
+{
+  "schema": "wd.bridge_writer_cutover_cutbook_config.v1",
+  "activation_state": "hold_source_foundation_only",
+  "lock_protocol": {
+    "replay_guard": {
+      "name": "Global\\WaggleDanceBridgeSpoolReplayV1",
+      "timeout_ms": 0
+    },
+    "append_deadline_ms": 10000,
+    "writer_acquire_order": [
+      "Global\\WaggleDanceBridgeAppendV1",
+      "Global\\WaggleDanceBridgeAppendV2"
+    ],
+    "replayer_append_acquire_order": [
+      "Global\\WaggleDanceBridgeAppendV1",
+      "Global\\WaggleDanceBridgeAppendV2"
+    ],
+    "release_order_reverse": true
+  },
+  "stream_policy": {
+    "generation_change_allowed": false,
+    "rotation_allowed": false,
+    "rewrite_allowed": false
+  },
+  "inventory_policy": {
+    "writer_components": [
+      ".agent-bridge/bin/Restore-BridgeSpool.ps1",
+      ".agent-bridge/bin/Write-AgentEvent.ps1",
+      "tools/bridge_event_writer.py"
+    ],
+    "direct_python_callers": [
+      "tools/bridge_loop_tick.py",
+      "tools/close_bridge_rco_request.py",
+      "tools/idle_protocol_activate.py"
+    ],
+    "direct_wrapper_callers": [
+      ".agent-bridge/bin/Claim-AgentTask.ps1",
+      ".agent-bridge/bin/Invoke-BridgeGit.ps1",
+      ".agent-bridge/bin/Invoke-RoleReview.ps1",
+      ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1",
+      ".agent-bridge/bin/Read-AgentBridge.ps1",
+      ".agent-bridge/bin/Release-AgentTask.ps1",
+      ".agent-bridge/bin/Send-Liveness.ps1",
+      ".agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1",
+      "tools/pr_bridge_wake.py"
+    ],
+    "required_entry_keys": {
+      "process": [
+        "action_id",
+        "pid",
+        "identity_sha256",
+        "command_sha256",
+        "closure_sha256",
+        "entrypoint_blob_id",
+        "dependency_blob_ids",
+        "toolchain_ids"
+      ],
+      "scheduled_task": [
+        "action_id",
+        "identity_sha256",
+        "action_sha256",
+        "definition_sha256",
+        "closure_sha256",
+        "entrypoint_blob_id",
+        "dependency_blob_ids",
+        "toolchain_ids"
+      ],
+      "runtime_blob": [
+        "id",
+        "source_path",
+        "sha256",
+        "size"
+      ],
+      "toolchain": [
+        "id",
+        "sha256",
+        "size"
+      ],
+      "cutbook_process_provenance": [
+        "action_kind",
+        "action_id",
+        "identity_sha256",
+        "command_or_action_sha256",
+        "closure_sha256",
+        "entrypoint_blob_id",
+        "dependency_blob_ids",
+        "toolchain_ids",
+        "runtime_blobs",
+        "toolchain",
+        "exact_source_head",
+        "origin",
+        "provenance_sha256"
+      ],
+      "cutbook_scheduled_task_provenance": [
+        "action_kind",
+        "action_id",
+        "identity_sha256",
+        "command_or_action_sha256",
+        "definition_sha256",
+        "closure_sha256",
+        "entrypoint_blob_id",
+        "dependency_blob_ids",
+        "toolchain_ids",
+        "runtime_blobs",
+        "toolchain",
+        "exact_source_head",
+        "origin",
+        "provenance_sha256"
+      ],
+      "cutbook_runtime_blob": [
+        "blob_id",
+        "source_path",
+        "source_blob_sha256",
+        "runtime_blob_sha256",
+        "size"
+      ]
+    },
+    "allowed_runtime_origin": "exact_head_runtime_install_provenance",
+    "blocked_runtime_origins": [
+      "legacy_direct_append",
+      "linked_worktree",
+      "unknown"
+    ],
+    "scope_proof": {
+      "complete": false,
+      "reason": "non_heuristic_process_task_scope_not_implemented"
+    }
+  },
+  "quiet_window": {
+    "attested_replayer_only": true,
+    "orphan_writer_pid_target": 0,
+    "pending_wal_file_target": 0,
+    "pending_wal_record_target": 0,
+    "final_replayable_wal_file_target": 0,
+    "final_replayable_wal_record_target": 0,
+    "quarantine_growth_target": 0
+  },
+  "rule_10": {
+    "detection_target_bps": 10000,
+    "min_cases_per_critical_class": 2,
+    "critical_classes": [
+      "event-conservation-break",
+      "lock-protocol-violation",
+      "rollback-rehearsal-failure",
+      "runtime-provenance-drift",
+      "wal-corruption",
+      "writer-identity-spoof"
+    ],
+    "rollback_max_ms": 60000,
+    "rollback_max_scheduler_ticks": 1,
+    "require_train_holdout_disjoint": true,
+    "require_executed_drill": true,
+    "require_post_cutover_rehearsal": true
+  },
+  "downstream_receipt_gate": {
+    "served_min": 10000,
+    "receipt_coverage_min_bps": 9500,
+    "solver_first_min_bps": 9500,
+    "evidence_max_age_days": 14,
+    "claim_safe_effect": "none"
+  },
+  "authority": {
+    "apply_allowed": false,
+    "capability_grant_allowed": false,
+    "deployment_allowed": false,
+    "git_mutation_allowed": false,
+    "process_mutation_allowed": false,
+    "scheduled_task_mutation_allowed": false,
+    "runtime_write_allowed": false,
+    "bridge_append_allowed": false,
+    "source_write_allowed": false,
+    "merge_allowed": false,
+    "claim_safe_flip_allowed": false,
+    "operator_approval_collected": false
+  }
+}

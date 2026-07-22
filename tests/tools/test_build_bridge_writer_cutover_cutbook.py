@@ -692,6 +692,160 @@ def test_lock_lifecycle_semantic_contradictions_hold_without_authority() -> None
 
 
 @pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (
+            lambda evidence, entry: entry.__setitem__(
+                "provenance_sha256", _digest(996)
+            ),
+            "lock_lifecycle_replayer_provenance_digest_mismatch",
+        ),
+        (
+            lambda evidence, entry: (
+                entry.__setitem__("exact_source_head", "b" * 40),
+                _seal_provenance(entry),
+                evidence["lock_lifecycle_receipt"].__setitem__(
+                    "replayer_provenance_sha256", entry["provenance_sha256"]
+                ),
+            ),
+            "lock_lifecycle_replayer_head_mismatch",
+        ),
+        (
+            lambda evidence, entry: (
+                entry["runtime_blobs"][0].__setitem__(
+                    "source_path", ".agent-bridge/bin/Write-AgentEvent.ps1"
+                ),
+                _seal_provenance(entry),
+                evidence["lock_lifecycle_receipt"].__setitem__(
+                    "replayer_provenance_sha256", entry["provenance_sha256"]
+                ),
+            ),
+            "lock_lifecycle_replayer_entrypoint_mismatch",
+        ),
+    ],
+)
+def test_lock_lifecycle_replayer_provenance_is_self_contained(
+    mutate,
+    expected: str,
+) -> None:
+    evidence = _evidence()
+    entry = next(
+        item
+        for item in evidence["provenance"]
+        if item["action_kind"] == "scheduled_task"
+    )
+    mutate(evidence, entry)
+    receipt = evidence["lock_lifecycle_receipt"]
+    receipt["replayer_provenance_sha256"] = entry["provenance_sha256"]
+    _seal_lock_lifecycle(receipt)
+
+    report = _report(evidence)
+    assert expected in _codes(report)
+    assert report["checks"]["lock_lifecycle_consistency"] is False
+    assert report["checks"]["lock_lifecycle"] is False
+    assert all(value is False for value in report["authority"].values())
+
+
+def test_timestamps_with_excess_fractional_precision_are_rejected() -> None:
+    evidence = _evidence()
+    receipt = evidence["lock_lifecycle_receipt"]
+    receipt["append_deadline_started_at_utc"] = "2026-07-21T10:01:00.3000000Z"
+    receipt["append_deadline_expires_at_utc"] = "2026-07-21T10:01:10.3000009Z"
+    _seal_lock_lifecycle(receipt)
+
+    with pytest.raises(cutbook.ContractError, match="canonical UTC timestamp"):
+        _report(evidence)
+
+
+def test_timeout_cleanup_cannot_precede_wait_completion() -> None:
+    evidence = _evidence()
+    receipt = evidence["lock_lifecycle_receipt"]
+    receipt["events"] = deepcopy(receipt["events"][:4])
+    receipt["events"][-1]["result"] = "timeout"
+    receipt["events"].extend(
+        [
+            {
+                "sequence": 4,
+                "at_utc": "2026-07-21T10:01:00.400Z",
+                "operation": "dispose",
+                "subject": cutbook.WRITER_LOCKS[0],
+                "timeout_ms": 0,
+                "result": "succeeded",
+            },
+            {
+                "sequence": 5,
+                "at_utc": "2026-07-21T10:01:00.500Z",
+                "operation": "release",
+                "subject": cutbook.REPLAYER_LOCKS[0],
+                "timeout_ms": 0,
+                "result": "succeeded",
+            },
+            {
+                "sequence": 6,
+                "at_utc": "2026-07-21T10:01:00.600Z",
+                "operation": "dispose",
+                "subject": cutbook.REPLAYER_LOCKS[0],
+                "timeout_ms": 0,
+                "result": "succeeded",
+            },
+        ]
+    )
+    receipt["outcome"] = "timeout"
+    _seal_lock_lifecycle(receipt)
+
+    report = _report(evidence)
+    assert "lock_lifecycle_timeout_completion_invalid" in _codes(report)
+    assert report["checks"]["lock_lifecycle_consistency"] is False
+    assert report["checks"]["lock_lifecycle"] is False
+
+
+def test_lock_lifecycle_deadline_boundaries_and_duplicate_construction() -> None:
+    evidence = _evidence()
+    receipt = evidence["lock_lifecycle_receipt"]
+    receipt["append_deadline_expires_at_utc"] = "2026-07-21T10:01:10.300001Z"
+    _seal_lock_lifecycle(receipt)
+    report = _report(evidence)
+    assert "lock_lifecycle_deadline_invalid" in _codes(report)
+
+    for boundary_time in (
+        "2026-07-21T10:01:00.299999Z",
+        "2026-07-21T10:01:10.300001Z",
+    ):
+        evidence = _evidence()
+        receipt = evidence["lock_lifecycle_receipt"]
+        receipt["events"][3]["at_utc"] = boundary_time
+        receipt["events"][3]["timeout_ms"] = 0
+        _seal_lock_lifecycle(receipt)
+        report = _report(evidence)
+        assert "lock_lifecycle_deadline_invalid" in _codes(report)
+        assert report["checks"]["lock_lifecycle_consistency"] is False
+
+    evidence = _evidence()
+    receipt = evidence["lock_lifecycle_receipt"]
+    duplicate = deepcopy(receipt["events"][2])
+    duplicate["at_utc"] = "2026-07-21T10:01:00.300500Z"
+    receipt["events"].insert(3, duplicate)
+    for sequence, event in enumerate(receipt["events"]):
+        event["sequence"] = sequence
+    _seal_lock_lifecycle(receipt)
+    report = _report(evidence)
+    assert "lock_lifecycle_acquire_order_invalid" in _codes(report)
+    assert report["checks"]["lock_lifecycle_consistency"] is False
+
+
+def test_lock_lifecycle_remaining_deadline_uses_microsecond_ceiling() -> None:
+    evidence = _evidence()
+    receipt = evidence["lock_lifecycle_receipt"]
+    receipt["events"][5]["at_utc"] = "2026-07-21T10:01:00.500001Z"
+    _seal_lock_lifecycle(receipt)
+
+    report = _report(evidence)
+    assert report["checks"]["lock_lifecycle_consistency"] is True
+    assert report["checks"]["lock_lifecycle"] is False
+    assert _codes(report) >= {"lock_lifecycle_authentication_not_implemented"}
+
+
+@pytest.mark.parametrize(
     ("failure_result", "constructed_failed_lock", "acquired_failed_lock"),
     [
         ("construction_failure", False, False),
@@ -734,12 +888,17 @@ def test_lock_lifecycle_failure_paths_forbid_mutation_and_clean_partial_set(
             ("dispose", cutbook.REPLAYER_LOCKS[0]),
         ]
     )
+    time_prefix = (
+        "2026-07-21T10:01:10."
+        if failure_result == "timeout"
+        else "2026-07-21T10:01:00."
+    )
     next_time = 400
     for operation, subject in cleanup:
         base.append(
             {
                 "sequence": len(base),
-                "at_utc": f"2026-07-21T10:01:00.{next_time:03d}Z",
+                "at_utc": f"{time_prefix}{next_time:03d}Z",
                 "operation": operation,
                 "subject": subject,
                 "timeout_ms": 0,
@@ -809,6 +968,8 @@ def test_docs_and_config_repeat_hold_and_complete_authority_matrix() -> None:
         "pending_file_count",
         "candidate_qualified",
         "replay_plan_sha256",
+        "timeout completion",
+        "receipt capture",
         "wal_replay_order_attestation_not_implemented",
     ):
         assert token in docs

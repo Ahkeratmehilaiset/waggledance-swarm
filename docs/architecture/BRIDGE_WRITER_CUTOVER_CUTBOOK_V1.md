@@ -48,6 +48,21 @@ quiet-start and post-drain canonical-state digests, the exact quiet interval,
 the shared append deadline, an ordered event trace, and its own canonical
 SHA-256.
 
+For an `acquire` event, `at_utc` is the wait-invocation time. The reducer uses
+that instant to rederive the remaining shared-deadline timeout with
+microsecond-exact, upward millisecond rounding capped by the configured
+10,000 ms budget. A producer reporting `timeout` must not emit cleanup or any
+other following event before `at_utc + timeout_ms`; the timeout completion
+bound is part of lifecycle chronology.
+
+The producer must bind the receipt to the exact evidence head and to a
+canonically hashed Scheduled Task provenance row whose entrypoint blob is
+`restore-bridge-spool` at
+`.agent-bridge/bin/Restore-BridgeSpool.ps1`. Resealing a foreign-head,
+digest-corrupt, or different-entrypoint row cannot establish lifecycle
+consistency. Timestamp strings use canonical UTC `Z` form with no more than
+six fractional digits.
+
 The event trace must prove ReplayV1 construction and zero-timeout acquisition,
 then AppendV1 and AppendV2 construction/acquisition under one deadline of at
 most 10,000 ms. Canonical-stream mutation may occur only after all three locks
@@ -56,7 +71,9 @@ before dispose for an acquired mutex and dispose-only for a constructed mutex
 that was not acquired. Timeout, abandoned ownership, construction failure, or
 an unexpected wait result forbids mutation and requires the same exact reverse
 cleanup for the constructed/acquired subset. Every lifecycle timestamp is
-strictly ordered inside the bound quiet interval.
+strictly ordered inside the bound quiet interval. The receipt capture is not a
+lifecycle event: it must occur strictly after the quiet interval ends and no
+later than the enclosing evidence capture.
 
 Malformed schema, key, or JSON types are contract errors. Digest, provenance,
 ordering, deadline, chronology, mutation, outcome, and cleanup contradictions

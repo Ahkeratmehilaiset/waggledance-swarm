@@ -10,7 +10,7 @@ or bridge state.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -35,6 +35,9 @@ EXIT_ERROR = 2
 EXIT_HOLD = 3
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+UTC_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
+)
 RUNTIME_BLOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 SID_RE = re.compile(r"^S-\d(?:-\d+)+$", re.IGNORECASE)
@@ -1974,6 +1977,48 @@ def _audit_lock_lifecycle(
             "lock_lifecycle_replayer_provenance_mismatch",
             str(receipt["replayer_action_id"]),
         )
+    else:
+        replayer_provenance = provenance_matches[0]
+        digest_input = {
+            key: value
+            for key, value in replayer_provenance.items()
+            if key != "provenance_sha256"
+        }
+        if replayer_provenance["provenance_sha256"] != canonical_digest(
+            digest_input
+        ):
+            _block(
+                blockers,
+                "lock_lifecycle_replayer_provenance_digest_mismatch",
+                str(receipt["replayer_action_id"]),
+            )
+        if replayer_provenance["exact_source_head"] != exact_head:
+            _block(
+                blockers,
+                "lock_lifecycle_replayer_head_mismatch",
+                str(receipt["replayer_action_id"]),
+            )
+        entrypoint_blob_id = str(replayer_provenance["entrypoint_blob_id"])
+        entrypoint_blobs = [
+            blob
+            for raw_blob in _list(
+                replayer_provenance["runtime_blobs"],
+                "replayer provenance runtime blobs",
+            )
+            for blob in [_object(raw_blob, "replayer provenance runtime blob")]
+            if blob["blob_id"] == entrypoint_blob_id
+        ]
+        if (
+            entrypoint_blob_id != "restore-bridge-spool"
+            or len(entrypoint_blobs) != 1
+            or entrypoint_blobs[0]["source_path"]
+            != ".agent-bridge/bin/Restore-BridgeSpool.ps1"
+        ):
+            _block(
+                blockers,
+                "lock_lifecycle_replayer_entrypoint_mismatch",
+                str(receipt["replayer_action_id"]),
+            )
 
     quiet_state = _object(evidence["quiet_start_state"], "quiet-start state")
     post_state = _object(evidence["post_drain_state"], "post-drain state")
@@ -2023,7 +2068,7 @@ def _audit_lock_lifecycle(
     )
     if (
         receipt["append_deadline_ms"] != deadline_ms
-        or int((deadline_end - deadline_start).total_seconds() * 1000) != deadline_ms
+        or deadline_end - deadline_start != timedelta(milliseconds=deadline_ms)
         or deadline_start < receipt_start
         or deadline_end > receipt_end
     ):
@@ -2064,18 +2109,29 @@ def _audit_lock_lifecycle(
     cleanup_started = False
     cleanup_events: list[tuple[str, str]] = []
     cleanup_failed = False
+    timeout_completion_not_before: datetime | None = None
 
     for event, event_time in zip(events, event_times):
         operation = str(event["operation"])
         subject = str(event["subject"])
         result = str(event["result"])
         timeout_ms = int(event["timeout_ms"])
+        if (
+            timeout_completion_not_before is not None
+            and event_time < timeout_completion_not_before
+        ):
+            _block(
+                blockers,
+                "lock_lifecycle_timeout_completion_invalid",
+                subject,
+            )
 
         if operation == "construct":
             if (
                 cleanup_started
                 or failure_kind
                 or next_lock >= len(expected_locks)
+                or len(constructed) != next_lock
                 or subject != expected_locks[next_lock]
                 or timeout_ms != 0
                 or result not in {"succeeded", "construction_failure"}
@@ -2109,20 +2165,33 @@ def _audit_lock_lifecycle(
                 if timeout_ms != 0:
                     _block(blockers, "lock_lifecycle_deadline_invalid", subject)
             else:
+                remaining = deadline_end - event_time
+                remaining_us = (
+                    (remaining.days * 24 * 60 * 60 + remaining.seconds)
+                    * 1_000_000
+                    + remaining.microseconds
+                )
                 remaining_ms = max(
                     0,
                     min(
                         deadline_ms,
-                        int((deadline_end - event_time).total_seconds() * 1000),
+                        (remaining_us + 999) // 1000,
                     ),
                 )
-                if event_time < deadline_start or timeout_ms != remaining_ms:
+                if (
+                    not (deadline_start <= event_time <= deadline_end)
+                    or timeout_ms != remaining_ms
+                ):
                     _block(blockers, "lock_lifecycle_deadline_invalid", subject)
             next_lock += 1
             if result in {"acquired", "abandoned"}:
                 acquired.append(subject)
             if result != "acquired":
                 failure_kind = result
+            if result == "timeout":
+                timeout_completion_not_before = event_time + timedelta(
+                    milliseconds=timeout_ms
+                )
             continue
 
         if operation == "mutation":
@@ -2160,6 +2229,15 @@ def _audit_lock_lifecycle(
         _block(blockers, "lock_lifecycle_cleanup_order_invalid", "receipt")
     if cleanup_failed:
         _block(blockers, "lock_lifecycle_cleanup_failed", "receipt")
+    if (
+        timeout_completion_not_before is not None
+        and captured_at < timeout_completion_not_before
+    ):
+        _block(
+            blockers,
+            "lock_lifecycle_timeout_completion_invalid",
+            "receipt capture",
+        )
 
     expected_outcome = "succeeded" if not failure_kind else failure_kind
     if receipt["outcome"] != expected_outcome:
@@ -2309,8 +2387,11 @@ def _blob_id(value: object, label: str) -> str:
 
 def _timestamp(value: object, label: str) -> datetime:
     text = _string(value, label)
-    if not text.endswith("Z"):
-        raise ContractError(f"{label} must use UTC Z form")
+    if not UTC_TIMESTAMP_RE.fullmatch(text):
+        raise ContractError(
+            f"{label} must be a canonical UTC timestamp with at most "
+            "six fractional digits"
+        )
     try:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00")
     except ValueError as exc:

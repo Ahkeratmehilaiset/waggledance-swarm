@@ -40,13 +40,31 @@ Global\WaggleDanceBridgeAppendV1
 Global\WaggleDanceBridgeAppendV2
 ```
 
-The cutbook cannot override the writer or replayer lock contracts. The
-present source foundation records the required order and budgets, but it does
-not consume a structured lock-lifecycle receipt. Current runtime cleanup
-warnings are not a machine-verifiable release result. A future collector must
-provide a hash-bound receipt for acquisition order, abandoned-lock handling,
-timeouts, reverse release, and every cleanup result before this blocker can be
-removed.
+The cutbook cannot override the writer or replayer lock contracts. It consumes
+the exact-key schema `wd.bridge_writer_lock_lifecycle_receipt.v1` and rederives
+a non-authoritative `lock_lifecycle_consistency` candidate. The receipt binds
+the exact source head, the replayer action and provenance digest, both
+quiet-start and post-drain canonical-state digests, the exact quiet interval,
+the shared append deadline, an ordered event trace, and its own canonical
+SHA-256.
+
+The event trace must prove ReplayV1 construction and zero-timeout acquisition,
+then AppendV1 and AppendV2 construction/acquisition under one deadline of at
+most 10,000 ms. Canonical-stream mutation may occur only after all three locks
+were acquired cleanly. Cleanup is exactly once in reverse order, with release
+before dispose for an acquired mutex and dispose-only for a constructed mutex
+that was not acquired. Timeout, abandoned ownership, construction failure, or
+an unexpected wait result forbids mutation and requires the same exact reverse
+cleanup for the constructed/acquired subset. Every lifecycle timestamp is
+strictly ordered inside the bound quiet interval.
+
+Malformed schema, key, or JSON types are contract errors. Digest, provenance,
+ordering, deadline, chronology, mutation, outcome, and cleanup contradictions
+are granular HOLD blockers. Even a consistent candidate is caller-supplied and
+unauthenticated: `lock_lifecycle` remains exactly `false`, all authority remains
+false, and `lock_lifecycle_authentication_not_implemented` remains blocking
+until a sealed collector verifier exists. Current runtime cleanup warnings are
+not such a verifier.
 
 ## Scope and known writer surface
 
@@ -291,7 +309,8 @@ It has no apply, execute, runtime-root, process, task, or output-path switch.
 Invalid JSON/schema/type input exits 2. A valid report is printed and exits 3
 because the decision remains `HOLD_SOURCE_FOUNDATION_ONLY`.
 
-The report also keeps `lock_lifecycle`,
+The report may set `lock_lifecycle_consistency=true` for internally consistent
+receipt data, but it keeps authenticated `lock_lifecycle`,
 `quiet_window_actor_attestation`, `event_wal_conservation`, `rule_10`, and
 authenticated downstream receipt checks false. These are explicit
 missing-proof states, not green booleans inferred from caller assertions.
@@ -309,7 +328,8 @@ This foundation remains on HOLD until all of these exist outside this slice:
 - complete non-heuristic process/task/open-handle scope proof;
 - dynamic entrypoint and worktree-origin provenance discovery;
 - a trusted quiet-window/conservation collector;
-- a hash-bound structured lock-lifecycle receipt, including cleanup results;
+- an authenticated collector binding for the hash-bound structured
+  lock-lifecycle receipt and cleanup results;
 - an authenticated finals-then-pendings replay-plan/order binding;
 - pinned live host, toolchain, runtime, process, and task-action manifests;
 - executed Rule-10 rollback and post-cutover rehearsal evidence;

@@ -461,10 +461,74 @@ def _receipts() -> dict[str, object]:
     return result
 
 
+def _lock_lifecycle_receipt(evidence: dict[str, object]) -> dict[str, object]:
+    replayer = next(
+        entry
+        for entry in evidence["provenance"]
+        if entry["action_kind"] == "scheduled_task"
+    )
+    events = [
+        ("2026-07-21T10:01:00.100Z", "construct", cutbook.REPLAYER_LOCKS[0], 0, "succeeded"),
+        ("2026-07-21T10:01:00.200Z", "acquire", cutbook.REPLAYER_LOCKS[0], 0, "acquired"),
+        ("2026-07-21T10:01:00.300Z", "construct", cutbook.WRITER_LOCKS[0], 0, "succeeded"),
+        ("2026-07-21T10:01:00.301Z", "acquire", cutbook.WRITER_LOCKS[0], 9999, "acquired"),
+        ("2026-07-21T10:01:00.400Z", "construct", cutbook.WRITER_LOCKS[1], 0, "succeeded"),
+        ("2026-07-21T10:01:00.500Z", "acquire", cutbook.WRITER_LOCKS[1], 9800, "acquired"),
+        ("2026-07-21T10:01:00.600Z", "mutation", "canonical_stream", 0, "succeeded"),
+        ("2026-07-21T10:01:00.700Z", "release", cutbook.WRITER_LOCKS[1], 0, "succeeded"),
+        ("2026-07-21T10:01:00.800Z", "dispose", cutbook.WRITER_LOCKS[1], 0, "succeeded"),
+        ("2026-07-21T10:01:00.900Z", "release", cutbook.WRITER_LOCKS[0], 0, "succeeded"),
+        ("2026-07-21T10:01:01.000Z", "dispose", cutbook.WRITER_LOCKS[0], 0, "succeeded"),
+        ("2026-07-21T10:01:01.100Z", "release", cutbook.REPLAYER_LOCKS[0], 0, "succeeded"),
+        ("2026-07-21T10:01:01.200Z", "dispose", cutbook.REPLAYER_LOCKS[0], 0, "succeeded"),
+    ]
+    receipt: dict[str, object] = {
+        "schema": cutbook.LOCK_LIFECYCLE_SCHEMA,
+        "exact_source_head": HEAD,
+        "replayer_action_id": replayer["action_id"],
+        "replayer_provenance_sha256": replayer["provenance_sha256"],
+        "quiet_start_state_canonical_sha256": cutbook.canonical_digest(
+            evidence["quiet_start_state"]["canonical"]
+        ),
+        "post_drain_state_canonical_sha256": cutbook.canonical_digest(
+            evidence["post_drain_state"]["canonical"]
+        ),
+        "quiet_window_started_at_utc": evidence["quiet_start_state"]["captured_at_utc"],
+        "quiet_window_ended_at_utc": evidence["post_drain_state"]["captured_at_utc"],
+        "append_deadline_ms": 10000,
+        "append_deadline_started_at_utc": "2026-07-21T10:01:00.300Z",
+        "append_deadline_expires_at_utc": "2026-07-21T10:01:10.300Z",
+        "outcome": "succeeded",
+        "events": [
+            {
+                "sequence": sequence,
+                "at_utc": at_utc,
+                "operation": operation,
+                "subject": subject,
+                "timeout_ms": timeout_ms,
+                "result": result,
+            }
+            for sequence, (at_utc, operation, subject, timeout_ms, result) in enumerate(events)
+        ],
+        "captured_at_utc": "2026-07-21T10:02:30.000Z",
+        "receipt_canonical_sha256": "",
+    }
+    receipt["receipt_canonical_sha256"] = cutbook.canonical_digest(
+        {key: value for key, value in receipt.items() if key != "receipt_canonical_sha256"}
+    )
+    return receipt
+
+
+def _seal_lock_lifecycle(receipt: dict[str, object]) -> None:
+    receipt["receipt_canonical_sha256"] = cutbook.canonical_digest(
+        {key: value for key, value in receipt.items() if key != "receipt_canonical_sha256"}
+    )
+
+
 def _evidence() -> dict[str, object]:
     pre = _inventory(captured_at_utc="2026-07-21T10:00:00Z", pid=101)
     post = _inventory(captured_at_utc="2026-07-21T10:03:00Z", pid=201)
-    return {
+    evidence: dict[str, object] = {
         "schema": cutbook.EVIDENCE_SCHEMA,
         "exact_source_head": HEAD,
         "captured_at_utc": "2026-07-21T10:04:00Z",
@@ -491,6 +555,8 @@ def _evidence() -> dict[str, object]:
         "downstream_receipts": _receipts(),
         "authority": dict(cutbook.AUTHORITY),
     }
+    evidence["lock_lifecycle_receipt"] = _lock_lifecycle_receipt(evidence)
+    return evidence
 
 
 def _report(evidence: dict[str, object] | None = None) -> dict[str, object]:
@@ -526,6 +592,7 @@ def test_valid_fixture_is_still_deterministic_hold_without_authority() -> None:
         "event_wal_conservation_consistency": True,
         "rule_10": False,
         "lock_lifecycle": False,
+        "lock_lifecycle_consistency": True,
         "quiet_window_actor_attestation": False,
         "downstream_receipts": False,
     }
@@ -537,7 +604,7 @@ def test_valid_fixture_is_still_deterministic_hold_without_authority() -> None:
     }
     assert _codes(first) == {
         "incomplete_scope_proof",
-        "lock_lifecycle_receipt_not_implemented",
+        "lock_lifecycle_authentication_not_implemented",
         "quiet_window_actor_attestation_not_implemented",
         "rule_10_execution_authentication_not_implemented",
         "source_foundation_only",
@@ -547,6 +614,155 @@ def test_valid_fixture_is_still_deterministic_hold_without_authority() -> None:
     assert first["downstream_claim_gates"]["candidate_qualified"] is True
     assert first["downstream_claim_gates"]["claim_safe_effect"] == "none"
     assert _downstream_codes(first) == {"receipt_authentication_not_implemented"}
+
+
+def test_lock_lifecycle_receipt_structural_spoofing_is_rejected() -> None:
+    cases = []
+    evidence = _evidence()
+    evidence["lock_lifecycle_receipt"]["schema"] = "wd.spoof.v1"
+    cases.append(evidence)
+    evidence = _evidence()
+    evidence["lock_lifecycle_receipt"]["authority"] = dict(cutbook.AUTHORITY)
+    cases.append(evidence)
+    evidence = _evidence()
+    evidence["lock_lifecycle_receipt"]["events"][0]["timeout_ms"] = True
+    cases.append(evidence)
+
+    for evidence in cases:
+        with pytest.raises(cutbook.ContractError):
+            _report(evidence)
+
+
+def test_lock_lifecycle_semantic_contradictions_hold_without_authority() -> None:
+    cases: list[tuple[dict[str, object], str]] = []
+
+    def add(expected: str, mutate) -> None:
+        evidence = _evidence()
+        receipt = evidence["lock_lifecycle_receipt"]
+        mutate(receipt)
+        _seal_lock_lifecycle(receipt)
+        cases.append((evidence, expected))
+
+    add(
+        "lock_lifecycle_replayer_provenance_mismatch",
+        lambda receipt: receipt.__setitem__("replayer_provenance_sha256", _digest(999)),
+    )
+    add(
+        "lock_lifecycle_quiet_state_digest_mismatch",
+        lambda receipt: receipt.__setitem__("quiet_start_state_canonical_sha256", _digest(998)),
+    )
+    add(
+        "lock_lifecycle_quiet_interval_mismatch",
+        lambda receipt: receipt.__setitem__("quiet_window_ended_at_utc", "2026-07-21T10:01:59Z"),
+    )
+    add(
+        "lock_lifecycle_deadline_invalid",
+        lambda receipt: receipt["events"][5].__setitem__("timeout_ms", 9801),
+    )
+    add(
+        "lock_lifecycle_acquire_order_invalid",
+        lambda receipt: receipt["events"][4].__setitem__("subject", cutbook.WRITER_LOCKS[0]),
+    )
+    add(
+        "lock_lifecycle_mutation_without_all_locks",
+        lambda receipt: receipt["events"][5].__setitem__("result", "timeout"),
+    )
+    add(
+        "lock_lifecycle_cleanup_order_invalid",
+        lambda receipt: receipt["events"][7].__setitem__("subject", cutbook.WRITER_LOCKS[0]),
+    )
+    add(
+        "lock_lifecycle_cleanup_failed",
+        lambda receipt: receipt["events"][7].__setitem__("result", "failed"),
+    )
+
+    for evidence, expected in cases:
+        report = _report(evidence)
+        assert expected in _codes(report)
+        assert report["checks"]["lock_lifecycle_consistency"] is False
+        assert report["checks"]["lock_lifecycle"] is False
+        assert "lock_lifecycle_authentication_not_implemented" in _codes(report)
+        assert all(value is False for value in report["authority"].values())
+
+    evidence = _evidence()
+    evidence["lock_lifecycle_receipt"]["receipt_canonical_sha256"] = _digest(997)
+    report = _report(evidence)
+    assert "lock_lifecycle_receipt_digest_mismatch" in _codes(report)
+    assert report["checks"]["lock_lifecycle_consistency"] is False
+
+
+@pytest.mark.parametrize(
+    ("failure_result", "constructed_failed_lock", "acquired_failed_lock"),
+    [
+        ("construction_failure", False, False),
+        ("timeout", True, False),
+        ("unexpected_wait", True, False),
+        ("abandoned", True, True),
+    ],
+)
+def test_lock_lifecycle_failure_paths_forbid_mutation_and_clean_partial_set(
+    failure_result: str,
+    constructed_failed_lock: bool,
+    acquired_failed_lock: bool,
+) -> None:
+    evidence = _evidence()
+    receipt = evidence["lock_lifecycle_receipt"]
+    base = receipt["events"][:2]
+    failed_lock = cutbook.WRITER_LOCKS[0]
+    if failure_result == "construction_failure":
+        base.append(
+            {
+                "sequence": 2,
+                "at_utc": "2026-07-21T10:01:00.300Z",
+                "operation": "construct",
+                "subject": failed_lock,
+                "timeout_ms": 0,
+                "result": failure_result,
+            }
+        )
+    else:
+        base.extend(deepcopy(receipt["events"][2:4]))
+        base[-1]["result"] = failure_result
+    cleanup = []
+    if constructed_failed_lock:
+        if acquired_failed_lock:
+            cleanup.append(("release", failed_lock))
+        cleanup.append(("dispose", failed_lock))
+    cleanup.extend(
+        [
+            ("release", cutbook.REPLAYER_LOCKS[0]),
+            ("dispose", cutbook.REPLAYER_LOCKS[0]),
+        ]
+    )
+    next_time = 400
+    for operation, subject in cleanup:
+        base.append(
+            {
+                "sequence": len(base),
+                "at_utc": f"2026-07-21T10:01:00.{next_time:03d}Z",
+                "operation": operation,
+                "subject": subject,
+                "timeout_ms": 0,
+                "result": "succeeded",
+            }
+        )
+        next_time += 100
+    receipt["events"] = base
+    receipt["outcome"] = (
+        "construction"
+        if failure_result == "construction_failure"
+        else failure_result
+    )
+    _seal_lock_lifecycle(receipt)
+
+    report = _report(evidence)
+    codes = _codes(report)
+    assert "lock_lifecycle_not_successful" in codes
+    assert "lock_lifecycle_cleanup_order_invalid" not in codes
+    assert "lock_lifecycle_cleanup_failed" not in codes
+    assert "lock_lifecycle_mutation_without_all_locks" not in codes
+    assert report["checks"]["lock_lifecycle_consistency"] is False
+    assert report["checks"]["lock_lifecycle"] is False
 
 
 def test_config_is_exact_hold_contract_and_matches_direct_callers() -> None:

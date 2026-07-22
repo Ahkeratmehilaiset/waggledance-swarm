@@ -105,6 +105,7 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
      gate-policy-marker-convention follow-up; enumeration stays as the belt to the
      marker's suspenders. — rco-1/rco-2/fable #1393 -->
 * `tools/bridge_event_taxonomy.py` (gate authority classifier — self-modification banned)
+* `tools/bridge_event_writer.py` (canonical Python bridge-event writer — self-modification banned; changes to the durable append boundary require operator review)
 * `tools/check_proven_safe_autosign_class.py` (P1 proven-safe-class checker — self-modification banned)
 * `tools/check_standing_consensus_sign_class.py` (9b standing-consensus-sign (a)/(b) classifier + admission — self-modification banned; the gate must not weaken the mechanism it grants nor auto-sign the PR that wires it)
 * `tools/check_status_name_safe.py` (gate status-name linter — self-modification banned)
@@ -114,6 +115,7 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `tests/tools/test_verify_bridge_consensus_conformance.py` (bridge-consensus conformance manifest anchor — self-modification banned; prevents allowlist-clean edits from dropping required fail-closed consensus cases)
 * `tests/tools/verify_bridge_consensus_conformance_corpus.json` (bridge-consensus conformance corpus anchor — self-modification banned; prevents allowlist-clean edits from weakening required fail-closed consensus cases)
 * `tests/tools/test_standing_consensus_sign_class.py` (9b standing-consensus-sign conformance anchor — self-modification banned; locks the (a)-refused / (b)-admitted / missing-element-refused fail-closed cases)
+* `tests/tools/test_bridge_event_writer.py` (canonical Python bridge-event writer conformance anchor — self-modification banned; prevents an autonomous writer-and-test weakening)
 * `tests/security/p4c_corpus/validate_p4c_corpus.py` (P4c adversarial-corpus validator anchor — self-consistent-tamper guarded; an auto-merged edit could weaken the content-derived re-derivation / coverage enforcement — rco-1 #1392. Corpus CASE additions stay allowlist-clean so the corpus can be extended; only the validator anchor is protected.)
 * `.env`
 * `.env.*`

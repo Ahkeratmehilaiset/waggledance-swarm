@@ -88,6 +88,10 @@ BRIDGE_CONSENSUS_CONFORMANCE_ANCHOR_FILE_DENYLIST_ENTRIES = {
     "tests/tools/test_verify_bridge_consensus_conformance.py",
     "tests/tools/verify_bridge_consensus_conformance_corpus.json",
 }
+BRIDGE_PYTHON_WRITER_FILE_DENYLIST_ENTRIES = {
+    "tools/bridge_event_writer.py",
+    "tests/tools/test_bridge_event_writer.py",
+}
 LEGACY_CODE_PATTERN_MARKERS = {
     "auto_execute=False",
     "operator_gate_required=True",
@@ -198,6 +202,11 @@ def test_charter_denylist_contains_bridge_consensus_conformance_anchors() -> Non
     assert BRIDGE_CONSENSUS_CONFORMANCE_ANCHOR_FILE_DENYLIST_ENTRIES <= set(
         charter.file_denylist
     )
+
+
+def test_charter_denylist_contains_canonical_python_bridge_writer_anchors() -> None:
+    charter = load_charter()
+    assert BRIDGE_PYTHON_WRITER_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
 
 
 def test_charter_preserves_existing_code_pattern_markers() -> None:
@@ -337,6 +346,15 @@ def test_evaluate_paths_blocks_bridge_consensus_conformance_anchors() -> None:
     for path in sorted(BRIDGE_CONSENSUS_CONFORMANCE_ANCHOR_FILE_DENYLIST_ENTRIES):
         decision = evaluate_paths(charter, [path])
         assert decision.allowed is False
+        assert decision.blocked_paths == (path,)
+        assert decision.reason == "denylist hit"
+
+
+def test_evaluate_paths_blocks_canonical_python_bridge_writer_anchors() -> None:
+    charter = load_charter()
+    for path in sorted(BRIDGE_PYTHON_WRITER_FILE_DENYLIST_ENTRIES):
+        decision = evaluate_paths(charter, [path])
+        assert decision.allowed is False, path
         assert decision.blocked_paths == (path,)
         assert decision.reason == "denylist hit"
 

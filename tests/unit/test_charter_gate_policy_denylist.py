@@ -27,11 +27,13 @@ GATE_POLICY_PATHS = [
     "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
     "docs/architecture/P4B_POST_MERGE_CANARY_V2.md",  # future via glob
     "tools/bridge_event_taxonomy.py",
+    "tools/bridge_event_writer.py",
     "tools/check_proven_safe_autosign_class.py",
     "tools/check_status_name_safe.py",
     "tools/auto_rollback_eligibility.py",
     "tools/verify_bridge_consensus.py",  # defensive future-proof (rco-1 #1393)
     "tests/security/p4c_corpus/validate_p4c_corpus.py",  # corpus validator anchor (rco-1 #1392)
+    "tests/tools/test_bridge_event_writer.py",  # canonical writer conformance anchor
 ]
 
 # Must STAY allowlist-clean (the denylist must not over-broaden onto ordinary work).

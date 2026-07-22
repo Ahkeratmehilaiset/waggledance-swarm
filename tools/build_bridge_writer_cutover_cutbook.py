@@ -10,7 +10,7 @@ or bridge state.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -27,6 +27,7 @@ STATE_SCHEMA = "wd.bridge_writer_state_observation.v1"
 INVENTORY_SCHEMA = "wd.bridge_writer_inventory_observation.v1"
 VALIDATED_INVENTORY_SCHEMA = "wd.bridge_runtime.validated_inventory.v1"
 CHECKPOINT_SCHEMA = "wd.bridge_writer_checkpoint_observation.v1"
+LOCK_LIFECYCLE_SCHEMA = "wd.bridge_writer_lock_lifecycle_receipt.v1"
 REPORT_SCHEMA = "wd.bridge_writer_cutover_cutbook.v1"
 DECISION_HOLD = "HOLD_SOURCE_FOUNDATION_ONLY"
 
@@ -34,6 +35,9 @@ EXIT_ERROR = 2
 EXIT_HOLD = 3
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+UTC_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
+)
 RUNTIME_BLOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 SID_RE = re.compile(r"^S-\d(?:-\d+)+$", re.IGNORECASE)
@@ -262,6 +266,14 @@ def build_bridge_writer_cutover_cutbook(
     conservation_consistency_ok = checked(
         lambda: _audit_conservation(normalized, exact_head, blockers)
     )
+    lock_lifecycle_receipt_consistency_ok = checked(
+        lambda: _audit_lock_lifecycle(normalized, config, exact_head, blockers)
+    )
+    lock_lifecycle_consistency_ok = (
+        provenance_ok
+        and inventory_ok
+        and lock_lifecycle_receipt_consistency_ok
+    )
     rule_10_ok = checked(lambda: _audit_rule_10(normalized, exact_head, blockers))
     downstream_blockers: list[dict[str, str]] = []
     _audit_downstream_receipts(
@@ -284,8 +296,8 @@ def build_bridge_writer_cutover_cutbook(
 
     _block(
         blockers,
-        "lock_lifecycle_receipt_not_implemented",
-        "structured acquisition and cleanup evidence is not implemented",
+        "lock_lifecycle_authentication_not_implemented",
+        "the lock-lifecycle receipt has no sealed collector verifier",
     )
     _block(
         blockers,
@@ -321,6 +333,7 @@ def build_bridge_writer_cutover_cutbook(
             "event_wal_conservation_consistency": conservation_consistency_ok,
             "rule_10": rule_10_ok,
             "lock_lifecycle": False,
+            "lock_lifecycle_consistency": lock_lifecycle_consistency_ok,
             "quiet_window_actor_attestation": False,
             "downstream_receipts": receipts_ok,
         },
@@ -566,6 +579,7 @@ def _validate_evidence(evidence: Mapping[str, object]) -> Mapping[str, object]:
             "post_start_inventory",
             "provenance",
             "rule_10",
+            "lock_lifecycle_receipt",
             "downstream_receipts",
             "authority",
         },
@@ -580,6 +594,7 @@ def _validate_evidence(evidence: Mapping[str, object]) -> Mapping[str, object]:
     _validate_inventory(evidence["post_start_inventory"], "post-start", head)
     _validate_provenance(evidence["provenance"])
     _validate_rule_10(evidence["rule_10"])
+    _validate_lock_lifecycle_receipt(evidence["lock_lifecycle_receipt"])
     _validate_receipts(evidence["downstream_receipts"])
     _validate_authority(evidence["authority"], "evidence.authority")
     return evidence
@@ -1146,6 +1161,74 @@ def _validate_receipts(raw: object) -> None:
             _list(receipts[key], f"downstream receipts.{key}")
         ):
             _sha256(identity, f"downstream receipts.{key}[{index}]")
+
+
+def _validate_lock_lifecycle_receipt(raw: object) -> None:
+    receipt = _object(raw, "lock lifecycle receipt")
+    _exact_keys(
+        receipt,
+        {
+            "schema",
+            "exact_source_head",
+            "replayer_action_id",
+            "replayer_provenance_sha256",
+            "quiet_start_state_canonical_sha256",
+            "post_drain_state_canonical_sha256",
+            "quiet_window_started_at_utc",
+            "quiet_window_ended_at_utc",
+            "append_deadline_ms",
+            "append_deadline_started_at_utc",
+            "append_deadline_expires_at_utc",
+            "outcome",
+            "events",
+            "captured_at_utc",
+            "receipt_canonical_sha256",
+        },
+        "lock lifecycle receipt",
+    )
+    _literal(
+        receipt["schema"],
+        LOCK_LIFECYCLE_SCHEMA,
+        "lock lifecycle receipt schema",
+    )
+    _commit(receipt["exact_source_head"], "lock lifecycle source head")
+    _entity_id(receipt["replayer_action_id"], "lock lifecycle replayer action")
+    for key in (
+        "replayer_provenance_sha256",
+        "quiet_start_state_canonical_sha256",
+        "post_drain_state_canonical_sha256",
+        "receipt_canonical_sha256",
+    ):
+        _sha256(receipt[key], f"lock lifecycle receipt.{key}")
+    for key in (
+        "quiet_window_started_at_utc",
+        "quiet_window_ended_at_utc",
+        "append_deadline_started_at_utc",
+        "append_deadline_expires_at_utc",
+        "captured_at_utc",
+    ):
+        _timestamp(receipt[key], f"lock lifecycle receipt.{key}")
+    _nonnegative_int(
+        receipt["append_deadline_ms"],
+        "lock lifecycle receipt.append_deadline_ms",
+    )
+    _identifier(receipt["outcome"], "lock lifecycle receipt outcome")
+    events = _list(receipt["events"], "lock lifecycle events")
+    if not events:
+        raise ContractError("lock lifecycle events must not be empty")
+    for index, raw_event in enumerate(events):
+        event = _object(raw_event, f"lock lifecycle event {index}")
+        _exact_keys(
+            event,
+            {"sequence", "at_utc", "operation", "subject", "timeout_ms", "result"},
+            f"lock lifecycle event {index}",
+        )
+        _nonnegative_int(event["sequence"], f"lock lifecycle event {index} sequence")
+        _timestamp(event["at_utc"], f"lock lifecycle event {index} time")
+        _identifier(event["operation"], f"lock lifecycle event {index} operation")
+        _string(event["subject"], f"lock lifecycle event {index} subject")
+        _nonnegative_int(event["timeout_ms"], f"lock lifecycle event {index} timeout")
+        _identifier(event["result"], f"lock lifecycle event {index} result")
 
 
 def _audit_provenance(
@@ -1875,6 +1958,303 @@ def _audit_downstream_receipts(
         _block(blockers, "receipt_evidence_stale", "downstream")
 
 
+def _audit_lock_lifecycle(
+    evidence: Mapping[str, object],
+    config: Mapping[str, object],
+    exact_head: str,
+    blockers: list[dict[str, str]],
+) -> None:
+    receipt = _object(evidence["lock_lifecycle_receipt"], "lock lifecycle receipt")
+    if receipt["exact_source_head"] != exact_head:
+        _block(blockers, "lock_lifecycle_head_mismatch", "receipt")
+
+    provenance_matches = [
+        entry
+        for raw_entry in _list(evidence["provenance"], "provenance")
+        for entry in [_object(raw_entry, "provenance entry")]
+        if entry["action_kind"] == "scheduled_task"
+        and entry["action_id"] == receipt["replayer_action_id"]
+        and entry["provenance_sha256"] == receipt["replayer_provenance_sha256"]
+    ]
+    if len(provenance_matches) != 1:
+        _block(
+            blockers,
+            "lock_lifecycle_replayer_provenance_mismatch",
+            str(receipt["replayer_action_id"]),
+        )
+    else:
+        replayer_provenance = provenance_matches[0]
+        digest_input = {
+            key: value
+            for key, value in replayer_provenance.items()
+            if key != "provenance_sha256"
+        }
+        if replayer_provenance["provenance_sha256"] != canonical_digest(
+            digest_input
+        ):
+            _block(
+                blockers,
+                "lock_lifecycle_replayer_provenance_digest_mismatch",
+                str(receipt["replayer_action_id"]),
+            )
+        if replayer_provenance["exact_source_head"] != exact_head:
+            _block(
+                blockers,
+                "lock_lifecycle_replayer_head_mismatch",
+                str(receipt["replayer_action_id"]),
+            )
+        entrypoint_blob_id = str(replayer_provenance["entrypoint_blob_id"])
+        entrypoint_blobs = [
+            blob
+            for raw_blob in _list(
+                replayer_provenance["runtime_blobs"],
+                "replayer provenance runtime blobs",
+            )
+            for blob in [_object(raw_blob, "replayer provenance runtime blob")]
+            if blob["blob_id"] == entrypoint_blob_id
+        ]
+        if (
+            entrypoint_blob_id != "restore-bridge-spool"
+            or len(entrypoint_blobs) != 1
+            or entrypoint_blobs[0]["source_path"]
+            != ".agent-bridge/bin/Restore-BridgeSpool.ps1"
+        ):
+            _block(
+                blockers,
+                "lock_lifecycle_replayer_entrypoint_mismatch",
+                str(receipt["replayer_action_id"]),
+            )
+
+    quiet_state = _object(evidence["quiet_start_state"], "quiet-start state")
+    post_state = _object(evidence["post_drain_state"], "post-drain state")
+    quiet_canonical = _object(quiet_state["canonical"], "quiet-start canonical")
+    post_canonical = _object(post_state["canonical"], "post-drain canonical")
+    if receipt["quiet_start_state_canonical_sha256"] != canonical_digest(
+        quiet_canonical
+    ):
+        _block(blockers, "lock_lifecycle_quiet_state_digest_mismatch", "quiet-start")
+    if receipt["post_drain_state_canonical_sha256"] != canonical_digest(
+        post_canonical
+    ):
+        _block(blockers, "lock_lifecycle_quiet_state_digest_mismatch", "post-drain")
+
+    quiet_start = _timestamp(quiet_state["captured_at_utc"], "quiet-start time")
+    quiet_end = _timestamp(post_state["captured_at_utc"], "post-drain time")
+    receipt_start = _timestamp(
+        receipt["quiet_window_started_at_utc"], "receipt quiet start"
+    )
+    receipt_end = _timestamp(
+        receipt["quiet_window_ended_at_utc"], "receipt quiet end"
+    )
+    if (
+        receipt_start != quiet_start
+        or receipt_end != quiet_end
+        or receipt_start >= receipt_end
+    ):
+        _block(blockers, "lock_lifecycle_quiet_interval_mismatch", "receipt")
+
+    expected_receipt_digest = canonical_digest(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key != "receipt_canonical_sha256"
+        }
+    )
+    if receipt["receipt_canonical_sha256"] != expected_receipt_digest:
+        _block(blockers, "lock_lifecycle_receipt_digest_mismatch", "receipt")
+
+    lock_config = _object(config["lock_protocol"], "config lock protocol")
+    deadline_ms = int(lock_config["append_deadline_ms"])
+    deadline_start = _timestamp(
+        receipt["append_deadline_started_at_utc"], "append deadline start"
+    )
+    deadline_end = _timestamp(
+        receipt["append_deadline_expires_at_utc"], "append deadline end"
+    )
+    if (
+        receipt["append_deadline_ms"] != deadline_ms
+        or deadline_end - deadline_start != timedelta(milliseconds=deadline_ms)
+        or deadline_start < receipt_start
+        or deadline_end > receipt_end
+    ):
+        _block(blockers, "lock_lifecycle_deadline_invalid", "shared append deadline")
+
+    events = [
+        _object(raw_event, "lock lifecycle event")
+        for raw_event in _list(receipt["events"], "lock lifecycle events")
+    ]
+    event_times = [
+        _timestamp(event["at_utc"], "lock lifecycle event time")
+        for event in events
+    ]
+    captured_at = _timestamp(receipt["captured_at_utc"], "lock lifecycle capture")
+    evidence_time = _timestamp(evidence["captured_at_utc"], "evidence capture")
+    if (
+        [event["sequence"] for event in events] != list(range(len(events)))
+        or any(left >= right for left, right in zip(event_times, event_times[1:]))
+    ):
+        _block(blockers, "lock_lifecycle_event_sequence_invalid", "receipt")
+    if (
+        any(
+            event_time <= receipt_start or event_time >= receipt_end
+            for event_time in event_times
+        )
+        or captured_at <= receipt_end
+        or captured_at > evidence_time
+    ):
+        _block(blockers, "lock_lifecycle_chronology_invalid", "quiet interval")
+
+    expected_locks = list(REPLAYER_LOCKS)
+    constructed: list[str] = []
+    acquired: list[str] = []
+    waited: set[str] = set()
+    next_lock = 0
+    failure_kind = ""
+    mutation_seen = False
+    cleanup_started = False
+    cleanup_events: list[tuple[str, str]] = []
+    cleanup_failed = False
+    timeout_completion_not_before: datetime | None = None
+
+    for event, event_time in zip(events, event_times):
+        operation = str(event["operation"])
+        subject = str(event["subject"])
+        result = str(event["result"])
+        timeout_ms = int(event["timeout_ms"])
+        if (
+            timeout_completion_not_before is not None
+            and event_time < timeout_completion_not_before
+        ):
+            _block(
+                blockers,
+                "lock_lifecycle_timeout_completion_invalid",
+                subject,
+            )
+
+        if operation == "construct":
+            if (
+                cleanup_started
+                or failure_kind
+                or next_lock >= len(expected_locks)
+                or len(constructed) != next_lock
+                or subject != expected_locks[next_lock]
+                or timeout_ms != 0
+                or result not in {"succeeded", "construction_failure"}
+            ):
+                _block(blockers, "lock_lifecycle_acquire_order_invalid", subject)
+                continue
+            if subject == WRITER_LOCKS[0] and event_time != deadline_start:
+                _block(blockers, "lock_lifecycle_deadline_invalid", subject)
+            if subject in WRITER_LOCKS and not (deadline_start <= event_time <= deadline_end):
+                _block(blockers, "lock_lifecycle_deadline_invalid", subject)
+            if result == "construction_failure":
+                failure_kind = "construction"
+            else:
+                constructed.append(subject)
+            continue
+
+        if operation == "acquire":
+            if (
+                cleanup_started
+                or failure_kind
+                or next_lock >= len(expected_locks)
+                or subject != expected_locks[next_lock]
+                or subject not in constructed
+                or subject in waited
+                or result not in {"acquired", "timeout", "abandoned", "unexpected_wait"}
+            ):
+                _block(blockers, "lock_lifecycle_acquire_order_invalid", subject)
+                continue
+            waited.add(subject)
+            if subject == REPLAYER_LOCKS[0]:
+                if timeout_ms != 0:
+                    _block(blockers, "lock_lifecycle_deadline_invalid", subject)
+            else:
+                remaining = deadline_end - event_time
+                remaining_us = (
+                    (remaining.days * 24 * 60 * 60 + remaining.seconds)
+                    * 1_000_000
+                    + remaining.microseconds
+                )
+                remaining_ms = max(
+                    0,
+                    min(
+                        deadline_ms,
+                        (remaining_us + 999) // 1000,
+                    ),
+                )
+                if (
+                    not (deadline_start <= event_time <= deadline_end)
+                    or timeout_ms != remaining_ms
+                ):
+                    _block(blockers, "lock_lifecycle_deadline_invalid", subject)
+            next_lock += 1
+            if result in {"acquired", "abandoned"}:
+                acquired.append(subject)
+            if result != "acquired":
+                failure_kind = result
+            if result == "timeout":
+                timeout_completion_not_before = event_time + timedelta(
+                    milliseconds=timeout_ms
+                )
+            continue
+
+        if operation == "mutation":
+            if (
+                cleanup_started
+                or mutation_seen
+                or failure_kind
+                or acquired != expected_locks
+                or subject != "canonical_stream"
+                or timeout_ms != 0
+                or result != "succeeded"
+            ):
+                _block(blockers, "lock_lifecycle_mutation_without_all_locks", subject)
+            else:
+                mutation_seen = True
+            continue
+
+        if operation in {"release", "dispose"}:
+            cleanup_started = True
+            cleanup_events.append((operation, subject))
+            if timeout_ms != 0 or result not in {"succeeded", "failed"}:
+                _block(blockers, "lock_lifecycle_cleanup_order_invalid", subject)
+            if result != "succeeded":
+                cleanup_failed = True
+            continue
+
+        _block(blockers, "lock_lifecycle_event_sequence_invalid", operation)
+
+    expected_cleanup: list[tuple[str, str]] = []
+    for lock_name in reversed(constructed):
+        if lock_name in acquired:
+            expected_cleanup.append(("release", lock_name))
+        expected_cleanup.append(("dispose", lock_name))
+    if cleanup_events != expected_cleanup:
+        _block(blockers, "lock_lifecycle_cleanup_order_invalid", "receipt")
+    if cleanup_failed:
+        _block(blockers, "lock_lifecycle_cleanup_failed", "receipt")
+    if (
+        timeout_completion_not_before is not None
+        and captured_at < timeout_completion_not_before
+    ):
+        _block(
+            blockers,
+            "lock_lifecycle_timeout_completion_invalid",
+            "receipt capture",
+        )
+
+    expected_outcome = "succeeded" if not failure_kind else failure_kind
+    if receipt["outcome"] != expected_outcome:
+        _block(blockers, "lock_lifecycle_outcome_mismatch", "receipt")
+    if failure_kind or not mutation_seen or acquired != expected_locks:
+        _block(
+            blockers,
+            "lock_lifecycle_not_successful",
+            failure_kind or "incomplete lifecycle",
+        )
+
+
 def _validate_authority(raw: object, label: str) -> None:
     authority = _object(raw, label)
     _exact_keys(authority, AUTHORITY_KEYS, label)
@@ -2012,8 +2392,11 @@ def _blob_id(value: object, label: str) -> str:
 
 def _timestamp(value: object, label: str) -> datetime:
     text = _string(value, label)
-    if not text.endswith("Z"):
-        raise ContractError(f"{label} must use UTC Z form")
+    if not UTC_TIMESTAMP_RE.fullmatch(text):
+        raise ContractError(
+            f"{label} must be a canonical UTC timestamp with at most "
+            "six fractional digits"
+        )
     try:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00")
     except ValueError as exc:

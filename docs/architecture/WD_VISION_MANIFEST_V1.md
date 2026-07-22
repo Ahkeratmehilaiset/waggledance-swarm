@@ -14,6 +14,75 @@ a **machine-readable grading rubric**. It is the *target*; the *truth source* is
 the current plan/state onto each panel and reports status + whether the literal
 claim is safe — **grade, do not cheerlead** (mirror `all_literal_claims_safe`).
 
+## Canonical product target
+
+Image #1 defines one product outcome, not six isolated demonstrations:
+
+> WaggleDance is an event- and state-driven collective solver intelligence that
+> turns detected work into a verified real-world outcome without routine user
+> participation.
+
+Within an already granted policy and connector envelope, the steady-state
+target is `routine_user_actions_required = 0`. The user does not prompt each
+job, choose solvers, relay data, reconcile intermediate results, or approve
+every routine step. The primary interface observes outcomes and exceptions and
+provides an emergency stop; it is not the workflow engine.
+
+The normative closed loop is:
+
+```text
+observe state or event
+  -> detect work
+  -> assemble a specialist solver swarm
+  -> solve and cross-verify
+  -> record MAGMA intent and admission
+  -> execute the real-world effect
+  -> record the MAGMA effect transition
+  -> verify and reconcile the resulting state
+  -> append the MAGMA reconciliation receipt
+  -> update vectorized collective memory
+  -> learn, grow, subdivide, or roll back
+```
+
+Decision intelligence belongs to the collective solver swarm: authoritative
+deterministic solvers first, specialist models second, and an LLM only as an
+advisory or fallback layer. The Smart Router, UI, and LLM coordinate or expose
+the work; none of them is the product's single central intelligence.
+
+The six image panels are mechanisms for this zero-touch outcome. The current
+eight-solver v3.13 slice is an acceptance surface, not the product boundary.
+Likewise, a chat answer, a proof artifact, or a rising solver count does not by
+itself satisfy the target.
+
+This contract is non-authorizing. It does not enlarge connector permissions,
+bypass an exception or safety stop, grant runtime authority, or flip
+`claim_safe`. WaggleDance may autonomously act and adapt inside a pre-authorized
+envelope, but it may not autonomously widen that envelope.
+
+### Historical workload baseline
+
+The operator attests that earlier WaggleDance generations performed real
+organization-specific solver work, complete solver-driven bookkeeping, real
+invoice-payment workflows, and large-database vectorization. These are the
+product baseline to preserve and reintegrate, not future greenfield examples.
+Private execution artifacts and customer details are intentionally excluded
+from the public repository, so this attestation is historical product context,
+not current-HEAD machine proof and not a `claim_safe` upgrade. The sanitized
+[operator-case bundle](../operator_cases/v3_13_0_capability_seed_bundle.md)
+remains a domain-shape anchor for the broader real workload surface, not
+execution evidence for the private historical runs.
+
+### Outcome acceptance axes
+
+Plans and graders must report end-to-end outcomes in addition to panel proofs:
+
+- eligible zero-touch workflow completion ratio;
+- routine user actions per eligible completed workflow, target `0`;
+- verified real-world outcome and external-effect MAGMA coverage ratios;
+- collective quality gain over the best single solver;
+- autonomous-growth marginal verified coverage gain and rollback correctness;
+- cost, latency, memory, and energy per completed workflow.
+
 ## Status vocabulary
 
 `proof` (proof/ops evidence exists) · `ops` (wired, operator-gated/bounded) ·

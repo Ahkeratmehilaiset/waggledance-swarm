@@ -4,9 +4,11 @@
 measurement and authority boundaries only. It grants no merge, cutover,
 runtime authority, operator approval, or `claim_safe` flip.
 
-**Decision:** P0 -> P1 is the only critical path until production-linked
-served-traffic ratios exist. Solver breadth, Dream, game theory, CEGIS, hex
-activation, and multi-instance work must not delay it.
+**Decision:** P0 -> P1 is the enabling critical path until production-linked
+served-traffic ratios exist. It is not the product definition. Solver breadth,
+Dream, game theory, CEGIS, hex activation, and multi-instance work must not
+delay it, while every phase remains accountable to the zero-touch end-to-end
+product outcome below.
 
 ## Normative hierarchy
 
@@ -21,6 +23,28 @@ activation, and multi-instance work must not delay it.
 `CONTINUOUS_PLAN_TO_VISION.md` remains historical authorization and backlog
 context. This document supersedes its current-state claims and T1-T7 phase
 order.
+
+## Product outcome invariant (non-authorizing)
+
+The canonical Image #1 target is an event- and state-driven collective solver
+intelligence. Inside a pre-authorized policy and connector envelope it detects
+work, assembles specialist solvers, solves and cross-verifies, executes and
+verifies the real-world effect, records MAGMA intent/admission, transition, and
+reconciliation receipts, updates vectorized collective memory, and learns or
+grows. Normal operation targets zero routine user actions. Chat and dashboards
+are observability, exception, and emergency-stop surfaces, not the primary
+workflow trigger.
+
+The current iteration is not inventing the first accounting, payment, domain-
+solver, or vectorization use case. Operator-attested prior generations already
+performed those workloads. This plan must reintegrate and productionize that
+historical product surface in the current runtime. Private execution artifacts
+remain outside the repository, so the attestation neither substitutes for
+current proof nor upgrades `claim_safe`.
+
+The six panel mechanisms and P0/P1 query counters are necessary evidence, but
+the product is complete only when eligible real workflows finish correctly
+without prompts, manual relay, routine approvals, or user reconciliation.
 
 ## Baseline
 
@@ -60,6 +84,11 @@ in `docs/architecture/GROK_4_5_PRODUCTION_CONVERGENCE_REVIEW_2026_07_15.md`.
 - Solver count is not intelligence. Growth counts only when
   `marginal_verified_coverage_gain > 0`, or when correctness-preserving cost or
   latency improves on held-out cases.
+- Query, route, receipt, and panel counters are intermediate evidence. They do
+  not substitute for a verified zero-touch real-world outcome.
+- Within a pre-authorized envelope, a workflow that still requires a prompt,
+  solver selection, manual relay, routine approval, or user reconciliation is
+  not zero-touch complete.
 - No consciousness claim is made. The measurable target is broader verified
   capability, calibrated self-knowledge, and bounded autonomous correction.
 
@@ -82,7 +111,7 @@ main: #1518 + #1519 + #1524 + #1525
              |
        ISO-ORACLE + process sandbox
              |
-       P3 one real low-risk growth --> CEGIS-v0 research
+       P3 zero-touch workload + growth --> CEGIS-v0 research
              |                            |
              +-------------+--------------+
                            |
@@ -177,7 +206,17 @@ then make the 8-cell mesh the reversible default served entry.
 **Exit:** `first_hop_hex_served_total == served_total` over a named production
 window, with receipts and Rule-10 green before any claim flip.
 
-## P3 - One real low-risk autonomous growth
+## P3 - Proven zero-touch workload reactivation and autonomous growth
+
+P3 is a bounded proof slice for the current runtime. It is not WaggleDance's
+first real use case and must not redefine the product as a classifier or chat
+demo. Reintegrate an operator-owned end-to-end workflow from the historical
+surface so a real event triggers work and the current solver swarm carries it
+through verified effect, reconciliation, MAGMA receipt, and memory update with
+no routine user action inside its pre-authorized envelope. Maintain a named
+portfolio spanning finance/administration, large-data vectorization/retrieval,
+and organization-specific domain operations as those connectors become
+available.
 
 Use one real low-risk domain: production-linked gap, declarative candidate,
 independent held-out oracle, process sandbox, shadow evaluation, lifecycle
@@ -194,12 +233,21 @@ upper confidence bound for error must be at most `0.03`.
 **Exit:** one real `autonomous_promotions_total` increment inside that authority
 envelope; held-out gates green; lifecycle receipt coverage `1.0`; rollback
 within one scheduler tick and 60 wall-clock seconds, whichever is stricter;
-sandbox violations `0`; and positive marginal verified coverage.
+sandbox violations `0`; positive marginal verified coverage; at least one
+eligible end-to-end workflow triggered without a user prompt; routine user
+actions `0`; and verified effect plus MAGMA coverage `1.0` for that workflow.
+The receipt must bind every participating specialist contribution and the
+cross-verification verdict. A valid single-solver completion must explicitly
+record why no swarm escalation was needed. The promoted solver's lineage must
+bind to the detected gap and participate in the replay or canary evidence for
+the demonstrated workflow.
 
 P3 alone cannot move `claim_safe`. The P3 + P4 claim gate, exact-head consensus,
 and operator authority remain required for any stronger claim.
 
-Do not add families or domains before this succeeds.
+Do not count a narrow classifier, manual handoff, or chat demonstration as
+historical-workload reactivation. Prefer restoring proven workload classes
+before expanding into unrelated domains.
 
 ## P4 - Rule-10 safety package
 
@@ -239,6 +287,11 @@ Never translate this into an "infinite scalability" claim.
 Publish dated production fallback, latency, audit completeness, resource, and
 marginal-coverage scorecards against predeclared budgets. Refresh competitive
 evidence and align public wording with machine truth.
+
+The production scorecard must also publish the eligible zero-touch workflow
+completion ratio, routine user actions per completed workflow, verified
+real-world outcome ratio, external-effect MAGMA coverage, exception/escalation
+rate, rollback correctness, and collective gain over the best single solver.
 
 **Exit:** budgets green on a named production window, evidence no older than 14
 days, and uncited or unbounded public claims removed.
@@ -285,6 +338,8 @@ meta-learner remains propose-never-enact.
    exact-head consensus, and operator authority.
 10. "Consciousness", "emergent superiority", or "infinite scalability" is
     inferred from quantity or synthetic evidence.
+11. Query or panel counters improve while no eligible real workflow completes
+    end to end without routine user action.
 
 ## Immediate queue
 

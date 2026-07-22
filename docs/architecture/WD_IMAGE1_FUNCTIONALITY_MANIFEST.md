@@ -8,6 +8,34 @@ not marketing copy. Each image claim is treated as a capability target, then
 mapped to code and docs that either prove it, partially support it, or show
 that the claim is still a future target.
 
+## Canonical target versus current proof
+
+The companion tool emits a root-level `canonical_target` contract in addition
+to the six capability records. Its product target is a zero-touch, event-driven
+collective solver swarm: observe, detect work, assemble specialists, solve,
+cross-verify, record MAGMA intent/admission, execute, record the effect
+transition, verify and reconcile the effect, append the reconciliation receipt,
+update vectorized collective memory, and learn or grow. Routine user actions
+target zero inside an already authorized policy and connector envelope. The UI
+is an observability, exception, and emergency-stop surface rather than the
+normal workflow driver.
+
+`canonical_target` is normative target metadata, not a seventh capability or a
+current proof. It is excluded from capability counts and cannot make an image
+claim safe. Its `authority_boundary` explicitly grants no runtime authority,
+does not permit self-expansion of authority, and does not flip `claim_safe`.
+The progress-counter tool exposes a separate `canonical_target_contract`
+validation result. A missing target remains visibly `legacy_missing` for old v1
+inputs; a present but altered or authority-widening target fails closed without
+raising any capability or claim counter.
+
+Operator-attested prior workloads include organization-specific domain
+solvers, solver-driven bookkeeping, real invoice-payment workflows, and
+large-database vectorization. They establish the historical product baseline,
+while private execution evidence remains outside the sanitized repository.
+Current status and public claims still come only from the six repo-grounded
+capability records and their proofs.
+
 ## Claim Policy
 
 Use the safest true wording until the proof tool reports otherwise:
@@ -60,6 +88,7 @@ The command is read-only with respect to repo files, runtime state, bridge
 state, and GitHub state. Executable local proofs may create ephemeral temp
 artifacts and delete them before returning. It emits a JSON matrix with:
 
+- `canonical_target`: the non-authorizing zero-touch collective-solver target
 - `status`: `implemented`, `partial`, `planned`, or `blocked`
 - `claim_safe`: whether the image's literal claim is safe to repeat
 - `evidence`: repo paths used for the status

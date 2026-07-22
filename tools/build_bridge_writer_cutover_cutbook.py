@@ -266,8 +266,13 @@ def build_bridge_writer_cutover_cutbook(
     conservation_consistency_ok = checked(
         lambda: _audit_conservation(normalized, exact_head, blockers)
     )
-    lock_lifecycle_consistency_ok = checked(
+    lock_lifecycle_receipt_consistency_ok = checked(
         lambda: _audit_lock_lifecycle(normalized, config, exact_head, blockers)
+    )
+    lock_lifecycle_consistency_ok = (
+        provenance_ok
+        and inventory_ok
+        and lock_lifecycle_receipt_consistency_ok
     )
     rule_10_ok = checked(lambda: _audit_rule_10(normalized, exact_head, blockers))
     downstream_blockers: list[dict[str, str]] = []

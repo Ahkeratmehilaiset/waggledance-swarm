@@ -746,6 +746,44 @@ def test_lock_lifecycle_replayer_provenance_is_self_contained(
     assert all(value is False for value in report["authority"].values())
 
 
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (
+            lambda entry: entry.__setitem__("origin", "linked_worktree"),
+            "inadmissible_runtime_origin",
+        ),
+        (
+            lambda entry: entry["runtime_blobs"][0].__setitem__(
+                "runtime_blob_sha256", _digest(995)
+            ),
+            "runtime_source_blob_mismatch",
+        ),
+    ],
+)
+def test_lock_lifecycle_candidate_requires_full_provenance_and_inventory_checks(
+    mutate,
+    expected: str,
+) -> None:
+    evidence = _evidence()
+    entry = next(
+        item
+        for item in evidence["provenance"]
+        if item["action_kind"] == "scheduled_task"
+    )
+    mutate(entry)
+    _seal_provenance(entry)
+    receipt = evidence["lock_lifecycle_receipt"]
+    receipt["replayer_provenance_sha256"] = entry["provenance_sha256"]
+    _seal_lock_lifecycle(receipt)
+
+    report = _report(evidence)
+    assert expected in _codes(report)
+    assert report["checks"]["lock_lifecycle_consistency"] is False
+    assert report["checks"]["lock_lifecycle"] is False
+    assert all(value is False for value in report["authority"].values())
+
+
 def test_timestamps_with_excess_fractional_precision_are_rejected() -> None:
     evidence = _evidence()
     receipt = evidence["lock_lifecycle_receipt"]
@@ -1098,6 +1136,7 @@ def test_provenance_head_hash_origin_dependency_and_duplicate_fail_closed() -> N
         assert report["decision"] == cutbook.DECISION_HOLD
         assert expected in _codes(report)
         assert report["checks"]["provenance"] is False
+        assert report["checks"]["lock_lifecycle_consistency"] is False
 
     evidence = _evidence()
     evidence["provenance"][0]["dependency_blob_ids"].append(
@@ -1138,6 +1177,7 @@ def test_inventory_origin_orphan_duplicate_digest_and_drift_fail_closed() -> Non
         report = _report(evidence)
         assert expected in _codes(report)
         assert report["checks"]["inventory"] is False
+        assert report["checks"]["lock_lifecycle_consistency"] is False
 
 
 def test_validated_inventory_projection_is_consumed_and_exactly_bound() -> None:
@@ -1214,6 +1254,7 @@ def test_validated_inventory_projection_is_consumed_and_exactly_bound() -> None:
         report = _report(evidence)
         assert expected in _codes(report)
         assert report["checks"]["inventory"] is False
+        assert report["checks"]["lock_lifecycle_consistency"] is False
 
     for field in ("processes", "scheduled_tasks", "runtime_blobs", "toolchain"):
         evidence = _evidence()

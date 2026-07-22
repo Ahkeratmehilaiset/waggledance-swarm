@@ -62,18 +62,16 @@ not documented as proof of the absence of every possible hidden wrapper.
 
 Deployment remains intentionally blocked by
 `configs/bridge_runtime_deployment.v2.json`. Do not populate production host,
-toolchain, collector, runtime, process, or Scheduled Task hashes until:
+toolchain, collector, runtime, process, or Scheduled Task hashes yet. The
+spool/WAL writer and direct Python writer migration are integrated in this
+source head and are no longer pending prerequisites. Deployment still requires:
 
-1. PR-A's spool/WAL writer is committed and pushed at an exact SHA.
-2. Direct Python writers in `bridge_loop_tick.py`,
-   `idle_protocol_activate.py`, and `close_bridge_rco_request.py` are migrated,
-   tested, committed, and pushed.
-3. The integrated source is merged to a clean canonical `origin/main`.
-4. The Python image hosting the gate, Git, PowerShell, collector, and every
+1. The integrated source stack is merged to a clean canonical `origin/main`.
+2. The Python image hosting the gate, Git, PowerShell, collector, and every
    runtime/config/module/DLL input are pinned and independently verified.
-5. A reviewed non-heuristic scope and dependency proof replaces the explicit
+3. A reviewed non-heuristic scope and dependency proof replaces the explicit
    `live_authority_hold` guard.
-6. A separately authorized operation deploys those exact bytes and restarts all
+4. A separately authorized operation deploys those exact bytes and restarts all
    affected writers before any authoritative live A/B attestation is enabled.
 
 Every authority flag in the gate report remains false. The gate audits

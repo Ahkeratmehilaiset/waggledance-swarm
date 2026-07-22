@@ -910,7 +910,7 @@ def test_hold_manifest_skips_collector(tmp_path: Path) -> None:
     assert "activation_hold" in _codes(report)
 
 
-def test_repository_manifest_is_intentionally_hashless_hold() -> None:
+def test_repository_manifest_is_current_hashless_hold_contract() -> None:
     manifest = json.loads((ROOT / MANIFEST_PATH).read_text(encoding="utf-8"))
 
     source_root = PureWindowsPath(r"C:\Python\project2")
@@ -931,7 +931,27 @@ def test_repository_manifest_is_intentionally_hashless_hold() -> None:
         }
     _validate_manifest(validation_manifest)
 
+    assert ACTIVATION_HOLD == "hold_pending_live_pins_and_scope_proof"
     assert manifest["activation_state"] == ACTIVATION_HOLD
+    assert manifest["pending_blockers"] == [
+        (
+            "production host identity, collector/toolchain hashes, runtime "
+            "dependency closure, process inventory, and Scheduled Task "
+            "inventory are intentionally unpinned"
+        ),
+        (
+            "complete non-heuristic process/task scope and independent "
+            "collector/runtime dependency discovery proof are not "
+            "implemented, so LIVE_MATCH is unreachable"
+        ),
+    ]
+    stale_pending_claims = (
+        "pr-a",
+        "not yet available",
+        "not yet migrated",
+    )
+    pending_text = "\n".join(manifest["pending_blockers"]).casefold()
+    assert all(marker not in pending_text for marker in stale_pending_claims)
     assert manifest["host_policy"]["expected_host_identity_sha256"] is None
     assert manifest["collector"]["sha256"] is None
     assert manifest["toolchain"] == []

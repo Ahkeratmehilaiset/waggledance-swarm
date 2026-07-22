@@ -41,7 +41,7 @@ INCOMPLETE_SCOPE_REASON = (
 )
 
 ACTIVATION_READY = "ready"
-ACTIVATION_HOLD = "hold_pending_pr_a_and_python_writer_migration"
+ACTIVATION_HOLD = "hold_pending_live_pins_and_scope_proof"
 SUPPORTED_PROTOCOL_STAGES = frozenset({"v1_fail_closed"})
 
 CANONICAL_SOURCE_ROOT = Path(r"C:\Python\project2")

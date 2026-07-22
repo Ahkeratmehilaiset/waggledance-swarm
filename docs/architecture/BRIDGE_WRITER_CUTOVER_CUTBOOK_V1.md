@@ -60,8 +60,12 @@ canonically hashed Scheduled Task provenance row whose entrypoint blob is
 `restore-bridge-spool` at
 `.agent-bridge/bin/Restore-BridgeSpool.ps1`. Resealing a foreign-head,
 digest-corrupt, or different-entrypoint row cannot establish lifecycle
-consistency. Timestamp strings use canonical UTC `Z` form with no more than
-six fractional digits.
+consistency. The candidate is the conjunction of the full provenance audit,
+the inventory/projection binding audit, and the lifecycle receipt reducer;
+the matched-row checks are not an exhaustive provenance allowlist. A blocked
+origin or any source/runtime blob mismatch therefore also keeps lifecycle
+consistency false. Timestamp strings use canonical UTC `Z` form with no more
+than six fractional digits.
 
 The event trace must prove ReplayV1 construction and zero-timeout acquisition,
 then AppendV1 and AppendV2 construction/acquisition under one deadline of at
@@ -326,8 +330,9 @@ It has no apply, execute, runtime-root, process, task, or output-path switch.
 Invalid JSON/schema/type input exits 2. A valid report is printed and exits 3
 because the decision remains `HOLD_SOURCE_FOUNDATION_ONLY`.
 
-The report may set `lock_lifecycle_consistency=true` for internally consistent
-receipt data, but it keeps authenticated `lock_lifecycle`,
+The report may set `lock_lifecycle_consistency=true` only when provenance,
+inventory/projection binding, and receipt data are all internally consistent,
+but it keeps authenticated `lock_lifecycle`,
 `quiet_window_actor_attestation`, `event_wal_conservation`, `rule_10`, and
 authenticated downstream receipt checks false. These are explicit
 missing-proof states, not green booleans inferred from caller assertions.

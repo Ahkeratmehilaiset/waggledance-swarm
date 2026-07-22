@@ -1,6 +1,6 @@
 {
   "schema": "wd.bridge_runtime_deployment.v2",
-  "activation_state": "hold_pending_pr_a_and_python_writer_migration",
+  "activation_state": "hold_pending_live_pins_and_scope_proof",
   "protocol_stage": "v1_fail_closed",
   "canonical": {
     "source_root": "C:\\Python\\project2",
@@ -37,8 +37,6 @@
     "scheduled_tasks": []
   },
   "pending_blockers": [
-    "PR-A spool/WAL writer commit and pushed exact SHA are not yet available",
-    "direct Python writers bridge_loop_tick.py, idle_protocol_activate.py, and close_bridge_rco_request.py are not yet migrated and committed",
     "production host identity, collector/toolchain hashes, runtime dependency closure, process inventory, and Scheduled Task inventory are intentionally unpinned",
     "complete non-heuristic process/task scope and independent collector/runtime dependency discovery proof are not implemented, so LIVE_MATCH is unreachable"
   ]

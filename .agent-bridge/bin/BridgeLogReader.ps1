@@ -710,6 +710,7 @@ function Read-BridgeLogSnapshotDelta {
         [Parameter(Mandatory)] [string] $Path,
         [AllowNull()] $Cursor = $null,
         [int64] $MaxBytes = 4194304,
+        [int] $MaxRows = 10000,
         [AllowEmptyString()] [string] $GenerationPath = ''
     )
 
@@ -720,6 +721,9 @@ function Read-BridgeLogSnapshotDelta {
     }
     if ($MaxBytes -lt 1 -or $MaxBytes -gt 67108864) {
         return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'max_bytes_invalid' -RequestedOffset $offset
+    }
+    if ($MaxRows -lt 1 -or $MaxRows -gt 100000) {
+        return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'max_rows_invalid' -RequestedOffset $offset
     }
     if (-not $GenerationPath -and $null -ne $Cursor -and $null -ne $cursorState.generation) {
         return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'generation_configuration_changed' -RequestedOffset $offset
@@ -813,10 +817,12 @@ function Read-BridgeLogSnapshotDelta {
         $totalBytesRead = [int64]($validationBytesRead + $read)
 
         $lastLf = -1
-        for ($index = $read - 1; $index -ge 0; $index--) {
+        $rowCount = 0
+        for ($index = 0; $index -lt $read; $index++) {
             if ($bytes[$index] -eq 10) {
                 $lastLf = $index
-                break
+                $rowCount++
+                if ($rowCount -ge $MaxRows) { break }
             }
         }
 

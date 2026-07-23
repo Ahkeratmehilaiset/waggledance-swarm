@@ -20,6 +20,8 @@ from typing import Any, BinaryIO
 
 DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 MAX_MAX_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_ROWS = 10_000
+MAX_MAX_ROWS = 100_000
 _MAX_GENERATION_BYTES = 512
 _MAX_JSON_NESTING_DEPTH = 32
 _MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
@@ -58,6 +60,19 @@ class BridgeReadResult:
     snapshot_length: int | None = None
     read_calls: int = 0
     requested_offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeLineReadResult:
+    """Stable bounded text lines for one-shot tail consumers."""
+
+    status: BridgeReadStatus
+    reason: str
+    lines: tuple[str, ...] = ()
+    bytes_read: int = 0
+    snapshot_length: int | None = None
+    file_identity: str | None = None
+    generation: str | None = None
 
 
 class _GenerationError(Exception):
@@ -159,6 +174,15 @@ def _load_bridge_json(text: str) -> Any:
         parse_int=_parse_safe_json_int,
         object_pairs_hook=_bridge_json_object,
     )
+
+
+def parse_bridge_json_object(text: str) -> dict[str, Any]:
+    """Parse one bridge row with the canonical cross-runtime JSON contract."""
+
+    value = _load_bridge_json(text)
+    if not isinstance(value, dict):
+        raise ValueError("bridge JSON row must be an object")
+    return value
 
 
 if os.name == "nt":
@@ -275,6 +299,20 @@ def _read_generation(path: Path) -> str:
     return generation
 
 
+def _optional_generation_exists(path: Path) -> bool:
+    """Probe optional generation configuration without leaking OS errors."""
+
+    try:
+        path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as exc:
+        raise _GenerationError(
+            BridgeReadStatus.RETRY, "generation_unavailable"
+        ) from exc
+    return True
+
+
 def _result(
     status: BridgeReadStatus,
     reason: str,
@@ -345,11 +383,26 @@ def _parse_rows(payload: bytes, *, starts_at_zero: bool) -> tuple[dict[str, Any]
     return tuple(parsed)
 
 
+def _complete_prefix_length(payload: bytes, *, max_rows: int) -> int:
+    """Return bytes through at most ``max_rows`` complete LF records."""
+
+    rows = 0
+    for index, value in enumerate(payload):
+        if value != 0x0A:
+            continue
+        rows += 1
+        if rows >= max_rows:
+            return index + 1
+    last_lf = payload.rfind(b"\n")
+    return 0 if last_lf < 0 else last_lf + 1
+
+
 def read_bridge_log(
     path: str | os.PathLike[str],
     *,
     cursor: BridgeCursor | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    max_rows: int = DEFAULT_MAX_ROWS,
     generation_path: str | os.PathLike[str] | None = None,
 ) -> BridgeReadResult:
     """Read a stable, bounded JSONL snapshot or delta.
@@ -370,6 +423,12 @@ def read_bridge_log(
         or not 1 <= max_bytes <= MAX_MAX_BYTES
     ):
         return _result(BridgeReadStatus.BLOCKED, "max_bytes_invalid", offset=offset)
+    if (
+        isinstance(max_rows, bool)
+        or not isinstance(max_rows, int)
+        or not 1 <= max_rows <= MAX_MAX_ROWS
+    ):
+        return _result(BridgeReadStatus.BLOCKED, "max_rows_invalid", offset=offset)
 
     generation_file = Path(generation_path) if generation_path is not None else None
     if generation_file is None and cursor is not None and cursor.generation is not None:
@@ -483,8 +542,8 @@ def read_bridge_log(
                     read_calls=read_calls,
                 )
 
-        last_lf = data.rfind(b"\n")
-        if last_lf < 0:
+        consumed = _complete_prefix_length(data, max_rows=max_rows)
+        if consumed == 0:
             status = (
                 BridgeReadStatus.BLOCKED
                 if len(data) >= max_bytes
@@ -504,7 +563,6 @@ def read_bridge_log(
                 read_calls=read_calls,
             )
         else:
-            consumed = last_lf + 1
             try:
                 rows = _parse_rows(data[:consumed], starts_at_zero=(offset == 0))
             except ValueError as exc:
@@ -588,11 +646,284 @@ def read_bridge_log(
             stream.close()
 
 
+def read_bridge_log_tail_lines(
+    path: str | os.PathLike[str],
+    *,
+    tail_rows: int,
+    max_bytes: int = MAX_MAX_BYTES,
+    generation_path: str | os.PathLike[str] | None = None,
+) -> BridgeLineReadResult:
+    """Read LF-complete tail rows through a bounded reverse boundary scan."""
+
+    if (
+        isinstance(tail_rows, bool)
+        or not isinstance(tail_rows, int)
+        or not 1 <= tail_rows <= MAX_MAX_ROWS
+    ):
+        return BridgeLineReadResult(BridgeReadStatus.BLOCKED, "max_rows_invalid")
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or not 1 <= max_bytes <= MAX_MAX_BYTES
+    ):
+        return BridgeLineReadResult(BridgeReadStatus.BLOCKED, "max_bytes_invalid")
+
+    generation_file = Path(generation_path) if generation_path is not None else None
+    try:
+        generation_configured = (
+            generation_file is not None
+            and _optional_generation_exists(generation_file)
+        )
+    except _GenerationError as exc:
+        return BridgeLineReadResult(exc.status, exc.reason)
+    generation_before: str | None = None
+    if generation_configured:
+        try:
+            assert generation_file is not None
+            generation_before = _read_generation(generation_file)
+        except _GenerationError as exc:
+            return BridgeLineReadResult(exc.status, exc.reason)
+
+    def finish(result: BridgeLineReadResult) -> BridgeLineReadResult:
+        """Fence every post-initialization outcome against generation races."""
+
+        if generation_file is None:
+            return result
+        try:
+            configured_after = _optional_generation_exists(generation_file)
+        except _GenerationError as exc:
+            return BridgeLineReadResult(
+                exc.status,
+                exc.reason,
+                bytes_read=result.bytes_read,
+                snapshot_length=result.snapshot_length,
+                file_identity=result.file_identity,
+                generation=generation_before,
+            )
+        if configured_after != generation_configured:
+            return BridgeLineReadResult(
+                BridgeReadStatus.RETRY,
+                "generation_configuration_changed",
+                bytes_read=result.bytes_read,
+                snapshot_length=result.snapshot_length,
+                file_identity=result.file_identity,
+                generation=generation_before,
+            )
+        if generation_configured:
+            try:
+                generation_after = _read_generation(generation_file)
+            except _GenerationError as exc:
+                return BridgeLineReadResult(
+                    exc.status,
+                    exc.reason,
+                    bytes_read=result.bytes_read,
+                    snapshot_length=result.snapshot_length,
+                    file_identity=result.file_identity,
+                    generation=generation_before,
+                )
+            if generation_after != generation_before:
+                return BridgeLineReadResult(
+                    BridgeReadStatus.RETRY,
+                    "generation_changed_during_read",
+                    bytes_read=result.bytes_read,
+                    snapshot_length=result.snapshot_length,
+                    file_identity=result.file_identity,
+                    generation=generation_before,
+                )
+        return result
+
+    log_path = Path(path)
+    stream: BinaryIO | None = None
+    try:
+        try:
+            stream = _open_log(log_path)
+        except (FileNotFoundError, NotADirectoryError):
+            return finish(
+                BridgeLineReadResult(BridgeReadStatus.IDLE, "log_missing")
+            )
+        except (PermissionError, OSError):
+            return finish(
+                BridgeLineReadResult(BridgeReadStatus.RETRY, "log_unavailable")
+            )
+
+        try:
+            identity = _file_identity(stream)
+            snapshot_length = os.fstat(stream.fileno()).st_size
+        except OSError:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.BLOCKED, "identity_unavailable"
+                )
+            )
+
+        requested = min(snapshot_length, max_bytes)
+        window_start = snapshot_length - requested
+        preceding_is_lf = False
+        try:
+            if window_start > 0:
+                stream.seek(window_start - 1, os.SEEK_SET)
+                preceding = stream.read(1)
+                if len(preceding) != 1:
+                    return finish(
+                        BridgeLineReadResult(
+                            BridgeReadStatus.RETRY,
+                            "snapshot_changed",
+                            bytes_read=len(preceding),
+                            snapshot_length=snapshot_length,
+                            file_identity=identity,
+                            generation=generation_before,
+                        )
+                    )
+                preceding_is_lf = preceding == b"\n"
+            stream.seek(window_start, os.SEEK_SET)
+            data = stream.read(requested)
+        except OSError:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.RETRY,
+                    "log_io_error",
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+        if len(data) != requested:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.RETRY,
+                    "snapshot_changed",
+                    bytes_read=len(data),
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+
+        provisional_reason: str | None = None
+        selected_start = 0
+        selected_end = 0
+        if data:
+            selected_end = data.rfind(b"\n") + 1
+            if selected_end == 0 and window_start > 0:
+                provisional_reason = "tail_exceeds_max_bytes"
+            elif selected_end > 0:
+                required_boundary = tail_rows + 1
+                seen_lf = 0
+                for index in range(selected_end - 1, -1, -1):
+                    if data[index] != 0x0A:
+                        continue
+                    seen_lf += 1
+                    if seen_lf >= required_boundary:
+                        selected_start = index + 1
+                        break
+                else:
+                    if window_start == 0:
+                        selected_start = 0
+                    elif preceding_is_lf and seen_lf >= tail_rows:
+                        selected_start = 0
+                    else:
+                        provisional_reason = "tail_exceeds_max_bytes"
+        if (
+            provisional_reason is None
+            and window_start + selected_start == 0
+            and data[selected_start:selected_end].startswith(_UTF8_BOM)
+        ):
+            provisional_reason = "log_bom"
+
+        try:
+            after_identity = _file_identity(stream)
+            after_length = os.fstat(stream.fileno()).st_size
+        except OSError:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.RETRY,
+                    "snapshot_changed",
+                    bytes_read=len(data),
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+        if after_identity != identity:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.RETRY,
+                    "file_identity_changed_during_read",
+                    bytes_read=len(data),
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+        if after_length < snapshot_length:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.RETRY,
+                    "snapshot_changed",
+                    bytes_read=len(data),
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+
+        if provisional_reason is not None:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.BLOCKED,
+                    provisional_reason,
+                    bytes_read=len(data),
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+
+        selected = data[selected_start:selected_end]
+        try:
+            text = selected.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return finish(
+                BridgeLineReadResult(
+                    BridgeReadStatus.BLOCKED,
+                    "invalid_utf8",
+                    bytes_read=len(data),
+                    snapshot_length=snapshot_length,
+                    file_identity=identity,
+                    generation=generation_before,
+                )
+            )
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        lines = [line[:-1] if line.endswith("\r") else line for line in lines]
+
+        return finish(
+            BridgeLineReadResult(
+                BridgeReadStatus.OK if lines else BridgeReadStatus.IDLE,
+                "rows_available" if lines else "no_rows",
+                lines=tuple(lines),
+                bytes_read=len(data),
+                snapshot_length=snapshot_length,
+                file_identity=identity,
+                generation=generation_before,
+            )
+        )
+    finally:
+        if stream is not None:
+            stream.close()
+
+
 __all__ = (
     "BridgeCursor",
+    "BridgeLineReadResult",
     "BridgeReadResult",
     "BridgeReadStatus",
     "DEFAULT_MAX_BYTES",
+    "DEFAULT_MAX_ROWS",
     "MAX_MAX_BYTES",
+    "MAX_MAX_ROWS",
+    "parse_bridge_json_object",
     "read_bridge_log",
+    "read_bridge_log_tail_lines",
 )

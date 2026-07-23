@@ -235,6 +235,30 @@ try {
         [int64]$roundTrip.bytes_read -eq 1
     )
 
+    $boundedRowsPath = Join-Path $tempRoot 'bounded-rows.jsonl'
+    [System.IO.File]::WriteAllBytes(
+        $boundedRowsPath,
+        $encoding.GetBytes(
+            '{"row":1}' + [char]10 +
+            '{"row":2}' + [char]10 +
+            '{"row":3}' + [char]10
+        )
+    )
+    $boundedFirst = Read-BridgeLogSnapshotDelta -Path $boundedRowsPath -MaxRows 2
+    $boundedSecond = Read-BridgeLogSnapshotDelta -Path $boundedRowsPath `
+        -Cursor $boundedFirst.candidate_cursor -MaxRows 2
+    Assert-BridgeConformance -Name 'max_rows_bounds_first_batch' -Condition (
+        $boundedFirst.status -ceq 'OK' -and
+        @($boundedFirst.rows).Count -eq 2 -and
+        [int]$boundedFirst.rows[0].row -eq 1 -and
+        [int]$boundedFirst.rows[1].row -eq 2
+    )
+    Assert-BridgeConformance -Name 'max_rows_continues_exactly_once' -Condition (
+        $boundedSecond.status -ceq 'OK' -and
+        @($boundedSecond.rows).Count -eq 1 -and
+        [int]$boundedSecond.rows[0].row -eq 3
+    )
+
     $identityPath = Join-Path $tempRoot 'changing-identity.jsonl'
     [System.IO.File]::WriteAllBytes(
         $identityPath,
@@ -279,6 +303,73 @@ try {
         $null -eq $changingResult.candidate_cursor -and
         @($changingResult.rows).Count -eq 0
     ) -Detail "reads=$script:generationReadCount status=$($changingResult.status)"
+
+    $continuityRoot = Join-Path $tempRoot 'continuity-task-id-collisions'
+    [void](New-Item -ItemType Directory -Path (Join-Path $continuityRoot 'shared'))
+    $continuityEvents = @(
+        [ordered]@{
+            ts_utc = '2026-07-23T00:00:00Z'; agent = 'lead'; type = 'message'
+            task_id = 'task-1'; status = 'request'; severity = ''; to = 'codex'
+            message = 'selected'; paths = @(); write_scope = @(); run_id = ''
+            pid = 0; cwd = ''; payload = @{}
+        },
+        [ordered]@{
+            ts_utc = '2026-07-23T00:00:01Z'; agent = 'other'; type = 'done'
+            task_id = 'task-10'; status = 'done'; severity = ''; to = ''
+            message = 'prefix collision'; paths = @(); write_scope = @(); run_id = ''
+            pid = 0; cwd = ''; payload = @{}
+        },
+        [ordered]@{
+            ts_utc = '2026-07-23T00:00:02Z'; agent = 'other'; type = 'done'
+            task_id = 'x-task-1'; status = 'done'; severity = ''; to = ''
+            message = 'suffix collision'; paths = @(); write_scope = @(); run_id = ''
+            pid = 0; cwd = ''; payload = @{}
+        },
+        [ordered]@{
+            ts_utc = '2026-07-23T00:00:03Z'; agent = 'other'; type = 'done'
+            task_id = 'TASK-1'; status = 'done'; severity = ''; to = ''
+            message = 'case collision'; paths = @(); write_scope = @(); run_id = ''
+            pid = 0; cwd = ''; payload = @{}
+        }
+    )
+    $continuityJson = (
+        ($continuityEvents | ForEach-Object {
+            $_ | ConvertTo-Json -Depth 10 -Compress
+        }) -join [char]10
+    ) + [char]10 + '{"torn":'
+    $continuityPath = Join-Path $continuityRoot 'shared\events.jsonl'
+    [System.IO.File]::WriteAllText($continuityPath, $continuityJson, $encoding)
+
+    $hadRuntimeRoot = Test-Path Env:\AGENT_BRIDGE_RUNTIME_ROOT
+    $previousRuntimeRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
+    try {
+        $env:AGENT_BRIDGE_RUNTIME_ROOT = $continuityRoot
+        . (Join-Path $PSScriptRoot 'Read-AgentBridge.ps1') `
+            -Agent codex -NoAckReceived -Tail 1 -ContinuityTail 0 *> $null
+        $continuityRows = @(
+            Read-BridgeContinuityEventObjects -Path $continuityPath `
+                -AgentName codex -MaxLines 0
+        )
+    } finally {
+        if ($hadRuntimeRoot) {
+            $env:AGENT_BRIDGE_RUNTIME_ROOT = $previousRuntimeRoot
+        } else {
+            Remove-Item Env:\AGENT_BRIDGE_RUNTIME_ROOT -ErrorAction SilentlyContinue
+        }
+    }
+    $continuityTaskIds = @($continuityRows | ForEach-Object { [string]$_.task_id })
+    Assert-BridgeConformance -Name 'continuity_exact_task_id_selected' -Condition (
+        $continuityTaskIds -ccontains 'task-1'
+    )
+    Assert-BridgeConformance -Name 'continuity_task_id_prefix_collision_excluded' -Condition (
+        $continuityTaskIds -cnotcontains 'task-10'
+    )
+    Assert-BridgeConformance -Name 'continuity_task_id_suffix_collision_excluded' -Condition (
+        $continuityTaskIds -cnotcontains 'x-task-1'
+    )
+    Assert-BridgeConformance -Name 'continuity_task_id_case_collision_excluded' -Condition (
+        $continuityTaskIds -cnotcontains 'TASK-1'
+    )
 
     Write-Output ("Bridge snapshot/delta conformance: {0}/{1} checks passed" -f $passed, $total)
     exit 0

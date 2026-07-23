@@ -4,7 +4,7 @@ param(
     [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent = '',
     [int] $Tail = 40,
     # Keep the interactive continuity view responsive on large bridge logs.
-    # Use 0 only for deep audits that intentionally scan all history.
+    # Use 0 for one bounded full snapshot (at most 64 MiB / 100k rows).
     [int] $ContinuityTail = 5000,
     [switch] $OtherOnly,
     [switch] $ShowClaims,
@@ -29,6 +29,7 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
 }
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
+. (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 $classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
 if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
@@ -51,21 +52,20 @@ function Read-BridgeEventObjects {
     # Internal review fix R1/A1 (2026-05-09): default 5000 was too low.
     # Heartbeat traffic at 60s * 2 agents is about 2880 events/day, so the
     # tail-truncation silently dropped continuity-section events older
-    # than ~2 days. 50000 covers about a month; pass -MaxLines 0 for
-    # unlimited (use sparingly).
+    # than ~2 days. 50000 covers about a month; pass -MaxLines 0 for one
+    # full snapshot bounded to 64 MiB / 100k rows.
     param([Parameter(Mandatory)] [string] $Path, [int] $MaxLines = 50000)
     $items = New-Object System.Collections.Generic.List[object]
-    if (-not (Test-Path -LiteralPath $Path)) { return $items }
-    $allLines = @(if ($MaxLines -le 0) {
-        Get-Content -Path $Path -Encoding UTF8
+    $result = if ($MaxLines -le 0) {
+        Read-BridgeEventSnapshot -Path $Path
     } else {
-        Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8
-    })
-    foreach ($line in $allLines) {
-        if (-not $line) { continue }
-        try {
-            [void]$items.Add(($line | ConvertFrom-Json))
-        } catch {}
+        Read-BridgeEventTail -Path $Path -MaxLines $MaxLines
+    }
+    if ($result.status -in @('BLOCKED','RETRY')) {
+        throw "Read-AgentBridge: stable event snapshot unavailable: $($result.reason)"
+    }
+    foreach ($event in @($result.rows)) {
+        [void]$items.Add($event)
     }
     return $items
 }
@@ -78,52 +78,36 @@ function Read-BridgeContinuityEventObjects {
     )
 
     $items = New-Object System.Collections.Generic.List[object]
-    if (-not (Test-Path -LiteralPath $Path)) { return $items }
-
-    $allLines = @(if ($MaxLines -le 0) {
-        Get-Content -Path $Path -Encoding UTF8
-    } else {
-        Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8
-    })
+    $allEvents = @(Read-BridgeEventObjects -Path $Path -MaxLines $MaxLines)
 
     $selectedIndexes = New-Object 'System.Collections.Generic.HashSet[int]'
-    $agentFieldNeedle = '"agent":"' + $AgentName + '"'
-    $toFieldRegex = [regex]::new(
-        '"to":"[^"]*' + [regex]::Escape($AgentName) + '[^"]*"',
-        [System.Text.RegularExpressions.RegexOptions]::Compiled -bor
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-    $requestLikeStatusRegex = [regex]::new(
-        '"status":"(?:request|ready|blocked|open|proposal|fix-pushed|fix-branch-pushed|pushed|ready_for_implementation|rco_requested|review_requested|changes_requested|proposal_ready|[^"]*proposal[^"]*)"',
-        [System.Text.RegularExpressions.RegexOptions]::Compiled -bor
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-
-    for ($i = 0; $i -lt $allLines.Count; $i++) {
-        $line = [string]$allLines[$i]
-        if (-not $line) { continue }
-        if ($line.IndexOf('"type":"heartbeat"', [System.StringComparison]::Ordinal) -ge 0 -or
-            $line.IndexOf('"type":"liveness"', [System.StringComparison]::Ordinal) -ge 0) {
+    for ($i = 0; $i -lt $allEvents.Count; $i++) {
+        $event = $allEvents[$i]
+        $eventType = if ($event.PSObject.Properties['type']) {
+            [string]$event.type
+        } else { '' }
+        if ($eventType -in @('heartbeat','liveness')) {
             continue
         }
-        $isAddressedToAgent = $toFieldRegex.IsMatch($line)
+        $isAddressedToAgent = Test-BridgeAddressedTo -Event $event `
+            -TargetAgent $AgentName
+        $eventAgent = if ($event.PSObject.Properties['agent']) {
+            [string]$event.agent
+        } else { '' }
         $isOwnRequestLike = (
-            $line.IndexOf($agentFieldNeedle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-            $requestLikeStatusRegex.IsMatch($line)
+            $eventAgent -eq $AgentName -and
+            (Test-BridgeRequestLikeEvent -Event $event)
         )
         if (-not $isAddressedToAgent -and -not $isOwnRequestLike) {
-            continue
-        }
-        try {
-            $event = $line | ConvertFrom-Json
-        } catch {
             continue
         }
         [void]$selectedIndexes.Add($i)
         [void]$items.Add($event)
     }
 
-    $taskIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $taskIds = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
     foreach ($event in $items) {
         $taskId = [string]$event.task_id
         if ($taskId -and
@@ -135,19 +119,16 @@ function Read-BridgeContinuityEventObjects {
     }
 
     if ($taskIds.Count -gt 0) {
-        $taskIdPattern = (@($taskIds) | ForEach-Object { [regex]::Escape([string]$_) }) -join '|'
-        $taskIdRegex = [regex]::new(
-            $taskIdPattern,
-            [System.Text.RegularExpressions.RegexOptions]::Compiled
-        )
-        for ($i = 0; $i -lt $allLines.Count; $i++) {
+        for ($i = 0; $i -lt $allEvents.Count; $i++) {
             if ($selectedIndexes.Contains($i)) { continue }
-            $line = [string]$allLines[$i]
-            if (-not $line) { continue }
-            if (-not $taskIdRegex.IsMatch($line)) { continue }
-            try {
-                [void]$items.Add(($line | ConvertFrom-Json))
-            } catch {}
+            $event = $allEvents[$i]
+            $eventTaskId = if ($event.PSObject.Properties['task_id']) {
+                [string]$event.task_id
+            } else { '' }
+            if (-not $eventTaskId -or -not $taskIds.Contains($eventTaskId)) {
+                continue
+            }
+            [void]$items.Add($event)
         }
     }
 
@@ -490,12 +471,8 @@ if ($ShowLiveness -and -not $NoContinuity) {
         $allLivenessEvents = New-Object System.Collections.Generic.List[object]
         $wakeRequests = New-Object System.Collections.Generic.List[object]
         $opens = New-Object System.Collections.Generic.List[object]
-        $allLines = Get-Content -Path $eventsPath -Encoding UTF8
-        foreach ($line in $allLines) {
-            if (-not $line) { continue }
-            try {
-                $e = $line | ConvertFrom-Json
-            } catch { continue }
+        $allLines = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines 0)
+        foreach ($e in $allLines) {
             [void]$allLivenessEvents.Add($e)
             if ($e.type -eq 'liveness' -or $e.type -eq 'heartbeat') {
                 $key = "{0}/{1}" -f $e.agent, $e.type
@@ -695,15 +672,10 @@ if (-not (Test-Path -LiteralPath $eventsPath)) {
     exit 0
 }
 
-$lines = @(Get-Content -Path $eventsPath -Tail $Tail -Encoding UTF8)
 $events = New-Object System.Collections.Generic.List[object]
-foreach ($line in $lines) {
-    if (-not $line) { continue }
-    try {
-        $e = $line | ConvertFrom-Json
-        if ($OtherOnly -and $Agent -and [string]$e.agent -eq $Agent) { continue }
-        [void]$events.Add($e)
-    } catch {}
+foreach ($e in @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)) {
+    if ($OtherOnly -and $Agent -and [string]$e.agent -eq $Agent) { continue }
+    [void]$events.Add($e)
 }
 
 if ($Raw) {

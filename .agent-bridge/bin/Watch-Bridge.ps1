@@ -36,6 +36,9 @@
 
 .PARAMETER MaxIterations
     Test hook: stop after N polls. 0 means run forever.
+
+.PARAMETER ReadyPath
+    Test/diagnostic hook: write a marker after the initial baseline is ready.
 #>
 [CmdletBinding()]
 param(
@@ -54,7 +57,9 @@ param(
     # detection by setting the baseline below those rows.
     [int] $StartLineCount = -1,
 
-    [string] $RuntimeRoot = ''
+    [string] $RuntimeRoot = '',
+
+    [string] $ReadyPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +85,7 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 
 $eventsPath = Join-Path $bridgeRoot 'shared\events.jsonl'
 $wakePath = Join-Path $bridgeRoot ("wake_{0}" -f $Agent)
+. (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 
 function Test-IsTargeted {
     param(
@@ -105,12 +111,24 @@ function Test-IsTargeted {
     return $targets -contains $WatchedAgent
 }
 
-# Establish baseline so we don't wake for pre-existing history.
-$lastLineCount = 0
+# Establish a stable identity-bound baseline so replacement cannot masquerade
+# as an append with a coincidentally larger byte length.
+$cursor = $null
 if ($StartLineCount -ge 0) {
-    $lastLineCount = $StartLineCount
-} elseif (Test-Path -LiteralPath $eventsPath) {
-    $lastLineCount = @(Get-Content -LiteralPath $eventsPath -ErrorAction SilentlyContinue).Count
+    $cursor = Resolve-BridgeCursorForLineCount -Path $eventsPath `
+        -LineCount ([int64]$StartLineCount)
+} else {
+    $baseline = Read-BridgeEventTail -Path $eventsPath -MaxLines 1
+    if ($baseline.status -in @('BLOCKED','RETRY')) {
+        throw "Watch-Bridge: baseline unavailable: $($baseline.reason)"
+    }
+    $cursor = $baseline.candidate_cursor
+}
+
+if ($ReadyPath) {
+    Set-Content -LiteralPath $ReadyPath `
+        -Value ([datetime]::UtcNow.ToString('o')) `
+        -Encoding UTF8 -NoNewline -Force -ErrorAction Stop
 }
 
 $iteration = 0
@@ -118,42 +136,34 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
     Start-Sleep -Milliseconds $PollIntervalMs
 
-    if (-not (Test-Path -LiteralPath $eventsPath)) { continue }
-
-    $lines = @(Get-Content -LiteralPath $eventsPath -ErrorAction SilentlyContinue)
-    $count = $lines.Count
-    if ($count -le $lastLineCount) {
-        # File may have been rotated/truncated; resync baseline so we
-        # don't miss future appends and don't double-fire on rotation.
-        if ($count -lt $lastLineCount) { $lastLineCount = $count }
+    $result = Read-BridgeEventDelta -Path $eventsPath -Cursor $cursor
+    if ($result.status -ceq 'RETRY') {
+        throw "Watch-Bridge: bridge read retry required: $($result.reason)"
+    }
+    if ($result.status -ceq 'BLOCKED') {
+        throw "Watch-Bridge: bridge read blocked: $($result.reason)"
+    }
+    if ($result.status -ne 'OK') {
+        if ($null -eq $cursor -and $null -ne $result.candidate_cursor) {
+            $cursor = $result.candidate_cursor
+        }
         continue
     }
 
-    $newLines = $lines | Select-Object -Skip $lastLineCount
-    $lastLineCount = $count
-
     $shouldWake = $false
-    foreach ($line in $newLines) {
-        if (-not $line) { continue }
-        try {
-            $ev = $line | ConvertFrom-Json -ErrorAction Stop
-        } catch {
-            continue
-        }
+    foreach ($ev in @($result.rows)) {
         if (Test-IsTargeted -Event $ev -WatchedAgent $Agent) {
             $shouldWake = $true
             break
         }
     }
-
     if ($shouldWake) {
         $stamp = (Get-Date).ToUniversalTime().ToString('o')
-        try {
-            Set-Content -LiteralPath $wakePath -Value $stamp `
-                -Encoding UTF8 -NoNewline -Force -ErrorAction Stop
-        } catch {
-            Write-Warning "Watch-Bridge: failed to write wake file '$wakePath': $($_.Exception.Message)"
-        }
+        Set-Content -LiteralPath $wakePath -Value $stamp `
+            -Encoding UTF8 -NoNewline -Force -ErrorAction Stop
+        $cursor = $result.candidate_cursor
         Start-Sleep -Milliseconds $DebounceMs
+    } else {
+        $cursor = $result.candidate_cursor
     }
 }

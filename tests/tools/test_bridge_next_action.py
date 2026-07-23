@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 
 import tools.bridge_next_action as bridge_next_action
+import waggledance.core.bridge_log_reader as bridge_log_reader
 from tools.bridge_next_action import (
     BridgeNextActionError,
     main,
     read_events,
     recommend_next_action,
 )
+from waggledance.core.bridge_log_reader import BridgeLineReadResult
 from waggledance.core.work_queue import Claim, claim_task
 
 
@@ -2789,7 +2791,8 @@ def test_read_events_honors_tail_before_validation(tmp_path: Path) -> None:
                 json.dumps({"task_id": "two"}),
                 json.dumps({"task_id": "three"}),
             ]
-        ),
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -2807,7 +2810,8 @@ def test_read_events_fails_closed_on_malformed_selected_line(tmp_path: Path) -> 
                 "{not-json",
                 json.dumps({"task_id": "two"}),
             ]
-        ),
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -2815,9 +2819,30 @@ def test_read_events_fails_closed_on_malformed_selected_line(tmp_path: Path) -> 
         read_events(events_path, tail=3)
     except BridgeNextActionError as exc:
         assert exc.report["decision"] == "bridge_next_action_error"
-        assert "line 2" in exc.report["errors"][0]
+        assert "selected tail row 2" in exc.report["errors"][0]
     else:
         raise AssertionError("malformed selected bridge event should fail closed")
+
+
+def test_read_events_labels_tail_relative_diagnostic_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"task_id": "one"}),
+                json.dumps({"task_id": "two"}),
+                "{not-json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BridgeNextActionError) as raised:
+        read_events(events_path, tail=1)
+
+    assert "selected tail row 1" in raised.value.report["errors"][0]
+    assert "events at line 1" not in raised.value.report["errors"][0]
 
 
 def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) -> None:
@@ -2829,7 +2854,8 @@ def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) ->
                 json.dumps(["not-object"]),
                 json.dumps({"task_id": "two"}),
             ]
-        ),
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -2837,7 +2863,7 @@ def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) ->
         read_events(events_path, tail=3)
     except BridgeNextActionError as exc:
         assert exc.report["decision"] == "bridge_next_action_error"
-        assert "line 2" in exc.report["errors"][0]
+        assert "selected tail row 2" in exc.report["errors"][0]
         assert "JSON object" in exc.report["errors"][0]
     else:
         raise AssertionError("non-object selected bridge event should fail closed")
@@ -2851,11 +2877,117 @@ def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
                 "null",
                 json.dumps({"task_id": "one"}),
             ]
-        ),
+        )
+        + "\n",
         encoding="utf-8",
     )
 
     assert read_events(events_path, tail=2) == [{"task_id": "one"}]
+
+
+@pytest.mark.parametrize("raw", ("\u00a0null\u00a0", "\u00a0{}\u00a0"))
+def test_read_events_rejects_unicode_whitespace_wrapped_rows(
+    tmp_path: Path, raw: str
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(raw + "\n", encoding="utf-8")
+
+    with pytest.raises(BridgeNextActionError) as raised:
+        read_events(events_path, tail=1)
+
+    assert raised.value.report["decision"] == "bridge_next_action_error"
+
+
+def test_read_events_ignores_unterminated_final_fragment(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        json.dumps({"task_id": "complete"})
+        + "\n"
+        + json.dumps({"task_id": "torn"}),
+        encoding="utf-8",
+    )
+
+    assert read_events(events_path, tail=2) == [{"task_id": "complete"}]
+
+
+def test_read_events_maps_nonpositive_tail_to_bounded_maximum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, int] = {}
+
+    def fake_tail_reader(
+        _path: Path,
+        *,
+        tail_rows: int,
+        max_bytes: int,
+        generation_path: Path,
+    ) -> BridgeLineReadResult:
+        captured["tail_rows"] = tail_rows
+        return BridgeLineReadResult(
+            bridge_next_action.BridgeReadStatus.IDLE,
+            "no_rows",
+        )
+
+    monkeypatch.setattr(
+        bridge_next_action,
+        "read_bridge_log_tail_lines",
+        fake_tail_reader,
+    )
+
+    assert read_events(tmp_path / "events.jsonl", tail=0) == []
+    assert captured["tail_rows"] == bridge_next_action.MAX_MAX_ROWS
+
+
+def test_read_events_fails_closed_on_missing_log_generation_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+
+    def missing_after_generation_appears(_path: Path) -> object:
+        generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+        raise FileNotFoundError(str(events_path))
+
+    monkeypatch.setattr(
+        bridge_log_reader, "_open_log", missing_after_generation_appears
+    )
+
+    with pytest.raises(BridgeNextActionError) as raised:
+        read_events(events_path, tail=1)
+
+    assert "generation_configuration_changed" in raised.value.report["errors"][0]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"value":NaN}',
+        '{"value":Infinity}',
+        '{"key":1,"key":2}',
+        '{"Key":1,"key":2}',
+        '{"value":9007199254740992}',
+        '{"nonascii_å":1}',
+        '{"value":' + ("[" * 33) + "0" + ("]" * 33) + "}",
+    ),
+)
+def test_read_events_enforces_canonical_json_contract(
+    tmp_path: Path, raw: str
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(raw + "\n", encoding="utf-8")
+
+    with pytest.raises(BridgeNextActionError) as raised:
+        read_events(events_path, tail=1)
+
+    assert raised.value.report["decision"] == "bridge_next_action_error"
+
+
+def test_read_events_rejects_bare_cr_double_object_row(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes(b'{"task_id":"one"}\r{"task_id":"two"}\n')
+
+    with pytest.raises(BridgeNextActionError):
+        read_events(events_path, tail=1)
 
 
 def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:

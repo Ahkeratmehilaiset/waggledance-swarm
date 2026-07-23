@@ -27,6 +27,13 @@ from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E40
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
 )
+from waggledance.core.bridge_log_reader import (  # noqa: E402
+    BridgeReadStatus,
+    MAX_MAX_BYTES,
+    MAX_MAX_ROWS,
+    parse_bridge_json_object,
+    read_bridge_log_tail_lines,
+)
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
@@ -187,7 +194,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--tail",
         type=int,
         default=50000,
-        help="Maximum event lines to read from the end of the JSONL file; <=0 reads all.",
+        help=(
+            "Maximum event lines to read from the end of the JSONL file; "
+            f"<=0 requests the bounded maximum of {MAX_MAX_ROWS} rows."
+        ),
     )
     parser.add_argument(
         "--open-request-max-age-hours",
@@ -307,48 +317,47 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
-    """Read bridge JSONL events, failing closed on malformed selected lines."""
-    if not path.exists():
+    """Read selected JSONL rows, skipping ASCII blanks/null; fail closed otherwise."""
+    generation_path = path.with_name("events.generation.json")
+    snapshot = read_bridge_log_tail_lines(
+        path,
+        tail_rows=tail if tail > 0 else MAX_MAX_ROWS,
+        max_bytes=MAX_MAX_BYTES,
+        generation_path=generation_path,
+    )
+    if snapshot.status is BridgeReadStatus.IDLE and snapshot.reason == "log_missing":
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    start_line = 1
-    if tail > 0:
-        start_line = max(1, len(lines) - tail + 1)
-        lines = lines[-tail:]
+    if snapshot.status not in {BridgeReadStatus.OK, BridgeReadStatus.IDLE}:
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": [f"bridge event snapshot unavailable: {snapshot.reason}"],
+            }
+        )
+    lines = list(snapshot.lines)
     events: list[dict[str, Any]] = []
-    for line_no, raw in enumerate(lines, start=start_line):
-        if not raw.strip():
+    for selected_row, raw in enumerate(lines, start=1):
+        ascii_trimmed = raw.strip(" \t\r")
+        if not ascii_trimmed:
+            continue
+        if ascii_trimmed == "null":
             continue
         try:
-            event = json.loads(raw)
-        except json.JSONDecodeError as exc:
+            event = parse_bridge_json_object(raw)
+        except ValueError as exc:
             raise BridgeNextActionError(
                 {
                     "ok": False,
                     "decision": "bridge_next_action_error",
                     "errors": [
                         (
-                            f"invalid JSON in bridge events at line "
-                            f"{line_no}: {exc.msg}"
+                            "invalid JSON object in bridge events at selected "
+                            f"tail row {selected_row}: {exc}"
                         )
                     ],
                 }
             ) from exc
-        if event is None:
-            continue
-        if not isinstance(event, dict):
-            raise BridgeNextActionError(
-                {
-                    "ok": False,
-                    "decision": "bridge_next_action_error",
-                    "errors": [
-                        (
-                            f"invalid bridge event at line {line_no}: "
-                            "event must be a JSON object"
-                        )
-                    ],
-                }
-            )
         events.append(event)
     return events
 

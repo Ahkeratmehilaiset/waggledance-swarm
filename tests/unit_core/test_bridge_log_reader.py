@@ -12,6 +12,7 @@ from waggledance.core.bridge_log_reader import (
     BridgeCursor,
     BridgeReadStatus,
     read_bridge_log,
+    read_bridge_log_tail_lines,
 )
 
 
@@ -362,3 +363,338 @@ def test_cursor_is_immutable() -> None:
     cursor = BridgeCursor(1, "identity")
     with pytest.raises((AttributeError, TypeError)):
         cursor.offset = 2  # type: ignore[misc]
+
+
+def test_max_rows_chunks_are_bounded_and_delivered_exactly_once(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n{"row":2}\n{"row":3}\n')
+
+    first = read_bridge_log(path, max_rows=2)
+    assert first.status is BridgeReadStatus.OK
+    assert first.rows == ({"row": 1}, {"row": 2})
+    assert first.candidate_cursor is not None
+
+    second = read_bridge_log(path, cursor=first.candidate_cursor, max_rows=2)
+    assert second.status is BridgeReadStatus.OK
+    assert second.rows == ({"row": 3},)
+    assert second.candidate_cursor is not None
+
+    third = read_bridge_log(path, cursor=second.candidate_cursor, max_rows=2)
+    assert third.status is BridgeReadStatus.IDLE
+    assert third.rows == ()
+    assert third.candidate_cursor == second.candidate_cursor
+
+
+def test_independent_readers_do_not_share_cursor_state(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n{"row":2}\n')
+
+    left = read_bridge_log(path, max_rows=1)
+    right = read_bridge_log(path, max_rows=1)
+
+    assert left.rows == right.rows == ({"row": 1},)
+    assert left.candidate_cursor == right.candidate_cursor
+    assert left.candidate_cursor is not None
+    left_next = read_bridge_log(path, cursor=left.candidate_cursor, max_rows=1)
+    assert left_next.rows == ({"row": 2},)
+    assert right.rows == ({"row": 1},)
+
+
+def test_larger_replacement_with_fewer_rows_is_not_treated_as_append(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n{"row":2}\n')
+    initial = read_bridge_log(path)
+    assert initial.candidate_cursor is not None
+
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"replacement":"' + (b"x" * 256) + b'"}\n')
+    os.replace(replacement, path)
+    result = read_bridge_log(path, cursor=initial.candidate_cursor)
+
+    assert path.stat().st_size > initial.candidate_cursor.offset
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "file_identity_changed"
+    assert result.rows == ()
+    assert result.candidate_cursor is None
+
+
+def test_tail_lines_are_row_and_byte_bounded(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n{"row":2}\n{"row":3}\n')
+
+    result = read_bridge_log_tail_lines(path, tail_rows=2, max_bytes=128)
+
+    assert result.status is BridgeReadStatus.OK
+    assert result.lines == ('{"row":2}', '{"row":3}')
+    assert result.bytes_read <= 128
+
+
+def test_tail_lines_ignore_unterminated_final_fragment(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n{"row":2}')
+
+    result = read_bridge_log_tail_lines(path, tail_rows=2)
+
+    assert result.status is BridgeReadStatus.OK
+    assert result.lines == ('{"row":1}',)
+
+
+def test_tail_lines_block_partial_only_bounded_window(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n' + (b"x" * 40))
+
+    result = read_bridge_log_tail_lines(path, tail_rows=1, max_bytes=16)
+
+    assert result.status is BridgeReadStatus.BLOCKED
+    assert result.reason == "tail_exceeds_max_bytes"
+    assert result.lines == ()
+
+
+def test_tail_lines_reject_zero_row_bound_without_io(tmp_path: Path) -> None:
+    result = read_bridge_log_tail_lines(
+        tmp_path / "missing.jsonl", tail_rows=0
+    )
+
+    assert result.status is BridgeReadStatus.BLOCKED
+    assert result.reason == "max_rows_invalid"
+    assert result.lines == ()
+
+
+def test_tail_lines_accept_exact_lf_aligned_max_byte_window(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    selected = b'{"row":2}\n{"row":3}\n'
+    path.write_bytes(b'{"row":1}\n' + selected)
+
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=2, max_bytes=len(selected)
+    )
+
+    assert result.status is BridgeReadStatus.OK
+    assert result.lines == ('{"row":2}', '{"row":3}')
+    assert result.bytes_read == len(selected)
+
+
+def test_tail_lines_fail_closed_on_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":1}\n{"row":"\xff"}\n')
+
+    result = read_bridge_log_tail_lines(path, tail_rows=2)
+
+    assert result.status is BridgeReadStatus.BLOCKED
+    assert result.reason == "invalid_utf8"
+    assert result.lines == ()
+
+
+def test_tail_generation_change_is_result_neutral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+    path.write_bytes(b'{"row":1}\n')
+    generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+    seen = iter(("g1", "g2"))
+    monkeypatch.setattr(reader, "_read_generation", lambda _path: next(seen))
+
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_changed_during_read"
+    assert result.lines == ()
+
+
+def test_tail_identity_change_supersedes_invalid_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"row":"\xff"}\n')
+    stable_identity = _identity(path)
+    identities = iter((stable_identity, stable_identity + "-changed"))
+    monkeypatch.setattr(reader, "_file_identity", lambda _stream: next(identities))
+
+    result = read_bridge_log_tail_lines(path, tail_rows=1)
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "file_identity_changed_during_read"
+    assert result.lines == ()
+
+
+def test_tail_identity_change_supersedes_window_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"value":"' + (b"x" * 128) + b'"}\n')
+    stable_identity = _identity(path)
+    identities = iter((stable_identity, stable_identity + "-changed"))
+    monkeypatch.setattr(reader, "_file_identity", lambda _stream: next(identities))
+
+    result = read_bridge_log_tail_lines(path, tail_rows=1, max_bytes=32)
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "file_identity_changed_during_read"
+    assert result.lines == ()
+
+
+def test_tail_generation_change_supersedes_invalid_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+    path.write_bytes(b'{"row":"\xff"}\n')
+    generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+    seen = iter(("g1", "g2"))
+    monkeypatch.setattr(reader, "_read_generation", lambda _path: next(seen))
+
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_changed_during_read"
+    assert result.lines == ()
+
+
+def test_tail_optional_generation_appearance_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+    path.write_bytes(b'{"row":1}\n')
+    generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+    original_stat = Path.stat
+    checks = iter((False, True))
+
+    def changing_stat(
+        candidate: Path, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        if candidate == generation_path:
+            if not next(checks):
+                raise FileNotFoundError(str(candidate))
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", changing_stat)
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_configuration_changed"
+    assert result.lines == ()
+
+
+def test_tail_missing_log_generation_appearance_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+
+    def missing_after_generation_appears(_path: Path) -> object:
+        generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+        raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(reader, "_open_log", missing_after_generation_appears)
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_configuration_changed"
+    assert result.lines == ()
+
+
+def test_tail_missing_log_generation_token_change_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+    generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+
+    def missing_after_generation_changes(_path: Path) -> object:
+        generation_path.write_text('{"generation":"g2"}', encoding="utf-8")
+        raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(reader, "_open_log", missing_after_generation_changes)
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_changed_during_read"
+    assert result.lines == ()
+
+
+def test_tail_unavailable_log_generation_appearance_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+
+    def unavailable_after_generation_appears(_path: Path) -> object:
+        generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+        raise PermissionError(str(path))
+
+    monkeypatch.setattr(reader, "_open_log", unavailable_after_generation_appears)
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_configuration_changed"
+    assert result.lines == ()
+
+
+@pytest.mark.parametrize("failure_phase", ("before", "after"))
+def test_tail_generation_existence_oserror_is_structured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    generation_path = tmp_path / "events.generation.json"
+    path.write_bytes(b'{"row":1}\n')
+    generation_path.write_text('{"generation":"g1"}', encoding="utf-8")
+    original_stat = Path.stat
+    generation_stat_calls = 0
+
+    def failing_stat(candidate: Path, *args: object, **kwargs: object) -> os.stat_result:
+        nonlocal generation_stat_calls
+        if candidate == generation_path:
+            generation_stat_calls += 1
+            if failure_phase == "before" or generation_stat_calls == 2:
+                raise PermissionError("generation existence probe denied")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing_stat)
+    result = read_bridge_log_tail_lines(
+        path, tail_rows=1, generation_path=generation_path
+    )
+
+    assert result.status is BridgeReadStatus.RETRY
+    assert result.reason == "generation_unavailable"
+    assert result.lines == ()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"value":NaN}',
+        '{"value":Infinity}',
+        '{"key":1,"key":2}',
+        '{"Key":1,"key":2}',
+        '{"value":9007199254740992}',
+        '{"nonascii_å":1}',
+        ("[" * 33) + "0" + ("]" * 33),
+    ),
+)
+def test_public_bridge_object_parser_enforces_canonical_contract(
+    raw: str,
+) -> None:
+    with pytest.raises(ValueError):
+        reader.parse_bridge_json_object(raw)

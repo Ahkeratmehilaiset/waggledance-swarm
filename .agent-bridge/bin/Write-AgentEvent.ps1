@@ -489,11 +489,6 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 }
 $sharedDir = Join-Path $bridgeRoot 'shared'
 $outboxDir = Join-Path (Join-Path $bridgeRoot 'outbox') $Agent
-foreach ($dir in @($sharedDir, $outboxDir)) {
-    if (-not (Test-Path -LiteralPath $dir)) {
-        [void](New-Item -ItemType Directory -Path $dir -Force)
-    }
-}
 
 if (-not $RunId) {
     $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
@@ -628,64 +623,903 @@ if (Test-OpenOperatorBridgeFollowNudgeDuplicate -Path $eventsPath -Candidate $ev
     return
 }
 
-$line = (($event | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine)
+$line = (($event | ConvertTo-Json -Depth 12 -Compress) + [char]10)
 
-function Add-LineWithRetry {
-    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Line)
-    $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent)) {
-        [void](New-Item -ItemType Directory -Path $parent -Force)
+function New-BridgeV1Mutex {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Purpose
+    )
+
+    # A fail-closed test hook: forcing construction failure can only deny a
+    # write; it can never authorize an unlocked append.
+    $forcedFailure = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE',
+        'Process'
+    )
+    if ($forcedFailure -in @('All', $Purpose)) {
+        throw "simulated bridge $Purpose mutex construction failure"
     }
-    $encoding = New-Object System.Text.UTF8Encoding($false)
+    return New-Object System.Threading.Mutex($false, $Name)
+}
 
-    # Contention hardening (bridge audit 2026-07-02): serialize appends across
-    # processes with a named mutex so the boot-burst / multi-agent case stops
-    # exhausting the retry loop. AbandonedMutexException means a holder died
-    # while owning the mutex - ownership transfers to us, so treat as
-    # acquired. A WaitOne timeout falls back to the unserialized retry loop
-    # below (never deadlock the bridge on a hung holder).
-    $mutex = $null
-    $acquired = $false
+function New-BridgeCanonicalSpoolPaths {
+    $spoolDir = Join-Path $bridgeRoot 'spool'
+    if (-not (Test-Path -LiteralPath $spoolDir -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $spoolDir -Force)
+    }
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff')
+    $nonce = [guid]::NewGuid().ToString('N')
+    $finalName = "failed-append-$Agent-$stamp-$PID-$nonce.jsonl"
+    return [pscustomobject]@{
+        SpoolDir = $spoolDir
+        FinalPath = Join-Path $spoolDir $finalName
+        PendingPath = Join-Path $spoolDir (".$finalName.pending")
+    }
+}
+
+function Open-PendingCanonicalWalLease {
+    param([Parameter(Mandatory)] [byte[]] $Bytes)
+
+    $paths = New-BridgeCanonicalSpoolPaths
+    $lease = $null
     try {
-        try {
-            $mutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeAppendV1')
-            try { $acquired = $mutex.WaitOne(10000) }
-            catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-        } catch { $mutex = $null }
+        $lease = New-Object System.IO.FileStream(
+            $paths.PendingPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+            $attributes = [System.IO.File]::GetAttributes($paths.PendingPath)
+            [System.IO.File]::SetAttributes(
+                $paths.PendingPath,
+                ($attributes -bor [System.IO.FileAttributes]::Hidden)
+            )
+        }
+        $lease.Write($Bytes, 0, $Bytes.Length)
+        $lease.Flush($true)
+        $paths | Add-Member -NotePropertyName Lease -NotePropertyValue $lease
+        $lease = $null
+        return $paths
+    } finally {
+        if ($null -ne $lease) { $lease.Dispose() }
+    }
+}
 
-        for ($i = 0; $i -lt 40; $i++) {
-            try {
-                [System.IO.File]::AppendAllText($Path, $Line, $encoding)
-                return
-            } catch {
-                Start-Sleep -Milliseconds (25 + ($i * 10))
+function Close-PendingCanonicalWalLease {
+    param([Parameter(Mandatory)] $Wal)
+    if ($null -ne $Wal.Lease) {
+        $Wal.Lease.Dispose()
+        $Wal.Lease = $null
+    }
+}
+
+function Promote-PendingCanonicalWal {
+    param([Parameter(Mandatory)] $Wal)
+
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $attributes = [System.IO.File]::GetAttributes($Wal.PendingPath)
+        [System.IO.File]::SetAttributes(
+            $Wal.PendingPath,
+            ($attributes -band (-bnot [System.IO.FileAttributes]::Hidden))
+        )
+    }
+    [System.IO.File]::Move($Wal.PendingPath, $Wal.FinalPath)
+    return $Wal.FinalPath
+}
+
+function Invoke-BridgeBeforeAppendTestHook {
+    param([Parameter(Mandatory)] [string] $PendingPath)
+
+    $readyPath = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_BEFORE_APPEND_READY',
+        'Process'
+    )
+    if (-not $readyPath) { return }
+    [System.IO.File]::WriteAllText($readyPath, $PendingPath)
+    $releasePath = "$readyPath.release"
+    for ($attempt = 0; $attempt -lt 400; $attempt++) {
+        if (Test-Path -LiteralPath $releasePath -PathType Leaf) { return }
+        Start-Sleep -Milliseconds 25
+    }
+    throw 'test hook timed out before transactional bridge append'
+}
+
+function Initialize-BridgeAppendV1Native {
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw (
+            'AppendV1 validation checkpoints require Windows file identity ' +
+            'and write-through atomic replacement; refusing an unfenced append'
+        )
+    }
+    if ('WaggleDance.BridgeAppendV1Native' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace WaggleDance {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BridgeByHandleFileInformation {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    public static class BridgeAppendV1Native {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetFileInformationByHandle(
+            IntPtr fileHandle,
+            out BridgeByHandleFileInformation fileInformation
+        );
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool MoveFileExW(
+            string existingPath,
+            string destinationPath,
+            uint flags
+        );
+    }
+}
+'@
+}
+
+function Get-BridgeAppendCheckpointPath {
+    param([Parameter(Mandatory)] [string] $Path)
+    return "$Path.append-v1-validation.json"
+}
+
+function Get-BridgeOpenFileIdentity {
+    param([Parameter(Mandatory)] [System.IO.FileStream] $Stream)
+
+    Initialize-BridgeAppendV1Native
+    $information = New-Object WaggleDance.BridgeByHandleFileInformation
+    $handle = $Stream.SafeFileHandle.DangerousGetHandle()
+    if (-not [WaggleDance.BridgeAppendV1Native]::GetFileInformationByHandle(
+        $handle,
+        [ref]$information
+    )) {
+        $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+        throw "GetFileInformationByHandle failed: $nativeCode ($($nativeError.Message))"
+    }
+    return ('windows-file-id-v1:{0:x8}:{1:x8}:{2:x8}' -f
+        ([uint32]$information.VolumeSerialNumber),
+        ([uint32]$information.FileIndexHigh),
+        ([uint32]$information.FileIndexLow))
+}
+
+function Get-BridgeSha256Hex {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes
+    )
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Test-BridgeExactBytesEqual {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Left,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Right
+    )
+    if ($Left.Length -ne $Right.Length) { return $false }
+    for ($index = 0; $index -lt $Left.Length; $index++) {
+        if ($Left[$index] -ne $Right[$index]) { return $false }
+    }
+    return $true
+}
+
+function New-BridgeAppendValidationCheckpointBytes {
+    param(
+        [Parameter(Mandatory)] [string] $FileIdentity,
+        [Parameter(Mandatory)] [int64] $Length,
+        [Parameter(Mandatory)] [int64] $AnchorLength,
+        [Parameter(Mandatory)] [string] $AnchorSha256
+    )
+
+    $checkpoint = [ordered]@{
+        schema = 'waggledance.bridge.append-v1-validation'
+        version = [int64]1
+        file_identity = $FileIdentity
+        validated_length = $Length.ToString([Globalization.CultureInfo]::InvariantCulture)
+        tail_anchor_length = $AnchorLength.ToString([Globalization.CultureInfo]::InvariantCulture)
+        tail_anchor_sha256 = $AnchorSha256
+    }
+    $checkpointJson = $checkpoint | ConvertTo-Json -Compress
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    return ,$strictUtf8.GetBytes($checkpointJson + [char]10)
+}
+
+function Get-BridgeAppendTailAnchor {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [int64] $Length
+    )
+
+    if ($Length -lt 0 -or $Length -ne [int64]$Stream.Length) {
+        throw 'cannot anchor an inexact canonical bridge length'
+    }
+    $anchorLength = [int][Math]::Min([int64]4096, $Length)
+    [byte[]]$anchorBytes = New-Object byte[] $anchorLength
+    if ($anchorLength -gt 0) {
+        [void]$Stream.Seek($Length - $anchorLength, [System.IO.SeekOrigin]::Begin)
+        $offset = 0
+        while ($offset -lt $anchorLength) {
+            $read = $Stream.Read($anchorBytes, $offset, $anchorLength - $offset)
+            if ($read -le 0) { throw 'canonical bridge tail anchor read ended early' }
+            $offset += $read
+        }
+    }
+    return [pscustomobject]@{
+        Length = $anchorLength
+        Sha256 = Get-BridgeSha256Hex -Bytes $anchorBytes
+    }
+}
+
+function Write-BridgeValidationTrace {
+    param([Parameter(Mandatory)] [string] $Mode)
+    $tracePath = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_VALIDATION_TRACE',
+        'Process'
+    )
+    if (-not $tracePath) { return }
+    $traceEncoding = New-Object System.Text.UTF8Encoding($false, $true)
+    [System.IO.File]::AppendAllText($tracePath, ($Mode + [char]10), $traceEncoding)
+}
+
+function Read-BridgeAppendValidationCheckpoint {
+    param(
+        [Parameter(Mandatory)] [string] $CheckpointPath,
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [string] $FileIdentity,
+        [Parameter(Mandatory)] [int64] $Length
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $CheckpointPath -PathType Leaf)) { return $false }
+        $checkpointFile = Get-Item -LiteralPath $CheckpointPath -Force
+        if ($checkpointFile.Length -le 0 -or $checkpointFile.Length -gt 8192) { return $false }
+        [byte[]]$bytes = [System.IO.File]::ReadAllBytes($CheckpointPath)
+        if (
+            $bytes.Length -eq 0 -or $bytes[$bytes.Length - 1] -ne 10 -or
+            ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and
+                $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+        ) { return $false }
+        for ($index = 0; $index -lt $bytes.Length - 1; $index++) {
+            if ($bytes[$index] -eq 10 -or $bytes[$index] -eq 13) { return $false }
+        }
+        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $text = $strictUtf8.GetString($bytes, 0, $bytes.Length - 1)
+        $checkpoint = $text | ConvertFrom-Json -ErrorAction Stop
+        if (-not ($checkpoint -is [System.Management.Automation.PSCustomObject])) { return $false }
+        $expectedProperties = @(
+            'schema', 'version', 'file_identity', 'validated_length',
+            'tail_anchor_length', 'tail_anchor_sha256'
+        )
+        $actualProperties = @($checkpoint.PSObject.Properties)
+        if ($actualProperties.Count -ne $expectedProperties.Count) { return $false }
+        foreach ($expectedProperty in $expectedProperties) {
+            if (@($actualProperties | Where-Object { $_.Name -ceq $expectedProperty }).Count -ne 1) {
+                return $false
             }
         }
+        if (
+            -not ($checkpoint.schema -is [string]) -or
+            [string]$checkpoint.schema -cne 'waggledance.bridge.append-v1-validation' -or
+            -not (($checkpoint.version -is [int]) -or
+                ($checkpoint.version -is [long])) -or
+            [int64]$checkpoint.version -ne 1 -or
+            -not ($checkpoint.file_identity -is [string]) -or
+            [string]$checkpoint.file_identity -cne $FileIdentity -or
+            -not ($checkpoint.validated_length -is [string]) -or
+            -not ($checkpoint.tail_anchor_length -is [string]) -or
+            -not ($checkpoint.tail_anchor_sha256 -is [string])
+        ) { return $false }
+        $validatedLengthText = [string]$checkpoint.validated_length
+        $anchorLengthText = [string]$checkpoint.tail_anchor_length
+        if (
+            $validatedLengthText -cnotmatch '^(0|[1-9][0-9]*)$' -or
+            $anchorLengthText -cnotmatch '^(0|[1-9][0-9]*)$'
+        ) { return $false }
+        $validatedLength = [int64]0
+        $anchorLength = [int64]0
+        if (
+            -not [int64]::TryParse($validatedLengthText, [ref]$validatedLength) -or
+            -not [int64]::TryParse($anchorLengthText, [ref]$anchorLength) -or
+            $validatedLength -ne $Length -or
+            $anchorLength -ne [Math]::Min([int64]4096, $Length)
+        ) { return $false }
+        $anchorHash = [string]$checkpoint.tail_anchor_sha256
+        if ($anchorHash -cnotmatch '^[0-9a-f]{64}$') { return $false }
+        [byte[]]$canonicalCheckpointBytes = `
+            New-BridgeAppendValidationCheckpointBytes `
+                -FileIdentity $FileIdentity -Length $validatedLength `
+                -AnchorLength $anchorLength -AnchorSha256 $anchorHash
+        if (-not (Test-BridgeExactBytesEqual `
+            -Left $bytes -Right $canonicalCheckpointBytes)) {
+            return $false
+        }
+        $actualAnchor = Get-BridgeAppendTailAnchor -Stream $Stream -Length $Length
+        return (
+            [int64]$actualAnchor.Length -eq $anchorLength -and
+            [string]$actualAnchor.Sha256 -ceq $anchorHash
+        )
+    } catch {
+        # The checkpoint is only a cache. Any read, parse, identity, or anchor
+        # problem must miss and force the authoritative full validation path.
+        return $false
+    }
+}
+
+function Write-BridgeAppendValidationCheckpoint {
+    param(
+        [Parameter(Mandatory)] [string] $CheckpointPath,
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [string] $FileIdentity,
+        [Parameter(Mandatory)] [int64] $Length,
+        [Parameter(Mandatory)] [ValidateSet('Bootstrap','AfterCanonical')]
+        [string] $Phase
+    )
+
+    $forcedFailure = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_CHECKPOINT_UPDATE_FAILURE',
+        'Process'
+    )
+    if ($forcedFailure -in @('All', $Phase)) {
+        throw "simulated validation checkpoint update failure during $Phase"
+    }
+    if (
+        $forcedFailure -ceq "${Phase}Once" -and
+        -not $script:bridgeCheckpointFailureInjected
+    ) {
+        $script:bridgeCheckpointFailureInjected = $true
+        throw "simulated one-shot validation checkpoint update failure during $Phase"
+    }
+    if ($Length -ne [int64]$Stream.Length) {
+        throw 'canonical bridge length changed before checkpoint advance'
+    }
+    $currentIdentity = Get-BridgeOpenFileIdentity -Stream $Stream
+    if ($currentIdentity -cne $FileIdentity) {
+        throw 'canonical bridge file identity changed before checkpoint advance'
+    }
+    $anchor = Get-BridgeAppendTailAnchor -Stream $Stream -Length $Length
+    [byte[]]$checkpointBytes = New-BridgeAppendValidationCheckpointBytes `
+        -FileIdentity $FileIdentity -Length $Length `
+        -AnchorLength ([int64]$anchor.Length) `
+        -AnchorSha256 ([string]$anchor.Sha256)
+    $temporaryPath = "$CheckpointPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+    $temporaryStream = $null
+    try {
+        $temporaryStream = New-Object System.IO.FileStream(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $temporaryStream.Write($checkpointBytes, 0, $checkpointBytes.Length)
+        $temporaryStream.Flush($true)
+        $temporaryStream.Dispose()
+        $temporaryStream = $null
+
+        Initialize-BridgeAppendV1Native
+        if (-not [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
+            $temporaryPath,
+            $CheckpointPath,
+            [uint32]0x00000009
+        )) {
+            $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+            throw "write-through checkpoint replacement failed: $nativeCode ($($nativeError.Message))"
+        }
+        [byte[]]$publishedBytes = [System.IO.File]::ReadAllBytes($CheckpointPath)
+        if (
+            $publishedBytes.Length -ne $checkpointBytes.Length -or
+            (Get-BridgeSha256Hex -Bytes $publishedBytes) -cne
+                (Get-BridgeSha256Hex -Bytes $checkpointBytes)
+        ) {
+            throw 'published validation checkpoint verification failed'
+        }
     } finally {
+        if ($null -ne $temporaryStream) { $temporaryStream.Dispose() }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Assert-BridgeAppendTargetStrictUtf8 {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [string] $Path
+    )
+
+    if ($Stream.Length -eq 0) { return }
+    [void]$Stream.Seek(-1, [System.IO.SeekOrigin]::End)
+    if ($Stream.ReadByte() -ne 10) {
+        throw "bridge append target has an unterminated row: $Path"
+    }
+
+    [void]$Stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+    $decoder = (New-Object System.Text.UTF8Encoding($false, $true)).GetDecoder()
+    $buffer = New-Object byte[] 8192
+    $characters = New-Object char[] 8192
+    try {
+        while ($true) {
+            $read = $Stream.Read($buffer, 0, $buffer.Length)
+            if ($read -eq 0) { break }
+            $flush = ($Stream.Position -eq $Stream.Length)
+            $offset = 0
+            do {
+                $bytesUsed = 0
+                $charactersUsed = 0
+                $completed = $false
+                $decoder.Convert(
+                    $buffer,
+                    $offset,
+                    $read - $offset,
+                    $characters,
+                    0,
+                    $characters.Length,
+                    $flush,
+                    [ref]$bytesUsed,
+                    [ref]$charactersUsed,
+                    [ref]$completed
+                )
+                if ($bytesUsed -eq 0 -and -not $completed) {
+                    throw 'strict UTF-8 decoder made no progress'
+                }
+                $offset += $bytesUsed
+            } while ($offset -lt $read -or ($flush -and -not $completed))
+        }
+    } catch {
+        throw "bridge append target is not strict UTF-8: $Path ($($_.Exception.Message))"
+    }
+}
+
+function Assert-BridgeAppendTargetValidated {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $CheckpointPath,
+        [Parameter(Mandatory)] [string] $FileIdentity,
+        [Parameter(Mandatory)] [int64] $Length
+    )
+
+    if (Read-BridgeAppendValidationCheckpoint `
+        -CheckpointPath $CheckpointPath -Stream $Stream `
+        -FileIdentity $FileIdentity -Length $Length) {
+        Write-BridgeValidationTrace -Mode 'checkpoint'
+        return
+    }
+    if ([Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_FAIL_ON_FULL_VALIDATION',
+        'Process'
+    ) -eq '1') {
+        throw 'simulated refusal of full canonical validation'
+    }
+    Write-BridgeValidationTrace -Mode 'full'
+    Assert-BridgeAppendTargetStrictUtf8 -Stream $Stream -Path $Path
+    Write-BridgeAppendValidationCheckpoint `
+        -CheckpointPath $CheckpointPath -Stream $Stream `
+        -FileIdentity $FileIdentity -Length $Length -Phase Bootstrap
+}
+
+function Invoke-BridgeAfterCanonicalTestHook {
+    $readyPath = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT',
+        'Process'
+    )
+    if (-not $readyPath) { return }
+    [System.IO.File]::WriteAllText($readyPath, 'ready')
+    $releasePath = "$readyPath.release"
+    for ($attempt = 0; $attempt -lt 400; $attempt++) {
+        if (Test-Path -LiteralPath $releasePath -PathType Leaf) { return }
+        Start-Sleep -Milliseconds 25
+    }
+    throw 'test hook timed out after canonical flush before checkpoint advance'
+}
+
+function Invoke-BridgeCanonicalTransactionalAppend {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [bool] $AppendMutexOwned
+    )
+
+    if (-not $AppendMutexOwned) {
+        throw 'refusing transactional bridge append without AppendV1 ownership'
+    }
+    # Gate the platform before creating shared/ or opening/creating the
+    # canonical path. On unsupported platforms the already-durable pending WAL
+    # may be retained, but no canonical path or parent is touched.
+    Initialize-BridgeAppendV1Native
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $parent -Force)
+    }
+    $stream = $null
+    $preAppendLength = [int64]0
+    try {
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::Read
+        )
+        $preAppendLength = [int64]$stream.Length
+        $checkpointPath = Get-BridgeAppendCheckpointPath -Path $Path
+        $fileIdentity = Get-BridgeOpenFileIdentity -Stream $stream
+        Assert-BridgeAppendTargetValidated `
+            -Stream $stream -Path $Path -CheckpointPath $checkpointPath `
+            -FileIdentity $fileIdentity -Length $preAppendLength
+        [void]$stream.Seek($preAppendLength, [System.IO.SeekOrigin]::Begin)
+        try {
+            $forcedCountText = [Environment]::GetEnvironmentVariable(
+                'AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES',
+                'Process'
+            )
+            if ($forcedCountText) {
+                $forcedCount = 0
+                if (-not [int]::TryParse($forcedCountText, [ref]$forcedCount)) {
+                    throw 'invalid test partial-append byte count'
+                }
+                if ($forcedCount -lt 0 -or $forcedCount -ge $Bytes.Length) {
+                    throw 'test partial-append byte count is outside the row'
+                }
+                if ($forcedCount -gt 0) {
+                    $stream.Write($Bytes, 0, $forcedCount)
+                }
+                throw 'simulated transactional append failure after partial write'
+            }
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            $stream.Flush($true)
+        } catch {
+            $appendError = $_.Exception.Message
+            try {
+                $stream.SetLength($preAppendLength)
+                $stream.Flush($true)
+            } catch {
+                throw (
+                    "transactional bridge append failed ($appendError); " +
+                    "ROLLBACK FAILED: $($_.Exception.Message)"
+                )
+            }
+            throw "transactional bridge append failed and rolled back: $appendError"
+        }
+        # The canonical bytes are durable before the checkpoint can advance.
+        # If this process dies or the checkpoint write fails now, the stale
+        # exact-length binding misses on the next attempt and the pending WAL
+        # is retained for exact-row replay dedup. Never roll durable bytes back
+        # merely because this non-authoritative cache could not advance.
+        $checkpointError = ''
+        try {
+            Invoke-BridgeAfterCanonicalTestHook
+            Write-BridgeAppendValidationCheckpoint `
+                -CheckpointPath $checkpointPath -Stream $stream `
+                -FileIdentity $fileIdentity `
+                -Length ([int64]($preAppendLength + $Bytes.Length)) `
+                -Phase AfterCanonical
+        } catch {
+            $checkpointError = $_.Exception.Message
+        }
+        return [pscustomobject]@{
+            PreAppendLength = $preAppendLength
+            AppendedLength = [int64]$Bytes.Length
+            CanonicalDurable = $true
+            CheckpointAdvanced = (-not $checkpointError)
+            CheckpointError = $checkpointError
+        }
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+$script:bridgeCheckpointFailureInjected = $false
+$script:bridgeWalCleanupFailureInjected = $false
+
+function Add-CanonicalLineWithWal {
+    param([Parameter(Mandatory)] [string] $Line)
+
+    # DEPLOYMENT FENCE: every direct canonical writer must acquire AppendV1 and
+    # use this pending-WAL/checkpoint protocol before this path is enabled in
+    # production. A bypass writer can invalidate the cache, but cannot provide
+    # the same crash/ordering guarantees while racing this critical section.
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    [byte[]]$lineBytes = $strictUtf8.GetBytes($Line)
+    if ($lineBytes.Length -eq 0 -or $lineBytes[$lineBytes.Length - 1] -ne 10) {
+        throw 'bridge WAL row must be non-empty strict UTF-8 ending in LF'
+    }
+    $mutex = $null
+    $acquired = $false
+    $dirtyAbandoned = $false
+    $Path = $eventsPath
+    $wal = Open-PendingCanonicalWalLease -Bytes $lineBytes
+    $mutexError = ''
+    try {
+        try {
+            $mutex = New-BridgeV1Mutex `
+                -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
+            if ($null -eq $mutex) { throw 'bridge append mutex construction returned null' }
+            try { $acquired = $mutex.WaitOne(10000) }
+            catch [System.Threading.AbandonedMutexException] {
+                $acquired = $true
+                $dirtyAbandoned = $true
+            }
+        } catch {
+            $mutexError = $_.Exception.Message
+        }
+
+        if (-not $acquired -or $dirtyAbandoned) {
+            if (-not $mutexError) { $mutexError = 'bridge append mutex timeout' }
+            if ($dirtyAbandoned) {
+                $mutexError = 'AppendV1 was abandoned; dirty ownership cannot mutate canonical bytes'
+            }
+            Close-PendingCanonicalWalLease -Wal $wal
+            try { $spoolPath = Promote-PendingCanonicalWal -Wal $wal }
+            catch {
+                throw (
+                    "could not acquire clean AppendV1 ($mutexError); pending WAL " +
+                    "retained at $($wal.PendingPath): $($_.Exception.Message)"
+                )
+            }
+            throw (
+                "could not acquire clean AppendV1 for bridge event: $Path " +
+                "(reason: $mutexError; event durably spooled to $spoolPath)"
+            )
+        }
+
+        try {
+            Close-PendingCanonicalWalLease -Wal $wal
+            Invoke-BridgeBeforeAppendTestHook -PendingPath $wal.PendingPath
+            $appendResult = Invoke-BridgeCanonicalTransactionalAppend `
+                -Path $Path -Bytes $lineBytes -AppendMutexOwned $acquired
+        } catch {
+            $appendError = $_.Exception.Message
+            try { Close-PendingCanonicalWalLease -Wal $wal }
+            catch {
+                throw (
+                    "bridge append failed ($appendError); WAL lease could not " +
+                    "close and pending WAL was retained at $($wal.PendingPath): " +
+                    "$($_.Exception.Message)"
+                )
+            }
+            try {
+                $spoolPath = Promote-PendingCanonicalWal -Wal $wal
+            } catch {
+                throw (
+                    "bridge append failed ($appendError); WAL promotion failed " +
+                    "and pending WAL was retained at $($wal.PendingPath): " +
+                    "$($_.Exception.Message)"
+                )
+            }
+            throw "bridge append failed; WAL promoted to $spoolPath ($appendError)"
+        }
+
+        if (-not $appendResult.CheckpointAdvanced) {
+            # Flush(true) already made the canonical row durable. Preserve the
+            # redundant WAL for exact replay dedup, but do not misreport the
+            # event as failed and invite a blind caller retry/duplicate.
+            $retainedPath = $wal.PendingPath
+            try { $retainedPath = Promote-PendingCanonicalWal -Wal $wal }
+            catch {
+                # The closed pending WAL is still durable and discoverable by
+                # the replayer. Promotion is a liveness aid, not authorization
+                # to claim the already-durable canonical append failed.
+                $retainedPath = $wal.PendingPath
+            }
+            Write-Warning -WarningAction Continue -Message (
+                'canonical bridge append is durable; validation checkpoint ' +
+                "advance failed and redundant WAL was retained at $retainedPath " +
+                "($($appendResult.CheckpointError))"
+            )
+            return
+        }
+
+        try {
+            $cleanupFailureMode = [Environment]::GetEnvironmentVariable(
+                'AGENT_BRIDGE_TEST_WAL_CLEANUP_FAILURE',
+                'Process'
+            )
+            if (
+                $cleanupFailureMode -eq '1' -or
+                ($cleanupFailureMode -ceq 'Once' -and
+                    -not $script:bridgeWalCleanupFailureInjected)
+            ) {
+                $script:bridgeWalCleanupFailureInjected = $true
+                throw 'simulated durable WAL cleanup failure'
+            }
+            [System.IO.File]::Delete($wal.PendingPath)
+            if (Test-Path -LiteralPath $wal.PendingPath) {
+                throw 'pending WAL still exists after removal'
+            }
+        } catch {
+            $cleanupError = $_.Exception.Message
+            $spoolPath = $wal.PendingPath
+            try { $spoolPath = Promote-PendingCanonicalWal -Wal $wal } catch {}
+            Write-Warning -WarningAction Continue -Message (
+                "bridge append is durable but WAL cleanup failed; retained at " +
+                "$spoolPath ($cleanupError)"
+            )
+            return
+        }
+        return
+    } finally {
+        if ($null -ne $wal -and $null -ne $wal.Lease) {
+            $wal.Lease.Dispose()
+            $wal.Lease = $null
+        }
         if ($null -ne $mutex) {
-            if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }
+            if ($acquired) {
+                try { $mutex.ReleaseMutex() }
+                catch {
+                    Write-Warning -WarningAction Continue -Message (
+                        "canonical AppendV1 release failed: $($_.Exception.Message)"
+                    )
+                }
+            }
             $mutex.Dispose()
         }
     }
+}
 
-    # Durability (bridge audit 2026-07-02): the event used to be LOST when the
-    # retry budget ran out (and the outbox copy was skipped because this throw
-    # aborts the script). Spool it to a per-event file first so nothing is
-    # dropped - a replay can append spooled events later - then still throw
-    # loudly so the caller knows the shared log missed it.
-    $spoolDir = Join-Path (Split-Path -Parent $parent) 'spool'
+function Invoke-BridgeAuxiliaryTransactionalAppend {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [bool] $AppendMutexOwned
+    )
+
+    if (-not $AppendMutexOwned) {
+        throw 'refusing auxiliary bridge append without AppendV1 ownership'
+    }
+    if ($Bytes.Length -eq 0 -or $Bytes[$Bytes.Length - 1] -ne 10) {
+        throw 'auxiliary bridge row must be non-empty strict UTF-8 ending in LF'
+    }
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $parent -Force)
+    }
+    $stream = $null
+    $preAppendLength = [int64]0
     try {
-        if (-not (Test-Path -LiteralPath $spoolDir)) {
-            [void](New-Item -ItemType Directory -Path $spoolDir -Force)
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::Read
+        )
+        $preAppendLength = [int64]$stream.Length
+        if ($preAppendLength -gt 0) {
+            [void]$stream.Seek(-1, [System.IO.SeekOrigin]::End)
+            if ($stream.ReadByte() -ne 10) {
+                throw 'auxiliary bridge append target has an unterminated row'
+            }
         }
-        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff')
-        $spoolPath = Join-Path $spoolDir ("failed-append-{0}-{1}-{2}.jsonl" -f $Agent, $stamp, $PID)
-        [System.IO.File]::WriteAllText($spoolPath, $Line, $encoding)
-        throw "could not append bridge event after retries: $Path (event spooled to $spoolPath)"
-    } catch [System.Management.Automation.RuntimeException] {
-        throw
+        [void]$stream.Seek($preAppendLength, [System.IO.SeekOrigin]::Begin)
+        try {
+            $forcedCountText = [Environment]::GetEnvironmentVariable(
+                'AGENT_BRIDGE_TEST_AUXILIARY_APPEND_FAILURE_AFTER_BYTES',
+                'Process'
+            )
+            if ($forcedCountText) {
+                $forcedCount = 0
+                if (-not [int]::TryParse($forcedCountText, [ref]$forcedCount)) {
+                    throw 'invalid test auxiliary partial-append byte count'
+                }
+                if ($forcedCount -lt 0 -or $forcedCount -ge $Bytes.Length) {
+                    throw 'test auxiliary partial-append byte count is outside the row'
+                }
+                if ($forcedCount -gt 0) {
+                    $stream.Write($Bytes, 0, $forcedCount)
+                }
+                throw 'simulated auxiliary append failure after partial write'
+            }
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            $stream.Flush($true)
+        } catch {
+            $appendError = $_.Exception.Message
+            try {
+                $stream.SetLength($preAppendLength)
+                $stream.Flush($true)
+            } catch {
+                throw (
+                    "auxiliary append failed ($appendError); rollback failed: " +
+                    $_.Exception.Message
+                )
+            }
+            throw "auxiliary append failed and rolled back: $appendError"
+        }
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Add-AuxiliaryLineBestEffort {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Line
+    )
+
+    try {
+        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        [byte[]]$lineBytes = $strictUtf8.GetBytes($Line)
+        if ($lineBytes.Length -eq 0 -or $lineBytes[$lineBytes.Length - 1] -ne 10) {
+            throw 'auxiliary bridge row must be non-empty strict UTF-8 ending in LF'
+        }
     } catch {
-        throw "could not append bridge event after retries: $Path (spool also failed: $_)"
+        Write-Warning -WarningAction Continue -Message (
+            "auxiliary outbox row was skipped: $($_.Exception.Message)"
+        )
+        return
+    }
+
+    $mutex = $null
+    $acquired = $false
+    $dirtyAbandoned = $false
+    $mutexError = ''
+    try {
+        try {
+            $mutex = New-BridgeV1Mutex `
+                -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose AppendAuxiliary
+            if ($null -eq $mutex) { throw 'auxiliary append mutex construction returned null' }
+            try { $acquired = $mutex.WaitOne(10000) }
+            catch [System.Threading.AbandonedMutexException] {
+                $acquired = $true
+                $dirtyAbandoned = $true
+            }
+        } catch {
+            $mutexError = $_.Exception.Message
+        }
+        if (-not $acquired -or $dirtyAbandoned) {
+            if (-not $mutexError) { $mutexError = 'AppendV1 timeout' }
+            if ($dirtyAbandoned) {
+                $mutexError = 'AppendV1 was abandoned; dirty ownership cannot mutate the outbox'
+            }
+            Write-Warning -WarningAction Continue -Message (
+                "auxiliary outbox append was skipped: $mutexError"
+            )
+            return
+        }
+        try {
+            Invoke-BridgeAuxiliaryTransactionalAppend `
+                -Path $Path -Bytes $lineBytes -AppendMutexOwned $acquired
+        } catch {
+            Write-Warning -WarningAction Continue -Message (
+                'canonical bridge event is durable; auxiliary outbox append ' +
+                "was skipped: $($_.Exception.Message)"
+            )
+            return
+        }
+    } finally {
+        if ($null -ne $mutex) {
+            if ($acquired) {
+                try { $mutex.ReleaseMutex() }
+                catch {
+                    Write-Warning -WarningAction Continue -Message (
+                        "auxiliary AppendV1 release failed: $($_.Exception.Message)"
+                    )
+                }
+            }
+            try { $mutex.Dispose() }
+            catch {
+                Write-Warning -WarningAction Continue -Message (
+                    "auxiliary AppendV1 dispose failed: $($_.Exception.Message)"
+                )
+            }
+        }
     }
 }
 
@@ -721,14 +1555,11 @@ function Write-JsonAtomic {
 
 $dateName = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') + '.jsonl'
 $outboxPath = Join-Path $outboxDir $dateName
-# Internal review fix R6 (2026-05-09): if shared write fails after all
-# retries, do NOT write the outbox copy. The shared events.jsonl is the
-# canonical bridge stream; an outbox-only event creates a phantom record
-# that no reader sees (Read-AgentBridge only consumes shared/events.jsonl)
-# and rots into per-agent local-only state. Append-then-throw lets the
-# caller surface the failure without leaving asymmetric state behind.
-Add-LineWithRetry -Path $eventsPath -Line $line
-Add-LineWithRetry -Path $outboxPath -Line $line
+# Only shared/events.jsonl owns replay WAL and validation-checkpoint state.
+# Once it is durable, the per-agent outbox is an auxiliary best-effort copy:
+# its failure must not invite a blind retry of the canonical event.
+Add-CanonicalLineWithWal -Line $line
+Add-AuxiliaryLineBestEffort -Path $outboxPath -Line $line
 
 $lastPath = Join-Path $sharedDir ("last_{0}.json" -f $Agent)
 try {

@@ -4,6 +4,119 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'BridgeLogReader.ps1')
 
+function Test-BridgeFullyQualifiedFileSystemPath {
+    param([AllowNull()] [AllowEmptyString()] [string] $Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if ([System.IO.Path]::DirectorySeparatorChar -ne [char]92) {
+        return (
+            $Path.Length -gt 1 -and
+            $Path.StartsWith(
+                '/',
+                [System.StringComparison]::Ordinal
+            ) -and
+            -not $Path.EndsWith(
+                '/',
+                [System.StringComparison]::Ordinal
+            )
+        )
+    }
+
+    if ($Path -cmatch '[\\/]$') { return $false }
+    if ($Path -cmatch '^[\\/]{2}[?.](?:[\\/]|$)') { return $false }
+    $isDriveAbsolute = $Path -cmatch '^[A-Za-z]:[\\/]'
+    $isOrdinaryUnc = (
+        $Path -cmatch
+            '^[\\/]{2}(?![?.](?:[\\/]|$))[^\\/]+[\\/][^\\/]+[\\/]+[^\\/]+(?:[\\/].*)?$'
+    )
+    if (-not $isDriveAbsolute -and -not $isOrdinaryUnc) { return $false }
+    if (
+        ($isDriveAbsolute -and $Path.Substring(2).IndexOf(':') -ge 0) -or
+        ($isOrdinaryUnc -and $Path.IndexOf(':') -ge 0)
+    ) {
+        return $false
+    }
+    if (
+        $isOrdinaryUnc -and
+        $Path -imatch
+            '^[\\/]{2}[^\\/]+[\\/](?:pipe|mailslot)(?:[\\/]|$)'
+    ) {
+        return $false
+    }
+
+    $reservedNamePattern = (
+        '^(?:CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|' +
+        'COM(?:[1-9]|\u00B9|\u00B2|\u00B3)|' +
+        'LPT(?:[1-9]|\u00B9|\u00B2|\u00B3))$'
+    )
+    foreach ($segment in @($Path -split '[\\/]')) {
+        if (-not $segment) { continue }
+        if (
+            $segment.EndsWith(
+                ' ',
+                [System.StringComparison]::Ordinal
+            ) -or
+            $segment.EndsWith(
+                '.',
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            return $false
+        }
+        $baseName = @($segment -split '\.', 2)[0]
+        $baseName = $baseName.TrimEnd([char[]]@([char]32))
+        if ($baseName -imatch $reservedNamePattern) { return $false }
+    }
+    return $true
+}
+
+function Resolve-BridgeFileSystemPath {
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $Path
+    )
+
+    $provider = $null
+    $drive = $null
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return [pscustomobject]@{ valid = $false; path = '' }
+    }
+    try {
+        $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+            $Path,
+            [ref]$provider,
+            [ref]$drive
+        )
+    } catch {
+        return [pscustomobject]@{ valid = $false; path = '' }
+    }
+
+    $isBuiltInFileSystem = (
+        $null -ne $provider -and
+        $provider.Name -ceq 'FileSystem' -and
+        $provider.ModuleName -ceq 'Microsoft.PowerShell.Core' -and
+        $provider.ImplementingType -eq
+            [Microsoft.PowerShell.Commands.FileSystemProvider]
+    )
+    if (
+        -not $isBuiltInFileSystem -or
+        -not (Test-BridgeFullyQualifiedFileSystemPath -Path $resolved)
+    ) {
+        return [pscustomobject]@{ valid = $false; path = '' }
+    }
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath([string]$resolved)
+    } catch {
+        return [pscustomobject]@{ valid = $false; path = '' }
+    }
+    if (-not (Test-BridgeFullyQualifiedFileSystemPath -Path $fullPath)) {
+        return [pscustomobject]@{ valid = $false; path = '' }
+    }
+    return [pscustomobject]@{ valid = $true; path = [string]$fullPath }
+}
+
 function Get-BridgeEventGenerationPath {
     param([Parameter(Mandatory)] [string] $Path)
 
@@ -38,12 +151,19 @@ function Read-BridgeEventDelta {
         Reads a bounded stable delta through the canonical C0 reader.
     #>
     param(
-        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()]
+        [string] $Path,
         [AllowNull()] $Cursor = $null,
         [int64] $MaxBytes = 4194304,
         [int] $MaxRows = 10000
     )
 
+    $pathResult = Resolve-BridgeFileSystemPath -Path $Path
+    if (-not $pathResult.valid) {
+        return New-BridgeLogReadResult -Status 'BLOCKED' `
+            -Reason 'log_path_invalid' -RequestedOffset 0
+    }
+    $Path = $pathResult.path
     $generationPath = Get-BridgeEventGenerationPath -Path $Path
     $result = Read-BridgeLogSnapshotDelta -Path $Path -Cursor $Cursor `
         -MaxBytes $MaxBytes -MaxRows $MaxRows -GenerationPath $generationPath
@@ -65,7 +185,8 @@ function Read-BridgeEventSnapshot {
         Reads one complete full snapshot within explicit byte and row bounds.
     #>
     param(
-        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()]
+        [string] $Path,
         [ValidateRange(1, 67108864)] [int64] $MaxBytes = 67108864,
         [ValidateRange(1, 100000)] [int] $MaxRows = 100000
     )
@@ -94,11 +215,18 @@ function Read-BridgeEventTail {
         Returns at most MaxLines stable rows without reading an unbounded prefix.
     #>
     param(
-        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()]
+        [string] $Path,
         [ValidateRange(1, 100000)] [int] $MaxLines,
         [ValidateRange(1, 67108864)] [int64] $MaxBytes = 67108864
     )
 
+    $pathResult = Resolve-BridgeFileSystemPath -Path $Path
+    if (-not $pathResult.valid) {
+        return New-BridgeLogReadResult -Status 'BLOCKED' `
+            -Reason 'log_path_invalid' -RequestedOffset 0
+    }
+    $Path = $pathResult.path
     $generationPath = Get-BridgeEventGenerationPath -Path $Path
     $result = & {
         $generation = $null
@@ -290,8 +418,21 @@ function Read-BridgeEventTail {
 }
 
 function Read-BridgeIncrementalState {
-    param([Parameter(Mandatory)] [string] $StatePath)
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $StatePath
+    )
 
+    $pathResult = Resolve-BridgeFileSystemPath -Path $StatePath
+    if (-not $pathResult.valid) {
+        return [pscustomobject]@{
+            status = 'BLOCKED'; reason = 'cursor_state_invalid'; cursor = $null
+            line_count = $null
+        }
+    }
+    $StatePath = $pathResult.path
     try {
         $stream = $null
         try {
@@ -394,11 +535,17 @@ function Commit-BridgeIncrementalStateFile {
 
 function Write-BridgeIncrementalState {
     param(
-        [Parameter(Mandatory)] [string] $StatePath,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()]
+        [string] $StatePath,
         [Parameter(Mandatory)] $Cursor,
         [hashtable] $Metadata = @{}
     )
 
+    $pathResult = Resolve-BridgeFileSystemPath -Path $StatePath
+    if (-not $pathResult.valid) {
+        throw 'refusing to persist a bridge cursor to an invalid state path'
+    }
+    $StatePath = $pathResult.path
     if ($null -eq $Cursor) { throw 'refusing to persist a null bridge cursor' }
     $validation = Get-BridgeCursorValidation -Cursor $Cursor
     if (-not $validation.valid) { throw 'refusing to persist an invalid bridge cursor' }

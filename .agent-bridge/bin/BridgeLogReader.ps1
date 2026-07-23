@@ -2,14 +2,16 @@
 
 Set-StrictMode -Version Latest
 
-if (-not ('WaggleDance.BridgeSnapshotDeltaV1.NativeMethods' -as [type])) {
+if (-not ('WaggleDance.BridgeFileIdentityV1.NativeMethods' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace WaggleDance.BridgeSnapshotDeltaV1
+namespace WaggleDance.BridgeFileIdentityV1
 {
     [StructLayout(LayoutKind.Sequential)]
     public struct FileTime
@@ -40,14 +42,86 @@ namespace WaggleDance.BridgeSnapshotDeltaV1
             SafeFileHandle file,
             out ByHandleFileInformation information);
 
-        public static ByHandleFileInformation Identity(SafeFileHandle file)
+        [DllImport(
+            "libc",
+            EntryPoint = "fstat",
+            SetLastError = true,
+            CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FStat(int fileDescriptor, IntPtr buffer);
+
+        public static string Identity(SafeFileHandle file)
+        {
+            if (file == null || file.IsInvalid || file.IsClosed)
+            {
+                throw new IOException("bridge file handle is not open");
+            }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return WindowsIdentity(file);
+            }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+                RuntimeInformation.ProcessArchitecture == Architecture.X64)
+            {
+                return LinuxIdentity(file);
+            }
+            throw new PlatformNotSupportedException(
+                "bridge file identity is supported only on Windows and Linux x64");
+        }
+
+        private static string WindowsIdentity(SafeFileHandle file)
         {
             ByHandleFileInformation information;
             if (!GetFileInformationByHandle(file, out information))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-            return information;
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "windows-v1:{0:x8}:{1:x8}{2:x8}",
+                information.VolumeSerialNumber,
+                information.FileIndexHigh,
+                information.FileIndexLow);
+        }
+
+        private static string LinuxIdentity(SafeFileHandle file)
+        {
+            bool addedReference = false;
+            IntPtr buffer = IntPtr.Zero;
+            try
+            {
+                file.DangerousAddRef(ref addedReference);
+                int fileDescriptor = file.DangerousGetHandle().ToInt32();
+                // The supported Linux x64 stat ABI starts with 64-bit st_dev
+                // and st_ino fields. A conservative buffer avoids coupling the
+                // managed declaration to the remaining native structure.
+                buffer = Marshal.AllocHGlobal(256);
+                if (FStat(fileDescriptor, buffer) != 0)
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                ulong device = unchecked((ulong)Marshal.ReadInt64(buffer, 0));
+                ulong inode = unchecked((ulong)Marshal.ReadInt64(buffer, 8));
+                if (inode == 0)
+                {
+                    throw new IOException("fstat returned an empty inode");
+                }
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "posix-v1:{0:x}:{1:x}",
+                    device,
+                    inode);
+            }
+            finally
+            {
+                if (buffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+                if (addedReference)
+                {
+                    file.DangerousRelease();
+                }
+            }
         }
     }
 }
@@ -450,16 +524,12 @@ function Get-BridgeLogFileIdentity {
     param([Parameter(Mandatory)] [System.IO.FileStream] $Stream)
 
     try {
-        $information = [WaggleDance.BridgeSnapshotDeltaV1.NativeMethods]::Identity(
+        return [WaggleDance.BridgeFileIdentityV1.NativeMethods]::Identity(
             $Stream.SafeFileHandle
         )
     } catch {
-        throw "GetFileInformationByHandle failed: $($_.Exception.Message)"
+        throw "bridge file identity unavailable: $($_.Exception.Message)"
     }
-    return ('windows-v1:{0:x8}:{1:x8}{2:x8}' -f
-        $information.VolumeSerialNumber,
-        $information.FileIndexHigh,
-        $information.FileIndexLow)
 }
 
 function New-BridgeLogCandidateCursor {

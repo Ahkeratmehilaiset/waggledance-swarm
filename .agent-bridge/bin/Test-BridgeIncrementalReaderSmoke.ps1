@@ -33,7 +33,7 @@ function Add-Check {
     if ($Detail) { Write-Host "        $Detail" }
 }
 
-$tempRoot = Join-Path $env:TEMP `
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
     "bridge-incremental-safe-smoke-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $eventsPath = Join-Path $tempRoot 'events.jsonl'
 $statePath = Join-Path $tempRoot 'reader.cursor.json'
@@ -43,6 +43,220 @@ try {
     Write-Host 'Bridge safe incremental reader smoke test'
     Write-Host '========================================='
     [void](New-Item -ItemType Directory -Path $tempRoot -Force)
+
+    $psLocation = Join-Path $tempRoot 'ps-location'
+    $dotNetCwd = Join-Path $tempRoot 'dotnet-cwd'
+    [void](New-Item -ItemType Directory -Path $psLocation -Force)
+    [void](New-Item -ItemType Directory -Path $dotNetCwd -Force)
+    $relativeEventsPath = Join-Path $psLocation 'relative-events.jsonl'
+    [System.IO.File]::WriteAllText(
+        $relativeEventsPath, ('{"relative":true}' + [char]10), $encoding
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $psLocation 'events.generation.json'),
+        '{"generation":"relative-v1"}',
+        $encoding
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $dotNetCwd 'relative-events.jsonl'),
+        ('{"relative":false}' + [char]10),
+        $encoding
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $dotNetCwd 'events.generation.json'),
+        '{"generation":"wrong-cwd"}',
+        $encoding
+    )
+    $relativeStatePath = 'relative-reader.cursor.json'
+    $wrongCwdStatePath = Join-Path $dotNetCwd $relativeStatePath
+    $providerDecoyPath = Join-Path $dotNetCwd 'Path'
+    [System.IO.File]::WriteAllText(
+        $wrongCwdStatePath, '{"decoy":true}', $encoding
+    )
+    [System.IO.File]::WriteAllText(
+        $providerDecoyPath, 'provider-decoy', $encoding
+    )
+
+    $originalDotNetCwd = [Environment]::CurrentDirectory
+    $locationPushed = $false
+    try {
+        [Environment]::CurrentDirectory = $dotNetCwd
+        Push-Location $psLocation
+        $locationPushed = $true
+        $relativeDelta = Read-BridgeEventDelta -Path 'relative-events.jsonl'
+        Write-BridgeIncrementalState -StatePath $relativeStatePath `
+            -Cursor $relativeDelta.candidate_cursor
+        $relativeState = Read-BridgeIncrementalState `
+            -StatePath $relativeStatePath
+
+        $safeInvalidPaths = @(
+            '',
+            '   ',
+            'Env:Path',
+            'Variable:PWD',
+            'FileSystem::relative-events.jsonl',
+            [System.IO.Path]::GetPathRoot($psLocation),
+            ($psLocation + [System.IO.Path]::DirectorySeparatorChar)
+        )
+        $invalidContractsHeld = $true
+        foreach ($invalidPath in $safeInvalidPaths) {
+            $invalidDelta = Read-BridgeEventDelta -Path $invalidPath
+            $invalidTail = Read-BridgeEventTail `
+                -Path $invalidPath -MaxLines 1
+            $invalidState = Read-BridgeIncrementalState `
+                -StatePath $invalidPath
+            $invalidWriteBlocked = $false
+            $invalidWriteMessage = ''
+            try {
+                Write-BridgeIncrementalState -StatePath $invalidPath `
+                    -Cursor $relativeDelta.candidate_cursor
+            } catch {
+                $invalidWriteBlocked = $true
+                $invalidWriteMessage = [string]$_.Exception.Message
+            }
+            if (
+                $invalidDelta.status -cne 'BLOCKED' -or
+                $invalidDelta.reason -cne 'log_path_invalid' -or
+                @($invalidDelta.rows).Count -ne 0 -or
+                $null -ne $invalidDelta.candidate_cursor -or
+                $invalidDelta.bytes_read -ne 0 -or
+                $invalidDelta.bytes_consumed -ne 0 -or
+                $null -ne $invalidDelta.snapshot_length -or
+                $invalidDelta.read_calls -ne 0 -or
+                $invalidDelta.requested_offset -ne 0 -or
+                $invalidTail.status -cne 'BLOCKED' -or
+                $invalidTail.reason -cne 'log_path_invalid' -or
+                @($invalidTail.rows).Count -ne 0 -or
+                $null -ne $invalidTail.candidate_cursor -or
+                $invalidTail.bytes_read -ne 0 -or
+                $invalidTail.bytes_consumed -ne 0 -or
+                $null -ne $invalidTail.snapshot_length -or
+                $invalidTail.read_calls -ne 0 -or
+                $invalidTail.requested_offset -ne 0 -or
+                $invalidState.status -cne 'BLOCKED' -or
+                $invalidState.reason -cne 'cursor_state_invalid' -or
+                $null -ne $invalidState.cursor -or
+                $null -ne $invalidState.line_count -or
+                -not $invalidWriteBlocked -or
+                $invalidWriteMessage -cne
+                    'refusing to persist a bridge cursor to an invalid state path'
+            ) {
+                $invalidContractsHeld = $false
+            }
+        }
+    } finally {
+        if ($locationPushed) { Pop-Location }
+        [Environment]::CurrentDirectory = $originalDotNetCwd
+    }
+    Add-Check 'relative event and state paths bind PowerShell location' (
+        $relativeDelta.status -ceq 'OK' -and
+        @($relativeDelta.rows).Count -eq 1 -and
+        [bool]$relativeDelta.rows[0].relative -and
+        $relativeDelta.candidate_cursor.generation -ceq 'relative-v1' -and
+        $relativeState.status -ceq 'OK' -and
+        (Test-Path -LiteralPath (Join-Path $psLocation $relativeStatePath) `
+            -PathType Leaf) -and
+        [System.IO.File]::ReadAllText($wrongCwdStatePath) -ceq
+            '{"decoy":true}'
+    )
+    Add-Check 'invalid path APIs fail closed before unintended I/O' (
+        $invalidContractsHeld -and
+        [System.IO.File]::ReadAllText($providerDecoyPath) -ceq
+            'provider-decoy'
+    )
+
+    $policyInvalidPaths = @()
+    $policyValidPaths = @(
+        ('FileSystem::' + $relativeEventsPath)
+    )
+    $bridgeSmokeDriveCreated = $false
+    try {
+        [void](New-PSDrive -Name BridgeSmoke -PSProvider FileSystem `
+            -Root $psLocation -Scope Script -ErrorAction Stop)
+        $bridgeSmokeDriveCreated = $true
+        $policyValidPaths += (
+            'BridgeSmoke:{0}relative-events.jsonl' -f
+                [System.IO.Path]::DirectorySeparatorChar
+        )
+
+        if ([System.IO.Path]::DirectorySeparatorChar -eq [char]92) {
+            $policyInvalidPaths += @(
+                '\\?\C:\bridge-path-hardening\events.jsonl',
+                '\\?\UNC\server\share\events.jsonl',
+                '\\.\PhysicalDrive0',
+                '\\.\pipe\bridge-path-hardening',
+                '\\server',
+                '\\server\',
+                '\\server\share',
+                '\\server\share\',
+                '\\server\pipe\bridge-path-hardening',
+                '\\server\share\events.jsonl:stream',
+                'FileSystem::\events.jsonl',
+                'FileSystem::C:events.jsonl',
+                (Join-Path $psLocation 'events.jsonl:stream'),
+                (Join-Path $psLocation 'events.jsonl.'),
+                (Join-Path $psLocation 'events.jsonl '),
+                (Join-Path (Join-Path $psLocation 'dir.') 'events.jsonl'),
+                (Join-Path (Join-Path $psLocation 'dir ') 'events.jsonl')
+            )
+            $reservedNames = @()
+            foreach ($reservedBase in @(
+                'NUL', 'CON', 'PRN', 'AUX', 'CONIN$', 'CONOUT$', 'CLOCK$'
+            )) {
+                $reservedNames += $reservedBase
+                $reservedNames += (
+                    '{0}.jsonl' -f $reservedBase.ToLowerInvariant()
+                )
+            }
+            foreach ($deviceIndex in 1..9) {
+                $reservedNames += "COM$deviceIndex"
+                $reservedNames += "com$deviceIndex.jsonl"
+                $reservedNames += "LPT$deviceIndex"
+                $reservedNames += "lpt$deviceIndex.jsonl"
+            }
+            $reservedNames += @(
+                'NUL .jsonl',
+                'COM1 .txt',
+                ("COM{0}" -f [char]0x00B9),
+                ("LPT{0}" -f [char]0x00B3)
+            )
+            foreach ($reservedName in $reservedNames) {
+                $policyInvalidPaths += Join-Path $psLocation $reservedName
+                $policyInvalidPaths += Join-Path `
+                    (Join-Path $psLocation $reservedName) 'events.jsonl'
+            }
+            foreach ($validName in @(
+                'COM0', 'COM10', 'LPT0', 'LPT10', 'NULX', 'CONSOLE',
+                '.hidden', 'normal.name'
+            )) {
+                $policyValidPaths += Join-Path $psLocation $validName
+            }
+            $policyValidPaths += '\\server\share\events.jsonl'
+        } else {
+            $policyValidPaths += Join-Path $psLocation 'events.jsonl:stream'
+        }
+
+        $invalidPolicyBlocked = $true
+        foreach ($candidate in $policyInvalidPaths) {
+            if ((Resolve-BridgeFileSystemPath -Path $candidate).valid) {
+                $invalidPolicyBlocked = $false
+            }
+        }
+        $validPolicyAccepted = $true
+        foreach ($candidate in $policyValidPaths) {
+            if (-not (Resolve-BridgeFileSystemPath -Path $candidate).valid) {
+                $validPolicyAccepted = $false
+            }
+        }
+    } finally {
+        if ($bridgeSmokeDriveCreated) {
+            Remove-PSDrive -Name BridgeSmoke -Scope Script -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+    Add-Check 'native path policy rejects aliases without overreach' (
+        $invalidPolicyBlocked -and $validPolicyAccepted
+    )
 
     $history = $encoding.GetBytes('{"history":true}' + [char]10)
     $stream = [System.IO.File]::Open(

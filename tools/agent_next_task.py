@@ -46,6 +46,10 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    bridge_identity_binding_status,
+    load_bridge_identity_registry,
+)
 from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
     deferred_lift_state,
 )
@@ -100,6 +104,12 @@ RCO_RESPONSE_STATUSES = {
     "blocked",
     "block_requested",
 }
+RCO_SCOUT_OUTCOME_TYPES = frozenset(
+    {*SUCCESSFUL_COMPLETION_TYPES, "finding", "handoff"}
+)
+NONTERMINAL_RCO_SCOUT_STATUSES = frozenset(
+    {"", "active", "claimed", "in_progress", "pending", "running", "started"}
+)
 RCO_REEMIT_GATE_TOKENS = (
     "needs rco reemit",
     "rco re-emit",
@@ -2006,8 +2016,14 @@ def _is_same_day_production_liveness_reactivation_task_id(
     task_id: str,
     now_utc: datetime,
 ) -> bool:
-    return task_id.startswith(
-        f"production-liveness-reactivation-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    prefix = (
+        "production-liveness-reactivation-scout-"
+        f"{now_utc.strftime('%Y-%m-%d')}-"
+    )
+    return _is_structured_liveness_task_id(
+        task_id,
+        prefix=prefix,
+        target_agents=tuple(PRODUCTION_PEER_AGENT.values()),
     )
 
 
@@ -2019,8 +2035,10 @@ def _matching_production_liveness_reactivation_task_ids(
     return {
         task_id
         for task_id in task_ids
-        if task_id == canonical_task_id
-        or task_id.startswith(f"{canonical_task_id}-")
+        if _is_exact_or_repeat_task_id(
+            task_id,
+            canonical_task_id=canonical_task_id,
+        )
     }
 
 
@@ -2098,8 +2116,11 @@ def _is_same_day_rco_lane_failover_task_id(
     task_id: str,
     now_utc: datetime,
 ) -> bool:
-    return task_id.startswith(
-        f"rco-lane-failover-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    prefix = f"rco-lane-failover-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    return _is_structured_liveness_task_id(
+        task_id,
+        prefix=prefix,
+        target_agents=RCO_REVIEW_AGENTS,
     )
 
 
@@ -2111,9 +2132,52 @@ def _matching_rco_lane_failover_task_ids(
     return {
         task_id
         for task_id in task_ids
-        if task_id == canonical_task_id
-        or task_id.startswith(f"{canonical_task_id}-")
+        if _is_exact_or_repeat_task_id(
+            task_id,
+            canonical_task_id=canonical_task_id,
+        )
     }
+
+
+def _is_exact_or_repeat_task_id(
+    task_id: str,
+    *,
+    canonical_task_id: str,
+) -> bool:
+    if task_id == canonical_task_id:
+        return True
+    return re.fullmatch(
+        rf"{re.escape(canonical_task_id)}-repeat-[1-9][0-9]*",
+        task_id,
+    ) is not None
+
+
+def _is_structured_liveness_task_id(
+    task_id: str,
+    *,
+    prefix: str,
+    target_agents: Sequence[str],
+) -> bool:
+    repeat_pattern = r"(?:-repeat-[1-9][0-9]*)?"
+    for target_agent in target_agents:
+        base = f"{prefix}{target_agent}"
+        match = re.fullmatch(
+            rf"{re.escape(base)}"
+            r"(?:(?:-since-([0-9]{8}t[0-9]{6}z))|"
+            r"(?:-task-[a-z0-9](?:[a-z0-9-]{0,47})))?"
+            rf"{repeat_pattern}",
+            task_id,
+        )
+        if match is None:
+            continue
+        since_token = match.group(1)
+        if since_token:
+            try:
+                datetime.strptime(since_token, "%Y%m%dt%H%M%Sz")
+            except ValueError:
+                continue
+        return True
+    return False
 
 
 def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
@@ -2274,12 +2338,31 @@ def _completed_rco_lane_failover_task_ids(
     now_utc: datetime,
 ) -> set[str]:
     completed: set[str] = set()
+    trusted_claims: dict[tuple[str, str], datetime] = {}
+    try:
+        identity_registry = load_bridge_identity_registry()
+    except (OSError, ValueError):
+        identity_registry = {}
 
     for event in events:
         task_id = str(event.get("task_id", ""))
         if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             continue
-        if _is_successful_completion_event(event):
+        agent = str(event.get("agent", ""))
+        claim_time = _trusted_rco_scout_claim_time(
+            event,
+            now_utc=now_utc,
+            identity_registry=identity_registry,
+        )
+        if claim_time is not None:
+            trusted_claims.setdefault((task_id, agent), claim_time)
+            continue
+        if _is_trusted_rco_scout_completion_event(
+            event=event,
+            claimed_at=trusted_claims.get((task_id, agent)),
+            now_utc=now_utc,
+            identity_registry=identity_registry,
+        ):
             completed.add(task_id)
 
     done_dir = bridge_root / "work_queue" / "done"
@@ -2296,16 +2379,174 @@ def _completed_rco_lane_failover_task_ids(
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             continue
-        status = str(
-            payload.get("release_status")
-            or payload.get("status")
-            or payload.get("release_message")
-            or ""
-        )
-        if _status_is_successful(status):
+        if _is_trusted_rco_scout_done_record(
+            payload,
+            now_utc=now_utc,
+            identity_registry=identity_registry,
+        ):
             completed.add(task_id)
 
     return completed
+
+
+def _is_trusted_rco_scout_completion_event(
+    *,
+    event: Mapping[str, Any],
+    claimed_at: datetime | None,
+    now_utc: datetime,
+    identity_registry: Mapping[str, str],
+) -> bool:
+    event_type = event.get("type")
+    if not isinstance(event_type, str) or event_type not in RCO_SCOUT_OUTCOME_TYPES:
+        return False
+
+    task_id = _required_exact_string(event, "task_id")
+    agent = _required_exact_string(event, "agent")
+    status = _required_exact_string(event, "status")
+    message = _required_exact_string(event, "message")
+    if not all((task_id, agent, status, message)):
+        return False
+    if bridge_identity_binding_status(
+        event,
+        registry=identity_registry,
+        restricted_agents=frozenset(identity_registry),
+    ) != "valid":
+        return False
+
+    status_tokens = set(re.findall(r"[a-z0-9]+", status.lower()))
+    if event_type in SUCCESSFUL_COMPLETION_TYPES:
+        if status not in SUCCESSFUL_COMPLETION_STATUSES:
+            return False
+    elif event_type == "finding":
+        if status != "open":
+            return False
+    elif status_tokens & NONTERMINAL_RCO_SCOUT_STATUSES:
+        return False
+
+    event_time = _parse_strict_utc(event.get("ts_utc"))
+    episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
+    if (
+        event_time is None
+        or event_time < episode_started_at
+        or event_time > now_utc
+        or claimed_at is None
+        or claimed_at > event_time
+    ):
+        return False
+    return True
+
+
+def _trusted_rco_scout_claim_time(
+    event: Mapping[str, Any],
+    *,
+    now_utc: datetime,
+    identity_registry: Mapping[str, str],
+) -> datetime | None:
+    if event.get("type") != "claim":
+        return None
+    task_id = _required_exact_string(event, "task_id")
+    if (
+        not task_id
+        or not _required_exact_string(event, "agent")
+        or _required_exact_string(event, "status") != "active"
+        or not _required_exact_string(event, "message")
+    ):
+        return None
+    if bridge_identity_binding_status(
+        event,
+        registry=identity_registry,
+        restricted_agents=frozenset(identity_registry),
+    ) != "valid":
+        return None
+    claimed_at = _parse_strict_utc(event.get("ts_utc"))
+    episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
+    if (
+        claimed_at is None
+        or claimed_at < episode_started_at
+        or claimed_at > now_utc
+    ):
+        return None
+    return claimed_at
+
+
+def _is_trusted_rco_scout_done_record(
+    payload: Any,
+    *,
+    now_utc: datetime,
+    identity_registry: Mapping[str, str],
+) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    required_fields = (
+        "agent",
+        "task_id",
+        "summary",
+        "release_status",
+        "release_message",
+        "claimed_at_utc",
+        "released_at_utc",
+    )
+    values = {key: _required_exact_string(payload, key) for key in required_fields}
+    if not all(values.values()):
+        return False
+    if values["agent"] not in identity_registry:
+        return False
+    status = values["release_status"]
+    if status not in SUCCESSFUL_COMPLETION_STATUSES and status != "handoff":
+        return False
+
+    task_id = values["task_id"]
+    claimed_at = _parse_strict_utc(values["claimed_at_utc"])
+    released_at = _parse_strict_utc(values["released_at_utc"])
+    episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
+    return (
+        claimed_at is not None
+        and released_at is not None
+        and episode_started_at <= claimed_at <= released_at <= now_utc
+    )
+
+
+def _required_exact_string(mapping: Mapping[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value or value != value.strip():
+        return ""
+    return value
+
+
+def _parse_strict_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _liveness_task_episode_started_at(
+    task_id: str,
+    now_utc: datetime,
+) -> datetime:
+    match = re.search(
+        r"-since-([0-9]{8}t[0-9]{6}z)(?:-repeat-[1-9][0-9]*)?$",
+        task_id,
+    )
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%dt%H%M%Sz").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            pass
+    return datetime(
+        now_utc.year,
+        now_utc.month,
+        now_utc.day,
+        tzinfo=timezone.utc,
+    )
 
 
 def _completed_dream_mode_task_ids(

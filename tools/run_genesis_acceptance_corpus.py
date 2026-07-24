@@ -207,6 +207,15 @@ PINNED_CASE_DIGESTS = {
     "lineage.negative.non_monotonic_depth": (
         "sha256:bc8164149d052245681daf2a91de745303398b7ef7023a0aaa4ffa466fb9baca"
     ),
+    "restore.positive.same_facts_same_id": (
+        "sha256:d85e6f7eb65fc7e46b89eea889eb552cc678f50c9582330841081a707d8638fe"
+    ),
+    "restore.positive.from_stored_mapping": (
+        "sha256:07f9f4e005b09073d5a534934641427d04ad5d5c8877ad45258a12ca3d8dfdc4"
+    ),
+    "restore.negative.drifted_field_rejects": (
+        "sha256:e2c62fb3cded7379af24b9f09827ca970ce6dc01abb494829e910e0c2144433d"
+    ),
     "authority.positive.identity_only": (
         "sha256:a3ec2ae77efd3e325b7ee4bc128cd1d970e77ee32ac5ccf3977a13aa5405afb9"
     ),

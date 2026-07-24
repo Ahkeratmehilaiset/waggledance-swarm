@@ -69,19 +69,15 @@ def test_independent_reference_reproduces_every_pinned_golden():
 
 def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     report = tool.run_corpus(CORPUS_PATH)
-    # This bounded foundation corpus deliberately remains fail closed until
-    # the final restore cells are pinned.
-    assert report["ok"] is False
-    assert report["coverage_complete"] is False
-    assert report["total"] == 31
-    assert report["accepted"] == 7
-    assert report["rejected"] == 24
+    assert report["ok"] is True
+    assert report["coverage_complete"] is True
+    assert report["total"] == 33
+    assert report["accepted"] == 8
+    assert report["rejected"] == 25
     assert report["mismatches"] == []
     assert report["divergences"] == []
-    assert report["corpus_matrix_complete"] is False
-    assert len(report["missing_case_ids"]) == (
-        len(tool.REQUIRED_CASE_MANIFEST) - report["total"]
-    )
+    assert report["corpus_matrix_complete"] is True
+    assert report["missing_case_ids"] == []
 
 
 def test_frozen_manifest_rejects_relabels_and_duplicate_semantics(tmp_path):
@@ -198,6 +194,39 @@ def test_lineage_axis_pins_positive_witnesses_and_closure_rejections():
         result = tool.run_case(case)
         assert result["matched_expectation"] is True
         assert result["diverged"] is False
+
+
+def test_restore_axis_pins_deterministic_rebuild_and_drift_rejection():
+    cases = {
+        case["case_id"]: case
+        for case in tool.load_corpus(CORPUS_PATH)["cases"]
+        if case["axis"] == "restore"
+    }
+    assert set(cases) == {
+        "restore.positive.from_stored_mapping",
+        "restore.positive.same_facts_same_id",
+        "restore.negative.drifted_field_rejects",
+    }
+    assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
+    for case in cases.values():
+        result = tool.run_case(case)
+        assert result["matched_expectation"] is True
+        assert result["diverged"] is False
+
+    restored = cases["restore.positive.same_facts_same_id"]
+    assert (
+        tool.ref_cell_id(
+            **{
+                key: restored["subject"]["stored_mapping"][key]
+                for key in (
+                    "pubkey_digest",
+                    "genesis_material_digest",
+                    "created_at_utc",
+                )
+            }
+        )
+        == restored["golden"]["cell_id"]
+    )
 
 
 def test_cli_declares_code_probe_gate_without_fabricating_execution():
@@ -493,9 +522,9 @@ def test_case_report_digest_is_rederivable_and_binds_every_decision_field():
         tool.derive_case_report_digest(tampered)
 
 
-def test_cli_emits_machine_readable_fail_closed_foundation(capsys):
-    assert tool.main([str(CORPUS_PATH)]) == 1
+def test_cli_emits_machine_readable_complete_corpus_report(capsys):
+    assert tool.main([str(CORPUS_PATH)]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["schema_version"] == tool.REPORT_SCHEMA
-    assert report["ok"] is False
-    assert report["coverage_complete"] is False
+    assert report["ok"] is True
+    assert report["coverage_complete"] is True

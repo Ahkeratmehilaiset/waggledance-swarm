@@ -10,6 +10,7 @@ import pytest
 
 from tools.build_promotion_snapshot import (
     PromotionSnapshotError,
+    _read_events_fail_closed,
     _run,
     build_promotion_snapshot,
     main,
@@ -316,6 +317,157 @@ def _events_path(tmp_path: Path, events: list[dict]) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"agent":"intruder","agent":"fable-5","payload":{}}',
+        '{"agent":"fable-5","payload":{"head":"old","head":"new"}}',
+    ],
+)
+def test_event_loader_rejects_duplicate_keys_at_any_nesting_without_leaks(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    path = tmp_path / "sensitive-events.jsonl"
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(PromotionSnapshotError) as raised:
+        _read_events_fail_closed(path)
+
+    message = str(raised.value)
+    assert message == (
+        "invalid bridge events JSON at line 1: duplicate object key"
+    )
+    assert str(path) not in message
+    assert raw not in message
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_event_loader_rejects_all_nonfinite_json_constants(
+    tmp_path: Path,
+    constant: str,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        f'{{"agent":"fable-5","payload":{{"score":{constant}}}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        PromotionSnapshotError,
+        match=(
+            r"^invalid bridge events JSON at line 1: "
+            r"non-finite numeric constant$"
+        ),
+    ):
+        _read_events_fail_closed(path)
+
+
+def test_event_loader_maps_invalid_utf8_to_path_safe_controlled_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sensitive-events.jsonl"
+    path.write_bytes(b'{"agent":"secret-\x80"}\n')
+
+    with pytest.raises(PromotionSnapshotError) as raised:
+        _read_events_fail_closed(path)
+
+    message = str(raised.value)
+    assert message == "bridge events file is not valid UTF-8"
+    assert str(path) not in message
+    assert "secret" not in message
+
+
+def test_event_loader_maps_malformed_json_to_path_safe_controlled_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sensitive-events.jsonl"
+    raw = '{"agent":"secret-value","payload":'
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(PromotionSnapshotError) as raised:
+        _read_events_fail_closed(path)
+
+    message = str(raised.value)
+    assert message == "invalid bridge events JSON at line 1"
+    assert str(path) not in message
+    assert "secret-value" not in message
+    assert raw not in message
+
+
+def test_event_loader_maps_read_failure_to_path_safe_controlled_error(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(PromotionSnapshotError) as raised:
+        _read_events_fail_closed(tmp_path)
+
+    message = str(raised.value)
+    assert message == "bridge events file could not be read"
+    assert str(tmp_path) not in message
+
+
+def test_duplicate_security_identity_fails_closed_end_to_end(
+    tmp_path: Path,
+) -> None:
+    lines = [json.dumps(event, sort_keys=True) for event in _events()]
+    lines[0] = lines[0].replace(
+        '"agent": "fable-5"',
+        '"agent": "intruder", "agent": "fable-5"',
+        1,
+    )
+    path = tmp_path / "events.jsonl"
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=path,
+        task_id=TASK,
+        origin_main_sha=BASE,
+        runner=_runner(),
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    assert report["errors"] == [
+        "invalid bridge events JSON at line 1: duplicate object key"
+    ]
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_nonfinite_event_json_fails_closed_end_to_end(
+    tmp_path: Path,
+    constant: str,
+) -> None:
+    lines = [json.dumps(event, sort_keys=True) for event in _events()]
+    lines[0] = lines[0].replace(
+        '"payload": {',
+        f'"payload": {{"risk_score": {constant}, ',
+        1,
+    )
+    path = tmp_path / "events.jsonl"
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=path,
+        task_id=TASK,
+        origin_main_sha=BASE,
+        runner=_runner(),
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    assert report["errors"] == [
+        "invalid bridge events JSON at line 1: non-finite numeric constant"
+    ]
 
 
 def _build(

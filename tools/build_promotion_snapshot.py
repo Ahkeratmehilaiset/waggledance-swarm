@@ -64,6 +64,25 @@ class PromotionSnapshotError(ValueError):
         )
 
 
+class _StrictEventJsonError(ValueError):
+    """Raised when event JSON uses an ambiguous or non-standard value."""
+
+
+def _reject_duplicate_object_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _StrictEventJsonError("duplicate object key")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json_constant(_constant: str) -> Any:
+    raise _StrictEventJsonError("non-finite numeric constant")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a dry-run autonomous promotion eligibility snapshot.",
@@ -354,23 +373,41 @@ def _normalize_checks(raw: object) -> list[dict[str, str]]:
 
 
 def _read_events_fail_closed(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        raise PromotionSnapshotError(f"bridge events file not found: {path}")
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except FileNotFoundError as exc:
+        raise PromotionSnapshotError("bridge events file not found") from exc
+    except UnicodeError as exc:
+        raise PromotionSnapshotError(
+            "bridge events file is not valid UTF-8"
+        ) from exc
+    except OSError as exc:
+        raise PromotionSnapshotError(
+            "bridge events file could not be read"
+        ) from exc
+
     events: list[dict[str, Any]] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    for line_number, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
+            event = json.loads(
+                line,
+                object_pairs_hook=_reject_duplicate_object_keys,
+                parse_constant=_reject_nonfinite_json_constant,
+            )
+        except _StrictEventJsonError as exc:
             raise PromotionSnapshotError(
-                f"invalid events line {line_number}: {exc.msg}"
+                f"invalid bridge events JSON at line {line_number}: {exc}"
+            ) from exc
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise PromotionSnapshotError(
+                f"invalid bridge events JSON at line {line_number}"
             ) from exc
         if not isinstance(event, dict):
             raise PromotionSnapshotError(
-                f"invalid events line {line_number}: event must be object"
+                f"invalid bridge events JSON at line {line_number}: "
+                "event must be object"
             )
         events.append(event)
     return events

@@ -663,7 +663,11 @@ def _schema_texts(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value.strip().casefold(),)
     if isinstance(value, Mapping):
-        values = value.values()
+        values = (
+            nested
+            for item in value.items()
+            for nested in item
+        )
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         values = value
     else:

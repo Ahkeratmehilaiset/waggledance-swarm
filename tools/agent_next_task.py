@@ -107,14 +107,22 @@ RCO_RESPONSE_STATUSES = {
 RCO_SCOUT_OUTCOME_TYPES = frozenset(
     {*SUCCESSFUL_COMPLETION_TYPES, "finding", "handoff"}
 )
-RCO_SCOUT_TERMINAL_HANDOFF_STATUSES = frozenset(
-    {"handoff", "rco_lane_restart_requested"}
-)
-RCO_SCOUT_TERMINAL_HANDOFF_STATUS_PATTERN = re.compile(
-    r"rco(?:1|2)?_lane_"
-    r"[a-z0-9]+(?:_[a-z0-9]+)*_"
-    r"(?:requested|diagnostics_clear)"
-)
+RCO_SCOUT_TERMINAL_HANDOFF_STATUSES = frozenset({
+    "handoff",
+    "rco_lane_failover_requested",
+    "rco_lane_inactive_diagnostics_clear",
+    "rco_lane_restart_or_fallback_verification_requested",
+    "rco_lane_restart_or_verify_requested",
+    "rco_lane_restart_requested",
+    "rco_lane_restart_verification_requested",
+    "rco_lane_verification_requested",
+    "rco_lane_verify_requested",
+    "rco1_lane_failover_requested",
+    "rco1_lane_stalled_verify_or_restart_requested",
+    "rco1_lane_verify_requested",
+    "rco2_lane_stalled_verify_or_restart_requested",
+    "rco2_lane_verify_requested",
+})
 RCO_SCOUT_DONE_EVENT_GRACE = timedelta(seconds=5)
 RCO_REEMIT_GATE_TOKENS = (
     "needs rco reemit",
@@ -2361,7 +2369,11 @@ def _completed_rco_lane_failover_task_ids(
         # A legacy record with no UUID is never completion authority by
         # itself. Its atomic claim-to-done lifecycle may only corroborate a
         # separately identity-bound terminal event from the same agent.
-        if binding_status in {"valid", "missing_uuid"}:
+        legacy_uuid_absent = (
+            binding_status == "missing_uuid"
+            and "agent_uuid" not in payload
+        )
+        if binding_status == "valid" or legacy_uuid_absent:
             done_lifecycles.setdefault((task_id, agent), []).append(
                 (claimed_at, released_at)
             )
@@ -2445,12 +2457,8 @@ def _is_trusted_rco_scout_completion_event(
 
 
 def _is_terminal_rco_scout_handoff_status(status: str) -> bool:
-    """Recognize only explicit or anchored RCO-lane terminal vocabulary."""
-    return (
-        status in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES
-        or RCO_SCOUT_TERMINAL_HANDOFF_STATUS_PATTERN.fullmatch(status)
-        is not None
-    )
+    """Recognize only the exact terminal vocabulary emitted by RCO scouts."""
+    return status in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES
 
 
 def _trusted_rco_scout_claim_time(

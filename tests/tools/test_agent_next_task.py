@@ -852,11 +852,20 @@ def test_completed_stalled_rco_lane_failover_advances_to_smoke(
     ("event_type", "status"),
     [
         ("finding", "open"),
-        ("handoff", "rco_lane_restart_requested"),
         ("handoff", "handoff"),
+        ("handoff", "rco_lane_failover_requested"),
         ("handoff", "rco_lane_inactive_diagnostics_clear"),
+        ("handoff", "rco_lane_restart_or_fallback_verification_requested"),
+        ("handoff", "rco_lane_restart_or_verify_requested"),
+        ("handoff", "rco_lane_restart_requested"),
+        ("handoff", "rco_lane_restart_verification_requested"),
+        ("handoff", "rco_lane_verification_requested"),
+        ("handoff", "rco_lane_verify_requested"),
+        ("handoff", "rco1_lane_failover_requested"),
         ("handoff", "rco1_lane_stalled_verify_or_restart_requested"),
+        ("handoff", "rco1_lane_verify_requested"),
         ("handoff", "rco2_lane_stalled_verify_or_restart_requested"),
+        ("handoff", "rco2_lane_verify_requested"),
         ("done", "done"),
     ],
 )
@@ -1013,6 +1022,59 @@ def test_legacy_done_lifecycle_corroboration_fails_closed(
     assert report["completed_rco_lane_failover_task_ids"] == []
 
 
+@pytest.mark.parametrize(
+    "malformed_uuid",
+    [None, "", False, 0, [], {}],
+    ids=["null", "empty-string", "false", "zero", "array", "object"],
+)
+def test_present_malformed_done_uuid_is_not_legacy_missing_uuid(
+    tmp_path: Path,
+    malformed_uuid: object,
+) -> None:
+    """Only an absent UUID field receives legacy lifecycle treatment."""
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            _rco_lane_stall_event(),
+            _rco_scout_outcome_event(
+                event_type="handoff",
+                status="rco1_lane_stalled_verify_or_restart_requested",
+                ts_utc="2026-05-20T11:45:00Z",
+            ),
+        ],
+    )
+    done_dir = bridge / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    (done_dir / "malformed-uuid.json").write_text(
+        json.dumps(
+            {
+                "agent": "codex-lead-1",
+                "agent_uuid": malformed_uuid,
+                "task_id": RCO_FAILOVER_TASK_ID,
+                "summary": "bounded RCO lane failover diagnostic",
+                "release_status": "done",
+                "release_message": "diagnostic complete",
+                "claimed_at_utc": "2026-05-20T11:30:00Z",
+                "released_at_utc": "2026-05-20T11:50:00Z",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_lane_failover_scout"
+    assert report["completed_rco_lane_failover_task_ids"] == []
+
+
 def test_real_shaped_legacy_done_prevents_duplicate_rco_scout(
     tmp_path: Path,
 ) -> None:
@@ -1149,6 +1211,10 @@ def test_untrusted_rco_scout_outcome_does_not_complete_task(
         "xrco_lane_restart_requested",
         "rco_lane__requested",
         "rco3_lane_restart_requested",
+        "rco_lane_not_requested",
+        "rco_lane_no_diagnostics_clear",
+        "rco1_lane_incomplete_requested",
+        "rco2_lane_do_not_restart_requested",
     ],
 )
 def test_nonterminal_or_unknown_rco_scout_handoff_does_not_complete_task(

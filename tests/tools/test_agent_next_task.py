@@ -854,6 +854,9 @@ def test_completed_stalled_rco_lane_failover_advances_to_smoke(
         ("finding", "open"),
         ("handoff", "rco_lane_restart_requested"),
         ("handoff", "handoff"),
+        ("handoff", "rco_lane_inactive_diagnostics_clear"),
+        ("handoff", "rco1_lane_stalled_verify_or_restart_requested"),
+        ("handoff", "rco2_lane_stalled_verify_or_restart_requested"),
         ("done", "done"),
     ],
 )
@@ -1136,7 +1139,17 @@ def test_untrusted_rco_scout_outcome_does_not_complete_task(
 
 @pytest.mark.parametrize(
     "status",
-    ["in_progress", "incomplete", "banana", "active", "pending"],
+    [
+        "in_progress",
+        "incomplete",
+        "banana",
+        "active",
+        "pending",
+        "rco_lane_restart_requested_extra",
+        "xrco_lane_restart_requested",
+        "rco_lane__requested",
+        "rco3_lane_restart_requested",
+    ],
 )
 def test_nonterminal_or_unknown_rco_scout_handoff_does_not_complete_task(
     tmp_path: Path,

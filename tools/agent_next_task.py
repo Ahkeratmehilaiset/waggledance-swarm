@@ -110,6 +110,11 @@ RCO_SCOUT_OUTCOME_TYPES = frozenset(
 RCO_SCOUT_TERMINAL_HANDOFF_STATUSES = frozenset(
     {"handoff", "rco_lane_restart_requested"}
 )
+RCO_SCOUT_TERMINAL_HANDOFF_STATUS_PATTERN = re.compile(
+    r"rco(?:1|2)?_lane_"
+    r"[a-z0-9]+(?:_[a-z0-9]+)*_"
+    r"(?:requested|diagnostics_clear)"
+)
 RCO_SCOUT_DONE_EVENT_GRACE = timedelta(seconds=5)
 RCO_REEMIT_GATE_TOKENS = (
     "needs rco reemit",
@@ -2387,7 +2392,6 @@ def _completed_rco_lane_failover_task_ids(
             ),
             now_utc=now_utc,
             identity_registry=identity_registry,
-            corroborated_by_terminal_done=done_claim_time is not None,
         ):
             completed.add(task_id)
 
@@ -2400,7 +2404,6 @@ def _is_trusted_rco_scout_completion_event(
     claimed_at: datetime | None,
     now_utc: datetime,
     identity_registry: Mapping[str, str],
-    corroborated_by_terminal_done: bool = False,
 ) -> bool:
     event_type = event.get("type")
     if not isinstance(event_type, str) or event_type not in RCO_SCOUT_OUTCOME_TYPES:
@@ -2425,10 +2428,7 @@ def _is_trusted_rco_scout_completion_event(
     elif event_type == "finding":
         if status != "open":
             return False
-    elif (
-        status not in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES
-        and not corroborated_by_terminal_done
-    ):
+    elif not _is_terminal_rco_scout_handoff_status(status):
         return False
 
     event_time = _parse_strict_utc(event.get("ts_utc"))
@@ -2442,6 +2442,15 @@ def _is_trusted_rco_scout_completion_event(
     ):
         return False
     return True
+
+
+def _is_terminal_rco_scout_handoff_status(status: str) -> bool:
+    """Recognize only explicit or anchored RCO-lane terminal vocabulary."""
+    return (
+        status in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES
+        or RCO_SCOUT_TERMINAL_HANDOFF_STATUS_PATTERN.fullmatch(status)
+        is not None
+    )
 
 
 def _trusted_rco_scout_claim_time(

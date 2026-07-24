@@ -330,14 +330,20 @@ def verify_lineage_registry(
     Parent fan-out stays legal (many children may link to one parent).
     Cycles are impossible once links verify: depth strictly increases."""
 
-    # Require a re-iterable, bounded Sequence (list/tuple) as declared -- NOT
-    # an arbitrary iterator. This makes two passes (index parents, then verify
-    # links); a one-shot generator would be exhausted after pass one and every
-    # non-root link check would silently pass. Rejecting (rather than
-    # materializing an unknown iterable) also refuses to hang/OOM on a hostile
-    # or infinite generator. str/bytes are Sequences but never a registry.
+    # Require a declared Sequence (bounded, indexable) -- NOT an arbitrary
+    # iterator (a generator would be consumed by pass one and hang/OOM if
+    # materialized). str/bytes are Sequences but never a registry.
     if not isinstance(entries, _SequenceABC) or isinstance(entries, (str, bytes)):
         return False, "not_sequence"
+    # SNAPSHOT once via the Sequence protocol (len + getitem), reading each
+    # index exactly once into an immutable tuple. This defeats a flapping /
+    # TOCTOU Sequence whose contents differ between iterations: both passes
+    # below operate on the frozen snapshot, never on the live object. Bounded
+    # by the declared length; any protocol error fails closed.
+    try:
+        entries = tuple(entries[index] for index in range(len(entries)))
+    except Exception:
+        return False, "unstable_sequence"
     if not entries:
         return False, "empty_registry"
     by_cell: dict[str, Mapping[str, object]] = {}

@@ -9,6 +9,8 @@ every direction, tamper breaks the entry hash, replay shapes are rejected.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
 from waggledance.core.genesis_lineage import (
@@ -359,6 +361,40 @@ def test_registry_rejects_one_shot_iterables_fail_closed():
         False,
         "not_sequence",
     )
+
+
+class _FlappingSequence(Sequence):
+    """A malicious Sequence: honest length, but the item at the child index
+    flaps between a wrong-link child (indexed pass) and the root (would-be
+    link-check pass). Snapshotting once must freeze whichever it presents so
+    the two passes cannot disagree."""
+
+    def __init__(self, root_map, bad_child_map):
+        self._root = root_map
+        self._bad = bad_child_map
+        self._reads = 0
+
+    def __len__(self):
+        return 2
+
+    def __getitem__(self, index):
+        if index == 0:
+            return self._root
+        # child slot flaps: first exposure = bad child, later = harmless root
+        self._reads += 1
+        return self._bad if self._reads == 1 else self._root
+
+
+def test_registry_flapping_sequence_toctou_cannot_pass():
+    """The lead's TOCTOU repro: a custom Sequence presenting [root,bad-child]
+    then [root]. The snapshot freezes the first read, so the bad child is
+    link-checked -- it can never index in but skip verification."""
+    root = _root()
+    bad = _build_forged_child_with_wrong_prev(root)
+    flapping = _FlappingSequence(root.to_mapping(), bad)
+    ok, reason = verify_lineage_registry(flapping)
+    assert ok is False  # the bad child is caught, not silently passed
+    assert reason is not None and reason != "empty_registry"
 
 
 def test_registry_accepts_tuple_sequence():

@@ -17,11 +17,13 @@ SCRIPT = ROOT / "tools" / "close_bridge_rco_request.py"
 
 sys.path.insert(0, str(ROOT))
 
+import tools.close_bridge_rco_request as closer  # noqa: E402
 from tools.close_bridge_rco_request import (  # noqa: E402
     CloseRcoError,
     close_bridge_rco_request,
     _read_events,
 )
+from tools.bridge_event_writer import _PortableTestBackend  # noqa: E402
 from tools.idle_check import evaluate_idle_state  # noqa: E402
 
 
@@ -106,6 +108,7 @@ def test_close_emits_event_that_clears_open_rco(tmp_path: Path) -> None:
         merged_at="2026-05-20T19:00:00Z",
         now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
         emit=True,
+        writer_backend=_PortableTestBackend(),
     )
     assert result["ok"] is True
     assert result["emitted"] is True
@@ -115,6 +118,8 @@ def test_close_emits_event_that_clears_open_rco(tmp_path: Path) -> None:
     assert result["proposed_event"]["task_id"] == "task-1"
     assert result["proposed_event"]["to"] == "codex,claude"
     assert "operator" not in result["proposed_event"]["to"]
+    assert not (bridge_root / "outbox").exists()
+    assert not (bridge_root / "shared" / "last_claude.json").exists()
 
     idle_after = evaluate_idle_state(
         events_path=bridge_root / "shared" / "events.jsonl",
@@ -142,6 +147,7 @@ def test_close_does_not_extend_recent_merge_window(tmp_path: Path) -> None:
         merged_at="2026-05-20T19:00:00Z",
         now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
         emit=True,
+        writer_backend=_PortableTestBackend(),
     )
 
     # Idle gate query at the SAME instant as the close emit. If the close
@@ -180,6 +186,97 @@ def test_dry_run_does_not_write(tmp_path: Path) -> None:
     assert result["emitted"] is False
     assert result["decision"] == "ready"
     assert events_path.read_text(encoding="utf-8") == before
+
+
+def test_writer_failure_maps_to_typed_close_decision_without_sidecars(
+    tmp_path: Path,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-write-fail", "2026-05-20T18:00:00Z")],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    before = events_path.read_bytes()
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="task-write-fail",
+            pr_number=8,
+            from_agent="claude",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=True,
+            writer_backend=_PortableTestBackend(mutex_outcomes=["timeout"]),
+        )
+
+    assert excinfo.value.decision == "bridge_write_failed"
+    assert events_path.read_bytes() == before
+    assert not (bridge_root / "outbox").exists()
+    assert not (bridge_root / "shared" / "last_claude.json").exists()
+    assert len(list((bridge_root / "spool").glob("failed-append-*.jsonl"))) == 1
+
+
+def test_invalid_from_agent_fails_before_wal_or_canonical_mutation(
+    tmp_path: Path,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-invalid-agent", "2026-05-20T18:00:00Z")],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    before = events_path.read_bytes()
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="task-invalid-agent",
+            pr_number=9,
+            from_agent="Invalid.Agent",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=True,
+            writer_backend=_PortableTestBackend(),
+        )
+
+    assert excinfo.value.decision == "invalid_args"
+    assert events_path.read_bytes() == before
+    assert not (bridge_root / "spool").exists()
+    assert not Path(f"{events_path}.append-v1-validation.json").exists()
+
+
+def test_invalid_close_event_type_fails_before_wal_or_canonical_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-invalid-type", "2026-05-20T18:00:00Z")],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    before = events_path.read_bytes()
+    original = closer._build_close_event
+
+    def invalid_type_event(**kwargs):
+        event = original(**kwargs)
+        event["type"] = "unknown-close-type"
+        return event
+
+    monkeypatch.setattr(closer, "_build_close_event", invalid_type_event)
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="task-invalid-type",
+            pr_number=10,
+            from_agent="claude",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=True,
+            writer_backend=_PortableTestBackend(),
+        )
+
+    assert excinfo.value.decision == "invalid_args"
+    assert events_path.read_bytes() == before
+    assert not (bridge_root / "spool").exists()
+    assert not Path(f"{events_path}.append-v1-validation.json").exists()
 
 
 def test_refuses_when_no_open_rco_for_task(tmp_path: Path) -> None:
@@ -361,6 +458,7 @@ def test_cli_default_bridge_root_uses_runtime_env_from_other_cwd(
     assert payload["emitted"] is False
 
 
+@pytest.mark.skipif(os.name != "nt", reason="production bridge writes are Windows-only")
 def test_cli_smoke(tmp_path: Path) -> None:
     bridge_root = _seed_bridge(
         tmp_path,

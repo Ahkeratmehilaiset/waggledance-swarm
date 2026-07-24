@@ -386,37 +386,35 @@ def test_registry_rejects_one_shot_iterables_fail_closed():
 
 
 class _FlappingSequence(Sequence):
-    """A malicious Sequence: honest length, but the item at the child index
-    flaps between a wrong-link child (indexed pass) and the root (would-be
-    link-check pass). Snapshotting once must freeze whichever it presents so
-    the two passes cannot disagree."""
+    """A malicious Sequence SUBCLASS whose child-index item flaps between reads.
+    The exact-list/tuple gate rejects it outright -- its overridden __getitem__/
+    __len__ are never invoked, so a flapping (or non-returning) Sequence cannot
+    reach any pass at all."""
 
     def __init__(self, root_map, bad_child_map):
         self._root = root_map
         self._bad = bad_child_map
-        self._reads = 0
+        self.reads = 0
 
     def __len__(self):
-        return 2
+        raise AssertionError("len must never be called")
 
     def __getitem__(self, index):
+        self.reads += 1
         if index == 0:
             return self._root
-        # child slot flaps: first exposure = bad child, later = harmless root
-        self._reads += 1
-        return self._bad if self._reads == 1 else self._root
+        return self._bad if self.reads == 1 else self._root
 
 
-def test_registry_flapping_sequence_toctou_cannot_pass():
-    """The lead's TOCTOU repro: a custom Sequence presenting [root,bad-child]
-    then [root]. The snapshot freezes the first read, so the bad child is
-    link-checked -- it can never index in but skip verification."""
+def test_registry_flapping_sequence_rejected_without_invoking_protocol():
+    """The lead's TOCTOU repro is closed by construction: an arbitrary Sequence
+    subclass is rejected as not_sequence BEFORE its len/getitem run, so a
+    flapping or non-returning Sequence can never present data to any pass."""
     root = _root()
     bad = _build_forged_child_with_wrong_prev(root)
     flapping = _FlappingSequence(root.to_mapping(), bad)
-    ok, reason = verify_lineage_registry(flapping)
-    assert ok is False  # the bad child is caught, not silently passed
-    assert reason is not None and reason != "empty_registry"
+    assert verify_lineage_registry(flapping) == (False, "not_sequence")
+    assert flapping.reads == 0  # overridden Sequence protocol never touched
 
 
 def test_registry_accepts_tuple_sequence():
@@ -485,26 +483,25 @@ def test_eq_any_str_schema_rejected():
     assert verify_lineage_entry(broken) == (False, "schema_version")
 
 
-def test_link_snapshots_defeat_parent_flip_after_verify():
-    """A live parent Mapping that verifies, then flips parent identity on a
-    later read, cannot fool the link: verify_lineage_link freezes both once."""
+def test_link_rejects_dict_subclass_parent_without_invoking_protocol():
+    """A parent that is a dict SUBCLASS with an overridden __getitem__ (which
+    would flip parent identity between reads) is rejected outright as
+    parent:not_mapping -- the exact-dict gate never invokes the overridden
+    protocol, so a flapping/hostile parent can never even reach the link check."""
     root, child = _root(), _child()
     good_parent = root.to_mapping()
+    invoked = {"getitem": False}
 
     class _FlipParentId(dict):
-        def __init__(self, base):
-            super().__init__(base)
-            self._reads = 0
-
         def __getitem__(self, key):
+            invoked["getitem"] = True
             if key == "cell_id":
-                self._reads += 1
-                # flips AFTER the snapshot's single read
-                return super().__getitem__(key) if self._reads <= 1 else "sha256:" + "9" * 64
+                return "sha256:" + "9" * 64
             return super().__getitem__(key)
 
     ok, reason = verify_lineage_link(child.to_mapping(), _FlipParentId(good_parent))
-    assert (ok, reason) == (True, None)  # snapshot froze the honest parent id
+    assert (ok, reason) == (False, "parent:not_mapping")
+    assert invoked["getitem"] is False  # overridden protocol never touched
 
 
 def test_alias_key_mapping_boundary_fail_closed():
@@ -512,6 +509,34 @@ def test_alias_key_mapping_boundary_fail_closed():
     alias = {k: v for k, v in good.items() if k != "cell_id"}
     alias[_EqAnyStr("cell_id")] = good["cell_id"]
     assert verify_lineage_entry(alias) == (False, "not_mapping")
+
+
+def test_wire_dict_returns_an_isolated_builtin_copy():
+    """The exact-dict boundary copies once: the returned snapshot equals the
+    input but is a distinct object, and mutating either side afterwards does not
+    affect the other."""
+    from waggledance.core.genesis_lineage import _require_wire_dict
+
+    src = {"a": 1, "b": 2}
+    snap = _require_wire_dict(src)
+    assert snap == src and snap is not src
+    snap["a"] = 999
+    assert src["a"] == 1
+    src["c"] = 3
+    assert "c" not in snap
+
+
+def test_registry_snapshots_input_list_before_processing():
+    """A plain list is accepted (liveness) and processed from a private tuple
+    snapshot: mutating the original list AFTER the call cannot retro-change the
+    already-returned verdict, and re-verifying the mutated list reflects it."""
+    root, child = _root(), _child()
+    entries = [root.to_mapping(), child.to_mapping()]
+    assert verify_lineage_registry(entries) == (True, None)
+    entries.append({"garbage": True})  # mutate the original container
+    # the prior verdict stands; a fresh call sees the mutated (now-invalid) list
+    ok, _ = verify_lineage_registry(entries)
+    assert ok is False
 
 
 def test_derive_entry_hash_validates_inputs():

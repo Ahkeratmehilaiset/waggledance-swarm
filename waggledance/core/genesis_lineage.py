@@ -34,9 +34,8 @@ lets a rebuilt cell (same genesis facts) prove the SAME lineage position.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence as _SequenceABC
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from typing import Optional
 
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -69,33 +68,25 @@ class GenesisLineageError(ValueError):
     """The value is outside the GenesisLineageV1 contract."""
 
 
-def _freeze_mapping(value: object) -> Optional[dict]:
-    """Snapshot an untrusted Mapping into a plain dict, reading each key once,
-    so a flapping/live Mapping cannot present different values across the shape
-    check and the digest recompute. Fail-closed (returns None) on: non-Mapping,
-    any keys()/getitem/hash protocol failure, a non-exact-str key (an EqAnyStr/
-    alias key that hashes/compares to impersonate a canonical key), or a
-    duplicate key (which a dict comprehension would silently collapse)."""
-    if not isinstance(value, Mapping):
+def _require_wire_dict(value: object) -> Optional[dict]:
+    """A decoded-JSON wire object is EXACTLY a built-in ``dict``. ``type(value)
+    is dict`` is the total, side-effect-free gate: it rejects arbitrary Mappings
+    AND dict subclasses WITHOUT invoking their (attacker-controlled) keys/
+    getitem/len/hash -- which could flap between reads, raise, or never return
+    (a SlowKeys custom Mapping makes an isinstance-based verifier non-total).
+    Only an exact dict's builtin protocol is then walked: each key must be an
+    exact ``str`` (a programmatic EqAnyStr/alias key that impersonates a
+    canonical key rejects; JSON keys are always plain str). The accepted dict is
+    COPIED ONCE with the builtin ``dict.copy`` -- a single atomic C-level
+    operation -- BEFORE any Python-level validation, so a concurrently mutated
+    dict cannot make a manual ``.items()`` loop observe a moving container or
+    raise ``RuntimeError``. All validation and use then read only the private
+    copy. Returns the plain-dict copy or None."""
+    if type(value) is not dict:
         return None
-    try:
-        raw_keys = list(value.keys())
-    except Exception:
-        return None
-    seen: set = set()
-    snapshot: dict = {}
-    for key in raw_keys:
+    snapshot = value.copy()
+    for key in snapshot:
         if type(key) is not str:
-            return None
-        try:
-            if key in seen:
-                return None
-        except Exception:
-            return None
-        seen.add(key)
-        try:
-            snapshot[key] = value[key]
-        except Exception:
             return None
     return snapshot
 
@@ -290,7 +281,7 @@ def build_root_entry(
 def build_child_entry(
     *,
     cell_id: str,
-    parent_entry: Mapping[str, object],
+    parent_entry: object,
     inherited_goal_slice_digest: str,
     inherited_budget_slice_digest: str,
 ) -> GenesisLineageV1:
@@ -300,7 +291,7 @@ def build_child_entry(
     ancestry is proven pairwise with ``verify_lineage_link`` and
     registry-wide with ``verify_lineage_registry`` closure."""
 
-    parent = _freeze_mapping(parent_entry)
+    parent = _require_wire_dict(parent_entry)
     if parent is None:
         raise GenesisLineageError("parent entry rejected: not_mapping")
     parent_ok, parent_reason = verify_lineage_entry(parent)
@@ -321,7 +312,7 @@ def verify_lineage_entry(value: object) -> tuple[bool, Optional[str]]:
     bidirectional root rules, no self-parent, and an internal ``entry_hash``
     recompute. Returns ``(ok, reason)``."""
 
-    snapshot = _freeze_mapping(value)
+    snapshot = _require_wire_dict(value)
     if snapshot is None:
         return False, "not_mapping"
     if set(snapshot.keys()) != LINEAGE_KEYS:
@@ -362,14 +353,14 @@ def verify_lineage_entry(value: object) -> tuple[bool, Optional[str]]:
 
 
 def verify_lineage_link(
-    child: Mapping[str, object], parent: Mapping[str, object]
+    child: object, parent: object
 ) -> tuple[bool, Optional[str]]:
     """Both entries verify AND the child genuinely descends from the parent."""
 
     # Freeze both once, then verify AND compare against the SAME frozen values,
     # so a live Mapping cannot flip parent_cell_id (etc.) after it verifies.
-    child = _freeze_mapping(child)
-    parent = _freeze_mapping(parent)
+    child = _require_wire_dict(child)
+    parent = _require_wire_dict(parent)
     if child is None:
         return False, "child:not_mapping"
     if parent is None:
@@ -390,7 +381,7 @@ def verify_lineage_link(
 
 
 def verify_lineage_registry(
-    entries: Sequence[Mapping[str, object]],
+    entries: object,
 ) -> tuple[bool, Optional[str]]:
     """Registry CLOSURE check: a valid registry is a single rooted lineage
     tree, not merely a set of self-consistent entries.
@@ -404,21 +395,22 @@ def verify_lineage_registry(
     Parent fan-out stays legal (many children may link to one parent).
     Cycles are impossible once links verify: depth strictly increases."""
 
-    # Require a declared Sequence (bounded, indexable) -- NOT an arbitrary
-    # iterator (a generator would be consumed by pass one and hang/OOM if
-    # materialized). str/bytes are Sequences but never a registry.
-    if not isinstance(entries, _SequenceABC) or isinstance(entries, (str, bytes)):
+    # Require an EXACT built-in list/tuple -- reject any Sequence subclass or
+    # arbitrary Sequence WITHOUT invoking its len/getitem/iter, which an
+    # attacker could make flap, raise, or never return (a SlowSequence makes an
+    # isinstance-based verifier non-total). str/bytes are not list/tuple, so
+    # they are rejected here too.
+    if type(entries) is not list and type(entries) is not tuple:
         return False, "not_sequence"
-    # SNAPSHOT via the Sequence protocol (len + getitem), and FREEZE EACH ENTRY
-    # to a plain dict, reading each index/key exactly once. Both passes below
-    # operate only on these frozen dicts -- never the live Sequence or live
-    # Mappings -- so neither a flapping Sequence nor a Mapping that flips a
-    # field after it verifies can present different data across passes. Bounded
-    # by the declared length; any protocol error fails closed.
-    try:
-        frozen = tuple(_freeze_mapping(entries[index]) for index in range(len(entries)))
-    except Exception:
-        return False, "unstable_sequence"
+    # SNAPSHOT the container ONCE with builtin tuple() -- a single atomic C-level
+    # copy -- BEFORE per-entry processing, so a concurrently mutated list cannot
+    # make the loop below observe a moving container or raise. Then FREEZE EACH
+    # ENTRY to a private plain dict via the exact-dict gate. Both passes operate
+    # only on these frozen dicts (never a live Mapping/Sequence), so neither a
+    # flapping container nor a Mapping that flips a field after it verifies can
+    # present different data across passes.
+    entry_inputs = tuple(entries)
+    frozen = tuple(_require_wire_dict(entry) for entry in entry_inputs)
     if not frozen:
         return False, "empty_registry"
     by_cell: dict[str, dict] = {}

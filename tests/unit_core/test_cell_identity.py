@@ -12,7 +12,6 @@ import pytest
 
 from waggledance.core.cell_identity import (
     IDENTITY_KEYS,
-    SCHEMA_VERSION,
     CellIdentityError,
     CellIdentityV1,
     build_cell_identity,
@@ -308,45 +307,48 @@ def test_eq_any_str_forged_fields_rejected_construct_and_verify():
     assert verify_cell_identity(broken) == (False, "schema_version")
 
 
-def test_live_mapping_result_depends_only_on_the_snapshot():
-    """The verifier reads each key exactly once (snapshot). A Mapping that
-    presents a forged cell_id on that first read and 'repairs' it on later
-    reads must still FAIL -- there is no second read to rescue it. This proves
-    the check-and-use operate on the same frozen value."""
+def test_dict_subclass_flip_rejected_without_invoking_protocol():
+    """A dict SUBCLASS with an overridden __getitem__ (that would flip cell_id
+    between reads) is rejected immediately as not_mapping by the exact-dict
+    gate -- the verifier never calls the overridden protocol at all. This is
+    the totality guarantee: an attacker-controlled method cannot flap, raise,
+    or fail to return, because it is never invoked."""
     good = _identity().to_mapping()
     forged = "sha256:" + "f" * 64
+    invoked = {"getitem": False}
 
     class _FlipCellId(dict):
-        def __init__(self, base):
-            super().__init__(base)
-            self._reads = 0
-
         def __getitem__(self, key):
+            invoked["getitem"] = True
             if key == "cell_id":
-                self._reads += 1
-                return forged if self._reads == 1 else super().__getitem__(key)
+                return forged
             return super().__getitem__(key)
 
-    ok, reason = verify_cell_identity(_FlipCellId(good))
-    assert ok is False
-    assert reason in ("cell_id_mismatch", "cell_id")
+    assert verify_cell_identity(_FlipCellId(good)) == (False, "not_mapping")
+    assert invoked["getitem"] is False  # overridden protocol never touched
 
 
 def test_alias_key_and_mapping_protocol_failures_fail_closed():
-    """The raw mapping boundary must fail closed: an alias/subclass key, a
-    keys()/getitem that raises, and a duplicate key all reject."""
+    """The raw mapping boundary is total. An alias/subclass KEY inside a plain
+    dict rejects on the exact-str-key check; a non-dict Mapping and a dict
+    subclass reject on the exact-dict gate BEFORE any of their (hostile) keys()/
+    getitem is invoked. All four cases return not_mapping."""
     from collections.abc import Mapping as _Map
 
     good = _identity().to_mapping()
 
-    # (a) str-subclass key that impersonates a canonical key by hash/eq.
+    # (a) str-subclass key that impersonates a canonical key by hash/eq. The
+    # container is a plain dict, so the gate admits it, then the exact-str-key
+    # walk rejects the EqAnyStr key.
     alias = {**good}
     del alias["cell_id"]
     alias[_EqAnyStr("cell_id")] = good["cell_id"]
-    ok, reason = verify_cell_identity(alias)
-    assert (ok, reason) == (False, "not_mapping")
+    assert verify_cell_identity(alias) == (False, "not_mapping")
 
-    # (b) keys() raises.
+    # (b) a non-dict Mapping with a hostile keys(): rejected by the exact-dict
+    # gate; keys() is NEVER called (totality).
+    keys_called = {"hit": False}
+
     class _BadKeys(_Map):
         def __iter__(self):
             return iter(())
@@ -358,18 +360,26 @@ def test_alias_key_and_mapping_protocol_failures_fail_closed():
             raise KeyError(k)
 
         def keys(self):
+            keys_called["hit"] = True
             raise RuntimeError("hostile keys()")
 
     assert verify_cell_identity(_BadKeys()) == (False, "not_mapping")
+    assert keys_called["hit"] is False
 
-    # (c) getitem raises.
+    # (c) a dict subclass with a hostile getitem: rejected by the exact-dict
+    # gate; getitem is NEVER called.
+    get_called = {"hit": False}
+
     class _BadGet(dict):
         def __getitem__(self, k):
+            get_called["hit"] = True
             raise RuntimeError("hostile getitem")
 
     assert verify_cell_identity(_BadGet(good)) == (False, "not_mapping")
+    assert get_called["hit"] is False
 
-    # (d) duplicate keys in the raw key list.
+    # (d) a non-dict Mapping declaring a duplicate key: rejected by the gate;
+    # its custom iteration is never consulted.
     class _DupKeys(_Map):
         def __init__(self, base):
             self._base = dict(base)
@@ -394,6 +404,44 @@ def test_non_mapping_inputs_fail_closed():
         ok, reason = verify_cell_identity(value)
         assert ok is False
         assert reason == "not_mapping"
+
+
+def test_custom_mapping_never_returns_is_rejected_without_invoking_it():
+    """The lead's SlowKeys totality evidence: a custom Mapping whose every
+    protocol method would abort (stand-in for 'never returns') is rejected by
+    the exact-dict gate BEFORE any method runs, so verify_cell_identity is
+    total and cannot hang on an attacker-declared shape."""
+    from collections.abc import Mapping as _Map
+
+    class _SlowKeys(_Map):
+        def __iter__(self):
+            raise AssertionError("iter must never be called")
+
+        def __len__(self):
+            raise AssertionError("len must never be called")
+
+        def __getitem__(self, k):
+            raise AssertionError("getitem must never be called")
+
+        def keys(self):
+            raise AssertionError("keys must never be called")
+
+    assert verify_cell_identity(_SlowKeys()) == (False, "not_mapping")
+
+
+def test_wire_dict_returns_an_isolated_builtin_copy():
+    """The exact-dict boundary copies once: the returned snapshot equals the
+    input but is a distinct object, and mutating either side afterwards does not
+    affect the other -- so validation and use read a private, stable value."""
+    from waggledance.core.cell_identity import _require_wire_dict
+
+    src = {"a": 1, "b": 2}
+    snap = _require_wire_dict(src)
+    assert snap == src and snap is not src
+    snap["a"] = 999
+    assert src["a"] == 1  # mutating the copy never reaches the input
+    src["c"] = 3
+    assert "c" not in snap  # mutating the input never reaches the copy
 
 
 def test_record_is_immutable():

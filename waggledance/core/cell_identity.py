@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping, Optional
+from typing import Optional
 
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -61,33 +61,25 @@ class CellIdentityError(ValueError):
     """The value is outside the CellIdentityV1 contract."""
 
 
-def _freeze_mapping(value: object) -> Optional[dict]:
-    """Snapshot an untrusted Mapping into a plain dict, reading each key once,
-    so a flapping/live Mapping cannot present different values across the shape
-    check and the digest recompute. Fail-closed (returns None) on: non-Mapping,
-    any keys()/getitem/hash protocol failure, a non-exact-str key (an EqAnyStr/
-    alias key hashes/compares to impersonate a canonical key), or a duplicate
-    key (which a dict comprehension would silently collapse)."""
-    if not isinstance(value, Mapping):
+def _require_wire_dict(value: object) -> Optional[dict]:
+    """A decoded-JSON wire object is EXACTLY a built-in ``dict``. ``type(value)
+    is dict`` is the total, side-effect-free gate: it rejects arbitrary Mappings
+    AND dict subclasses WITHOUT invoking their (attacker-controlled) keys/
+    getitem/len/hash -- which could flap between reads, raise, or never return
+    (a SlowKeys custom Mapping makes an isinstance-based verifier non-total).
+    Only an exact dict's builtin protocol is then walked: each key must be an
+    exact ``str`` (a programmatic EqAnyStr/alias key that impersonates a
+    canonical key rejects; JSON keys are always plain str). The accepted dict is
+    COPIED ONCE with the builtin ``dict.copy`` -- a single atomic C-level
+    operation -- BEFORE any Python-level validation, so a concurrently mutated
+    dict cannot make a manual ``.items()`` loop observe a moving container or
+    raise ``RuntimeError``. All validation and use then read only the private
+    copy. Returns the plain-dict copy or None."""
+    if type(value) is not dict:
         return None
-    try:
-        raw_keys = list(value.keys())
-    except Exception:
-        return None
-    seen: set = set()
-    snapshot: dict = {}
-    for key in raw_keys:
+    snapshot = value.copy()
+    for key in snapshot:
         if type(key) is not str:
-            return None
-        try:
-            if key in seen:
-                return None
-        except Exception:
-            return None
-        seen.add(key)
-        try:
-            snapshot[key] = value[key]
-        except Exception:
             return None
     return snapshot
 
@@ -209,7 +201,7 @@ def verify_cell_identity(value: object) -> tuple[bool, Optional[str]]:
     names its clause. Absent key, explicit null, and wrong type are three
     distinct inputs and all three reject."""
 
-    snapshot = _freeze_mapping(value)
+    snapshot = _require_wire_dict(value)
     if snapshot is None:
         return False, "not_mapping"
     if set(snapshot.keys()) != IDENTITY_KEYS:

@@ -8,6 +8,7 @@ no real GitHub call fires and the live repo is never touched.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from tools.bridge_loop_tick import (
     peer_activation_recommendation,
     peer_has_active_pr_producing_claim,
 )
+from tools.bridge_event_writer import BridgeEventWriteError, _PortableTestBackend
 from waggledance.core.work_queue import claim_task
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
@@ -334,6 +336,7 @@ def test_cli_defaults_to_runtime_bridge_root_env(
     assert report["next_action_detail"]["task_id"] == "runtime-loop-claim"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="production bridge writes are Windows-only")
 def test_cli_emit_peer_activation_uses_runtime_bridge_root_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -377,6 +380,49 @@ def test_cli_emit_peer_activation_uses_runtime_bridge_root_env(
     assert events[-1]["agent"] == "codex-tools-1"
     assert events[-1]["to"] == "codex-lead-1"
     assert events[-1]["status"] == "scout_requested"
+
+
+def test_cli_custom_events_write_failure_preserves_typed_decision(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge_root = tmp_path / "bridge-never-created"
+    custom_events = tmp_path / "custom-events.jsonl"
+    now = datetime.now(timezone.utc)
+    custom_events.write_text(
+        "\n".join(
+            json.dumps(event, sort_keys=True)
+            for event in [
+                _finding("codex-lead-1", _format_z(now - timedelta(minutes=40))),
+                _heartbeat("codex-lead-1", _format_z(now - timedelta(minutes=5))),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inbox = tmp_path / "operator_inbox"
+    inbox.mkdir()
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex-tools-1",
+            "--bridge-root",
+            str(bridge_root),
+            "--events",
+            str(custom_events),
+            "--inbox-dir",
+            str(inbox),
+            "--emit-peer-activation",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "bridge_write_failed"
+    assert "non-canonical" in report["errors"][0]
+    assert not bridge_root.exists()
 
 
 def test_cli_peer_activation_default_is_report_only(
@@ -992,6 +1038,7 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
         agent="codex",
         event_spec=rec["bridge_event"],
         now_utc=NOW,
+        writer_backend=_PortableTestBackend(),
     )
 
     line = events_path.read_text(encoding="utf-8").strip()
@@ -1006,6 +1053,29 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
         json.loads((tmp_path / "shared" / "last_codex.json").read_text())["task_id"]
         == event["task_id"]
     )
+
+
+def test_emit_peer_activation_refuses_custom_events_target(tmp_path: Path) -> None:
+    events = [_heartbeat("claude", "2026-05-22T13:55:00Z")]
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    with pytest.raises(BridgeEventWriteError, match="non-canonical"):
+        emit_peer_activation_event(
+            bridge_root=tmp_path / "bridge",
+            events_path=tmp_path / "custom-events.jsonl",
+            agent="codex",
+            event_spec=rec["bridge_event"],
+            now_utc=NOW,
+            writer_backend=_PortableTestBackend(),
+        )
+
+    assert not (tmp_path / "bridge").exists()
 
 
 def test_peer_activation_event_is_handoff_only_without_authority():

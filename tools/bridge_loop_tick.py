@@ -39,7 +39,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -51,6 +50,11 @@ if str(ROOT) not in sys.path:
 from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
+)
+from tools.bridge_event_writer import (  # noqa: E402
+    AppendV1Backend,
+    BridgeEventWriteError,
+    write_bridge_event,
 )
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
@@ -516,49 +520,24 @@ def emit_peer_activation_event(
     agent: str,
     event_spec: Mapping[str, Any],
     now_utc: datetime,
+    events_path: Path | None = None,
+    writer_backend: AppendV1Backend | None = None,
 ) -> Path:
-    """Append one validated peer-activation handoff to the bridge event stream."""
+    """Durably append one validated peer-activation handoff."""
 
     event = materialize_peer_activation_event(
         agent=agent,
         event_spec=event_spec,
         now_utc=now_utc,
     )
-    shared_dir = bridge_root / "shared"
-    outbox_dir = bridge_root / "outbox" / agent
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    outbox_dir.mkdir(parents=True, exist_ok=True)
-
-    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
-    events_path = shared_dir / "events.jsonl"
-    outbox_path = outbox_dir / f"{now_utc.astimezone(timezone.utc):%Y-%m-%d}.jsonl"
-    last_path = shared_dir / f"last_{agent}.json"
-    _append_line_with_retry(events_path, line)
-    _append_line_with_retry(outbox_path, line)
-    try:
-        _write_json_atomic(last_path, json.dumps(event, indent=2))
-    except OSError:
-        # last_<agent>.json is a convenience cache; events.jsonl is canonical.
-        pass
-    return events_path
-
-
-def _append_line_with_retry(path: Path, line: str) -> None:
-    for attempt in range(40):
-        try:
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line)
-            return
-        except OSError:
-            if attempt == 39:
-                raise
-            time.sleep(0.025 + (attempt * 0.01))
-
-
-def _write_json_atomic(path: Path, payload: str) -> None:
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
+    result = write_bridge_event(
+        bridge_root=bridge_root,
+        events_path=events_path,
+        event=event,
+        write_sidecars=True,
+        backend=writer_backend,
+    )
+    return result.events_path
 
 
 def my_unmerged_rco_passes(
@@ -1010,9 +989,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 agent=args.agent,
                 event_spec=peer_activation["bridge_event"],
                 now_utc=now_utc,
+                events_path=events_path,
             )
             peer_activation["emitted"] = True
             peer_activation["emitted_path"] = str(event_path)
+    except BridgeEventWriteError as exc:
+        report = {
+            "ok": False,
+            "decision": exc.decision,
+            "errors": [str(exc)],
+        }
+        print(json.dumps(report, sort_keys=True))
+        return 1
     except Exception as exc:  # noqa: BLE001
         report = {
             "ok": False,

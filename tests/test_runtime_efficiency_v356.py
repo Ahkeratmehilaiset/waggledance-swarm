@@ -689,6 +689,28 @@ class TestVersionConsistency:
 class TestAdaptiveSuccessMemory:
     """Tests for rolling success tracking."""
 
+    def test_records_and_ratio_snapshots_hold_internal_lock(self):
+        """Every mutable-history access must hold the memory's own lock."""
+        mem = _AdaptiveSuccessMemory()
+
+        class GuardedDeque(collections.deque):
+            def append(self, item):
+                assert mem._lock.locked()
+                return super().append(item)
+
+            def __iter__(self):
+                assert mem._lock.locked()
+                return super().__iter__()
+
+        timestamp = time.time()
+        mem.cell_history["hub"] = GuardedDeque([(timestamp, True)])
+        mem.category_history["general"] = GuardedDeque([(timestamp, True)])
+
+        mem.record("hub", "general", False)
+        assert mem.cell_success_ratio("hub") == 0.5
+        assert mem.category_success_ratio("general") == 0.5
+        assert mem.cell_success_ratios() == {"hub": 0.5}
+
     def test_empty_returns_none(self):
         mem = _AdaptiveSuccessMemory()
         assert mem.cell_success_ratio("nonexistent") is None

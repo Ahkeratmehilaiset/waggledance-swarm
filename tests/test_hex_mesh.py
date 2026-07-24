@@ -467,25 +467,55 @@ class TestNeighborIdCache:
         )
 
     def test_get_neighbor_cells_repeated_lookups_are_cheap(self):
-        """Regression guard for the headline hex scaling property:
-        20k repeated get_neighbor_cells calls must complete in well
-        under the prior recompute-from-coord cost. Codex scout
-        measured 253.28 ms BEFORE; the cached path should comfortably
-        beat that. We assert < 100 ms as a generous regression
-        threshold (microbench script measures the actual number)."""
+        """The cached path must beat the prior recompute path in the same run.
+
+        Relative, alternating samples preserve the performance regression
+        guard without an absolute wall-clock deadline that flakes under load.
+        """
+        import statistics
         import time
+
         reg = self._registry()
-        cell_ids = list(reg.cells.keys())
-        assert cell_ids
-        start = time.perf_counter()
-        for _ in range(20000):
-            for cid in cell_ids:
-                reg.get_neighbor_cells(cid)
-                break  # one lookup per outer iteration
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 100.0, (
-            f"20000 get_neighbor_cells took {elapsed_ms:.2f}ms — "
-            f"expected < 100ms after R18 Candidate 1 cache"
+        cell_id = next(iter(reg.cells))
+        cell = reg._cells[cell_id]
+
+        def cached_lookup():
+            return reg.get_neighbor_cells(cell_id)
+
+        def recompute_lookup():
+            neighbors = []
+            for coord in cell.coord.neighbors():
+                neighbor_id = reg._coord_to_cell.get(coord)
+                if neighbor_id and neighbor_id != cell_id:
+                    neighbor = reg._cells.get(neighbor_id)
+                    if neighbor and neighbor.enabled:
+                        neighbors.append(neighbor)
+            return neighbors
+
+        assert cached_lookup() == recompute_lookup()
+        for _ in range(100):
+            cached_lookup()
+            recompute_lookup()
+
+        samples = {"cached": [], "recomputed": []}
+        iterations = 10000
+        for round_index in range(5):
+            order = (
+                (("cached", cached_lookup), ("recomputed", recompute_lookup))
+                if round_index % 2 == 0
+                else (("recomputed", recompute_lookup), ("cached", cached_lookup))
+            )
+            for label, lookup in order:
+                start = time.perf_counter()
+                for _ in range(iterations):
+                    lookup()
+                samples[label].append(time.perf_counter() - start)
+
+        cached_median = statistics.median(samples["cached"])
+        recomputed_median = statistics.median(samples["recomputed"])
+        assert cached_median * 2 < recomputed_median, (
+            f"cached median {cached_median:.6f}s must be at least 2x faster "
+            f"than same-run recompute median {recomputed_median:.6f}s"
         )
 
 

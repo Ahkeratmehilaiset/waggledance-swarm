@@ -2,7 +2,7 @@
   "schema_version": "wd.genesis_acceptance_corpus.v1",
   "cases": [
     {
-      "case_id": "identity.positive.known_answer",
+      "case_id": "identity.positive.positive",
       "kind": "positive",
       "axis": "identity",
       "subject": {
@@ -20,7 +20,7 @@
       "expect": {"verdict": "ACCEPT", "reason": null}
     },
     {
-      "case_id": "lineage.positive.root_known_answer",
+      "case_id": "lineage.positive.positive_entry",
       "kind": "positive",
       "axis": "lineage",
       "subject": {

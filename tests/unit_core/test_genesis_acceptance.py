@@ -62,6 +62,38 @@ def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     assert report["accepted"] == 3
     assert report["mismatches"] == []
     assert report["divergences"] == []
+    assert report["corpus_matrix_complete"] is False
+    assert len(report["missing_case_ids"]) == (
+        len(tool.REQUIRED_CASE_MANIFEST) - report["total"]
+    )
+
+
+def test_frozen_manifest_rejects_relabels_and_duplicate_semantics(tmp_path):
+    document = tool.load_corpus(CORPUS_PATH)
+    relabelled = deepcopy(document)
+    relabelled["cases"][0]["case_id"] = "identity.positive.relabelled"
+    path = tmp_path / "relabelled.json"
+    path.write_text(json.dumps(relabelled), encoding="utf-8")
+    with pytest.raises(tool.CorpusError, match=r"^case:semantic_id$"):
+        tool.load_corpus(path)
+
+    duplicated = deepcopy(document)
+    duplicated["cases"].append(deepcopy(duplicated["cases"][0]))
+    path.write_text(json.dumps(duplicated), encoding="utf-8")
+    with pytest.raises(tool.CorpusError, match=r"^case:duplicate_id$"):
+        tool.load_corpus(path)
+
+
+def test_cli_declares_code_probe_gate_without_fabricating_execution():
+    report = tool.run_corpus(CORPUS_PATH)
+    assert report["required_code_probes"] == sorted(tool.REQUIRED_CODE_PROBES)
+    assert report["code_probe_gate"] == "separate_executable_test_required"
+    assert "executed_code_probes" not in report
+    assert "container_code_probe" not in report["missing_case_ids"]
+    assert (
+        tool.REQUIRED_CASE_MANIFEST["authority.positive.identity_only"]
+        == ("authority", "positive")
+    )
 
 
 def test_raw_cap_is_checked_before_json_decode(tmp_path):

@@ -41,6 +41,63 @@ _UTC = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,9})?Z$"
 )
+_CASE_ID = re.compile(
+    r"^(identity|lineage|restore|authority|timestamp)\."
+    r"(positive|negative)\.[a-z0-9_]+$"
+)
+AXES = frozenset({"identity", "lineage", "restore", "authority", "timestamp"})
+
+# Frozen W2C-A v4 inert-corpus cells. The manifest is deliberately exact:
+# repeating an axis/kind under a new label cannot satisfy matrix coverage.
+REQUIRED_CASE_MANIFEST = {
+    "identity.positive.positive": ("identity", "positive"),
+    "identity.negative.cell_id_mismatch": ("identity", "negative"),
+    "identity.negative.forged_id": ("identity", "negative"),
+    "identity.negative.bad_sha256_shape": ("identity", "negative"),
+    "identity.negative.missing_key": ("identity", "negative"),
+    "identity.negative.null_field": ("identity", "negative"),
+    "identity.negative.wrong_type_field": ("identity", "negative"),
+    "identity.negative.extra_key": ("identity", "negative"),
+    "lineage.positive.positive_entry": ("lineage", "positive"),
+    "lineage.positive.positive_link": ("lineage", "positive"),
+    "lineage.positive.positive_registry": ("lineage", "positive"),
+    "lineage.negative.entry_hash_mismatch": ("lineage", "negative"),
+    "lineage.negative.self_parent": ("lineage", "negative"),
+    "lineage.negative.depth_off_by_one": ("lineage", "negative"),
+    "lineage.negative.root_marker_disagreement": ("lineage", "negative"),
+    "lineage.negative.orphan_parent": ("lineage", "negative"),
+    "lineage.negative.two_roots": ("lineage", "negative"),
+    "lineage.negative.duplicate_cell_id": ("lineage", "negative"),
+    "lineage.negative.broken_prev_link": ("lineage", "negative"),
+    "lineage.negative.non_monotonic_depth": ("lineage", "negative"),
+    "restore.positive.same_facts_same_id": ("restore", "positive"),
+    "restore.positive.from_stored_mapping": ("restore", "positive"),
+    "restore.negative.drifted_field_rejects": ("restore", "negative"),
+    "authority.positive.identity_only": ("authority", "positive"),
+    "authority.negative.grant_field": ("authority", "negative"),
+    "authority.negative.budget_field": ("authority", "negative"),
+    "authority.negative.capability_field": ("authority", "negative"),
+    "timestamp.positive.positive": ("timestamp", "positive"),
+    "timestamp.negative.unicode_decimal": ("timestamp", "negative"),
+    "timestamp.negative.impossible_calendar": ("timestamp", "negative"),
+    "timestamp.negative.trailing_zero_fraction": ("timestamp", "negative"),
+    "timestamp.negative.non_utc": ("timestamp", "negative"),
+    "timestamp.negative.naive": ("timestamp", "negative"),
+}
+
+# Hostile Python values cannot be represented by inert JSON. The CLI reports
+# these required cells but never claims to have executed them.
+REQUIRED_CODE_PROBES = frozenset(
+    {
+        "subclass_value_lying_eq",
+        "homoglyph_key",
+        "flapping_mapping",
+        "nonreturning_mapping",
+        "nonreturning_sequence",
+        "dict_subclass",
+        "list_subclass",
+    }
+)
 
 
 class CorpusError(ValueError):
@@ -175,18 +232,23 @@ def _require_case_shape(case: object) -> dict[str, Any]:
         raise CorpusError("expect:not_mapping")
     if set(case) != {"case_id", "kind", "axis", "subject", "golden", "expect"}:
         raise CorpusError("case:keyset")
-    if type(case["case_id"]) is not str or not case["case_id"]:
+    if (
+        type(case["case_id"]) is not str
+        or _CASE_ID.fullmatch(case["case_id"]) is None
+    ):
         raise CorpusError("case:case_id")
-    if case["kind"] not in {"positive", "negative"}:
-        raise CorpusError("case:kind")
-    if case["axis"] not in {
-        "identity",
-        "lineage",
-        "restore",
-        "authority",
-        "timestamp",
+    if type(case["kind"]) is not str or case["kind"] not in {
+        "positive",
+        "negative",
     }:
+        raise CorpusError("case:kind")
+    if type(case["axis"]) is not str or case["axis"] not in AXES:
         raise CorpusError("case:axis")
+    binding = REQUIRED_CASE_MANIFEST.get(case["case_id"])
+    if binding is None:
+        raise CorpusError("case:semantic_id")
+    if binding != (case["axis"], case["kind"]):
+        raise CorpusError("case:semantic_binding")
     if type(case["subject"]) is not dict:
         raise CorpusError("case:subject")
     if case["golden"] is not None and type(case["golden"]) is not dict:
@@ -304,11 +366,16 @@ def load_corpus(path: Path) -> dict[str, Any]:
         raise CorpusError("corpus:cases")
     if len(cases) > MAX_CASES:
         raise CorpusError("caps:case_count")
+    case_ids: list[str] = []
     for case in cases:
         if type(case) is not dict:
             raise CorpusError("case:not_mapping")
         if len(_canonical_bytes(case)) > MAX_CASE_BYTES:
             raise CorpusError("caps:case_bytes")
+        checked_case = _require_case_shape(case)
+        case_ids.append(checked_case["case_id"])
+    if len(case_ids) != len(set(case_ids)):
+        raise CorpusError("case:duplicate_id")
     return document
 
 
@@ -440,15 +507,11 @@ def run_corpus(path: Path) -> dict[str, Any]:
     divergences = [
         result["case_id"] for result in results if result["diverged"]
     ]
-    covered_axis_kinds = {
-        (case.get("axis"), case.get("kind")) for case in document["cases"]
-    }
-    required_axis_kinds = {
-        (axis, kind)
-        for axis in ("identity", "lineage", "restore", "authority", "timestamp")
-        for kind in ("positive", "negative")
-    }
-    coverage_complete = required_axis_kinds <= covered_axis_kinds
+    present_case_ids = {case["case_id"] for case in document["cases"]}
+    missing_case_ids = sorted(
+        set(REQUIRED_CASE_MANIFEST).difference(present_case_ids)
+    )
+    corpus_matrix_complete = not missing_case_ids
     return {
         "schema_version": REPORT_SCHEMA,
         "corpus_digest": _digest(document),
@@ -461,8 +524,12 @@ def run_corpus(path: Path) -> dict[str, Any]:
         ),
         "mismatches": mismatches,
         "divergences": divergences,
-        "coverage_complete": coverage_complete,
-        "ok": not mismatches and not divergences and coverage_complete,
+        "missing_case_ids": missing_case_ids,
+        "corpus_matrix_complete": corpus_matrix_complete,
+        "required_code_probes": sorted(REQUIRED_CODE_PROBES),
+        "code_probe_gate": "separate_executable_test_required",
+        "coverage_complete": corpus_matrix_complete,
+        "ok": not mismatches and not divergences and corpus_matrix_complete,
         "results": results,
     }
 

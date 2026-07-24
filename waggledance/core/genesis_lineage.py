@@ -69,8 +69,19 @@ class GenesisLineageError(ValueError):
     """The value is outside the GenesisLineageV1 contract."""
 
 
+def _freeze_mapping(value: object) -> Optional[dict]:
+    """Snapshot an untrusted Mapping into a plain dict, reading each key once,
+    so a flapping/live Mapping cannot present different values across the
+    shape check and the digest recompute. None if not a Mapping."""
+    if not isinstance(value, Mapping):
+        return None
+    return {key: value[key] for key in list(value.keys())}
+
+
 def _require_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+    # EXACT str only: a str subclass overriding __eq__ (compare-equal-to-
+    # anything) would defeat the later == recompute, so reject subclasses here.
+    if type(value) is not str or not _SHA256.fullmatch(value):
         raise GenesisLineageError(f"{label} must be a sha256:<64 hex> digest")
     return value
 
@@ -110,6 +121,10 @@ def _validate_fields(
     inherited_budget_slice_digest: str,
 ) -> None:
     _require_sha256(cell_id, "cell_id")
+    # Exact str before ANY == against the sentinel, so a permissive-__eq__
+    # subclass cannot masquerade as the root parent and skip sha256 validation.
+    if type(parent_cell_id) is not str:
+        raise GenesisLineageError("parent_cell_id must be a str")
     if parent_cell_id != GENESIS_ROOT_PARENT:
         _require_sha256(parent_cell_id, "parent_cell_id")
     _require_sha256(lineage_prev_hash, "lineage_prev_hash")
@@ -117,7 +132,9 @@ def _validate_fields(
     _require_sha256(
         inherited_budget_slice_digest, "inherited_budget_slice_digest"
     )
-    if isinstance(depth, bool) or not isinstance(depth, int):
+    # EXACT int: bool is an int subclass, and an int subclass could override
+    # comparisons; type() is int rejects both.
+    if type(depth) is not int:
         raise GenesisLineageError("depth must be an integer")
     if not 0 <= depth <= MAX_DEPTH:
         raise GenesisLineageError(f"depth must be within 0..{MAX_DEPTH}")
@@ -148,7 +165,9 @@ class GenesisLineageV1:
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != SCHEMA_VERSION:
+        if type(self.schema_version) is not str or (
+            self.schema_version != SCHEMA_VERSION
+        ):
             raise GenesisLineageError("lineage schema_version refused")
         _validate_fields(
             cell_id=self.cell_id,
@@ -158,6 +177,8 @@ class GenesisLineageV1:
             inherited_goal_slice_digest=self.inherited_goal_slice_digest,
             inherited_budget_slice_digest=self.inherited_budget_slice_digest,
         )
+        # entry_hash exact str before the == recompute (permissive-__eq__ guard).
+        _require_sha256(self.entry_hash, "entry_hash")
         expected = derive_entry_hash(
             cell_id=self.cell_id,
             parent_cell_id=self.parent_cell_id,
@@ -240,14 +261,17 @@ def build_child_entry(
     ancestry is proven pairwise with ``verify_lineage_link`` and
     registry-wide with ``verify_lineage_registry`` closure."""
 
-    parent_ok, parent_reason = verify_lineage_entry(parent_entry)
+    parent = _freeze_mapping(parent_entry)
+    if parent is None:
+        raise GenesisLineageError("parent entry rejected: not_mapping")
+    parent_ok, parent_reason = verify_lineage_entry(parent)
     if not parent_ok:
         raise GenesisLineageError(f"parent entry rejected: {parent_reason}")
     return _build(
         cell_id=cell_id,
-        parent_cell_id=str(parent_entry["cell_id"]),
-        lineage_prev_hash=str(parent_entry["entry_hash"]),
-        depth=int(parent_entry["depth"]) + 1,  # type: ignore[call-overload]
+        parent_cell_id=parent["cell_id"],
+        lineage_prev_hash=parent["entry_hash"],
+        depth=parent["depth"] + 1,
         inherited_goal_slice_digest=inherited_goal_slice_digest,
         inherited_budget_slice_digest=inherited_budget_slice_digest,
     )
@@ -258,37 +282,40 @@ def verify_lineage_entry(value: object) -> tuple[bool, Optional[str]]:
     bidirectional root rules, no self-parent, and an internal ``entry_hash``
     recompute. Returns ``(ok, reason)``."""
 
-    if not isinstance(value, Mapping):
+    snapshot = _freeze_mapping(value)
+    if snapshot is None:
         return False, "not_mapping"
-    if set(value.keys()) != LINEAGE_KEYS:
+    if set(snapshot.keys()) != LINEAGE_KEYS:
         return False, "keyset"
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if type(snapshot.get("schema_version")) is not str or (
+        snapshot["schema_version"] != SCHEMA_VERSION
+    ):
         return False, "schema_version"
     try:
         _validate_fields(
-            cell_id=value.get("cell_id"),  # type: ignore[arg-type]
-            parent_cell_id=value.get("parent_cell_id"),  # type: ignore[arg-type]
-            lineage_prev_hash=value.get("lineage_prev_hash"),  # type: ignore[arg-type]
-            depth=value.get("depth"),  # type: ignore[arg-type]
-            inherited_goal_slice_digest=value.get(
+            cell_id=snapshot.get("cell_id"),  # type: ignore[arg-type]
+            parent_cell_id=snapshot.get("parent_cell_id"),  # type: ignore[arg-type]
+            lineage_prev_hash=snapshot.get("lineage_prev_hash"),  # type: ignore[arg-type]
+            depth=snapshot.get("depth"),  # type: ignore[arg-type]
+            inherited_goal_slice_digest=snapshot.get(
                 "inherited_goal_slice_digest"
             ),  # type: ignore[arg-type]
-            inherited_budget_slice_digest=value.get(
+            inherited_budget_slice_digest=snapshot.get(
                 "inherited_budget_slice_digest"
             ),  # type: ignore[arg-type]
         )
     except GenesisLineageError as exc:
         return False, str(exc)
-    entry_hash = value.get("entry_hash")
-    if not isinstance(entry_hash, str) or not _SHA256.fullmatch(entry_hash):
+    entry_hash = snapshot.get("entry_hash")
+    if type(entry_hash) is not str or not _SHA256.fullmatch(entry_hash):
         return False, "entry_hash"
     expected = derive_entry_hash(
-        cell_id=value["cell_id"],  # type: ignore[arg-type]
-        parent_cell_id=value["parent_cell_id"],  # type: ignore[arg-type]
-        lineage_prev_hash=value["lineage_prev_hash"],  # type: ignore[arg-type]
-        depth=value["depth"],  # type: ignore[arg-type]
-        inherited_goal_slice_digest=value["inherited_goal_slice_digest"],  # type: ignore[arg-type]
-        inherited_budget_slice_digest=value["inherited_budget_slice_digest"],  # type: ignore[arg-type]
+        cell_id=snapshot["cell_id"],
+        parent_cell_id=snapshot["parent_cell_id"],
+        lineage_prev_hash=snapshot["lineage_prev_hash"],
+        depth=snapshot["depth"],
+        inherited_goal_slice_digest=snapshot["inherited_goal_slice_digest"],
+        inherited_budget_slice_digest=snapshot["inherited_budget_slice_digest"],
     )
     if entry_hash != expected:
         return False, "entry_hash_mismatch"
@@ -300,6 +327,14 @@ def verify_lineage_link(
 ) -> tuple[bool, Optional[str]]:
     """Both entries verify AND the child genuinely descends from the parent."""
 
+    # Freeze both once, then verify AND compare against the SAME frozen values,
+    # so a live Mapping cannot flip parent_cell_id (etc.) after it verifies.
+    child = _freeze_mapping(child)
+    parent = _freeze_mapping(parent)
+    if child is None:
+        return False, "child:not_mapping"
+    if parent is None:
+        return False, "parent:not_mapping"
     child_ok, child_reason = verify_lineage_entry(child)
     if not child_ok:
         return False, f"child:{child_reason}"
@@ -310,7 +345,7 @@ def verify_lineage_link(
         return False, "parent_cell_id_mismatch"
     if child["lineage_prev_hash"] != parent["entry_hash"]:
         return False, "prev_hash_mismatch"
-    if child["depth"] != int(parent["depth"]) + 1:  # type: ignore[call-overload]
+    if child["depth"] != parent["depth"] + 1:
         return False, "depth_mismatch"
     return True, None
 
@@ -335,24 +370,25 @@ def verify_lineage_registry(
     # materialized). str/bytes are Sequences but never a registry.
     if not isinstance(entries, _SequenceABC) or isinstance(entries, (str, bytes)):
         return False, "not_sequence"
-    # SNAPSHOT once via the Sequence protocol (len + getitem), reading each
-    # index exactly once into an immutable tuple. This defeats a flapping /
-    # TOCTOU Sequence whose contents differ between iterations: both passes
-    # below operate on the frozen snapshot, never on the live object. Bounded
+    # SNAPSHOT via the Sequence protocol (len + getitem), and FREEZE EACH ENTRY
+    # to a plain dict, reading each index/key exactly once. Both passes below
+    # operate only on these frozen dicts -- never the live Sequence or live
+    # Mappings -- so neither a flapping Sequence nor a Mapping that flips a
+    # field after it verifies can present different data across passes. Bounded
     # by the declared length; any protocol error fails closed.
     try:
-        entries = tuple(entries[index] for index in range(len(entries)))
+        frozen = tuple(_freeze_mapping(entries[index]) for index in range(len(entries)))
     except Exception:
         return False, "unstable_sequence"
-    if not entries:
+    if not frozen:
         return False, "empty_registry"
-    by_cell: dict[str, Mapping[str, object]] = {}
+    by_cell: dict[str, dict] = {}
     root_count = 0
-    for index, entry in enumerate(entries):
+    for index, entry in enumerate(frozen):
         ok, reason = verify_lineage_entry(entry)
         if not ok:
             return False, f"entry_{index}:{reason}"
-        cell_id = str(entry["cell_id"])
+        cell_id = entry["cell_id"]  # exact str, verified
         if cell_id in by_cell:
             return False, f"entry_{index}:duplicate_cell_id"
         by_cell[cell_id] = entry
@@ -362,10 +398,10 @@ def verify_lineage_registry(
         return False, "no_root"
     if root_count > 1:
         return False, "multiple_roots"
-    for index, entry in enumerate(entries):
+    for index, entry in enumerate(frozen):
         if entry["parent_cell_id"] == GENESIS_ROOT_PARENT:
             continue
-        parent = by_cell.get(str(entry["parent_cell_id"]))
+        parent = by_cell.get(entry["parent_cell_id"])
         if parent is None:
             return False, f"entry_{index}:orphan_parent_not_in_registry"
         ok, reason = verify_lineage_link(entry, parent)

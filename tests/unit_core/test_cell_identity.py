@@ -272,6 +272,66 @@ def test_one_instant_cannot_mint_two_identities():
             )
 
 
+class _EqAnyStr(str):
+    """A str subclass that compares equal to anything -- the classic
+    permissive-__eq__ forgery. Exact-type checks must reject it."""
+
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    def __hash__(self):
+        return 0
+
+
+def test_eq_any_str_forged_fields_rejected_construct_and_verify():
+    good = _identity()
+    forged_id = _EqAnyStr("sha256:" + "0" * 64)
+    # Constructor must reject a permissive-__eq__ cell_id (no self-cert).
+    with pytest.raises(CellIdentityError):
+        CellIdentityV1(
+            cell_id=forged_id,
+            pubkey_digest=_PUBKEY,
+            genesis_material_digest=_GENESIS,
+            created_at_utc=_CREATED,
+        )
+    # Verifier must reject it in every digest-bound field + schema.
+    for key in ("cell_id", "pubkey_digest", "genesis_material_digest"):
+        broken = good.to_mapping()
+        broken[key] = _EqAnyStr(broken[key])
+        ok, _ = verify_cell_identity(broken)
+        assert ok is False, key
+    broken = good.to_mapping()
+    broken["schema_version"] = _EqAnyStr("anything")
+    assert verify_cell_identity(broken) == (False, "schema_version")
+
+
+def test_live_mapping_result_depends_only_on_the_snapshot():
+    """The verifier reads each key exactly once (snapshot). A Mapping that
+    presents a forged cell_id on that first read and 'repairs' it on later
+    reads must still FAIL -- there is no second read to rescue it. This proves
+    the check-and-use operate on the same frozen value."""
+    good = _identity().to_mapping()
+    forged = "sha256:" + "f" * 64
+
+    class _FlipCellId(dict):
+        def __init__(self, base):
+            super().__init__(base)
+            self._reads = 0
+
+        def __getitem__(self, key):
+            if key == "cell_id":
+                self._reads += 1
+                return forged if self._reads == 1 else super().__getitem__(key)
+            return super().__getitem__(key)
+
+    ok, reason = verify_cell_identity(_FlipCellId(good))
+    assert ok is False
+    assert reason in ("cell_id_mismatch", "cell_id")
+
+
 def test_non_mapping_inputs_fail_closed():
     for value in (None, "identity", 7, ["x"], object()):
         ok, reason = verify_cell_identity(value)

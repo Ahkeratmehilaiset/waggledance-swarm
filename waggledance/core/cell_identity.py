@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Optional
+from typing import Mapping, Optional
 
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -61,14 +61,27 @@ class CellIdentityError(ValueError):
     """The value is outside the CellIdentityV1 contract."""
 
 
+def _freeze_mapping(value: object) -> Optional[dict]:
+    """Snapshot an untrusted Mapping into a plain dict, reading each key once,
+    so a flapping/live Mapping cannot present different values to successive
+    reads across the shape check and the digest recompute. None if not a
+    Mapping."""
+    if not isinstance(value, Mapping):
+        return None
+    return {key: value[key] for key in list(value.keys())}
+
+
 def _require_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+    # EXACT str only: a str subclass (e.g. one overriding __eq__ to compare
+    # equal to anything) would defeat the later == recompute, so subclasses
+    # are rejected here before any comparison.
+    if type(value) is not str or not _SHA256.fullmatch(value):
         raise CellIdentityError(f"{label} must be a sha256:<64 hex> digest")
     return value
 
 
 def _require_created_at(value: object) -> str:
-    if not isinstance(value, str) or not _CREATED_AT_UTC.fullmatch(value):
+    if type(value) is not str or not _CREATED_AT_UTC.fullmatch(value):
         raise CellIdentityError(
             "created_at_utc must be an ISO-8601 UTC instant with Z suffix"
         )
@@ -124,8 +137,13 @@ class CellIdentityV1:
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != SCHEMA_VERSION:
+        if type(self.schema_version) is not str or (
+            self.schema_version != SCHEMA_VERSION
+        ):
             raise CellIdentityError("cell identity schema_version refused")
+        # Validate cell_id as an EXACT str before the == recompute, so a
+        # subclass with a permissive __eq__ cannot self-certify a forged id.
+        _require_sha256(self.cell_id, "cell_id")
         expected = derive_cell_id(
             pubkey_digest=self.pubkey_digest,
             genesis_material_digest=self.genesis_material_digest,
@@ -170,31 +188,28 @@ def verify_cell_identity(value: object) -> tuple[bool, Optional[str]]:
     names its clause. Absent key, explicit null, and wrong type are three
     distinct inputs and all three reject."""
 
-    if not isinstance(value, Mapping):
+    snapshot = _freeze_mapping(value)
+    if snapshot is None:
         return False, "not_mapping"
-    if set(value.keys()) != IDENTITY_KEYS:
+    if set(snapshot.keys()) != IDENTITY_KEYS:
         return False, "keyset"
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if type(snapshot.get("schema_version")) is not str or (
+        snapshot["schema_version"] != SCHEMA_VERSION
+    ):
         return False, "schema_version"
-    checks: tuple[tuple[str, Any], ...] = (
-        ("cell_id", _SHA256),
-        ("pubkey_digest", _SHA256),
-        ("genesis_material_digest", _SHA256),
-    )
-    for key, pattern in checks:
-        field = value.get(key)
-        if not isinstance(field, str) or not pattern.fullmatch(field):
+    for key in ("cell_id", "pubkey_digest", "genesis_material_digest"):
+        field = snapshot.get(key)
+        if type(field) is not str or not _SHA256.fullmatch(field):
             return False, key
-    created = value.get("created_at_utc")
     try:
-        _require_created_at(created)
+        _require_created_at(snapshot.get("created_at_utc"))
     except CellIdentityError:
         return False, "created_at_utc"
     expected = derive_cell_id(
-        pubkey_digest=value["pubkey_digest"],
-        genesis_material_digest=value["genesis_material_digest"],
-        created_at_utc=created,
+        pubkey_digest=snapshot["pubkey_digest"],
+        genesis_material_digest=snapshot["genesis_material_digest"],
+        created_at_utc=snapshot["created_at_utc"],
     )
-    if value["cell_id"] != expected:
+    if snapshot["cell_id"] != expected:
         return False, "cell_id_mismatch"
     return True, None

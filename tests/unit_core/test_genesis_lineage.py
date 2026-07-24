@@ -423,6 +423,68 @@ def test_registry_closure_is_order_independent():
     assert verify_lineage_registry(shuffled) == (True, None)
 
 
+class _EqAnyStr(str):
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    def __hash__(self):
+        return 0
+
+
+class _LyingDepth(int):
+    """An int subclass; exact-type checks must reject it as depth."""
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["cell_id", "parent_cell_id", "lineage_prev_hash", "entry_hash",
+     "inherited_goal_slice_digest", "inherited_budget_slice_digest"],
+)
+def test_eq_any_str_subclass_field_rejected(key):
+    broken = _child().to_mapping()
+    broken[key] = _EqAnyStr(broken[key])
+    ok, _ = verify_lineage_entry(broken)
+    assert ok is False
+
+
+def test_lying_depth_int_subclass_rejected():
+    broken = _child().to_mapping()
+    broken["depth"] = _LyingDepth(1)
+    ok, _ = verify_lineage_entry(broken)
+    assert ok is False
+
+
+def test_eq_any_str_schema_rejected():
+    broken = _child().to_mapping()
+    broken["schema_version"] = _EqAnyStr("anything")
+    assert verify_lineage_entry(broken) == (False, "schema_version")
+
+
+def test_link_snapshots_defeat_parent_flip_after_verify():
+    """A live parent Mapping that verifies, then flips parent identity on a
+    later read, cannot fool the link: verify_lineage_link freezes both once."""
+    root, child = _root(), _child()
+    good_parent = root.to_mapping()
+
+    class _FlipParentId(dict):
+        def __init__(self, base):
+            super().__init__(base)
+            self._reads = 0
+
+        def __getitem__(self, key):
+            if key == "cell_id":
+                self._reads += 1
+                # flips AFTER the snapshot's single read
+                return super().__getitem__(key) if self._reads <= 1 else "sha256:" + "9" * 64
+            return super().__getitem__(key)
+
+    ok, reason = verify_lineage_link(child.to_mapping(), _FlipParentId(good_parent))
+    assert (ok, reason) == (True, None)  # snapshot froze the honest parent id
+
+
 def test_schema_version_pinned():
     wrong = _child().to_mapping()
     wrong["schema_version"] = "wd.genesis_lineage.v2"

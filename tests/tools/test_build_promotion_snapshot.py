@@ -80,7 +80,6 @@ def _runner(
             str(PR),
             "--repo",
             REPO,
-            "--patch",
         ): _completed(diff),
     }
 

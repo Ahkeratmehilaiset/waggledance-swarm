@@ -248,8 +248,11 @@ def _gh_changed_paths(*, repo: str, pr_number: int, runner: Runner | None) -> li
 
 
 def _gh_diff_text(*, repo: str, pr_number: int, runner: Runner | None) -> str:
+    # Keep policy input aligned with the autonomous merge driver. ``--patch``
+    # emits format-patch commit-message preambles, so policy markers mentioned
+    # only in prose can otherwise be mistaken for changed code.
     completed = _run(
-        ["gh", "pr", "diff", str(pr_number), "--repo", repo, "--patch"],
+        ["gh", "pr", "diff", str(pr_number), "--repo", repo],
         runner=runner,
     )
     if not completed.stdout:

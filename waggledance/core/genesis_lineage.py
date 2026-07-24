@@ -34,6 +34,7 @@ lets a rebuilt cell (same genesis facts) prove the SAME lineage position.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence as _SequenceABC
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
@@ -329,11 +330,14 @@ def verify_lineage_registry(
     Parent fan-out stays legal (many children may link to one parent).
     Cycles are impossible once links verify: depth strictly increases."""
 
-    # Materialize ONCE: entries may be a one-shot iterable (generator). This
-    # function makes two passes (index parents, then verify links); without
-    # this a generator would be exhausted after pass one and every non-root
-    # link check would silently see nothing and pass.
-    entries = list(entries)
+    # Require a re-iterable, bounded Sequence (list/tuple) as declared -- NOT
+    # an arbitrary iterator. This makes two passes (index parents, then verify
+    # links); a one-shot generator would be exhausted after pass one and every
+    # non-root link check would silently pass. Rejecting (rather than
+    # materializing an unknown iterable) also refuses to hang/OOM on a hostile
+    # or infinite generator. str/bytes are Sequences but never a registry.
+    if not isinstance(entries, _SequenceABC) or isinstance(entries, (str, bytes)):
+        return False, "not_sequence"
     if not entries:
         return False, "empty_registry"
     by_cell: dict[str, Mapping[str, object]] = {}

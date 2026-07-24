@@ -473,7 +473,7 @@ def check_rco_pass_present(
             registry=registry,
             restricted_agents=restricted_agents,
         )
-        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+        if binding_status in {"missing_uuid", "mismatch_uuid", "uuid_alias"}:
             # Fail-closed veto asymmetry (bridge audit 2026-07-02): identity
             # binding exists to stop FORGED passes, so an unverified pass
             # stays ignored. But an unverified VETO-shaped event from a
@@ -620,7 +620,7 @@ def _find_task_id_mismatch_rco_pass_events(
             event,
             registry=identity_registry,
             restricted_agents=restricted_agents,
-        ) in {"missing_uuid", "mismatch_uuid"}:
+        ) in {"missing_uuid", "mismatch_uuid", "uuid_alias"}:
             continue
         if _is_qualifying_rco_pass(event, head, agent):
             summary = _summarize_event(event)

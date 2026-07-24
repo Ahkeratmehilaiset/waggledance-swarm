@@ -12,6 +12,7 @@ from tools.idle_consensus_auto_merge import (
     build_parser,
     evaluate_auto_merge_gate,
     main,
+    verify_bridge_consensus,
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -647,6 +648,54 @@ def test_bridge_consensus_accepts_exact_head_payload_alias(tmp_path: Path) -> No
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["bridge_consensus"]["ok"] is True
     assert report["bridge_consensus"]["rco_pass_ref"]["agent"] == "claude-rco-1"
+
+
+def test_bridge_consensus_rejects_registered_uuid_alias_build_pass() -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"exact_head": HEAD}},
+        _bridge_event(
+            agent="alias-probe",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {
+            "agent_uuid": AGENT_UUIDS["codex-tools-1"],
+            "payload": {"exact_head": HEAD},
+        },
+        _bridge_event(
+            agent="claude-rco-1",
+            type_="decision",
+            status="rco_pass",
+        )
+        | {"payload": {"pr": 477, "exact_head": HEAD}},
+    ]
+
+    result = verify_bridge_consensus(
+        events=events,
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        tools_agent="alias-probe",
+        author_agent="fable-5",
+    )
+
+    assert result["ok"] is False
+    assert result["identities"]["build_tools"]["agent"] == "alias-probe"
+    assert result["identities"]["build_tools"]["approved"] is False
+    assert any(
+        "build_tools (alias-probe): no head-bound approval" in reason
+        for reason in result["reasons"]
+    )
+    assert result["ignored_identity_mismatch_events"][0]["agent"] == "alias-probe"
+    assert (
+        result["ignored_identity_mismatch_events"][0]["identity_binding_status"]
+        == "uuid_alias"
+    )
 
 
 # --- 9b standing-consensus-sign wiring (end-to-end through the merge gate) ---

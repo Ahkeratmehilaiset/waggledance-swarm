@@ -460,6 +460,19 @@ function Assert-AgentUuidMatchesIdentityRegistry {
     }
     $expectedUuid = Get-BridgeObjectField -Object $identities -Name $Agent
     if (-not $expectedUuid) {
+        if ($AgentUuid) {
+            foreach ($identity in @($identities.PSObject.Properties)) {
+                $registeredAgent = [string]$identity.Name
+                $registeredUuid = [string]$identity.Value
+                if ([string]::Equals(
+                    [string]$AgentUuid,
+                    $registeredUuid,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                    throw "agent_uuid belongs to bridge identity registry agent: $registeredAgent"
+                }
+            }
+        }
         return
     }
     $expectedUuidText = [string]$expectedUuid

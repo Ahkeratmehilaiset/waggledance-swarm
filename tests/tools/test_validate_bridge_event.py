@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -284,6 +286,162 @@ def test_cli_identity_registry_strict_accepts_matching_uuid(
     assert rc == 0
     assert payload["ok"] is True
     assert payload["identity_registry_audit"]["ok"] is True
+
+
+def test_cli_identity_registry_strict_rejects_registered_uuid_alias(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    registry_path = tmp_path / "bridge_identity_registry.json"
+    _write_identity_registry(registry_path)
+    _write_jsonl(
+        events_path,
+        [
+            _good_event(
+                agent="alias-probe",
+                agent_uuid=AGENT_UUID.upper(),
+                status="build_consensus_pass",
+            )
+        ],
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--identity-registry",
+        str(registry_path),
+        "--identity-registry-mode",
+        "strict",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    audit = payload["identity_registry_audit"]
+    assert rc == 1
+    assert payload["ok"] is False
+    assert audit["schema_version"] == "bridge-identity-registry-audit.v2"
+    assert audit["non_registry_agent_event_count"] == 1
+    assert audit["registered_uuid_alias_events"] == 1
+    assert audit["gate_relevant_registered_uuid_alias"] == 1
+    assert audit["issue_count"] == 1
+    assert audit["examples"] == [
+        {
+            "agent": "alias-probe",
+            "gate_relevant": True,
+            "line_no": 1,
+            "reason": "registered_uuid_alias",
+            "registered_uuid_owner": "codex-lead-1",
+            "status": "build_consensus_pass",
+            "type": "message",
+        }
+    ]
+
+
+def test_cli_identity_registry_rejects_duplicate_uuid_owners(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    registry_path = tmp_path / "bridge_identity_registry.json"
+    _write_jsonl(events_path, [_good_event()])
+    _write_identity_registry(
+        registry_path,
+        identities={"codex-lead-1": AGENT_UUID, "alias-probe": AGENT_UUID.upper()},
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--identity-registry",
+        str(registry_path),
+        "--identity-registry-mode",
+        "strict",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "UUID reused by" in captured.err
+
+
+def test_bridge_writer_rejects_reverse_uuid_alias(tmp_path: Path) -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is required for the bridge writer regression")
+
+    root = Path(__file__).resolve().parents[2]
+    registry = json.loads(
+        (root / "configs" / "bridge_identity_registry.json").read_text(
+            encoding="utf-8"
+        )
+    )["identities"]
+    registered_agent, registered_uuid = next(iter(registry.items()))
+    alias_agent = "alias-probe"
+    assert alias_agent not in registry
+
+    runtime_root = tmp_path / ".agent-bridge"
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    common_args = [
+        powershell,
+        "-NoProfile",
+        "-File",
+        str(root / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"),
+        "-Type",
+        "status",
+        "-TaskId",
+        "identity-alias-regression",
+        "-Status",
+        "probe",
+        "-Message",
+        "isolated writer regression",
+    ]
+
+    rejected = subprocess.run(
+        [
+            *common_args,
+            "-Agent",
+            alias_agent,
+            "-AgentUuid",
+            registered_uuid.upper(),
+        ],
+        cwd=root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected.returncode != 0
+    assert "agent_uuid belongs to bridge identity registry agent" in (
+        rejected.stdout + rejected.stderr
+    )
+
+    accepted = subprocess.run(
+        [
+            *common_args,
+            "-Agent",
+            registered_agent,
+            "-AgentUuid",
+            registered_uuid,
+        ],
+        cwd=root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    event = json.loads(
+        (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8")
+    )
+    assert event["agent"] == registered_agent
+    assert event["agent_uuid"] == registered_uuid
 
 
 def test_cli_event_hygiene_warn_reports_bridge_event_shape_issues(

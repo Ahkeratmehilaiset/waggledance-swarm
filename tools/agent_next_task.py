@@ -33,7 +33,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -107,8 +107,8 @@ RCO_RESPONSE_STATUSES = {
 RCO_SCOUT_OUTCOME_TYPES = frozenset(
     {*SUCCESSFUL_COMPLETION_TYPES, "finding", "handoff"}
 )
-NONTERMINAL_RCO_SCOUT_STATUSES = frozenset(
-    {"", "active", "claimed", "in_progress", "pending", "running", "started"}
+RCO_SCOUT_TERMINAL_HANDOFF_STATUSES = frozenset(
+    {"handoff", "rco_lane_restart_requested"}
 )
 RCO_REEMIT_GATE_TOKENS = (
     "needs rco reemit",
@@ -2042,6 +2042,25 @@ def _matching_production_liveness_reactivation_task_ids(
     }
 
 
+def _iter_done_records(bridge_root: Path) -> Iterator[Mapping[str, Any]]:
+    """Yield only readable JSON-object work-queue completion records."""
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        return
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        # ValueError includes JSONDecodeError and UnicodeError. RecursionError
+        # remains separate because deeply nested hostile JSON can raise it.
+        except (OSError, ValueError, RecursionError):
+            continue
+        if isinstance(payload, Mapping):
+            yield payload
+
+
 def _production_liveness_task_completed_at_or_after(
     task_id: str,
     *,
@@ -2058,17 +2077,7 @@ def _production_liveness_task_completed_at_or_after(
         if completed_at is not None and completed_at >= threshold:
             return True
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         if str(payload.get("task_id") or "") != task_id:
             continue
         status = str(
@@ -2256,17 +2265,7 @@ def _completed_substrate_smoke_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         if str(payload.get("agent", "")) != agent:
             continue
         task_id = str(payload.get("task_id", ""))
@@ -2302,17 +2301,7 @@ def _completed_production_liveness_reactivation_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_production_liveness_reactivation_task_id(
             task_id,
@@ -2365,17 +2354,7 @@ def _completed_rco_lane_failover_task_ids(
         ):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             continue
@@ -2413,14 +2392,13 @@ def _is_trusted_rco_scout_completion_event(
     ) != "valid":
         return False
 
-    status_tokens = set(re.findall(r"[a-z0-9]+", status.lower()))
     if event_type in SUCCESSFUL_COMPLETION_TYPES:
         if status not in SUCCESSFUL_COMPLETION_STATUSES:
             return False
     elif event_type == "finding":
         if status != "open":
             return False
-    elif status_tokens & NONTERMINAL_RCO_SCOUT_STATUSES:
+    elif status not in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES:
         return False
 
     event_time = _parse_strict_utc(event.get("ts_utc"))
@@ -2489,7 +2467,14 @@ def _is_trusted_rco_scout_done_record(
     values = {key: _required_exact_string(payload, key) for key in required_fields}
     if not all(values.values()):
         return False
-    if values["agent"] not in identity_registry:
+    # Security-sensitive scout completion never inherits identity merely from
+    # a registered agent string or a done filename. Legacy/unbound records
+    # cannot clear the completion gate.
+    if bridge_identity_binding_status(
+        payload,
+        registry=identity_registry,
+        restricted_agents=frozenset(identity_registry),
+    ) != "valid":
         return False
     status = values["release_status"]
     if status not in SUCCESSFUL_COMPLETION_STATUSES and status != "handoff":
@@ -2568,17 +2553,7 @@ def _completed_dream_mode_task_ids(
         if _is_successful_completion_event(event):
             completed.add(canonical_task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         canonical_task_id = _canonical_same_day_dream_mode_task_id(
             task_id,
@@ -2613,17 +2588,7 @@ def _completed_operational_scout_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_operational_scout_task_id(task_id, now_utc):
             continue
@@ -2654,17 +2619,7 @@ def _completed_continuous_operational_scout_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_continuous_operational_scout_task_id(task_id, now_utc):
             continue

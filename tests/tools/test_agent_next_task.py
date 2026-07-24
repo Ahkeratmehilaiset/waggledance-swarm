@@ -828,6 +828,13 @@ def test_completed_stalled_rco_lane_failover_advances_to_smoke(
         bridge_root=bridge,
         now_utc=NOW,
     )
+    done_file = next((bridge / "work_queue" / "done").glob("*.json"))
+    done_payload = json.loads(done_file.read_text(encoding="utf-8"))
+    done_payload["agent_uuid"] = BRIDGE_AGENT_UUIDS["codex-lead-1"]
+    done_file.write_text(
+        json.dumps(done_payload, sort_keys=True),
+        encoding="utf-8",
+    )
 
     report = evaluate_agent_next_task(
         agent="codex-lead-1",
@@ -846,6 +853,7 @@ def test_completed_stalled_rco_lane_failover_advances_to_smoke(
     [
         ("finding", "open"),
         ("handoff", "rco_lane_restart_requested"),
+        ("handoff", "handoff"),
         ("done", "done"),
     ],
 )
@@ -894,7 +902,6 @@ def test_identity_bound_claim_then_rco_scout_outcome_advances_to_smoke(
         "claim_identity_mismatch",
         "claim_missing_message",
         "claim_timestamp_after_outcome",
-        "nonterminal_handoff",
     ],
 )
 def test_untrusted_rco_scout_outcome_does_not_complete_task(
@@ -936,16 +943,46 @@ def test_untrusted_rco_scout_outcome_does_not_complete_task(
         del claim["message"]
     elif hostile_case == "claim_timestamp_after_outcome":
         claim["ts_utc"] = "2026-05-20T11:55:00Z"
-    elif hostile_case == "nonterminal_handoff":
-        outcome["type"] = "handoff"
-        outcome["status"] = "active"
-
     events = [_rco_lane_stall_event()]
     if hostile_case != "missing_claim":
         events.append(claim)
     events.append(outcome)
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(bridge, events)
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_lane_failover_scout"
+    assert report["candidate"]["kind"] == "rco_lane_failover_scout"
+    assert report["completed_rco_lane_failover_task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["in_progress", "incomplete", "banana", "active", "pending"],
+)
+def test_nonterminal_or_unknown_rco_scout_handoff_does_not_complete_task(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            _rco_lane_stall_event(),
+            _rco_scout_claim_event(),
+            _rco_scout_outcome_event(
+                event_type="handoff",
+                status=status,
+            ),
+        ],
+    )
     _claims_dir(bridge)
 
     report = evaluate_agent_next_task(
@@ -1025,6 +1062,7 @@ def test_complete_rco_scout_handoff_done_record_advances_to_smoke(
         json.dumps(
             {
                 "agent": "codex-lead-1",
+                "agent_uuid": BRIDGE_AGENT_UUIDS["codex-lead-1"],
                 "task_id": RCO_FAILOVER_TASK_ID,
                 "summary": "bounded RCO lane failover diagnostic",
                 "release_status": "handoff",
@@ -1058,6 +1096,8 @@ def test_complete_rco_scout_handoff_done_record_advances_to_smoke(
         "missing_release_message",
         "missing_claimed_at",
         "missing_released_at",
+        "missing_agent_uuid",
+        "identity_mismatch",
         "unregistered_agent",
         "future_release",
         "pre_episode_claim",
@@ -1073,6 +1113,7 @@ def test_malformed_rco_scout_done_record_does_not_complete_task(
 ) -> None:
     payload = {
         "agent": "codex-lead-1",
+        "agent_uuid": BRIDGE_AGENT_UUIDS["codex-lead-1"],
         "task_id": RCO_FAILOVER_TASK_ID,
         "summary": "bounded RCO lane failover diagnostic",
         "release_status": "handoff",
@@ -1096,6 +1137,10 @@ def test_malformed_rco_scout_done_record_does_not_complete_task(
         del payload["claimed_at_utc"]
     elif hostile_case == "missing_released_at":
         del payload["released_at_utc"]
+    elif hostile_case == "missing_agent_uuid":
+        del payload["agent_uuid"]
+    elif hostile_case == "identity_mismatch":
+        payload["agent_uuid"] = "00000000-0000-0000-0000-000000000000"
     elif hostile_case == "unregistered_agent":
         payload["agent"] = "random-agent"
     elif hostile_case == "future_release":
@@ -1129,6 +1174,50 @@ def test_malformed_rco_scout_done_record_does_not_complete_task(
     )
 
     assert report["decision"] == "claim_rco_lane_failover_scout"
+    assert report["completed_rco_lane_failover_task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "raw_payload",
+    [
+        b"[]",
+        b"1",
+        b'"not-an-object"',
+        b"\xff\xfe\xfa",
+        b"{",
+        b'{"integer":' + (b"9" * 5000) + b"}",
+        (b"[" * 2000) + b"0" + (b"]" * 2000),
+    ],
+    ids=[
+        "array",
+        "integer",
+        "string",
+        "invalid_utf8",
+        "invalid_json",
+        "integer_limit",
+        "deep_recursion",
+    ],
+)
+def test_malformed_done_json_is_ignored_fail_closed(
+    tmp_path: Path,
+    raw_payload: bytes,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(bridge, [_rco_lane_stall_event()])
+    done_dir = bridge / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    (done_dir / "hostile.json").write_bytes(raw_payload)
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_lane_failover_scout"
+    assert report["candidate"]["kind"] == "rco_lane_failover_scout"
     assert report["completed_rco_lane_failover_task_ids"] == []
 
 
@@ -1212,6 +1301,13 @@ def test_new_rco_lane_failover_episode_ignores_prior_done_scout(
         release_message="earlier diagnostic completed",
         bridge_root=bridge,
         now_utc=NOW,
+    )
+    done_file = next((bridge / "work_queue" / "done").glob("*.json"))
+    done_payload = json.loads(done_file.read_text(encoding="utf-8"))
+    done_payload["agent_uuid"] = BRIDGE_AGENT_UUIDS["codex-lead-1"]
+    done_file.write_text(
+        json.dumps(done_payload, sort_keys=True),
+        encoding="utf-8",
     )
 
     report = evaluate_agent_next_task(

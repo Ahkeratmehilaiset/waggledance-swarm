@@ -217,7 +217,9 @@ def build_promotion_snapshot(
                 + "; ".join(str(error) for error in errors)
             ) from exc
         head_ref_name = _required_str(pr_status.get("head_ref"), "headRefName")
-        task_id = _required_str(task_id or head_ref_name, "task_id")
+        if type(task_id) is str and task_id == "":
+            task_id = head_ref_name
+        task_id = _required_str(task_id, "task_id")
         head_sha = _required_sha(pr_status.get("head_sha"), "headRefOid")
         base_sha = _required_sha(pr_status.get("base_sha"), "baseRefOid")
         changed_paths = pr_status["changed_paths"]
@@ -294,8 +296,10 @@ def build_promotion_snapshot(
         return _invalid_report(str(exc))
 
 
-def _origin_main_sha(value: str, *, runner: Runner | None) -> str:
-    if value:
+def _origin_main_sha(value: object, *, runner: Runner | None) -> str:
+    if type(value) is not str:
+        raise PromotionSnapshotError("origin_main_sha must be a string")
+    if value != "":
         return _required_sha(value, "origin_main_sha")
     completed = _run(["git", "rev-parse", "origin/main"], runner=runner)
     return _required_sha(completed.stdout.strip(), "origin_main_sha")

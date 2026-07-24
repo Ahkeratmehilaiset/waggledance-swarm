@@ -732,6 +732,50 @@ def test_non_integral_pr_number_fails_before_runner(
     assert "positive integer" in report["errors"][0]
 
 
+@pytest.mark.parametrize("task_id", [False, 0, None, [], {}])
+def test_falsey_nonstring_task_id_does_not_default_to_head_ref(
+    tmp_path: Path,
+    task_id: object,
+) -> None:
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        task_id=task_id,  # type: ignore[arg-type]
+        origin_main_sha=BASE,
+        runner=_runner(),
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["errors"] == ["task_id must be a string"]
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
+@pytest.mark.parametrize("origin_main_sha", [False, 0, None, [], {}])
+def test_falsey_nonstring_origin_main_sha_fails_before_runner(
+    tmp_path: Path,
+    origin_main_sha: object,
+) -> None:
+    def runner(command):
+        raise AssertionError(f"runner should not be called: {command}")
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=origin_main_sha,  # type: ignore[arg-type]
+        runner=runner,
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["errors"] == ["origin_main_sha must be a string"]
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
 def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
     eligible_events = _events_path(tmp_path, _events())
     eligible = main(

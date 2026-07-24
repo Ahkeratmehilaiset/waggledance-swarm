@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,47 @@ def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
         encoding="utf-8",
     )
     return events_path
+
+
+def _legacy_bare_cr_events() -> list[dict[str, object]]:
+    task_id = (
+        "production-liveness-reactivation-scout-2026-07-01-"
+        "codex-tools-1-since-20260701t161039z"
+    )
+    return [
+        {
+            "agent": "codex-lead-1",
+            "status": "attention",
+            "task_id": task_id,
+            "ts_utc": "2026-07-01T16:45:30.4576368Z",
+            "type": "test",
+        },
+        {
+            "agent": "codex-lead-1",
+            "status": "bridge_log_repair_note",
+            "task_id": task_id,
+            "ts_utc": "2026-07-01T16:46:54.4324612Z",
+            "type": "message",
+        },
+    ]
+
+
+def _bare_cr_row(events: list[dict[str, object]]) -> str:
+    return "\r".join(
+        json.dumps(event, separators=(",", ":"), sort_keys=True)
+        for event in events
+    )
+
+
+def _waive_bare_cr_row(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setattr(
+        bridge_next_action,
+        "_LEGACY_BARE_CR_ROW_SHA256",
+        hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+    )
 
 
 def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path) -> None:
@@ -2988,6 +3030,106 @@ def test_read_events_rejects_bare_cr_double_object_row(tmp_path: Path) -> None:
 
     with pytest.raises(BridgeNextActionError):
         read_events(events_path, tail=1)
+
+
+def test_read_events_accepts_only_waived_bare_cr_row_in_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _legacy_bare_cr_events()
+    raw = _bare_cr_row(expected)
+    _waive_bare_cr_row(monkeypatch, raw)
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes((raw + "\n").encode("utf-8"))
+
+    assert read_events(events_path, tail=1) == expected
+
+
+def test_read_events_waived_bare_cr_row_honors_lf_tail_before_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _legacy_bare_cr_events()
+    raw = _bare_cr_row(expected)
+    _waive_bare_cr_row(monkeypatch, raw)
+    trailing = {"task_id": "after-compat-row"}
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes(
+        (
+            "{not-json\n"
+            + raw
+            + "\n"
+            + json.dumps(trailing, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+    )
+
+    assert read_events(events_path, tail=2) == [*expected, trailing]
+
+
+def test_read_events_rejects_one_byte_mutation_of_waived_bare_cr_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _bare_cr_row(_legacy_bare_cr_events())
+    _waive_bare_cr_row(monkeypatch, raw)
+    mutated = raw.replace('"attention"', '"attentioN"', 1)
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes((mutated + "\n").encode("utf-8"))
+
+    with pytest.raises(BridgeNextActionError):
+        read_events(events_path, tail=1)
+
+
+def test_read_events_rejects_waived_bare_cr_wrong_fragment_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _bare_cr_row(
+        [
+            *_legacy_bare_cr_events(),
+            {"task_id": "unexpected-third-fragment"},
+        ]
+    )
+    _waive_bare_cr_row(monkeypatch, raw)
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes((raw + "\n").encode("utf-8"))
+
+    with pytest.raises(BridgeNextActionError) as raised:
+        read_events(events_path, tail=1)
+
+    assert "exactly two non-empty fragments" in raised.value.report["errors"][0]
+
+
+def test_read_events_rejects_waived_bare_cr_malformed_fragment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _bare_cr_row(_legacy_bare_cr_events()[:1])
+    raw = first + "\r{not-json"
+    _waive_bare_cr_row(monkeypatch, raw)
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes((raw + "\n").encode("utf-8"))
+
+    with pytest.raises(BridgeNextActionError):
+        read_events(events_path, tail=1)
+
+
+def test_read_events_rejects_waived_bare_cr_fingerprint_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutated_events = _legacy_bare_cr_events()
+    mutated_events[1]["status"] = "bridge_log_repair_note_changed"
+    raw = _bare_cr_row(mutated_events)
+    _waive_bare_cr_row(monkeypatch, raw)
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes((raw + "\n").encode("utf-8"))
+
+    with pytest.raises(BridgeNextActionError) as raised:
+        read_events(events_path, tail=1)
+
+    assert "event fingerprints do not match" in raised.value.report["errors"][0]
 
 
 def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:

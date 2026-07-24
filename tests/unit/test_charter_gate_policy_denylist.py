@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from waggledance.core.idle_consensus_charter import evaluate_paths, load_charter
+from waggledance.core.idle_consensus_charter import (
+    evaluate_diff_content,
+    evaluate_paths,
+    load_charter,
+)
 
 
 GATE_POLICY_PATHS = [
@@ -27,11 +31,13 @@ GATE_POLICY_PATHS = [
     "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
     "docs/architecture/P4B_POST_MERGE_CANARY_V2.md",  # future via glob
     "tools/bridge_event_taxonomy.py",
+    "tools/bridge_event_writer.py",
     "tools/check_proven_safe_autosign_class.py",
     "tools/check_status_name_safe.py",
     "tools/auto_rollback_eligibility.py",
     "tools/verify_bridge_consensus.py",  # defensive future-proof (rco-1 #1393)
     "tests/security/p4c_corpus/validate_p4c_corpus.py",  # corpus validator anchor (rco-1 #1392)
+    "tests/tools/test_bridge_event_writer.py",  # canonical writer conformance anchor
 ]
 
 # Must STAY allowlist-clean (the denylist must not over-broaden onto ordinary work).
@@ -57,3 +63,18 @@ def test_gate_policy_path_is_off_allowlist(charter, path):
 @pytest.mark.parametrize("path", ALLOWLIST_CLEAN_PATHS)
 def test_ordinary_path_stays_allowlist_clean(charter, path):
     assert evaluate_paths(charter, [path]).allowed is True, path
+
+
+def test_bridge_writer_rename_patch_stays_operator_gated(charter):
+    diff = """\
+diff --git a/tools/bridge_event_writer.py b/tools/run_bridge_event_writer_proof.py
+similarity index 100%
+rename from tools/bridge_event_writer.py
+rename to tools/run_bridge_event_writer_proof.py
+"""
+
+    decision = evaluate_diff_content(charter, diff)
+
+    assert decision.allowed is False
+    assert decision.reason == "code pattern denylist hit"
+    assert any("bridge_event_writer" in hit for hit in decision.code_pattern_hits)

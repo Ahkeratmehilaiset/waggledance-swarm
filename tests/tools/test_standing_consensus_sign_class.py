@@ -34,6 +34,8 @@ A_CLASS_PATHS = [
     "tools/check_proven_safe_autosign_class.py",
     "tools/check_standing_consensus_sign_class.py",   # self -> no self-activation
     "tools/bridge_event_taxonomy.py",                 # wired into the live consumer
+    "tools/bridge_event_writer.py",                   # canonical durable append boundary
+    "tools/run_bridge_event_writer_proof.py",         # protected writer rename target
     ".agent-bridge/bin/Write-AgentEvent.ps1",
     "waggledance/adapters/http/routes/solvers.py",
     "waggledance/adapters/http/routes/auth_session.py",
@@ -50,6 +52,7 @@ A_CLASS_PATHS = [
     "tests/tools/test_verify_bridge_consensus_conformance.py",
     "tests/tools/verify_bridge_consensus_conformance_corpus.json",
     "tests/tools/test_standing_consensus_sign_class.py",   # this very file (self)
+    "tests/tools/test_bridge_event_writer.py",              # writer conformance anchor
     "tests/tools/test_cause_b_rco_finding_blocks_by_type.py",
     "tests/security/p4c_corpus/validate_p4c_corpus.py",    # validator anchor is (a)
     "configs/app_secret.json",
@@ -242,6 +245,8 @@ def test_mixed_a_and_b_never_admitted():
         "docs/architecture/P1_PROVEN_SAFE_AUTOSIGN_CLASS_V1.md",
         "docs/architecture/P4_SAFETY_SUBSTRATE_RFC.md",
         "docs/architecture/P4B_POST_MERGE_CANARY_V1.md",
+        "tools/bridge_event_writer.py",
+        "tests/tools/test_bridge_event_writer.py",
     ],
 )
 def test_charter_denylisted_invariants_never_admit(path):

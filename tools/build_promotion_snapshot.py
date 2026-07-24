@@ -274,11 +274,33 @@ def _run_json(command: Sequence[str], *, runner: Runner | None) -> Mapping[str, 
 
 def _run(command: Sequence[str], *, runner: Runner | None) -> RunnerResult:
     if runner is None:
-        completed = subprocess.run(
+        raw_completed = subprocess.run(
             list(command),
             check=False,
             capture_output=True,
-            text=True,
+        )
+        raw_streams = {
+            "stdout": getattr(raw_completed, "stdout", None),
+            "stderr": getattr(raw_completed, "stderr", None),
+        }
+        if any(type(value) is not bytes for value in raw_streams.values()):
+            raise PromotionSnapshotError(
+                "subprocess result streams must be bytes"
+            )
+        decoded: dict[str, str] = {}
+        for stream_name, value in raw_streams.items():
+            try:
+                decoded[stream_name] = value.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise PromotionSnapshotError(
+                    f"command emitted invalid UTF-8 on {stream_name}: "
+                    f"{command[0]}"
+                ) from exc
+        completed = subprocess.CompletedProcess(
+            list(command),
+            int(getattr(raw_completed, "returncode", 1)),
+            decoded["stdout"],
+            decoded["stderr"],
         )
     else:
         completed = runner(tuple(command))
@@ -287,8 +309,9 @@ def _run(command: Sequence[str], *, runner: Runner | None) -> RunnerResult:
         detail = f": {stderr}" if stderr else ""
         raise PromotionSnapshotError(f"command failed: {' '.join(command)}{detail}")
     stdout = getattr(completed, "stdout", None)
-    if stdout is None:
-        raise PromotionSnapshotError("runner result missing stdout")
+    stderr = getattr(completed, "stderr", None)
+    if type(stdout) is not str or type(stderr) is not str:
+        raise PromotionSnapshotError("runner result streams must be text")
     return completed
 
 

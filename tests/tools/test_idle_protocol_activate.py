@@ -11,6 +11,7 @@ import sys
 import pytest
 
 import tools.idle_protocol_activate as activator
+from tools.bridge_event_writer import _PortableTestBackend
 from tools.idle_check import _is_substantive_agent_message
 from tools.idle_protocol_activate import ActivationError, activate_idle_protocol
 from tools.verify_magma_receipt import verify_manifest
@@ -160,6 +161,7 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _write_events(path: Path, events: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
         encoding="utf-8",
@@ -208,12 +210,13 @@ def _activate(
     receipt_out_dir: Path | None = None,
     from_agent: str = "codex",
     to_agent: str | None = None,
+    writer_backend=None,
 ) -> dict:
     payload_path = tmp_path / "payload.json"
-    events_path = tmp_path / "events.jsonl"
-    claims_dir = tmp_path / "claims"
     bridge_root = tmp_path / "bridge"
-    claims_dir.mkdir()
+    events_path = bridge_root / "shared" / "events.jsonl"
+    claims_dir = bridge_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
     _write_json(payload_path, payload)
     _write_events(events_path, events if events is not None else _base_events())
     return activate_idle_protocol(
@@ -230,6 +233,22 @@ def _activate(
         now_utc=NOW,
         emit=emit,
         receipt_out_dir=receipt_out_dir,
+        writer_backend=(
+            writer_backend if writer_backend is not None else _PortableTestBackend()
+        ),
+    )
+
+
+def _assert_no_emitted_idle_event(tmp_path: Path) -> None:
+    events_path = tmp_path / "bridge" / "shared" / "events.jsonl"
+    if not events_path.exists():
+        return
+    rows = [json.loads(line) for line in events_path.read_text("utf-8").splitlines()]
+    assert not any(
+        row.get("ts_utc") == "2026-05-17T12:00:00Z"
+        and isinstance(row.get("payload"), dict)
+        and row["payload"].get("protocol_version") == "idle-protocol.v1"
+        for row in rows
     )
 
 
@@ -240,7 +259,7 @@ def test_round_one_dry_run_requires_idle_and_does_not_emit(tmp_path: Path) -> No
     assert report["emitted"] is False
     assert report["proposed_bridge_event"]["status"] == "idle_proposal"
     assert report["to"] == "claude"
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_round_one_accepts_regex_agent_ids_when_target_is_explicit(
@@ -273,7 +292,7 @@ def test_round_one_refuses_active_bridge_before_emitting(tmp_path: Path) -> None
 
     assert excinfo.value.report["decision"] == "active"
     assert "recent_agent_message" in excinfo.value.report["blockers"]
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_refuses_malformed_bridge_events_before_emitting(tmp_path: Path) -> None:
@@ -318,7 +337,7 @@ def test_round_one_rate_limit_blocks_sixth_daily_instance(tmp_path: Path) -> Non
         "instances_today": 5,
         "utc_date": "2026-05-17",
     }
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_round_one_rate_limit_uses_utc_day_boundary(tmp_path: Path) -> None:
@@ -365,7 +384,7 @@ def test_emit_appends_bridge_event_outbox_and_last_file(tmp_path: Path) -> None:
     events_path = tmp_path / "bridge" / "shared" / "events.jsonl"
     outbox_path = tmp_path / "bridge" / "outbox" / "codex" / "2026-05-17.jsonl"
     last_path = tmp_path / "bridge" / "shared" / "last_codex.json"
-    emitted = json.loads(events_path.read_text(encoding="utf-8").strip())
+    emitted = json.loads(events_path.read_text(encoding="utf-8").splitlines()[-1])
 
     assert report["emitted"] is True
     assert outbox_path.exists()
@@ -393,7 +412,7 @@ def test_receipt_out_dir_writes_verified_bundle_without_bridge_emit(
         "errors": [],
     }
     assert verify_manifest(out_dir / "manifest.json")["ok"] is True
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
     payload = json.loads((out_dir / "payload-001-idle.json").read_text(encoding="utf-8"))
     evaluation = json.loads(
@@ -426,7 +445,7 @@ def test_receipt_out_dir_refuses_existing_directory_before_emit(
 
     assert excinfo.value.report["decision"] == "invalid_receipt_bundle"
     assert any("must not exist" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_receipt_out_dir_verifier_failure_blocks_bridge_emit(
@@ -452,7 +471,7 @@ def test_receipt_out_dir_verifier_failure_blocks_bridge_emit(
         "receipt bundle verification failed" in error
         for error in excinfo.value.report["errors"]
     )
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_receipt_out_dir_with_emit_writes_bundle_and_bridge_event(
@@ -481,7 +500,7 @@ def test_privacy_canary_refuses_before_bridge_event_output(tmp_path: Path) -> No
 
     assert excinfo.value.report["decision"] == "privacy_canary_detected"
     assert "proposed_bridge_event" not in excinfo.value.report
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_non_consensus_payload_cannot_carry_execution_control_fields(
@@ -497,7 +516,7 @@ def test_non_consensus_payload_cannot_carry_execution_control_fields(
     assert excinfo.value.report["decision"] == "invalid_payload"
     assert any("auto_execute" in error for error in excinfo.value.report["errors"])
     assert any("operator_gate_required" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_bridge_event_schema_is_validated_before_append(tmp_path: Path) -> None:
@@ -529,47 +548,90 @@ def test_bridge_event_schema_is_validated_before_append(tmp_path: Path) -> None:
     assert not (bridge_root / "shared" / "events.jsonl").exists()
 
 
-def test_outbox_append_failure_does_not_write_shared_event(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_append = activator._append_line_with_retry
+def test_emit_refuses_custom_events_path_before_bridge_creation(tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.json"
+    events_path = tmp_path / "custom-events.jsonl"
+    claims_dir = tmp_path / "claims"
+    bridge_root = tmp_path / "bridge"
+    claims_dir.mkdir()
+    _write_json(payload_path, _proposal())
+    _write_events(events_path, _base_events())
 
-    def fail_outbox(path: Path, line: str) -> None:
+    with pytest.raises(ActivationError) as excinfo:
+        activate_idle_protocol(
+            payload_path=payload_path,
+            events_path=events_path,
+            claims_dir=claims_dir,
+            bridge_root=bridge_root,
+            from_agent="codex",
+            to_agent="claude",
+            task_id=None,
+            idle_minutes=60,
+            pending_ci_count=0,
+            open_request_max_age_hours=12.0,
+            now_utc=NOW,
+            emit=True,
+            writer_backend=_PortableTestBackend(),
+        )
+
+    assert excinfo.value.report["decision"] == "bridge_write_failed"
+    assert "non-canonical" in excinfo.value.report["errors"][0]
+    assert not bridge_root.exists()
+
+
+class _OutboxOpenFailureBackend(_PortableTestBackend):
+    def open_or_create_shared_read(self, path: Path):
         if "outbox" in path.parts:
             raise PermissionError("simulated outbox failure")
-        original_append(path, line)
+        return super().open_or_create_shared_read(path)
 
-    monkeypatch.setattr(activator, "_append_line_with_retry", fail_outbox)
 
-    with pytest.raises(PermissionError):
-        _activate(tmp_path, _proposal(), emit=True)
+def test_outbox_append_failure_keeps_canonical_success_and_last_file(
+    tmp_path: Path,
+) -> None:
+    with pytest.warns(RuntimeWarning, match="auxiliary outbox append was skipped"):
+        report = _activate(
+            tmp_path,
+            _proposal(),
+            emit=True,
+            writer_backend=_OutboxOpenFailureBackend(),
+        )
 
     bridge_root = tmp_path / "bridge"
-    assert not (bridge_root / "shared" / "events.jsonl").exists()
-    assert not (bridge_root / "shared" / "last_codex.json").exists()
+    rows = [
+        json.loads(line)
+        for line in (bridge_root / "shared" / "events.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert report["emitted"] is True
+    assert rows[-1]["status"] == "idle_proposal"
+    assert (bridge_root / "shared" / "last_codex.json").exists()
+    assert not (bridge_root / "outbox" / "codex" / "2026-05-17.jsonl").exists()
 
 
-def test_shared_append_failure_rolls_back_outbox_and_last_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_append = activator._append_line_with_retry
-
-    def fail_shared(path: Path, line: str) -> None:
+class _CanonicalOpenFailureBackend(_PortableTestBackend):
+    def open_or_create_shared_read(self, path: Path):
         if path.name == "events.jsonl":
             raise PermissionError("simulated shared failure")
-        original_append(path, line)
+        return super().open_or_create_shared_read(path)
 
-    monkeypatch.setattr(activator, "_append_line_with_retry", fail_shared)
 
-    with pytest.raises(PermissionError):
-        _activate(tmp_path, _proposal(), emit=True)
+def test_shared_append_failure_is_typed_and_creates_no_sidecars(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(
+            tmp_path,
+            _proposal(),
+            emit=True,
+            writer_backend=_CanonicalOpenFailureBackend(),
+        )
 
     bridge_root = tmp_path / "bridge"
-    assert not (bridge_root / "shared" / "events.jsonl").exists()
+    assert excinfo.value.report["decision"] == "bridge_write_failed"
+    _assert_no_emitted_idle_event(tmp_path)
     assert not (bridge_root / "shared" / "last_codex.json").exists()
     assert not (bridge_root / "outbox" / "codex" / "2026-05-17.jsonl").exists()
+    assert len(list((bridge_root / "spool").glob("failed-append-*.jsonl"))) == 1
 
 
 def test_round_two_continues_after_prior_idle_event_even_when_bridge_is_active(
@@ -615,7 +677,7 @@ def test_round_two_requires_prior_idle_event(tmp_path: Path) -> None:
         _activate(tmp_path, _counter(), emit=True)
 
     assert excinfo.value.report["decision"] == "missing_prior_idle_event"
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_duplicate_proposal_id_is_refused_before_emit(tmp_path: Path) -> None:
@@ -632,7 +694,7 @@ def test_duplicate_proposal_id_is_refused_before_emit(tmp_path: Path) -> None:
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
     assert any("already present" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_round_two_reference_must_exist_in_prior_idle_payloads(tmp_path: Path) -> None:
@@ -649,7 +711,7 @@ def test_round_two_reference_must_exist_in_prior_idle_payloads(tmp_path: Path) -
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
     assert any("responds_to" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_round_four_plus_requires_prior_round_three_adversarial_review(
@@ -677,7 +739,7 @@ def test_round_four_plus_requires_prior_round_three_adversarial_review(
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
     assert any("round-3 idle_adversarial_review" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_round_four_plus_continues_after_prior_adversarial_review(
@@ -746,7 +808,7 @@ def test_round_four_requires_adversarial_review_in_same_instance(
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
     assert any("same instance" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_prior_charter_violation_terminates_continuation_before_emit(
@@ -775,7 +837,7 @@ def test_prior_charter_violation_terminates_continuation_before_emit(
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
     assert any("terminated this instance" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_prior_charter_violation_does_not_block_new_round_one_instance(
@@ -1066,7 +1128,7 @@ def test_cli_receipt_out_dir_writes_verified_bundle(tmp_path: Path) -> None:
     report = json.loads(completed.stdout)
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
     assert (out_dir / "manifest.json").exists()
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_cli_rejects_dry_run_and_apply_together(tmp_path: Path) -> None:

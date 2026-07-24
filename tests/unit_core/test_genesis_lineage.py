@@ -17,6 +17,7 @@ from waggledance.core.genesis_lineage import (
     GENESIS_PREV_HASH,
     GENESIS_ROOT_PARENT,
     LINEAGE_KEYS,
+    RELATIONAL_INPUT_POLICY,
     SCHEMA_VERSION,
     GenesisLineageError,
     GenesisLineageV1,
@@ -60,6 +61,21 @@ def test_root_entry_builds_and_verifies():
     assert root.depth == 0
     assert root.lineage_prev_hash == GENESIS_PREV_HASH
     assert verify_lineage_entry(root.to_mapping()) == (True, None)
+
+
+def test_root_entry_known_answer_vector_locks_canonical_recipe():
+    """Domain/schema/canonicalization drift must not silently remint lineage."""
+    assert _root().entry_hash == (
+        "sha256:017cb45956ec5ae233801202d7dce852"
+        "eeb44c9e238eb720b217e47721fc7b46"
+    )
+
+
+def test_relational_input_policy_is_explicit_for_future_live_adapter():
+    """A live registry must not mistake per-object copies for a transaction."""
+    assert RELATIONAL_INPUT_POLICY == "caller_owned_quiescent.v1"
+    assert "must remain unmodified" in (verify_lineage_link.__doc__ or "")
+    assert "must remain unmodified" in (verify_lineage_registry.__doc__ or "")
 
 
 def test_three_deep_chain_verifies_end_to_end():
@@ -407,9 +423,10 @@ class _FlappingSequence(Sequence):
 
 
 def test_registry_flapping_sequence_rejected_without_invoking_protocol():
-    """The lead's TOCTOU repro is closed by construction: an arbitrary Sequence
-    subclass is rejected as not_sequence BEFORE its len/getitem run, so a
-    flapping or non-returning Sequence can never present data to any pass."""
+    """An arbitrary Sequence subclass is rejected as not_sequence BEFORE its
+    len/getitem run, so its attacker-controlled protocol cannot present data to
+    any pass. Plain list/tuple inputs remain subject to the documented
+    no-concurrent-mutation precondition."""
     root = _root()
     bad = _build_forged_child_with_wrong_prev(root)
     flapping = _FlappingSequence(root.to_mapping(), bad)
@@ -529,7 +546,8 @@ def test_wire_dict_returns_an_isolated_builtin_copy():
 def test_registry_snapshots_input_list_before_processing():
     """A plain list is accepted (liveness) and processed from a private tuple
     snapshot: mutating the original list AFTER the call cannot retro-change the
-    already-returned verdict, and re-verifying the mutated list reflects it."""
+    already-returned verdict, and re-verifying the mutated list reflects it.
+    This is intentionally not evidence of cross-object concurrency safety."""
     root, child = _root(), _child()
     entries = [root.to_mapping(), child.to_mapping()]
     assert verify_lineage_registry(entries) == (True, None)

@@ -25,6 +25,13 @@ is evidence, never a grant:
   (many children, one parent) stays legal -- subdivision is the point.
 * **No self-parenting.** ``cell_id == parent_cell_id`` is rejected, closing
   the replay shape where an entry is resubmitted as its own child.
+* **Stable-input boundary.** These APIs validate decoded Python objects. A
+  caller must not mutate an input dict/list/tuple during a call. Relational
+  snapshots are per object; they do not manufacture a linearizable view across
+  independently mutable child, parent, or registry objects. A runtime store
+  must copy the whole relation under the same lock/transaction used by its
+  writers (and bind the store generation/head digest to its receipt) before
+  calling these pure verifiers.
 
 Verifiers recompute everything from primitive fields; no stored flag or hash
 is trusted. No clock, no randomness -- derivation is replayable, which is what
@@ -41,6 +48,9 @@ from waggledance.core.magma.canonical import sha256_digest
 
 SCHEMA_VERSION = "wd.genesis_lineage.v1"
 DIGEST_DOMAIN = "wd.genesis_lineage.digest.v1"
+# Machine-readable integration boundary for the later live registry/adapter.
+# This pure decoded-object verifier cannot coordinate external writers.
+RELATIONAL_INPUT_POLICY = "caller_owned_quiescent.v1"
 
 # Root sentinel parent + the well-known genesis predecessor hash (the
 # chat_served_ledger convention: self-describing all-zero digest).
@@ -77,11 +87,13 @@ def _require_wire_dict(value: object) -> Optional[dict]:
     Only an exact dict's builtin protocol is then walked: each key must be an
     exact ``str`` (a programmatic EqAnyStr/alias key that impersonates a
     canonical key rejects; JSON keys are always plain str). The accepted dict is
-    COPIED ONCE with the builtin ``dict.copy`` -- a single atomic C-level
-    operation -- BEFORE any Python-level validation, so a concurrently mutated
-    dict cannot make a manual ``.items()`` loop observe a moving container or
-    raise ``RuntimeError``. All validation and use then read only the private
-    copy. Returns the plain-dict copy or None."""
+    copied once with builtin ``dict.copy`` before validation, and all later
+    reads use only that private copy.
+
+    This is a decoded-object boundary, not a synchronization primitive. The
+    caller must not mutate ``value`` concurrently with this call. A per-object
+    copy cannot establish one co-temporal snapshot across a child and parent or
+    across every entry in a registry. Returns the plain-dict copy or None."""
     if type(value) is not dict:
         return None
     snapshot = value.copy()
@@ -359,10 +371,17 @@ def verify_lineage_entry(value: object) -> tuple[bool, Optional[str]]:
 def verify_lineage_link(
     child: object, parent: object
 ) -> tuple[bool, Optional[str]]:
-    """Both entries verify AND the child genuinely descends from the parent."""
+    """Both entries verify AND the child genuinely descends from the parent.
 
-    # Freeze both once, then verify AND compare against the SAME frozen values,
-    # so a live Mapping cannot flip parent_cell_id (etc.) after it verifies.
+    ``child`` and ``parent`` must remain unmodified for the whole call. Their
+    private copies stabilize subsequent validation, but the two copies are not
+    an atomic snapshot of independently mutable caller state. Runtime callers
+    must materialize both under the same writer lock/transaction first.
+    """
+
+    # Copy each stable input once, then verify AND compare against those same
+    # private values. This prevents later reads within this function from
+    # drifting; it deliberately does not claim cross-object linearizability.
     child = _require_wire_dict(child)
     parent = _require_wire_dict(parent)
     if child is None:
@@ -397,7 +416,15 @@ def verify_lineage_registry(
     ``verify_lineage_link`` proof passing -- a rehashed child whose link to
     the real parent fails, or a child whose parent is absent, is rejected.
     Parent fan-out stays legal (many children may link to one parent).
-    Cycles are impossible once links verify: depth strictly increases."""
+    Cycles are impossible once links verify: depth strictly increases.
+
+    Input-stability precondition: the outer list/tuple and every member dict
+    must remain unmodified for the whole call. The verifier makes private
+    per-object copies for deterministic subsequent processing, but those copies
+    are not a transaction over externally mutable objects. A runtime registry
+    must snapshot all entries under the same lock/transaction used by writers
+    before invoking this pure decoded-object verifier.
+    """
 
     # Require an EXACT built-in list/tuple -- reject any Sequence subclass or
     # arbitrary Sequence WITHOUT invoking its len/getitem/iter, which an
@@ -406,13 +433,10 @@ def verify_lineage_registry(
     # they are rejected here too.
     if type(entries) is not list and type(entries) is not tuple:
         return False, "not_sequence"
-    # SNAPSHOT the container ONCE with builtin tuple() -- a single atomic C-level
-    # copy -- BEFORE per-entry processing, so a concurrently mutated list cannot
-    # make the loop below observe a moving container or raise. Then FREEZE EACH
-    # ENTRY to a private plain dict via the exact-dict gate. Both passes operate
-    # only on these frozen dicts (never a live Mapping/Sequence), so neither a
-    # flapping container nor a Mapping that flips a field after it verifies can
-    # present different data across passes.
+    # Copy the stable outer container before per-entry processing, then copy
+    # each stable entry through the exact-dict gate. Both validation passes use
+    # only those private values. This isolates later internal reads; it does not
+    # make independently mutable external objects into an atomic registry.
     entry_inputs = tuple(entries)
     frozen = tuple(_require_wire_dict(entry) for entry in entry_inputs)
     if not frozen:

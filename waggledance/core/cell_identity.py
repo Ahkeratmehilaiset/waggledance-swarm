@@ -75,11 +75,13 @@ def _require_wire_dict(value: object) -> Optional[dict]:
     Only an exact dict's builtin protocol is then walked: each key must be an
     exact ``str`` (a programmatic EqAnyStr/alias key that impersonates a
     canonical key rejects; JSON keys are always plain str). The accepted dict is
-    COPIED ONCE with the builtin ``dict.copy`` -- a single atomic C-level
-    operation -- BEFORE any Python-level validation, so a concurrently mutated
-    dict cannot make a manual ``.items()`` loop observe a moving container or
-    raise ``RuntimeError``. All validation and use then read only the private
-    copy. Returns the plain-dict copy or None."""
+    copied once with builtin ``dict.copy`` before validation, and all later
+    reads use only that private copy.
+
+    This is a decoded-object boundary, not a synchronization primitive. The
+    caller must not mutate ``value`` concurrently with this call. In
+    particular, the copy does not claim an atomic snapshot against an external
+    writer that does not share a lock. Returns the plain-dict copy or None."""
     if type(value) is not dict:
         return None
     snapshot = value.copy()

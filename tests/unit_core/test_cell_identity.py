@@ -50,6 +50,20 @@ def test_cell_id_is_deterministic_and_input_sensitive():
         created_at_utc=_CREATED,
     )
     assert other.cell_id != _identity().cell_id
+    later = build_cell_identity(
+        pubkey_digest=_PUBKEY,
+        genesis_material_digest=_GENESIS,
+        created_at_utc="2026-07-24T06:45:01Z",
+    )
+    assert later.cell_id != _identity().cell_id
+
+
+def test_cell_id_known_answer_vector_locks_canonical_recipe():
+    """Domain/schema/canonicalization drift must not silently remint cells."""
+    assert _identity().cell_id == (
+        "sha256:b5b4e2114fe12d1467fca59489f4304b"
+        "441ac7c2bb8eb53f467f92d36478a17d"
+    )
 
 
 def test_rebuild_from_same_genesis_facts_reclaims_same_identity():

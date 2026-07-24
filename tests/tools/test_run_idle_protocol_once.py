@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+import tools.run_idle_protocol_once as runner
+from tools.bridge_event_writer import _PortableTestBackend
 from tools.run_idle_protocol_once import (
     IdleRunnerError,
     build_round_one_payload,
@@ -20,6 +22,19 @@ from waggledance.core.idle_protocol import validate_idle_proposal
 
 
 NOW = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _inject_portable_append_v1_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = runner.activate_idle_protocol
+
+    def injected_activate(**kwargs):
+        kwargs["writer_backend"] = _PortableTestBackend()
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner, "activate_idle_protocol", injected_activate)
 
 
 def _event(
@@ -69,6 +84,7 @@ def _base_idle_events() -> list[dict[str, object]]:
 
 
 def _write_events(path: Path, events: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
         encoding="utf-8",
@@ -83,11 +99,11 @@ def _run(
     proposal_id: str | None = "idle-prop-20260517-runner",
     from_agent: str = "codex",
 ) -> dict:
-    events_path = tmp_path / "events.jsonl"
-    claims_dir = tmp_path / "claims"
     bridge_root = tmp_path / "bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    claims_dir = bridge_root / "work_queue" / "claims"
     scratch_dir = tmp_path / "scratch"
-    claims_dir.mkdir()
+    claims_dir.mkdir(parents=True)
     _write_events(events_path, events if events is not None else _base_idle_events())
     return run_idle_protocol_once(
         events_path=events_path,
@@ -105,6 +121,19 @@ def _run(
         emit=emit,
         receipt_out_dir=None,
         scratch_dir=scratch_dir,
+    )
+
+
+def _assert_no_emitted_idle_event(tmp_path: Path) -> None:
+    events_path = tmp_path / "bridge" / "shared" / "events.jsonl"
+    if not events_path.exists():
+        return
+    rows = [json.loads(line) for line in events_path.read_text("utf-8").splitlines()]
+    assert not any(
+        row.get("ts_utc") == "2026-05-17T12:00:00Z"
+        and isinstance(row.get("payload"), dict)
+        and row["payload"].get("protocol_version") == "idle-protocol.v1"
+        for row in rows
     )
 
 
@@ -138,7 +167,7 @@ def test_active_bridge_is_noop_even_when_emit_requested(tmp_path: Path) -> None:
     assert report["decision"] == "active"
     assert report["emitted"] is False
     assert "recent_agent_message" in report["blockers"]
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
     assert not (tmp_path / "scratch").exists()
 
 
@@ -155,7 +184,7 @@ def test_idle_dry_run_builds_activation_without_bridge_write(tmp_path: Path) -> 
     assert activation["proposed_bridge_event"]["payload"]["proposal_id"] == (
         "idle-prop-20260517-runner"
     )
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
     assert list((tmp_path / "scratch").glob("*.json")) == []
 
 
@@ -164,7 +193,7 @@ def test_idle_emit_appends_one_valid_bridge_event(tmp_path: Path) -> None:
 
     events_path = tmp_path / "bridge" / "shared" / "events.jsonl"
     outbox_path = tmp_path / "bridge" / "outbox" / "codex" / "2026-05-17.jsonl"
-    emitted = json.loads(events_path.read_text(encoding="utf-8").strip())
+    emitted = json.loads(events_path.read_text(encoding="utf-8").splitlines()[-1])
 
     assert report["decision"] == "idle_ready"
     assert report["emitted"] is True
@@ -176,6 +205,39 @@ def test_idle_emit_appends_one_valid_bridge_event(tmp_path: Path) -> None:
     assert "auto_execute" not in emitted["payload"]
     validate_event(emitted)
     assert list((tmp_path / "scratch").glob("*.json")) == []
+
+
+def test_idle_emit_refuses_custom_events_path(tmp_path: Path) -> None:
+    events_path = tmp_path / "custom-events.jsonl"
+    claims_dir = tmp_path / "claims"
+    bridge_root = tmp_path / "bridge"
+    scratch_dir = tmp_path / "scratch"
+    claims_dir.mkdir()
+    _write_events(events_path, _base_idle_events())
+
+    with pytest.raises(IdleRunnerError) as excinfo:
+        run_idle_protocol_once(
+            events_path=events_path,
+            claims_dir=claims_dir,
+            bridge_root=bridge_root,
+            from_agent="codex",
+            to_agent=None,
+            task_id=None,
+            proposal_id="idle-prop-custom-events-refusal",
+            idle_minutes=60,
+            pending_ci_count=0,
+            open_request_max_age_hours=12.0,
+            operator_last_activity_utc=None,
+            now_utc=NOW,
+            emit=True,
+            receipt_out_dir=None,
+            scratch_dir=scratch_dir,
+        )
+
+    assert excinfo.value.report["decision"] == "bridge_write_failed"
+    assert "non-canonical" in excinfo.value.report["errors"][0]
+    assert not bridge_root.exists()
+    assert list(scratch_dir.glob("*.json")) == []
 
 
 def test_duplicate_proposal_id_is_refused_before_bridge_write(tmp_path: Path) -> None:
@@ -194,7 +256,7 @@ def test_duplicate_proposal_id_is_refused_before_bridge_write(tmp_path: Path) ->
     assert excinfo.value.report["decision"] == "invalid_sequence"
     assert excinfo.value.report["emitted"] is False
     assert any("already present" in error for error in excinfo.value.report["errors"])
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
     assert list((tmp_path / "scratch").glob("*.json")) == []
 
 
@@ -216,7 +278,7 @@ def test_daily_rate_limit_is_preserved_before_bridge_write(tmp_path: Path) -> No
     assert excinfo.value.report["decision"] == "rate_limited"
     assert excinfo.value.report["exit_code"] == 5
     assert excinfo.value.report["emitted"] is False
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
     assert list((tmp_path / "scratch").glob("*.json")) == []
 
 
@@ -229,7 +291,7 @@ def test_from_agent_claude_targets_codex(tmp_path: Path) -> None:
     )
 
     events_path = tmp_path / "bridge" / "shared" / "events.jsonl"
-    emitted = json.loads(events_path.read_text(encoding="utf-8").strip())
+    emitted = json.loads(events_path.read_text(encoding="utf-8").splitlines()[-1])
 
     assert report["emitted"] is True
     assert emitted["agent"] == "claude"
@@ -260,7 +322,7 @@ def test_missing_events_file_returns_unknown_without_bridge_write(tmp_path: Path
 
     assert excinfo.value.report["decision"] == "unknown"
     assert excinfo.value.report["emitted"] is False
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
     assert not (tmp_path / "scratch").exists()
 
 
@@ -274,7 +336,7 @@ def test_path_like_proposal_id_is_refused_before_scratch_write(tmp_path: Path) -
     assert excinfo.value.report["decision"] == "invalid_proposal_id"
     assert excinfo.value.report["emitted"] is False
     assert outside.read_text(encoding="utf-8") == "keep"
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
     assert not (tmp_path / "scratch").exists()
 
 
@@ -315,7 +377,7 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     assert report["activation"]["proposed_bridge_event"]["payload"]["proposal_id"] == (
         "idle-prop-20260517t120000000000z-codex"
     )
-    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+    _assert_no_emitted_idle_event(tmp_path)
 
 
 def test_cli_defaults_paths_to_runtime_bridge_root(

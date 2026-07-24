@@ -143,6 +143,7 @@ Even within allowlisted file paths, an autonomous merge **must refuse** if the d
 * Changes to `verify_manifest` ok-check or canonical digest logic in `tools/verify_magma_receipt.py` or `waggledance/core/magma/`
 * Changes to denylist or allowlist content in `tools/idle_consensus_to_pr.py` (self-modification ban)
 * Changes to the three-identity / RCO-pass / head-binding verification logic in `tools/idle_consensus_auto_merge.py` (consensus-gate self-modification ban)
+* Changes involving the canonical Python bridge writer identifier `bridge_event_writer` (rename/move defense for the writer and its conformance anchor)
 * Changes that disable the adversarial-corpus promotion gate (T5b): flipping `require_adversarial_gate` to a `False` default, weakening `ADVERSARIAL_CORPUS_MIN_CASES`, or altering `verify_adversarial_corpus_gate` re-derivation/binding in `waggledance/core/magma/adversarial_gate.py` or `waggledance/core/autonomy_growth/auto_promotion_engine.py` (gate self-modification ban; opt-out is test-only)
 * Changes to `PRIVATE_MARKER` constant or `_DO_NOT_LEAK` detection logic anywhere
 * Changes that REMOVE existing `write_receipt_bundle` or `verify_manifest` calls

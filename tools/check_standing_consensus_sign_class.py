@@ -79,6 +79,7 @@ _A_CODE_SUBSTR = (
     "check_proven_safe_autosign_class",
     "check_standing_consensus_sign_class",   # self -> no self-activation
     "bridge_event_taxonomy",                 # wired into the live veto consumer
+    "bridge_event_writer",                   # canonical writer, including rename targets
     "check_status_name_safe",
     "idle_consensus_to_pr",
 )

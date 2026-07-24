@@ -35,6 +35,7 @@ A_CLASS_PATHS = [
     "tools/check_standing_consensus_sign_class.py",   # self -> no self-activation
     "tools/bridge_event_taxonomy.py",                 # wired into the live consumer
     "tools/bridge_event_writer.py",                   # canonical durable append boundary
+    "tools/run_bridge_event_writer_proof.py",         # protected writer rename target
     ".agent-bridge/bin/Write-AgentEvent.ps1",
     "waggledance/adapters/http/routes/solvers.py",
     "waggledance/adapters/http/routes/auth_session.py",

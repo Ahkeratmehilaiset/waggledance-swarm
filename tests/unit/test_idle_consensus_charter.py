@@ -92,6 +92,9 @@ BRIDGE_PYTHON_WRITER_FILE_DENYLIST_ENTRIES = {
     "tools/bridge_event_writer.py",
     "tests/tools/test_bridge_event_writer.py",
 }
+BRIDGE_PYTHON_WRITER_CODE_PATTERN_MARKERS = {
+    "bridge_event_writer",
+}
 LEGACY_CODE_PATTERN_MARKERS = {
     "auto_execute=False",
     "operator_gate_required=True",
@@ -207,6 +210,13 @@ def test_charter_denylist_contains_bridge_consensus_conformance_anchors() -> Non
 def test_charter_denylist_contains_canonical_python_bridge_writer_anchors() -> None:
     charter = load_charter()
     assert BRIDGE_PYTHON_WRITER_FILE_DENYLIST_ENTRIES <= set(charter.file_denylist)
+
+
+def test_charter_code_patterns_protect_canonical_python_bridge_writer() -> None:
+    charter = load_charter()
+    code_patterns = "\n".join(charter.code_pattern_denylist)
+    for marker in BRIDGE_PYTHON_WRITER_CODE_PATTERN_MARKERS:
+        assert marker in code_patterns
 
 
 def test_charter_preserves_existing_code_pattern_markers() -> None:
@@ -357,6 +367,22 @@ def test_evaluate_paths_blocks_canonical_python_bridge_writer_anchors() -> None:
         assert decision.allowed is False, path
         assert decision.blocked_paths == (path,)
         assert decision.reason == "denylist hit"
+
+
+def test_evaluate_diff_content_blocks_canonical_python_bridge_writer_rename() -> None:
+    charter = load_charter()
+    diff = """\
+diff --git a/tools/bridge_event_writer.py b/tools/run_bridge_event_writer_proof.py
+similarity index 100%
+rename from tools/bridge_event_writer.py
+rename to tools/run_bridge_event_writer_proof.py
+"""
+
+    decision = evaluate_diff_content(charter, diff)
+
+    assert decision.allowed is False
+    assert decision.reason == "code pattern denylist hit"
+    assert any("bridge_event_writer" in hit for hit in decision.code_pattern_hits)
 
 
 def test_evaluate_paths_blocks_traversal_to_denylisted_path() -> None:

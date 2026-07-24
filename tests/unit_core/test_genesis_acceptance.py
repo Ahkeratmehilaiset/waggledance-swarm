@@ -100,6 +100,25 @@ def test_hostile_container_is_rejected_without_protocol_invocation():
     assert hostile.invoked is False
 
 
+def test_malformed_expectation_fails_closed_without_crashing():
+    result = tool.run_case(
+        {
+            "case_id": "container.negative.expect_not_mapping",
+            "axis": "unknown",
+            "expect": [],
+        }
+    )
+    assert result == {
+        "oracle_verdict": "REJECT",
+        "verifier_verdict": "REJECT",
+        "reason": "expect:not_mapping",
+        "diverged": False,
+        "case_id": "container.negative.expect_not_mapping",
+        "axis": "unknown",
+        "matched_expectation": False,
+    }
+
+
 def test_cli_emits_machine_readable_fail_closed_foundation(capsys):
     assert tool.main([str(CORPUS_PATH)]) == 1
     report = json.loads(capsys.readouterr().out)

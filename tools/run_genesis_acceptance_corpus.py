@@ -271,10 +271,19 @@ def run_case(case: object) -> dict[str, Any]:
             "reason": str(exc) or type(exc).__name__,
             "diverged": False,
         }
+    expectation = case.get("expect")
+    if type(expectation) is not dict:
+        result = {
+            "oracle_verdict": "REJECT",
+            "verifier_verdict": "REJECT",
+            "reason": "expect:not_mapping",
+            "diverged": False,
+        }
     result["case_id"] = case.get("case_id")
     result["axis"] = axis
     result["matched_expectation"] = (
-        result["verifier_verdict"] == case.get("expect", {}).get("verdict")
+        type(expectation) is dict
+        and result["verifier_verdict"] == expectation.get("verdict")
     )
     return result
 

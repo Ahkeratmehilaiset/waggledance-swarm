@@ -3,9 +3,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
-from tools.build_promotion_snapshot import build_promotion_snapshot, main
+import pytest
+
+from tools.build_promotion_snapshot import (
+    PromotionSnapshotError,
+    _run,
+    build_promotion_snapshot,
+    main,
+)
 
 REPO = "Ahkeratmehilaiset/waggledance-swarm"
 PR = 901
@@ -26,6 +34,87 @@ AGENT_UUIDS = {
 
 def _completed(stdout: str) -> SimpleNamespace:
     return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+
+def test_default_runner_decodes_child_output_as_strict_utf8(monkeypatch) -> None:
+    """GitHub CLI emits UTF-8 even when the Windows locale is cp1252."""
+
+    observed: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\uff10\n".encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        "tools.build_promotion_snapshot.subprocess.run",
+        fake_run,
+    )
+
+    completed = _run(("gh", "pr", "diff", "1557"), runner=None)
+
+    assert completed.stdout == "\uff10\n"
+    assert observed == {
+        "command": ["gh", "pr", "diff", "1557"],
+        "check": False,
+        "capture_output": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("stream_name", "stdout", "stderr"),
+    [
+        ("stdout", b"\x80", b""),
+        ("stderr", b"ok\n", b"\x80"),
+    ],
+)
+def test_default_runner_rejects_invalid_utf8_on_every_stream(
+    monkeypatch,
+    stream_name: str,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    """Malformed child output must fail closed even when exit status is zero."""
+
+    monkeypatch.setattr(
+        "tools.build_promotion_snapshot.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(
+        PromotionSnapshotError,
+        match=rf"invalid UTF-8 on {stream_name}: gh",
+    ):
+        _run(("gh", "pr", "diff", "1557"), runner=None)
+
+
+@pytest.mark.parametrize("stream_name,fd", [("stdout", 1), ("stderr", 2)])
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_real_child_invalid_utf8_fails_closed(
+    stream_name: str,
+    fd: int,
+    returncode: int,
+) -> None:
+    """Decode in the parent thread for consistent Windows/POSIX behavior."""
+
+    script = (
+        f"import os; os.write({fd}, b'\\x80'); "
+        f"raise SystemExit({returncode})"
+    )
+
+    with pytest.raises(
+        PromotionSnapshotError,
+        match=rf"invalid UTF-8 on {stream_name}: ",
+    ):
+        _run((sys.executable, "-c", script), runner=None)
 
 
 def _pr_view(*, base: str = BASE, checks: list[dict] | None = None) -> dict:

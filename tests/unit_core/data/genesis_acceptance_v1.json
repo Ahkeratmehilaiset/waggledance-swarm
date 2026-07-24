@@ -386,6 +386,101 @@
       "expect": {"verdict": "ACCEPT", "reason": null}
     },
     {
+      "case_id": "lineage.negative.entry_hash_mismatch",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "entry",
+        "entry": {
+          "schema_version": "wd.genesis_lineage.v1",
+          "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parent_cell_id": "genesis:root",
+          "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "depth": 0,
+          "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "entry_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "entry_hash_mismatch"}
+    },
+    {
+      "case_id": "lineage.negative.self_parent",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "entry",
+        "entry": {
+          "schema_version": "wd.genesis_lineage.v1",
+          "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parent_cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "lineage_prev_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46",
+          "depth": 1,
+          "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "entry_hash": "sha256:dd1ff139e1bc4e75d5833baf7d39b285a2a3201eb5e465a47e24b9eab0b317dc"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "a cell cannot be its own parent"}
+    },
+    {
+      "case_id": "lineage.negative.depth_off_by_one",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "link",
+        "link": {
+          "child": {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "parent_cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "lineage_prev_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46",
+            "depth": 2,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:ae3071ffbe0b877c5d194e07ffd453bff176691f6969ef3bd627bada24d209d1"
+          },
+          "parent": {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          }
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "depth_mismatch"}
+    },
+    {
+      "case_id": "lineage.negative.root_marker_disagreement",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "entry",
+        "entry": {
+          "schema_version": "wd.genesis_lineage.v1",
+          "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parent_cell_id": "genesis:root",
+          "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "depth": 1,
+          "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+        }
+      },
+      "golden": null,
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "root markers (sentinel parent, depth 0, genesis prev hash) must agree in all directions"
+      }
+    },
+    {
       "case_id": "restore.positive.from_stored_mapping",
       "kind": "positive",
       "axis": "restore",

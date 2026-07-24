@@ -73,9 +73,9 @@ def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     # the frozen negative axis-by-reason matrix is added.
     assert report["ok"] is False
     assert report["coverage_complete"] is False
-    assert report["total"] == 22
+    assert report["total"] == 26
     assert report["accepted"] == 7
-    assert report["rejected"] == 15
+    assert report["rejected"] == 19
     assert report["mismatches"] == []
     assert report["divergences"] == []
     assert report["corpus_matrix_complete"] is False
@@ -173,7 +173,7 @@ def test_timestamp_axis_pins_canonical_positive_and_rejection_matrix():
         assert result["diverged"] is False
 
 
-def test_lineage_positive_axis_pins_entry_link_and_registry_witnesses():
+def test_lineage_axis_pins_positive_witnesses_and_local_rejections():
     cases = {
         case["case_id"]: case
         for case in tool.load_corpus(CORPUS_PATH)["cases"]
@@ -183,6 +183,10 @@ def test_lineage_positive_axis_pins_entry_link_and_registry_witnesses():
         "lineage.positive.positive_entry",
         "lineage.positive.positive_link",
         "lineage.positive.positive_registry",
+        "lineage.negative.entry_hash_mismatch",
+        "lineage.negative.self_parent",
+        "lineage.negative.depth_off_by_one",
+        "lineage.negative.root_marker_disagreement",
     }
     assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
     for case in cases.values():

@@ -180,6 +180,18 @@ PINNED_CASE_DIGESTS = {
     "lineage.positive.positive_registry": (
         "sha256:f3b646ac4471326bb293831767b25f49b60bc91ff165d4142b1c55c2aa3cdded"
     ),
+    "lineage.negative.entry_hash_mismatch": (
+        "sha256:efe31d0d8726e9d423088ec658f6f91a444f8b9ef1974f7044b745e949c9957b"
+    ),
+    "lineage.negative.self_parent": (
+        "sha256:4279c9111616607bb781d2560e7f5bcc8fff464b55333070c753b8dc7f8730e8"
+    ),
+    "lineage.negative.depth_off_by_one": (
+        "sha256:13dd6cf1e3d5849dfd620834916f5dc4297c3ffa69a1cc2036cd83b1277a8d9e"
+    ),
+    "lineage.negative.root_marker_disagreement": (
+        "sha256:bcdda1170c91b7f0f143d5a97994c627d3500034afc9475644b59d1ec1ca4e88"
+    ),
     "authority.positive.identity_only": (
         "sha256:a3ec2ae77efd3e325b7ee4bc128cd1d970e77ee32ac5ccf3977a13aa5405afb9"
     ),
@@ -444,6 +456,8 @@ def ref_entry_hash(
         raise CorpusError("parent_cell_id:type")
     if parent_cell_id != "genesis:root":
         _require_digest(parent_cell_id, "parent_cell_id")
+    if cell_id == parent_cell_id:
+        raise CorpusError("self_parent")
     _require_digest(lineage_prev_hash, "lineage_prev_hash")
     _require_digest(inherited_goal_slice_digest, "goal_digest")
     _require_digest(inherited_budget_slice_digest, "budget_digest")

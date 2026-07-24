@@ -481,6 +481,181 @@
       }
     },
     {
+      "case_id": "lineage.negative.orphan_parent",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "registry",
+        "registry": [
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          },
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "parent_cell_id": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "lineage_prev_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "depth": 1,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:fcb2295020e80c3ec1be0bc4dc64a4402afaedb4c63d6d33b9fc16b7480cd6ab"
+          }
+        ]
+      },
+      "golden": null,
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "entry_1:orphan_parent_not_in_registry"
+      }
+    },
+    {
+      "case_id": "lineage.negative.two_roots",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "registry",
+        "registry": [
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          },
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:35b15f3a0385ea423c1e2b3d1cab6690e5d5a5763bad99b69588176bb5a28584"
+          }
+        ]
+      },
+      "golden": null,
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "multiple_roots"
+      }
+    },
+    {
+      "case_id": "lineage.negative.duplicate_cell_id",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "registry",
+        "registry": [
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          },
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          }
+        ]
+      },
+      "golden": null,
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "entry_1:duplicate_cell_id"
+      }
+    },
+    {
+      "case_id": "lineage.negative.broken_prev_link",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "link",
+        "link": {
+          "child": {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "parent_cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "lineage_prev_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "depth": 1,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:ba7be47f379a89c3b306210fefc162406ca0f227dc357ab2afc42827b9abc824"
+          },
+          "parent": {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          }
+        }
+      },
+      "golden": null,
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "prev_hash_mismatch"
+      }
+    },
+    {
+      "case_id": "lineage.negative.non_monotonic_depth",
+      "kind": "negative",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "registry",
+        "registry": [
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          },
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "parent_cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "lineage_prev_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46",
+            "depth": 2,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:ae3071ffbe0b877c5d194e07ffd453bff176691f6969ef3bd627bada24d209d1"
+          }
+        ]
+      },
+      "golden": null,
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "entry_1:link:depth_mismatch"
+      }
+    },
+    {
       "case_id": "restore.positive.from_stored_mapping",
       "kind": "positive",
       "axis": "restore",

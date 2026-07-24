@@ -70,12 +70,12 @@ def test_independent_reference_reproduces_every_pinned_golden():
 def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     report = tool.run_corpus(CORPUS_PATH)
     # This bounded foundation corpus deliberately remains fail closed until
-    # the frozen negative axis-by-reason matrix is added.
+    # the final restore cells are pinned.
     assert report["ok"] is False
     assert report["coverage_complete"] is False
-    assert report["total"] == 26
+    assert report["total"] == 31
     assert report["accepted"] == 7
-    assert report["rejected"] == 19
+    assert report["rejected"] == 24
     assert report["mismatches"] == []
     assert report["divergences"] == []
     assert report["corpus_matrix_complete"] is False
@@ -173,7 +173,7 @@ def test_timestamp_axis_pins_canonical_positive_and_rejection_matrix():
         assert result["diverged"] is False
 
 
-def test_lineage_axis_pins_positive_witnesses_and_local_rejections():
+def test_lineage_axis_pins_positive_witnesses_and_closure_rejections():
     cases = {
         case["case_id"]: case
         for case in tool.load_corpus(CORPUS_PATH)["cases"]
@@ -187,6 +187,11 @@ def test_lineage_axis_pins_positive_witnesses_and_local_rejections():
         "lineage.negative.self_parent",
         "lineage.negative.depth_off_by_one",
         "lineage.negative.root_marker_disagreement",
+        "lineage.negative.orphan_parent",
+        "lineage.negative.two_roots",
+        "lineage.negative.duplicate_cell_id",
+        "lineage.negative.broken_prev_link",
+        "lineage.negative.non_monotonic_depth",
     }
     assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
     for case in cases.values():

@@ -192,6 +192,21 @@ PINNED_CASE_DIGESTS = {
     "lineage.negative.root_marker_disagreement": (
         "sha256:bcdda1170c91b7f0f143d5a97994c627d3500034afc9475644b59d1ec1ca4e88"
     ),
+    "lineage.negative.orphan_parent": (
+        "sha256:9c77bc6de641c4c7ec62d6f3240f6b9994bca4d9a89e9816d9a065a2cccc0383"
+    ),
+    "lineage.negative.two_roots": (
+        "sha256:78c37f1ad3f0426644f2c8656cc5394ff952bd2d5000e85844258f7b5b034987"
+    ),
+    "lineage.negative.duplicate_cell_id": (
+        "sha256:c56eedb733360af29aaf34fef67af2b4eea735e985e29eaefa950086f541ae5d"
+    ),
+    "lineage.negative.broken_prev_link": (
+        "sha256:3506612816e2ec98c9978f26f32aafd9da16e65b65197ab3776419b936c8ae86"
+    ),
+    "lineage.negative.non_monotonic_depth": (
+        "sha256:bc8164149d052245681daf2a91de745303398b7ef7023a0aaa4ffa466fb9baca"
+    ),
     "authority.positive.identity_only": (
         "sha256:a3ec2ae77efd3e325b7ee4bc128cd1d970e77ee32ac5ccf3977a13aa5405afb9"
     ),

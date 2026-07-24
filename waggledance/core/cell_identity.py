@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping, Optional
 
 from waggledance.core.magma.canonical import sha256_digest
@@ -68,6 +69,14 @@ def _require_created_at(value: object) -> str:
         raise CellIdentityError(
             "created_at_utc must be an ISO-8601 UTC instant with Z suffix"
         )
+    # The regex pins the canonical SHAPE; the parse pins calendar REALITY --
+    # shape-only acceptance would let 2026-99-99T99:99:99Z mint an identity.
+    try:
+        datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError as exc:
+        raise CellIdentityError(
+            "created_at_utc must be a real calendar instant"
+        ) from exc
     return value
 
 
@@ -167,7 +176,9 @@ def verify_cell_identity(value: object) -> tuple[bool, Optional[str]]:
         if not isinstance(field, str) or not pattern.fullmatch(field):
             return False, key
     created = value.get("created_at_utc")
-    if not isinstance(created, str) or not _CREATED_AT_UTC.fullmatch(created):
+    try:
+        _require_created_at(created)
+    except CellIdentityError:
         return False, "created_at_utc"
     expected = derive_cell_id(
         pubkey_digest=value["pubkey_digest"],

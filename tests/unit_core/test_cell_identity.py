@@ -167,6 +167,40 @@ def test_created_at_shape_enforced(value):
         )
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-99-99T99:99:99Z",  # the probe case: shape-valid, impossible
+        "2026-13-01T00:00:00Z",  # month 13
+        "2026-02-30T00:00:00Z",  # Feb 30
+        "2026-02-29T00:00:00Z",  # 2026 is not a leap year
+        "2026-07-24T24:00:00Z",  # hour 24
+        "2026-07-24T06:60:00Z",  # minute 60
+    ],
+)
+def test_impossible_calendar_instants_rejected(value):
+    """Regex pins shape; the parse must pin reality (lead's runtime probe)."""
+    with pytest.raises(CellIdentityError, match="calendar"):
+        derive_cell_id(
+            pubkey_digest=_PUBKEY,
+            genesis_material_digest=_GENESIS,
+            created_at_utc=value,
+        )
+    broken = _mapping()
+    broken["created_at_utc"] = value
+    assert verify_cell_identity(broken) == (False, "created_at_utc")
+
+
+def test_real_leap_day_and_fractional_seconds_accepted():
+    for created in ("2024-02-29T23:59:59Z", "2026-07-24T06:45:00.123456789Z"):
+        identity = build_cell_identity(
+            pubkey_digest=_PUBKEY,
+            genesis_material_digest=_GENESIS,
+            created_at_utc=created,
+        )
+        assert verify_cell_identity(identity.to_mapping()) == (True, None)
+
+
 def test_non_mapping_inputs_fail_closed():
     for value in (None, "identity", 7, ["x"], object()):
         ok, reason = verify_cell_identity(value)

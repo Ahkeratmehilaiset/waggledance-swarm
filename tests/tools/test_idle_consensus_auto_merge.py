@@ -471,7 +471,11 @@ def test_zero_exit_without_confirmed_merged_state_fails_closed(
         )
 
     assert excinfo.value.report["decision"] == "post_merge_state_unconfirmed"
-    assert excinfo.value.report["gh_merge_attempted"] is True
+    report = excinfo.value.report
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
 
 
 def test_head_mismatch_blocks_without_runner() -> None:
@@ -2706,6 +2710,10 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
     assert report["decision"] == "auto_merge_failed"
     assert "PRIVATE_MARKER" not in " ".join(report["errors"])
     assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
 
 
 @pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
@@ -2717,6 +2725,7 @@ def test_idle_merge_result_requires_exact_integer_returncode(
     runner = _canonical_apply_runner(
         calls,
         merge_returncode=returncode,  # type: ignore[arg-type]
+        post_state="OPEN",
     )
 
     with pytest.raises(AutoMergeGateError) as excinfo:
@@ -2735,6 +2744,300 @@ def test_idle_merge_result_requires_exact_integer_returncode(
     report = excinfo.value.report
     assert report["decision"] == "auto_merge_invalid_result"
     assert report.get("auto_merge_event_payload") is None
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert len(
+        [call for call in calls if call[:3] == ["gh", "pr", "merge"]]
+    ) == 1
+    assert any(
+        "number,state,mergeCommit,headRefOid,headRefName,baseRefName" in call
+        for call in calls
+    )
+
+
+def test_missing_merge_returncode_recovers_then_reports_unknown_effect(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    canonical_runner = _canonical_apply_runner(calls, post_state="OPEN")
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = canonical_runner(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            return SimpleNamespace(stdout=result.stdout, stderr=result.stderr)
+        return result
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_invalid_result"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+
+
+def test_malformed_merge_result_recovers_confirmed_exact_merge(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(
+        calls,
+        merge_returncode=None,  # type: ignore[arg-type]
+    )
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["decision"] == "auto_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is True
+    assert report["gh_merge_attempted"] is True
+    assert report["merge_recovery"]["decision"] == (
+        "merged_after_merge_command_result_unknown"
+    )
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
+
+
+def test_merge_runner_exception_after_dispatch_reports_unknown_effect(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls, post_state="OPEN")
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            raise RuntimeError("PRIVATE_MARKER")
+        return result
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_runner_exception"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_merge_returncode_property_exception_is_recovered(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls, post_state="OPEN")
+
+    class RaisingReturncode:
+        stdout = ""
+        stderr = ""
+
+        @property
+        def returncode(self):
+            raise RuntimeError("PRIVATE_MARKER")
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            return RaisingReturncode()  # type: ignore[return-value]
+        return result
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_runner_exception"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert "PRIVATE_MARKER" not in json.dumps(report, sort_keys=True)
+
+
+def test_merge_runner_exception_recovers_confirmed_exact_merge(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls)
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            raise RuntimeError("timeout")
+        return result
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["decision"] == "auto_merged"
+    assert report["external_effect"] is True
+    assert report["gh_merge_attempted"] is True
+    assert report["merge_recovery"]["decision"] == (
+        "merged_after_merge_command_result_unknown"
+    )
+
+
+def test_post_dispatch_private_verifier_state_is_controlled(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, merge_returncode=1)
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+            merge_verifier=lambda *_args: {
+                "number": 477,
+                "state": "PRIVATE_MARKER",
+            },
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_failed"
+    assert report["merge_recovery"]["decision"] == (
+        "verifier_returned_invalid_state"
+    )
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert "PRIVATE_MARKER" not in json.dumps(report, sort_keys=True)
+
+
+def test_post_dispatch_hostile_verifier_mapping_is_not_invoked(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, merge_returncode=1)
+
+    class HostileMapping(dict):
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("must not invoke")
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+            merge_verifier=lambda *_args: HostileMapping(),
+        )
+
+    report = excinfo.value.report
+    assert report["merge_recovery"]["decision"] == (
+        "verifier_returned_non_object"
+    )
+    assert report["external_effect_unknown"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "decision"),
+    [
+        ("state", "pr_not_merged"),
+        ("headRefOid", "merged_head_mismatch"),
+        ("headRefName", "merged_head_ref_mismatch"),
+        ("baseRefName", "merged_base_ref_mismatch"),
+    ],
+)
+def test_merge_recovery_does_not_invoke_hostile_equality(
+    field: str,
+    decision: str,
+) -> None:
+    class BoomEq:
+        def __eq__(self, _other: object) -> bool:
+            raise RuntimeError("must not compare")
+
+    state: dict[str, object] = {
+        "ok": True,
+        "number": 477,
+        "state": "MERGED",
+        "headRefOid": HEAD,
+        "headRefName": "idle-consensus-001",
+        "baseRefName": "main",
+        "mergeCommit": {"oid": MERGE_SHA},
+    }
+    state[field] = BoomEq()
+
+    report = idle_merge_tool._recover_merge_state_after_failure(
+        pr_number=477,
+        expected_head=HEAD,
+        expected_head_ref="idle-consensus-001",
+        expected_base_ref="main",
+        repo="example/repo",
+        return_code=1,
+        verifier=lambda *_args: state,
+    )
+
+    assert report["merged"] is False
+    assert report["decision"] == decision
 
 
 def test_falsey_callable_idle_runner_is_used_without_default_fallback(
@@ -2951,6 +3254,10 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
     report = excinfo.value.report
     assert report["decision"] == "auto_merge_failed"
     assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
 
 
 @pytest.mark.parametrize("ok_value", [False, 0, "false", None])

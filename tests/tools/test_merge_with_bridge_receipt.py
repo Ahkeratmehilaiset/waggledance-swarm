@@ -163,7 +163,7 @@ def test_unexpected_head_blocks_before_receipt_or_merge(tmp_path: Path) -> None:
 
 
 def test_gh_merge_failure_is_reported_after_receipt(tmp_path: Path) -> None:
-    calls, runner = _runner(merge_returncode=1)
+    calls, runner = _runner(merge_returncode=1, post_state="OPEN")
 
     report = merge_with_bridge_receipt(
         pr_number=1174,
@@ -183,7 +183,11 @@ def test_gh_merge_failure_is_reported_after_receipt(tmp_path: Path) -> None:
     assert report["decision"] == "gh_merge_failed"
     assert report["stage"] == "merge"
     assert report["gh_merge_attempted"] is True
-    assert report["merge_executed"] is False
+    assert report["merge_executed"] is None
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["post_merge"]["decision"] == "post_merge_not_confirmed"
     assert len(_merge_calls(calls)) == 1
     assert Path(report["receipt_bundle_path"]).exists()
 
@@ -210,7 +214,10 @@ def test_zero_exit_without_confirmed_merged_state_fails_closed(
 
     assert report["decision"] == "post_merge_state_unconfirmed"
     assert report["gh_merge_attempted"] is True
-    assert report["merge_executed"] is False
+    assert report["merge_executed"] is None
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
     assert len(_merge_calls(calls)) == 1
 
 
@@ -236,7 +243,8 @@ def test_post_merge_head_ref_identity_mismatch_fails_closed(
 
     assert report["decision"] == "post_merge_state_unconfirmed"
     assert report["post_merge"]["decision"] == "post_merge_not_confirmed"
-    assert report["merge_executed"] is False
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
     assert len(_merge_calls(calls)) == 1
 
 
@@ -419,7 +427,10 @@ def test_merge_result_requires_exact_integer_returncode(
     tmp_path: Path,
     returncode: object,
 ) -> None:
-    calls, runner = _runner(merge_returncode=returncode)  # type: ignore[arg-type]
+    calls, runner = _runner(
+        merge_returncode=returncode,  # type: ignore[arg-type]
+        post_state="OPEN",
+    )
 
     report = merge_with_bridge_receipt(
         pr_number=1174,
@@ -438,7 +449,9 @@ def test_merge_result_requires_exact_integer_returncode(
 
     assert report["decision"] == "invalid_merge_result"
     assert report["gh_merge_attempted"] is True
-    assert report["merge_executed"] is False
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["post_merge"]["decision"] == "post_merge_not_confirmed"
     assert len(_merge_calls(calls)) == 1
 
 
@@ -476,7 +489,314 @@ def test_post_merge_query_requires_exact_integer_returncode(
 
     assert report["decision"] == "post_merge_state_unconfirmed"
     assert report["post_merge"]["decision"] == "post_merge_query_invalid"
-    assert report["merge_executed"] is False
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
+
+
+@pytest.mark.parametrize("merge_returncode", [None, 1])
+def test_nonstandard_merge_result_recovers_confirmed_exact_merge(
+    tmp_path: Path,
+    merge_returncode: object,
+) -> None:
+    calls, runner = _runner(
+        merge_returncode=merge_returncode,  # type: ignore[arg-type]
+    )
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "merge_executed_after_receipt"
+    assert report["merge_executed"] is True
+    assert report["dry_run"] is False
+    assert report["external_effect"] is True
+    assert report["external_effect_unknown"] is False
+    assert report["post_merge"]["decision"] == "post_merge_confirmed"
+    assert report["merge_commit_sha"] == MERGE_SHA
+
+
+def test_merge_runner_exception_after_dispatch_is_indeterminate(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner(post_state="OPEN")
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if list(command)[:3] == ["gh", "pr", "merge"]:
+            raise RuntimeError("PRIVATE_MARKER")
+        return result
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "gh_merge_runner_exception"
+    assert report["gh_merge_attempted"] is True
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["post_merge"]["decision"] == "post_merge_not_confirmed"
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_merge_returncode_property_exception_is_indeterminate(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner(post_state="OPEN")
+
+    class RaisingReturncode:
+        stdout = ""
+
+        @property
+        def returncode(self):
+            raise RuntimeError("PRIVATE_MARKER")
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if list(command)[:3] == ["gh", "pr", "merge"]:
+            return RaisingReturncode()  # type: ignore[return-value]
+        return result
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "gh_merge_runner_exception"
+    assert report["post_merge"]["decision"] == "post_merge_not_confirmed"
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_merge_runner_exception_recovers_confirmed_exact_merge(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner()
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if list(command)[:3] == ["gh", "pr", "merge"]:
+            raise RuntimeError("timeout")
+        return result
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "merge_executed_after_receipt"
+    assert report["merge_executed"] is True
+    assert report["external_effect_unknown"] is False
+    assert report["post_merge"]["decision"] == "post_merge_confirmed"
+
+
+def test_post_merge_query_runner_exception_is_controlled(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner()
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        if (
+            list(command)[:3] == ["gh", "pr", "view"]
+            and "number,state,mergeCommit,headRefOid,headRefName,baseRefName"
+            in command
+        ):
+            calls.append(list(command))
+            raise RuntimeError("PRIVATE_MARKER")
+        return delegate(command)
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "post_merge_state_unconfirmed"
+    assert report["post_merge"]["decision"] == "post_merge_query_exception"
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_post_merge_query_returncode_property_exception_is_controlled(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner()
+
+    class RaisingReturncode:
+        stdout = ""
+
+        @property
+        def returncode(self):
+            raise RuntimeError("PRIVATE_MARKER")
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        if (
+            list(command)[:3] == ["gh", "pr", "view"]
+            and "number,state,mergeCommit,headRefOid,headRefName,baseRefName"
+            in command
+        ):
+            calls.append(list(command))
+            return RaisingReturncode()  # type: ignore[return-value]
+        return delegate(command)
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "post_merge_state_unconfirmed"
+    assert report["post_merge"]["decision"] == "post_merge_query_exception"
+    assert report["merge_executed"] is None
+    assert report["external_effect_unknown"] is True
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_post_merge_query_stdout_property_exception_is_controlled(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner()
+
+    class RaisingStdout:
+        returncode = 0
+
+        @property
+        def stdout(self):
+            raise RuntimeError("PRIVATE_MARKER")
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        if (
+            list(command)[:3] == ["gh", "pr", "view"]
+            and "number,state,mergeCommit,headRefOid,headRefName,baseRefName"
+            in command
+        ):
+            calls.append(list(command))
+            return RaisingStdout()  # type: ignore[return-value]
+        return delegate(command)
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    serialized = json.dumps(report, sort_keys=True)
+    assert report["decision"] == "post_merge_state_unconfirmed"
+    assert report["post_merge"]["decision"] == "post_merge_query_invalid"
+    assert report["merge_executed"] is None
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert "PRIVATE_MARKER" not in serialized
+
+
+def test_post_merge_query_deep_json_is_controlled(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner()
+    deep_json = ("[" * 5000) + "0" + ("]" * 5000)
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        if (
+            list(command)[:3] == ["gh", "pr", "view"]
+            and "number,state,mergeCommit,headRefOid,headRefName,baseRefName"
+            in command
+        ):
+            calls.append(list(command))
+            return SimpleNamespace(returncode=0, stdout=deep_json)
+        return delegate(command)
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "post_merge_state_unconfirmed"
+    assert report["post_merge"]["decision"] == "post_merge_query_invalid"
+    assert report["merge_executed"] is None
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
 
 
 def test_falsey_callable_runner_is_used_without_live_fallback(

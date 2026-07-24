@@ -20,6 +20,9 @@ def _status() -> dict:
         "pr_number": 944,
         "head_sha": HEAD,
         "base_sha": BASE,
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "is_draft": True,
         "changed_paths": ["tools/idle_daily_summary.py"],
         "diff_text": "+ def helper():\n+     return 1\n",
         "checks": [

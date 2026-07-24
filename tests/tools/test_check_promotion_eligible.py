@@ -9,9 +9,13 @@ import sys
 
 import pytest
 
+import tools.check_promotion_eligible as promotion_tool
 from tools.check_promotion_eligible import (
+    PromotionEligibilityError,
     _find_private_marker,
+    _read_events_fail_closed,
     evaluate_promotion_eligibility,
+    main,
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -34,6 +38,9 @@ def _status(**overrides: object) -> dict:
         "pr_number": 901,
         "head_sha": HEAD,
         "base_sha": BASE,
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "is_draft": True,
         "changed_paths": ["tools/idle_daily_summary.py"],
         "diff_text": "+ def helper():\n+     return 1\n",
         "checks": [
@@ -110,21 +117,30 @@ def _evaluate(
     *,
     status: dict | None = None,
     events: list[dict] | None = None,
+    task_id: object = TASK,
     head: str = HEAD,
     origin_main_sha: str = BASE,
+    pr_number: object = None,
     prior_approved_head: str = "",
     prior_approved_diff_text: str | None = None,
+    charter_path: object = promotion_tool.DEFAULT_CHARTER_PATH,
+    rco_agents: object = None,
     author_agent: str = "fable-5",
+    from_agent: object = "promotion-pipeline",
 ) -> dict:
     return evaluate_promotion_eligibility(
-        pr_status=status or _status(),
+        pr_status=_status() if status is None else status,
         events=events if events is not None else _full_events(),
-        task_id=TASK,
+        task_id=task_id,
         head=head,
         origin_main_sha=origin_main_sha,
+        pr_number=pr_number,
         prior_approved_head=prior_approved_head,
         prior_approved_diff_text=prior_approved_diff_text,
+        charter_path=charter_path,
+        rco_agents=rco_agents,
         author_agent=author_agent,
+        from_agent=from_agent,
     )
 
 
@@ -217,7 +233,8 @@ def test_descriptive_build_consensus_stale_payload_head_fails_promotion() -> Non
     report = _evaluate(events=events)
 
     assert report["eligible"] is False
-    assert "bridge consensus incomplete" in report["reasons"]
+    assert report["decision"] == "invalid_input"
+    assert "contradictory head evidence" in report["errors"][0]
 
 
 def test_descriptive_build_consensus_payload_head_block_fails_promotion() -> None:
@@ -574,6 +591,495 @@ def test_malformed_status_fails_closed() -> None:
     assert report["eligible"] is False
     assert report["decision"] == "invalid_input"
     assert "changed_paths must be a list" in report["errors"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("task_id", False),
+        ("task_id", f" {TASK}"),
+        ("head", False),
+        ("head", HEAD.upper()),
+        ("head", f"{HEAD} "),
+        ("origin_main_sha", 0),
+        ("origin_main_sha", BASE.upper()),
+        ("prior_approved_head", False),
+        ("prior_approved_diff_text", False),
+        ("author_agent", False),
+        ("author_agent", 0),
+        ("author_agent", " fable-5"),
+        ("from_agent", False),
+        ("from_agent", 0),
+        ("from_agent", " promotion-pipeline"),
+        ("rco_agents", False),
+        ("rco_agents", []),
+        ("rco_agents", [" claude-rco-1"]),
+        ("rco_agents", [1]),
+        ("charter_path", False),
+        ("pr_number", False),
+        ("pr_number", 0),
+    ],
+)
+def test_direct_public_inputs_fail_before_any_gate(
+    monkeypatch,
+    field: str,
+    value: object,
+) -> None:
+    gate_calls: list[str] = []
+
+    def forbidden_charter(*_args, **_kwargs):
+        gate_calls.append("load_charter")
+        raise AssertionError("gate must not run")
+
+    monkeypatch.setattr(promotion_tool, "load_charter", forbidden_charter)
+    kwargs: dict[str, object] = {
+        "pr_status": _status(),
+        "events": _full_events(),
+        "task_id": TASK,
+        "head": HEAD,
+        "origin_main_sha": BASE,
+        "pr_number": None,
+        "prior_approved_head": "",
+        "prior_approved_diff_text": None,
+        "charter_path": promotion_tool.DEFAULT_CHARTER_PATH,
+        "rco_agents": None,
+        "author_agent": "fable-5",
+        "from_agent": "promotion-pipeline",
+    }
+    kwargs[field] = value
+
+    report = evaluate_promotion_eligibility(**kwargs)  # type: ignore[arg-type]
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert gate_calls == []
+
+
+@pytest.mark.parametrize(
+    ("status_field", "value"),
+    [
+        ("head_sha", 123),
+        ("head_sha", HEAD.upper()),
+        ("base_sha", False),
+        ("base_sha", BASE.upper()),
+        ("changed_paths", [" tools/idle_daily_summary.py"]),
+        ("changed_paths", []),
+        ("diff_text", ""),
+        ("checks", [{"state": "success"}]),
+        (
+            "checks",
+            [{"name": "unified", "state": " success"}],
+        ),
+        ("is_draft", 0),
+    ],
+)
+def test_nested_snapshot_authority_inputs_fail_before_any_gate(
+    monkeypatch,
+    status_field: str,
+    value: object,
+) -> None:
+    gate_calls: list[str] = []
+    status = _status()
+    status[status_field] = value
+    monkeypatch.setattr(
+        promotion_tool,
+        "load_charter",
+        lambda *_args, **_kwargs: gate_calls.append("load_charter"),
+    )
+
+    report = _evaluate(status=status)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert gate_calls == []
+
+
+def test_object_coercion_cannot_forge_head_or_check_success(monkeypatch) -> None:
+    class LooksValid:
+        def __str__(self) -> str:
+            return HEAD
+
+    status = _status(
+        head_sha=LooksValid(),
+        checks=[{"name": "unified", "state": LooksValid()}],
+    )
+    gate_calls: list[str] = []
+    monkeypatch.setattr(
+        promotion_tool,
+        "load_charter",
+        lambda *_args, **_kwargs: gate_calls.append("load_charter"),
+    )
+
+    report = _evaluate(status=status)
+
+    assert report["decision"] == "invalid_input"
+    assert gate_calls == []
+
+
+@pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
+def test_non_open_snapshot_state_is_ineligible(state: str) -> None:
+    report = _evaluate(status=_status(state=state))
+
+    assert report["eligible"] is False
+    assert "PR state snapshot must be OPEN" in report["reasons"]
+
+
+@pytest.mark.parametrize("mergeable", ["CONFLICTING", "UNKNOWN"])
+def test_non_mergeable_snapshot_is_ineligible(mergeable: str) -> None:
+    report = _evaluate(status=_status(mergeable=mergeable))
+
+    assert report["eligible"] is False
+    assert "PR mergeable snapshot must be MERGEABLE" in report["reasons"]
+
+
+def test_ready_pr_can_merge_without_claiming_undraft() -> None:
+    report = _evaluate(status=_status(is_draft=False))
+
+    assert report["eligible"] is True
+    assert report["would_undraft"] is False
+    assert report["would_merge"] is True
+
+
+def test_hex_evidence_ids_must_be_exact() -> None:
+    report = _evaluate(
+        status=_status(
+            hex_cell_promotion_acceptance=_hex_acceptance(
+                accepted_candidate_id="cand-alpha ",
+            )
+        )
+    )
+
+    assert report["eligible"] is False
+    gate = report["gate_results"]["hex_promotion_acceptance"]
+    assert gate["ok"] is False
+    assert "exact string" in gate["reason"]
+
+
+def test_event_privacy_marker_is_refused() -> None:
+    events = _full_events()
+    events[0]["message"] = "PRIVATE_MARKER"
+
+    report = _evaluate(events=events)
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda status: status.update(extra=b"bytes"),
+        lambda status: status.update(extra=object()),
+    ],
+)
+def test_non_json_snapshot_values_are_controlled(
+    mutator,
+) -> None:
+    status = _status()
+    mutator(status)
+
+    report = _evaluate(status=status)
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+
+
+def test_cyclic_snapshot_is_controlled() -> None:
+    status = _status()
+    status["cycle"] = status
+
+    report = _evaluate(status=status)
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+    assert "cycle" in report["errors"][0]
+
+
+def test_deeply_nested_snapshot_is_controlled() -> None:
+    status = _status()
+    nested: list[object] = []
+    cursor = nested
+    for _ in range(70):
+        child: list[object] = []
+        cursor.append(child)
+        cursor = child
+    status["nested"] = nested
+
+    report = _evaluate(status=status)
+
+    assert report["decision"] == "invalid_input"
+    assert "nesting depth" in report["errors"][0]
+
+
+def test_malformed_event_envelope_is_controlled_before_gates(
+    monkeypatch,
+) -> None:
+    events = _full_events()
+    events[0]["status"] = False
+    gate_calls: list[str] = []
+    monkeypatch.setattr(
+        promotion_tool,
+        "load_charter",
+        lambda *_args, **_kwargs: gate_calls.append("load_charter"),
+    )
+
+    report = _evaluate(events=events)
+
+    assert report["decision"] == "invalid_input"
+    assert gate_calls == []
+
+
+@pytest.mark.parametrize("payload", [[], None])
+def test_legacy_event_payload_shapes_and_empty_fields_remain_compatible(
+    payload: object,
+) -> None:
+    events = _full_events()
+    events.append(
+        {
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "agent": "legacy-agent",
+            "type": "heartbeat",
+            "status": "Legacy STATUS",
+            "task_id": "",
+            "message": "",
+            "payload": payload,
+            "pid": 0,
+        }
+    )
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+
+
+def test_irrelevant_legacy_authority_payload_shapes_do_not_poison_history() -> None:
+    events = _full_events()
+    events.insert(
+        0,
+        {
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "agent": "legacy-agent",
+            "type": "note",
+            "status": "Legacy Review",
+            "task_id": "legacy-agent/unrelated-task",
+            "message": "historical unrelated event",
+            "payload": {
+                "exact_head": True,
+                "pr": "not-an-integer",
+            },
+        },
+    )
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+
+
+@pytest.mark.parametrize(
+    ("payload_key", "payload_value"),
+    [
+        ("exact_head", True),
+        ("exact_head", HEAD.upper()),
+        ("pr", "901"),
+        ("pr", False),
+        ("task_id", False),
+    ],
+)
+def test_relevant_authority_payload_values_require_exact_types(
+    payload_key: str,
+    payload_value: object,
+) -> None:
+    events = _full_events()
+    events[0]["payload"][payload_key] = payload_value
+
+    report = _evaluate(events=events)
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+
+
+def test_current_approval_with_message_payload_head_conflict_is_invalid() -> None:
+    events = _full_events()
+    events[0]["payload"]["head"] = NEW_HEAD
+
+    report = _evaluate(events=events)
+
+    assert report["decision"] == "invalid_input"
+    assert "contradictory head evidence" in report["errors"][0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("type", "Decision"),
+        ("status", "RCO_PASS"),
+        ("status", "CHANGES_REQUESTED"),
+    ],
+)
+def test_authority_type_and_status_must_be_canonical_lowercase(
+    field: str,
+    value: str,
+) -> None:
+    events = _full_events()
+    events[2][field] = value
+
+    report = _evaluate(events=events)
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+
+
+def test_explicit_event_and_rco_tuples_are_rejected() -> None:
+    event_report = evaluate_promotion_eligibility(
+        pr_status=_status(),
+        events=tuple(_full_events()),  # type: ignore[arg-type]
+        task_id=TASK,
+        head=HEAD,
+        origin_main_sha=BASE,
+        author_agent="fable-5",
+        from_agent="promotion-pipeline",
+    )
+    rco_report = _evaluate(
+        rco_agents=("claude-rco-1", "claude-rco-2"),
+    )
+
+    assert event_report["decision"] == "invalid_input"
+    assert rco_report["decision"] == "invalid_input"
+
+
+def test_direct_authority_integer_bounds_are_enforced() -> None:
+    pr_report = _evaluate(pr_number=1 << 63)
+    events = _full_events()
+    events[0]["pid"] = 1 << 63
+    pid_report = _evaluate(events=events)
+
+    assert pr_report["decision"] == "invalid_input"
+    assert pid_report["decision"] == "invalid_input"
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["tools/A.py", "tools/a.py"],
+        ["tools/caf\u00e9.py", "tools/cafe\u0301.py"],
+        ["tools/a.py", "tools/a.py"],
+    ],
+)
+def test_changed_path_aliases_are_refused(paths: list[str]) -> None:
+    report = _evaluate(status=_status(changed_paths=paths))
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+
+
+def test_missing_charter_is_controlled_before_path_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gate_calls: list[str] = []
+    monkeypatch.setattr(
+        promotion_tool,
+        "evaluate_paths",
+        lambda *_args, **_kwargs: gate_calls.append("evaluate_paths"),
+    )
+
+    report = _evaluate(charter_path=tmp_path / "missing-charter.yaml")
+
+    assert report["decision"] == "invalid_input"
+    assert report["errors"] == ["charter could not be loaded"]
+    assert gate_calls == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"agent":"codex-lead-1","agent":"codex-tools-1"}',
+        '{"value":NaN}',
+        '{"value":Infinity}',
+        '{"value":1e999}',
+    ],
+)
+def test_event_loader_rejects_ambiguous_json(
+    tmp_path: Path,
+    line: str,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(line, encoding="utf-8")
+
+    with pytest.raises(PromotionEligibilityError) as excinfo:
+        _read_events_fail_closed(path)
+
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert str(path) not in " ".join(excinfo.value.report["errors"])
+
+
+def test_event_loader_rejects_invalid_utf8_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "secret-events.jsonl"
+    path.write_bytes(b"\x80")
+
+    with pytest.raises(PromotionEligibilityError) as excinfo:
+        _read_events_fail_closed(path)
+
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert str(path) not in " ".join(excinfo.value.report["errors"])
+
+
+@pytest.mark.parametrize(
+    ("target", "raw"),
+    [
+        ("status", b'{"pr_number":901,"pr_number":902}'),
+        ("status", b'{"value":NaN}'),
+        ("status", b'{"value":1e999}'),
+        ("status", b"\x80"),
+        ("status", b"[" * 1100 + b"0" + b"]" * 1100),
+        ("status", b'{"value":' + (b"9" * 5000) + b"}"),
+        ("events", b'{"agent":"a","agent":"b"}'),
+        ("events", b'{"value":Infinity}'),
+        ("events", b'{"value":1e999}'),
+        ("events", b"\x80"),
+        ("events", b'{"value":' + (b"9" * 5000) + b"}"),
+        ("events", (b'{"value":' + (b"[" * 5000) + b"0" + (b"]" * 5000) + b"}")),
+    ],
+)
+def test_cli_strict_json_inputs_fail_closed(
+    tmp_path: Path,
+    capsys,
+    target: str,
+    raw: bytes,
+) -> None:
+    status_path = tmp_path / "status.json"
+    events_path = tmp_path / "events.jsonl"
+    status_path.write_text(json.dumps(_status()), encoding="utf-8")
+    events_path.write_text(
+        "\n".join(json.dumps(event) for event in _full_events()),
+        encoding="utf-8",
+    )
+    (status_path if target == "status" else events_path).write_bytes(raw)
+
+    exit_code = main(
+        [
+            "--pr-status-file",
+            str(status_path),
+            "--events",
+            str(events_path),
+            "--task-id",
+            TASK,
+            "--head",
+            HEAD,
+            "--origin-main-sha",
+            BASE,
+            "--author-agent",
+            "fable-5",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert payload["decision"] == "invalid_input"
+    assert payload["eligible"] is False
 
 
 def test_cli_returns_zero_only_when_eligible(tmp_path: Path) -> None:

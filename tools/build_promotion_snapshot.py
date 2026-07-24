@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence as SequenceABC
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -24,6 +25,7 @@ if str(ROOT) not in sys.path:
 from tools.check_promotion_eligible import (  # noqa: E402
     DEFAULT_EVENTS_PATH,
     DEFAULT_RCO_AGENTS,
+    _find_private_marker,
     evaluate_promotion_eligibility,
 )
 from tools.bridge_pr_author import resolve_bridge_pr_author  # noqa: E402
@@ -84,6 +86,23 @@ def _reject_duplicate_object_keys(
 
 def _reject_nonfinite_json_constant(_constant: str) -> Any:
     raise _StrictEventJsonError("non-finite numeric constant")
+
+
+def _reject_nonfinite_json_numbers(
+    value: object,
+    *,
+    _depth: int = 0,
+) -> None:
+    if _depth > 64:
+        raise _StrictEventJsonError("maximum JSON nesting depth exceeded")
+    if type(value) is float and not math.isfinite(value):
+        raise _StrictEventJsonError("non-finite numeric value")
+    if type(value) is list:
+        for item in value:
+            _reject_nonfinite_json_numbers(item, _depth=_depth + 1)
+    elif type(value) is dict:
+        for item in value.values():
+            _reject_nonfinite_json_numbers(item, _depth=_depth + 1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -226,6 +245,10 @@ def build_promotion_snapshot(
             runner=runner,
         )
         events = _read_events_fail_closed(events_path)
+        if _find_private_marker(events) is not None:
+            raise PromotionSnapshotError(
+                "bridge events contain a refused privacy marker"
+            )
         prior_approved_diff_text = _read_prior_diff_fail_closed(
             prior_approved_diff_file
         )
@@ -294,7 +317,9 @@ def build_promotion_snapshot(
             prior_approved_head=prior_approved_head,
             prior_approved_diff_text=prior_approved_diff_text,
             charter_path=charter_path,
-            rco_agents=rco_agents,
+            rco_agents=(
+                list(rco_agents) if rco_agents is not None else None
+            ),
             author_agent=author_agent,
             from_agent=from_agent,
         )
@@ -586,11 +611,17 @@ def _read_events_fail_closed(path: Path) -> list[dict[str, Any]]:
                 object_pairs_hook=_reject_duplicate_object_keys,
                 parse_constant=_reject_nonfinite_json_constant,
             )
+            _reject_nonfinite_json_numbers(event)
         except _StrictEventJsonError as exc:
             raise PromotionSnapshotError(
                 f"invalid bridge events JSON at line {line_number}: {exc}"
             ) from exc
-        except (json.JSONDecodeError, UnicodeError) as exc:
+        except (
+            json.JSONDecodeError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+        ) as exc:
             raise PromotionSnapshotError(
                 f"invalid bridge events JSON at line {line_number}"
             ) from exc

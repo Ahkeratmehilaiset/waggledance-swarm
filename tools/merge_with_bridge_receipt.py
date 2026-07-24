@@ -339,30 +339,28 @@ def merge_with_bridge_receipt(
             },
         )
 
-    merge_result = run(command)
-    return_code = getattr(merge_result, "returncode", None)
-    if type(return_code) is not int:
-        return {
-            **ready_report,
-            "ok": False,
-            "decision": "invalid_merge_result",
-            "stage": "merge",
-            "errors": ["gh pr merge returned an invalid exit code"],
-            "gh_merge_attempted": True,
-            "merge_executed": False,
-            "exit_code": 1,
-        }
-    if return_code != 0:
-        return {
-            **ready_report,
-            "ok": False,
-            "decision": "gh_merge_failed",
-            "stage": "merge",
-            "errors": [f"gh pr merge failed with exit code {return_code}"],
-            "gh_merge_attempted": True,
-            "merge_executed": False,
-            "exit_code": 1,
-        }
+    try:
+        merge_result = run(command)
+        return_code = getattr(merge_result, "returncode", None)
+    except Exception as exc:
+        return_code = None
+        command_decision = "gh_merge_runner_exception"
+        command_errors = [
+            f"gh pr merge runner raised {exc.__class__.__name__}"
+        ]
+    else:
+        if type(return_code) is not int:
+            return_code = None
+            command_decision = "invalid_merge_result"
+            command_errors = ["gh pr merge returned an invalid exit code"]
+        elif return_code != 0:
+            command_decision = "gh_merge_failed"
+            command_errors = [
+                f"gh pr merge failed with exit code {return_code}"
+            ]
+        else:
+            command_decision = "gh_merge_succeeded"
+            command_errors = []
 
     post_merge = _query_confirmed_merge(
         pr_number=pr_number,
@@ -373,17 +371,39 @@ def merge_with_bridge_receipt(
         runner=run,
     )
     if post_merge.get("merged") is not True:
+        decision = (
+            "post_merge_state_unconfirmed"
+            if command_decision == "gh_merge_succeeded"
+            else command_decision
+        )
+        errors = [
+            *command_errors,
+            *(
+                list(post_merge.get("errors", []))
+                or ["GitHub did not confirm the exact-head merge"]
+            ),
+        ]
         return {
             **ready_report,
             "ok": False,
-            "decision": "post_merge_state_unconfirmed",
-            "stage": "post_merge",
-            "errors": list(post_merge.get("errors", []))
-            or ["merge command exited zero but GitHub did not confirm MERGED"],
+            "decision": decision,
+            "stage": (
+                "post_merge"
+                if command_decision == "gh_merge_succeeded"
+                else "merge"
+            ),
+            "errors": errors,
             "fresh_gate": fresh_gate,
             "post_merge": post_merge,
+            "merge_command_result": {
+                "decision": command_decision,
+                "return_code": return_code,
+            },
             "gh_merge_attempted": True,
-            "merge_executed": False,
+            "merge_executed": None,
+            "dry_run": False,
+            "external_effect": None,
+            "external_effect_unknown": True,
             "exit_code": 1,
         }
 
@@ -392,9 +412,16 @@ def merge_with_bridge_receipt(
         "decision": "merge_executed_after_receipt",
         "fresh_gate": fresh_gate,
         "post_merge": post_merge,
+        "merge_command_result": {
+            "decision": command_decision,
+            "return_code": return_code,
+        },
         "merge_commit_sha": post_merge["merge_commit_sha"],
         "gh_merge_attempted": True,
         "merge_executed": True,
+        "dry_run": False,
+        "external_effect": True,
+        "external_effect_unknown": False,
     }
 
 
@@ -455,8 +482,17 @@ def _query_confirmed_merge(
     ]
     if repo:
         command.extend(["--repo", repo])
-    result = runner(command)
-    return_code = getattr(result, "returncode", None)
+    try:
+        result = runner(command)
+        return_code = getattr(result, "returncode", None)
+    except Exception as exc:
+        return {
+            "merged": False,
+            "decision": "post_merge_query_exception",
+            "errors": [
+                f"post-merge GitHub query raised {exc.__class__.__name__}"
+            ],
+        }
     if type(return_code) is not int:
         return {
             "merged": False,
@@ -488,7 +524,7 @@ def _query_confirmed_merge(
             ),
             object_pairs_hook=_reject_duplicate_json_keys,
         )
-    except (TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+    except Exception:
         return {
             "merged": False,
             "decision": "post_merge_query_invalid",
@@ -514,6 +550,7 @@ def _query_confirmed_merge(
     if (
         type(number) is not int
         or number != pr_number
+        or type(state) is not str
         or state != "MERGED"
         or type(head) is not str
         or head != expected_head

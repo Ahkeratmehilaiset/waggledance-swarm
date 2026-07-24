@@ -657,42 +657,38 @@ def evaluate_auto_merge_gate(
         }
 
     run = runner if runner is not None else _run_command
-    result = run(command)
-    return_code = getattr(result, "returncode", None)
-    if type(return_code) is not int:
-        raise AutoMergeGateError(
-            {
-                **base,
-                "decision": "auto_merge_invalid_result",
-                "ok": False,
-                "operator_review_required": True,
-                "errors": [
-                    "gh pr merge returned an invalid exit code"
-                ],
-                "gh_merge_attempted": True,
-                "exit_code": 1,
-            }
+    recovery_verifier = (
+        merge_verifier
+        if merge_verifier is not None
+        else (
+            lambda number, head, repository: _query_pr_merge_state(
+                number,
+                head,
+                repository,
+                runner=run,
+            )
         )
-    if return_code != 0:
+    )
+    attempted_failure = {
+        **base,
+        "dry_run": False,
+        "external_effect": None,
+        "external_effect_unknown": True,
+        "gh_merge_attempted": True,
+    }
+    try:
+        result = run(command)
+        return_code = getattr(result, "returncode", None)
+    except Exception as exc:
+        report["gh_merge_attempted"] = True
         merge_recovery = _recover_merge_state_after_failure(
             pr_number=pr_number,
             expected_head=expected_head,
             expected_head_ref=str(apply_snapshot["head_ref"]),
             expected_base_ref=str(apply_snapshot["base_ref"]),
             repo=repo,
-            return_code=return_code,
-            verifier=(
-                merge_verifier
-                if merge_verifier is not None
-                else (
-                    lambda number, head, repository: _query_pr_merge_state(
-                        number,
-                        head,
-                        repository,
-                        runner=run,
-                    )
-                )
-            ),
+            return_code=None,
+            verifier=recovery_verifier,
         )
         if merge_recovery["merged"]:
             report.update(
@@ -709,7 +705,80 @@ def evaluate_auto_merge_gate(
             return report
         raise AutoMergeGateError(
             {
-                **base,
+                **attempted_failure,
+                "decision": "auto_merge_runner_exception",
+                "ok": False,
+                "operator_review_required": True,
+                "errors": [
+                    f"gh pr merge runner raised {exc.__class__.__name__}"
+                ],
+                "merge_recovery": merge_recovery,
+                "exit_code": 1,
+            }
+        ) from exc
+    report["gh_merge_attempted"] = True
+    if type(return_code) is not int:
+        merge_recovery = _recover_merge_state_after_failure(
+            pr_number=pr_number,
+            expected_head=expected_head,
+            expected_head_ref=str(apply_snapshot["head_ref"]),
+            expected_base_ref=str(apply_snapshot["base_ref"]),
+            repo=repo,
+            return_code=None,
+            verifier=recovery_verifier,
+        )
+        if merge_recovery["merged"]:
+            report.update(
+                _auto_merged_fields(
+                    pr_number=pr_number,
+                    title=title,
+                    consensus_proposal_id=consensus_proposal_id,
+                    merge_commit_sha=str(merge_recovery["merge_commit_sha"]),
+                    receipt_bundle_path=receipt_bundle_path,
+                    rate_gate=rate_gate,
+                    merge_recovery=merge_recovery,
+                )
+            )
+            return report
+        raise AutoMergeGateError(
+            {
+                **attempted_failure,
+                "decision": "auto_merge_invalid_result",
+                "ok": False,
+                "operator_review_required": True,
+                "errors": [
+                    "gh pr merge returned an invalid exit code"
+                ],
+                "merge_recovery": merge_recovery,
+                "exit_code": 1,
+            }
+        )
+    if return_code != 0:
+        merge_recovery = _recover_merge_state_after_failure(
+            pr_number=pr_number,
+            expected_head=expected_head,
+            expected_head_ref=str(apply_snapshot["head_ref"]),
+            expected_base_ref=str(apply_snapshot["base_ref"]),
+            repo=repo,
+            return_code=return_code,
+            verifier=recovery_verifier,
+        )
+        if merge_recovery["merged"]:
+            report.update(
+                _auto_merged_fields(
+                    pr_number=pr_number,
+                    title=title,
+                    consensus_proposal_id=consensus_proposal_id,
+                    merge_commit_sha=str(merge_recovery["merge_commit_sha"]),
+                    receipt_bundle_path=receipt_bundle_path,
+                    rate_gate=rate_gate,
+                    merge_recovery=merge_recovery,
+                )
+            )
+            return report
+        raise AutoMergeGateError(
+            {
+                **attempted_failure,
                 "decision": "auto_merge_failed",
                 "ok": False,
                 "operator_review_required": True,
@@ -726,23 +795,12 @@ def evaluate_auto_merge_gate(
         expected_base_ref=str(apply_snapshot["base_ref"]),
         repo=repo,
         return_code=0,
-        verifier=(
-            merge_verifier
-            if merge_verifier is not None
-            else (
-                lambda number, head, repository: _query_pr_merge_state(
-                    number,
-                    head,
-                    repository,
-                    runner=run,
-                )
-            )
-        ),
+        verifier=recovery_verifier,
     )
     if not post_merge["merged"]:
         raise AutoMergeGateError(
             {
-                **base,
+                **attempted_failure,
                 "decision": "post_merge_state_unconfirmed",
                 "ok": False,
                 "operator_review_required": True,
@@ -750,7 +808,6 @@ def evaluate_auto_merge_gate(
                     "merge command exited zero but GitHub did not confirm MERGED"
                 ],
                 "merge_recovery": post_merge,
-                "gh_merge_attempted": True,
                 "exit_code": 1,
             }
         )
@@ -806,7 +863,7 @@ def _recover_merge_state_after_failure(
     expected_head_ref: str,
     expected_base_ref: str,
     repo: str,
-    return_code: int,
+    return_code: int | None,
     verifier: MergeVerifier | None,
 ) -> dict[str, Any]:
     base = {
@@ -825,26 +882,33 @@ def _recover_merge_state_after_failure(
             "decision": "verifier_exception",
             "error": exc.__class__.__name__,
         }
-    if not isinstance(state, Mapping):
+    if type(state) is not dict:
         return {**base, "decision": "verifier_returned_non_object"}
-    _assert_no_private_markers(state)
+    try:
+        _assert_no_private_markers(state)
+    except Exception:
+        return {**base, "decision": "verifier_returned_invalid_state"}
 
     if "ok" in state and state.get("ok") is not True:
         return {**base, "decision": "verifier_refused_merge_state"}
     number = state.get("number")
     if type(number) is not int or number != pr_number:
         return {**base, "decision": "merged_pr_mismatch"}
-    if state.get("state") != "MERGED":
+    state_value = state.get("state")
+    if type(state_value) is not str or state_value != "MERGED":
         return {**base, "decision": "pr_not_merged"}
-    if state.get("headRefOid") != expected_head:
+    head = state.get("headRefOid")
+    if type(head) is not str or head != expected_head:
         return {**base, "decision": "merged_head_mismatch"}
-    if state.get("headRefName") != expected_head_ref:
+    head_ref = state.get("headRefName")
+    if type(head_ref) is not str or head_ref != expected_head_ref:
         return {**base, "decision": "merged_head_ref_mismatch"}
-    if state.get("baseRefName") != expected_base_ref:
+    base_ref = state.get("baseRefName")
+    if type(base_ref) is not str or base_ref != expected_base_ref:
         return {**base, "decision": "merged_base_ref_mismatch"}
     merge_commit = state.get("mergeCommit")
     merge_commit_sha = ""
-    if isinstance(merge_commit, Mapping):
+    if type(merge_commit) is dict:
         oid = merge_commit.get("oid")
         if type(oid) is str:
             merge_commit_sha = oid
@@ -856,7 +920,11 @@ def _recover_merge_state_after_failure(
         "decision": (
             "merged_after_merge_command"
             if return_code == 0
-            else "merged_after_merge_command_failure"
+            else (
+                "merged_after_merge_command_failure"
+                if return_code is not None
+                else "merged_after_merge_command_result_unknown"
+            )
         ),
         "merge_commit_sha": merge_commit_sha,
     }

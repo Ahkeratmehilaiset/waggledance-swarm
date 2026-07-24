@@ -367,6 +367,46 @@ def test_event_loader_rejects_all_nonfinite_json_constants(
         _read_events_fail_closed(path)
 
 
+def test_event_loader_rejects_overflowed_finite_literal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"agent":"fable-5","payload":{"score":1e999}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        PromotionSnapshotError,
+        match=(
+            r"^invalid bridge events JSON at line 1: "
+            r"non-finite numeric value$"
+        ),
+    ):
+        _read_events_fail_closed(path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"value":' + (b"9" * 5000) + b"}",
+        b'{"value":' + (b"[" * 5000) + b"0" + (b"]" * 5000) + b"}",
+    ],
+)
+def test_event_loader_controls_huge_integer_and_deep_json(
+    tmp_path: Path,
+    raw: bytes,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(raw)
+
+    with pytest.raises(PromotionSnapshotError) as raised:
+        _read_events_fail_closed(path)
+
+    assert str(raised.value) == "invalid bridge events JSON at line 1"
+    assert str(path) not in str(raised.value)
+
+
 def test_event_loader_maps_invalid_utf8_to_path_safe_controlled_error(
     tmp_path: Path,
 ) -> None:
@@ -470,6 +510,37 @@ def test_nonfinite_event_json_fails_closed_end_to_end(
     assert report["errors"] == [
         "invalid bridge events JSON at line 1: non-finite numeric constant"
     ]
+
+
+def test_private_event_marker_blocks_before_author_resolution_or_runner(
+    tmp_path: Path,
+) -> None:
+    events = _events()
+    events[0]["message"] = "PRIVATE_MARKER"
+    events_path = _events_path(tmp_path, events)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]) -> SimpleNamespace:
+        calls.append(tuple(command))
+        raise AssertionError("runner must not execute")
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=events_path,
+        task_id=TASK,
+        origin_main_sha=BASE,
+        runner=runner,
+    )
+
+    serialized = json.dumps(report, sort_keys=True)
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    assert calls == []
+    assert "PRIVATE_MARKER" not in serialized
+    assert str(events_path) not in serialized
 
 
 def _build(

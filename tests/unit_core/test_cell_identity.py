@@ -332,6 +332,63 @@ def test_live_mapping_result_depends_only_on_the_snapshot():
     assert reason in ("cell_id_mismatch", "cell_id")
 
 
+def test_alias_key_and_mapping_protocol_failures_fail_closed():
+    """The raw mapping boundary must fail closed: an alias/subclass key, a
+    keys()/getitem that raises, and a duplicate key all reject."""
+    from collections.abc import Mapping as _Map
+
+    good = _identity().to_mapping()
+
+    # (a) str-subclass key that impersonates a canonical key by hash/eq.
+    alias = {**good}
+    del alias["cell_id"]
+    alias[_EqAnyStr("cell_id")] = good["cell_id"]
+    ok, reason = verify_cell_identity(alias)
+    assert (ok, reason) == (False, "not_mapping")
+
+    # (b) keys() raises.
+    class _BadKeys(_Map):
+        def __iter__(self):
+            return iter(())
+
+        def __len__(self):
+            return 0
+
+        def __getitem__(self, k):
+            raise KeyError(k)
+
+        def keys(self):
+            raise RuntimeError("hostile keys()")
+
+    assert verify_cell_identity(_BadKeys()) == (False, "not_mapping")
+
+    # (c) getitem raises.
+    class _BadGet(dict):
+        def __getitem__(self, k):
+            raise RuntimeError("hostile getitem")
+
+    assert verify_cell_identity(_BadGet(good)) == (False, "not_mapping")
+
+    # (d) duplicate keys in the raw key list.
+    class _DupKeys(_Map):
+        def __init__(self, base):
+            self._base = dict(base)
+
+        def __iter__(self):
+            return iter(list(self._base) + ["cell_id"])
+
+        def keys(self):
+            return list(self._base) + ["cell_id"]
+
+        def __len__(self):
+            return len(self._base) + 1
+
+        def __getitem__(self, k):
+            return self._base[k]
+
+    assert verify_cell_identity(_DupKeys(good)) == (False, "not_mapping")
+
+
 def test_non_mapping_inputs_fail_closed():
     for value in (None, "identity", 7, ["x"], object()):
         ok, reason = verify_cell_identity(value)

@@ -71,11 +71,33 @@ class GenesisLineageError(ValueError):
 
 def _freeze_mapping(value: object) -> Optional[dict]:
     """Snapshot an untrusted Mapping into a plain dict, reading each key once,
-    so a flapping/live Mapping cannot present different values across the
-    shape check and the digest recompute. None if not a Mapping."""
+    so a flapping/live Mapping cannot present different values across the shape
+    check and the digest recompute. Fail-closed (returns None) on: non-Mapping,
+    any keys()/getitem/hash protocol failure, a non-exact-str key (an EqAnyStr/
+    alias key that hashes/compares to impersonate a canonical key), or a
+    duplicate key (which a dict comprehension would silently collapse)."""
     if not isinstance(value, Mapping):
         return None
-    return {key: value[key] for key in list(value.keys())}
+    try:
+        raw_keys = list(value.keys())
+    except Exception:
+        return None
+    seen: set = set()
+    snapshot: dict = {}
+    for key in raw_keys:
+        if type(key) is not str:
+            return None
+        try:
+            if key in seen:
+                return None
+        except Exception:
+            return None
+        seen.add(key)
+        try:
+            snapshot[key] = value[key]
+        except Exception:
+            return None
+    return snapshot
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -95,8 +117,21 @@ def derive_entry_hash(
     inherited_goal_slice_digest: str,
     inherited_budget_slice_digest: str,
 ) -> str:
-    """Digest over the canonical entry content (entry_hash itself excluded)."""
+    """Digest over the canonical entry content (entry_hash itself excluded).
 
+    Validates its inputs under the same exact-primitive contract as the rest
+    of the module (via ``_validate_fields``) so a public caller cannot fold a
+    permissive-__eq__ subclass or non-canonical value into a digest; internal
+    callers pass already-validated fields, so the recheck is cheap."""
+
+    _validate_fields(
+        cell_id=cell_id,
+        parent_cell_id=parent_cell_id,
+        lineage_prev_hash=lineage_prev_hash,
+        depth=depth,
+        inherited_goal_slice_digest=inherited_goal_slice_digest,
+        inherited_budget_slice_digest=inherited_budget_slice_digest,
+    )
     return sha256_digest(
         {
             "domain": DIGEST_DOMAIN,
@@ -153,7 +188,11 @@ def _validate_fields(
 @dataclass(frozen=True)
 class GenesisLineageV1:
     """Immutable lineage entry. Construction re-derives ``entry_hash`` and
-    enforces the root/child rules, so a forged instance cannot exist."""
+    enforces this entry's OWN root/child field rules -- i.e. entry-level
+    SELF-CONSISTENCY. It does NOT prove ancestry: that this entry's parent
+    actually exists or is itself valid. Ancestry is proven pairwise with
+    ``verify_lineage_link`` and registry-wide with ``verify_lineage_registry``
+    closure."""
 
     cell_id: str
     parent_cell_id: str

@@ -63,12 +63,33 @@ class CellIdentityError(ValueError):
 
 def _freeze_mapping(value: object) -> Optional[dict]:
     """Snapshot an untrusted Mapping into a plain dict, reading each key once,
-    so a flapping/live Mapping cannot present different values to successive
-    reads across the shape check and the digest recompute. None if not a
-    Mapping."""
+    so a flapping/live Mapping cannot present different values across the shape
+    check and the digest recompute. Fail-closed (returns None) on: non-Mapping,
+    any keys()/getitem/hash protocol failure, a non-exact-str key (an EqAnyStr/
+    alias key hashes/compares to impersonate a canonical key), or a duplicate
+    key (which a dict comprehension would silently collapse)."""
     if not isinstance(value, Mapping):
         return None
-    return {key: value[key] for key in list(value.keys())}
+    try:
+        raw_keys = list(value.keys())
+    except Exception:
+        return None
+    seen: set = set()
+    snapshot: dict = {}
+    for key in raw_keys:
+        if type(key) is not str:
+            return None
+        try:
+            if key in seen:
+                return None
+        except Exception:
+            return None
+        seen.add(key)
+        try:
+            snapshot[key] = value[key]
+        except Exception:
+            return None
+    return snapshot
 
 
 def _require_sha256(value: object, label: str) -> str:

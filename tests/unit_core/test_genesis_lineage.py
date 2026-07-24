@@ -208,21 +208,43 @@ def test_link_rejects_wrong_parent_and_skipped_depth():
 
 
 def test_replay_parent_as_its_own_child_rejected():
-    """An entry resubmitted 'one deeper' under itself is a forged shape."""
+    """An entry resubmitted 'one deeper' under itself is a forged shape.
+    derive_entry_hash now rejects it directly; a forger who hand-computes the
+    canonical digest to bypass that is still caught by verify_lineage_entry."""
+    from waggledance.core.genesis_lineage import DIGEST_DOMAIN
+    from waggledance.core.magma.canonical import sha256_digest
+
     root = _root()
+    # derive rejects the self-parent shape at digest time (earliest defence).
+    with pytest.raises(GenesisLineageError, match="own parent"):
+        derive_entry_hash(
+            cell_id=root.cell_id,
+            parent_cell_id=root.cell_id,
+            lineage_prev_hash=root.entry_hash,
+            depth=1,
+            inherited_goal_slice_digest=_GOAL,
+            inherited_budget_slice_digest=_BUDGET,
+        )
+
+    # A forger hand-rolls a matching entry_hash to skip derive's validation;
+    # verify_lineage_entry must still reject the self-parent.
     replay = dict(
         root.to_mapping(),
         parent_cell_id=root.cell_id,
         lineage_prev_hash=root.entry_hash,
         depth=1,
     )
-    replay["entry_hash"] = derive_entry_hash(
-        cell_id=replay["cell_id"],
-        parent_cell_id=replay["parent_cell_id"],
-        lineage_prev_hash=replay["lineage_prev_hash"],
-        depth=1,
-        inherited_goal_slice_digest=_GOAL,
-        inherited_budget_slice_digest=_BUDGET,
+    replay["entry_hash"] = sha256_digest(
+        {
+            "domain": DIGEST_DOMAIN,
+            "schema_version": SCHEMA_VERSION,
+            "cell_id": replay["cell_id"],
+            "parent_cell_id": replay["parent_cell_id"],
+            "lineage_prev_hash": replay["lineage_prev_hash"],
+            "depth": 1,
+            "inherited_goal_slice_digest": _GOAL,
+            "inherited_budget_slice_digest": _BUDGET,
+        }
     )
     ok, reason = verify_lineage_entry(replay)
     assert ok is False
@@ -483,6 +505,36 @@ def test_link_snapshots_defeat_parent_flip_after_verify():
 
     ok, reason = verify_lineage_link(child.to_mapping(), _FlipParentId(good_parent))
     assert (ok, reason) == (True, None)  # snapshot froze the honest parent id
+
+
+def test_alias_key_mapping_boundary_fail_closed():
+    good = _child().to_mapping()
+    alias = {k: v for k, v in good.items() if k != "cell_id"}
+    alias[_EqAnyStr("cell_id")] = good["cell_id"]
+    assert verify_lineage_entry(alias) == (False, "not_mapping")
+
+
+def test_derive_entry_hash_validates_inputs():
+    """The public digest fn follows the exact-primitive contract: a subclass
+    field cannot be folded into a lineage digest."""
+    with pytest.raises(GenesisLineageError):
+        derive_entry_hash(
+            cell_id=_EqAnyStr("sha256:" + "1" * 64),
+            parent_cell_id=GENESIS_ROOT_PARENT,
+            lineage_prev_hash=GENESIS_PREV_HASH,
+            depth=0,
+            inherited_goal_slice_digest=_GOAL,
+            inherited_budget_slice_digest=_BUDGET,
+        )
+    with pytest.raises(GenesisLineageError):
+        derive_entry_hash(
+            cell_id="sha256:" + "1" * 64,
+            parent_cell_id=GENESIS_ROOT_PARENT,
+            lineage_prev_hash=GENESIS_PREV_HASH,
+            depth=_LyingDepth(0),
+            inherited_goal_slice_digest=_GOAL,
+            inherited_budget_slice_digest=_BUDGET,
+        )
 
 
 def test_schema_version_pinned():

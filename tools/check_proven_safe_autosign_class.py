@@ -468,23 +468,40 @@ def classify_change(changes: Sequence[dict], *, charter=None, diff_text: str = "
 
 def _run_git(args: list[str], cwd: str) -> tuple[int, str]:
     try:
-        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                           encoding="utf-8", errors="replace")
-        return p.returncode, p.stdout or ""
-    except OSError:
+        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True)
+        stdout = p.stdout.decode("utf-8", errors="strict")
+        p.stderr.decode("utf-8", errors="strict")
+        return p.returncode, stdout
+    except (OSError, UnicodeDecodeError):
         return 1, ""
 
 
 def gather_changes(base: str, repo_root: str) -> tuple[list[dict], str]:
     """Build the change-list + raw diff from git diff BASE...HEAD. ([], '') on error."""
-    code, names = _run_git(["diff", "--name-only", f"{base}...HEAD"], repo_root)
+    code, names = _run_git(
+        [
+            "diff",
+            "--find-renames",
+            "--name-status",
+            "-z",
+            f"{base}...HEAD",
+        ],
+        repo_root,
+    )
     if code != 0:
         return [], ""
-    files = [ln.strip() for ln in names.splitlines() if ln.strip()]
+    files = _parse_name_status_z(names)
+    if files is None:
+        return [], ""
     changes: list[dict] = []
     diff_all = []
     for f in files:
-        c2, d = _run_git(["diff", f"{base}...HEAD", "--", f], repo_root)
+        c2, d = _run_git(
+            ["diff", "--no-renames", f"{base}...HEAD", "--", f],
+            repo_root,
+        )
+        if c2 != 0:
+            return [], ""
         diff_all.append(d)
         added, removed = [], []
         for ln in d.splitlines():
@@ -494,6 +511,43 @@ def gather_changes(base: str, repo_root: str) -> tuple[list[dict], str]:
                 removed.append(ln[1:])
         changes.append({"path": f, "added": added, "removed": removed})
     return changes, "\n".join(diff_all)
+
+
+def _parse_name_status_z(value: str) -> list[str] | None:
+    if type(value) is not str or not value.endswith("\0"):
+        return None
+    fields = value.split("\0")
+    if fields[-1] != "":
+        return None
+    fields.pop()
+    paths: list[str] = []
+    seen: set[str] = set()
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        index += 1
+        if status in {"A", "D", "M", "T", "U", "X", "B"}:
+            path_count = 1
+        elif re.fullmatch(r"[RC][0-9]{1,3}", status):
+            path_count = 2
+        else:
+            return None
+        if index + path_count > len(fields):
+            return None
+        record_paths = fields[index : index + path_count]
+        index += path_count
+        if any(not path for path in record_paths):
+            return None
+        for path in record_paths:
+            if "\\" in path:
+                return None
+            normalized = _norm(path)
+            if not normalized or normalized != path.replace("\\", "/"):
+                return None
+            if normalized not in seen:
+                seen.add(normalized)
+                paths.append(normalized)
+    return paths
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -6,9 +6,12 @@ from pathlib import Path
 import pytest
 
 from tools.check_proven_safe_autosign_class import (
+    _parse_name_status_z,
     _is_additive_metrics_counter,
     classify_change,
+    gather_changes,
 )
+import tools.check_proven_safe_autosign_class as autosign
 
 
 def _ch(path, added=None, removed=None) -> dict:
@@ -321,3 +324,85 @@ def test_charter_supplied_safe_change_in_class():
         charter=charter, diff_text="+p50 12ms\n+p99 40ms",
     )
     assert r["in_class"] is True
+
+
+# --- rename/copy source-path preservation -----------------------------------
+
+def test_name_status_z_includes_both_rename_and_copy_paths() -> None:
+    parsed = _parse_name_status_z(
+        "R100\0waggledance/unsafe.py\0tests/safe.py\0"
+        "C087\0docs/source.md\0docs/benchmarks/copy.md\0"
+    )
+
+    assert parsed == [
+        "waggledance/unsafe.py",
+        "tests/safe.py",
+        "docs/source.md",
+        "docs/benchmarks/copy.md",
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "R100\0only-source.py\0",
+        "R100\0source.py\0target.py",
+        "R\0source.py\0target.py\0",
+        "Q100\0source.py\0target.py\0",
+        "M\0\0",
+        "M\0tests\\looks-safe.py\0",
+    ],
+)
+def test_name_status_z_malformed_records_fail_closed(raw: str) -> None:
+    assert _parse_name_status_z(raw) is None
+
+
+def test_gather_changes_classifies_rename_source_and_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_git(args: list[str], cwd: str) -> tuple[int, str]:
+        calls.append(args)
+        if "--name-status" in args:
+            return (
+                0,
+                "R100\0waggledance/core/authority.py\0"
+                "tests/test_authority.py\0",
+            )
+        path = args[-1]
+        if path == "waggledance/core/authority.py":
+            return (
+                0,
+                "diff --git a/waggledance/core/authority.py /dev/null\n"
+                "--- a/waggledance/core/authority.py\n"
+                "+++ /dev/null\n"
+                "-grant_authority = True\n",
+            )
+        if path == "tests/test_authority.py":
+            return (
+                0,
+                "diff --git /dev/null b/tests/test_authority.py\n"
+                "--- /dev/null\n"
+                "+++ b/tests/test_authority.py\n"
+                "+def test_safe():\n"
+                "+    assert True\n",
+            )
+        raise AssertionError(path)
+
+    monkeypatch.setattr(autosign, "_run_git", fake_run_git)
+    changes, diff_text = gather_changes("origin/main", "C:/repo")
+
+    assert [change["path"] for change in changes] == [
+        "waggledance/core/authority.py",
+        "tests/test_authority.py",
+    ]
+    assert calls[0][:4] == [
+        "diff",
+        "--find-renames",
+        "--name-status",
+        "-z",
+    ]
+    assert all("--no-renames" in call for call in calls[1:])
+    assert "grant_authority" in diff_text
+    assert _in_class(changes) is False

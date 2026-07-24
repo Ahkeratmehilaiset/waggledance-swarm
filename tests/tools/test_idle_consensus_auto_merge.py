@@ -7,11 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.idle_consensus_auto_merge as idle_merge_tool
+from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.idle_consensus_auto_merge import (
     AutoMergeGateError,
     build_parser,
     evaluate_auto_merge_gate,
     main,
+    verify_bridge_consensus,
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -27,31 +30,207 @@ AGENT_UUIDS = {
 }
 
 
+def _git_identity_status_fields() -> dict:
+    material = github_pr_git_identity_evidence(
+        {
+            "author": {
+                "login": "Ahkeratmehilaiset",
+                "name": "",
+                "email": "",
+            },
+            "commits": [
+                {
+                    "oid": HEAD,
+                    "authors": [
+                        {
+                            "name": "Jani",
+                            "email": "jani@jkhservice.fi",
+                            "login": "",
+                        }
+                    ],
+                }
+            ],
+        },
+        expected_head_sha=HEAD,
+    )
+    identities = material.pop("identities")
+    return {
+        "git_identities": identities,
+        "git_identity_evidence": material,
+    }
+
+
 def _status(**overrides) -> dict:
     status = {
         "pr_number": 477,
         "head_sha": HEAD,
+        "head_ref": "idle-consensus-001",
         "base_sha": BASE,
+        "base_ref": "main",
+        "base_tip_sha": BASE,
         "title": "Idle consensus follow-up",
         "mergeable": "clean",
+        "state": "OPEN",
+        "is_draft": False,
+        "updated_at": "2026-07-24T09:00:00Z",
         "author_agent": "claude-rco-2",
         "operator_approved": False,
         "receipt_verified": True,
         "changed_paths": ["tools/idle_daily_summary.py"],
         "diff_text": "+ def helper():\n+     return 1\n",
         "checks": [
-            {"name": "test (3.13)", "state": "success"},
-            {"name": "unified", "state": "success"},
+            {
+                "name": "test (3.13)",
+                "state": "success",
+                "status": "",
+                "conclusion": "",
+            },
+            {
+                "name": "unified",
+                "state": "success",
+                "status": "",
+                "conclusion": "",
+            },
         ],
+        **_git_identity_status_fields(),
     }
     status.update(overrides)
     return status
 
 
-def _events_path(tmp_path: Path, events: list[dict] | None = None) -> Path:
+def _snapshot_gh_payload(status: dict | None = None) -> dict:
+    source = _status() if status is None else status
+    return {
+        "number": source["pr_number"],
+        "title": source["title"],
+        "headRefOid": source["head_sha"],
+        "headRefName": source["head_ref"],
+        "baseRefOid": source["base_sha"],
+        "baseRefName": source["base_ref"],
+        "mergeable": source["mergeable"],
+        "state": source["state"],
+        "isDraft": source["is_draft"],
+        "url": "https://github.example/pull/477",
+        "reviewDecision": "",
+        "updatedAt": source["updated_at"],
+        "changedFiles": 1,
+        "statusCheckRollup": source["checks"],
+        "author": {
+            "login": "Ahkeratmehilaiset",
+            "name": "",
+            "email": "",
+        },
+        "commits": [
+            {
+                "oid": source["head_sha"],
+                "authors": [
+                    {
+                        "name": "Jani",
+                        "email": "jani@jkhservice.fi",
+                        "login": "",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _canonical_apply_runner(
+    calls: list[list[str]],
+    *,
+    merge_returncode: int = 0,
+    post_state: str = "MERGED",
+    status: dict | None = None,
+) -> object:
+    snapshot_status = _status() if status is None else status
+    payload = _snapshot_gh_payload(snapshot_status)
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        command = list(command)
+        calls.append(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            return SimpleNamespace(
+                returncode=merge_returncode,
+                stdout="",
+                stderr="Gateway Timeout" if merge_returncode else "",
+            )
+        if command[:3] == ["gh", "pr", "view"]:
+            if (
+                "number,state,mergeCommit,headRefOid,headRefName,baseRefName"
+                in command
+            ):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "number": 477,
+                            "state": post_state,
+                            "headRefOid": HEAD,
+                            "headRefName": "idle-consensus-001",
+                            "baseRefName": "main",
+                            "mergeCommit": (
+                                {"oid": MERGE_SHA}
+                                if post_state == "MERGED"
+                                else None
+                            ),
+                        }
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(payload),
+                stderr="",
+            )
+        if command[:2] == ["gh", "api"]:
+            if "/git/ref/heads/" in command[4]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "ref": "refs/heads/main",
+                            "object": {"type": "commit", "sha": BASE},
+                        }
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "filename": "tools/idle_daily_summary.py",
+                            "status": "modified",
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "diff"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=snapshot_status["diff_text"],
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    return runner
+
+
+def _events_path(
+    tmp_path: Path,
+    events: list[dict] | None = None,
+    *,
+    claim_agent: str = "claude-rco-2",
+    claim_task: str = "idle-consensus-001",
+    inject_claim: bool = True,
+) -> Path:
+    rows = list(events or [])
+    if inject_claim and not any(event.get("type") == "claim" for event in rows):
+        rows.insert(0, _claim(claim_agent, claim_task))
     path = tmp_path / "events.jsonl"
     path.write_text(
-        "\n".join(json.dumps(event, sort_keys=True) for event in (events or [])),
+        "\n".join(json.dumps(event, sort_keys=True) for event in rows),
         encoding="utf-8",
     )
     return path
@@ -79,10 +258,18 @@ def _bridge_event(
     return event
 
 
-def _claim(agent: str, task_id: str, *, ts: str = "2026-05-18T00:59:00Z") -> dict:
-    return _bridge_event(
+def _claim(
+    agent: str,
+    task_id: str,
+    *,
+    ts: str = "2026-05-18T00:59:00Z",
+    write_scope: list[str] | None = None,
+) -> dict:
+    event = _bridge_event(
         agent=agent, type_="claim", status="active", task_id=task_id, ts=ts
     )
+    event["write_scope"] = ["*"] if write_scope is None else write_scope
+    return event
 
 
 def _rco_pass(
@@ -132,23 +319,25 @@ def test_dry_run_ready_never_invokes_runner() -> None:
         runner=runner,
     )
     assert calls == []
-    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["decision"] == "operator_review_required"
     assert report["dry_run"] is True
     assert report["external_effect"] is False
-    assert report["would_merge"] is True
+    assert report["would_merge"] is False
     assert "gh" in report["gh_command"]
     assert f"--match-head-commit={HEAD}" in report["gh_command"]
     assert report["receipt_gate"]["verified"] is True
     assert report["path_gate"]["allowed"] is True
     assert report["diff_gate"]["allowed"] is True
+    assert report["author_resolution"]["ok"] is False
+    assert any(
+        "PR author resolution requires operator review" in reason
+        for reason in report["reasons"]
+    )
 
 
 def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
     calls: list[list[str]] = []
-
-    def runner(command: list[str]) -> SimpleNamespace:
-        calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="abcdef\n")
+    runner = _canonical_apply_runner(calls)
 
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
@@ -161,23 +350,23 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
         apply=True,
         runner=runner,
     )
-    assert len(calls) == 1
-    assert calls[0][:4] == ["gh", "pr", "merge", "477"]
-    assert f"--match-head-commit={HEAD}" in calls[0]
+    merge_calls = [call for call in calls if call[:3] == ["gh", "pr", "merge"]]
+    assert len(merge_calls) == 1
+    assert merge_calls[0][:4] == ["gh", "pr", "merge", "477"]
+    assert f"--match-head-commit={HEAD}" in merge_calls[0]
+    assert "--delete-branch" not in merge_calls[0]
     assert report["decision"] == "auto_merged"
     assert report["external_effect"] is True
     assert report["auto_merge_event_payload"]["auto_merged"] is True
-    assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
+    assert report["apply_recheck"]["ok"] is True
 
 
 def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
     calls: list[list[str]] = []
     events_path = _events_path(tmp_path, [_rco_pass()])
     events_path.write_bytes(b"\xef\xbb\xbf" + events_path.read_bytes())
-
-    def runner(command: list[str]) -> SimpleNamespace:
-        calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="abcdef\n")
+    runner = _canonical_apply_runner(calls)
 
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
@@ -191,16 +380,20 @@ def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
         runner=runner,
     )
 
-    assert len(calls) == 1
+    assert len(
+        [call for call in calls if call[:3] == ["gh", "pr", "merge"]]
+    ) == 1
     assert report["decision"] == "auto_merged"
-    assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
 
 
 def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> None:
-    calls: list[str] = []
+    events: list[str] = []
+    command_calls: list[list[str]] = []
+    canonical_runner = _canonical_apply_runner(command_calls)
 
     def artifact_writer() -> dict:
-        calls.append("artifact")
+        events.append("artifact")
         return {
             "receipt_bundle": {
                 "manifest": "docs/receipts/manifest.json",
@@ -209,8 +402,8 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
         }
 
     def runner(command: list[str]) -> SimpleNamespace:
-        calls.append("merge")
-        return SimpleNamespace(returncode=0, stdout="abcdef\n")
+        events.append("merge" if command[:3] == ["gh", "pr", "merge"] else "recheck")
+        return canonical_runner(command)
 
     report = evaluate_auto_merge_gate(
         pr_status=_status(receipt_verified=False),
@@ -223,11 +416,66 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
         runner=runner,
         artifact_writer=artifact_writer,
     )
-    assert calls == ["artifact", "merge"]
+    assert events[0] == "artifact"
+    assert events.count("merge") == 1
+    assert events.index("artifact") < events.index("merge")
     assert report["decision"] == "auto_merged"
     assert report["auto_merge_event_payload"]["receipt_bundle_path"] == (
         "docs/receipts/manifest.json"
     )
+
+
+def test_apply_rechecks_full_snapshot_before_merge(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(
+        calls,
+        status=_status(updated_at="2026-07-24T09:00:01Z"),
+    )
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert "apply snapshot recheck drifted: updated_at" in report["reasons"]
+    assert not [
+        call for call in calls if call[:3] == ["gh", "pr", "merge"]
+    ]
+
+
+def test_zero_exit_without_confirmed_merged_state_fails_closed(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, post_state="OPEN")
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    assert excinfo.value.report["decision"] == "post_merge_state_unconfirmed"
+    report = excinfo.value.report
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
 
 
 def test_head_mismatch_blocks_without_runner() -> None:
@@ -245,6 +493,33 @@ def test_head_mismatch_blocks_without_runner() -> None:
     assert report["decision"] == "operator_review_required"
     assert "exact head mismatch" in report["reasons"]
     assert report["external_effect"] is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"state": "CLOSED"}, "PR state snapshot must be OPEN"),
+        ({"is_draft": True}, "PR must not be a draft"),
+        ({"is_draft": "false"}, "PR must not be a draft"),
+    ],
+)
+def test_closed_or_draft_pr_snapshot_fails_closed(
+    tmp_path: Path,
+    overrides: dict,
+    reason: str,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(**overrides),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert reason in report["reasons"]
 
 
 def test_apply_requires_expected_base_sha_before_runner(tmp_path: Path) -> None:
@@ -389,7 +664,11 @@ def test_missing_diff_text_snapshot_fails_closed() -> None:
     assert "diff_text must be a string" in excinfo.value.report["errors"]
 
 
-def test_daily_rate_limit_blocks_without_runner(tmp_path: Path) -> None:
+def test_daily_rate_limit_blocks_without_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(idle_merge_tool, "_today_utc", lambda: "2026-05-18")
     calls: list[list[str]] = []
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
@@ -414,6 +693,63 @@ def test_daily_rate_limit_blocks_without_runner(tmp_path: Path) -> None:
         "quota_total": 5,
     }
     assert "daily rate limit exceeded: 5/5 for 2026-05-18" in report["reasons"]
+
+
+@pytest.mark.parametrize(
+    "utc_date",
+    ["not-a-date", "20260724", "2026-7-24", " 2026-07-24"],
+)
+def test_quota_date_requires_exact_iso_calendar_date(
+    utc_date: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            utc_date=utc_date,
+            apply=True,
+            runner=lambda command: calls.append(list(command)),
+        )
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert "YYYY-MM-DD" in excinfo.value.report["errors"][0]
+
+
+def test_apply_rejects_historical_quota_date_before_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(idle_merge_tool, "_today_utc", lambda: "2026-07-24")
+    calls: list[list[str]] = []
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(
+                tmp_path,
+                [
+                    _auto_merge_event(index, ts="2026-07-24T01:00:00Z")
+                    for index in range(1, 6)
+                ],
+            ),
+            utc_date="2026-07-23",
+            apply=True,
+            runner=lambda command: calls.append(list(command)),
+        )
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert "current UTC date" in excinfo.value.report["errors"][0]
 
 
 def test_pending_check_blocks_merge() -> None:
@@ -499,7 +835,7 @@ def test_rco_gate_not_checked_defaults_fail_closed_report() -> None:
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
     )
-    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["decision"] == "operator_review_required"
     assert report["rco_pass_gate"]["ok"] is False
     assert report["rco_pass_gate"]["decision"] == (
         "not_checked_operator_review_required"
@@ -766,6 +1102,7 @@ def test_bridge_consensus_waives_build_author_slot_with_independent_peer(
     peer_role: str,
 ) -> None:
     events = [
+        _claim(author_agent, "idle-consensus-001"),
         _bridge_event(
             agent="codex-lead-1",
             type_="decision",
@@ -833,6 +1170,7 @@ def test_bridge_consensus_build_author_waiver_still_requires_peer_build_slot(
     peer_agent: str,
 ) -> None:
     events = [
+        _claim(author_agent, "idle-consensus-001"),
         _bridge_event(
             agent=author_agent,
             type_="decision",
@@ -1047,8 +1385,8 @@ def test_bridge_consensus_allows_clear_preflight_status_with_block_context(
 def test_bridge_consensus_rejects_build_pass_with_noncanonical_task_id(
     tmp_path: Path,
 ) -> None:
-    canonical_task = "codex-lead-1/v12-solver-growth-coverage-summary-20260608"
-    wrong_task = "codex-lead-1-v12-solver-growth-coverage-summary-20260608"
+    canonical_task = "fable-5/v12-solver-growth-coverage-summary-20260608"
+    wrong_task = "fable-5-v12-solver-growth-coverage-summary-20260608"
     events = [
         _bridge_event(
             agent="codex-lead-1",
@@ -1069,12 +1407,20 @@ def test_bridge_consensus_rejects_build_pass_with_noncanonical_task_id(
         _rco_pass(task_id=canonical_task),
     ]
     report = evaluate_auto_merge_gate(
-        pr_status=_status(),
+        pr_status=_status(
+            head_ref=canonical_task,
+            author_agent="fable-5",
+        ),
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id=canonical_task,
         receipt_bundle_path="docs/receipts/manifest.json",
-        events_path=_events_path(tmp_path, events),
+        events_path=_events_path(
+            tmp_path,
+            events,
+            claim_agent="fable-5",
+            claim_task=canonical_task,
+        ),
         bridge_task_id=canonical_task,
         require_bridge_consensus=True,
     )
@@ -1449,7 +1795,11 @@ def test_lead_stall_failover_refuses_tools_authored_pr(
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
-        events_path=_events_path(tmp_path, _lead_stall_failover_events()),
+        events_path=_events_path(
+            tmp_path,
+            _lead_stall_failover_events(),
+            claim_agent="codex-tools-1",
+        ),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
         allow_lead_stall_failover=True,
@@ -1769,7 +2119,13 @@ def _failover_report(
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
-        events_path=_events_path(tmp_path, events),
+        events_path=_events_path(
+            tmp_path,
+            events,
+            claim_agent=str(
+                (status_overrides or {}).get("author_agent", "claude-rco-2")
+            ),
+        ),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
         allow_lead_stall_failover=True,
@@ -2108,12 +2464,14 @@ def test_author_resolves_from_bridge_claim_not_operator_github_login(
     tmp_path: Path,
 ) -> None:
     task = "wd/rco/rule9a-backup-rco"
+    status = _status(
+        author_login="Ahkeratmehilaiset",
+        author={"login": "Ahkeratmehilaiset"},
+        head_ref=task,
+    )
+    status.pop("author_agent")
     report = evaluate_auto_merge_gate(
-        pr_status=_status(
-            author_agent=None,
-            author_login="Ahkeratmehilaiset",
-            author={"login": "Ahkeratmehilaiset"},
-        ),
+        pr_status=status,
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id=task,
@@ -2147,12 +2505,17 @@ def test_unresolvable_author_fails_closed_instead_of_guessing_task_prefix(
             author_agent=None,
             author_login="Ahkeratmehilaiset",
             author={"login": "Ahkeratmehilaiset"},
+            head_ref=task,
         ),
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id=task,
         receipt_bundle_path="docs/receipts/manifest.json",
-        events_path=_events_path(tmp_path, [_rco_pass(task_id=task)]),
+        events_path=_events_path(
+            tmp_path,
+            [_rco_pass(task_id=task)],
+            inject_claim=False,
+        ),
         bridge_task_id=task,
     )
 
@@ -2163,6 +2526,66 @@ def test_unresolvable_author_fails_closed_instead_of_guessing_task_prefix(
         "missing exact-head RCO_PASS from recognized non-author RCO"
         in report["reasons"]
     )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["absent_evidence", "empty_identities", "incomplete_evidence"],
+)
+def test_missing_or_incomplete_identity_evidence_blocks_with_bridge_events(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    status = _status()
+    if mode == "absent_evidence":
+        status.pop("git_identity_evidence")
+    elif mode == "empty_identities":
+        status["git_identities"] = []
+        status["git_identity_evidence"] = {
+            **status["git_identity_evidence"],
+            "identity_count": 0,
+            "commit_author_count": 0,
+        }
+    else:
+        status["git_identity_evidence"] = dict(
+            status["git_identity_evidence"]
+        )
+        status["git_identity_evidence"].pop("commit_oids")
+
+    report = evaluate_auto_merge_gate(
+        pr_status=status,
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["author_resolution"]["ok"] is False
+    assert any(
+        "PR author resolution requires operator review" in reason
+        for reason in report["reasons"]
+    )
+
+
+def test_non_string_author_assertion_blocks_instead_of_coercing(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(author_agent=["claude-rco-2"]),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["author_resolution"]["decision"] == "invalid_author_evidence"
+    assert "must be a string" in report["author_resolution"]["reasons"][0]
 
 
 def test_missing_from_agent_treats_all_bridge_decisions_as_peer_signals(
@@ -2188,7 +2611,7 @@ def test_missing_from_agent_treats_all_bridge_decisions_as_peer_signals(
     assert report["bridge_peer_gate"]["latest_blocking_event"]["agent"] == "claude"
 
 
-def test_status_check_rollup_is_supported() -> None:
+def test_status_check_rollup_is_supported(tmp_path: Path) -> None:
     status = _status()
     status.pop("checks")
     status["statusCheckRollup"] = [
@@ -2199,6 +2622,8 @@ def test_status_check_rollup_is_supported() -> None:
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
     )
     assert report["decision"] == "auto_merge_plan_ready"
 
@@ -2214,12 +2639,16 @@ def test_empty_status_check_snapshot_blocks_merge() -> None:
     assert "status checks snapshot is required before merge" in report["reasons"]
 
 
-def test_operator_approval_snapshot_metadata_is_not_required() -> None:
+def test_operator_approval_snapshot_metadata_is_not_required(
+    tmp_path: Path,
+) -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(operator_approved=False),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
     )
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["operator_review_required"] is False
@@ -2248,8 +2677,22 @@ def test_receipt_bundle_required() -> None:
 
 
 def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    canonical_runner = _canonical_apply_runner(
+        calls,
+        merge_returncode=7,
+        post_state="OPEN",
+    )
+
     def runner(command: list[str]) -> SimpleNamespace:
-        return SimpleNamespace(returncode=7, stdout="", stderr="PRIVATE_MARKER")
+        result = canonical_runner(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            return SimpleNamespace(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr="PRIVATE_MARKER",
+            )
+        return result
 
     with pytest.raises(AutoMergeGateError) as excinfo:
         evaluate_auto_merge_gate(
@@ -2266,22 +2709,381 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
     report = excinfo.value.report
     assert report["decision"] == "auto_merge_failed"
     assert "PRIVATE_MARKER" not in " ".join(report["errors"])
-    assert report["merge_recovery"]["decision"] == "not_checked"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_idle_merge_result_requires_exact_integer_returncode(
+    tmp_path: Path,
+    returncode: object,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(
+        calls,
+        merge_returncode=returncode,  # type: ignore[arg-type]
+        post_state="OPEN",
+    )
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_invalid_result"
+    assert report.get("auto_merge_event_payload") is None
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert len(
+        [call for call in calls if call[:3] == ["gh", "pr", "merge"]]
+    ) == 1
+    assert any(
+        "number,state,mergeCommit,headRefOid,headRefName,baseRefName" in call
+        for call in calls
+    )
+
+
+def test_missing_merge_returncode_recovers_then_reports_unknown_effect(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    canonical_runner = _canonical_apply_runner(calls, post_state="OPEN")
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = canonical_runner(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            return SimpleNamespace(stdout=result.stdout, stderr=result.stderr)
+        return result
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_invalid_result"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+
+
+def test_malformed_merge_result_recovers_confirmed_exact_merge(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(
+        calls,
+        merge_returncode=None,  # type: ignore[arg-type]
+    )
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["decision"] == "auto_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is True
+    assert report["gh_merge_attempted"] is True
+    assert report["merge_recovery"]["decision"] == (
+        "merged_after_merge_command_result_unknown"
+    )
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
+
+
+def test_merge_runner_exception_after_dispatch_reports_unknown_effect(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls, post_state="OPEN")
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            raise RuntimeError("PRIVATE_MARKER")
+        return result
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_runner_exception"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+
+
+def test_merge_returncode_property_exception_is_recovered(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls, post_state="OPEN")
+
+    class RaisingReturncode:
+        stdout = ""
+        stderr = ""
+
+        @property
+        def returncode(self):
+            raise RuntimeError("PRIVATE_MARKER")
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            return RaisingReturncode()  # type: ignore[return-value]
+        return result
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_runner_exception"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert "PRIVATE_MARKER" not in json.dumps(report, sort_keys=True)
+
+
+def test_merge_runner_exception_recovers_confirmed_exact_merge(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls)
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            raise RuntimeError("timeout")
+        return result
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["decision"] == "auto_merged"
+    assert report["external_effect"] is True
+    assert report["gh_merge_attempted"] is True
+    assert report["merge_recovery"]["decision"] == (
+        "merged_after_merge_command_result_unknown"
+    )
+
+
+def test_post_dispatch_private_verifier_state_is_controlled(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, merge_returncode=1)
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+            merge_verifier=lambda *_args: {
+                "number": 477,
+                "state": "PRIVATE_MARKER",
+            },
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_failed"
+    assert report["merge_recovery"]["decision"] == (
+        "verifier_returned_invalid_state"
+    )
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+    assert "PRIVATE_MARKER" not in json.dumps(report, sort_keys=True)
+
+
+def test_post_dispatch_hostile_verifier_mapping_is_not_invoked(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, merge_returncode=1)
+
+    class HostileMapping(dict):
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("must not invoke")
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+            merge_verifier=lambda *_args: HostileMapping(),
+        )
+
+    report = excinfo.value.report
+    assert report["merge_recovery"]["decision"] == (
+        "verifier_returned_non_object"
+    )
+    assert report["external_effect_unknown"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "decision"),
+    [
+        ("state", "pr_not_merged"),
+        ("headRefOid", "merged_head_mismatch"),
+        ("headRefName", "merged_head_ref_mismatch"),
+        ("baseRefName", "merged_base_ref_mismatch"),
+    ],
+)
+def test_merge_recovery_does_not_invoke_hostile_equality(
+    field: str,
+    decision: str,
+) -> None:
+    class BoomEq:
+        def __eq__(self, _other: object) -> bool:
+            raise RuntimeError("must not compare")
+
+    state: dict[str, object] = {
+        "ok": True,
+        "number": 477,
+        "state": "MERGED",
+        "headRefOid": HEAD,
+        "headRefName": "idle-consensus-001",
+        "baseRefName": "main",
+        "mergeCommit": {"oid": MERGE_SHA},
+    }
+    state[field] = BoomEq()
+
+    report = idle_merge_tool._recover_merge_state_after_failure(
+        pr_number=477,
+        expected_head=HEAD,
+        expected_head_ref="idle-consensus-001",
+        expected_base_ref="main",
+        repo="example/repo",
+        return_code=1,
+        verifier=lambda *_args: state,
+    )
+
+    assert report["merged"] is False
+    assert report["decision"] == decision
+
+
+def test_falsey_callable_idle_runner_is_used_without_default_fallback(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls)
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: list[str]) -> SimpleNamespace:
+            return delegate(command)
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=FalseyRunner(),
+    )
+
+    assert report["decision"] == "auto_merged"
+    assert calls
 
 
 def test_runner_failure_recovers_when_pr_view_confirms_merge(
     tmp_path: Path,
 ) -> None:
     verifier_calls: list[tuple[int, str, str]] = []
-
-    def runner(command: list[str]) -> SimpleNamespace:
-        return SimpleNamespace(returncode=1, stdout="", stderr="Gateway Timeout")
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, merge_returncode=1)
 
     def verifier(pr_number: int, expected_head: str, repo: str) -> dict:
         verifier_calls.append((pr_number, expected_head, repo))
         return {
+            "number": 477,
             "state": "MERGED",
             "headRefOid": expected_head,
+            "headRefName": "idle-consensus-001",
+            "baseRefName": "main",
             "mergeCommit": {"oid": MERGE_SHA},
         }
 
@@ -2306,16 +3108,133 @@ def test_runner_failure_recovers_when_pr_view_confirms_merge(
     assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
 
 
+def test_unregistered_rco_cannot_satisfy_bridge_consensus() -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD}},
+        {
+            "agent": "evil-rco",
+            "type": "decision",
+            "status": "rco_pass",
+            "task_id": "idle-consensus-001",
+            "payload": {"head": HEAD, "pr": 477},
+        },
+    ]
+
+    report = verify_bridge_consensus(
+        events=events,
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        rco_agent="evil-rco",
+        author_agent="fable-5",
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_consensus_config"
+    assert "not registered" in report["reasons"][0]
+
+
+def test_injected_registry_cannot_register_an_attacker_rco() -> None:
+    injected = {
+        **AGENT_UUIDS,
+        "evil-rco": "11111111-1111-4111-8111-111111111111",
+    }
+
+    report = verify_bridge_consensus(
+        events=[],
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        rco_agent="evil-rco",
+        author_agent="fable-5",
+        identity_registry=injected,
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_identity_registry"
+    assert "canonical registry" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "decision"),
+    [
+        ("task_id", False, "invalid_consensus_config"),
+        ("task_id", " idle-consensus-001", "invalid_consensus_config"),
+        ("head_sha", False, "invalid_consensus_head"),
+        ("head_sha", 7, "invalid_consensus_head"),
+        ("pr_number", False, "invalid_consensus_config"),
+        ("allow_lead_stall_failover", 1, "invalid_consensus_config"),
+        (
+            "lead_stall_failover_threshold_seconds",
+            False,
+            "invalid_consensus_config",
+        ),
+        (
+            "lead_stall_failover_changed_paths",
+            "tools/a.py",
+            "invalid_consensus_config",
+        ),
+        (
+            "lead_stall_failover_diff_text",
+            False,
+            "invalid_consensus_config",
+        ),
+        (
+            "lead_stall_failover_charter_path",
+            False,
+            "invalid_consensus_config",
+        ),
+        ("lead_agent", " codex-lead-1", "invalid_consensus_config"),
+        ("tools_agent", " codex-tools-1", "invalid_consensus_config"),
+        ("author_agent", " fable-5", "invalid_consensus_config"),
+        ("rco_agent", [1], "invalid_consensus_config"),
+    ],
+)
+def test_bridge_consensus_public_inputs_fail_closed_without_type_leaks(
+    field: str,
+    value: object,
+    decision: str,
+) -> None:
+    kwargs: dict[str, object] = {
+        "events": [],
+        "task_id": "idle-consensus-001",
+        "head_sha": HEAD,
+        "pr_number": 477,
+        "author_agent": "fable-5",
+    }
+    kwargs[field] = value
+
+    report = verify_bridge_consensus(**kwargs)  # type: ignore[arg-type]
+
+    assert report["ok"] is False
+    assert report["decision"] == decision
+    assert report["rco_pass_ref"] is None
+
+
 def test_runner_failure_still_fails_when_merge_verifier_disagrees(
     tmp_path: Path,
 ) -> None:
-    def runner(command: list[str]) -> SimpleNamespace:
-        return SimpleNamespace(returncode=1, stdout="", stderr="Gateway Timeout")
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(calls, merge_returncode=1)
 
     def verifier(pr_number: int, expected_head: str, repo: str) -> dict:
         return {
+            "number": 477,
             "state": "OPEN",
             "headRefOid": expected_head,
+            "headRefName": "idle-consensus-001",
+            "baseRefName": "main",
             "mergeCommit": None,
         }
 
@@ -2335,6 +3254,134 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
     report = excinfo.value.report
     assert report["decision"] == "auto_merge_failed"
     assert report["merge_recovery"]["decision"] == "pr_not_merged"
+    assert report["dry_run"] is False
+    assert report["external_effect"] is None
+    assert report["external_effect_unknown"] is True
+    assert report["gh_merge_attempted"] is True
+
+
+@pytest.mark.parametrize("ok_value", [False, 0, "false", None])
+def test_merge_recovery_rejects_every_present_nontrue_ok_value(
+    ok_value: object,
+) -> None:
+    state = {
+        "number": 477,
+        "state": "MERGED",
+        "headRefOid": HEAD,
+        "headRefName": "idle-consensus-001",
+        "baseRefName": "main",
+        "mergeCommit": {"oid": MERGE_SHA},
+        "ok": ok_value,
+    }
+
+    report = idle_merge_tool._recover_merge_state_after_failure(
+        pr_number=477,
+        expected_head=HEAD,
+        expected_head_ref="idle-consensus-001",
+        expected_base_ref="main",
+        repo="example/repo",
+        return_code=1,
+        verifier=lambda *_args: state,
+    )
+
+    assert report["merged"] is False
+    assert report["decision"] == "verifier_refused_merge_state"
+
+
+def test_merge_recovery_rejects_wrong_pr_even_when_other_fields_match() -> None:
+    report = idle_merge_tool._recover_merge_state_after_failure(
+        pr_number=477,
+        expected_head=HEAD,
+        expected_head_ref="idle-consensus-001",
+        expected_base_ref="main",
+        repo="example/repo",
+        return_code=1,
+        verifier=lambda *_args: {
+            "number": 9999,
+            "state": "MERGED",
+            "headRefOid": HEAD,
+            "headRefName": "idle-consensus-001",
+            "baseRefName": "main",
+            "mergeCommit": {"oid": MERGE_SHA},
+        },
+    )
+
+    assert report["merged"] is False
+    assert report["decision"] == "merged_pr_mismatch"
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [7, False, ["manifest"], {"manifest": "x"}, "", " ", " path.json"],
+)
+def test_artifact_manifest_requires_an_exact_nonempty_string(
+    manifest: object,
+) -> None:
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        idle_merge_tool._verified_artifact_manifest(
+            {
+                "receipt_bundle": {
+                    "manifest": manifest,
+                    "verifier_report": {"ok": True},
+                }
+            }
+        )
+
+    assert excinfo.value.report["decision"] == "artifact_receipt_failed"
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_merge_state_query_requires_exact_integer_returncode(
+    returncode: object,
+) -> None:
+    result = SimpleNamespace(stdout="{}", stderr="")
+    if returncode is not None:
+        result.returncode = returncode
+
+    report = idle_merge_tool._query_pr_merge_state(
+        477,
+        HEAD,
+        "example/repo",
+        runner=lambda _command: result,
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "merge_state_query_invalid_result"
+
+
+def test_falsey_callable_merge_state_runner_is_not_replaced() -> None:
+    calls: list[list[str]] = []
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: list[str]) -> SimpleNamespace:
+            calls.append(list(command))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "number": 477,
+                        "state": "MERGED",
+                        "headRefOid": HEAD,
+                        "headRefName": "idle-consensus-001",
+                        "baseRefName": "main",
+                        "mergeCommit": {"oid": MERGE_SHA},
+                    }
+                ),
+                stderr="",
+            )
+
+    report = idle_merge_tool._query_pr_merge_state(
+        477,
+        HEAD,
+        "example/repo",
+        runner=FalseyRunner(),
+    )
+
+    assert calls
+    assert report["number"] == 477
 
 
 def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> None:
@@ -2383,7 +3430,16 @@ def test_cli_defaults_events_to_runtime_bridge_root(
     runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
     runtime_events = runtime_bridge / "shared" / "events.jsonl"
     runtime_events.parent.mkdir(parents=True)
-    runtime_events.write_text(json.dumps(_rco_pass(), sort_keys=True), encoding="utf-8")
+    runtime_events.write_text(
+        "\n".join(
+            json.dumps(event, sort_keys=True)
+            for event in [
+                _claim("claude-rco-2", "idle-consensus-001"),
+                _rco_pass(),
+            ]
+        ),
+        encoding="utf-8",
+    )
     pr_status = tmp_path / "pr_status.json"
     pr_status.write_text(json.dumps(_status(), sort_keys=True), encoding="utf-8")
     monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime_bridge))
@@ -2412,3 +3468,180 @@ def test_cli_defaults_events_to_runtime_bridge_root(
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "auto_merge_plan_ready"
     assert report["rco_pass_gate"]["ok"] is True
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_receipt_verified_requires_exact_boolean(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(receipt_verified=value),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["receipt_gate"]["verified"] is False
+    assert "receipt_verified must be a boolean" in report["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "decision"),
+    [
+        ("pr_status", None, "invalid_pr_status"),
+        ("pr_status", [], "invalid_pr_status"),
+        ("pr_status", "status", "invalid_pr_status"),
+        ("pr_status", 7, "invalid_pr_status"),
+        ("pr_status", True, "invalid_pr_status"),
+        ("expected_head", 0, "invalid_input"),
+        ("expected_base_sha", False, "invalid_input"),
+        ("consensus_proposal_id", [], "invalid_input"),
+        ("consensus_proposal_id", " idle-consensus-001", "invalid_input"),
+        ("receipt_bundle_path", None, "invalid_input"),
+        ("repo", 7, "invalid_input"),
+        ("from_agent", False, "invalid_input"),
+        ("from_agent", " codex-lead-1", "invalid_input"),
+        ("bridge_task_id", {}, "invalid_input"),
+        ("bridge_task_id", " idle-consensus-001", "invalid_input"),
+        ("utc_date", 20260724, "invalid_input"),
+        ("events_path", "events.jsonl", "invalid_input"),
+        ("charter_path", "charter.toml", "invalid_input"),
+        ("lead_stall_failover_threshold_seconds", 1.5, "invalid_input"),
+        ("runner", False, "invalid_input"),
+        ("merge_verifier", 0, "invalid_input"),
+        ("artifact_writer", [], "invalid_input"),
+    ],
+)
+def test_malformed_public_inputs_raise_controlled_gate_error_before_effects(
+    field: str,
+    value: object,
+    decision: str,
+) -> None:
+    calls: list[list[str]] = []
+    kwargs: dict[str, object] = {
+        "pr_status": _status(),
+        "expected_head": HEAD,
+        "expected_base_sha": BASE,
+        "consensus_proposal_id": "idle-consensus-001",
+        "receipt_bundle_path": "docs/receipts/manifest.json",
+        "runner": lambda command: calls.append(list(command)),
+    }
+    kwargs[field] = value
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(**kwargs)  # type: ignore[arg-type]
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == decision
+    assert excinfo.value.report["external_effect"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("apply", "false"),
+        ("apply", 0),
+        ("apply", 1),
+        ("require_bridge_consensus", "false"),
+        ("require_bridge_consensus", 0),
+        ("standing_consensus_sign", "true"),
+        ("standing_consensus_sign", 1),
+        ("allow_lead_stall_failover", []),
+        ("allow_lead_stall_failover", None),
+    ],
+)
+def test_effect_and_control_flags_require_exact_booleans(
+    field: str,
+    value: object,
+) -> None:
+    calls: list[list[str]] = []
+    kwargs: dict[str, object] = {
+        "pr_status": _status(),
+        "expected_head": HEAD,
+        "expected_base_sha": BASE,
+        "consensus_proposal_id": "idle-consensus-001",
+        "receipt_bundle_path": "docs/receipts/manifest.json",
+        "runner": lambda command: calls.append(list(command)),
+    }
+    kwargs[field] = value
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(**kwargs)  # type: ignore[arg-type]
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert f"{field} must be a boolean" in excinfo.value.report["errors"][0]
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b'{"type":"claim","type":"decision"}\n',
+        b'{"type":"claim","payload":{"weight":NaN}}\n',
+        b'{"type":"claim","payload":{"weight":Infinity}}\n',
+        b"\xff\xfe\x00",
+    ],
+)
+def test_bridge_events_use_strict_json_and_utf8(
+    tmp_path: Path,
+    contents: bytes,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes(contents)
+    calls: list[list[str]] = []
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=events_path,
+            runner=lambda command: calls.append(list(command)),
+        )
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_events"
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b'{"pr_number":477,"pr_number":478}',
+        b'{"pr_number":NaN}',
+        b'{"pr_number":Infinity}',
+        b"\xff\xfe\x00",
+    ],
+)
+def test_cli_pr_status_uses_strict_json_and_utf8(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    contents: bytes,
+) -> None:
+    pr_status = tmp_path / "pr-status.json"
+    pr_status.write_bytes(contents)
+
+    exit_code = main(
+        [
+            "--pr-status-file",
+            str(pr_status),
+            "--expected-head",
+            HEAD,
+            "--expected-base-sha",
+            BASE,
+            "--consensus-proposal-id",
+            "idle-consensus-001",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "invalid_pr_status"
+    assert report["external_effect"] is False

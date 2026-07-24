@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
 import pytest
 
+from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.verify_magma_receipt import verify_manifest
 from tools.write_bridge_consensus_merge_receipt import (
     BridgeConsensusMergeReceiptError,
@@ -16,10 +17,11 @@ from tools.write_bridge_consensus_merge_receipt import (
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "fedcba0987654321fedcba0987654321fedcba09"
-TASK = "codex-lead-1/bridge-consensus-receipt-test"
+TASK = "claude-rco-2/bridge-consensus-receipt-test"
 NOW = datetime(2026, 6, 13, 22, 50, tzinfo=timezone.utc)
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+    "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
@@ -86,7 +88,81 @@ def test_refuses_without_exact_head_rco_pass(tmp_path: Path) -> None:
     assert not (tmp_path / "receipt").exists()
 
 
+@pytest.mark.parametrize(
+    "now_utc",
+    [False, 0, 7, "2026-06-13T22:50:00Z", datetime(2026, 6, 13, 22, 50)],
+)
+def test_receipt_writer_rejects_nonaware_datetime_before_writes(
+    tmp_path: Path,
+    now_utc: object,
+) -> None:
+    out_dir = tmp_path / "receipt"
+
+    with pytest.raises(BridgeConsensusMergeReceiptError) as excinfo:
+        write_bridge_consensus_merge_receipt(
+            pr_status=_pr_status(),
+            events_path=_events_path(tmp_path, _full_consensus()),
+            out_dir=out_dir,
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id=TASK,
+            repo="example/repo",
+            from_agent="codex-lead-1",
+            bridge_task_id=TASK,
+            now_utc=now_utc,  # type: ignore[arg-type]
+        )
+
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert not out_dir.exists()
+
+
+def test_receipt_writer_normalizes_aware_time_to_utc(tmp_path: Path) -> None:
+    local_time = NOW.astimezone(timezone(timedelta(hours=2)))
+    out_dir = tmp_path / "receipt"
+
+    write_bridge_consensus_merge_receipt(
+        pr_status=_pr_status(),
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=out_dir,
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        repo="example/repo",
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        now_utc=local_time,
+    )
+
+    payload = json.loads(
+        (out_dir / "payload-001-merge.json").read_text(encoding="utf-8")
+    )
+    assert payload["created_at_utc"] == "2026-06-13T22:50:00Z"
+
+
 def _pr_status() -> dict:
+    material = github_pr_git_identity_evidence(
+        {
+            "author": {
+                "login": "Ahkeratmehilaiset",
+                "name": "",
+                "email": "",
+            },
+            "commits": [
+                {
+                    "oid": HEAD,
+                    "authors": [
+                        {
+                            "name": "Jani",
+                            "email": "jani@jkhservice.fi",
+                            "login": "",
+                        }
+                    ],
+                }
+            ],
+        },
+        expected_head_sha=HEAD,
+    )
+    identities = material.pop("identities")
     return {
         "pr_number": 1174,
         "title": "fix(bridge): test receipt writer",
@@ -94,6 +170,7 @@ def _pr_status() -> dict:
         "base_sha": BASE,
         "head_ref": TASK,
         "state": "OPEN",
+        "is_draft": False,
         "mergeable": "MERGEABLE",
         "receipt_verified": True,
         "author_agent": "claude-rco-2",
@@ -103,6 +180,8 @@ def _pr_status() -> dict:
             {"name": "unified", "conclusion": "SUCCESS", "status": "COMPLETED"},
             {"name": "test (3.13)", "conclusion": "SUCCESS", "status": "COMPLETED"},
         ],
+        "git_identities": identities,
+        "git_identity_evidence": material,
     }
 
 
@@ -117,10 +196,18 @@ def _events_path(tmp_path: Path, events: list[dict]) -> Path:
 
 def _full_consensus() -> list[dict]:
     return [
+        _claim("claude-rco-2", "2026-06-13T22:39:00Z"),
         _event("codex-lead-1", "build_consensus_pass", "2026-06-13T22:40:00Z"),
         _event("codex-tools-1", "build_consensus_pass", "2026-06-13T22:41:00Z"),
         _event("claude-rco-1", "rco_pass", "2026-06-13T22:42:00Z"),
     ]
+
+
+def _claim(agent: str, ts_utc: str) -> dict:
+    event = _event(agent, "active", ts_utc)
+    event["type"] = "claim"
+    event["write_scope"] = ["*"]
+    return event
 
 
 def _event(agent: str, status: str, ts_utc: str) -> dict:

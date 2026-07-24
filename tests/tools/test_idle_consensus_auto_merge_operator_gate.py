@@ -1,15 +1,17 @@
 import json
 from pathlib import Path
 
+from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.idle_consensus_auto_merge import evaluate_auto_merge_gate
 
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
+BASE = "abcdef1234567890abcdef1234567890abcdef12"
 TASK = "codex-tools-1/operator-gate-regression-20260606"
 LEAD = "codex-lead-1"
 TOOLS = "codex-tools-1"
 RCO = "claude-rco-1"
-AUTHOR = "claude-rco-2"
+AUTHOR = TOOLS
 AGENT_UUIDS = {
     LEAD: "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     TOOLS: "7a8af68d-20bc-4598-9953-23c5dd98b102",
@@ -32,6 +34,16 @@ def _approval(agent: str, status: str, *, ts: str) -> dict:
 
 def _full_bridge_consensus() -> list[dict]:
     return [
+        {
+            "ts_utc": "2026-06-06T00:59:00Z",
+            "agent": AUTHOR,
+            "type": "claim",
+            "status": "active",
+            "task_id": TASK,
+            "write_scope": ["*"],
+            "payload": {},
+            "agent_uuid": AGENT_UUIDS[AUTHOR],
+        },
         _approval(LEAD, "build_consensus_pass", ts="2026-06-06T01:00:00Z"),
         _approval(TOOLS, "build_consensus_pass", ts="2026-06-06T01:01:00Z"),
         _approval(RCO, "rco_pass", ts="2026-06-06T01:02:00Z"),
@@ -48,11 +60,38 @@ def _events_path(tmp_path: Path, events: list[dict]) -> Path:
 
 
 def _status(**overrides) -> dict:
+    material = github_pr_git_identity_evidence(
+        {
+            "author": {
+                "login": "Ahkeratmehilaiset",
+                "name": "",
+                "email": "",
+            },
+            "commits": [
+                {
+                    "oid": HEAD,
+                    "authors": [
+                        {
+                            "name": "Jani",
+                            "email": "jani@jkhservice.fi",
+                            "login": "",
+                        }
+                    ],
+                }
+            ],
+        },
+        expected_head_sha=HEAD,
+    )
+    identities = material.pop("identities")
     status = {
         "pr_number": 907,
         "head_sha": HEAD,
+        "head_ref": TASK,
+        "base_sha": BASE,
         "title": "[codex] add operator feedback scheduler preflight",
         "mergeable": "clean",
+        "state": "OPEN",
+        "is_draft": False,
         "receipt_verified": True,
         "author_agent": AUTHOR,
         "changed_paths": ["tests/tools/test_operator_gate_regression.py"],
@@ -61,6 +100,8 @@ def _status(**overrides) -> dict:
             {"name": "test (3.13)", "state": "success"},
             {"name": "unified", "state": "success"},
         ],
+        "git_identities": identities,
+        "git_identity_evidence": material,
     }
     status.update(overrides)
     return status

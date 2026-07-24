@@ -116,7 +116,7 @@ def write_bridge_consensus_merge_receipt(
     bridge_task_id: str = "",
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
-    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now = _validated_now_utc(now_utc)
     manifest_path = out_dir / "manifest.json"
     gate_report = _merge_plan_report(
         pr_status=pr_status,
@@ -177,6 +177,32 @@ def write_bridge_consensus_merge_receipt(
         "receipt_bundle": receipt_bundle,
         "gate_report": gate_report,
     }
+
+
+def _validated_now_utc(value: object) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if type(value) is not datetime:
+        raise BridgeConsensusMergeReceiptError(
+            {
+                "decision": "invalid_input",
+                "ok": False,
+                "errors": [
+                    "now_utc must be a timezone-aware datetime or null"
+                ],
+                "exit_code": 2,
+            }
+        )
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise BridgeConsensusMergeReceiptError(
+            {
+                "decision": "invalid_input",
+                "ok": False,
+                "errors": ["now_utc must be timezone-aware"],
+                "exit_code": 2,
+            }
+        )
+    return value.astimezone(timezone.utc)
 
 
 def _merge_plan_report(

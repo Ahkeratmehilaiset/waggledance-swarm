@@ -134,8 +134,12 @@ def build_promotion_driver_lag_report(
     from_agent: str = "promotion-driver-lag-report",
 ) -> dict[str, Any]:
     """Return a diff-free report describing pending promotion-driver work."""
+    try:
+        normalized_pr_status = _promotion_pr_status(pr_status)
+    except ValueError as exc:
+        return _invalid_report(str(exc))
     promotion = evaluate_promotion_eligibility(
-        pr_status=pr_status,
+        pr_status=normalized_pr_status,
         events=events,
         task_id=task_id,
         head=head,
@@ -151,7 +155,11 @@ def build_promotion_driver_lag_report(
     if promotion.get("decision") == "invalid_input":
         return _invalid_report("; ".join(map(str, promotion.get("errors", []))))
 
-    pr_summary = _pr_summary(pr_status=pr_status, head=head, pr_number=pr_number)
+    pr_summary = _pr_summary(
+        pr_status=normalized_pr_status,
+        head=head,
+        pr_number=pr_number,
+    )
     required_actions: list[str] = []
     lag_reason = ""
     promotion_eligible = bool(promotion.get("eligible"))
@@ -195,6 +203,82 @@ def build_promotion_driver_lag_report(
     return report
 
 
+def _promotion_pr_status(
+    pr_status: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Map raw GitHub snapshot aliases onto the verifier's canonical boundary."""
+    if type(pr_status) is not dict:
+        return pr_status
+    normalized = dict(pr_status)
+
+    for key in ("state", "pr_state"):
+        if key in normalized:
+            value = normalized[key]
+            if type(value) is not str or not value or value != value.strip():
+                raise ValueError(f"{key} must be a non-empty exact string")
+    state_values = [
+        normalized[key] for key in ("state", "pr_state") if key in normalized
+    ]
+    if len(set(state_values)) > 1:
+        raise ValueError("state and pr_state disagree")
+    if "state" not in normalized and state_values:
+        normalized["state"] = state_values[0]
+
+    draft_values: list[bool] = []
+    for key in ("is_draft", "isDraft", "draft"):
+        if key in normalized and type(normalized[key]) is not bool:
+            raise ValueError(f"{key} must be a boolean")
+        if key in normalized:
+            draft_values.append(normalized[key])
+    if len(set(draft_values)) > 1:
+        raise ValueError("is_draft, isDraft, and draft disagree")
+    if "is_draft" not in normalized and draft_values:
+        normalized["is_draft"] = draft_values[0]
+
+    merge_clean_values: list[bool] = []
+    for key in ("mergeable", "mergeStateStatus", "merge_state"):
+        if key in normalized:
+            value = normalized[key]
+            if type(value) is not str or not value or value != value.strip():
+                raise ValueError(f"{key} must be a non-empty exact string")
+            merge_clean_values.append(
+                value == "MERGEABLE"
+                if key == "mergeable"
+                else (
+                    value == "CLEAN"
+                    if key == "mergeStateStatus"
+                    else value in {"CLEAN", "MERGEABLE"}
+                )
+            )
+    if len(set(merge_clean_values)) > 1:
+        raise ValueError(
+            "mergeable, mergeStateStatus, and merge_state disagree"
+        )
+    if "mergeable" not in normalized and merge_clean_values:
+        normalized["mergeable"] = (
+            "MERGEABLE" if merge_clean_values[0] else "UNKNOWN"
+        )
+
+    merged_at_values: list[str] = []
+    for key in ("merged_at", "mergedAt"):
+        if key not in normalized:
+            continue
+        value = normalized[key]
+        if value is None:
+            merged_at_values.append("")
+            continue
+        if type(value) is not str or value != value.strip():
+            raise ValueError(f"{key} must be null or an exact string")
+        merged_at_values.append(value)
+    if len(set(merged_at_values)) > 1:
+        raise ValueError("merged_at and mergedAt disagree")
+    merged_at = merged_at_values[0] if merged_at_values else ""
+    normalized["merged_at"] = merged_at
+    if normalized.get("state") == "OPEN" and merged_at:
+        raise ValueError("OPEN state cannot have a merged timestamp")
+    return normalized
+
+
 def _promotion_summary(promotion: Mapping[str, Any]) -> dict[str, Any]:
     gate_results = promotion.get("gate_results")
     gate_ok: dict[str, bool] = {}
@@ -232,12 +316,10 @@ def _pr_summary(
         "number": number,
         "state": state,
         "is_draft": _draft_value(pr_status),
-        "merge_state": _first_str(
-            pr_status, ("merge_state", "mergeStateStatus", "mergeable")
-        ),
+        "merge_state": _first_str(pr_status, ("mergeable",)),
         "head": _first_str(pr_status, ("head_sha", "headRefOid")) or head,
         "base": _first_str(pr_status, ("base_sha", "baseRefOid")),
-        "merged_at": _first_str(pr_status, ("merged_at", "mergedAt")),
+        "merged_at": _first_str(pr_status, ("merged_at",)),
     }
 
 

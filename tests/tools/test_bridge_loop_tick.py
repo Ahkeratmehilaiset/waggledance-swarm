@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.bridge_loop_tick import (
     MERGE_DRIVER_COMMAND,
     WAKEUP_ACT_NOW,
@@ -85,6 +86,8 @@ def _claim(agent: str, task: str, *, ts: str = "2026-05-22T12:59:00Z") -> dict:
         "task_id": task,
         "status": "active",
         "message": "claimed",
+        "write_scope": ["*"],
+        "payload": {},
     })
 
 
@@ -115,6 +118,7 @@ def _build_consensus(
 
 def _three_identity_consensus(task: str, *, pr: int, head: str) -> list[dict]:
     return [
+        _claim("fable-5", task),
         _build_consensus(
             task,
             head=head,
@@ -192,12 +196,42 @@ def _format_z(value: datetime) -> str:
     )
 
 
-def _green_snapshot(pr: int, head: str = HEAD) -> dict:
+def _green_snapshot(pr: int, head: str = HEAD, task: str = "t1") -> dict:
+    material = github_pr_git_identity_evidence(
+        {
+            "author": {
+                "login": "Ahkeratmehilaiset",
+                "name": "",
+                "email": "",
+            },
+            "commits": [
+                {
+                    "oid": head,
+                    "authors": [
+                        {
+                            "name": "Jani",
+                            "email": "jani@jkhservice.fi",
+                            "login": "",
+                        }
+                    ],
+                }
+            ],
+        },
+        expected_head_sha=head,
+    )
+    identities = material.pop("identities")
     return {
         "pr_number": pr,
         "head_sha": head,
+        "head_ref": task,
+        "base_sha": BASE,
         "mergeable": "MERGEABLE",
-        "author_agent": "claude-rco-2",
+        "state": "OPEN",
+        "is_draft": False,
+        "author_agent": "fable-5",
+        "changed_paths": ["tools/idle_daily_summary.py"],
+        "git_identities": identities,
+        "git_identity_evidence": material,
         "checks": [
             {
                 "name": "test",
@@ -507,6 +541,7 @@ def test_merge_ready_with_short_approved_head_prefix():
 
 def test_not_ready_without_full_bridge_consensus():
     events = [
+        _claim("fable-5", "t1"),
         _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
         _rco_gate_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
     ]
@@ -630,7 +665,10 @@ def test_no_snapshot_fn_is_unchecked_not_ready():
 
 
 def test_not_ready_without_exact_head_rco_pass():
-    events = [_rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")]
+    events = [
+        _claim("fable-5", "t1"),
+        _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
+    ]
     r = evaluate_merge_ready(
         _candidate(),
         events=events,
@@ -660,7 +698,7 @@ def test_merge_ready_resolves_author_from_claim_and_rejects_rco_self_pass():
         ),
         _rco_gate_pass(task, pr=900, head=HEAD, ts="2026-05-22T13:31:00Z"),
     ]
-    snapshot = _green_snapshot(900)
+    snapshot = _green_snapshot(900, task=task)
     snapshot.pop("author_agent")
     snapshot["author"] = {"login": "Ahkeratmehilaiset"}
 

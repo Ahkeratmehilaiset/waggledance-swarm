@@ -211,14 +211,15 @@ def evaluate(*,
     reasons: list[str] = []
 
     # Hard rule checks (constitution-listed invariants)
-    if not no_runtime_mutation:
+    if no_runtime_mutation is not True:
         # The action_gate must always see no_runtime_mutation=True;
-        # if not, the action_gate_is_only_exit hard rule blocks it.
+        # only the exact boolean literal is accepted.  Truthy values
+        # must not launder an untrusted wire value through this rule.
         for hr in hard_rules:
             if hr.id == "action_gate_is_only_exit":
                 blocking.append(hr.id)
                 reasons.append(
-                    f"hard rule {hr.id}: action carries no_runtime_mutation=False"
+                    f"hard rule {hr.id}: no_runtime_mutation is not exact true"
                 )
                 break
 

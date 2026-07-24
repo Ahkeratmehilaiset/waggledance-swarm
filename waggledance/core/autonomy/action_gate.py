@@ -29,6 +29,7 @@ from . import (
     budget_engine as be,
     governor as gov,
     kernel_state as ks,
+    mission_queue as mq,
     policy_core as pc,
 )
 
@@ -83,8 +84,8 @@ def _breaker_state_for_lane(state: ks.KernelState, lane: str) -> str:
             if b.quarantined:
                 return "quarantined"
             return b.state
-    # Unknown lane → treat as closed (open assumption would lock the
-    # gate when new lanes are introduced; better to allow + audit).
+    # Valid lanes do not all require a dedicated breaker snapshot. Lane
+    # membership is checked before this helper is called.
     return "closed"
 
 
@@ -110,32 +111,78 @@ def evaluate_one(
     budgets: tuple[ks.BudgetEntry, ...] | None = None,
 ) -> GateVerdict:
     """Run policy + breaker + budget checks on one recommendation."""
-    budgets = budgets if budgets is not None else state.budgets
+    if type(recommendation) is not gov.ActionRecommendation:
+        return GateVerdict(
+            recommendation_id="invalid-recommendation",
+            verdict="REJECT_HARD",
+            reason="recommendation must be an exact ActionRecommendation",
+            blocking_rule_ids=("action_gate_is_only_exit",),
+        )
+
+    # Snapshot every route-defining field once after the exact-shape gate.
+    # This keeps validation and dispatch bound to the same immutable values.
+    recommendation_id = recommendation.recommendation_id
+    no_runtime_mutation = recommendation.no_runtime_mutation
+    lane = recommendation.lane
+    kind = recommendation.kind
+
+    if no_runtime_mutation is not True:
+        return GateVerdict(
+            recommendation_id=recommendation_id,
+            verdict="REJECT_HARD",
+            reason="no_runtime_mutation must be the boolean literal true",
+            blocking_rule_ids=("action_gate_is_only_exit",),
+        )
+    if type(lane) is not str:
+        return GateVerdict(
+            recommendation_id=recommendation_id,
+            verdict="REJECT_HARD",
+            reason="recommendation lane must be an exact built-in str",
+        )
+    if lane not in mq.ALLOWED_LANES:
+        return GateVerdict(
+            recommendation_id=recommendation_id,
+            verdict="REJECT_HARD",
+            reason=f"unknown recommendation lane: {lane!r}",
+        )
+    if type(kind) is not str:
+        return GateVerdict(
+            recommendation_id=recommendation_id,
+            verdict="REJECT_HARD",
+            reason="recommendation kind must be an exact built-in str",
+        )
+    if kind not in mq.ALLOWED_KINDS:
+        return GateVerdict(
+            recommendation_id=recommendation_id,
+            verdict="REJECT_HARD",
+            reason=f"unknown recommendation kind: {kind!r}",
+        )
 
     # 1. Circuit breaker
-    breaker_state = _breaker_state_for_lane(state, recommendation.lane)
+    budgets = budgets if budgets is not None else state.budgets
+    breaker_state = _breaker_state_for_lane(state, lane)
     if breaker_state in ("open", "quarantined"):
         return GateVerdict(
-            recommendation_id=recommendation.recommendation_id,
+            recommendation_id=recommendation_id,
             verdict="DEFER",
-            reason=f"circuit breaker for lane {recommendation.lane!r} is {breaker_state!r}",
+            reason=f"circuit breaker for lane {lane!r} is {breaker_state!r}",
             breaker_state=breaker_state,
         )
 
     # 2. Policy
     ev = pc.evaluate(
-        action_id=recommendation.recommendation_id,
-        action_kind=recommendation.kind,
-        action_lane=recommendation.lane,
+        action_id=recommendation_id,
+        action_kind=kind,
+        action_lane=lane,
         requires_human_review=recommendation.requires_human_review,
-        no_runtime_mutation=recommendation.no_runtime_mutation,
+        no_runtime_mutation=no_runtime_mutation,
         hard_rules=hard_rules,
         adaptive_rules=adaptive_rules,
         capsule_context=recommendation.capsule_context,
     )
     if not ev.allowed:
         return GateVerdict(
-            recommendation_id=recommendation.recommendation_id,
+            recommendation_id=recommendation_id,
             verdict="REJECT_HARD",
             reason="policy block: " + (ev.reasons[0] if ev.reasons else "unspecified"),
             blocking_rule_ids=ev.blocking_rule_ids,
@@ -145,7 +192,7 @@ def evaluate_one(
 
     # 3. Budget reservation (no actual consumption — that happens in
     #    the lane after work succeeds)
-    budget_name = _budget_for_kind(recommendation.kind)
+    budget_name = _budget_for_kind(kind)
     budget_violation = None
     if budget_name:
         amount = 1.0
@@ -159,7 +206,7 @@ def evaluate_one(
             budget_violation = v.to_dict()
             if v.severity == "fatal":
                 return GateVerdict(
-                    recommendation_id=recommendation.recommendation_id,
+                    recommendation_id=recommendation_id,
                     verdict="REJECT_HARD",
                     reason=f"budget fatal: {v.kind} on {v.budget_name}",
                     advisory_rule_ids=ev.advisory_rule_ids,
@@ -168,7 +215,7 @@ def evaluate_one(
                 )
             # recoverable → DEFER (back-off)
             return GateVerdict(
-                recommendation_id=recommendation.recommendation_id,
+                recommendation_id=recommendation_id,
                 verdict="DEFER",
                 reason=f"budget over-reserved on {v.budget_name}",
                 advisory_rule_ids=ev.advisory_rule_ids,
@@ -177,7 +224,7 @@ def evaluate_one(
             )
 
     return GateVerdict(
-        recommendation_id=recommendation.recommendation_id,
+        recommendation_id=recommendation_id,
         verdict="ADMIT_TO_LANE",
         reason=("admitted; advisories: "
                 + ",".join(ev.advisory_rule_ids) if ev.advisory_rule_ids

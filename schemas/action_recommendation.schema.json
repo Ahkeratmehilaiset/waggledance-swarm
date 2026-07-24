@@ -38,6 +38,7 @@
         "promotion_review_request",
         "memory_tier_move",
         "calibration_check",
+        "self_inspection",
         "noop"
       ]
     },
@@ -67,7 +68,7 @@
     "no_runtime_mutation": {
       "type": "boolean",
       "const": true,
-      "description": "MUST be true. The kernel never produces runtime-mutating recommendations directly; only action_gate may downgrade and only under explicit human approval."
+      "description": "MUST be the boolean literal true. ActionGate rejects every recommendation that does not preserve this invariant."
     },
     "requires_human_review": {"type": "boolean"},
     "produced_by": {"type": "string"},

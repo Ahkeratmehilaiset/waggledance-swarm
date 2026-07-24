@@ -339,6 +339,48 @@ def test_load_skips_malformed_lines(tmp_path):
     assert loaded[0].mission_id == a.mission_id
 
 
+@pytest.mark.parametrize(
+    "wire_value",
+    (False, 0, 1, "false", "true", None),
+)
+def test_load_preserves_only_literal_true_no_runtime_mutation(
+    tmp_path,
+    wire_value,
+):
+    payload = _m().to_dict()
+    payload["no_runtime_mutation"] = wire_value
+    path = tmp_path / "missions.jsonl"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    loaded = mq.load_missions(path)
+
+    assert len(loaded) == 1
+    assert loaded[0].no_runtime_mutation is False
+
+
+def test_load_missing_no_runtime_mutation_fails_closed(tmp_path):
+    payload = _m().to_dict()
+    payload.pop("no_runtime_mutation")
+    path = tmp_path / "missions.jsonl"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    loaded = mq.load_missions(path)
+
+    assert len(loaded) == 1
+    assert loaded[0].no_runtime_mutation is False
+
+
+def test_load_literal_true_no_runtime_mutation_stays_true(tmp_path):
+    payload = _m().to_dict()
+    path = tmp_path / "missions.jsonl"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    loaded = mq.load_missions(path)
+
+    assert len(loaded) == 1
+    assert loaded[0].no_runtime_mutation is True
+
+
 # ── 9. Mission.no_runtime_mutation invariant ──────────────────────
 
 def test_mission_no_runtime_mutation_is_constant_true():

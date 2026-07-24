@@ -310,7 +310,7 @@ def load_missions(path: Path | str) -> list[Mission]:
                 intent=str(d["intent"]),
                 rationale=str(d["rationale"]),
                 lifecycle_status=str(d.get("lifecycle_status") or "queued"),
-                no_runtime_mutation=bool(d.get("no_runtime_mutation", True)),
+                no_runtime_mutation=(d.get("no_runtime_mutation") is True),
                 created_tick_id=int(d.get("created_tick_id") or 0),
                 capsule_context=str(d.get("capsule_context") or "neutral_v1"),
                 evidence_refs=tuple(d.get("evidence_refs") or ()),

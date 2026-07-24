@@ -76,7 +76,13 @@ def test_load_hard_rules_from_real_constitution():
         assert r.severity in ("warning", "recoverable", "fatal", "info")
 
 
-def test_evaluate_blocks_when_no_runtime_mutation_false():
+@pytest.mark.parametrize(
+    "forged_value",
+    (False, 0, 1, "false", "true", None),
+)
+def test_evaluate_blocks_unless_no_runtime_mutation_is_exact_true(
+    forged_value,
+):
     rules = pc.load_hard_rules(
         ROOT / "waggledance" / "core" / "autonomy" / "constitution.yaml"
     )
@@ -84,7 +90,7 @@ def test_evaluate_blocks_when_no_runtime_mutation_false():
         action_id="a"*12, action_kind="builder_request",
         action_lane="builder_lane",
         requires_human_review=True,
-        no_runtime_mutation=False,   # ← violation
+        no_runtime_mutation=forged_value,
         hard_rules=rules,
     )
     assert ev.allowed is False

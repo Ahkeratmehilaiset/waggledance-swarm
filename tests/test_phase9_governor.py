@@ -391,3 +391,16 @@ def test_recommendation_to_dict_has_required_fields():
                  "capsule_context", "evidence_refs"}
     assert required.issubset(d.keys())
     assert d["no_runtime_mutation"] is True
+
+
+def test_recommendation_schema_matches_mission_route_allowlists():
+    schema = json.loads(
+        (
+            ROOT / "schemas" / "action_recommendation.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert set(schema["properties"]["kind"]["enum"]) == set(mq.ALLOWED_KINDS)
+    assert set(schema["properties"]["lane"]["enum"]) == set(mq.ALLOWED_LANES)
+    assert schema["properties"]["no_runtime_mutation"]["type"] == "boolean"
+    assert schema["properties"]["no_runtime_mutation"]["const"] is True

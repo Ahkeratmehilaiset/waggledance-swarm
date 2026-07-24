@@ -13,7 +13,7 @@ CRITICAL CONTRACT:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from . import (
@@ -48,11 +48,14 @@ class DispatchReport:
 
 def _mission_to_recommendation(m: mq.Mission, tick_id: int
                                   ) -> gov.ActionRecommendation:
-    return gov.make_recommendation(
-        tick_id=tick_id, kind=m.kind, lane=m.lane,
-        intent=m.intent, rationale=m.rationale,
-        capsule_context=m.capsule_context,
-        evidence_refs=m.evidence_refs,
+    return replace(
+        gov.make_recommendation(
+            tick_id=tick_id, kind=m.kind, lane=m.lane,
+            intent=m.intent, rationale=m.rationale,
+            capsule_context=m.capsule_context,
+            evidence_refs=m.evidence_refs,
+        ),
+        no_runtime_mutation=(m.no_runtime_mutation is True),
     )
 
 

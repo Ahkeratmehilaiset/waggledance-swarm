@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -18,6 +21,19 @@ SPEC = importlib.util.spec_from_file_location("genesis_acceptance_tool", TOOL_PA
 assert SPEC is not None and SPEC.loader is not None
 tool = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tool)
+
+DIRECT_CODE_PROBES = frozenset(
+    {
+        "subclass_value_lying_eq",
+        "homoglyph_key",
+        "flapping_mapping",
+        "dict_subclass",
+        "list_subclass",
+    }
+)
+NONRETURNING_CODE_PROBES = frozenset(
+    {"nonreturning_mapping", "nonreturning_sequence"}
+)
 
 
 def _lineage_entries(case):
@@ -403,6 +419,149 @@ def test_hostile_container_is_rejected_without_protocol_invocation():
     assert result["verifier_verdict"] == "REJECT"
     assert result["reason"] == "case:not_mapping"
     assert hostile.invoked is False
+
+
+def test_declared_code_probe_matrix_is_exhaustive():
+    assert DIRECT_CODE_PROBES | NONRETURNING_CODE_PROBES == (
+        tool.REQUIRED_CODE_PROBES
+    )
+    assert DIRECT_CODE_PROBES.isdisjoint(NONRETURNING_CODE_PROBES)
+
+
+def test_direct_hostile_value_probes_reject_without_protocol_invocation():
+    from waggledance.core.cell_identity import verify_cell_identity
+    from waggledance.core.genesis_lineage import verify_lineage_registry
+
+    identity = deepcopy(
+        tool.load_corpus(CORPUS_PATH)["cases"][0]["subject"]["identity_mapping"]
+    )
+    executed = set()
+
+    class LyingString(str):
+        invoked = False
+
+        def __eq__(self, other):
+            self.invoked = True
+            raise AssertionError("must reject before comparison")
+
+    lying_value = LyingString(identity["pubkey_digest"])
+    lying_identity = dict(identity)
+    lying_identity["pubkey_digest"] = lying_value
+    assert verify_cell_identity(lying_identity) == (False, "pubkey_digest")
+    assert lying_value.invoked is False
+    executed.add("subclass_value_lying_eq")
+
+    homoglyph_identity = dict(identity)
+    homoglyph_identity["cell_\N{CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I}d"] = (
+        homoglyph_identity["cell_id"]
+    )
+    assert verify_cell_identity(homoglyph_identity) == (False, "keyset")
+    executed.add("homoglyph_key")
+
+    class FlappingMapping(Mapping):
+        invoked = 0
+
+        def __getitem__(self, key):
+            self.invoked += 1
+            return identity[key]
+
+        def __iter__(self):
+            self.invoked += 1
+            return iter(identity if self.invoked % 2 else reversed(identity))
+
+        def __len__(self):
+            self.invoked += 1
+            return len(identity) + self.invoked % 2
+
+    flapping = FlappingMapping()
+    assert verify_cell_identity(flapping) == (False, "not_mapping")
+    assert flapping.invoked == 0
+    executed.add("flapping_mapping")
+
+    class HostileDict(dict):
+        invoked = False
+
+        def keys(self):
+            self.invoked = True
+            raise AssertionError("must reject before keys")
+
+        def __iter__(self):
+            self.invoked = True
+            raise AssertionError("must reject before iteration")
+
+    hostile_dict = HostileDict(identity)
+    assert verify_cell_identity(hostile_dict) == (False, "not_mapping")
+    assert hostile_dict.invoked is False
+    executed.add("dict_subclass")
+
+    class HostileList(list):
+        invoked = False
+
+        def __iter__(self):
+            self.invoked = True
+            raise AssertionError("must reject before iteration")
+
+        def __len__(self):
+            self.invoked = True
+            raise AssertionError("must reject before length")
+
+        def __getitem__(self, index):
+            self.invoked = True
+            raise AssertionError("must reject before indexing")
+
+    hostile_list = HostileList()
+    assert verify_lineage_registry(hostile_list) == (False, "not_sequence")
+    assert hostile_list.invoked is False
+    executed.add("list_subclass")
+
+    assert executed == DIRECT_CODE_PROBES
+
+
+def test_nonreturning_code_probes_are_total_in_isolated_process():
+    probe = r"""
+import json
+from collections.abc import Mapping, Sequence
+from threading import Event
+
+from waggledance.core.cell_identity import verify_cell_identity
+from waggledance.core.genesis_lineage import verify_lineage_registry
+
+class NonReturningMapping(Mapping):
+    def __getitem__(self, key):
+        Event().wait()
+    def __iter__(self):
+        Event().wait()
+    def __len__(self):
+        Event().wait()
+
+class NonReturningSequence(Sequence):
+    def __getitem__(self, index):
+        Event().wait()
+    def __len__(self):
+        Event().wait()
+
+results = {
+    "nonreturning_mapping": (
+        verify_cell_identity(NonReturningMapping()) == (False, "not_mapping")
+    ),
+    "nonreturning_sequence": (
+        verify_lineage_registry(NonReturningSequence())
+        == (False, "not_sequence")
+    ),
+}
+print(json.dumps(results, sort_keys=True))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    results = json.loads(completed.stdout)
+    assert set(results) == NONRETURNING_CODE_PROBES
+    assert all(results.values())
 
 
 def test_direct_case_rejects_outer_smuggling_and_enforces_case_cap(monkeypatch):

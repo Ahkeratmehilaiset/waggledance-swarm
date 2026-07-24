@@ -61,9 +61,9 @@ def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     # the frozen negative axis-by-reason matrix is added.
     assert report["ok"] is False
     assert report["coverage_complete"] is False
-    assert report["total"] == 14
-    assert report["accepted"] == 4
-    assert report["rejected"] == 10
+    assert report["total"] == 20
+    assert report["accepted"] == 5
+    assert report["rejected"] == 15
     assert report["mismatches"] == []
     assert report["divergences"] == []
     assert report["corpus_matrix_complete"] is False
@@ -138,6 +138,27 @@ def test_authority_axis_has_identity_only_witness_and_rejects_smuggling():
         "reason": "authority:keyset",
         "diverged": False,
     }
+
+
+def test_timestamp_axis_pins_canonical_positive_and_rejection_matrix():
+    cases = {
+        case["case_id"]: case
+        for case in tool.load_corpus(CORPUS_PATH)["cases"]
+        if case["axis"] == "timestamp"
+    }
+    assert set(cases) == {
+        "timestamp.positive.positive",
+        "timestamp.negative.unicode_decimal",
+        "timestamp.negative.impossible_calendar",
+        "timestamp.negative.trailing_zero_fraction",
+        "timestamp.negative.non_utc",
+        "timestamp.negative.naive",
+    }
+    assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
+    for case in cases.values():
+        result = tool.run_case(case)
+        assert result["matched_expectation"] is True
+        assert result["diverged"] is False
 
 
 def test_cli_declares_code_probe_gate_without_fabricating_execution():

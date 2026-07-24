@@ -171,6 +171,24 @@ PINNED_CASE_DIGESTS = {
     "authority.negative.capability_field": (
         "sha256:a35374f62b384af8940e6f852b0e4c3658f97262ab3534461e58b6abebbf3751"
     ),
+    "timestamp.positive.positive": (
+        "sha256:d2b97e07956cb4ab31c093773c175c464b58d8e2508c5f13fd30a5733175b8ec"
+    ),
+    "timestamp.negative.unicode_decimal": (
+        "sha256:5725b85399af387102392f8eaf710cee4b1c233d26cd8edb6cffdb1e51e8a134"
+    ),
+    "timestamp.negative.impossible_calendar": (
+        "sha256:fcd2a470e6a2ec536f585b84920e63d5112d52e2ead9916c933b88af6470bf6a"
+    ),
+    "timestamp.negative.trailing_zero_fraction": (
+        "sha256:7eaeda22cd02477b81977c3867c9dc099b192e694ca48948b85dbfb69b0b4f09"
+    ),
+    "timestamp.negative.non_utc": (
+        "sha256:65c9d38410618bee707991d84af91c128e969e3f46b1620fa92c54872afc1d0d"
+    ),
+    "timestamp.negative.naive": (
+        "sha256:8b04bdf8599e4651e5039f07a47f3a1342740ca4c59bee0bc6cbfab99a0a0788"
+    ),
 }
 
 

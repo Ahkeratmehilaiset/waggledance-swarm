@@ -201,6 +201,104 @@
       "expect": {"verdict": "REJECT", "reason": "keyset"}
     },
     {
+      "case_id": "timestamp.positive.positive",
+      "kind": "positive",
+      "axis": "timestamp",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": {
+        "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d"
+      },
+      "expect": {"verdict": "ACCEPT", "reason": null}
+    },
+    {
+      "case_id": "timestamp.negative.unicode_decimal",
+      "kind": "negative",
+      "axis": "timestamp",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "۲۰۲۶-07-24T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "created_at_utc"}
+    },
+    {
+      "case_id": "timestamp.negative.impossible_calendar",
+      "kind": "negative",
+      "axis": "timestamp",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-02-30T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "created_at_utc"}
+    },
+    {
+      "case_id": "timestamp.negative.trailing_zero_fraction",
+      "kind": "negative",
+      "axis": "timestamp",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00.10Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "created_at_utc"}
+    },
+    {
+      "case_id": "timestamp.negative.non_utc",
+      "kind": "negative",
+      "axis": "timestamp",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00+00:00"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "created_at_utc"}
+    },
+    {
+      "case_id": "timestamp.negative.naive",
+      "kind": "negative",
+      "axis": "timestamp",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "created_at_utc"}
+    },
+    {
       "case_id": "lineage.positive.positive_entry",
       "kind": "positive",
       "axis": "lineage",

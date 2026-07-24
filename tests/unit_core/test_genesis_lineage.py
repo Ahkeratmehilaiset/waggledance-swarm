@@ -227,6 +227,128 @@ def test_replay_parent_as_its_own_child_rejected():
     assert reason is not None and "own parent" in reason
 
 
+def test_registry_closure_empty_fails_closed():
+    assert verify_lineage_registry([]) == (False, "empty_registry")
+
+
+def test_registry_closure_rootless_orphans_rejected():
+    """An orphan-only registry (children, no root) must not read as valid."""
+    root, child = _root(), _child()
+    ok, reason = verify_lineage_registry([child.to_mapping()])
+    assert (ok, reason) == (False, "no_root")
+    grandchild = build_child_entry(
+        cell_id=_GRANDCHILD_ID,
+        parent_entry=child.to_mapping(),
+        inherited_goal_slice_digest=_GOAL,
+        inherited_budget_slice_digest=_BUDGET,
+    )
+    ok, reason = verify_lineage_registry(
+        [child.to_mapping(), grandchild.to_mapping()]
+    )
+    assert (ok, reason) == (False, "no_root")
+    del root  # silence unused warning
+
+
+def test_registry_closure_two_roots_rejected():
+    other_root = build_root_entry(
+        cell_id=_SIBLING_ID,
+        inherited_goal_slice_digest=_GOAL,
+        inherited_budget_slice_digest=_BUDGET,
+    )
+    ok, reason = verify_lineage_registry(
+        [_root().to_mapping(), other_root.to_mapping()]
+    )
+    assert (ok, reason) == (False, "multiple_roots")
+
+
+def test_registry_closure_orphan_parent_not_in_registry_rejected():
+    root, child = _root(), _child()
+    grandchild = build_child_entry(
+        cell_id=_GRANDCHILD_ID,
+        parent_entry=child.to_mapping(),
+        inherited_goal_slice_digest=_GOAL,
+        inherited_budget_slice_digest=_BUDGET,
+    )
+    # child (grandchild's parent) omitted -> orphan even though root exists
+    ok, reason = verify_lineage_registry(
+        [root.to_mapping(), grandchild.to_mapping()]
+    )
+    assert ok is False
+    assert reason is not None and reason.endswith(
+        "orphan_parent_not_in_registry"
+    )
+
+
+def test_registry_closure_rehashed_child_link_failure_rejected():
+    """The lead's repro: a child naming the real in-registry parent but
+    REHASHED over a wrong prev -- self-consistent per entry, broken as a
+    link -- must fail the registry."""
+    root = _root()
+    forged = _build_forged_child_with_wrong_prev(root)
+    assert verify_lineage_entry(forged) == (True, None)  # self-consistent...
+    ok, reason = verify_lineage_registry([root.to_mapping(), forged])
+    assert ok is False  # ...but the registry closure catches the broken link
+    assert reason is not None and "link:prev_hash_mismatch" in reason
+
+
+def _build_forged_child_with_wrong_prev(root):
+    wrong_prev = "sha256:" + "9" * 64
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "cell_id": _CHILD_ID,
+        "parent_cell_id": root.cell_id,
+        "lineage_prev_hash": wrong_prev,
+        "depth": 1,
+        "inherited_goal_slice_digest": _GOAL,
+        "inherited_budget_slice_digest": _BUDGET,
+        "entry_hash": derive_entry_hash(
+            cell_id=_CHILD_ID,
+            parent_cell_id=root.cell_id,
+            lineage_prev_hash=wrong_prev,
+            depth=1,
+            inherited_goal_slice_digest=_GOAL,
+            inherited_budget_slice_digest=_BUDGET,
+        ),
+    }
+
+
+def test_registry_closure_depth_skip_rejected():
+    root = _root()
+    skipped = {
+        "schema_version": SCHEMA_VERSION,
+        "cell_id": _CHILD_ID,
+        "parent_cell_id": root.cell_id,
+        "lineage_prev_hash": root.entry_hash,
+        "depth": 2,
+        "inherited_goal_slice_digest": _GOAL,
+        "inherited_budget_slice_digest": _BUDGET,
+    }
+    skipped["entry_hash"] = derive_entry_hash(
+        cell_id=_CHILD_ID,
+        parent_cell_id=root.cell_id,
+        lineage_prev_hash=root.entry_hash,
+        depth=2,
+        inherited_goal_slice_digest=_GOAL,
+        inherited_budget_slice_digest=_BUDGET,
+    )
+    ok, reason = verify_lineage_registry([root.to_mapping(), skipped])
+    assert ok is False
+    assert reason is not None and "link:depth_mismatch" in reason
+
+
+def test_registry_closure_is_order_independent():
+    """A child listed BEFORE its parent must still verify (no order coupling)."""
+    root, child = _root(), _child()
+    grandchild = build_child_entry(
+        cell_id=_GRANDCHILD_ID,
+        parent_entry=child.to_mapping(),
+        inherited_goal_slice_digest=_GOAL,
+        inherited_budget_slice_digest=_BUDGET,
+    )
+    shuffled = [grandchild.to_mapping(), root.to_mapping(), child.to_mapping()]
+    assert verify_lineage_registry(shuffled) == (True, None)
+
+
 def test_schema_version_pinned():
     wrong = _child().to_mapping()
     wrong["schema_version"] = "wd.genesis_lineage.v2"

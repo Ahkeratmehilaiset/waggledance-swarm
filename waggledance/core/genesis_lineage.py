@@ -16,10 +16,13 @@ is evidence, never a grant:
 * **Root rules are bidirectional.** ``parent_cell_id == GENESIS_ROOT_PARENT``,
   ``depth == 0`` and ``lineage_prev_hash == GENESIS_PREV_HASH`` must agree in
   ALL directions -- a non-root wearing any single root marker is rejected.
-* **One lineage entry per cell (injective).** A cell has exactly one origin;
-  a registry with two entries for one ``cell_id`` is forged/ambiguous and
-  fails closed. Parent fan-out (many children, one parent) stays legal --
-  subdivision is the point.
+* **One lineage entry per cell (injective), one rooted tree (closure).**
+  A cell has exactly one origin; a registry with two entries for one
+  ``cell_id`` is forged/ambiguous and fails closed. A valid REGISTRY is
+  additionally a single rooted tree: exactly one root, no orphans, and every
+  child link proven with ``verify_lineage_link`` against its in-registry
+  parent -- per-entry self-consistency alone is NOT ancestry. Parent fan-out
+  (many children, one parent) stays legal -- subdivision is the point.
 * **No self-parenting.** ``cell_id == parent_cell_id`` is rejected, closing
   the replay shape where an entry is resubmitted as its own child.
 
@@ -230,8 +233,11 @@ def build_child_entry(
     inherited_goal_slice_digest: str,
     inherited_budget_slice_digest: str,
 ) -> GenesisLineageV1:
-    """A child binds to a VERIFIED parent entry; a malformed or forged parent
-    cannot mint descendants."""
+    """A child binds to a SELF-CONSISTENT parent entry (``verify_lineage_entry``
+    passes): a malformed parent cannot mint descendants. This is entry-level
+    validation only -- it does NOT prove the parent's own ancestry. Full
+    ancestry is proven pairwise with ``verify_lineage_link`` and
+    registry-wide with ``verify_lineage_registry`` closure."""
 
     parent_ok, parent_reason = verify_lineage_entry(parent_entry)
     if not parent_ok:
@@ -311,18 +317,43 @@ def verify_lineage_link(
 def verify_lineage_registry(
     entries: Sequence[Mapping[str, object]],
 ) -> tuple[bool, Optional[str]]:
-    """Registry-level check: every entry verifies and each ``cell_id`` appears
-    EXACTLY once (one origin per cell). Parent fan-out remains legal because
-    only child rows repeat a parent id in ``parent_cell_id``, never in
-    ``cell_id``."""
+    """Registry CLOSURE check: a valid registry is a single rooted lineage
+    tree, not merely a set of self-consistent entries.
 
-    seen: set[str] = set()
+    Enforced, order-independently: every entry verifies; each ``cell_id``
+    appears EXACTLY once (injective); EXACTLY ONE root exists (empty and
+    rootless/orphan-only registries fail closed, as do two roots); and every
+    non-root's parent must BE IN the registry with the full
+    ``verify_lineage_link`` proof passing -- a rehashed child whose link to
+    the real parent fails, or a child whose parent is absent, is rejected.
+    Parent fan-out stays legal (many children may link to one parent).
+    Cycles are impossible once links verify: depth strictly increases."""
+
+    if not entries:
+        return False, "empty_registry"
+    by_cell: dict[str, Mapping[str, object]] = {}
+    root_count = 0
     for index, entry in enumerate(entries):
         ok, reason = verify_lineage_entry(entry)
         if not ok:
             return False, f"entry_{index}:{reason}"
         cell_id = str(entry["cell_id"])
-        if cell_id in seen:
+        if cell_id in by_cell:
             return False, f"entry_{index}:duplicate_cell_id"
-        seen.add(cell_id)
+        by_cell[cell_id] = entry
+        if entry["parent_cell_id"] == GENESIS_ROOT_PARENT:
+            root_count += 1
+    if root_count == 0:
+        return False, "no_root"
+    if root_count > 1:
+        return False, "multiple_roots"
+    for index, entry in enumerate(entries):
+        if entry["parent_cell_id"] == GENESIS_ROOT_PARENT:
+            continue
+        parent = by_cell.get(str(entry["parent_cell_id"]))
+        if parent is None:
+            return False, f"entry_{index}:orphan_parent_not_in_registry"
+        ok, reason = verify_lineage_link(entry, parent)
+        if not ok:
+            return False, f"entry_{index}:link:{reason}"
     return True, None

@@ -628,9 +628,16 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
         return False
-    schema_text = str(payload.get("schema")).casefold()
+    owned_schema_texts = tuple(
+        schema_text
+        for schema_text in _schema_texts(payload.get("schema"))
+        if schema_text.startswith("wd.")
+    )
     if (
-        "wd.rco_direct_pass_block_request" in schema_text
+        any(
+            "wd.rco_direct_pass_block_request" in schema_text
+            for schema_text in owned_schema_texts
+        )
         and event.get("type") == "message"
         and event.get("status") == DIRECT_RCO_REQUEST_STATUS
     ):
@@ -646,7 +653,26 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
         and _has_rco_required_signal_marker(required_signals)
     ):
         return True
-    return "wd.exact_head_consensus" in schema_text
+    return any(
+        "wd.exact_head_consensus" in schema_text
+        for schema_text in owned_schema_texts
+    )
+
+
+def _schema_texts(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value.strip().casefold(),)
+    if isinstance(value, Mapping):
+        values = value.values()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        values = value
+    else:
+        return ()
+    return tuple(
+        schema_text
+        for nested in values
+        for schema_text in _schema_texts(nested)
+    )
 
 
 def _has_rco_required_signal_marker(

@@ -1229,6 +1229,73 @@ def test_direct_rco_contract_is_fail_closed_without_capturing_third_party(
     assert report["criteria"]["open_rco_requests"]["task_ids"] == []
 
 
+@pytest.mark.parametrize(
+    "schema",
+    (
+        "third.party.wd.rco_direct_pass_block_request.v1",
+        "com.example.wd.rco_direct_pass_block_request.v1",
+        "xwd.rco_direct_pass_block_request.v1",
+    ),
+)
+def test_direct_rco_contract_ignores_embedded_third_party_namespace(
+    tmp_path: Path,
+    schema: str,
+) -> None:
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    request = _direct_rco_request(
+        task_id=f"third-party-{schema.split('.')[0]}",
+        head=head,
+    )
+    payload = request["payload"]
+    assert isinstance(payload, dict)
+    payload["schema"] = schema
+
+    report = _run(tmp_path, _base_idle_events() + [request])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_direct_rco_internal_schema_typo_remains_sticky_hold(
+    tmp_path: Path,
+) -> None:
+    task_id = "direct-internal-schema-typo-sticky"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    request = _direct_rco_request(task_id=task_id, head=head)
+    payload = request["payload"]
+    assert isinstance(payload, dict)
+    payload["schema"] = "wd.rco_direct_pass_block_requset.v1"
+    apparent_responses = [
+        _direct_rco_response(
+            task_id=task_id,
+            head=head,
+            agent=agent,
+            ts_utc=f"2026-05-17T11:0{index}:00Z",
+        )
+        for index, agent in enumerate(
+            ("claude-rco-1", "claude-rco-2"),
+            start=5,
+        )
+    ]
+    requester_done = _event(
+        ts_utc="2026-05-17T11:07:00Z",
+        agent="codex-lead-1",
+        type="done",
+        task_id=task_id,
+        status="completed",
+        to="claude-rco-1,claude-rco-2",
+        message=f"Requester work completed at {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+    requester_done["agent_uuid"] = BRIDGE_AGENT_UUIDS["codex-lead-1"]
+
+    report = _run(
+        tmp_path,
+        _base_idle_events() + [request] + apparent_responses + [requester_done],
+    )
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
 def test_valid_canonical_tools_review_is_not_an_rco_lock(
     tmp_path: Path,
 ) -> None:

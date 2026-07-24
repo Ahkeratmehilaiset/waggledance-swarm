@@ -1,0 +1,64 @@
+{
+  "schema_version": "wd.genesis_acceptance_corpus.v1",
+  "cases": [
+    {
+      "case_id": "identity.positive.known_answer",
+      "kind": "positive",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": {
+        "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d"
+      },
+      "expect": {"verdict": "ACCEPT", "reason": null}
+    },
+    {
+      "case_id": "lineage.positive.root_known_answer",
+      "kind": "positive",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "entry",
+        "entry": {
+          "schema_version": "wd.genesis_lineage.v1",
+          "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parent_cell_id": "genesis:root",
+          "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "depth": 0,
+          "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+        }
+      },
+      "golden": {
+        "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46",
+        "depth": 0
+      },
+      "expect": {"verdict": "ACCEPT", "reason": null}
+    },
+    {
+      "case_id": "restore.positive.from_stored_mapping",
+      "kind": "positive",
+      "axis": "restore",
+      "subject": {
+        "stored_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": {
+        "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d"
+      },
+      "expect": {"verdict": "ACCEPT", "reason": null}
+    }
+  ]
+}

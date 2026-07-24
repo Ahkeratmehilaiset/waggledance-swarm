@@ -4,9 +4,9 @@
     Cursor-based bridge event monitor for active agent sessions.
 
 .DESCRIPTION
-    Tails shared/events.jsonl by line-count cursor and prints only new
-    substantive events. This is the chat/terminal-facing companion to the
-    wake-file substrate: Watch-Bridge.ps1 tells an agent that something
+    Tails shared/events.jsonl by an identity-bound byte cursor and prints only
+    new substantive events. This is the chat/terminal-facing companion to
+    the wake-file substrate: Watch-Bridge.ps1 tells an agent that something
     arrived, while this script shows exactly what arrived without replaying
     old history on every poll.
 
@@ -73,6 +73,7 @@ if (-not (Test-Path -LiteralPath $sharedDir -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $sharedDir -Force -ErrorAction Stop)
 }
 $eventsPath = Join-Path $sharedDir 'events.jsonl'
+. (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 
 if (-not $StatePath) {
     $suffix = if ($FromAgent) { "_from_$FromAgent" } else { '' }
@@ -153,72 +154,48 @@ function Format-MonitorLine {
         $ts, $from, $to, $type, $status, $taskId, $message
 }
 
-function Get-EventLines {
-    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) { return @() }
-    return @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 -ErrorAction Stop)
-}
-
-function Get-InitialCursor {
-    if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
-        try {
-            $state = Get-Content -Raw -LiteralPath $StatePath -Encoding UTF8 | ConvertFrom-Json
-            if ($state.PSObject.Properties['line_count']) {
-                return [int64]$state.line_count
-            }
-        } catch {}
-    }
-    if ($ReplayExisting) { return [int64]0 }
-    return [int64]@(Get-EventLines).Count
-}
-
 function Save-Cursor {
-    param([Parameter(Mandatory)] [int64] $LineCount)
+    param([Parameter(Mandatory)] $Value)
 
-    $parent = Split-Path -Parent $StatePath
-    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
-        [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
-    }
-    $state = [ordered]@{
-        line_count      = $LineCount
-        updated_at_utc  = (Get-Date).ToUniversalTime().ToString('o')
+    Write-BridgeIncrementalState -StatePath $StatePath -Cursor $Value -Metadata @{
         agent           = $Agent
         from_agent      = $FromAgent
         targeted_only   = [bool]$TargetedOnly
         replay_existing = [bool]$ReplayExisting
     }
-    $json = $state | ConvertTo-Json -Depth 6
-    $tmp = "$StatePath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($tmp, $json, $encoding)
-    Move-Item -LiteralPath $tmp -Destination $StatePath -Force -ErrorAction Stop
 }
 
-$cursor = Get-InitialCursor
-Save-Cursor -LineCount $cursor
+$state = Read-BridgeIncrementalState -StatePath $StatePath
+if ($state.status -ceq 'BLOCKED') {
+    throw "Monitor-AgentBridge: refusing invalid cursor state '$StatePath'"
+}
+$cursor = $null
+if ($state.status -ceq 'OK') {
+    $cursor = $state.cursor
+} elseif ($state.status -ceq 'LEGACY') {
+    $cursor = Resolve-BridgeCursorForLineCount -Path $eventsPath `
+        -LineCount ([int64]$state.line_count)
+    if ($null -ne $cursor) { Save-Cursor -Value $cursor }
+} elseif (-not $ReplayExisting) {
+    $baseline = Read-BridgeEventTail -Path $eventsPath -MaxLines 1
+    if ($baseline.status -in @('BLOCKED','RETRY')) {
+        throw "Monitor-AgentBridge: baseline unavailable: $($baseline.reason)"
+    }
+    $cursor = $baseline.candidate_cursor
+    if ($null -ne $cursor) { Save-Cursor -Value $cursor }
+}
 
 $iteration = 0
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
 
-    $lines = @(Get-EventLines)
-    $count = [int64]$lines.Count
-
-    if ($count -lt $cursor) {
-        # events.jsonl was truncated or rotated. Avoid flooding replay on
-        # the replacement file unless the caller explicitly asked for replay.
-        $cursor = if ($ReplayExisting) { [int64]0 } else { $count }
-        Save-Cursor -LineCount $cursor
-    }
-
-    if ($count -gt $cursor) {
-        $skip = [int]$cursor
-        foreach ($line in @($lines | Select-Object -Skip $skip)) {
-            if (-not $line) { continue }
-            try {
-                $event = $line | ConvertFrom-Json -ErrorAction Stop
-            } catch {
-                continue
-            }
+    $result = Read-BridgeEventDelta -Path $eventsPath -Cursor $cursor
+    if ($result.status -ceq 'RETRY') {
+        throw "Monitor-AgentBridge: bridge read retry required: $($result.reason)"
+    } elseif ($result.status -ceq 'BLOCKED') {
+        throw "Monitor-AgentBridge: bridge read blocked: $($result.reason)"
+    } elseif ($result.status -ceq 'OK') {
+        foreach ($event in @($result.rows)) {
             if (-not (Test-SubstantiveMonitorEvent `
                     -Event $event `
                     -LocalAgent $Agent `
@@ -232,8 +209,11 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
                 Write-Output (Format-MonitorLine -Event $event)
             }
         }
-        $cursor = $count
-        Save-Cursor -LineCount $cursor
+        $cursor = $result.candidate_cursor
+        Save-Cursor -Value $cursor
+    } elseif ($null -ne $result.candidate_cursor -and $null -eq $cursor) {
+        $cursor = $result.candidate_cursor
+        Save-Cursor -Value $cursor
     }
 
     if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }

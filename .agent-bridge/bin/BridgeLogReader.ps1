@@ -2,14 +2,16 @@
 
 Set-StrictMode -Version Latest
 
-if (-not ('WaggleDance.BridgeSnapshotDeltaV1.NativeMethods' -as [type])) {
+if (-not ('WaggleDance.BridgeFileIdentityV1.NativeMethods' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace WaggleDance.BridgeSnapshotDeltaV1
+namespace WaggleDance.BridgeFileIdentityV1
 {
     [StructLayout(LayoutKind.Sequential)]
     public struct FileTime
@@ -40,14 +42,86 @@ namespace WaggleDance.BridgeSnapshotDeltaV1
             SafeFileHandle file,
             out ByHandleFileInformation information);
 
-        public static ByHandleFileInformation Identity(SafeFileHandle file)
+        [DllImport(
+            "libc",
+            EntryPoint = "fstat",
+            SetLastError = true,
+            CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FStat(int fileDescriptor, IntPtr buffer);
+
+        public static string Identity(SafeFileHandle file)
+        {
+            if (file == null || file.IsInvalid || file.IsClosed)
+            {
+                throw new IOException("bridge file handle is not open");
+            }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return WindowsIdentity(file);
+            }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+                RuntimeInformation.ProcessArchitecture == Architecture.X64)
+            {
+                return LinuxIdentity(file);
+            }
+            throw new PlatformNotSupportedException(
+                "bridge file identity is supported only on Windows and Linux x64");
+        }
+
+        private static string WindowsIdentity(SafeFileHandle file)
         {
             ByHandleFileInformation information;
             if (!GetFileInformationByHandle(file, out information))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-            return information;
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "windows-v1:{0:x8}:{1:x8}{2:x8}",
+                information.VolumeSerialNumber,
+                information.FileIndexHigh,
+                information.FileIndexLow);
+        }
+
+        private static string LinuxIdentity(SafeFileHandle file)
+        {
+            bool addedReference = false;
+            IntPtr buffer = IntPtr.Zero;
+            try
+            {
+                file.DangerousAddRef(ref addedReference);
+                int fileDescriptor = file.DangerousGetHandle().ToInt32();
+                // The supported Linux x64 stat ABI starts with 64-bit st_dev
+                // and st_ino fields. A conservative buffer avoids coupling the
+                // managed declaration to the remaining native structure.
+                buffer = Marshal.AllocHGlobal(256);
+                if (FStat(fileDescriptor, buffer) != 0)
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                ulong device = unchecked((ulong)Marshal.ReadInt64(buffer, 0));
+                ulong inode = unchecked((ulong)Marshal.ReadInt64(buffer, 8));
+                if (inode == 0)
+                {
+                    throw new IOException("fstat returned an empty inode");
+                }
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "posix-v1:{0:x}:{1:x}",
+                    device,
+                    inode);
+            }
+            finally
+            {
+                if (buffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+                if (addedReference)
+                {
+                    file.DangerousRelease();
+                }
+            }
         }
     }
 }
@@ -450,16 +524,12 @@ function Get-BridgeLogFileIdentity {
     param([Parameter(Mandatory)] [System.IO.FileStream] $Stream)
 
     try {
-        $information = [WaggleDance.BridgeSnapshotDeltaV1.NativeMethods]::Identity(
+        return [WaggleDance.BridgeFileIdentityV1.NativeMethods]::Identity(
             $Stream.SafeFileHandle
         )
     } catch {
-        throw "GetFileInformationByHandle failed: $($_.Exception.Message)"
+        throw "bridge file identity unavailable: $($_.Exception.Message)"
     }
-    return ('windows-v1:{0:x8}:{1:x8}{2:x8}' -f
-        $information.VolumeSerialNumber,
-        $information.FileIndexHigh,
-        $information.FileIndexLow)
 }
 
 function New-BridgeLogCandidateCursor {
@@ -710,6 +780,7 @@ function Read-BridgeLogSnapshotDelta {
         [Parameter(Mandatory)] [string] $Path,
         [AllowNull()] $Cursor = $null,
         [int64] $MaxBytes = 4194304,
+        [int] $MaxRows = 10000,
         [AllowEmptyString()] [string] $GenerationPath = ''
     )
 
@@ -720,6 +791,9 @@ function Read-BridgeLogSnapshotDelta {
     }
     if ($MaxBytes -lt 1 -or $MaxBytes -gt 67108864) {
         return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'max_bytes_invalid' -RequestedOffset $offset
+    }
+    if ($MaxRows -lt 1 -or $MaxRows -gt 100000) {
+        return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'max_rows_invalid' -RequestedOffset $offset
     }
     if (-not $GenerationPath -and $null -ne $Cursor -and $null -ne $cursorState.generation) {
         return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'generation_configuration_changed' -RequestedOffset $offset
@@ -813,10 +887,12 @@ function Read-BridgeLogSnapshotDelta {
         $totalBytesRead = [int64]($validationBytesRead + $read)
 
         $lastLf = -1
-        for ($index = $read - 1; $index -ge 0; $index--) {
+        $rowCount = 0
+        for ($index = 0; $index -lt $read; $index++) {
             if ($bytes[$index] -eq 10) {
                 $lastLf = $index
-                break
+                $rowCount++
+                if ($rowCount -ge $MaxRows) { break }
             }
         }
 

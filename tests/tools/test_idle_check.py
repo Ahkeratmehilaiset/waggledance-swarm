@@ -1255,6 +1255,73 @@ def test_direct_rco_contract_ignores_embedded_third_party_namespace(
     assert report["criteria"]["open_rco_requests"]["task_ids"] == []
 
 
+def test_owned_schema_mapping_key_remains_sticky_hold(
+    tmp_path: Path,
+) -> None:
+    task_id = "owned-schema-mapping-key-sticky"
+    head = "97b0bad684a5c0b8531b643f363002a184a34cd5"
+    request = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id=task_id,
+        status="review_requested",
+        to="codex-tools-1",
+        message="Tools-only request carries a malformed owned schema key.",
+        payload={
+            "schema": {
+                "wd.exact_head_consensus_requset.v1": {
+                    "description": "malformed owned marker"
+                }
+            },
+            "request_only": True,
+            "canonical_task_id": task_id,
+            "head": head,
+        },
+    )
+    apparent_response = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="claude-rco-1",
+        type="decision",
+        task_id=task_id,
+        status="rco_pass",
+        to="codex-lead-1",
+        message=f"RCO PASS at exact head {head}.",
+        payload={"head": head, "canonical_task_id": task_id},
+    )
+
+    report = _run(
+        tmp_path,
+        _base_idle_events() + [request, apparent_response],
+    )
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+def test_external_schema_mapping_key_is_ignored(
+    tmp_path: Path,
+) -> None:
+    request = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        type="wake_request",
+        task_id="external-schema-mapping-key",
+        status="review_requested",
+        to="codex-tools-1",
+        message="Tools-only request carries an external schema key.",
+        payload={
+            "schema": {
+                "third.party.wd.exact_head_consensus_requset.v1": {
+                    "description": "external marker"
+                }
+            },
+            "request_only": True,
+        },
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
 def test_direct_rco_internal_schema_typo_remains_sticky_hold(
     tmp_path: Path,
 ) -> None:

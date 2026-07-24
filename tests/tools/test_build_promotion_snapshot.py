@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.build_promotion_snapshot as promotion_snapshot_tool
+import tools.pr_status_snapshot as pr_status_tool
 from tools.build_promotion_snapshot import (
     PromotionSnapshotError,
     _read_events_fail_closed,
@@ -481,6 +483,7 @@ def _build(
     file_records: list[dict] | None = None,
     diff: str = DIFF,
     task: str = TASK,
+    rco_agents: object = None,
 ) -> dict:
     event_rows = events if events is not None else _events()
     if events is None and paths is not None:
@@ -494,6 +497,7 @@ def _build(
         task_id=task,
         origin_main_sha=origin_main_sha,
         author_agent=author_agent,
+        rco_agents=rco_agents,  # type: ignore[arg-type]
         runner=_runner(
             base=base,
             paths=paths,
@@ -774,6 +778,217 @@ def test_falsey_nonstring_origin_main_sha_fails_before_runner(
     assert report["errors"] == ["origin_main_sha must be a string"]
     assert report["undraft_cmd"] == []
     assert report["merge_cmd"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("repo", f" {REPO}"),
+        ("repo", False),
+        ("events_path", False),
+        ("charter_path", False),
+        ("task_id", f" {TASK}"),
+        ("author_agent", False),
+        ("author_agent", 7),
+        ("author_agent", " fable-5"),
+        ("from_agent", False),
+        ("from_agent", 7),
+        ("from_agent", " codex-lead-1"),
+        ("prior_approved_head", False),
+        ("prior_approved_head", 7),
+        ("prior_approved_diff_file", False),
+        ("rco_agents", False),
+        ("rco_agents", "claude-rco-1"),
+        ("rco_agents", []),
+        ("rco_agents", [1]),
+        ("rco_agents", [" claude-rco-1"]),
+    ],
+)
+def test_public_inputs_reject_wrong_types_and_padded_identities_before_runner(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]):
+        calls.append(tuple(command))
+        raise AssertionError("invalid input must fail before runner")
+
+    kwargs: dict[str, object] = {
+        "repo": REPO,
+        "pr_number": PR,
+        "events_path": _events_path(tmp_path, _events()),
+        "origin_main_sha": BASE,
+        "runner": runner,
+    }
+    kwargs[field] = value
+
+    report = build_promotion_snapshot(**kwargs)  # type: ignore[arg-type]
+
+    assert calls == []
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
+@pytest.mark.parametrize("runner_value", [False, 0, 7, [], object()])
+def test_noncallable_runner_never_falls_back_to_live_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_value: object,
+) -> None:
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("default runner must not be selected")
+
+    monkeypatch.setattr(promotion_snapshot_tool.subprocess, "run", forbidden)
+    monkeypatch.setattr(pr_status_tool, "_run_command", forbidden)
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=BASE,
+        runner=runner_value,  # type: ignore[arg-type]
+    )
+
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+
+
+def test_falsey_callable_runner_is_used_instead_of_default(
+    tmp_path: Path,
+) -> None:
+    delegate = _runner()
+    calls: list[tuple[str, ...]] = []
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: tuple[str, ...]) -> SimpleNamespace:
+            calls.append(tuple(command))
+            return delegate(tuple(command))
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=BASE,
+        runner=FalseyRunner(),
+    )
+
+    assert report["eligible"] is True
+    assert calls
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_runner_returncode_requires_an_exact_integer(
+    returncode: object,
+) -> None:
+    result = SimpleNamespace(stdout="", stderr="")
+    if returncode is not None:
+        result.returncode = returncode
+
+    with pytest.raises(
+        PromotionSnapshotError,
+        match="runner result returncode must be an integer",
+    ):
+        _run(("gh", "pr", "view", "1"), runner=lambda _command: result)
+
+
+def test_nonzero_runner_result_validates_stream_types_before_formatting() -> None:
+    with pytest.raises(
+        PromotionSnapshotError,
+        match="runner result streams must be text",
+    ):
+        _run(
+            ("gh", "pr", "view", "1"),
+            runner=lambda _command: SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr={"sensitive": "value"},
+            ),
+        )
+
+
+@pytest.mark.parametrize("kind", ["missing", "invalid_utf8"])
+def test_prior_diff_read_failures_are_controlled_path_safe_and_pre_runner(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    path = tmp_path / "sensitive-prior.diff"
+    if kind == "invalid_utf8":
+        path.write_bytes(b"+ secret-\x80\n")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]):
+        calls.append(tuple(command))
+        raise AssertionError("invalid prior diff must fail before runner")
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=BASE,
+        prior_approved_diff_file=path,
+        runner=runner,
+    )
+
+    assert calls == []
+    assert report["decision"] == "invalid_input"
+    assert report["eligible"] is False
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    message = report["errors"][0]
+    assert str(path) not in message
+    assert "secret" not in message
+
+
+def test_unregistered_configured_rco_cannot_authorize_promotion(
+    tmp_path: Path,
+) -> None:
+    events = _events()
+    events[-1]["agent"] = "evil-rco"
+    events[-1].pop("agent_uuid")
+
+    report = _build(
+        tmp_path,
+        events=events,
+        rco_agents=["evil-rco"],
+    )
+
+    assert report["eligible"] is False
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    bridge = report["eligibility"]["gate_results"]["bridge_consensus"]
+    assert bridge["ok"] is False
+    assert bridge["decision"] == "invalid_consensus_config"
+
+
+def test_mixed_registered_and_unregistered_rco_config_fails_closed(
+    tmp_path: Path,
+) -> None:
+    report = _build(
+        tmp_path,
+        events=_events(),
+        rco_agents=["claude-rco-1", "evil-rco"],
+    )
+
+    assert report["eligible"] is False
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    bridge = report["eligibility"]["gate_results"]["bridge_consensus"]
+    assert bridge["ok"] is False
+    assert bridge["decision"] == "invalid_consensus_config"
+    assert bridge["by_agent"]["claude-rco-1"]["ok"] is True
+    assert (
+        bridge["by_agent"]["evil-rco"]["decision"]
+        == "invalid_consensus_config"
+    )
 
 
 def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:

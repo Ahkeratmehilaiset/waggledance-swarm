@@ -9,6 +9,7 @@ runtime bridge events.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence as SequenceABC
 import json
 from pathlib import Path
 import re
@@ -38,6 +39,8 @@ from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 RunnerResult = Any
 Runner = Callable[[Sequence[str]], RunnerResult]
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 SAFETY_FLAGS = (
     "external_effect",
     "runtime_authority_granted",
@@ -200,9 +203,32 @@ def build_promotion_snapshot(
 ) -> dict[str, Any]:
     """Return a dry-run report and never execute promotion commands."""
     try:
-        repo = _required_str(repo, "repo")
-        if type(pr_number) is not int or pr_number <= 0:
-            raise PromotionSnapshotError("pr_number must be a positive integer")
+        (
+            repo,
+            task_id,
+            origin_main_sha,
+            author_agent,
+            from_agent,
+            prior_approved_head,
+            rco_agents,
+        ) = _validate_build_inputs(
+            repo=repo,
+            pr_number=pr_number,
+            events_path=events_path,
+            charter_path=charter_path,
+            task_id=task_id,
+            origin_main_sha=origin_main_sha,
+            author_agent=author_agent,
+            from_agent=from_agent,
+            prior_approved_head=prior_approved_head,
+            prior_approved_diff_file=prior_approved_diff_file,
+            rco_agents=rco_agents,
+            runner=runner,
+        )
+        events = _read_events_fail_closed(events_path)
+        prior_approved_diff_text = _read_prior_diff_fail_closed(
+            prior_approved_diff_file
+        )
         origin_main_sha = _origin_main_sha(origin_main_sha, runner=runner)
         try:
             pr_status = build_pr_status_snapshot(
@@ -216,17 +242,19 @@ def build_promotion_snapshot(
                 "canonical PR snapshot failed: "
                 + "; ".join(str(error) for error in errors)
             ) from exc
-        head_ref_name = _required_str(pr_status.get("head_ref"), "headRefName")
+        head_ref_name = _required_exact_nonempty_string(
+            pr_status.get("head_ref"),
+            "headRefName",
+        )
         if type(task_id) is str and task_id == "":
             task_id = head_ref_name
-        task_id = _required_str(task_id, "task_id")
+        task_id = _required_exact_nonempty_string(task_id, "task_id")
         head_sha = _required_sha(pr_status.get("head_sha"), "headRefOid")
         base_sha = _required_sha(pr_status.get("base_sha"), "baseRefOid")
         changed_paths = pr_status["changed_paths"]
         diff_text = pr_status["diff_text"]
         git_identities = pr_status["git_identities"]
         git_identity_evidence = pr_status["git_identity_evidence"]
-        events = _read_events_fail_closed(events_path)
         author_resolution = resolve_bridge_pr_author(
             events=events,
             pr_number=pr_number,
@@ -252,12 +280,10 @@ def build_promotion_snapshot(
                 operator_required=True,
                 author_resolution=author_resolution,
             )
-        author_agent = str(author_resolution["author_agent"])
-        prior_approved_diff_text = None
-        if prior_approved_diff_file is not None:
-            prior_approved_diff_text = prior_approved_diff_file.read_text(
-                encoding="utf-8"
-            )
+        author_agent = _required_agent_id(
+            author_resolution.get("author_agent"),
+            "resolved author_agent",
+        )
         eligibility = evaluate_promotion_eligibility(
             pr_status=pr_status,
             events=events,
@@ -296,6 +322,155 @@ def build_promotion_snapshot(
         return _invalid_report(str(exc))
 
 
+def _validate_build_inputs(
+    *,
+    repo: object,
+    pr_number: object,
+    events_path: object,
+    charter_path: object,
+    task_id: object,
+    origin_main_sha: object,
+    author_agent: object,
+    from_agent: object,
+    prior_approved_head: object,
+    prior_approved_diff_file: object,
+    rco_agents: object,
+    runner: object,
+) -> tuple[
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+    tuple[str, ...] | None,
+]:
+    normalized_repo = _required_exact_nonempty_string(repo, "repo")
+    if REPO_RE.fullmatch(normalized_repo) is None:
+        raise PromotionSnapshotError("repo must be OWNER/NAME")
+    if type(pr_number) is not int or pr_number <= 0:
+        raise PromotionSnapshotError("pr_number must be a positive integer")
+    if not isinstance(events_path, Path):
+        raise PromotionSnapshotError("events_path must be a Path")
+    if not isinstance(charter_path, Path):
+        raise PromotionSnapshotError("charter_path must be a Path")
+    if prior_approved_diff_file is not None and not isinstance(
+        prior_approved_diff_file, Path
+    ):
+        raise PromotionSnapshotError(
+            "prior_approved_diff_file must be a Path or null"
+        )
+    if runner is not None and not callable(runner):
+        raise PromotionSnapshotError("runner must be callable or null")
+
+    normalized_task_id = _optional_nonempty_string(task_id, "task_id")
+    normalized_origin_main_sha = _optional_sha(
+        origin_main_sha,
+        "origin_main_sha",
+    )
+    normalized_author_agent = _optional_agent_id(
+        author_agent,
+        "author_agent",
+    )
+    normalized_from_agent = _required_agent_id(from_agent, "from_agent")
+    normalized_prior_head = _optional_sha(
+        prior_approved_head,
+        "prior_approved_head",
+    )
+    normalized_rco_agents = _validate_rco_agents(rco_agents)
+    return (
+        normalized_repo,
+        normalized_task_id,
+        normalized_origin_main_sha,
+        normalized_author_agent,
+        normalized_from_agent,
+        normalized_prior_head,
+        normalized_rco_agents,
+    )
+
+
+def _optional_nonempty_string(value: object, field: str) -> str:
+    if type(value) is not str:
+        raise PromotionSnapshotError(f"{field} must be a string")
+    if value == "":
+        return ""
+    return _required_exact_nonempty_string(value, field)
+
+
+def _required_exact_nonempty_string(value: object, field: str) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+    ):
+        raise PromotionSnapshotError(
+            f"{field} must be a non-empty exact string"
+        )
+    return value
+
+
+def _required_agent_id(value: object, field: str) -> str:
+    if type(value) is not str or AGENT_ID_RE.fullmatch(value) is None:
+        raise PromotionSnapshotError(f"{field} must be a valid agent id")
+    return value
+
+
+def _optional_agent_id(value: object, field: str) -> str:
+    if type(value) is not str:
+        raise PromotionSnapshotError(f"{field} must be a string")
+    if value == "":
+        return ""
+    return _required_agent_id(value, field)
+
+
+def _optional_sha(value: object, field: str) -> str:
+    if type(value) is not str:
+        raise PromotionSnapshotError(f"{field} must be a string")
+    if value == "":
+        return ""
+    return _required_sha(value, field)
+
+
+def _validate_rco_agents(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+        value, SequenceABC
+    ):
+        raise PromotionSnapshotError(
+            "rco_agents must be a non-string sequence or null"
+        )
+    if len(value) == 0:
+        raise PromotionSnapshotError("rco_agents must not be empty")
+    normalized: list[str] = []
+    for index, agent in enumerate(value, 1):
+        normalized.append(_required_agent_id(agent, f"rco_agents item {index}"))
+    return tuple(normalized)
+
+
+def _read_prior_diff_fail_closed(path: object) -> str | None:
+    if path is None:
+        return None
+    if not isinstance(path, Path):
+        raise PromotionSnapshotError(
+            "prior_approved_diff_file must be a Path or null"
+        )
+    try:
+        return path.read_text(encoding="utf-8", errors="strict")
+    except FileNotFoundError as exc:
+        raise PromotionSnapshotError(
+            "prior approved diff file not found"
+        ) from exc
+    except UnicodeError as exc:
+        raise PromotionSnapshotError(
+            "prior approved diff file is not valid UTF-8"
+        ) from exc
+    except OSError as exc:
+        raise PromotionSnapshotError(
+            "prior approved diff file could not be read"
+        ) from exc
+
+
 def _origin_main_sha(value: object, *, runner: Runner | None) -> str:
     if type(value) is not str:
         raise PromotionSnapshotError("origin_main_sha must be a string")
@@ -306,6 +481,8 @@ def _origin_main_sha(value: object, *, runner: Runner | None) -> str:
 
 
 def _run(command: Sequence[str], *, runner: Runner | None) -> RunnerResult:
+    if runner is not None and not callable(runner):
+        raise PromotionSnapshotError("runner must be callable or null")
     if runner is None:
         raw_completed = subprocess.run(
             list(command),
@@ -320,6 +497,11 @@ def _run(command: Sequence[str], *, runner: Runner | None) -> RunnerResult:
             raise PromotionSnapshotError(
                 "subprocess result streams must be bytes"
             )
+        return_code = getattr(raw_completed, "returncode", None)
+        if type(return_code) is not int:
+            raise PromotionSnapshotError(
+                "subprocess result returncode must be an integer"
+            )
         decoded: dict[str, str] = {}
         for stream_name, value in raw_streams.items():
             try:
@@ -331,20 +513,24 @@ def _run(command: Sequence[str], *, runner: Runner | None) -> RunnerResult:
                 ) from exc
         completed = subprocess.CompletedProcess(
             list(command),
-            int(getattr(raw_completed, "returncode", 1)),
+            return_code,
             decoded["stdout"],
             decoded["stderr"],
         )
     else:
         completed = runner(tuple(command))
-    if int(getattr(completed, "returncode", 1)) != 0:
-        stderr = str(getattr(completed, "stderr", "")).strip()
-        detail = f": {stderr}" if stderr else ""
-        raise PromotionSnapshotError(f"command failed: {' '.join(command)}{detail}")
+    return_code = getattr(completed, "returncode", None)
+    if type(return_code) is not int:
+        raise PromotionSnapshotError(
+            "runner result returncode must be an integer"
+        )
     stdout = getattr(completed, "stdout", None)
     stderr = getattr(completed, "stderr", None)
     if type(stdout) is not str or type(stderr) is not str:
         raise PromotionSnapshotError("runner result streams must be text")
+    if return_code != 0:
+        detail = f": {stderr.strip()}" if stderr.strip() else ""
+        raise PromotionSnapshotError(f"command failed: {' '.join(command)}{detail}")
     return completed
 
 

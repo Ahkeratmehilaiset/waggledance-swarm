@@ -40,6 +40,7 @@ GH_JSON_FIELDS = (
 )
 GH_FILES_PER_PAGE = 100
 GH_MAX_PULL_FILES = 3000
+GH_GRAPHQL_CONNECTION_PAGE_SIZE = 100
 GH_FILE_STATUSES = {
     "added",
     "changed",
@@ -161,6 +162,8 @@ def build_pr_status_snapshot(
             "invalid_receipt_verified",
             "receipt_verified must be a boolean",
         )
+    if runner is not None and not callable(runner):
+        raise _invalid("invalid_runner", "runner must be callable or null")
     if expected_base_sha and not SHA_RE.fullmatch(expected_base_sha):
         raise _invalid(
             "invalid_expected_base_sha",
@@ -168,7 +171,7 @@ def build_pr_status_snapshot(
         )
 
     command = _gh_pr_view_command(pr_number=pr_number, repo=repo)
-    run = runner or _run_command
+    run = runner if runner is not None else _run_command
     stdout = _run_gh_text(
         run,
         command,
@@ -348,7 +351,7 @@ def _run_gh_text(
     label: str,
 ) -> str:
     result = run(command)
-    return_code = getattr(result, "returncode", 0)
+    return_code = getattr(result, "returncode", None)
     if type(return_code) is not int:
         raise _invalid(failure_decision, f"{label} returned an invalid exit code")
     stdout = _strict_utf8_stream(
@@ -449,6 +452,7 @@ def _normalize_anchor(
             "pull_files_limit_exceeded",
             f"changedFiles exceeds the REST pull-files limit of {GH_MAX_PULL_FILES}",
         )
+    _assert_identity_connections_complete(raw)
     try:
         material = github_pr_git_identity_evidence(
             raw,
@@ -472,6 +476,29 @@ def _normalize_anchor(
         "git_identities": git_identities,
         "git_identity_evidence": material,
     }
+
+
+def _assert_identity_connections_complete(raw: Mapping[str, Any]) -> None:
+    commits = raw.get("commits")
+    if not isinstance(commits, list):
+        return
+    if len(commits) >= GH_GRAPHQL_CONNECTION_PAGE_SIZE:
+        raise _invalid(
+            "incomplete_git_identities",
+            "PR commit identity metadata may be truncated",
+        )
+    for index, commit in enumerate(commits, 1):
+        if not isinstance(commit, Mapping):
+            continue
+        authors = commit.get("authors")
+        if (
+            isinstance(authors, list)
+            and len(authors) >= GH_GRAPHQL_CONNECTION_PAGE_SIZE
+        ):
+            raise _invalid(
+                "incomplete_git_identities",
+                f"PR commit {index} author metadata may be truncated",
+            )
 
 
 def _assert_anchor_stable(

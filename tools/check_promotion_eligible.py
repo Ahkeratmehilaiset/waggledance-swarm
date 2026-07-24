@@ -605,7 +605,25 @@ def _bridge_consensus_set_gate(
         )
         for agent in rco_agents
     }
+    invalid = [
+        result
+        for result in by_agent.values()
+        if result.get("decision")
+        in {
+            "invalid_consensus_config",
+            "invalid_consensus_head",
+            "invalid_identity_registry",
+        }
+    ]
     passing = [agent for agent, result in by_agent.items() if result.get("ok") is True]
+    if invalid:
+        return {
+            "ok": False,
+            "decision": str(invalid[0]["decision"]),
+            "satisfying_rco_agent": "",
+            "recognized_rco_agents": list(rco_agents),
+            "by_agent": by_agent,
+        }
     return {
         "ok": bool(passing),
         "decision": (

@@ -53,6 +53,7 @@ from waggledance.core.idle_consensus_charter import (  # noqa: E402
     load_charter,
 )
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    AGENT_ID_PATTERN,
     bridge_identity_binding_status,
     load_bridge_identity_registry,
 )
@@ -337,13 +338,21 @@ def evaluate_auto_merge_gate(
 
     events = _read_bridge_events(events_path) if events_path is not None else []
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
-    bridge_gate_task_id = bridge_task_id.strip() or consensus_proposal_id
+    bridge_gate_task_id = (
+        bridge_task_id if bridge_task_id != "" else consensus_proposal_id
+    )
     charter = load_charter(charter_path)
     changed_paths = _changed_paths(pr_status)
     diff_text = _diff_text(pr_status)
     path_gate = evaluate_paths(charter, changed_paths)
     diff_gate = evaluate_diff_content(charter, diff_text)
-    rate_date = utc_date or _today_utc()
+    trusted_today = _today_utc()
+    rate_date = trusted_today if utc_date is None else utc_date
+    if apply and rate_date != trusted_today:
+        raise _invalid(
+            "invalid_input",
+            "utc_date must equal the current UTC date when apply is true",
+        )
     quota_used = _count_daily_auto_merges(events, rate_date)
     quota_total = int(charter.daily_quota)
     rate_gate = {
@@ -647,9 +656,23 @@ def evaluate_auto_merge_gate(
             "reasons": list(apply_recheck.get("reasons", [])),
         }
 
-    run = runner or _run_command
+    run = runner if runner is not None else _run_command
     result = run(command)
-    return_code = int(getattr(result, "returncode", 0))
+    return_code = getattr(result, "returncode", None)
+    if type(return_code) is not int:
+        raise AutoMergeGateError(
+            {
+                **base,
+                "decision": "auto_merge_invalid_result",
+                "ok": False,
+                "operator_review_required": True,
+                "errors": [
+                    "gh pr merge returned an invalid exit code"
+                ],
+                "gh_merge_attempted": True,
+                "exit_code": 1,
+            }
+        )
     if return_code != 0:
         merge_recovery = _recover_merge_state_after_failure(
             pr_number=pr_number,
@@ -806,6 +829,11 @@ def _recover_merge_state_after_failure(
         return {**base, "decision": "verifier_returned_non_object"}
     _assert_no_private_markers(state)
 
+    if "ok" in state and state.get("ok") is not True:
+        return {**base, "decision": "verifier_refused_merge_state"}
+    number = state.get("number")
+    if type(number) is not int or number != pr_number:
+        return {**base, "decision": "merged_pr_mismatch"}
     if state.get("state") != "MERGED":
         return {**base, "decision": "pr_not_merged"}
     if state.get("headRefOid") != expected_head:
@@ -977,18 +1005,31 @@ def _base_ref_gate(
 
 
 def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:
-    raw: Sequence[str]
+    raw: Sequence[object]
     if value is None:
         raw = BRIDGE_CONSENSUS_RCO_AGENTS
-    elif isinstance(value, str):
+    elif type(value) is str:
         raw = (value,)
+    elif not isinstance(value, Sequence) or isinstance(
+        value, (bytes, bytearray)
+    ):
+        raise ValueError("rco_agent must be a string, sequence, or null")
     else:
         raw = value
     normalized: list[str] = []
-    for item in raw:
-        agent = str(item or "").strip()
-        if agent and agent not in normalized:
-            normalized.append(agent)
+    for index, item in enumerate(raw, 1):
+        if (
+            type(item) is not str
+            or not item
+            or item != item.strip()
+            or AGENT_ID_PATTERN.fullmatch(item) is None
+        ):
+            raise ValueError(
+                f"rco_agent item {index} must be an exact canonical agent id"
+            )
+        if item in normalized:
+            raise ValueError("rco_agent identities must be distinct")
+        normalized.append(item)
     return tuple(normalized)
 
 
@@ -1166,8 +1207,96 @@ def verify_bridge_consensus(
     the MAGMA receipt so a consumer can re-derive the verdict rather than
     trust a bare flag.
     """
-    recognized_rco_agents = _normalize_rco_agents(rco_agent)
-    author_agent = (author_agent or "").strip()
+    if (
+        not isinstance(events, Sequence)
+        or isinstance(events, (str, bytes, bytearray))
+    ):
+        return _invalid_consensus_input(
+            "events must be a non-string sequence",
+            head_sha=head_sha,
+        )
+    if (
+        type(task_id) is not str
+        or not task_id
+        or task_id != task_id.strip()
+    ):
+        return _invalid_consensus_input(
+            "task_id must be a non-empty exact string",
+            head_sha=head_sha,
+        )
+    if type(head_sha) is not str or SHA_RE.fullmatch(head_sha) is None:
+        return _invalid_consensus_input(
+            "head_sha must be a 40-char lowercase sha",
+            head_sha=head_sha,
+            decision="invalid_consensus_head",
+        )
+    if pr_number is not None and (
+        type(pr_number) is not int or pr_number <= 0
+    ):
+        return _invalid_consensus_input(
+            "pr_number must be a positive integer or null",
+            head_sha=head_sha,
+        )
+    if type(allow_lead_stall_failover) is not bool:
+        return _invalid_consensus_input(
+            "allow_lead_stall_failover must be a boolean",
+            head_sha=head_sha,
+        )
+    if (
+        type(lead_stall_failover_threshold_seconds) is not int
+        or lead_stall_failover_threshold_seconds <= 0
+    ):
+        return _invalid_consensus_input(
+            "lead_stall_failover_threshold_seconds must be a positive integer",
+            head_sha=head_sha,
+        )
+    if (
+        not isinstance(lead_stall_failover_changed_paths, Sequence)
+        or isinstance(
+            lead_stall_failover_changed_paths,
+            (str, bytes, bytearray),
+        )
+        or any(
+            type(path) is not str
+            or not path
+            or path != path.strip()
+            for path in lead_stall_failover_changed_paths
+        )
+    ):
+        return _invalid_consensus_input(
+            "lead_stall_failover_changed_paths must contain exact paths",
+            head_sha=head_sha,
+        )
+    if type(lead_stall_failover_diff_text) is not str:
+        return _invalid_consensus_input(
+            "lead_stall_failover_diff_text must be a string",
+            head_sha=head_sha,
+        )
+    if not isinstance(lead_stall_failover_charter_path, Path):
+        return _invalid_consensus_input(
+            "lead_stall_failover_charter_path must be a Path",
+            head_sha=head_sha,
+        )
+    try:
+        recognized_rco_agents = _normalize_rco_agents(rco_agent)
+    except ValueError as exc:
+        recognized_rco_agents = ()
+        config_error = str(exc)
+    else:
+        config_error = ""
+    if (
+        type(author_agent) is not str
+        or not author_agent
+        or author_agent != author_agent.strip()
+        or AGENT_ID_PATTERN.fullmatch(author_agent) is None
+    ):
+        config_error = config_error or (
+            "author_agent must be an exact canonical agent id"
+        )
+        normalized_author_agent = ""
+    else:
+        normalized_author_agent = author_agent
+    author_agent = normalized_author_agent
     eligible_rco_agents = tuple(
         agent for agent in recognized_rco_agents if agent != author_agent
     )
@@ -1189,7 +1318,27 @@ def verify_bridge_consensus(
         ),
     }
     build_expected = (lead_agent, tools_agent)
-    if len({a for a in build_expected if a and a.strip()}) != 2:
+    if config_error:
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": [config_error],
+        }
+    if any(
+        type(agent) is not str
+        or not agent
+        or agent != agent.strip()
+        or AGENT_ID_PATTERN.fullmatch(agent) is None
+        for agent in build_expected
+    ):
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": [
+                "lead/tools identities must be exact canonical agent ids"
+            ],
+        }
+    if len(set(build_expected)) != 2:
         return {
             **base,
             "decision": "invalid_consensus_config",
@@ -1229,25 +1378,40 @@ def verify_bridge_consensus(
     eligible_build_agents = {
         agent: agent != author_agent for agent in build_expected
     }
-    if not SHA_RE.fullmatch(head_sha or ""):
-        return {
-            **base,
-            "decision": "invalid_consensus_head",
-            "reasons": [
-                "head_sha must be a 40-char lowercase sha for consensus binding"
-            ],
-        }
     try:
-        registry = (
-            load_bridge_identity_registry()
-            if identity_registry is None
-            else dict(identity_registry)
-        )
-    except ValueError as exc:
+        canonical_registry = load_bridge_identity_registry()
+        if identity_registry is not None:
+            if (
+                not isinstance(identity_registry, Mapping)
+                or dict(identity_registry) != canonical_registry
+            ):
+                raise ValueError(
+                    "identity_registry must exactly match the canonical registry"
+                )
+        registry = canonical_registry
+    except (TypeError, ValueError) as exc:
         return {
             **base,
             "decision": "invalid_identity_registry",
             "reasons": [str(exc)],
+        }
+    configured_agents = {
+        lead_agent,
+        tools_agent,
+        author_agent,
+        *recognized_rco_agents,
+    }
+    unregistered_agents = sorted(
+        agent for agent in configured_agents if agent not in registry
+    )
+    if unregistered_agents:
+        return {
+            **base,
+            "decision": "invalid_consensus_config",
+            "reasons": [
+                "consensus identities are not registered: "
+                + ", ".join(unregistered_agents)
+            ],
         }
 
     latest_build_approval: dict[str, tuple[int, Mapping[str, Any]]] = {}
@@ -1262,7 +1426,10 @@ def verify_bridge_consensus(
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
-        agent = str(event.get("agent", ""))
+        agent_value = event.get("agent", "")
+        if type(agent_value) is not str:
+            continue
+        agent = agent_value
         if agent not in watched_agents:
             continue
         binding_status = bridge_identity_binding_status(
@@ -1270,7 +1437,7 @@ def verify_bridge_consensus(
             registry=registry,
             restricted_agents=watched_agents,
         )
-        if binding_status in {"missing_uuid", "mismatch_uuid"}:
+        if binding_status != "valid":
             ignored_identity_mismatch_events.append(
                 {
                     "ts_utc": str(event.get("ts_utc", "")),
@@ -1572,6 +1739,27 @@ def verify_bridge_consensus(
         "blocking_rco_agents": sorted(blocking_rco_agents),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
         "lead_stall_failover": lead_stall_failover,
+    }
+
+
+def _invalid_consensus_input(
+    reason: str,
+    *,
+    head_sha: object,
+    decision: str = "invalid_consensus_config",
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "decision": decision,
+        "reasons": [reason],
+        "head_sha": head_sha if type(head_sha) is str else "",
+        "identities": {},
+        "rco_pass_ref": None,
+        "recognized_rco_agents": [],
+        "eligible_rco_agents": [],
+        "author_agent": "",
+        "blocking_rco_agents": [],
+        "ignored_identity_mismatch_events": [],
     }
 
 
@@ -2112,6 +2300,42 @@ def _validate_evaluate_inputs(
                 "invalid_input",
                 f"{field} must be callable or null",
             )
+    if (
+        not consensus_proposal_id
+        or consensus_proposal_id != consensus_proposal_id.strip()
+    ):
+        raise _invalid(
+            "invalid_input",
+            "consensus_proposal_id must be a non-empty exact string",
+        )
+    if repo != repo.strip():
+        raise _invalid("invalid_input", "repo must be an exact string")
+    if from_agent and (
+        from_agent != from_agent.strip()
+        or AGENT_ID_PATTERN.fullmatch(from_agent) is None
+    ):
+        raise _invalid(
+            "invalid_input",
+            "from_agent must be an exact agent id or empty",
+        )
+    if bridge_task_id and bridge_task_id != bridge_task_id.strip():
+        raise _invalid(
+            "invalid_input",
+            "bridge_task_id must be an exact string or empty",
+        )
+    if utc_date is not None:
+        try:
+            parsed_date = datetime.strptime(utc_date, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise _invalid(
+                "invalid_input",
+                "utc_date must use exact YYYY-MM-DD format",
+            ) from exc
+        if parsed_date.isoformat() != utc_date:
+            raise _invalid(
+                "invalid_input",
+                "utc_date must use exact YYYY-MM-DD format",
+            )
 
 
 def _validate_sha(value: object, field: str) -> None:
@@ -2148,6 +2372,11 @@ def _query_pr_merge_state(
     *,
     runner: Runner | None = None,
 ) -> Mapping[str, Any]:
+    if runner is not None and not callable(runner):
+        return {
+            "ok": False,
+            "decision": "merge_state_query_invalid_runner",
+        }
     command = [
         "gh",
         "pr",
@@ -2158,8 +2387,9 @@ def _query_pr_merge_state(
     ]
     if repo:
         command.extend(["--repo", repo])
-    result = (runner or _run_command)(command)
-    return_code = getattr(result, "returncode", 0)
+    run = runner if runner is not None else _run_command
+    result = run(command)
+    return_code = getattr(result, "returncode", None)
     if type(return_code) is not int:
         return {
             "ok": False,
@@ -2278,8 +2508,12 @@ def _verified_artifact_manifest(report: Mapping[str, Any]) -> str:
         raise _artifact_receipt_error(
             "artifact receipt verifier did not return ok=True"
         )
-    manifest = str(bundle.get("manifest", ""))
-    if not manifest:
+    manifest = bundle.get("manifest")
+    if (
+        type(manifest) is not str
+        or not manifest
+        or manifest != manifest.strip()
+    ):
         raise _artifact_receipt_error("artifact receipt manifest path is missing")
     return manifest
 

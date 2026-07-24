@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -86,6 +86,57 @@ def test_refuses_without_exact_head_rco_pass(tmp_path: Path) -> None:
     assert report["ok"] is False
     assert any("bridge consensus incomplete" in error for error in report["errors"])
     assert not (tmp_path / "receipt").exists()
+
+
+@pytest.mark.parametrize(
+    "now_utc",
+    [False, 0, 7, "2026-06-13T22:50:00Z", datetime(2026, 6, 13, 22, 50)],
+)
+def test_receipt_writer_rejects_nonaware_datetime_before_writes(
+    tmp_path: Path,
+    now_utc: object,
+) -> None:
+    out_dir = tmp_path / "receipt"
+
+    with pytest.raises(BridgeConsensusMergeReceiptError) as excinfo:
+        write_bridge_consensus_merge_receipt(
+            pr_status=_pr_status(),
+            events_path=_events_path(tmp_path, _full_consensus()),
+            out_dir=out_dir,
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id=TASK,
+            repo="example/repo",
+            from_agent="codex-lead-1",
+            bridge_task_id=TASK,
+            now_utc=now_utc,  # type: ignore[arg-type]
+        )
+
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert not out_dir.exists()
+
+
+def test_receipt_writer_normalizes_aware_time_to_utc(tmp_path: Path) -> None:
+    local_time = NOW.astimezone(timezone(timedelta(hours=2)))
+    out_dir = tmp_path / "receipt"
+
+    write_bridge_consensus_merge_receipt(
+        pr_status=_pr_status(),
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=out_dir,
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        repo="example/repo",
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        now_utc=local_time,
+    )
+
+    payload = json.loads(
+        (out_dir / "payload-001-merge.json").read_text(encoding="utf-8")
+    )
+    assert payload["created_at_utc"] == "2026-06-13T22:50:00Z"
 
 
 def _pr_status() -> dict:

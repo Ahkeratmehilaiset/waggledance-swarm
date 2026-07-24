@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 import pytest
 
+import tools.merge_with_bridge_receipt as merge_tool
 from tools.merge_with_bridge_receipt import merge_with_bridge_receipt
 
 
@@ -26,6 +27,11 @@ AGENT_UUIDS = {
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
+
+
+@pytest.fixture(autouse=True)
+def _trusted_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(merge_tool, "_utc_now", lambda: NOW)
 
 
 def test_dry_run_writes_receipt_without_attempting_merge(tmp_path: Path) -> None:
@@ -309,6 +315,199 @@ def test_expected_sha_is_not_normalized_before_effects(
 
     assert calls == []
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "now_utc",
+    [False, 0, 7, "2026-06-14T06:20:00Z", datetime(2026, 6, 14)],
+)
+def test_now_utc_requires_timezone_aware_datetime_before_effects(
+    tmp_path: Path,
+    now_utc: object,
+) -> None:
+    calls, runner = _runner()
+
+    with pytest.raises(ValueError, match="now_utc"):
+        merge_with_bridge_receipt(
+            pr_number=1174,
+            repo="example/repo",
+            events_path=_events_path(tmp_path, _full_consensus()),
+            out_dir=tmp_path / "out",
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id=TASK,
+            apply=True,
+            now_utc=now_utc,  # type: ignore[arg-type]
+            runner=runner,
+        )
+
+    assert calls == []
+    assert not (tmp_path / "out").exists()
+
+
+def test_apply_rejects_historical_now_even_with_full_historical_quota(
+    tmp_path: Path,
+) -> None:
+    calls, runner = _runner()
+    historical = NOW.replace(day=13)
+    quota_events = [
+        {
+            "ts_utc": f"2026-06-14T0{index}:00:00Z",
+            "agent": "codex-lead-1",
+            "type": "done",
+            "status": "idle_auto_merge_done",
+            "task_id": f"merged-{index}",
+            "payload": {"auto_merged": True},
+        }
+        for index in range(1, 6)
+    ]
+
+    with pytest.raises(ValueError, match="current UTC date"):
+        merge_with_bridge_receipt(
+            pr_number=1174,
+            repo="example/repo",
+            events_path=_events_path(
+                tmp_path,
+                [*_full_consensus(), *quota_events],
+            ),
+            out_dir=tmp_path / "out",
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id=TASK,
+            apply=True,
+            now_utc=historical,
+            runner=runner,
+        )
+
+    assert calls == []
+    assert not _merge_calls(calls)
+
+
+def test_apply_receipt_uses_trusted_clock_not_same_day_override(
+    tmp_path: Path,
+) -> None:
+    calls, runner = _runner()
+    supplied = NOW.replace(hour=0, minute=1)
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=supplied,
+        runner=runner,
+    )
+
+    assert report["merge_executed"] is True
+    payload = json.loads(
+        (tmp_path / "out" / "receipt" / "payload-001-merge.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["created_at_utc"] == "2026-06-14T06:20:00Z"
+    assert len(_merge_calls(calls)) == 1
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_merge_result_requires_exact_integer_returncode(
+    tmp_path: Path,
+    returncode: object,
+) -> None:
+    calls, runner = _runner(merge_returncode=returncode)  # type: ignore[arg-type]
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "invalid_merge_result"
+    assert report["gh_merge_attempted"] is True
+    assert report["merge_executed"] is False
+    assert len(_merge_calls(calls)) == 1
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_post_merge_query_requires_exact_integer_returncode(
+    tmp_path: Path,
+    returncode: object,
+) -> None:
+    calls, delegate = _runner()
+
+    def runner(command: Sequence[str]) -> SimpleNamespace:
+        result = delegate(command)
+        if (
+            list(command)[:3] == ["gh", "pr", "view"]
+            and "number,state,mergeCommit,headRefOid,headRefName,baseRefName"
+            in command
+        ):
+            result.returncode = returncode
+        return result
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=True,
+        now_utc=NOW,
+        runner=runner,
+    )
+
+    assert report["decision"] == "post_merge_state_unconfirmed"
+    assert report["post_merge"]["decision"] == "post_merge_query_invalid"
+    assert report["merge_executed"] is False
+
+
+def test_falsey_callable_runner_is_used_without_live_fallback(
+    tmp_path: Path,
+) -> None:
+    calls, delegate = _runner()
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: Sequence[str]) -> SimpleNamespace:
+            return delegate(command)
+
+    report = merge_with_bridge_receipt(
+        pr_number=1174,
+        repo="example/repo",
+        events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "out",
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=TASK,
+        from_agent="codex-lead-1",
+        bridge_task_id=TASK,
+        apply=False,
+        now_utc=NOW,
+        runner=FalseyRunner(),
+    )
+
+    assert report["decision"] == "merge_receipt_ready"
+    assert calls
 
 
 def _runner(

@@ -7,12 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.idle_consensus_auto_merge as idle_merge_tool
 from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.idle_consensus_auto_merge import (
     AutoMergeGateError,
     build_parser,
     evaluate_auto_merge_gate,
     main,
+    verify_bridge_consensus,
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -658,7 +660,11 @@ def test_missing_diff_text_snapshot_fails_closed() -> None:
     assert "diff_text must be a string" in excinfo.value.report["errors"]
 
 
-def test_daily_rate_limit_blocks_without_runner(tmp_path: Path) -> None:
+def test_daily_rate_limit_blocks_without_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(idle_merge_tool, "_today_utc", lambda: "2026-05-18")
     calls: list[list[str]] = []
     report = evaluate_auto_merge_gate(
         pr_status=_status(),
@@ -683,6 +689,63 @@ def test_daily_rate_limit_blocks_without_runner(tmp_path: Path) -> None:
         "quota_total": 5,
     }
     assert "daily rate limit exceeded: 5/5 for 2026-05-18" in report["reasons"]
+
+
+@pytest.mark.parametrize(
+    "utc_date",
+    ["not-a-date", "20260724", "2026-7-24", " 2026-07-24"],
+)
+def test_quota_date_requires_exact_iso_calendar_date(
+    utc_date: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            utc_date=utc_date,
+            apply=True,
+            runner=lambda command: calls.append(list(command)),
+        )
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert "YYYY-MM-DD" in excinfo.value.report["errors"][0]
+
+
+def test_apply_rejects_historical_quota_date_before_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(idle_merge_tool, "_today_utc", lambda: "2026-07-24")
+    calls: list[list[str]] = []
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(
+                tmp_path,
+                [
+                    _auto_merge_event(index, ts="2026-07-24T01:00:00Z")
+                    for index in range(1, 6)
+                ],
+            ),
+            utc_date="2026-07-23",
+            apply=True,
+            runner=lambda command: calls.append(list(command)),
+        )
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_input"
+    assert "current UTC date" in excinfo.value.report["errors"][0]
 
 
 def test_pending_check_blocks_merge() -> None:
@@ -2645,6 +2708,64 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
     assert report["merge_recovery"]["decision"] == "pr_not_merged"
 
 
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_idle_merge_result_requires_exact_integer_returncode(
+    tmp_path: Path,
+    returncode: object,
+) -> None:
+    calls: list[list[str]] = []
+    runner = _canonical_apply_runner(
+        calls,
+        merge_returncode=returncode,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            expected_base_sha=BASE,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path, [_rco_pass()]),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+        )
+
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_invalid_result"
+    assert report.get("auto_merge_event_payload") is None
+
+
+def test_falsey_callable_idle_runner_is_used_without_default_fallback(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    delegate = _canonical_apply_runner(calls)
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: list[str]) -> SimpleNamespace:
+            return delegate(command)
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=FalseyRunner(),
+    )
+
+    assert report["decision"] == "auto_merged"
+    assert calls
+
+
 def test_runner_failure_recovers_when_pr_view_confirms_merge(
     tmp_path: Path,
 ) -> None:
@@ -2684,6 +2805,120 @@ def test_runner_failure_recovers_when_pr_view_confirms_merge(
     assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
 
 
+def test_unregistered_rco_cannot_satisfy_bridge_consensus() -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD}},
+        {
+            "agent": "evil-rco",
+            "type": "decision",
+            "status": "rco_pass",
+            "task_id": "idle-consensus-001",
+            "payload": {"head": HEAD, "pr": 477},
+        },
+    ]
+
+    report = verify_bridge_consensus(
+        events=events,
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        rco_agent="evil-rco",
+        author_agent="fable-5",
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_consensus_config"
+    assert "not registered" in report["reasons"][0]
+
+
+def test_injected_registry_cannot_register_an_attacker_rco() -> None:
+    injected = {
+        **AGENT_UUIDS,
+        "evil-rco": "11111111-1111-4111-8111-111111111111",
+    }
+
+    report = verify_bridge_consensus(
+        events=[],
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        rco_agent="evil-rco",
+        author_agent="fable-5",
+        identity_registry=injected,
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_identity_registry"
+    assert "canonical registry" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "decision"),
+    [
+        ("task_id", False, "invalid_consensus_config"),
+        ("task_id", " idle-consensus-001", "invalid_consensus_config"),
+        ("head_sha", False, "invalid_consensus_head"),
+        ("head_sha", 7, "invalid_consensus_head"),
+        ("pr_number", False, "invalid_consensus_config"),
+        ("allow_lead_stall_failover", 1, "invalid_consensus_config"),
+        (
+            "lead_stall_failover_threshold_seconds",
+            False,
+            "invalid_consensus_config",
+        ),
+        (
+            "lead_stall_failover_changed_paths",
+            "tools/a.py",
+            "invalid_consensus_config",
+        ),
+        (
+            "lead_stall_failover_diff_text",
+            False,
+            "invalid_consensus_config",
+        ),
+        (
+            "lead_stall_failover_charter_path",
+            False,
+            "invalid_consensus_config",
+        ),
+        ("lead_agent", " codex-lead-1", "invalid_consensus_config"),
+        ("tools_agent", " codex-tools-1", "invalid_consensus_config"),
+        ("author_agent", " fable-5", "invalid_consensus_config"),
+        ("rco_agent", [1], "invalid_consensus_config"),
+    ],
+)
+def test_bridge_consensus_public_inputs_fail_closed_without_type_leaks(
+    field: str,
+    value: object,
+    decision: str,
+) -> None:
+    kwargs: dict[str, object] = {
+        "events": [],
+        "task_id": "idle-consensus-001",
+        "head_sha": HEAD,
+        "pr_number": 477,
+        "author_agent": "fable-5",
+    }
+    kwargs[field] = value
+
+    report = verify_bridge_consensus(**kwargs)  # type: ignore[arg-type]
+
+    assert report["ok"] is False
+    assert report["decision"] == decision
+    assert report["rco_pass_ref"] is None
+
+
 def test_runner_failure_still_fails_when_merge_verifier_disagrees(
     tmp_path: Path,
 ) -> None:
@@ -2716,6 +2951,130 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
     report = excinfo.value.report
     assert report["decision"] == "auto_merge_failed"
     assert report["merge_recovery"]["decision"] == "pr_not_merged"
+
+
+@pytest.mark.parametrize("ok_value", [False, 0, "false", None])
+def test_merge_recovery_rejects_every_present_nontrue_ok_value(
+    ok_value: object,
+) -> None:
+    state = {
+        "number": 477,
+        "state": "MERGED",
+        "headRefOid": HEAD,
+        "headRefName": "idle-consensus-001",
+        "baseRefName": "main",
+        "mergeCommit": {"oid": MERGE_SHA},
+        "ok": ok_value,
+    }
+
+    report = idle_merge_tool._recover_merge_state_after_failure(
+        pr_number=477,
+        expected_head=HEAD,
+        expected_head_ref="idle-consensus-001",
+        expected_base_ref="main",
+        repo="example/repo",
+        return_code=1,
+        verifier=lambda *_args: state,
+    )
+
+    assert report["merged"] is False
+    assert report["decision"] == "verifier_refused_merge_state"
+
+
+def test_merge_recovery_rejects_wrong_pr_even_when_other_fields_match() -> None:
+    report = idle_merge_tool._recover_merge_state_after_failure(
+        pr_number=477,
+        expected_head=HEAD,
+        expected_head_ref="idle-consensus-001",
+        expected_base_ref="main",
+        repo="example/repo",
+        return_code=1,
+        verifier=lambda *_args: {
+            "number": 9999,
+            "state": "MERGED",
+            "headRefOid": HEAD,
+            "headRefName": "idle-consensus-001",
+            "baseRefName": "main",
+            "mergeCommit": {"oid": MERGE_SHA},
+        },
+    )
+
+    assert report["merged"] is False
+    assert report["decision"] == "merged_pr_mismatch"
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [7, False, ["manifest"], {"manifest": "x"}, "", " ", " path.json"],
+)
+def test_artifact_manifest_requires_an_exact_nonempty_string(
+    manifest: object,
+) -> None:
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        idle_merge_tool._verified_artifact_manifest(
+            {
+                "receipt_bundle": {
+                    "manifest": manifest,
+                    "verifier_report": {"ok": True},
+                }
+            }
+        )
+
+    assert excinfo.value.report["decision"] == "artifact_receipt_failed"
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_merge_state_query_requires_exact_integer_returncode(
+    returncode: object,
+) -> None:
+    result = SimpleNamespace(stdout="{}", stderr="")
+    if returncode is not None:
+        result.returncode = returncode
+
+    report = idle_merge_tool._query_pr_merge_state(
+        477,
+        HEAD,
+        "example/repo",
+        runner=lambda _command: result,
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "merge_state_query_invalid_result"
+
+
+def test_falsey_callable_merge_state_runner_is_not_replaced() -> None:
+    calls: list[list[str]] = []
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: list[str]) -> SimpleNamespace:
+            calls.append(list(command))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "number": 477,
+                        "state": "MERGED",
+                        "headRefOid": HEAD,
+                        "headRefName": "idle-consensus-001",
+                        "baseRefName": "main",
+                        "mergeCommit": {"oid": MERGE_SHA},
+                    }
+                ),
+                stderr="",
+            )
+
+    report = idle_merge_tool._query_pr_merge_state(
+        477,
+        HEAD,
+        "example/repo",
+        runner=FalseyRunner(),
+    )
+
+    assert calls
+    assert report["number"] == 477
 
 
 def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> None:
@@ -2835,10 +3194,13 @@ def test_receipt_verified_requires_exact_boolean(
         ("expected_head", 0, "invalid_input"),
         ("expected_base_sha", False, "invalid_input"),
         ("consensus_proposal_id", [], "invalid_input"),
+        ("consensus_proposal_id", " idle-consensus-001", "invalid_input"),
         ("receipt_bundle_path", None, "invalid_input"),
         ("repo", 7, "invalid_input"),
         ("from_agent", False, "invalid_input"),
+        ("from_agent", " codex-lead-1", "invalid_input"),
         ("bridge_task_id", {}, "invalid_input"),
+        ("bridge_task_id", " idle-consensus-001", "invalid_input"),
         ("utc_date", 20260724, "invalid_input"),
         ("events_path", "events.jsonl", "invalid_input"),
         ("charter_path", "charter.toml", "invalid_input"),

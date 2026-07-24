@@ -218,7 +218,7 @@ def resolve_bridge_pr_author(
         for index, event in enumerate(events):
             if not isinstance(event, Mapping):
                 raise ValueError(f"events item {index} must be an object")
-            if str(event.get("type", "")).strip().lower() != "claim":
+            if event.get("type") != "claim":
                 continue
             classification = _classify_claim(
                 event=event,
@@ -299,7 +299,9 @@ def resolve_bridge_pr_author(
 
         if type(asserted_author_agent) is not str:
             raise ValueError("asserted_author_agent must be a string")
-        asserted = asserted_author_agent.strip()
+        if asserted_author_agent != asserted_author_agent.strip():
+            raise ValueError("asserted_author_agent must be an exact string")
+        asserted = asserted_author_agent
         if asserted:
             if asserted not in registry:
                 return _refusal(
@@ -403,7 +405,11 @@ def _classify_claim(
     )
     conflicts.extend(_payload_conflicts(payload, _HEAD_PAYLOAD_KEYS, {head_sha}))
     conflicts.extend(_payload_int_conflicts(payload, _PR_PAYLOAD_KEYS, pr_number))
-    if type(event_task_value) is not str:
+    if (
+        type(event_task_value) is not str
+        or not event_task_value
+        or event_task_value != event_task_value.strip()
+    ):
         conflicts.append("task_id")
     if conflicts:
         return _invalid_claim(
@@ -412,9 +418,16 @@ def _classify_claim(
         )
 
     agent_value = event.get("agent", "")
-    if type(agent_value) is not str:
-        return _invalid_claim(index, "claim agent must be a string")
-    agent = agent_value.strip()
+    if (
+        type(agent_value) is not str
+        or not agent_value
+        or agent_value != agent_value.strip()
+    ):
+        return _invalid_claim(
+            index,
+            "claim agent must be a non-empty exact string",
+        )
+    agent = agent_value
     if agent not in registry:
         return _invalid_claim(
             index,
@@ -577,9 +590,15 @@ def _normalize_git_identity(
         raw = value.get(key, "")
         if type(raw) is not str:
             raise ValueError(f"{source} Git identity {key} must be a string")
-        normalized_fields[key] = raw.strip()
+        if raw != raw.strip():
+            raise ValueError(
+                f"{source} Git identity {key} must be an exact string"
+            )
+        normalized_fields[key] = raw
+    if source != source.strip():
+        raise ValueError("Git identity source must be an exact string")
     normalized = {
-        "source": source.strip(),
+        "source": source,
         "commit_oid": commit_oid,
         **normalized_fields,
     }
@@ -735,19 +754,26 @@ def _normalize_repo_paths(
     normalized: list[str] = []
     seen: set[str] = set()
     for index, item in enumerate(value):
-        if not isinstance(item, str):
+        if type(item) is not str:
             raise ValueError(f"{field} item {index} must be a string")
-        path = item.replace("\\", "/").strip()
+        if item != item.strip():
+            raise ValueError(f"{field} item {index} must be an exact path")
+        if "\\" in item:
+            raise ValueError(
+                f"{field} item {index} is not a canonical repository path"
+            )
+        path = item
         if not path:
             raise ValueError(f"{field} item {index} must not be empty")
         if path.startswith("/") or any(ord(character) < 32 for character in path):
             raise ValueError(f"{field} item {index} is not a safe repository path")
-        path = path.rstrip("/")
-        if not path:
-            raise ValueError(f"{field} item {index} must not be empty")
         if path == "*" and allow_wildcard:
             candidate = path
         else:
+            if path.endswith("/") or "//" in path:
+                raise ValueError(
+                    f"{field} item {index} is not a canonical repository path"
+                )
             if "*" in path:
                 raise ValueError(f"{field} item {index} contains a wildcard")
             pure = PurePosixPath(path)
@@ -756,6 +782,10 @@ def _normalize_repo_paths(
             if ":" in path:
                 raise ValueError(f"{field} item {index} is not a repository path")
             candidate = pure.as_posix()
+            if candidate != path:
+                raise ValueError(
+                    f"{field} item {index} is not a canonical repository path"
+                )
         if candidate not in seen:
             seen.add(candidate)
             normalized.append(candidate)
@@ -771,7 +801,7 @@ def _payload_exact_match(
 ) -> bool:
     return any(
         type(payload.get(key)) is str
-        and payload.get(key).strip() in expected
+        and payload.get(key) in expected
         for key in keys
         if key in payload
     )
@@ -797,7 +827,7 @@ def _payload_conflicts(
         if key not in payload:
             continue
         value = payload.get(key)
-        if type(value) is not str or value.strip() not in expected:
+        if type(value) is not str or value not in expected:
             conflicts.append(key)
     return conflicts
 
@@ -835,7 +865,7 @@ def _refusal(base: Mapping[str, Any], *reasons: str) -> dict[str, Any]:
 
 
 def _required_exact_string(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value or value != value.strip():
+    if type(value) is not str or not value or value != value.strip():
         raise ValueError(f"{field} must be a non-empty exact string")
     return value
 

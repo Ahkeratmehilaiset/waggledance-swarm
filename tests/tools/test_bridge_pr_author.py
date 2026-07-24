@@ -272,6 +272,88 @@ def test_asserted_author_is_only_conflict_evidence_not_ownership() -> None:
     assert "no valid UUID-bound canonical write claim" in no_claim["reasons"][0]
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "event_type",
+        "event_task",
+        "agent",
+        "payload_task",
+        "payload_branch",
+        "payload_head",
+        "scope",
+    ],
+)
+def test_padded_claim_identity_bindings_and_scope_never_authorize(
+    case: str,
+) -> None:
+    claim = _claim()
+    if case == "event_type":
+        claim["type"] = " claim"
+    elif case == "event_task":
+        claim["task_id"] = f" {TASK}"
+    elif case == "agent":
+        claim["agent"] = " codex-lead-1"
+    elif case == "payload_task":
+        claim["payload"] = {"task_id": f" {TASK}"}
+    elif case == "payload_branch":
+        claim["payload"] = {"headRefName": f"{TASK} "}
+    elif case == "payload_head":
+        claim["payload"] = {"head": f" {HEAD}"}
+    elif case == "scope":
+        claim["write_scope"] = [f" {PATHS[0]}", PATHS[1]]
+
+    report = _resolve(events=[claim])
+
+    assert report["ok"] is False
+    assert report["author_agent"] == ""
+    assert report["operator_review_required"] is True
+
+
+def test_padded_asserted_author_never_normalizes_into_authority() -> None:
+    report = _resolve(asserted_author_agent=" codex-lead-1")
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_author_evidence"
+    assert "exact string" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tools/one.py/",
+        "tools//one.py",
+        "tools/./one.py",
+        "tools/../tools/one.py",
+        r"tools\one.py",
+    ],
+)
+def test_noncanonical_exact_scope_paths_never_normalize_into_coverage(
+    path: str,
+) -> None:
+    report = _resolve(
+        events=[_claim(scope=[path, "tests/tools/test_one.py"])]
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "manual_operator_review_required"
+    assert "claim write_scope" in report["reasons"][0]
+
+
+def test_padded_git_identity_never_normalizes_into_registered_agent() -> None:
+    identities, evidence = _git_material(commit_name="codex-lead-1")
+    identities[1]["name"] = " codex-lead-1"
+
+    report = _resolve(
+        git_identities=identities,
+        git_identity_evidence=evidence,
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_author_evidence"
+    assert "exact string" in report["reasons"][0]
+
+
 def test_non_string_identity_assertion_and_fractional_pr_ids_fail_closed() -> None:
     identities, evidence = _git_material()
     identities[1]["name"] = 7

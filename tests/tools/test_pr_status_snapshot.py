@@ -1112,3 +1112,128 @@ def test_snapshot_expected_base_sha_is_not_normalized(
 
     assert calls == []
     assert excinfo.value.report["decision"] == "invalid_expected_base_sha"
+
+
+@pytest.mark.parametrize("runner_value", [False, 0, 7, [], object()])
+def test_noncallable_runner_is_rejected_without_live_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_value: object,
+) -> None:
+    calls: list[list[str]] = []
+
+    def forbidden(command):
+        calls.append(list(command))
+        raise AssertionError("live runner must not be selected")
+
+    monkeypatch.setattr(snapshot_tool, "_run_command", forbidden)
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(
+            pr_number=479,
+            runner=runner_value,  # type: ignore[arg-type]
+        )
+
+    assert calls == []
+    assert excinfo.value.report["decision"] == "invalid_runner"
+
+
+def test_falsey_callable_runner_is_used_instead_of_default() -> None:
+    calls, delegate = _runner()
+
+    class FalseyRunner:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, command: list[str]) -> SimpleNamespace:
+            return delegate(command)
+
+    snapshot = build_pr_status_snapshot(
+        pr_number=479,
+        runner=FalseyRunner(),
+    )
+
+    assert snapshot["pr_number"] == 479
+    assert len(calls) == 6
+
+
+@pytest.mark.parametrize("returncode", [None, False, "0", 0.0])
+def test_gh_result_returncode_requires_an_exact_integer(
+    returncode: object,
+) -> None:
+    result = SimpleNamespace(stdout="{}", stderr="")
+    if returncode is not None:
+        result.returncode = returncode
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        snapshot_tool._run_gh_text(
+            lambda _command: result,
+            ("gh", "pr", "view", "479"),
+            failure_decision="gh_pr_view_failed",
+            label="gh pr view",
+        )
+
+    assert excinfo.value.report["decision"] == "gh_pr_view_failed"
+    assert "invalid exit code" in excinfo.value.report["errors"][0]
+
+
+def _identity_commit(index: int, total: int, *, author_count: int = 1) -> dict:
+    oid = HEAD if index == total else f"{index:040x}"
+    return {
+        "oid": oid,
+        "authors": [
+            {
+                "name": f"Author {author_index}",
+                "email": f"author-{author_index}@example.invalid",
+                "login": "",
+            }
+            for author_index in range(1, author_count + 1)
+        ],
+    }
+
+
+def test_graphql_commit_identity_boundary_accepts_99_records() -> None:
+    payload = _gh_payload(
+        commits=[_identity_commit(index, 99) for index in range(1, 100)]
+    )
+    _, runner = _runner(payload=payload)
+
+    snapshot = build_pr_status_snapshot(pr_number=479, runner=runner)
+
+    assert snapshot["git_identity_evidence"]["commit_count"] == 99
+
+
+def test_graphql_commit_identity_boundary_rejects_100_as_truncated() -> None:
+    payload = _gh_payload(
+        commits=[_identity_commit(index, 100) for index in range(1, 101)]
+    )
+    calls, runner = _runner(payload=payload)
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+
+    assert len(calls) == 1
+    assert excinfo.value.report["decision"] == "incomplete_git_identities"
+
+
+def test_graphql_commit_author_boundary_accepts_99_records() -> None:
+    payload = _gh_payload(
+        commits=[_identity_commit(1, 1, author_count=99)]
+    )
+    _, runner = _runner(payload=payload)
+
+    snapshot = build_pr_status_snapshot(pr_number=479, runner=runner)
+
+    assert snapshot["git_identity_evidence"]["commit_author_count"] == 99
+
+
+def test_graphql_commit_author_boundary_rejects_100_as_truncated() -> None:
+    payload = _gh_payload(
+        commits=[_identity_commit(1, 1, author_count=100)]
+    )
+    calls, runner = _runner(payload=payload)
+
+    with pytest.raises(PrStatusSnapshotError) as excinfo:
+        build_pr_status_snapshot(pr_number=479, runner=runner)
+
+    assert len(calls) == 1
+    assert excinfo.value.report["decision"] == "incomplete_git_identities"

@@ -38,6 +38,7 @@ from tools.write_bridge_consensus_merge_receipt import (  # noqa: E402
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 Runner = Callable[[Sequence[str]], Any]
 
 
@@ -153,12 +154,42 @@ def merge_with_bridge_receipt(
         raise ValueError("out_dir must be a Path")
     if runner is not None and not callable(runner):
         raise ValueError("runner must be callable or null")
+    if (
+        not consensus_proposal_id
+        or consensus_proposal_id != consensus_proposal_id.strip()
+    ):
+        raise ValueError(
+            "consensus_proposal_id must be a non-empty exact string"
+        )
+    if repo != repo.strip():
+        raise ValueError("repo must be an exact string")
+    if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("repo must be OWNER/NAME")
+    if from_agent and (
+        from_agent != from_agent.strip()
+        or AGENT_ID_RE.fullmatch(from_agent) is None
+    ):
+        raise ValueError("from_agent must be an exact agent id or empty")
+    if bridge_task_id and bridge_task_id != bridge_task_id.strip():
+        raise ValueError("bridge_task_id must be an exact string or empty")
+    trusted_now_utc = _utc_now()
+    effective_now_utc = (
+        trusted_now_utc
+        if now_utc is None
+        else _validated_now_utc(now_utc)
+    )
+    if apply and effective_now_utc.date() != trusted_now_utc.date():
+        raise ValueError(
+            "now_utc must use the current UTC date when apply is true"
+        )
+    if apply:
+        effective_now_utc = trusted_now_utc
     expected_head = _validate_sha(expected_head, "expected_head")
     expected_base_sha = _validate_sha(expected_base_sha, "expected_base_sha")
     if method not in {"squash", "merge", "rebase"}:
         raise ValueError("method must be squash, merge, or rebase")
 
-    run = runner or _run_command
+    run = runner if runner is not None else _run_command
     snapshot_path = out_dir / "pr-status.json"
     receipt_dir = out_dir / "receipt"
 
@@ -206,7 +237,7 @@ def merge_with_bridge_receipt(
             repo=repo,
             from_agent=from_agent,
             bridge_task_id=bridge_task_id,
-            now_utc=now_utc,
+            now_utc=effective_now_utc,
         )
     except BridgeConsensusMergeReceiptError as exc:
         return _blocked(
@@ -284,7 +315,7 @@ def merge_with_bridge_receipt(
             consensus_proposal_id=consensus_proposal_id,
             receipt_bundle_path=receipt_report["receipt_bundle_path"],
             events_path=events_path,
-            utc_date=(now_utc or datetime.now(timezone.utc)).date().isoformat(),
+            utc_date=effective_now_utc.date().isoformat(),
             repo=repo,
             from_agent=from_agent,
             bridge_task_id=bridge_task_id,
@@ -309,7 +340,18 @@ def merge_with_bridge_receipt(
         )
 
     merge_result = run(command)
-    return_code = int(getattr(merge_result, "returncode", 0))
+    return_code = getattr(merge_result, "returncode", None)
+    if type(return_code) is not int:
+        return {
+            **ready_report,
+            "ok": False,
+            "decision": "invalid_merge_result",
+            "stage": "merge",
+            "errors": ["gh pr merge returned an invalid exit code"],
+            "gh_merge_attempted": True,
+            "merge_executed": False,
+            "exit_code": 1,
+        }
     if return_code != 0:
         return {
             **ready_report,
@@ -414,7 +456,13 @@ def _query_confirmed_merge(
     if repo:
         command.extend(["--repo", repo])
     result = runner(command)
-    return_code = int(getattr(result, "returncode", 0))
+    return_code = getattr(result, "returncode", None)
+    if type(return_code) is not int:
+        return {
+            "merged": False,
+            "decision": "post_merge_query_invalid",
+            "errors": ["post-merge GitHub query returned an invalid exit code"],
+        }
     if return_code != 0:
         return {
             "merged": False,
@@ -534,6 +582,20 @@ def _validate_sha(value: object, field: str) -> str:
     if type(value) is not str or not SHA_RE.fullmatch(value):
         raise ValueError(f"{field} must be a 40-char lowercase sha")
     return value
+
+
+def _validated_now_utc(value: object) -> datetime:
+    if value is None:
+        return _utc_now()
+    if type(value) is not datetime:
+        raise ValueError("now_utc must be a timezone-aware datetime or null")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("now_utc must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _parse_utc(value: str) -> datetime:

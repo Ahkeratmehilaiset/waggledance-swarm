@@ -20,6 +20,15 @@ tool = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tool)
 
 
+def _lineage_entries(case):
+    subject = case["subject"]
+    if subject["lineage_kind"] == "entry":
+        return [subject["entry"]]
+    if subject["lineage_kind"] == "link":
+        return [subject["link"]["child"], subject["link"]["parent"]]
+    return subject["registry"]
+
+
 def test_independent_reference_reproduces_every_pinned_golden():
     document = tool.load_corpus(CORPUS_PATH)
     for case in document["cases"]:
@@ -39,20 +48,23 @@ def test_independent_reference_reproduces_every_pinned_golden():
                 created_at_utc=mapping["created_at_utc"],
             ) == case["golden"]["cell_id"]
         elif case["axis"] == "lineage":
-            entry = case["subject"]["entry"]
-            assert tool.ref_entry_hash(
-                **{
-                    key: entry[key]
-                    for key in (
-                        "cell_id",
-                        "parent_cell_id",
-                        "lineage_prev_hash",
-                        "depth",
-                        "inherited_goal_slice_digest",
-                        "inherited_budget_slice_digest",
-                    )
-                }
-            ) == case["golden"]["entry_hash"]
+            for entry in _lineage_entries(case):
+                expected = tool.ref_entry_hash(
+                    **{
+                        key: entry[key]
+                        for key in (
+                            "cell_id",
+                            "parent_cell_id",
+                            "lineage_prev_hash",
+                            "depth",
+                            "inherited_goal_slice_digest",
+                            "inherited_budget_slice_digest",
+                        )
+                    }
+                )
+                assert expected == entry["entry_hash"]
+                if case["golden"] is not None:
+                    assert expected == case["golden"]["entry_hash"]
 
 
 def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
@@ -61,8 +73,8 @@ def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     # the frozen negative axis-by-reason matrix is added.
     assert report["ok"] is False
     assert report["coverage_complete"] is False
-    assert report["total"] == 20
-    assert report["accepted"] == 5
+    assert report["total"] == 22
+    assert report["accepted"] == 7
     assert report["rejected"] == 15
     assert report["mismatches"] == []
     assert report["divergences"] == []
@@ -153,6 +165,24 @@ def test_timestamp_axis_pins_canonical_positive_and_rejection_matrix():
         "timestamp.negative.trailing_zero_fraction",
         "timestamp.negative.non_utc",
         "timestamp.negative.naive",
+    }
+    assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
+    for case in cases.values():
+        result = tool.run_case(case)
+        assert result["matched_expectation"] is True
+        assert result["diverged"] is False
+
+
+def test_lineage_positive_axis_pins_entry_link_and_registry_witnesses():
+    cases = {
+        case["case_id"]: case
+        for case in tool.load_corpus(CORPUS_PATH)["cases"]
+        if case["axis"] == "lineage"
+    }
+    assert set(cases) == {
+        "lineage.positive.positive_entry",
+        "lineage.positive.positive_link",
+        "lineage.positive.positive_registry",
     }
     assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
     for case in cases.values():

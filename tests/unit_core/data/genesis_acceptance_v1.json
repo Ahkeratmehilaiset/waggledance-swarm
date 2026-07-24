@@ -322,6 +322,70 @@
       "expect": {"verdict": "ACCEPT", "reason": null}
     },
     {
+      "case_id": "lineage.positive.positive_link",
+      "kind": "positive",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "link",
+        "link": {
+          "child": {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "parent_cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "lineage_prev_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46",
+            "depth": 1,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:3b0441105ad71450e5f1ceb32a0fe5b6d9183259a6109c61bb5cd4d9268bddf6"
+          },
+          "parent": {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          }
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "ACCEPT", "reason": null}
+    },
+    {
+      "case_id": "lineage.positive.positive_registry",
+      "kind": "positive",
+      "axis": "lineage",
+      "subject": {
+        "lineage_kind": "registry",
+        "registry": [
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "parent_cell_id": "genesis:root",
+            "lineage_prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "depth": 0,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46"
+          },
+          {
+            "schema_version": "wd.genesis_lineage.v1",
+            "cell_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "parent_cell_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "lineage_prev_hash": "sha256:017cb45956ec5ae233801202d7dce852eeb44c9e238eb720b217e47721fc7b46",
+            "depth": 1,
+            "inherited_goal_slice_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "inherited_budget_slice_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry_hash": "sha256:3b0441105ad71450e5f1ceb32a0fe5b6d9183259a6109c61bb5cd4d9268bddf6"
+          }
+        ]
+      },
+      "golden": null,
+      "expect": {"verdict": "ACCEPT", "reason": null}
+    },
+    {
       "case_id": "restore.positive.from_stored_mapping",
       "kind": "positive",
       "axis": "restore",

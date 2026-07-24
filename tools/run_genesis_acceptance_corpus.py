@@ -76,6 +76,18 @@ IDENTITY_KEYS = frozenset(
         "created_at_utc",
     }
 )
+LINEAGE_KEYS = frozenset(
+    {
+        "schema_version",
+        "cell_id",
+        "parent_cell_id",
+        "lineage_prev_hash",
+        "depth",
+        "inherited_goal_slice_digest",
+        "inherited_budget_slice_digest",
+        "entry_hash",
+    }
+)
 AUTHORITY_SUBJECT_KEYS = frozenset({"identity_mapping"})
 
 # Frozen W2C-A v4 inert-corpus cells. The manifest is deliberately exact:
@@ -158,6 +170,15 @@ PINNED_CASE_DIGESTS = {
     ),
     "identity.negative.extra_key": (
         "sha256:16b75846dfcef64d525ae4a1bd3fa56d766386a720bc740b60dee6b5f72dd924"
+    ),
+    "lineage.positive.positive_entry": (
+        "sha256:eb00e1fb2e54e893341eeda3c9c0d9248cf8c1efb523dc8b6ca6d823ae56aed3"
+    ),
+    "lineage.positive.positive_link": (
+        "sha256:cdfd5561465ed1cba5251b9c21fe8d7ef28818b7c6698cf688c440370fd24188"
+    ),
+    "lineage.positive.positive_registry": (
+        "sha256:f3b646ac4471326bb293831767b25f49b60bc91ff165d4142b1c55c2aa3cdded"
     ),
     "authority.positive.identity_only": (
         "sha256:a3ec2ae77efd3e325b7ee4bc128cd1d970e77ee32ac5ccf3977a13aa5405afb9"
@@ -540,24 +561,113 @@ def _authority_result(case: dict[str, Any]) -> dict[str, Any]:
     return _identity_result(case)
 
 
-def _lineage_result(case: dict[str, Any]) -> dict[str, Any]:
-    from waggledance.core.genesis_lineage import verify_lineage_entry
-
-    entry = case["subject"]["entry"]
-    fields = {
-        key: entry[key]
-        for key in (
-            "cell_id",
-            "parent_cell_id",
-            "lineage_prev_hash",
-            "depth",
-            "inherited_goal_slice_digest",
-            "inherited_budget_slice_digest",
+def _lineage_entry_reference(entry: object) -> tuple[bool, str | None]:
+    if type(entry) is not dict or set(entry) != LINEAGE_KEYS:
+        return False, None
+    if (
+        type(entry.get("schema_version")) is not str
+        or entry["schema_version"] != _SCHEMA_LIN
+    ):
+        return False, None
+    try:
+        expected = ref_entry_hash(
+            **{
+                key: entry[key]
+                for key in (
+                    "cell_id",
+                    "parent_cell_id",
+                    "lineage_prev_hash",
+                    "depth",
+                    "inherited_goal_slice_digest",
+                    "inherited_budget_slice_digest",
+                )
+            }
         )
-    }
-    expected = ref_entry_hash(**fields)
-    oracle_ok = entry.get("entry_hash") == expected
-    verifier_ok, verifier_reason = verify_lineage_entry(entry)
+    except (CorpusError, KeyError, TypeError, ValueError):
+        return False, None
+    return (
+        type(entry.get("entry_hash")) is str
+        and entry["entry_hash"] == expected,
+        expected,
+    )
+
+
+def _lineage_link_reference(child: object, parent: object) -> bool:
+    child_ok, _ = _lineage_entry_reference(child)
+    parent_ok, _ = _lineage_entry_reference(parent)
+    if not child_ok or not parent_ok:
+        return False
+    assert type(child) is dict and type(parent) is dict
+    return bool(
+        child["parent_cell_id"] == parent["cell_id"]
+        and child["lineage_prev_hash"] == parent["entry_hash"]
+        and child["depth"] == parent["depth"] + 1
+    )
+
+
+def _lineage_registry_reference(entries: object) -> bool:
+    if type(entries) not in {list, tuple} or not entries:
+        return False
+    frozen: list[dict[str, Any]] = []
+    for entry in entries:
+        ok, _ = _lineage_entry_reference(entry)
+        if not ok or type(entry) is not dict:
+            return False
+        frozen.append(entry)
+    by_cell: dict[str, dict[str, Any]] = {}
+    for entry in frozen:
+        cell_id = entry["cell_id"]
+        if cell_id in by_cell:
+            return False
+        by_cell[cell_id] = entry
+    roots = [
+        entry
+        for entry in frozen
+        if entry["parent_cell_id"] == "genesis:root"
+    ]
+    if len(roots) != 1:
+        return False
+    for entry in frozen:
+        if entry["parent_cell_id"] == "genesis:root":
+            continue
+        parent = by_cell.get(entry["parent_cell_id"])
+        if parent is None or not _lineage_link_reference(entry, parent):
+            return False
+    return True
+
+
+def _lineage_result(case: dict[str, Any]) -> dict[str, Any]:
+    from waggledance.core.genesis_lineage import (
+        verify_lineage_entry,
+        verify_lineage_link,
+        verify_lineage_registry,
+    )
+
+    subject = case["subject"]
+    lineage_kind = subject["lineage_kind"]
+    if lineage_kind == "entry":
+        entry = subject["entry"]
+        oracle_ok, expected = _lineage_entry_reference(entry)
+        golden = case["golden"]
+        if golden is not None:
+            oracle_ok = bool(
+                oracle_ok
+                and expected == golden.get("entry_hash")
+                and entry.get("depth") == golden.get("depth")
+            )
+        verifier_ok, verifier_reason = verify_lineage_entry(entry)
+    elif lineage_kind == "link":
+        link = subject["link"]
+        oracle_ok = _lineage_link_reference(link["child"], link["parent"])
+        verifier_ok, verifier_reason = verify_lineage_link(
+            link["child"], link["parent"]
+        )
+    elif lineage_kind == "registry":
+        registry = subject["registry"]
+        oracle_ok = _lineage_registry_reference(registry)
+        verifier_ok, verifier_reason = verify_lineage_registry(registry)
+    else:
+        raise CorpusError("lineage:kind")
     return {
         "oracle_verdict": "ACCEPT" if oracle_ok else "REJECT",
         "verifier_verdict": "ACCEPT" if verifier_ok else "REJECT",

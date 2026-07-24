@@ -77,6 +77,13 @@ def _require_created_at(value: object) -> str:
         raise CellIdentityError(
             "created_at_utc must be a real calendar instant"
         ) from exc
+    # One canonical LEXEME per instant: a fractional part must not end in a
+    # zero, else 00Z / 00.0Z / 00.00Z (one instant, three spellings) would
+    # mint three different cell_ids and break content-addressed identity.
+    if "." in value and value[value.index(".") + 1 : -1].endswith("0"):
+        raise CellIdentityError(
+            "created_at_utc fractional seconds must not have trailing zeros"
+        )
     return value
 
 

@@ -192,13 +192,59 @@ def test_impossible_calendar_instants_rejected(value):
 
 
 def test_real_leap_day_and_fractional_seconds_accepted():
-    for created in ("2024-02-29T23:59:59Z", "2026-07-24T06:45:00.123456789Z"):
+    for created in (
+        "2024-02-29T23:59:59Z",
+        "2026-07-24T06:45:00.123456789Z",
+        "2026-07-24T06:45:00.1Z",
+        "2026-07-24T06:45:00.102Z",  # zero INSIDE the fraction is fine
+    ):
         identity = build_cell_identity(
             pubkey_digest=_PUBKEY,
             genesis_material_digest=_GENESIS,
             created_at_utc=created,
         )
         assert verify_cell_identity(identity.to_mapping()) == (True, None)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-07-24T06:45:00.0Z",    # same instant as 00Z
+        "2026-07-24T06:45:00.00Z",
+        "2026-07-24T06:45:00.100Z",  # same instant as .1Z
+        "2026-07-24T06:45:00.120Z",
+    ],
+)
+def test_noncanonical_fraction_spellings_rejected(value):
+    """One instant, one lexeme: trailing-zero fractions would mint DIFFERENT
+    cell_ids for the SAME UTC instant (lead's second probe)."""
+    with pytest.raises(CellIdentityError, match="trailing zeros"):
+        derive_cell_id(
+            pubkey_digest=_PUBKEY,
+            genesis_material_digest=_GENESIS,
+            created_at_utc=value,
+        )
+    broken = _mapping()
+    broken["created_at_utc"] = value
+    assert verify_cell_identity(broken) == (False, "created_at_utc")
+
+
+def test_one_instant_cannot_mint_two_identities():
+    """The canonical spelling passes; every alternate spelling of the same
+    instant is rejected, so no instant has two derivable cell_ids."""
+    canonical = derive_cell_id(
+        pubkey_digest=_PUBKEY,
+        genesis_material_digest=_GENESIS,
+        created_at_utc="2026-07-24T06:45:00Z",
+    )
+    assert canonical
+    for alias in ("2026-07-24T06:45:00.0Z", "2026-07-24T06:45:00.000Z"):
+        with pytest.raises(CellIdentityError):
+            derive_cell_id(
+                pubkey_digest=_PUBKEY,
+                genesis_material_digest=_GENESIS,
+                created_at_utc=alias,
+            )
 
 
 def test_non_mapping_inputs_fail_closed():

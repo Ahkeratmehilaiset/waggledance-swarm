@@ -20,6 +20,118 @@
       "expect": {"verdict": "ACCEPT", "reason": null}
     },
     {
+      "case_id": "identity.negative.cell_id_mismatch",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "cell_id_mismatch"}
+    },
+    {
+      "case_id": "identity.negative.forged_id",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:e34661bb792439dd022589ca30160f58a6246f4843e9ca2cb61315a06757fc2b",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "cell_id_mismatch"}
+    },
+    {
+      "case_id": "identity.negative.bad_sha256_shape",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:abc",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "cell_id"}
+    },
+    {
+      "case_id": "identity.negative.missing_key",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "keyset"}
+    },
+    {
+      "case_id": "identity.negative.null_field",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": null,
+          "created_at_utc": "2026-07-24T06:45:00Z"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "genesis_material_digest"}
+    },
+    {
+      "case_id": "identity.negative.wrong_type_field",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": []
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "created_at_utc"}
+    },
+    {
+      "case_id": "identity.negative.extra_key",
+      "kind": "negative",
+      "axis": "identity",
+      "subject": {
+        "identity_mapping": {
+          "schema_version": "wd.cell_identity.v1",
+          "cell_id": "sha256:b5b4e2114fe12d1467fca59489f4304b441ac7c2bb8eb53f467f92d36478a17d",
+          "pubkey_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "genesis_material_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "created_at_utc": "2026-07-24T06:45:00Z",
+          "unexpected": "refuse"
+        }
+      },
+      "golden": null,
+      "expect": {"verdict": "REJECT", "reason": "keyset"}
+    },
+    {
       "case_id": "lineage.positive.positive_entry",
       "kind": "positive",
       "axis": "lineage",

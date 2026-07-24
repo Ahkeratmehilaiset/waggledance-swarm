@@ -46,6 +46,15 @@ _CASE_ID = re.compile(
     r"(positive|negative)\.[a-z0-9_]+$"
 )
 AXES = frozenset({"identity", "lineage", "restore", "authority", "timestamp"})
+IDENTITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "cell_id",
+        "pubkey_digest",
+        "genesis_material_digest",
+        "created_at_utc",
+    }
+)
 
 # Frozen W2C-A v4 inert-corpus cells. The manifest is deliberately exact:
 # repeating an axis/kind under a new label cannot satisfy matrix coverage.
@@ -98,6 +107,37 @@ REQUIRED_CODE_PROBES = frozenset(
         "list_subclass",
     }
 )
+
+# Attributable W2C-A reconstruction proceeds by completed axis. Each digest
+# binds the full inert case: id, axis/kind, subject, golden, and exact expected
+# verdict/reason. Unpinned manifest cells remain visibly missing rather than
+# being credited through labels alone.
+PINNED_CASE_DIGESTS = {
+    "identity.positive.positive": (
+        "sha256:841dc9e7bec0502b22d5b83a1012871005e641e719085b2d3827e3d24a7b7a55"
+    ),
+    "identity.negative.cell_id_mismatch": (
+        "sha256:560bf7219af413d7eee8bf813518de29359532efb1528487bc372ab18443abc1"
+    ),
+    "identity.negative.forged_id": (
+        "sha256:1b89c1d1807490d748a5ae798f4cd447ad130eadd8b427306bdd086b62d03a9d"
+    ),
+    "identity.negative.bad_sha256_shape": (
+        "sha256:06cbf934fb5a8df7a0c02dd800aff411e298a97e22c6d40c5c72ec5074a11514"
+    ),
+    "identity.negative.missing_key": (
+        "sha256:244ef2f26d30e8fdcd2a0d962acc386f758b951f15735525e0781dbbaac8b1b4"
+    ),
+    "identity.negative.null_field": (
+        "sha256:69587ec3d0dfbbf9460c1b461fd79aca83ce283b29f1c6a52ce6eb7d28f53d22"
+    ),
+    "identity.negative.wrong_type_field": (
+        "sha256:65d437480a0b9f61582771dcd876d3776b0a163abc90e4eb3516dbaa5c1da9f2"
+    ),
+    "identity.negative.extra_key": (
+        "sha256:16b75846dfcef64d525ae4a1bd3fa56d766386a720bc740b60dee6b5f72dd924"
+    ),
+}
 
 
 class CorpusError(ValueError):
@@ -257,6 +297,9 @@ def _require_case_shape(case: object) -> dict[str, Any]:
         raise CorpusError("expect:verdict")
     if expectation["reason"] is not None and type(expectation["reason"]) is not str:
         raise CorpusError("expect:reason")
+    pinned_digest = PINNED_CASE_DIGESTS.get(case["case_id"])
+    if pinned_digest is not None and _digest(case) != pinned_digest:
+        raise CorpusError("case:semantic_digest")
     return case
 
 
@@ -383,16 +426,26 @@ def _identity_result(case: dict[str, Any]) -> dict[str, Any]:
     from waggledance.core.cell_identity import verify_cell_identity
 
     mapping = case["subject"]["identity_mapping"]
-    facts = {
-        key: mapping[key]
-        for key in (
-            "pubkey_digest",
-            "genesis_material_digest",
-            "created_at_utc",
-        )
-    }
-    expected = ref_cell_id(**facts)
-    oracle_ok = mapping.get("cell_id") == expected
+    oracle_ok = False
+    if (
+        type(mapping) is dict
+        and set(mapping) == IDENTITY_KEYS
+        and type(mapping.get("schema_version")) is str
+        and mapping["schema_version"] == _SCHEMA_ID
+    ):
+        try:
+            expected = ref_cell_id(
+                pubkey_digest=mapping["pubkey_digest"],
+                genesis_material_digest=mapping["genesis_material_digest"],
+                created_at_utc=mapping["created_at_utc"],
+            )
+        except (CorpusError, KeyError, TypeError, ValueError):
+            pass
+        else:
+            oracle_ok = (
+                type(mapping.get("cell_id")) is str
+                and mapping["cell_id"] == expected
+            )
     verifier_ok, verifier_reason = verify_cell_identity(mapping)
     return {
         "oracle_verdict": "ACCEPT" if oracle_ok else "REJECT",
@@ -490,6 +543,8 @@ def run_case(case: object) -> dict[str, Any]:
     result["matched_expectation"] = (
         type(expectation) is dict
         and result["verifier_verdict"] == expectation.get("verdict")
+        and result["reason"] == expectation.get("reason")
+        and not result["diverged"]
     )
     try:
         result["oracle_digest"] = derive_case_report_digest(result)

@@ -23,6 +23,9 @@ SPEC.loader.exec_module(tool)
 def test_independent_reference_reproduces_every_pinned_golden():
     document = tool.load_corpus(CORPUS_PATH)
     for case in document["cases"]:
+        if case["kind"] == "negative":
+            assert case["golden"] is None
+            continue
         if case["axis"] in {"identity", "restore"}:
             key = (
                 "identity_mapping"
@@ -58,8 +61,9 @@ def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     # the frozen negative axis-by-reason matrix is added.
     assert report["ok"] is False
     assert report["coverage_complete"] is False
-    assert report["total"] == 3
+    assert report["total"] == 10
     assert report["accepted"] == 3
+    assert report["rejected"] == 7
     assert report["mismatches"] == []
     assert report["divergences"] == []
     assert report["corpus_matrix_complete"] is False
@@ -81,6 +85,22 @@ def test_frozen_manifest_rejects_relabels_and_duplicate_semantics(tmp_path):
     duplicated["cases"].append(deepcopy(duplicated["cases"][0]))
     path.write_text(json.dumps(duplicated), encoding="utf-8")
     with pytest.raises(tool.CorpusError, match=r"^case:duplicate_id$"):
+        tool.load_corpus(path)
+
+
+def test_pinned_identity_cells_bind_subject_golden_and_expectation(tmp_path):
+    document = tool.load_corpus(CORPUS_PATH)
+    assert {
+        case["case_id"]
+        for case in document["cases"]
+        if case["axis"] == "identity"
+    } == set(tool.PINNED_CASE_DIGESTS)
+
+    tampered = deepcopy(document)
+    tampered["cases"][1]["expect"]["reason"] = "keyset"
+    path = tmp_path / "tampered_identity_semantics.json"
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(tool.CorpusError, match=r"^case:semantic_digest$"):
         tool.load_corpus(path)
 
 

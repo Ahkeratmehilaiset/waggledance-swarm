@@ -539,6 +539,18 @@ def test_registry_snapshots_input_list_before_processing():
     assert ok is False
 
 
+def test_frozen_is_not_a_trust_boundary_forced_mutation_caught_by_verifier():
+    """frozen=True is ergonomic only: object.__setattr__ bypasses it and mutates
+    a validated entry, and to_mapping emits the forged field. The real,
+    verification-time guarantee holds: verify_lineage_entry re-derives
+    entry_hash and rejects the mutated mapping under its old hash."""
+    child = _child()
+    object.__setattr__(child, "inherited_goal_slice_digest", "sha256:" + "e" * 64)
+    forged = child.to_mapping()  # emits the mutated (still shape-valid) field
+    assert forged["inherited_goal_slice_digest"] == "sha256:" + "e" * 64
+    assert verify_lineage_entry(forged) == (False, "entry_hash_mismatch")
+
+
 def test_derive_entry_hash_validates_inputs():
     """The public digest fn follows the exact-primitive contract: a subclass
     field cannot be folded into a lineage digest."""

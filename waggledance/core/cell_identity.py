@@ -5,8 +5,13 @@ A cell's identity IS the domain-separated sha256 digest of its immutable
 genesis facts: the digest of its public key, the digest of its genesis
 material, and its creation timestamp. Consequences, by construction:
 
-* **Not self-writable.** Changing any field yields a different ``cell_id``;
-  there is no way to keep an identity while altering what it commits to.
+* **Tamper-evident, not tamper-proof.** The ``cell_id`` digest binds the
+  genesis fields, so a record altered away from them cannot PASS
+  ``verify_cell_identity`` under its old id. Construction enforces only LOCAL
+  consistency and ``frozen=True`` is an ergonomic guardrail, not a security
+  boundary (``object.__setattr__`` can still mutate an instance in-process);
+  the guarantee is therefore verification-time, so any untrusted or
+  boundary-crossing mapping must be run through the public verifier.
 * **Verifiers recompute.** ``verify_cell_identity`` derives ``cell_id`` from
   the primitive fields and compares; a stored/claimed id is never trusted.
 * **Zero authority.** The record carries no grants, budgets, or capability
@@ -140,8 +145,13 @@ def derive_cell_id(
 
 @dataclass(frozen=True)
 class CellIdentityV1:
-    """Immutable identity record. Constructing one re-derives and enforces
-    ``cell_id``, so a forged instance cannot exist in a passing process."""
+    """Locally-consistent identity record: construction re-derives and enforces
+    ``cell_id`` against the other fields at build time. ``frozen=True`` is an
+    ergonomic guardrail only -- ``object.__setattr__`` can still mutate an
+    instance, after which ``to_mapping`` would emit the altered fields -- so it
+    is NOT a trust boundary. The real guarantee is verification-time: an altered
+    record cannot pass ``verify_cell_identity`` under its old digest, so any
+    boundary-crossing mapping must be run through that public verifier."""
 
     cell_id: str
     pubkey_digest: str

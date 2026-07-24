@@ -178,12 +178,16 @@ def _validate_fields(
 
 @dataclass(frozen=True)
 class GenesisLineageV1:
-    """Immutable lineage entry. Construction re-derives ``entry_hash`` and
-    enforces this entry's OWN root/child field rules -- i.e. entry-level
-    SELF-CONSISTENCY. It does NOT prove ancestry: that this entry's parent
-    actually exists or is itself valid. Ancestry is proven pairwise with
-    ``verify_lineage_link`` and registry-wide with ``verify_lineage_registry``
-    closure."""
+    """Locally self-consistent lineage entry: construction re-derives
+    ``entry_hash`` and enforces this entry's OWN root/child field rules.
+    ``frozen=True`` is an ergonomic guardrail only, NOT a trust boundary
+    (``object.__setattr__`` can mutate an instance, after which ``to_mapping``
+    emits the altered fields); the real guarantee is verification-time -- an
+    altered record cannot pass ``verify_lineage_entry`` under its old
+    ``entry_hash``. And entry-level SELF-CONSISTENCY is NOT ancestry: it does
+    NOT prove this entry's parent actually exists or is itself valid. Ancestry
+    is proven pairwise with ``verify_lineage_link`` and registry-wide with
+    ``verify_lineage_registry`` closure."""
 
     cell_id: str
     parent_cell_id: str

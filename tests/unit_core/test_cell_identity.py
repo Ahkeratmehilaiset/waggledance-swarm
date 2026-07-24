@@ -444,10 +444,24 @@ def test_wire_dict_returns_an_isolated_builtin_copy():
     assert "c" not in snap  # mutating the input never reaches the copy
 
 
-def test_record_is_immutable():
+def test_frozen_blocks_normal_assignment_ergonomic_guardrail():
+    """frozen=True is an ergonomic guardrail: it raises on NORMAL attribute
+    assignment. It is not a security boundary (see the forced-mutation test)."""
     identity = _identity()
     with pytest.raises(Exception):
         identity.cell_id = "sha256:" + "0" * 64  # type: ignore[misc]
+
+
+def test_frozen_is_not_a_trust_boundary_forced_mutation_caught_by_verifier():
+    """object.__setattr__ bypasses frozen and mutates a validated record;
+    to_mapping then emits the forged field. The real, verification-time
+    guarantee holds: verify_cell_identity re-derives cell_id and rejects the
+    mutated mapping under its old digest."""
+    identity = _identity()
+    object.__setattr__(identity, "pubkey_digest", "sha256:" + "e" * 64)
+    forged = identity.to_mapping()  # emits the mutated field
+    assert forged["pubkey_digest"] == "sha256:" + "e" * 64
+    assert verify_cell_identity(forged) == (False, "cell_id_mismatch")
 
 
 def test_no_authority_fields_exist():

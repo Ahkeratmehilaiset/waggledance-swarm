@@ -24,7 +24,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 CORPUS_SCHEMA = "wd.genesis_acceptance_corpus.v1"
+CASE_REPORT_SCHEMA = "wd.genesis_acceptance_report.v1"
 REPORT_SCHEMA = "wd.genesis_acceptance_corpus_report.v1"
+_CASE_REPORT_DIGEST_DOMAIN = "wd.genesis_acceptance_report.digest.v1"
 MAX_RAW_BYTES = 1_048_576
 MAX_CASES = 4_096
 MAX_CASE_BYTES = 65_536
@@ -78,11 +80,122 @@ def _canonical_bytes(value: object) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 
 def _digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def derive_case_report_digest(report: object) -> str:
+    """Re-derive the digest-bound portion of an AcceptanceReportV1."""
+
+    if type(report) is not dict:
+        raise CorpusError("report:not_mapping")
+    fields = {
+        "schema_version": report.get("schema_version"),
+        "case_id": report.get("case_id"),
+        "axis": report.get("axis"),
+        "oracle_verdict": report.get("oracle_verdict"),
+        "verifier_verdict": report.get("verifier_verdict"),
+        "reason": report.get("reason"),
+    }
+    if (
+        type(fields["schema_version"]) is not str
+        or fields["schema_version"] != CASE_REPORT_SCHEMA
+    ):
+        raise CorpusError("report:schema_version")
+    if type(fields["case_id"]) is not str:
+        raise CorpusError("report:case_id")
+    if type(fields["axis"]) is not str or fields["axis"] not in {
+        "identity",
+        "lineage",
+        "restore",
+        "authority",
+        "timestamp",
+    }:
+        raise CorpusError("report:axis")
+    if (
+        type(fields["oracle_verdict"]) is not str
+        or fields["oracle_verdict"] not in {"ACCEPT", "REJECT"}
+    ):
+        raise CorpusError("report:oracle_verdict")
+    if (
+        type(fields["verifier_verdict"]) is not str
+        or fields["verifier_verdict"] not in {"ACCEPT", "REJECT"}
+    ):
+        raise CorpusError("report:verifier_verdict")
+    if fields["reason"] is not None and type(fields["reason"]) is not str:
+        raise CorpusError("report:reason")
+    return _digest({"domain": _CASE_REPORT_DIGEST_DOMAIN, **fields})
+
+
+def _require_plain_json(value: object) -> None:
+    pending = [value]
+    seen_containers: set[int] = set()
+    visited = 0
+    while pending:
+        current = pending.pop()
+        visited += 1
+        if visited > MAX_CASE_BYTES + 1:
+            raise CorpusError("caps:case_bytes")
+        if type(current) is dict:
+            marker = id(current)
+            if marker in seen_containers:
+                raise CorpusError("case:json")
+            seen_containers.add(marker)
+            if any(type(key) is not str for key in current):
+                raise CorpusError("case:json")
+            pending.extend(current.values())
+        elif type(current) is list:
+            marker = id(current)
+            if marker in seen_containers:
+                raise CorpusError("case:json")
+            seen_containers.add(marker)
+            pending.extend(current)
+        elif current is None or type(current) in {str, bool, int, float}:
+            continue
+        else:
+            raise CorpusError("case:json")
+
+
+def _require_case_shape(case: object) -> dict[str, Any]:
+    if type(case) is not dict:
+        raise CorpusError("case:not_mapping")
+    _require_plain_json(case)
+    try:
+        case_bytes = _canonical_bytes(case)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise CorpusError("case:json") from exc
+    if len(case_bytes) > MAX_CASE_BYTES:
+        raise CorpusError("caps:case_bytes")
+    expectation = case.get("expect")
+    if type(expectation) is not dict or set(expectation) != {"verdict", "reason"}:
+        raise CorpusError("expect:not_mapping")
+    if set(case) != {"case_id", "kind", "axis", "subject", "golden", "expect"}:
+        raise CorpusError("case:keyset")
+    if type(case["case_id"]) is not str or not case["case_id"]:
+        raise CorpusError("case:case_id")
+    if case["kind"] not in {"positive", "negative"}:
+        raise CorpusError("case:kind")
+    if case["axis"] not in {
+        "identity",
+        "lineage",
+        "restore",
+        "authority",
+        "timestamp",
+    }:
+        raise CorpusError("case:axis")
+    if type(case["subject"]) is not dict:
+        raise CorpusError("case:subject")
+    if case["golden"] is not None and type(case["golden"]) is not dict:
+        raise CorpusError("case:golden")
+    if expectation["verdict"] not in {"ACCEPT", "REJECT"}:
+        raise CorpusError("expect:verdict")
+    if expectation["reason"] is not None and type(expectation["reason"]) is not str:
+        raise CorpusError("expect:reason")
+    return case
 
 
 def _require_digest(value: object, label: str) -> str:
@@ -281,23 +394,20 @@ def _restore_result(case: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_case(case: object) -> dict[str, Any]:
-    if type(case) is not dict:
-        return {
-            "oracle_verdict": "REJECT",
-            "verifier_verdict": "REJECT",
-            "reason": "case:not_mapping",
-            "diverged": False,
-        }
-    axis = case.get("axis")
+    case_id = case.get("case_id") if type(case) is dict else None
+    axis = case.get("axis") if type(case) is dict else None
+    expectation: object = None
     try:
+        checked_case = _require_case_shape(case)
+        case_id = checked_case["case_id"]
+        axis = checked_case["axis"]
+        expectation = checked_case["expect"]
         if axis in {"identity", "authority", "timestamp"}:
-            result = _identity_result(case)
+            result = _identity_result(checked_case)
         elif axis == "lineage":
-            result = _lineage_result(case)
-        elif axis == "restore":
-            result = _restore_result(case)
+            result = _lineage_result(checked_case)
         else:
-            raise CorpusError("case:axis")
+            result = _restore_result(checked_case)
     except (CorpusError, KeyError, TypeError, ValueError) as exc:
         result = {
             "oracle_verdict": "REJECT",
@@ -305,20 +415,19 @@ def run_case(case: object) -> dict[str, Any]:
             "reason": str(exc) or type(exc).__name__,
             "diverged": False,
         }
-    expectation = case.get("expect")
-    if type(expectation) is not dict:
-        result = {
-            "oracle_verdict": "REJECT",
-            "verifier_verdict": "REJECT",
-            "reason": "expect:not_mapping",
-            "diverged": False,
-        }
-    result["case_id"] = case.get("case_id")
+    if result["diverged"]:
+        result["reason"] = "oracle:verifier_divergence"
+    result["schema_version"] = CASE_REPORT_SCHEMA
+    result["case_id"] = case_id
     result["axis"] = axis
     result["matched_expectation"] = (
         type(expectation) is dict
         and result["verifier_verdict"] == expectation.get("verdict")
     )
+    try:
+        result["oracle_digest"] = derive_case_report_digest(result)
+    except CorpusError:
+        result["oracle_digest"] = None
     return result
 
 

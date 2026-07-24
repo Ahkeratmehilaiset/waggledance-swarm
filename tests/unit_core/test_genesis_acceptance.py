@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import io
 import json
@@ -189,6 +190,50 @@ def test_hostile_container_is_rejected_without_protocol_invocation():
     assert hostile.invoked is False
 
 
+def test_direct_case_rejects_outer_smuggling_and_enforces_case_cap(monkeypatch):
+    case = deepcopy(tool.load_corpus(CORPUS_PATH)["cases"][0])
+    case["authority_grant"] = True
+    result = tool.run_case(case)
+    assert result["verifier_verdict"] == "REJECT"
+    assert result["reason"] == "case:keyset"
+    assert result["matched_expectation"] is False
+
+    case.pop("authority_grant")
+    monkeypatch.setattr(tool, "MAX_CASE_BYTES", 1)
+    result = tool.run_case(case)
+    assert result["verifier_verdict"] == "REJECT"
+    assert result["reason"] == "caps:case_bytes"
+    assert result["matched_expectation"] is False
+
+
+def test_direct_case_rejects_nested_hostile_value_without_invoking_protocol():
+    class HostileMapping(dict):
+        invoked = False
+
+        def keys(self):
+            self.invoked = True
+            raise AssertionError("must not be invoked")
+
+    case = deepcopy(tool.load_corpus(CORPUS_PATH)["cases"][0])
+    hostile = HostileMapping()
+    case["subject"]["identity_mapping"] = hostile
+    result = tool.run_case(case)
+    assert result["verifier_verdict"] == "REJECT"
+    assert result["reason"] == "case:json"
+    assert result["matched_expectation"] is False
+    assert hostile.invoked is False
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), -float("inf")])
+def test_direct_case_rejects_nonfinite_values(nonfinite):
+    case = deepcopy(tool.load_corpus(CORPUS_PATH)["cases"][0])
+    case["subject"]["identity_mapping"]["created_at_utc"] = nonfinite
+    result = tool.run_case(case)
+    assert result["verifier_verdict"] == "REJECT"
+    assert result["reason"] == "case:json"
+    assert result["matched_expectation"] is False
+
+
 def test_malformed_expectation_fails_closed_without_crashing():
     result = tool.run_case(
         {
@@ -198,6 +243,7 @@ def test_malformed_expectation_fails_closed_without_crashing():
         }
     )
     assert result == {
+        "schema_version": tool.CASE_REPORT_SCHEMA,
         "oracle_verdict": "REJECT",
         "verifier_verdict": "REJECT",
         "reason": "expect:not_mapping",
@@ -205,7 +251,27 @@ def test_malformed_expectation_fails_closed_without_crashing():
         "case_id": "container.negative.expect_not_mapping",
         "axis": "unknown",
         "matched_expectation": False,
+        "oracle_digest": None,
     }
+
+
+def test_case_report_digest_is_rederivable_and_binds_report_verdict():
+    case = tool.load_corpus(CORPUS_PATH)["cases"][0]
+    report = tool.run_case(case)
+    assert report["schema_version"] == tool.CASE_REPORT_SCHEMA
+    assert report["oracle_digest"] == tool.derive_case_report_digest(report)
+
+    tampered = dict(report)
+    tampered["verifier_verdict"] = "REJECT"
+    assert tool.derive_case_report_digest(tampered) != report["oracle_digest"]
+
+    class LyingString(str):
+        def __eq__(self, other):
+            raise AssertionError("must reject without comparison")
+
+    tampered["schema_version"] = LyingString(tool.CASE_REPORT_SCHEMA)
+    with pytest.raises(tool.CorpusError, match=r"^report:schema_version$"):
+        tool.derive_case_report_digest(tampered)
 
 
 def test_cli_emits_machine_readable_fail_closed_foundation(capsys):

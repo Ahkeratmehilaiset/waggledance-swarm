@@ -55,40 +55,60 @@ class _AdaptiveSuccessMemory:
     # Per query category: deque of (timestamp, succeeded: bool)
     category_history: dict = field(default_factory=dict)
     window_s: float = 3600.0  # 1-hour rolling window
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def record(self, cell_id: str, category: str, succeeded: bool) -> None:
-        import time as _t
-        now = _t.time()
-        if cell_id not in self.cell_history:
-            self.cell_history[cell_id] = collections.deque(maxlen=100)
-        self.cell_history[cell_id].append((now, succeeded))
-        if category not in self.category_history:
-            self.category_history[category] = collections.deque(maxlen=100)
-        self.category_history[category].append((now, succeeded))
+        now = time.time()
+        with self._lock:
+            if cell_id not in self.cell_history:
+                self.cell_history[cell_id] = collections.deque(maxlen=100)
+            self.cell_history[cell_id].append((now, succeeded))
+            if category not in self.category_history:
+                self.category_history[category] = collections.deque(maxlen=100)
+            self.category_history[category].append((now, succeeded))
+
+    @staticmethod
+    def _success_ratio(history: tuple, cutoff: float) -> float | None:
+        recent = [
+            (timestamp, succeeded)
+            for timestamp, succeeded in history
+            if timestamp > cutoff
+        ]
+        if not recent:
+            return None
+        return sum(1 for _, succeeded in recent if succeeded) / len(recent)
 
     def cell_success_ratio(self, cell_id: str) -> float | None:
         """Return success ratio for cell in rolling window, or None if no data."""
-        import time as _t
-        hist = self.cell_history.get(cell_id)
-        if not hist:
-            return None
-        cutoff = _t.time() - self.window_s
-        recent = [(t, s) for t, s in hist if t > cutoff]
-        if not recent:
-            return None
-        return sum(1 for _, s in recent if s) / len(recent)
+        with self._lock:
+            cutoff = time.time() - self.window_s
+            history = tuple(self.cell_history.get(cell_id, ()))
+        return self._success_ratio(history, cutoff)
 
     def category_success_ratio(self, category: str) -> float | None:
         """Return success ratio for category in rolling window."""
-        import time as _t
-        hist = self.category_history.get(category)
-        if not hist:
-            return None
-        cutoff = _t.time() - self.window_s
-        recent = [(t, s) for t, s in hist if t > cutoff]
-        if not recent:
-            return None
-        return sum(1 for _, s in recent if s) / len(recent)
+        with self._lock:
+            cutoff = time.time() - self.window_s
+            history = tuple(self.category_history.get(category, ()))
+        return self._success_ratio(history, cutoff)
+
+    def cell_success_ratios(self) -> dict[str, float | None]:
+        """Return a consistent snapshot of every cell's rolling ratio."""
+        with self._lock:
+            cutoff = time.time() - self.window_s
+            histories = {
+                cell_id: tuple(history)
+                for cell_id, history in self.cell_history.items()
+            }
+        return {
+            cell_id: self._success_ratio(history, cutoff)
+            for cell_id, history in histories.items()
+        }
 
 
 class HexNeighborAssist:
@@ -793,10 +813,7 @@ class HexNeighborAssist:
                 "escalation_ratio": (
                     m.global_escalations / max(total_queries, 1)
                 ),
-                "cell_success_memory": {
-                    cell_id: self._success_memory.cell_success_ratio(cell_id)
-                    for cell_id in list(self._success_memory.cell_history.keys())
-                },
+                "cell_success_memory": self._success_memory.cell_success_ratios(),
             }
 
     def get_last_trace(self) -> dict | None:

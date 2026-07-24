@@ -9,20 +9,23 @@ one bridge event only when ``--emit`` is passed.
 from __future__ import annotations
 
 import argparse
-from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
 import sys
-import time
 from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.bridge_event_writer import (
+    AppendV1Backend,
+    BridgeEventWriteError,
+    write_bridge_event,
+)
 from tools.idle_check import (
     DEFAULT_CLAIMS_DIR,
     DEFAULT_EVENTS_PATH,
@@ -167,6 +170,7 @@ def activate_idle_protocol(
     now_utc: datetime,
     emit: bool,
     receipt_out_dir: Path | None = None,
+    writer_backend: AppendV1Backend | None = None,
 ) -> dict[str, Any]:
     payload = _load_payload(payload_path)
     if "_DO_NOT_LEAK" in json.dumps(payload, sort_keys=True):
@@ -322,7 +326,22 @@ def activate_idle_protocol(
                 },
             ) from exc
     if emit:
-        event_path = _append_bridge_event(bridge_root, bridge_event)
+        try:
+            event_path = _append_bridge_event(
+                bridge_root,
+                bridge_event,
+                events_path=events_path,
+                writer_backend=writer_backend,
+            )
+        except BridgeEventWriteError as exc:
+            raise ActivationError(
+                "bridge event write failed",
+                {
+                    "decision": exc.decision,
+                    "errors": [str(exc)],
+                    "exit_code": 2,
+                },
+            ) from exc
         report["emitted"] = True
         report["event_path"] = str(event_path)
     return report
@@ -824,75 +843,21 @@ def _reason_codes_for_idle_event(
     return reason_codes
 
 
-def _append_bridge_event(bridge_root: Path, event: Mapping[str, Any]) -> Path:
-    shared_dir = bridge_root / "shared"
-    outbox_dir = bridge_root / "outbox" / str(event["agent"])
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    outbox_dir.mkdir(parents=True, exist_ok=True)
-
-    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
-    events_path = shared_dir / "events.jsonl"
-    outbox_path = outbox_dir / (_date_name(str(event["ts_utc"])))
-    last_path = shared_dir / f"last_{event['agent']}.json"
-    old_last = last_path.read_text(encoding="utf-8") if last_path.exists() else None
-    outbox_written = False
-    last_written = False
-    try:
-        _append_line_with_retry(outbox_path, line)
-        outbox_written = True
-        _write_json_atomic(last_path, json.dumps(event, indent=2))
-        last_written = True
-        _append_line_with_retry(events_path, line)
-    except Exception:
-        if last_written:
-            _restore_last_file(last_path, old_last)
-        if outbox_written:
-            _remove_trailing_line_if_exact(outbox_path, line)
-        raise
-    return events_path
-
-
-def _append_line_with_retry(path: Path, line: str) -> None:
-    for attempt in range(40):
-        try:
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line)
-            return
-        except OSError:
-            if attempt == 39:
-                raise
-            time.sleep(0.025 + (attempt * 0.01))
-
-
-def _write_json_atomic(path: Path, payload: str) -> None:
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
-
-
-def _restore_last_file(path: Path, previous: str | None) -> None:
-    with suppress(OSError):
-        if previous is None:
-            if path.exists():
-                path.unlink()
-            return
-        _write_json_atomic(path, previous)
-
-
-def _remove_trailing_line_if_exact(path: Path, line: str) -> None:
-    with suppress(OSError):
-        text = path.read_text(encoding="utf-8")
-        if not text.endswith(line):
-            return
-        remaining = text[: -len(line)]
-        if remaining:
-            path.write_text(remaining, encoding="utf-8")
-        else:
-            path.unlink()
-
-
-def _date_name(ts_utc: str) -> str:
-    return ts_utc[:10] + ".jsonl"
+def _append_bridge_event(
+    bridge_root: Path,
+    event: Mapping[str, Any],
+    *,
+    events_path: Path | None = None,
+    writer_backend: AppendV1Backend | None = None,
+) -> Path:
+    result = write_bridge_event(
+        bridge_root=bridge_root,
+        events_path=events_path,
+        event=event,
+        write_sidecars=True,
+        backend=writer_backend,
+    )
+    return result.events_path
 
 
 def _parse_utc(value: str) -> datetime:

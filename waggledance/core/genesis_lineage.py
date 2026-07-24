@@ -329,6 +329,11 @@ def verify_lineage_registry(
     Parent fan-out stays legal (many children may link to one parent).
     Cycles are impossible once links verify: depth strictly increases."""
 
+    # Materialize ONCE: entries may be a one-shot iterable (generator). This
+    # function makes two passes (index parents, then verify links); without
+    # this a generator would be exhausted after pass one and every non-root
+    # link check would silently see nothing and pass.
+    entries = list(entries)
     if not entries:
         return False, "empty_registry"
     by_cell: dict[str, Mapping[str, object]] = {}

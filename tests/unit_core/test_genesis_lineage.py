@@ -336,6 +336,34 @@ def test_registry_closure_depth_skip_rejected():
     assert reason is not None and "link:depth_mismatch" in reason
 
 
+def test_registry_closure_survives_one_shot_generator():
+    """A generator is consumed once; the registry makes two passes, so it must
+    materialize first -- otherwise a forged child slips past the link check."""
+    root = _root()
+    forged = _build_forged_child_with_wrong_prev(root)
+
+    def gen_valid():
+        yield root.to_mapping()
+        yield _child().to_mapping()
+
+    def gen_forged():
+        yield root.to_mapping()
+        yield forged
+
+    assert verify_lineage_registry(gen_valid()) == (True, None)
+    ok, reason = verify_lineage_registry(gen_forged())
+    assert ok is False
+    assert reason is not None and "link:prev_hash_mismatch" in reason
+
+
+def test_registry_closure_empty_generator_fails_closed():
+    def empty_gen():
+        return
+        yield  # pragma: no cover
+
+    assert verify_lineage_registry(empty_gen()) == (False, "empty_registry")
+
+
 def test_registry_closure_is_order_independent():
     """A child listed BEFORE its parent must still verify (no order coupling)."""
     root, child = _root(), _child()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -66,6 +67,94 @@ def test_raw_cap_is_checked_before_json_decode(tmp_path):
     path = tmp_path / "oversized.json"
     path.write_bytes(b"{" + b"x" * tool.MAX_RAW_BYTES)
     with pytest.raises(tool.CorpusError, match=r"^caps:raw_bytes$"):
+        tool.load_corpus(path)
+
+
+def test_raw_cap_uses_one_bounded_read():
+    class TrackingReader(io.BytesIO):
+        read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            return super().read(size)
+
+    reader = TrackingReader(b"{" + b"x" * tool.MAX_RAW_BYTES)
+
+    class CorpusPath:
+        def open(self, mode: str):
+            assert mode == "rb"
+            return reader
+
+    with pytest.raises(tool.CorpusError, match=r"^caps:raw_bytes$"):
+        tool.load_corpus(CorpusPath())
+    assert reader.read_sizes == [tool.MAX_RAW_BYTES + 1]
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_nonfinite_json_constants_fail_closed(tmp_path, constant):
+    path = tmp_path / "nonfinite.json"
+    path.write_bytes(
+        (
+            '{"schema_version":"'
+            + tool.CORPUS_SCHEMA
+            + '","cases":['
+            + constant
+            + "]}"
+        ).encode("ascii")
+    )
+    with pytest.raises(tool.CorpusError, match=r"^corpus:json$"):
+        tool.load_corpus(path)
+
+
+def test_duplicate_json_keys_fail_closed(tmp_path):
+    path = tmp_path / "duplicate.json"
+    path.write_bytes(
+        (
+            '{"schema_version":"'
+            + tool.CORPUS_SCHEMA
+            + '","schema_version":"'
+            + tool.CORPUS_SCHEMA
+            + '","cases":[]}'
+        ).encode("ascii")
+    )
+    with pytest.raises(tool.CorpusError, match=r"^corpus:json$"):
+        tool.load_corpus(path)
+
+
+def test_huge_integer_and_decoder_recursion_fail_closed(tmp_path, monkeypatch):
+    path = tmp_path / "hostile.json"
+    path.write_bytes(
+        b'{"schema_version":"'
+        + tool.CORPUS_SCHEMA.encode("ascii")
+        + b'","cases":['
+        + b"9" * 5_000
+        + b"]}"
+    )
+    with pytest.raises(tool.CorpusError, match=r"^corpus:json$"):
+        tool.load_corpus(path)
+
+    monkeypatch.setattr(
+        tool.json,
+        "loads",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError()),
+    )
+    with pytest.raises(tool.CorpusError, match=r"^corpus:json$"):
+        tool.load_corpus(path)
+
+
+def test_deep_json_nesting_hits_explicit_depth_cap(tmp_path):
+    path = tmp_path / "deep.json"
+    nested = (
+        b'{"schema_version":"'
+        + tool.CORPUS_SCHEMA.encode("ascii")
+        + b'","cases":[{"nested":'
+        + b"[" * (tool.MAX_JSON_DEPTH + 1)
+        + b"0"
+        + b"]" * (tool.MAX_JSON_DEPTH + 1)
+        + b"}]}"
+    )
+    path.write_bytes(nested)
+    with pytest.raises(tool.CorpusError, match=r"^caps:json_depth$"):
         tool.load_corpus(path)
 
 

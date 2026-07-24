@@ -28,6 +28,7 @@ REPORT_SCHEMA = "wd.genesis_acceptance_corpus_report.v1"
 MAX_RAW_BYTES = 1_048_576
 MAX_CASES = 4_096
 MAX_CASE_BYTES = 65_536
+MAX_JSON_DEPTH = 128
 
 _DOMAIN_ID = "wd.cell_identity.digest.v1"
 _DOMAIN_LIN = "wd.genesis_lineage.digest.v1"
@@ -42,6 +43,33 @@ _UTC = re.compile(
 
 class CorpusError(ValueError):
     """The corpus is outside the bounded inert-data contract."""
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _reject_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _require_bounded_json_depth(value: object) -> None:
+    pending = [(value, 0)]
+    while pending:
+        current, depth = pending.pop()
+        if depth > MAX_JSON_DEPTH:
+            raise CorpusError("caps:json_depth")
+        if type(current) is dict:
+            pending.extend((item, depth + 1) for item in current.values())
+        elif type(current) is list:
+            pending.extend((item, depth + 1) for item in current)
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -138,13 +166,19 @@ def ref_entry_hash(
 
 
 def load_corpus(path: Path) -> dict[str, Any]:
-    raw = path.read_bytes()
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_RAW_BYTES + 1)
     if len(raw) > MAX_RAW_BYTES:
         raise CorpusError("caps:raw_bytes")
     try:
-        document = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        document = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise CorpusError("corpus:json") from exc
+    _require_bounded_json_depth(document)
     if type(document) is not dict or set(document) != {
         "schema_version",
         "cases",

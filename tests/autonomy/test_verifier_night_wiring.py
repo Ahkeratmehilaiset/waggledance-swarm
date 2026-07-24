@@ -16,6 +16,8 @@ from waggledance.core.domain.autonomy import (
     Action,
     CapabilityCategory,
     CapabilityContract,
+    CaseTrajectory,
+    Goal,
     QualityGrade,
 )
 from waggledance.core.learning.case_builder import CaseTrajectoryBuilder
@@ -168,6 +170,89 @@ class TestDrainCases:
 
 
 class TestRunNightLearning:
+    def test_dream_output_has_no_execution_or_routing_authority(
+        self, monkeypatch
+    ):
+        from waggledance.core.autonomy.runtime import AutonomyRuntime
+
+        rt = AutonomyRuntime(
+            profile="VALIDATION",
+            enable_persistence=False,
+            enable_magma=False,
+        )
+        rt.prediction_ledger = None
+        rt.capability_confidence = None
+        rt.goal_engine.get_promises_to_user = MagicMock(return_value=[])
+        rt.case_builder.drain_cases = MagicMock(return_value=[])
+
+        pipeline_result = MagicMock(
+            gold_count=0,
+            silver_count=0,
+            bronze_count=0,
+            quarantine_count=0,
+        )
+        pipeline_result.to_dict.return_value = {
+            "cases_built": 0,
+            "success": True,
+        }
+        rt._night_pipeline = MagicMock()
+        rt._night_pipeline.run_cycle.return_value = pipeline_result
+
+        simulated_trajectory = CaseTrajectory(
+            goal=Goal(description="2+2"),
+            quality_grade=QualityGrade.BRONZE,
+            trajectory_origin="simulated",
+            synthetic=True,
+            counterfactual_alternatives=["solve.math"],
+            verifier_result={
+                "outcome": "success",
+                "original_trajectory_id": "day-1",
+            },
+        )
+        dream_session = MagicMock(
+            night_id="night-read-only",
+            simulations_run=1,
+            insights_found=1,
+            insight_score=0.5,
+            simulated_trajectories=[simulated_trajectory],
+        )
+        monkeypatch.setattr(
+            "waggledance.core.learning.dream_mode.run_dream_session",
+            MagicMock(return_value=dream_session),
+        )
+        rt._evaluate_dream_alternatives = MagicMock(
+            side_effect=AssertionError("Dream must not execute capabilities")
+        )
+        rt.solver_router.apply_dream_hints = MagicMock(
+            side_effect=AssertionError("Dream must not mutate routing memory")
+        )
+        rt.action_bus.submit = MagicMock(
+            side_effect=AssertionError("Dream must not submit real actions")
+        )
+        rt.working_memory.put = MagicMock(
+            side_effect=AssertionError("Dream must not write working memory")
+        )
+        memory_before = rt.working_memory.as_context_dict()
+
+        result = rt.run_night_learning()
+
+        rt._evaluate_dream_alternatives.assert_not_called()
+        rt.solver_router.apply_dream_hints.assert_not_called()
+        rt.action_bus.submit.assert_not_called()
+        rt.working_memory.put.assert_not_called()
+        assert rt.working_memory.as_context_dict() == memory_before
+        assert rt.working_memory.by_category("dream_hint") == []
+        assert result["dream"] == {
+            "night_id": "night-read-only",
+            "simulations_run": 1,
+            "insights_found": 1,
+            "insight_score": 0.5,
+            "authority": "none",
+            "real_solver_evaluation_applied": False,
+            "routing_hints_applied": 0,
+        }
+        assert type(result["dream"]["routing_hints_applied"]) is int
+
     def test_run_night_learning_returns_result(self):
         from waggledance.core.autonomy.runtime import AutonomyRuntime
 

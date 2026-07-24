@@ -38,6 +38,11 @@ from tools.idle_consensus_artifact import (  # noqa: E402
     DEFAULT_OUT_DIR as DEFAULT_ARTIFACT_OUT_DIR,
     write_idle_consensus_artifact,
 )
+from tools.bridge_pr_author import resolve_bridge_pr_author  # noqa: E402
+from tools.pr_status_snapshot import (  # noqa: E402
+    PrStatusSnapshotError,
+    build_pr_status_snapshot,
+)
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
     evaluate_standing_consensus_sign,
 )
@@ -54,7 +59,6 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-BRIDGE_AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 PASS_STATES = {"pass", "passed", "success", "successful", "ok"}
 MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
@@ -209,7 +213,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if events_path is None:
         events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
     try:
-        status = json.loads(args.pr_status_file.read_text(encoding="utf-8"))
+        status_text = args.pr_status_file.read_bytes().decode(
+            "utf-8-sig",
+            errors="strict",
+        )
+        status = _strict_json_loads(
+            status_text,
+            decision="invalid_pr_status",
+            context="PR status JSON",
+        )
         report = evaluate_auto_merge_gate(
             pr_status=status,
             expected_head=args.expected_head,
@@ -228,7 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_lead_stall_failover=args.allow_lead_stall_failover,
             artifact_writer=_cli_artifact_writer(args, events_path),
         )
-    except (json.JSONDecodeError, OSError) as exc:
+    except (OSError, UnicodeError) as exc:
         report = {
             "decision": "invalid_pr_status",
             "ok": False,
@@ -280,6 +292,29 @@ def evaluate_auto_merge_gate(
     artifact_writer: ArtifactWriter | None = None,
 ) -> dict[str, Any]:
     """Evaluate and optionally apply the final idle auto-merge gate."""
+    _validate_evaluate_inputs(
+        pr_status=pr_status,
+        expected_head=expected_head,
+        consensus_proposal_id=consensus_proposal_id,
+        expected_base_sha=expected_base_sha,
+        receipt_bundle_path=receipt_bundle_path,
+        events_path=events_path,
+        charter_path=charter_path,
+        utc_date=utc_date,
+        repo=repo,
+        from_agent=from_agent,
+        bridge_task_id=bridge_task_id,
+        apply=apply,
+        require_bridge_consensus=require_bridge_consensus,
+        standing_consensus_sign=standing_consensus_sign,
+        allow_lead_stall_failover=allow_lead_stall_failover,
+        lead_stall_failover_threshold_seconds=(
+            lead_stall_failover_threshold_seconds
+        ),
+        runner=runner,
+        merge_verifier=merge_verifier,
+        artifact_writer=artifact_writer,
+    )
     _assert_no_private_markers(
         {
             "pr_status": pr_status,
@@ -295,7 +330,6 @@ def evaluate_auto_merge_gate(
         }
     )
     _validate_sha(expected_head, "expected_head")
-    expected_base_sha = expected_base_sha.strip().lower()
     if expected_base_sha:
         _validate_sha(expected_base_sha, "expected_base_sha")
     if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
@@ -304,19 +338,6 @@ def evaluate_auto_merge_gate(
     events = _read_bridge_events(events_path) if events_path is not None else []
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = bridge_task_id.strip() or consensus_proposal_id
-    author_agent = _pr_author_agent(
-        pr_status,
-        bridge_gate_task_id,
-        events=events,
-    )
-    bridge_peer_gate = _bridge_peer_gate(
-        events=events,
-        task_id=bridge_gate_task_id,
-        pr_number=pr_number,
-        from_agent=from_agent,
-        author_agent=author_agent,
-        checked=events_path is not None,
-    )
     charter = load_charter(charter_path)
     changed_paths = _changed_paths(pr_status)
     diff_text = _diff_text(pr_status)
@@ -332,16 +353,47 @@ def evaluate_auto_merge_gate(
         "quota_total": quota_total,
     }
 
-    head_sha = str(pr_status.get("head_sha", ""))
+    head_sha_value = pr_status.get("head_sha", "")
+    if type(head_sha_value) is not str:
+        raise _invalid("invalid_pr_status", "head_sha must be a string")
+    head_sha = head_sha_value
     _validate_sha(head_sha, "head_sha")
+    snapshot_base_value = pr_status.get("base_sha", "")
+    if type(snapshot_base_value) is not str:
+        raise _invalid("invalid_pr_status", "base_sha must be a string")
+    snapshot_base_sha = snapshot_base_value
+    author_resolution = _pr_author_resolution(
+        pr_status,
+        bridge_gate_task_id,
+        events=events,
+        expected_head_sha=expected_head,
+        expected_base_sha=expected_base_sha or snapshot_base_sha,
+    )
+    author_agent = (
+        str(author_resolution.get("author_agent", ""))
+        if author_resolution.get("ok") is True
+        else ""
+    )
+    bridge_peer_gate = _bridge_peer_gate(
+        events=events,
+        task_id=bridge_gate_task_id,
+        pr_number=pr_number,
+        from_agent=from_agent,
+        author_agent=author_agent,
+        checked=events_path is not None,
+    )
     title = str(pr_status.get("title", ""))
     mergeable = str(pr_status.get("mergeable", ""))
+    state = pr_status.get("state")
+    is_draft = pr_status.get("is_draft")
     base_gate = _base_ref_gate(
-        snapshot_base_sha=str(pr_status.get("base_sha", "")),
+        snapshot_base_sha=snapshot_base_sha,
         expected_base_sha=expected_base_sha,
         required=apply,
     )
-    receipt_verified = bool(pr_status.get("receipt_verified", False))
+    receipt_verified_value = pr_status.get("receipt_verified", False)
+    receipt_verified = receipt_verified_value is True
+    receipt_verified_typed = type(receipt_verified_value) is bool
     checks = _checks(pr_status)
     artifact_hook_configured = artifact_writer is not None
     rco_pass_gate = _bridge_rco_pass_gate(
@@ -354,6 +406,14 @@ def evaluate_auto_merge_gate(
     )
 
     blockers: list[str] = []
+    if author_resolution.get("ok") is not True:
+        reasons = author_resolution.get("reasons") or [
+            "PR author could not be resolved"
+        ]
+        blockers.extend(
+            f"PR author resolution requires operator review: {reason}"
+            for reason in reasons
+        )
     if head_sha != expected_head:
         blockers.append("exact head mismatch")
     if not path_gate.allowed:
@@ -362,6 +422,10 @@ def evaluate_auto_merge_gate(
         blockers.append(f"diff gate failed: {diff_gate.reason}")
     if mergeable not in MERGEABLE_STATES:
         blockers.append(f"mergeable state is not clean: {mergeable}")
+    if state != "OPEN":
+        blockers.append("PR state snapshot must be OPEN")
+    if is_draft is not False:
+        blockers.append("PR must not be a draft")
     if not bool(base_gate.get("allowed", False)):
         blockers.append(str(base_gate.get("reason", "base freshness gate failed")))
     if not rate_gate["allowed"]:
@@ -390,6 +454,8 @@ def evaluate_auto_merge_gate(
             blockers.append("unresolved peer bridge block")
     if events_path is not None and not bool(rco_pass_gate.get("ok", False)):
         blockers.append("missing exact-head RCO_PASS from recognized non-author RCO")
+    if not receipt_verified_typed:
+        blockers.append("receipt_verified must be a boolean")
     if not receipt_bundle_path and not (apply and artifact_hook_configured):
         blockers.append("receipt_bundle_path is required before merge")
     if (
@@ -466,6 +532,7 @@ def evaluate_auto_merge_gate(
         base_gate=base_gate,
         bridge_consensus=bridge_consensus,
     )
+    base["author_resolution"] = author_resolution
     if blockers:
         return {
             **base,
@@ -500,6 +567,86 @@ def evaluate_auto_merge_gate(
         report["receipt_bundle_path"] = manifest_path
         report["artifact_report"] = dict(artifact_report)
 
+    try:
+        apply_snapshot = build_pr_status_snapshot(
+            pr_number=pr_number,
+            repo=repo,
+            receipt_verified=True,
+            expected_base_sha=expected_base_sha,
+            runner=runner,
+        )
+    except PrStatusSnapshotError as exc:
+        return {
+            **report,
+            "decision": "operator_review_required",
+            "ok": False,
+            "would_merge": False,
+            "operator_review_required": True,
+            "reasons": [
+                "apply snapshot recheck failed: "
+                + "; ".join(
+                    str(error)
+                    for error in (
+                        exc.report.get("errors")
+                        or ["canonical PR snapshot failed"]
+                    )
+                )
+            ],
+            "apply_recheck": dict(exc.report),
+        }
+    apply_recheck = _compare_apply_snapshot(
+        initial=pr_status,
+        verified=apply_snapshot,
+        task_id=bridge_gate_task_id,
+        events=events,
+        expected_head=expected_head,
+        expected_base_sha=expected_base_sha,
+        expected_author_agent=author_agent,
+    )
+    if apply_recheck.get("ok") is True:
+        fresh_gate = evaluate_auto_merge_gate(
+            pr_status=apply_snapshot,
+            expected_head=expected_head,
+            expected_base_sha=expected_base_sha,
+            consensus_proposal_id=consensus_proposal_id,
+            receipt_bundle_path=receipt_bundle_path,
+            events_path=events_path,
+            charter_path=charter_path,
+            utc_date=rate_date,
+            repo=repo,
+            from_agent=from_agent,
+            bridge_task_id=bridge_gate_task_id,
+            apply=False,
+            require_bridge_consensus=require_bridge_consensus,
+            standing_consensus_sign=standing_consensus_sign,
+            allow_lead_stall_failover=allow_lead_stall_failover,
+            lead_stall_failover_threshold_seconds=(
+                lead_stall_failover_threshold_seconds
+            ),
+        )
+        apply_recheck["fresh_gate"] = fresh_gate
+        if fresh_gate.get("ok") is not True:
+            apply_recheck["ok"] = False
+            apply_recheck["decision"] = "apply_snapshot_recheck_failed"
+            apply_recheck["reasons"] = [
+                "fresh apply safety gate failed: " + str(reason)
+                for reason in (
+                    fresh_gate.get("reasons")
+                    or fresh_gate.get("errors")
+                    or ["unknown fresh-gate refusal"]
+                )
+            ]
+    report["apply_recheck"] = apply_recheck
+    if apply_recheck.get("ok") is not True:
+        return {
+            **report,
+            "decision": "operator_review_required",
+            "ok": False,
+            "would_merge": False,
+            "operator_review_required": True,
+            "reasons": list(apply_recheck.get("reasons", [])),
+        }
+
     run = runner or _run_command
     result = run(command)
     return_code = int(getattr(result, "returncode", 0))
@@ -507,12 +654,21 @@ def evaluate_auto_merge_gate(
         merge_recovery = _recover_merge_state_after_failure(
             pr_number=pr_number,
             expected_head=expected_head,
+            expected_head_ref=str(apply_snapshot["head_ref"]),
+            expected_base_ref=str(apply_snapshot["base_ref"]),
             repo=repo,
             return_code=return_code,
             verifier=(
                 merge_verifier
                 if merge_verifier is not None
-                else (None if runner is not None else _query_pr_merge_state)
+                else (
+                    lambda number, head, repository: _query_pr_merge_state(
+                        number,
+                        head,
+                        repository,
+                        runner=run,
+                    )
+                )
             ),
         )
         if merge_recovery["merged"]:
@@ -540,14 +696,50 @@ def evaluate_auto_merge_gate(
             }
         )
 
+    post_merge = _recover_merge_state_after_failure(
+        pr_number=pr_number,
+        expected_head=expected_head,
+        expected_head_ref=str(apply_snapshot["head_ref"]),
+        expected_base_ref=str(apply_snapshot["base_ref"]),
+        repo=repo,
+        return_code=0,
+        verifier=(
+            merge_verifier
+            if merge_verifier is not None
+            else (
+                lambda number, head, repository: _query_pr_merge_state(
+                    number,
+                    head,
+                    repository,
+                    runner=run,
+                )
+            )
+        ),
+    )
+    if not post_merge["merged"]:
+        raise AutoMergeGateError(
+            {
+                **base,
+                "decision": "post_merge_state_unconfirmed",
+                "ok": False,
+                "operator_review_required": True,
+                "errors": [
+                    "merge command exited zero but GitHub did not confirm MERGED"
+                ],
+                "merge_recovery": post_merge,
+                "gh_merge_attempted": True,
+                "exit_code": 1,
+            }
+        )
     report.update(
         _auto_merged_fields(
             pr_number=pr_number,
             title=title,
             consensus_proposal_id=consensus_proposal_id,
-            merge_commit_sha=str(getattr(result, "stdout", "")).strip(),
+            merge_commit_sha=str(post_merge["merge_commit_sha"]),
             receipt_bundle_path=receipt_bundle_path,
             rate_gate=rate_gate,
+            merge_recovery=post_merge,
         )
     )
     return report
@@ -588,6 +780,8 @@ def _recover_merge_state_after_failure(
     *,
     pr_number: int,
     expected_head: str,
+    expected_head_ref: str,
+    expected_base_ref: str,
     repo: str,
     return_code: int,
     verifier: MergeVerifier | None,
@@ -612,20 +806,30 @@ def _recover_merge_state_after_failure(
         return {**base, "decision": "verifier_returned_non_object"}
     _assert_no_private_markers(state)
 
-    if str(state.get("state", "")) != "MERGED":
+    if state.get("state") != "MERGED":
         return {**base, "decision": "pr_not_merged"}
-    if str(state.get("headRefOid", "")) != expected_head:
+    if state.get("headRefOid") != expected_head:
         return {**base, "decision": "merged_head_mismatch"}
+    if state.get("headRefName") != expected_head_ref:
+        return {**base, "decision": "merged_head_ref_mismatch"}
+    if state.get("baseRefName") != expected_base_ref:
+        return {**base, "decision": "merged_base_ref_mismatch"}
     merge_commit = state.get("mergeCommit")
     merge_commit_sha = ""
     if isinstance(merge_commit, Mapping):
-        merge_commit_sha = str(merge_commit.get("oid", ""))
+        oid = merge_commit.get("oid")
+        if type(oid) is str:
+            merge_commit_sha = oid
     if not SHA_RE.fullmatch(merge_commit_sha):
         return {**base, "decision": "missing_merge_commit_sha"}
     return {
         **base,
         "merged": True,
-        "decision": "merged_after_merge_command_failure",
+        "decision": (
+            "merged_after_merge_command"
+            if return_code == 0
+            else "merged_after_merge_command_failure"
+        ),
         "merge_commit_sha": merge_commit_sha,
     }
 
@@ -682,7 +886,6 @@ def _merge_command(*, pr_number: int, expected_head: str, repo: str) -> list[str
         "merge",
         str(pr_number),
         "--squash",
-        "--delete-branch",
         f"--match-head-commit={expected_head}",
     ]
     if repo:
@@ -742,8 +945,6 @@ def _base_ref_gate(
     expected_base_sha: str,
     required: bool,
 ) -> dict[str, Any]:
-    snapshot_base_sha = snapshot_base_sha.strip().lower()
-    expected_base_sha = expected_base_sha.strip().lower()
     gate = {
         "allowed": True,
         "required": bool(required),
@@ -797,93 +998,133 @@ def _pr_author_agent(
     *,
     events: Sequence[Mapping[str, Any]] = (),
 ) -> str:
-    """Resolve the author to a bridge-agent id, or empty to fail closed.
-
-    GitHub authorship is not a bridge identity in this repository: PRs are
-    pushed by the operator account, while the merge gate compares reviewers
-    against bridge agents such as ``claude-rco-1``. Prefer the bridge claim
-    that owns the task and only accept explicit/fallback values when they are
-    known bridge-agent ids.
-    """
-    known_agents = _known_bridge_agents(events)
-    claimed_author = _bridge_claim_author_agent(
+    """Return the shared fail-closed resolver's agent, or empty on refusal."""
+    report = _pr_author_resolution(
+        pr_status,
+        bridge_task_id,
         events=events,
-        bridge_task_id=bridge_task_id,
-        known_agents=known_agents,
+        expected_head_sha=str(pr_status.get("head_sha", "")),
+        expected_base_sha=str(pr_status.get("base_sha", "")),
     )
-    if claimed_author:
-        return claimed_author
-
-    for key in ("author_agent", "author_login", "author"):
-        value = pr_status.get(key)
-        candidate = _known_bridge_agent_from_value(value, known_agents=known_agents)
-        if candidate:
-            return candidate
-
-    task_prefix = bridge_task_id.split("/", 1)[0].strip()
-    return _known_bridge_agent_from_value(task_prefix, known_agents=known_agents)
+    return (
+        str(report.get("author_agent", ""))
+        if report.get("ok") is True
+        else ""
+    )
 
 
-def _known_bridge_agents(events: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
-    known: list[str] = []
-    for agent in BRIDGE_CONSENSUS_AUTHOR_AGENTS:
-        if agent not in known:
-            known.append(agent)
-    for event in events:
-        if not isinstance(event, Mapping):
-            continue
-        agent = str(event.get("agent", "")).strip()
-        if _is_bridge_agent_id(agent) and agent not in known:
-            known.append(agent)
-    return tuple(known)
-
-
-def _bridge_claim_author_agent(
+def _pr_author_resolution(
+    pr_status: Mapping[str, Any],
+    bridge_task_id: str,
     *,
     events: Sequence[Mapping[str, Any]],
-    bridge_task_id: str,
-    known_agents: Sequence[str],
-) -> str:
-    for event in events:
-        if not isinstance(event, Mapping):
-            continue
-        if str(event.get("task_id", "")) != bridge_task_id:
-            continue
-        if str(event.get("type", "")).lower() != "claim":
-            continue
-        candidate = _known_bridge_agent_from_value(
-            event.get("agent"),
-            known_agents=known_agents,
-        )
-        if candidate:
-            return candidate
-    return ""
+    expected_head_sha: str,
+    expected_base_sha: str,
+) -> dict[str, Any]:
+    head_ref_name = pr_status.get("head_ref")
+    if head_ref_name is None:
+        head_ref_name = pr_status.get("headRefName", "")
+    git_identities = pr_status.get("git_identities", ())
+    git_identity_evidence = pr_status.get("git_identity_evidence")
+    asserted_author_agent = pr_status.get("author_agent", "")
+    try:
+        changed_paths = _changed_paths(pr_status)
+    except AutoMergeGateError as exc:
+        return {
+            "ok": False,
+            "decision": "invalid_author_evidence",
+            "operator_review_required": True,
+            "author_agent": "",
+            "reasons": list(exc.report.get("errors", [])),
+        }
+    return resolve_bridge_pr_author(
+        events=events,
+        pr_number=pr_status.get("pr_number"),
+        task_id=bridge_task_id,
+        head_ref_name=head_ref_name,  # type: ignore[arg-type]
+        head_sha=pr_status.get("head_sha", ""),  # type: ignore[arg-type]
+        base_sha=pr_status.get("base_sha", ""),  # type: ignore[arg-type]
+        expected_head_sha=expected_head_sha,
+        expected_base_sha=expected_base_sha,
+        changed_paths=changed_paths,
+        git_identities=git_identities,  # type: ignore[arg-type]
+        git_identity_evidence=git_identity_evidence,  # type: ignore[arg-type]
+        asserted_author_agent=asserted_author_agent,  # type: ignore[arg-type]
+    )
 
 
-def _known_bridge_agent_from_value(
-    value: Any,
+def _compare_apply_snapshot(
     *,
-    known_agents: Sequence[str],
-) -> str:
-    candidates: list[Any] = [value]
-    if isinstance(value, Mapping):
-        candidates = [
-            value.get("author_agent"),
-            value.get("bridge_agent"),
-            value.get("agent"),
-            value.get("login"),
-        ]
-    for candidate in candidates:
-        if not isinstance(candidate, str):
-            continue
-        normalized = candidate.strip()
-        if _is_bridge_agent_id(normalized) and normalized in known_agents:
-            return normalized
-    return ""
-
-
-def _is_bridge_agent_id(value: str) -> bool:
-    return bool(BRIDGE_AGENT_ID_RE.fullmatch(value))
+    initial: Mapping[str, Any],
+    verified: Mapping[str, Any],
+    task_id: str,
+    events: Sequence[Mapping[str, Any]],
+    expected_head: str,
+    expected_base_sha: str,
+    expected_author_agent: str,
+) -> dict[str, Any]:
+    initial_head_ref = initial.get("head_ref")
+    if initial_head_ref is None:
+        initial_head_ref = initial.get("headRefName")
+    fields = {
+        "pr_number": (initial.get("pr_number"), verified.get("pr_number")),
+        "head_ref": (initial_head_ref, verified.get("head_ref")),
+        "head_sha": (initial.get("head_sha"), verified.get("head_sha")),
+        "base_ref": (initial.get("base_ref"), verified.get("base_ref")),
+        "base_sha": (initial.get("base_sha"), verified.get("base_sha")),
+        "base_tip_sha": (
+            initial.get("base_tip_sha"),
+            verified.get("base_tip_sha"),
+        ),
+        "state": (initial.get("state"), verified.get("state")),
+        "is_draft": (initial.get("is_draft"), verified.get("is_draft")),
+        "updated_at": (initial.get("updated_at"), verified.get("updated_at")),
+        "mergeable": (initial.get("mergeable"), verified.get("mergeable")),
+        "checks": (initial.get("checks"), verified.get("checks")),
+        "changed_paths": (
+            initial.get("changed_paths"),
+            verified.get("changed_paths"),
+        ),
+        "diff_text": (initial.get("diff_text"), verified.get("diff_text")),
+        "git_identities": (
+            initial.get("git_identities"),
+            verified.get("git_identities"),
+        ),
+        "git_identity_evidence": (
+            initial.get("git_identity_evidence"),
+            verified.get("git_identity_evidence"),
+        ),
+    }
+    drifted = [field for field, pair in fields.items() if pair[0] != pair[1]]
+    reasons = [
+        f"apply snapshot recheck drifted: {field}"
+        for field in drifted
+    ]
+    resolution = _pr_author_resolution(
+        verified,
+        task_id,
+        events=events,
+        expected_head_sha=expected_head,
+        expected_base_sha=expected_base_sha,
+    )
+    if resolution.get("ok") is not True:
+        reasons.extend(
+            "apply author resolution failed: " + str(reason)
+            for reason in (
+                resolution.get("reasons")
+                or ["PR author could not be resolved"]
+            )
+        )
+    elif resolution.get("author_agent") != expected_author_agent:
+        reasons.append("apply author resolution changed canonical owner")
+    return {
+        "ok": not reasons,
+        "decision": "apply_snapshot_recheck_pass"
+        if not reasons
+        else "apply_snapshot_recheck_failed",
+        "reasons": reasons,
+        "author_resolution": resolution,
+    }
 
 
 def verify_bridge_consensus(
@@ -1802,13 +2043,79 @@ def _check_passed(check: Mapping[str, Any]) -> bool:
 
 
 def _require_int(value: object, field: str) -> int:
-    if not isinstance(value, int):
+    if type(value) is not int:
         raise _invalid("invalid_pr_status", f"{field} must be an integer")
     return value
 
 
-def _validate_sha(value: str, field: str) -> None:
-    if not SHA_RE.fullmatch(value):
+def _validate_evaluate_inputs(
+    *,
+    pr_status: object,
+    expected_head: object,
+    consensus_proposal_id: object,
+    expected_base_sha: object,
+    receipt_bundle_path: object,
+    events_path: object,
+    charter_path: object,
+    utc_date: object,
+    repo: object,
+    from_agent: object,
+    bridge_task_id: object,
+    apply: object,
+    require_bridge_consensus: object,
+    standing_consensus_sign: object,
+    allow_lead_stall_failover: object,
+    lead_stall_failover_threshold_seconds: object,
+    runner: object,
+    merge_verifier: object,
+    artifact_writer: object,
+) -> None:
+    if not isinstance(pr_status, Mapping):
+        raise _invalid("invalid_pr_status", "pr_status must be an object")
+    for field, value in (
+        ("expected_head", expected_head),
+        ("consensus_proposal_id", consensus_proposal_id),
+        ("expected_base_sha", expected_base_sha),
+        ("receipt_bundle_path", receipt_bundle_path),
+        ("repo", repo),
+        ("from_agent", from_agent),
+        ("bridge_task_id", bridge_task_id),
+    ):
+        if type(value) is not str:
+            raise _invalid("invalid_input", f"{field} must be a string")
+    if utc_date is not None and type(utc_date) is not str:
+        raise _invalid("invalid_input", "utc_date must be a string or null")
+    if events_path is not None and not isinstance(events_path, Path):
+        raise _invalid("invalid_input", "events_path must be a Path or null")
+    if not isinstance(charter_path, Path):
+        raise _invalid("invalid_input", "charter_path must be a Path")
+    for field, value in (
+        ("apply", apply),
+        ("require_bridge_consensus", require_bridge_consensus),
+        ("standing_consensus_sign", standing_consensus_sign),
+        ("allow_lead_stall_failover", allow_lead_stall_failover),
+    ):
+        if type(value) is not bool:
+            raise _invalid("invalid_input", f"{field} must be a boolean")
+    if type(lead_stall_failover_threshold_seconds) is not int:
+        raise _invalid(
+            "invalid_input",
+            "lead_stall_failover_threshold_seconds must be an integer",
+        )
+    for field, value in (
+        ("runner", runner),
+        ("merge_verifier", merge_verifier),
+        ("artifact_writer", artifact_writer),
+    ):
+        if value is not None and not callable(value):
+            raise _invalid(
+                "invalid_input",
+                f"{field} must be callable or null",
+            )
+
+
+def _validate_sha(value: object, field: str) -> None:
+    if type(value) is not str or not SHA_RE.fullmatch(value):
         raise _invalid("invalid_sha", f"{field} must be a 40-char lowercase sha")
 
 
@@ -1826,12 +2133,11 @@ def _invalid(decision: str, message: str) -> AutoMergeGateError:
     )
 
 
-def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         list(command),
         check=False,
         capture_output=True,
-        text=True,
     )
 
 
@@ -1839,6 +2145,8 @@ def _query_pr_merge_state(
     pr_number: int,
     expected_head: str,
     repo: str,
+    *,
+    runner: Runner | None = None,
 ) -> Mapping[str, Any]:
     command = [
         "gh",
@@ -1846,23 +2154,43 @@ def _query_pr_merge_state(
         "view",
         str(pr_number),
         "--json",
-        "state,mergeCommit,headRefOid",
+        "number,state,mergeCommit,headRefOid,headRefName,baseRefName",
     ]
     if repo:
         command.extend(["--repo", repo])
-    result = _run_command(command)
-    return_code = int(getattr(result, "returncode", 0))
+    result = (runner or _run_command)(command)
+    return_code = getattr(result, "returncode", 0)
+    if type(return_code) is not int:
+        return {
+            "ok": False,
+            "decision": "merge_state_query_invalid_result",
+        }
+    try:
+        stdout = _strict_utf8_result_stream(
+            getattr(result, "stdout", ""),
+        )
+        _strict_utf8_result_stream(getattr(result, "stderr", ""))
+    except (TypeError, UnicodeError):
+        return {
+            "ok": False,
+            "decision": "merge_state_query_invalid_utf8",
+        }
     if return_code != 0:
         return {
             "ok": False,
             "decision": "merge_state_query_failed",
             "return_code": return_code,
         }
-    stdout = str(getattr(result, "stdout", ""))
     _assert_no_private_markers(stdout)
     try:
-        state = json.loads(stdout)
-    except json.JSONDecodeError:
+        state = json.loads(
+            stdout,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {value}")
+            ),
+            object_pairs_hook=_reject_duplicate_json_object_keys,
+        )
+    except (json.JSONDecodeError, ValueError):
         return {
             "ok": False,
             "decision": "merge_state_query_invalid_json",
@@ -1873,13 +2201,39 @@ def _query_pr_merge_state(
             "decision": "merge_state_query_non_object",
         }
     _assert_no_private_markers(state)
-    if str(state.get("headRefOid", "")) != expected_head:
+    if state.get("number") != pr_number:
+        return {
+            **dict(state),
+            "ok": False,
+            "decision": "merge_state_query_pr_mismatch",
+        }
+    if state.get("headRefOid") != expected_head:
         return {
             **dict(state),
             "ok": False,
             "decision": "merge_state_query_head_mismatch",
         }
     return state
+
+
+def _strict_utf8_result_stream(value: object) -> str:
+    if type(value) is bytes:
+        return value.decode("utf-8", errors="strict")
+    if type(value) is str:
+        value.encode("utf-8", errors="strict")
+        return value
+    raise TypeError("subprocess stream must be text or bytes")
+
+
+def _reject_duplicate_json_object_keys(
+    pairs: Sequence[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def _run_artifact_writer(artifact_writer: ArtifactWriter) -> Mapping[str, Any]:
@@ -1948,16 +2302,27 @@ def _artifact_receipt_error(message: str) -> AutoMergeGateError:
 def _read_bridge_events(events_path: Path) -> list[dict[str, Any]]:
     if not events_path.exists():
         raise _invalid("missing_events", f"missing bridge events file: {events_path}")
+    try:
+        text = events_path.read_bytes().decode("utf-8-sig", errors="strict")
+    except UnicodeError as exc:
+        raise _invalid(
+            "invalid_events",
+            "bridge events file must be valid UTF-8",
+        ) from exc
+    except OSError as exc:
+        raise _invalid(
+            "invalid_events",
+            f"bridge events file could not be read: {exc.__class__.__name__}",
+        ) from exc
     events: list[dict[str, Any]] = []
-    for line_no, line in enumerate(
-        events_path.read_text(encoding="utf-8-sig").splitlines(), 1
-    ):
+    for line_no, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise _invalid("invalid_events", f"line {line_no}: {exc.msg}") from exc
+        event = _strict_json_loads(
+            line,
+            decision="invalid_events",
+            context=f"line {line_no}",
+        )
         if not isinstance(event, dict):
             raise _invalid("invalid_events", f"line {line_no}: event must be an object")
         events.append(event)
@@ -1982,13 +2347,36 @@ def _is_auto_merge_event(
     event: Mapping[str, Any],
     payload: Mapping[str, Any],
 ) -> bool:
-    if bool(payload.get("auto_merged")):
+    if payload.get("auto_merged") is True:
         return True
     return event.get("type") == "done" and "auto_merge" in str(event.get("status", ""))
 
 
 def _today_utc() -> str:
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def _strict_json_loads(
+    text: object,
+    *,
+    decision: str,
+    context: str,
+) -> object:
+    if type(text) is not str:
+        raise _invalid(decision, f"{context}: JSON input must be text")
+
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"non-standard JSON constant: {value}")
+
+    try:
+        return json.loads(
+            text,
+            parse_constant=reject_constant,
+            object_pairs_hook=_reject_duplicate_json_object_keys,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        message = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        raise _invalid(decision, f"{context}: {message}") from exc
 
 
 def _cli_artifact_writer(

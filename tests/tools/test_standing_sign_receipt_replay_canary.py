@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.standing_sign_receipt_replay_canary import (
     replay_standing_sign_receipt,
 )
@@ -197,12 +198,38 @@ def test_cli_json_returns_exit_three_on_blocker(tmp_path: Path) -> None:
 
 
 def _status(**overrides: object) -> dict[str, object]:
+    material = github_pr_git_identity_evidence(
+        {
+            "author": {
+                "login": "Ahkeratmehilaiset",
+                "name": "",
+                "email": "",
+            },
+            "commits": [
+                {
+                    "oid": HEAD,
+                    "authors": [
+                        {
+                            "name": "Jani",
+                            "email": "jani@jkhservice.fi",
+                            "login": "",
+                        }
+                    ],
+                }
+            ],
+        },
+        expected_head_sha=HEAD,
+    )
+    identities = material.pop("identities")
     status: dict[str, object] = {
         "pr_number": 477,
         "head_sha": HEAD,
         "base_sha": BASE,
+        "head_ref": TASK,
         "title": "Standing sign proof",
         "mergeable": "clean",
+        "state": "OPEN",
+        "is_draft": False,
         "author_agent": "fable-5",
         "operator_approved": False,
         "receipt_verified": True,
@@ -215,6 +242,8 @@ def _status(**overrides: object) -> dict[str, object]:
             {"name": "test (3.13)", "state": "success"},
             {"name": "unified", "state": "success"},
         ],
+        "git_identities": identities,
+        "git_identity_evidence": material,
     }
     status.update(overrides)
     return status
@@ -296,7 +325,9 @@ def _dual_rco_events() -> list[dict[str, object]]:
 
 
 def _claim(agent: str, task_id: str, *, ts: str) -> dict[str, object]:
-    return _event(agent, "claim", "active", ts, task_id=task_id)
+    event = _event(agent, "claim", "active", ts, task_id=task_id)
+    event["write_scope"] = ["*"]
+    return event
 
 
 def _event(

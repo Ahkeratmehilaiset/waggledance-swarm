@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import waggledance.core.bridge_identity_registry as identity_registry_module
+from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.idle_consensus_auto_merge import (
     evaluate_auto_merge_gate,
     verify_bridge_consensus as _verify_bridge_consensus,
@@ -21,6 +22,7 @@ from tools.idle_consensus_auto_merge import (
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 OTHER_HEAD = "00000000000000000000000000000000deadbeef"
+BASE = "abcdef1234567890abcdef1234567890abcdef12"
 TASK = "codex-lead/t0b-consensus-approver-20260529"
 
 LEAD = "codex-lead-1"
@@ -766,13 +768,40 @@ def test_invalid_head_fails_closed() -> None:
 
 
 def _status(**overrides) -> dict:
+    material = github_pr_git_identity_evidence(
+        {
+            "author": {
+                "login": "Ahkeratmehilaiset",
+                "name": "",
+                "email": "",
+            },
+            "commits": [
+                {
+                    "oid": HEAD,
+                    "authors": [
+                        {
+                            "name": "Jani",
+                            "email": "jani@jkhservice.fi",
+                            "login": "",
+                        }
+                    ],
+                }
+            ],
+        },
+        expected_head_sha=HEAD,
+    )
+    identities = material.pop("identities")
     status = {
         "pr_number": 781,
         "head_sha": HEAD,
+        "head_ref": TASK,
+        "base_sha": BASE,
         "title": "T0b consensus approver",
         "mergeable": "clean",
+        "state": "OPEN",
+        "is_draft": False,
         "receipt_verified": True,
-        "author_agent": RCO2,
+        "author_agent": AUTHOR,
         # An allowlisted, non-denylisted path: the gate itself is now
         # self-modification-denylisted (T0a), so it cannot be the changed path.
         "changed_paths": ["tools/idle_daily_summary.py"],
@@ -781,15 +810,31 @@ def _status(**overrides) -> dict:
             {"name": "test (3.13)", "state": "success"},
             {"name": "unified", "state": "success"},
         ],
+        "git_identities": identities,
+        "git_identity_evidence": material,
     }
     status.update(overrides)
     return status
 
 
 def _events_path(tmp_path: Path, events: list[dict]) -> Path:
+    rows = list(events)
+    rows.insert(
+        0,
+        {
+            "ts_utc": "2026-05-29T12:59:00Z",
+            "agent": AUTHOR,
+            "agent_uuid": AGENT_UUIDS[AUTHOR],
+            "type": "claim",
+            "status": "active",
+            "task_id": TASK,
+            "write_scope": ["*"],
+            "payload": {},
+        },
+    )
     path = tmp_path / "events.jsonl"
     path.write_text(
-        "\n".join(json.dumps(e, sort_keys=True) for e in events), encoding="utf-8"
+        "\n".join(json.dumps(e, sort_keys=True) for e in rows), encoding="utf-8"
     )
     return path
 
@@ -837,6 +882,8 @@ def test_gate_unchanged_when_consensus_not_required(tmp_path: Path) -> None:
         consensus_proposal_id=TASK,
         receipt_bundle_path="docs/receipts/manifest.json",
     )
-    assert report["ok"] is True
+    assert report["ok"] is False
+    assert report["decision"] == "operator_review_required"
+    assert report["author_resolution"]["ok"] is False
     assert report["bridge_consensus"]["required"] is False
     assert report["bridge_consensus"]["decision"] == "not_required"

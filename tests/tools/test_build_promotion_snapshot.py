@@ -14,10 +14,11 @@ from tools.build_promotion_snapshot import (
     build_promotion_snapshot,
     main,
 )
+from tools.pr_status_snapshot import GH_JSON_FIELDS
 
 REPO = "Ahkeratmehilaiset/waggledance-swarm"
 PR = 901
-TASK = "codex-tools-1/promotion-snapshot-fixture-20260605"
+TASK = "fable-5/promotion-snapshot-fixture-20260605"
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
@@ -117,12 +118,44 @@ def test_real_child_invalid_utf8_fails_closed(
         _run((sys.executable, "-c", script), runner=None)
 
 
-def _pr_view(*, base: str = BASE, checks: list[dict] | None = None) -> dict:
+def _pr_view(
+    *,
+    base: str = BASE,
+    checks: list[dict] | None = None,
+    task: str = TASK,
+    changed_files: int = 1,
+) -> dict:
     return {
         "number": PR,
-        "headRefName": TASK,
+        "title": "fix(bridge): promotion snapshot fixture",
+        "headRefName": task,
         "headRefOid": HEAD,
         "baseRefOid": base,
+        "baseRefName": "main",
+        "mergeable": "MERGEABLE",
+        "state": "OPEN",
+        "isDraft": True,
+        "url": f"https://github.example/pull/{PR}",
+        "reviewDecision": "",
+        "updatedAt": "2026-07-24T09:00:00Z",
+        "changedFiles": changed_files,
+        "author": {
+            "login": "Ahkeratmehilaiset",
+            "name": "",
+            "email": "",
+        },
+        "commits": [
+            {
+                "oid": HEAD,
+                "authors": [
+                    {
+                        "name": "Jani",
+                        "email": "jani@jkhservice.fi",
+                        "login": "",
+                    }
+                ],
+            }
+        ],
         "statusCheckRollup": (
             checks
             if checks is not None
@@ -139,44 +172,80 @@ def _runner(
     base: str = BASE,
     checks: list[dict] | None = None,
     paths: list[str] | None = None,
+    file_records: list[dict] | None = None,
     diff: str = DIFF,
+    task: str = TASK,
 ):
     paths = paths or PATHS
+    records = file_records or [
+        {"filename": path, "status": "modified"}
+        for path in paths
+    ]
     commands = {
         (
             "gh",
             "pr",
             "view",
             str(PR),
-            "--repo",
-            REPO,
             "--json",
-            "number,headRefName,headRefOid,baseRefOid,statusCheckRollup",
-        ): _completed(json.dumps(_pr_view(base=base, checks=checks))),
+            f"{GH_JSON_FIELDS},state",
+            "--repo",
+            REPO,
+        ): _completed(
+            json.dumps(
+                _pr_view(
+                    base=base,
+                    checks=checks,
+                    task=task,
+                    changed_files=len(records),
+                )
+            )
+        ),
+        (
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            f"repos/{REPO}/git/ref/heads/main",
+        ): _completed(
+            json.dumps(
+                {
+                    "ref": "refs/heads/main",
+                    "object": {"type": "commit", "sha": base},
+                }
+            )
+        ),
+        (
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            f"repos/{REPO}/pulls/{PR}/files",
+            "-f",
+            "per_page=100",
+            "-f",
+            "page=1",
+        ): _completed(
+            json.dumps(
+                records
+            )
+        ),
         (
             "gh",
             "pr",
             "diff",
             str(PR),
-            "--repo",
-            REPO,
-            "--name-only",
-        ): _completed("\n".join(paths) + "\n"),
-        (
-            "gh",
-            "pr",
-            "diff",
-            str(PR),
-            "--repo",
-            REPO,
             "--patch",
+            "--repo",
+            REPO,
         ): _completed(diff),
     }
 
     def run(command: tuple[str, ...]) -> SimpleNamespace:
-        if command not in commands:
-            raise AssertionError(f"unexpected command: {command!r}")
-        return commands[command]
+        key = tuple(command)
+        if key not in commands:
+            raise AssertionError(f"unexpected command: {key!r}")
+        return commands[key]
 
     return run
 
@@ -257,15 +326,29 @@ def _build(
     origin_main_sha: str = BASE,
     author_agent: str = "",
     paths: list[str] | None = None,
+    file_records: list[dict] | None = None,
     diff: str = DIFF,
+    task: str = TASK,
 ) -> dict:
+    event_rows = events if events is not None else _events()
+    if events is None and paths is not None:
+        for event in event_rows:
+            if event.get("type") == "claim":
+                event["write_scope"] = list(paths)
     return build_promotion_snapshot(
         repo=REPO,
         pr_number=PR,
-        events_path=_events_path(tmp_path, events if events is not None else _events()),
+        events_path=_events_path(tmp_path, event_rows),
+        task_id=task,
         origin_main_sha=origin_main_sha,
         author_agent=author_agent,
-        runner=_runner(base=base, paths=paths, diff=diff),
+        runner=_runner(
+            base=base,
+            paths=paths,
+            file_records=file_records,
+            diff=diff,
+            task=task,
+        ),
     )
 
 
@@ -300,6 +383,26 @@ def test_builds_eligible_dry_run_snapshot_from_gh_and_bridge_claim(
     assert report["would_execute"] is False
 
 
+def test_build_uses_canonical_rename_source_and_target_paths(
+    tmp_path: Path,
+) -> None:
+    paths = ["tools/new_name.py", "tools/old_name.py"]
+    report = _build(
+        tmp_path,
+        paths=paths,
+        file_records=[
+            {
+                "filename": "tools/new_name.py",
+                "previous_filename": "tools/old_name.py",
+                "status": "renamed",
+            }
+        ],
+    )
+
+    assert report["eligible"] is True
+    assert report["pr_status"]["changed_paths"] == paths
+
+
 def test_stale_base_returns_not_eligible_without_commands(tmp_path: Path) -> None:
     report = _build(tmp_path, base=OTHER_BASE, origin_main_sha=BASE)
 
@@ -331,12 +434,36 @@ def test_missing_bridge_consensus_returns_not_eligible(tmp_path: Path) -> None:
 def test_lead_authored_tools_and_rco_satisfy_build_author_slot_waiver(
     tmp_path: Path,
 ) -> None:
+    task = "codex-lead-1/promotion-snapshot-fixture-20260605"
     events = [
-        _event("codex-tools-1", "build_consensus_pass", ts="2026-06-05T05:31:00Z"),
-        _event("claude-rco-1", "rco_pass", ts="2026-06-05T05:32:00Z"),
+        _event(
+            "codex-lead-1",
+            "active",
+            type_="claim",
+            task_id=task,
+            ts="2026-06-05T05:29:00Z",
+            write_scope=list(PATHS),
+        ),
+        _event(
+            "codex-tools-1",
+            "build_consensus_pass",
+            task_id=task,
+            ts="2026-06-05T05:31:00Z",
+        ),
+        _event(
+            "claude-rco-1",
+            "rco_pass",
+            task_id=task,
+            ts="2026-06-05T05:32:00Z",
+        ),
     ]
 
-    report = _build(tmp_path, events=events, author_agent="codex-lead-1")
+    report = _build(
+        tmp_path,
+        events=events,
+        author_agent="codex-lead-1",
+        task=task,
+    )
 
     assert report["eligible"] is True
     assert report["decision"] == "promotion_eligible"
@@ -358,11 +485,11 @@ def test_missing_author_claim_fails_closed(tmp_path: Path) -> None:
     report = _build(tmp_path, events=_events(include_claim=False))
 
     assert report["eligible"] is False
-    assert report["decision"] == "invalid_input"
+    assert report["decision"] == "operator_review_required"
     assert report["queue_route"] == "manual_triage_required"
-    assert report["next_action"] == "fix_snapshot_input_then_rerun"
-    assert report["operator_required"] is False
-    assert "author_agent could not be derived" in report["errors"][0]
+    assert report["next_action"] == "inspect_pr_author_evidence"
+    assert report["operator_required"] is True
+    assert "no valid UUID-bound canonical write claim" in report["errors"][0]
     assert report["undraft_cmd"] == []
     assert report["merge_cmd"] == []
 
@@ -404,6 +531,55 @@ def test_pending_ci_routes_to_ci_wait_or_debug(tmp_path: Path) -> None:
     assert "status checks not green: unified" in report["reasons"]
 
 
+def test_pr_head_drift_during_snapshot_capture_fails_closed(
+    tmp_path: Path,
+) -> None:
+    stable_runner = _runner()
+    view_calls = 0
+
+    def drift_runner(command: tuple[str, ...]) -> SimpleNamespace:
+        nonlocal view_calls
+        if tuple(command[:3]) == ("gh", "pr", "view"):
+            view_calls += 1
+            if view_calls == 2:
+                moved = _pr_view()
+                moved["headRefOid"] = "0" * 40
+                return _completed(json.dumps(moved))
+        return stable_runner(command)
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=PR,
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=BASE,
+        runner=drift_runner,
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "headRefOid changed during snapshot capture" in report["errors"][0]
+
+
+@pytest.mark.parametrize("pr_number", [True, 901.0, 901.5, "901"])
+def test_non_integral_pr_number_fails_before_runner(
+    tmp_path: Path,
+    pr_number: object,
+) -> None:
+    def runner(command):
+        raise AssertionError(f"runner should not be called: {command}")
+
+    report = build_promotion_snapshot(
+        repo=REPO,
+        pr_number=pr_number,  # type: ignore[arg-type]
+        events_path=_events_path(tmp_path, _events()),
+        origin_main_sha=BASE,
+        runner=runner,
+    )
+
+    assert report["decision"] == "invalid_input"
+    assert "positive integer" in report["errors"][0]
+
+
 def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
     eligible_events = _events_path(tmp_path, _events())
     eligible = main(
@@ -440,8 +616,11 @@ def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
         runner=_runner(),
     )
 
-    assert invalid == 2
-    assert json.loads(capsys.readouterr().out)["decision"] == "invalid_input"
+    assert invalid == 3
+    assert (
+        json.loads(capsys.readouterr().out)["decision"]
+        == "operator_review_required"
+    )
 
 
 def test_cli_default_events_uses_runtime_bridge_root_env(

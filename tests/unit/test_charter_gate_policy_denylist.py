@@ -36,6 +36,8 @@ GATE_POLICY_PATHS = [
     "tools/check_status_name_safe.py",
     "tools/auto_rollback_eligibility.py",
     "tools/verify_bridge_consensus.py",  # defensive future-proof (rco-1 #1393)
+    "tools/check_promotion_eligible.py",  # promotion verdict gate
+    "tests/tools/test_check_promotion_eligible.py",  # gate conformance anchor
     "tests/security/p4c_corpus/validate_p4c_corpus.py",  # corpus validator anchor (rco-1 #1392)
     "tests/tools/test_bridge_event_writer.py",  # canonical writer conformance anchor
 ]

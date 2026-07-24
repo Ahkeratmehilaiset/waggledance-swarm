@@ -69,6 +69,7 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `tools/merge_with_bridge_receipt.py` (receipt-bound merge executor — self-modification banned)
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
 * `tools/check_rco_pass_present.py` (RCO-pass verifier — self-modification banned)
+* `tools/check_promotion_eligible.py` (promotion-eligibility verdict gate — self-modification banned)
 * `tools/write_bridge_consensus_merge_receipt.py` (bridge-consensus merge receipt writer — self-modification banned)
 * `tools/verify_magma_receipt.py` (MAGMA receipt verifier — self-modification banned)
 * `waggledance/core/idle_consensus_charter.py` (charter allowlist/denylist evaluator — self-modification banned)
@@ -114,6 +115,7 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `tools/verify_bridge_consensus.py` (bridge-consensus 3-identity verifier — self-modification banned; defensive future-proof: the verifier logic currently lives in the already-denylisted `tools/idle_consensus_auto_merge.py`, this closes the standalone-file refactor path — rco-1 #1393)
 * `tests/tools/test_verify_bridge_consensus_conformance.py` (bridge-consensus conformance manifest anchor — self-modification banned; prevents allowlist-clean edits from dropping required fail-closed consensus cases)
 * `tests/tools/verify_bridge_consensus_conformance_corpus.json` (bridge-consensus conformance corpus anchor — self-modification banned; prevents allowlist-clean edits from weakening required fail-closed consensus cases)
+* `tests/tools/test_check_promotion_eligible.py` (promotion-eligibility conformance anchor — self-modification banned; prevents an autonomous gate-and-test weakening)
 * `tests/tools/test_standing_consensus_sign_class.py` (9b standing-consensus-sign conformance anchor — self-modification banned; locks the (a)-refused / (b)-admitted / missing-element-refused fail-closed cases)
 * `tests/tools/test_bridge_event_writer.py` (canonical Python bridge-event writer conformance anchor — self-modification banned; prevents an autonomous writer-and-test weakening)
 * `tests/security/p4c_corpus/validate_p4c_corpus.py` (P4c adversarial-corpus validator anchor — self-consistent-tamper guarded; an auto-merged edit could weaken the content-derived re-derivation / coverage enforcement — rco-1 #1392. Corpus CASE additions stay allowlist-clean so the corpus can be extended; only the validator anchor is protected.)
@@ -230,7 +232,7 @@ For every autonomous merge:
 
 This charter document is on the file denylist. Any PR that modifies `docs/architecture/IDLE_AUTONOMY_CHARTER.md` itself must be operator-merged. Agents cannot weaken their own gates.
 
-The same ban applies to denylist edits inside `tools/idle_consensus_to_pr.py`, to the consensus-verification logic inside `tools/idle_consensus_auto_merge.py`, `tools/check_bridge_changes_requested.py`, `tools/check_rco_pass_present.py`, and `tools/write_bridge_consensus_merge_receipt.py`, to `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, and to operator-gate constants throughout the substrate. A bridge consensus can never self-approve a change to the gate that evaluates it — such PRs always operator-merge.
+The same ban applies to denylist edits inside `tools/idle_consensus_to_pr.py`, to the consensus-verification logic inside `tools/idle_consensus_auto_merge.py`, `tools/check_bridge_changes_requested.py`, `tools/check_rco_pass_present.py`, `tools/check_promotion_eligible.py`, and `tools/write_bridge_consensus_merge_receipt.py`, to `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, and to operator-gate constants throughout the substrate. A bridge consensus can never self-approve a change to the gate that evaluates it — such PRs always operator-merge.
 
 ## Charter scope
 

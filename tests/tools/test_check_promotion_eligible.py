@@ -185,6 +185,45 @@ def test_rco2_can_satisfy_recognized_rco_slot() -> None:
     )
 
 
+def test_configured_nondefault_rco_can_satisfy_all_gates() -> None:
+    report = _evaluate(
+        events=_full_events(rco_agent="fable-5"),
+        rco_agents=["fable-5"],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+    assert report["gate_results"]["rco_pass"]["satisfying_rco_agent"] == "fable-5"
+    assert (
+        report["gate_results"]["bridge_consensus"]["satisfying_rco_agent"]
+        == "fable-5"
+    )
+
+
+def test_configured_nondefault_rco_malformed_current_head_veto_is_invalid() -> None:
+    events = _full_events()
+    events.append(
+        _event(
+            "fable-5",
+            "operator_review_required",
+            type_="finding",
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": HEAD, "pr": "901"},
+        )
+    )
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5", "claude-rco-1"],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "pr must be a positive integer" in report["errors"][0]
+
+
 def test_descriptive_build_consensus_payload_head_fails_promotion() -> None:
     events = [
         _event(
@@ -233,8 +272,8 @@ def test_descriptive_build_consensus_stale_payload_head_fails_promotion() -> Non
     report = _evaluate(events=events)
 
     assert report["eligible"] is False
-    assert report["decision"] == "invalid_input"
-    assert "contradictory head evidence" in report["errors"][0]
+    assert report["decision"] == "promotion_not_eligible"
+    assert "bridge consensus incomplete" in report["reasons"]
 
 
 def test_descriptive_build_consensus_payload_head_block_fails_promotion() -> None:
@@ -878,7 +917,7 @@ def test_irrelevant_legacy_authority_payload_shapes_do_not_poison_history() -> N
 @pytest.mark.parametrize(
     ("payload_key", "payload_value"),
     [
-        ("exact_head", True),
+        ("exact_head", False),
         ("exact_head", HEAD.upper()),
         ("pr", "901"),
         ("pr", False),
@@ -898,14 +937,468 @@ def test_relevant_authority_payload_values_require_exact_types(
     assert report["eligible"] is False
 
 
-def test_current_approval_with_message_payload_head_conflict_is_invalid() -> None:
+def test_exact_head_true_flag_is_valid_with_typed_head_binding() -> None:
     events = _full_events()
-    events[0]["payload"]["head"] = NEW_HEAD
+    events[0]["payload"]["exact_head"] = True
 
     report = _evaluate(events=events)
 
+    assert report["eligible"] is True
+
+
+@pytest.mark.parametrize("event_indexes", [(0, 1, 2), (0,), (2,)])
+def test_typed_stale_head_cannot_fall_back_to_current_message_head(
+    event_indexes: tuple[int, ...],
+) -> None:
+    events = _full_events()
+    for index in event_indexes:
+        events[index]["payload"]["head"] = "f" * 40
+
+    report = _evaluate(events=events)
+
+    if event_indexes == (2,):
+        assert report["eligible"] is True
+        assert report["decision"] == "promotion_eligible"
+    else:
+        assert report["eligible"] is False
+        assert report["decision"] == "promotion_not_eligible"
+        assert "bridge consensus incomplete" in report["reasons"]
+
+
+@pytest.mark.parametrize(
+    "clear_status",
+    [
+        "changes_requested_cleared_ci_green",
+        "rco_changes_requested_cleared",
+        "approved_waiver_block_cleared",
+        "producer_no_block_reemit_required",
+    ],
+)
+def test_peer_consumed_clear_cannot_bypass_malformed_authority_payload(
+    clear_status: str,
+) -> None:
+    events = _full_events()
+    events.extend(
+        [
+            _event(
+                "codex-tools-1",
+                "changes_requested",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                clear_status,
+                ts="2026-06-05T05:34:00Z",
+                payload={"head": HEAD, "pr": "901"},
+            ),
+        ]
+    )
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
     assert report["decision"] == "invalid_input"
-    assert "contradictory head evidence" in report["errors"][0]
+    assert "pr must be a positive integer" in report["errors"][0]
+
+
+def test_pr_task_scope_malformed_clear_cannot_reopen_current_block() -> None:
+    events = _full_events()
+    events.extend(
+        [
+            _event(
+                "codex-tools-1",
+                "changes_requested",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "changes_requested_cleared",
+                task_id="review for PR #901",
+                ts="2026-06-05T05:34:00Z",
+                payload={"head": 123},
+            ),
+        ]
+    )
+    events[-1]["message"] = "changes_requested_cleared"
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "head must be an exact lowercase sha" in report["errors"][0]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {"head": NEW_HEAD, "pr": 901},
+            f"changes_requested_cleared exact head {NEW_HEAD}",
+        ),
+        ({"pr": 901}, "changes_requested_cleared"),
+        ({"head": NEW_HEAD, "pr": 901}, "changes_requested_cleared"),
+    ],
+)
+def test_stale_or_headless_clear_cannot_reopen_current_block(
+    payload: dict,
+    message: str,
+) -> None:
+    events = _full_events()
+    events.extend(
+        [
+            _event(
+                "codex-tools-1",
+                "changes_requested",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "codex-tools-1",
+                "changes_requested_cleared",
+                ts="2026-06-05T05:34:00Z",
+                payload=payload,
+            ),
+        ]
+    )
+    events[-1]["message"] = message
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "unresolved peer bridge block" in report["reasons"][0]
+    assert "bridge consensus incomplete" in report["reasons"]
+
+
+def test_block_by_type_is_never_filtered_as_stale_enabling_evidence() -> None:
+    events = _full_events()
+    events.append(
+        _event(
+            "claude-rco-1",
+            "rco_pass",
+            type_="finding",
+            ts="2026-06-05T05:33:00Z",
+            payload={"pr": 901},
+        )
+    )
+    events[-1]["message"] = "headless finding remains a fail-closed veto"
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "unresolved peer bridge block" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"rco_pass exact head {HEAD}; superseded exact head {NEW_HEAD}",
+        f"reviewed base {HEAD}; no exact-head binding",
+    ],
+)
+def test_rco_payload_head_does_not_hide_unsafe_message_fallback(
+    message: str,
+) -> None:
+    events = _full_events()
+    events[2]["message"] = message
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
+
+
+def test_rco_exact_head_string_can_dominate_noisy_message() -> None:
+    events = _full_events()
+    events[2]["payload"]["exact_head"] = HEAD
+    events[2]["message"] = (
+        f"rco_pass exact head {HEAD}; superseded exact head {NEW_HEAD}"
+    )
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+
+
+def test_rco_stale_typed_exact_head_cannot_fall_back_to_current_message() -> None:
+    events = _full_events()
+    events[2]["payload"] = {"exact_head": NEW_HEAD, "pr": 901}
+    events[2]["message"] = f"rco_pass exact head {HEAD}"
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+    )
+
+
+@pytest.mark.parametrize("event_index", [0, 1, 2])
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"build_consensus_pass superseded exact head {HEAD}",
+        f"rco_pass not exact head {HEAD}",
+        f"approval base exact head {HEAD}",
+        f"exact head {HEAD} is stale",
+        f"build_consensus_pass superseded (exact head {HEAD})",
+        f"build_consensus_pass not, exact head {HEAD}",
+        f"rco_pass isn't exact head {HEAD}",
+        f"rco_pass wrong exact head {HEAD}",
+        f"rco_pass invalid exact head {HEAD}",
+        f"rco_pass cannot approve exact head {HEAD}",
+        f"rco_pass exact head {HEAD}, is stale",
+        f"rco_pass exact head {HEAD} isn't current",
+        f"rco_pass PR #902 exact head {HEAD}",
+    ],
+)
+def test_unsafe_message_head_roles_cannot_enable_authority(
+    event_index: int,
+    message: str,
+) -> None:
+    events = _full_events()
+    events[event_index]["payload"] = {"pr": 901}
+    events[event_index]["message"] = message
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+        if event_index == 2
+        else "bridge consensus incomplete" in report["reasons"]
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"build_consensus_pass exact head {HEAD}",
+        f"build_consensus_pass PR #901 exact head {HEAD}",
+        f"build_consensus_pass for PR #901 at exact head {HEAD}",
+        f"build consensus pass at exact-head {HEAD}.",
+        f"no blockers at exact head {HEAD}",
+        f"no issues at exact head: {HEAD}.",
+    ],
+)
+def test_canonical_positive_message_head_fallback_remains_valid(
+    message: str,
+) -> None:
+    events = _full_events()
+    events[0]["payload"] = {"pr": 901}
+    events[0]["message"] = message
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "not_approved",
+        "approved_not",
+        "rco_not_pass",
+        "acknowledged_not",
+    ],
+)
+def test_negated_approval_shaped_status_cannot_clear_peer_block(
+    status: str,
+) -> None:
+    events = _full_events()
+    events.extend(
+        [
+            _event(
+                "peer-agent",
+                "changes_requested",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "peer-agent",
+                status,
+                ts="2026-06-05T05:34:00Z",
+                payload={"head": HEAD, "pr": 901},
+            ),
+        ]
+    )
+    events[-1]["message"] = f"{status} exact head {HEAD}"
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "unresolved peer bridge block" in report["reasons"][0]
+
+
+def test_custom_rco_informational_finding_does_not_poison_history() -> None:
+    events = _full_events(rco_agent="fable-5")
+    events.append(
+        _event(
+            "fable-5",
+            "info",
+            type_="finding",
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": HEAD, "pr": "901"},
+        )
+    )
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5"],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+
+
+def test_ambiguous_explicit_message_head_fallback_is_invalid() -> None:
+    events = _full_events()
+    events[0]["payload"] = {"pr": 901}
+    events[0]["message"] = (
+        f"build_consensus_pass exact head {HEAD}; "
+        f"superseded exact head {NEW_HEAD}"
+    )
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "bridge consensus incomplete" in report["reasons"]
+
+
+@pytest.mark.parametrize("event_index", [0, 1, 2])
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"reviewed exact head {NEW_HEAD}; base {HEAD}",
+        f"reviewed exact head {NEW_HEAD}; superseded {HEAD}",
+        f"base {HEAD}; no exact-head binding",
+    ],
+)
+def test_loose_current_sha_cannot_satisfy_message_only_authority_binding(
+    event_index: int,
+    message: str,
+) -> None:
+    events = _full_events()
+    events[event_index]["payload"] = {"pr": 901}
+    events[event_index]["message"] = message
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert (
+        "missing exact-head RCO_PASS from recognized non-author RCO"
+        in report["reasons"]
+        if event_index == 2
+        else "bridge consensus incomplete" in report["reasons"]
+    )
+
+
+def test_message_only_stale_authority_does_not_poison_current_head() -> None:
+    events = _full_events()
+    for index, (agent, status) in enumerate(
+        [
+            ("codex-lead-1", "build_consensus_pass"),
+            ("codex-tools-1", "build_consensus_pass"),
+            ("claude-rco-1", "rco_pass"),
+        ],
+        start=40,
+    ):
+        event = _event(
+            agent,
+            status,
+            ts=f"2026-06-05T05:{index}:00Z",
+            payload={"pr": 901},
+        )
+        event["message"] = f"{status} exact head {NEW_HEAD}"
+        events.append(event)
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+
+
+def test_canonical_pr1551_diagnostic_string_pr_is_not_authority() -> None:
+    event = {
+        "ts_utc": "2026-07-21T08:30:56.8213241Z",
+        "agent": "codex-tools-1",
+        "type": "handoff",
+        "status": "rco_lane_verification_requested",
+        "task_id": (
+            "rco-lane-failover-scout-2026-07-21-claude-rco-2-"
+            "since-20260720t054533z"
+        ),
+        "message": (
+            "Please verify the inactive lane for PR #1551 at "
+            "e6870ebb91b1c30b6278b4d80e261479c325798d."
+        ),
+        "payload": {
+            "authority": "diagnostic_only",
+            "head": "e6870ebb91b1c30b6278b4d80e261479c325798d",
+            "pr": "1551",
+            "task_id": (
+                "codex-lead-1/idle-dispatcher-rco-requests-20260720"
+            ),
+        },
+    }
+    events = [event]
+
+    promotion_tool._validate_event_envelopes(events)
+    promotion_tool._validate_event_authority_consistency(
+        events,
+        expected_task_id="codex-tools-1/unified-bridge-author-resolver-20260724",
+        expected_pr_number=1551,
+        expected_head="e6870ebb91b1c30b6278b4d80e261479c325798d",
+    )
+
+
+def test_canonical_pr1557_pass_allows_base_and_superseded_sha_roles() -> None:
+    head = "c4f63493968c7ae73fea43c8b0a372ff6e7319af"
+    current_head = "edbe8ddf048ce4e58e6d4d47082326e22e9d5b9d"
+    base = "ae61cf33eae2d3b9b517663fcb63bdaa61ea4201"
+    superseded = "73c7f864d63b9be666644f3e13f1dc2f42c4fefe"
+    task = "fable-5/w2a-cell-identity-lineage-contracts-20260724"
+    event = {
+        "ts_utc": "2026-07-24T06:55:08.2155416Z",
+        "agent": "codex-tools-1",
+        "type": "decision",
+        "status": "build_consensus_pass",
+        "task_id": task,
+        "message": (
+            f"TOOLS independent exact-head PASS for draft PR #1557 "
+            f"at exact head {head} (base {base}). "
+            f"The superseded {superseded} timestamp gap is fixed."
+        ),
+        "payload": {
+            "base": base,
+            "head": head,
+            "pr": 1557,
+            "superseded_head": superseded,
+            "verdict": "build_consensus_pass",
+        },
+    }
+    events = [event]
+
+    promotion_tool._validate_event_envelopes(events)
+    promotion_tool._validate_event_authority_consistency(
+        events,
+        expected_task_id=task,
+        expected_pr_number=1557,
+        expected_head=current_head,
+    )
 
 
 @pytest.mark.parametrize(

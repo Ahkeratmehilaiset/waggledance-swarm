@@ -29,6 +29,7 @@ A_CLASS_PATHS = [
     "tools/verify_bridge_consensus.py",
     "tools/check_bridge_changes_requested.py",
     "tools/check_rco_pass_present.py",
+    "tools/check_promotion_eligible.py",
     "tools/merge_with_bridge_receipt.py",
     "tools/write_bridge_consensus_merge_receipt.py",
     "tools/check_proven_safe_autosign_class.py",
@@ -51,6 +52,7 @@ A_CLASS_PATHS = [
     "waggledance/core/v3_13_0/doc_ingest.py",
     "tests/tools/test_verify_bridge_consensus_conformance.py",
     "tests/tools/verify_bridge_consensus_conformance_corpus.json",
+    "tests/tools/test_check_promotion_eligible.py",
     "tests/tools/test_standing_consensus_sign_class.py",   # this very file (self)
     "tests/tools/test_bridge_event_writer.py",              # writer conformance anchor
     "tests/tools/test_cause_b_rco_finding_blocks_by_type.py",

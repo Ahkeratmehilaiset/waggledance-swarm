@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.build_promotion_driver_lag_report import (
     build_promotion_driver_lag_report,
 )
@@ -125,6 +127,92 @@ def test_open_nondraft_eligible_pr_reports_merge_only_pending() -> None:
     assert report["lag_reason"] == "driver_action_pending"
 
 
+def test_nonclean_raw_merge_state_fails_closed() -> None:
+    report = _report(status=_status(mergeStateStatus="UNSTABLE"))
+
+    assert report["decision"] == "promotion_driver_lag_absent"
+    assert report["driver_action_required"] is False
+    assert report["promotion"]["eligible"] is False
+    assert report["promotion"]["gate_ok"]["snapshot_state"] is False
+
+
+def test_equivalent_raw_and_canonical_aliases_are_accepted() -> None:
+    report = _report(
+        status=_status(
+            is_draft=True,
+            mergeable="MERGEABLE",
+        )
+    )
+
+    assert report["decision"] == "promotion_driver_lag_detected"
+    assert report["promotion"]["eligible"] is True
+    assert report["required_driver_actions"] == ["undraft", "merge"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mergeStateStatus": "UNSTABLE", "mergeable": "MERGEABLE"},
+        {"isDraft": True, "is_draft": False},
+        {"mergeStateStatus": 7, "mergeable": "MERGEABLE"},
+        {"isDraft": "yes", "is_draft": False},
+        {"mergeable": True},
+        {"is_draft": "yes"},
+        {"pr_state": 7},
+        {"draft": "yes"},
+        {"merge_state": 7},
+        {"mergedAt": 7},
+    ],
+)
+def test_malformed_or_conflicting_status_aliases_fail_closed(
+    overrides: dict[str, object],
+) -> None:
+    report = _report(status=_status(**overrides))
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["driver_action_required"] is False
+    assert report["would_merge"] is False
+
+
+def test_summary_only_status_aliases_normalize_to_verifier_boundary() -> None:
+    status = _status()
+    status["pr_state"] = status.pop("state")
+    status["draft"] = status.pop("isDraft")
+    status["merge_state"] = status.pop("mergeStateStatus")
+    status["mergedAt"] = None
+
+    report = _report(status=status)
+
+    assert report["decision"] == "promotion_driver_lag_detected"
+    assert report["promotion"]["eligible"] is True
+    assert report["required_driver_actions"] == ["undraft", "merge"]
+    assert report["pr"]["state"] == "open"
+    assert report["pr"]["is_draft"] is True
+    assert report["pr"]["merge_state"] == "MERGEABLE"
+    assert report["pr"]["merged_at"] == ""
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"merge_state": "BLOCKED"},
+        {"pr_state": "CLOSED"},
+        {"mergedAt": "2026-07-24T12:00:00Z"},
+        {"draft": False},
+    ],
+)
+def test_additional_conflicting_status_aliases_fail_closed(
+    overrides: dict[str, object],
+) -> None:
+    report = _report(status=_status(**overrides))
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_input"
+    assert report["driver_action_required"] is False
+    assert report["would_merge"] is False
+
+
 def test_ineligible_promotion_has_no_driver_action() -> None:
     report = _report(events=_full_events()[:2])
 
@@ -138,14 +226,14 @@ def test_ineligible_promotion_has_no_driver_action() -> None:
     ]["reasons"]
 
 
-def test_closed_pr_has_no_driver_action_even_when_promotion_eligible() -> None:
+def test_closed_pr_has_no_driver_action_and_is_not_promotion_eligible() -> None:
     report = _report(status=_status(state="MERGED", isDraft=False))
 
     assert report["decision"] == "promotion_driver_lag_absent"
     assert report["driver_action_required"] is False
     assert report["required_driver_actions"] == []
-    assert report["lag_reason"] == "pr_not_open"
-    assert report["promotion"]["eligible"] is True
+    assert report["lag_reason"] == "promotion_not_eligible"
+    assert report["promotion"]["eligible"] is False
 
 
 def test_report_does_not_echo_diff_text_or_changed_paths() -> None:

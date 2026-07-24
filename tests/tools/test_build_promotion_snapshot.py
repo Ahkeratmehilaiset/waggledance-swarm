@@ -387,15 +387,23 @@ def test_event_loader_rejects_overflowed_finite_literal(
 
 
 @pytest.mark.parametrize(
-    "raw",
+    ("raw", "expected_message"),
     [
-        b'{"value":' + (b"9" * 5000) + b"}",
-        b'{"value":' + (b"[" * 5000) + b"0" + (b"]" * 5000) + b"}",
+        (
+            b'{"value":' + (b"9" * 5000) + b"}",
+            "invalid bridge events JSON at line 1",
+        ),
+        (
+            b'{"value":' + (b"[" * 70) + b"0" + (b"]" * 70) + b"}",
+            "invalid bridge events JSON at line 1: "
+            "maximum JSON nesting depth exceeded",
+        ),
     ],
 )
 def test_event_loader_controls_huge_integer_and_deep_json(
     tmp_path: Path,
     raw: bytes,
+    expected_message: str,
 ) -> None:
     path = tmp_path / "events.jsonl"
     path.write_bytes(raw)
@@ -403,7 +411,7 @@ def test_event_loader_controls_huge_integer_and_deep_json(
     with pytest.raises(PromotionSnapshotError) as raised:
         _read_events_fail_closed(path)
 
-    assert str(raised.value) == "invalid bridge events JSON at line 1"
+    assert str(raised.value) == expected_message
     assert str(path) not in str(raised.value)
 
 

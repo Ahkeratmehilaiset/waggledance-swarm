@@ -67,6 +67,8 @@ CORPUS_ANCHOR_FILE_DENYLIST_ENTRIES = {
 ADVERSARIAL_GATE_FILE_DENYLIST_ENTRIES = {
     "waggledance/core/magma/adversarial_gate.py",
     "tools/idle_consensus_to_pr.py",
+    "tools/check_promotion_eligible.py",
+    "tests/tools/test_check_promotion_eligible.py",
 }
 MAGMA_PROVENANCE_FILE_DENYLIST_ENTRIES = {
     "tools/verify_magma_receipt.py",

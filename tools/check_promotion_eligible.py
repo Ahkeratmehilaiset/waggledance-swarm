@@ -24,15 +24,35 @@ if str(ROOT) not in sys.path:
 
 from tools.check_bridge_changes_requested import (  # noqa: E402
     APPROVAL_STATUSES as PEER_APPROVAL_STATUSES,
+    BLOCKING_EVENT_TYPES as PEER_BLOCKING_EVENT_TYPES,
     BLOCKING_STATUSES as PEER_BLOCKING_STATUSES,
+    CLEAR_EVENT_TYPES as PEER_CLEAR_EVENT_TYPES,
+    DONE_APPROVAL_STATUSES as PEER_DONE_APPROVAL_STATUSES,
+    _RECOGNIZED_RCOS as PEER_RECOGNIZED_RCO_AGENTS,
+    _event_matches_scope as _peer_event_matches_scope,
+    _is_approval_status as _peer_is_approval_status,
+    _is_blocking_status as _peer_is_blocking_status,
+    _is_clear_status as _peer_is_clear_status,
     check_bridge_clear_to_merge,
 )
 from tools.check_rco_pass_present import (  # noqa: E402
+    DECISION_TYPES_FOR_PASS as RCO_PASS_EVENT_TYPES,
+    _is_rco_veto_event,
     check_rco_pass_present,
 )
 from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from tools.idle_consensus_auto_merge import (  # noqa: E402
+    BRIDGE_CONSENSUS_LEAD,
+    BRIDGE_CONSENSUS_TOOLS,
+    BUILD_CONSENSUS_STATUSES,
+    DECISION_EVENT_TYPES,
+    RCO_PASS_STATUSES,
+    _consensus_block_scope_match,
     verify_bridge_consensus,
+)
+from tools.bridge_event_taxonomy import (  # noqa: E402
+    BLOCK_BY_TYPE as AUTHORITY_BLOCK_BY_TYPE,
+    RCO_GATED_TYPES as AUTHORITY_RCO_GATED_TYPES,
 )
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
@@ -48,8 +68,9 @@ UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
-MESSAGE_SHA_RE = re.compile(
-    r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{40}(?![0-9A-Fa-f])"
+EXPLICIT_EXACT_HEAD_RE = re.compile(
+    r"(?i)\bexact(?:[-_\s]+)head(?:[-_\s]+sha)?"
+    r"\s*(?:[:=@]\s*)?([0-9a-f]{40})(?![0-9a-f])"
 )
 MAX_AUTHORITY_INTEGER = (1 << 63) - 1
 AUTHORITY_HEAD_KEYS = (
@@ -313,6 +334,7 @@ def _evaluate_promotion_eligibility(
         expected_task_id=task_id,
         expected_pr_number=number,
         expected_head=head,
+        recognized_rco_agents=rco_agent_set,
     )
     prior_diff_text = _prior_approved_diff_text(
         pr_status=pr_status,
@@ -362,23 +384,30 @@ def _evaluate_promotion_eligibility(
         prior_approved_diff_text=prior_diff_text,
     )
     approval_head = str(base_gate["approval_head"])
+    gate_events = _current_head_gate_events(
+        events,
+        expected_task_id=task_id,
+        expected_pr_number=number,
+        expected_head=approval_head,
+        recognized_rco_agents=rco_agent_set,
+    )
     try:
         peer_gate = check_bridge_clear_to_merge(
-            events=events,
+            events=gate_events,
             task_id=task_id,
             merging_agent=from_agent,
             author_agent=author_agent,
             pr_number=number,
         )
         rco_pass_gate = _rco_pass_set_gate(
-            events=events,
+            events=gate_events,
             task_id=task_id,
             head=approval_head,
             rco_agents=rco_agent_set,
             author_agent=author_agent,
         )
         bridge_consensus_gate = _bridge_consensus_set_gate(
-            events=events,
+            events=gate_events,
             task_id=task_id,
             head=approval_head,
             pr_number=number,
@@ -1018,95 +1047,90 @@ def _validate_event_authority_consistency(
     expected_task_id: str,
     expected_pr_number: int,
     expected_head: str,
+    recognized_rco_agents: Sequence[str] = DEFAULT_RCO_AGENTS,
 ) -> None:
     assert type(events) is list
     for index, event in enumerate(events, 1):
         assert type(event) is dict
-        payload = event["payload"]
-        message = event["message"]
-        event_task = event["task_id"]
-        payload_mapping = payload if type(payload) is dict else {}
-        relevant_to_task = event_task == expected_task_id
-        relevant_to_payload_task = any(
-            type(payload_mapping.get(key)) is str
-            and payload_mapping.get(key) == expected_task_id
-            for key in AUTHORITY_TASK_KEYS
-        )
-        relevant_to_pr = any(
-            _authority_pr_value_matches(
-                payload_mapping.get(key),
-                expected_pr_number,
-            )
-            for key in AUTHORITY_PR_KEYS
-            if key in payload_mapping
-        )
-        relevant_to_head = (
-            expected_head in message.casefold()
-            or any(
-                type(payload_mapping.get(key)) is str
-                and payload_mapping.get(key).strip().casefold() == expected_head
-                for key in AUTHORITY_HEAD_KEYS
-            )
-        )
-        if not (
-            relevant_to_task
-            or relevant_to_payload_task
-            or relevant_to_pr
-            or relevant_to_head
+        if not _is_exact_gate_authority_event(
+            event,
+            recognized_rco_agents=recognized_rco_agents,
         ):
             continue
 
-        message_heads = MESSAGE_SHA_RE.findall(message)
-        if any(SHA_RE.fullmatch(value) is None for value in message_heads):
-            raise PromotionEligibilityError(
-                _invalid_report(
-                    "invalid_input",
-                    f"events item {index} message contains a noncanonical sha",
-                )
-            )
-        if type(payload) is not dict:
+        payload = event["payload"]
+        event_task = event["task_id"]
+        payload_mapping = payload if type(payload) is dict else {}
+        if not _event_matches_gate_consumer_scope(
+            event,
+            expected_task_id=expected_task_id,
+            expected_pr_number=expected_pr_number,
+            expected_head=expected_head,
+            recognized_rco_agents=recognized_rco_agents,
+        ):
             continue
 
         payload_heads: list[str] = []
-        for key in AUTHORITY_HEAD_KEYS:
-            if key not in payload:
-                continue
-            value = payload[key]
-            if type(value) is not str or SHA_RE.fullmatch(value) is None:
-                raise PromotionEligibilityError(
-                    _invalid_report(
-                        "invalid_input",
-                        f"events item {index} {key} must be an exact lowercase sha",
+        if type(payload) is dict:
+            for key in AUTHORITY_HEAD_KEYS:
+                if key not in payload:
+                    continue
+                value = payload[key]
+                if key == "exact_head" and type(value) is bool:
+                    if value is not True:
+                        raise PromotionEligibilityError(
+                            _invalid_report(
+                                "invalid_input",
+                                f"events item {index} exact_head flag "
+                                "must be true",
+                            )
+                        )
+                    continue
+                if type(value) is not str or SHA_RE.fullmatch(value) is None:
+                    raise PromotionEligibilityError(
+                        _invalid_report(
+                            "invalid_input",
+                            f"events item {index} {key} must be an exact "
+                            "lowercase sha",
+                        )
                     )
-                )
-            payload_heads.append(value)
-        if len(set(payload_heads)) != len(payload_heads):
-            payload_heads = list(dict.fromkeys(payload_heads))
-        if len(set(payload_heads)) > 1:
-            raise PromotionEligibilityError(
-                _invalid_report(
-                    "invalid_input",
-                    f"events item {index} has contradictory head evidence",
-                )
-            )
-
-        payload_prs: list[int] = []
-        for key in AUTHORITY_PR_KEYS:
-            if key not in payload:
-                continue
-            value = payload[key]
+                payload_heads.append(value)
             if (
-                type(value) is not int
-                or value <= 0
-                or value > MAX_AUTHORITY_INTEGER
+                type(payload.get("exact_head")) is bool
+                and not payload_heads
             ):
                 raise PromotionEligibilityError(
                     _invalid_report(
                         "invalid_input",
-                        f"events item {index} {key} must be a positive integer",
+                        f"events item {index} exact_head flag requires "
+                        "a typed head binding",
                     )
                 )
-            payload_prs.append(value)
+            if len(set(payload_heads)) > 1:
+                raise PromotionEligibilityError(
+                    _invalid_report(
+                        "invalid_input",
+                        f"events item {index} has contradictory head evidence",
+                    )
+                )
+        payload_prs: list[int] = []
+        if type(payload) is dict:
+            for key in AUTHORITY_PR_KEYS:
+                if key not in payload:
+                    continue
+                value = payload[key]
+                if (
+                    type(value) is not int
+                    or value <= 0
+                    or value > MAX_AUTHORITY_INTEGER
+                ):
+                    raise PromotionEligibilityError(
+                        _invalid_report(
+                            "invalid_input",
+                            f"events item {index} {key} must be a positive integer",
+                        )
+                    )
+                payload_prs.append(value)
         if len(set(payload_prs)) > 1:
             raise PromotionEligibilityError(
                 _invalid_report(
@@ -1116,22 +1140,23 @@ def _validate_event_authority_consistency(
             )
 
         payload_tasks: list[str] = []
-        for key in AUTHORITY_TASK_KEYS:
-            if key not in payload:
-                continue
-            value = payload[key]
-            if (
-                type(value) is not str
-                or not value
-                or value != value.strip()
-            ):
-                raise PromotionEligibilityError(
-                    _invalid_report(
-                        "invalid_input",
-                        f"events item {index} {key} must be an exact string",
+        if type(payload) is dict:
+            for key in AUTHORITY_TASK_KEYS:
+                if key not in payload:
+                    continue
+                value = payload[key]
+                if (
+                    type(value) is not str
+                    or not value
+                    or value != value.strip()
+                ):
+                    raise PromotionEligibilityError(
+                        _invalid_report(
+                            "invalid_input",
+                            f"events item {index} {key} must be an exact string",
+                        )
                     )
-                )
-            payload_tasks.append(value)
+                payload_tasks.append(value)
         if len(set(payload_tasks)) > 1:
             raise PromotionEligibilityError(
                 _invalid_report(
@@ -1158,29 +1183,257 @@ def _validate_event_authority_consistency(
                 )
             )
 
-        if (
-            _status_has_authority_semantics(event["status"])
-            and payload_heads
-            and message_heads
-            and len(set([*payload_heads, *message_heads])) > 1
-        ):
-            raise PromotionEligibilityError(
-                _invalid_report(
-                    "invalid_input",
-                    f"events item {index} has contradictory head evidence",
-                )
-            )
 
-
-def _authority_pr_value_matches(
-    value: object,
-    expected_pr_number: int,
+def _is_exact_gate_authority_event(
+    event: Mapping[str, Any],
+    *,
+    recognized_rco_agents: Sequence[str] = DEFAULT_RCO_AGENTS,
 ) -> bool:
-    if type(value) in {bool, int, float}:
-        return value == expected_pr_number
-    if type(value) is str:
-        return value.strip() == str(expected_pr_number)
-    return False
+    event_type = event["type"]
+    status = event["status"]
+    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
+        return True
+    if _is_exact_gate_blocking_event(
+        event,
+        recognized_rco_agents=recognized_rco_agents,
+    ):
+        return True
+    if event_type in {"decision", "rco_review", "finding", "done"}:
+        if (
+            event_type != "done"
+            or status in PEER_DONE_APPROVAL_STATUSES
+        ) and _peer_is_approval_status(status):
+            return True
+    return (
+        event_type in DECISION_EVENT_TYPES
+        and status in BUILD_CONSENSUS_STATUSES | RCO_PASS_STATUSES
+    )
+
+
+def _is_exact_gate_blocking_event(
+    event: Mapping[str, Any],
+    *,
+    recognized_rco_agents: Sequence[str] = DEFAULT_RCO_AGENTS,
+) -> bool:
+    event_type = event["type"]
+    status = event["status"]
+    agent = event["agent"]
+    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
+        return False
+    if event_type in AUTHORITY_BLOCK_BY_TYPE and (
+        event_type not in AUTHORITY_RCO_GATED_TYPES
+        or agent in PEER_RECOGNIZED_RCO_AGENTS
+        or (
+            agent in recognized_rco_agents
+            and _is_rco_veto_event(event)
+        )
+    ):
+        return True
+    return (
+        event_type in PEER_BLOCKING_EVENT_TYPES
+        and _peer_is_blocking_status(status, event_type=event_type)
+    )
+
+
+def _is_exact_gate_enabling_event(event: Mapping[str, Any]) -> bool:
+    event_type = event["type"]
+    status = event["status"]
+    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
+        return True
+    if event_type in {"decision", "rco_review", "finding", "done"}:
+        if (
+            event_type != "done"
+            or status in PEER_DONE_APPROVAL_STATUSES
+        ) and _peer_is_approval_status(status):
+            return True
+    return (
+        event_type in DECISION_EVENT_TYPES
+        and status in BUILD_CONSENSUS_STATUSES | RCO_PASS_STATUSES
+    )
+
+
+def _is_safe_exact_gate_enabling_event(event: Mapping[str, Any]) -> bool:
+    event_type = event["type"]
+    status = event["status"]
+    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
+        return True
+    if event_type in {"decision", "rco_review", "finding", "done"}:
+        if (
+            event_type != "done"
+            or status in PEER_DONE_APPROVAL_STATUSES
+        ) and status in PEER_APPROVAL_STATUSES:
+            return True
+    return (
+        event_type in DECISION_EVENT_TYPES
+        and status in BUILD_CONSENSUS_STATUSES | RCO_PASS_STATUSES
+    )
+
+
+def _event_matches_gate_consumer_scope(
+    event: Mapping[str, Any],
+    *,
+    expected_task_id: str,
+    expected_pr_number: int,
+    expected_head: str,
+    recognized_rco_agents: Sequence[str],
+) -> bool:
+    """Mirror the live peer/consensus task, PR, and head scope predicates."""
+    if _peer_event_matches_scope(
+        event,
+        task_id=expected_task_id,
+        pr_number=expected_pr_number,
+    ):
+        return True
+    consensus_head_scoped = _consensus_block_scope_match(
+        event,
+        task_id=expected_task_id,
+        pr_number=expected_pr_number,
+        head_sha=expected_head,
+    )
+    if not consensus_head_scoped:
+        return False
+    if _is_exact_gate_blocking_event(
+        event,
+        recognized_rco_agents=recognized_rco_agents,
+    ):
+        return True
+    if (
+        event["type"] in PEER_CLEAR_EVENT_TYPES
+        and _peer_is_clear_status(event["status"])
+    ):
+        return True
+    if (
+        event["agent"] in {BRIDGE_CONSENSUS_LEAD, BRIDGE_CONSENSUS_TOOLS}
+        and event["type"] in DECISION_EVENT_TYPES
+        and event["status"] in BUILD_CONSENSUS_STATUSES
+    ):
+        return True
+    return (
+        event["agent"] in recognized_rco_agents
+        and event["type"] in RCO_PASS_EVENT_TYPES
+        and event["status"] in RCO_PASS_STATUSES
+    )
+
+
+def _is_rco_pass_authority_event(
+    event: Mapping[str, Any],
+    *,
+    recognized_rco_agents: Sequence[str],
+) -> bool:
+    return (
+        event["agent"] in recognized_rco_agents
+        and event["type"] in RCO_PASS_EVENT_TYPES
+        and event["status"] in RCO_PASS_STATUSES
+    )
+
+
+def _message_has_sole_current_exact_head_binding(
+    message: str,
+    *,
+    expected_head: str,
+    expected_pr_number: int,
+    status: str,
+) -> bool:
+    status_tokens = [
+        re.escape(token)
+        for token in re.split(r"[-_\s]+", status.strip())
+        if token
+    ]
+    if not status_tokens:
+        return False
+    status_phrase = r"[-_\s]+".join(status_tokens)
+    match = re.fullmatch(
+        rf"(?i)\s*(?:{status_phrase}"
+        r"(?:\s+(?:for\s+)?pr\s*#?([1-9][0-9]*))?"
+        r"|no\s+(?:blockers?|issues?))"
+        r"(?:\s+at)?\s+exact(?:[-_\s]+)head(?:[-_\s]+sha)?"
+        r"\s*(?:[:=@]\s*)?([0-9a-f]{40})\s*[.!]?\s*",
+        message,
+    )
+    if match is None or match.group(2) != expected_head:
+        return False
+    message_pr = match.group(1)
+    return message_pr is None or int(message_pr) == expected_pr_number
+
+
+def _event_has_current_head_binding(
+    event: Mapping[str, Any],
+    *,
+    expected_head: str,
+    expected_pr_number: int,
+    recognized_rco_agents: Sequence[str],
+) -> bool:
+    if not _is_safe_exact_gate_enabling_event(event):
+        return False
+    payload = event["payload"]
+    payload_mapping = payload if type(payload) is dict else {}
+    if _is_rco_pass_authority_event(
+        event,
+        recognized_rco_agents=recognized_rco_agents,
+    ):
+        exact_head = payload_mapping.get("exact_head")
+        if type(exact_head) is str:
+            return exact_head == expected_head
+        return _message_has_sole_current_exact_head_binding(
+            event["message"],
+            expected_head=expected_head,
+            expected_pr_number=expected_pr_number,
+            status=event["status"],
+        )
+    structured_head_present = any(
+        key in payload_mapping for key in AUTHORITY_HEAD_KEYS
+    )
+    if structured_head_present:
+        return any(
+            type(payload_mapping.get(key)) is str
+            and payload_mapping.get(key).strip().casefold() == expected_head
+            for key in AUTHORITY_HEAD_KEYS
+        )
+    return _message_has_sole_current_exact_head_binding(
+        event["message"],
+        expected_head=expected_head,
+        expected_pr_number=expected_pr_number,
+        status=event["status"],
+    )
+
+
+def _current_head_gate_events(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    expected_task_id: str,
+    expected_pr_number: int,
+    expected_head: str,
+    recognized_rco_agents: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    """Drop stale/headless enabling evidence while retaining every block."""
+    filtered: list[Mapping[str, Any]] = []
+    for event in events:
+        if _is_exact_gate_blocking_event(
+            event,
+            recognized_rco_agents=recognized_rco_agents,
+        ):
+            filtered.append(event)
+            continue
+        if not _is_exact_gate_enabling_event(event):
+            filtered.append(event)
+            continue
+        if not _event_matches_gate_consumer_scope(
+            event,
+            expected_task_id=expected_task_id,
+            expected_pr_number=expected_pr_number,
+            expected_head=expected_head,
+            recognized_rco_agents=recognized_rco_agents,
+        ):
+            filtered.append(event)
+            continue
+        if _event_has_current_head_binding(
+            event,
+            expected_head=expected_head,
+            expected_pr_number=expected_pr_number,
+            recognized_rco_agents=recognized_rco_agents,
+        ):
+            filtered.append(event)
+    return filtered
 
 
 def _validate_json_tree(

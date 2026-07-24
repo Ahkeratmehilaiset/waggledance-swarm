@@ -174,6 +174,44 @@ def test_duplicate_json_keys_fail_closed(tmp_path):
         tool.load_corpus(path)
 
 
+@pytest.mark.parametrize(
+    "encoding",
+    ["utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"],
+)
+def test_corpus_requires_strict_utf8_without_any_bom(tmp_path, encoding):
+    path = tmp_path / "encoded.json"
+    raw = json.dumps(
+        {"schema_version": tool.CORPUS_SCHEMA, "cases": []}
+    ).encode(encoding)
+    if encoding in {"utf-16-le", "utf-16-be"}:
+        bom = b"\xff\xfe" if encoding.endswith("-le") else b"\xfe\xff"
+        raw = bom + raw
+    path.write_bytes(raw)
+    with pytest.raises(tool.CorpusError, match=r"^corpus:encoding$"):
+        tool.load_corpus(path)
+
+
+@pytest.mark.parametrize(
+    "hostile_value",
+    ["1e1000000", '"\\ud800"'],
+)
+def test_exponent_bomb_and_unpaired_surrogate_have_stable_error(
+    tmp_path, hostile_value
+):
+    path = tmp_path / "hostile_scalar.json"
+    path.write_bytes(
+        (
+            '{"schema_version":"'
+            + tool.CORPUS_SCHEMA
+            + '","cases":['
+            + hostile_value
+            + "]}"
+        ).encode("ascii")
+    )
+    with pytest.raises(tool.CorpusError, match=r"^corpus:json$"):
+        tool.load_corpus(path)
+
+
 def test_huge_integer_and_decoder_recursion_fail_closed(tmp_path, monkeypatch):
     path = tmp_path / "hostile.json"
     path.write_bytes(
@@ -258,6 +296,18 @@ def test_direct_case_rejects_outer_smuggling_and_enforces_case_cap(monkeypatch):
     assert result["matched_expectation"] is False
 
 
+def test_direct_case_enforces_depth_before_semantic_or_verifier_work():
+    case = deepcopy(tool.load_corpus(CORPUS_PATH)["cases"][0])
+    nested: object = "leaf"
+    for _ in range(tool.MAX_JSON_DEPTH + 1):
+        nested = [nested]
+    case["subject"]["nested"] = nested
+    result = tool.run_case(case)
+    assert result["verifier_verdict"] == "REJECT"
+    assert result["reason"] == "caps:json_depth"
+    assert result["matched_expectation"] is False
+
+
 def test_direct_case_rejects_nested_hostile_value_without_invoking_protocol():
     class HostileMapping(dict):
         invoked = False
@@ -303,24 +353,45 @@ def test_malformed_expectation_fails_closed_without_crashing():
         "case_id": "container.negative.expect_not_mapping",
         "axis": "unknown",
         "matched_expectation": False,
+        "operator_authorized": False,
         "oracle_digest": None,
     }
 
 
-def test_case_report_digest_is_rederivable_and_binds_report_verdict():
+def test_case_report_digest_is_rederivable_and_binds_every_decision_field():
     case = tool.load_corpus(CORPUS_PATH)["cases"][0]
     report = tool.run_case(case)
     assert report["schema_version"] == tool.CASE_REPORT_SCHEMA
     assert report["oracle_digest"] == tool.derive_case_report_digest(report)
 
-    tampered = dict(report)
-    tampered["verifier_verdict"] = "REJECT"
-    assert tool.derive_case_report_digest(tampered) != report["oracle_digest"]
+    mutations = {
+        "oracle_verdict": "REJECT",
+        "verifier_verdict": "REJECT",
+        "reason": "tampered",
+        "diverged": True,
+        "matched_expectation": False,
+        "operator_authorized": True,
+    }
+    for field, value in mutations.items():
+        tampered = dict(report)
+        tampered[field] = value
+        assert tool.derive_case_report_digest(tampered) != report["oracle_digest"]
+
+    missing = dict(report)
+    missing.pop("matched_expectation")
+    with pytest.raises(tool.CorpusError, match=r"^report:keyset$"):
+        tool.derive_case_report_digest(missing)
+
+    extra = dict(report)
+    extra["unexpected"] = True
+    with pytest.raises(tool.CorpusError, match=r"^report:keyset$"):
+        tool.derive_case_report_digest(extra)
 
     class LyingString(str):
         def __eq__(self, other):
             raise AssertionError("must reject without comparison")
 
+    tampered = dict(report)
     tampered["schema_version"] = LyingString(tool.CASE_REPORT_SCHEMA)
     with pytest.raises(tool.CorpusError, match=r"^report:schema_version$"):
         tool.derive_case_report_digest(tampered)

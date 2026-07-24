@@ -31,6 +31,13 @@ MAX_RAW_BYTES = 1_048_576
 MAX_CASES = 4_096
 MAX_CASE_BYTES = 65_536
 MAX_JSON_DEPTH = 128
+_JSON_BOMS = (
+    b"\x00\x00\xfe\xff",
+    b"\xff\xfe\x00\x00",
+    b"\xef\xbb\xbf",
+    b"\xfe\xff",
+    b"\xff\xfe",
+)
 
 _DOMAIN_ID = "wd.cell_identity.digest.v1"
 _DOMAIN_LIN = "wd.genesis_lineage.digest.v1"
@@ -46,6 +53,20 @@ _CASE_ID = re.compile(
     r"(positive|negative)\.[a-z0-9_]+$"
 )
 AXES = frozenset({"identity", "lineage", "restore", "authority", "timestamp"})
+CASE_REPORT_KEYS = frozenset(
+    {
+        "schema_version",
+        "case_id",
+        "axis",
+        "oracle_verdict",
+        "verifier_verdict",
+        "reason",
+        "diverged",
+        "matched_expectation",
+        "operator_authorized",
+        "oracle_digest",
+    }
+)
 IDENTITY_KEYS = frozenset(
     {
         "schema_version",
@@ -190,6 +211,8 @@ def derive_case_report_digest(report: object) -> str:
 
     if type(report) is not dict:
         raise CorpusError("report:not_mapping")
+    if set(report) != CASE_REPORT_KEYS:
+        raise CorpusError("report:keyset")
     fields = {
         "schema_version": report.get("schema_version"),
         "case_id": report.get("case_id"),
@@ -197,6 +220,9 @@ def derive_case_report_digest(report: object) -> str:
         "oracle_verdict": report.get("oracle_verdict"),
         "verifier_verdict": report.get("verifier_verdict"),
         "reason": report.get("reason"),
+        "diverged": report.get("diverged"),
+        "matched_expectation": report.get("matched_expectation"),
+        "operator_authorized": report.get("operator_authorized"),
     }
     if (
         type(fields["schema_version"]) is not str
@@ -225,6 +251,12 @@ def derive_case_report_digest(report: object) -> str:
         raise CorpusError("report:verifier_verdict")
     if fields["reason"] is not None and type(fields["reason"]) is not str:
         raise CorpusError("report:reason")
+    if type(fields["diverged"]) is not bool:
+        raise CorpusError("report:diverged")
+    if type(fields["matched_expectation"]) is not bool:
+        raise CorpusError("report:matched_expectation")
+    if type(fields["operator_authorized"]) is not bool:
+        raise CorpusError("report:operator_authorized")
     return _digest({"domain": _CASE_REPORT_DIGEST_DOMAIN, **fields})
 
 
@@ -261,9 +293,10 @@ def _require_case_shape(case: object) -> dict[str, Any]:
     if type(case) is not dict:
         raise CorpusError("case:not_mapping")
     _require_plain_json(case)
+    _require_bounded_json_depth(case)
     try:
         case_bytes = _canonical_bytes(case)
-    except (TypeError, ValueError, RecursionError) as exc:
+    except (TypeError, UnicodeError, ValueError, RecursionError) as exc:
         raise CorpusError("case:json") from exc
     if len(case_bytes) > MAX_CASE_BYTES:
         raise CorpusError("caps:case_bytes")
@@ -388,15 +421,24 @@ def load_corpus(path: Path) -> dict[str, Any]:
         raw = stream.read(MAX_RAW_BYTES + 1)
     if len(raw) > MAX_RAW_BYTES:
         raise CorpusError("caps:raw_bytes")
+    if raw.startswith(_JSON_BOMS):
+        raise CorpusError("corpus:encoding")
     try:
+        text = raw.decode("utf-8", errors="strict")
         document = json.loads(
-            raw,
+            text,
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_json_constant,
         )
-    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+    except UnicodeDecodeError as exc:
+        raise CorpusError("corpus:encoding") from exc
+    except (ValueError, RecursionError) as exc:
         raise CorpusError("corpus:json") from exc
     _require_bounded_json_depth(document)
+    try:
+        _canonical_bytes(document)
+    except (TypeError, UnicodeError, ValueError, RecursionError) as exc:
+        raise CorpusError("corpus:json") from exc
     if type(document) is not dict or set(document) != {
         "schema_version",
         "cases",
@@ -413,8 +455,6 @@ def load_corpus(path: Path) -> dict[str, Any]:
     for case in cases:
         if type(case) is not dict:
             raise CorpusError("case:not_mapping")
-        if len(_canonical_bytes(case)) > MAX_CASE_BYTES:
-            raise CorpusError("caps:case_bytes")
         checked_case = _require_case_shape(case)
         case_ids.append(checked_case["case_id"])
     if len(case_ids) != len(set(case_ids)):
@@ -546,10 +586,12 @@ def run_case(case: object) -> dict[str, Any]:
         and result["reason"] == expectation.get("reason")
         and not result["diverged"]
     )
+    result["operator_authorized"] = False
+    result["oracle_digest"] = None
     try:
         result["oracle_digest"] = derive_case_report_digest(result)
     except CorpusError:
-        result["oracle_digest"] = None
+        pass
     return result
 
 

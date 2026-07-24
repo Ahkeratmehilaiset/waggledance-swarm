@@ -37,8 +37,11 @@ SCHEMA_VERSION = "wd.cell_identity.v1"
 DIGEST_DOMAIN = "wd.cell_identity.digest.v1"
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+# ASCII digits ONLY. Python's ``\d`` matches Unicode decimals (Arabic-Indic
+# ٠-٩, fullwidth ０-９), which would pass shape yet be a different lexeme --
+# and Unicode digits are not a canonical content-addressed key.
 _CREATED_AT_UTC = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$"
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z$"
 )
 
 # The complete wire shape. Exact-keyset: extras (e.g. a smuggled authority

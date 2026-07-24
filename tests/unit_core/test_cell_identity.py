@@ -229,6 +229,31 @@ def test_noncanonical_fraction_spellings_rejected(value):
     assert verify_cell_identity(broken) == (False, "created_at_utc")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-07-24T06:45:0٠Z",       # Arabic-Indic zero in seconds
+        "2026-07-24T06:45:00.١Z",     # Arabic-Indic one in fraction
+        "2026-07-24T06:45:00.０Z",     # fullwidth zero in fraction
+        "２026-07-24T06:45:00Z",       # fullwidth digit in year
+        "2026-07-24T06:45:00.٩٨Z",  # Arabic-Indic in fraction
+    ],
+)
+def test_unicode_decimal_digits_rejected(value):
+    """Python's \\d matches Unicode decimals; the ASCII-only regex must reject
+    them on BOTH paths so a non-canonical spelling cannot mint an identity
+    (lead's third probe)."""
+    with pytest.raises(CellIdentityError, match="Z suffix"):
+        derive_cell_id(
+            pubkey_digest=_PUBKEY,
+            genesis_material_digest=_GENESIS,
+            created_at_utc=value,
+        )
+    broken = _mapping()
+    broken["created_at_utc"] = value
+    assert verify_cell_identity(broken) == (False, "created_at_utc")
+
+
 def test_one_instant_cannot_mint_two_identities():
     """The canonical spelling passes; every alternate spelling of the same
     instant is rejected, so no instant has two derivable cell_ids."""

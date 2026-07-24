@@ -28,7 +28,7 @@ without weakening any charter gate.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -110,6 +110,7 @@ RCO_SCOUT_OUTCOME_TYPES = frozenset(
 RCO_SCOUT_TERMINAL_HANDOFF_STATUSES = frozenset(
     {"handoff", "rco_lane_restart_requested"}
 )
+RCO_SCOUT_DONE_EVENT_GRACE = timedelta(seconds=5)
 RCO_REEMIT_GATE_TOKENS = (
     "needs rco reemit",
     "rco re-emit",
@@ -2328,10 +2329,37 @@ def _completed_rco_lane_failover_task_ids(
 ) -> set[str]:
     completed: set[str] = set()
     trusted_claims: dict[tuple[str, str], datetime] = {}
+    done_lifecycles: dict[
+        tuple[str, str],
+        list[tuple[datetime, datetime]],
+    ] = {}
     try:
         identity_registry = load_bridge_identity_registry()
     except (OSError, ValueError):
         identity_registry = {}
+
+    for payload in _iter_done_records(bridge_root):
+        lifecycle = _rco_scout_done_lifecycle(
+            payload,
+            now_utc=now_utc,
+        )
+        if lifecycle is None:
+            continue
+        task_id, agent, claimed_at, released_at = lifecycle
+        binding_status = bridge_identity_binding_status(
+            payload,
+            registry=identity_registry,
+            restricted_agents=frozenset(identity_registry),
+        )
+        if binding_status == "valid":
+            completed.add(task_id)
+        # A legacy record with no UUID is never completion authority by
+        # itself. Its atomic claim-to-done lifecycle may only corroborate a
+        # separately identity-bound terminal event from the same agent.
+        if binding_status in {"valid", "missing_uuid"}:
+            done_lifecycles.setdefault((task_id, agent), []).append(
+                (claimed_at, released_at)
+            )
 
     for event in events:
         task_id = str(event.get("task_id", ""))
@@ -2346,22 +2374,20 @@ def _completed_rco_lane_failover_task_ids(
         if claim_time is not None:
             trusted_claims.setdefault((task_id, agent), claim_time)
             continue
+        done_claim_time = _corroborating_rco_scout_done_claim_time(
+            event,
+            done_lifecycles=done_lifecycles,
+        )
         if _is_trusted_rco_scout_completion_event(
             event=event,
-            claimed_at=trusted_claims.get((task_id, agent)),
+            claimed_at=(
+                done_claim_time
+                if done_claim_time is not None
+                else trusted_claims.get((task_id, agent))
+            ),
             now_utc=now_utc,
             identity_registry=identity_registry,
-        ):
-            completed.add(task_id)
-
-    for payload in _iter_done_records(bridge_root):
-        task_id = str(payload.get("task_id", ""))
-        if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
-            continue
-        if _is_trusted_rco_scout_done_record(
-            payload,
-            now_utc=now_utc,
-            identity_registry=identity_registry,
+            corroborated_by_terminal_done=done_claim_time is not None,
         ):
             completed.add(task_id)
 
@@ -2374,6 +2400,7 @@ def _is_trusted_rco_scout_completion_event(
     claimed_at: datetime | None,
     now_utc: datetime,
     identity_registry: Mapping[str, str],
+    corroborated_by_terminal_done: bool = False,
 ) -> bool:
     event_type = event.get("type")
     if not isinstance(event_type, str) or event_type not in RCO_SCOUT_OUTCOME_TYPES:
@@ -2398,7 +2425,10 @@ def _is_trusted_rco_scout_completion_event(
     elif event_type == "finding":
         if status != "open":
             return False
-    elif status not in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES:
+    elif (
+        status not in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES
+        and not corroborated_by_terminal_done
+    ):
         return False
 
     event_time = _parse_strict_utc(event.get("ts_utc"))
@@ -2453,8 +2483,31 @@ def _is_trusted_rco_scout_done_record(
     now_utc: datetime,
     identity_registry: Mapping[str, str],
 ) -> bool:
-    if not isinstance(payload, Mapping):
+    lifecycle = _rco_scout_done_lifecycle(payload, now_utc=now_utc)
+    if lifecycle is None:
         return False
+    # Security-sensitive scout completion never inherits identity merely from
+    # a registered agent string or a done filename. Legacy/unbound records
+    # need a separately identity-bound terminal event and are handled only as
+    # corroborating lifecycle evidence by the collector.
+    return (
+        bridge_identity_binding_status(
+            payload,
+            registry=identity_registry,
+            restricted_agents=frozenset(identity_registry),
+        )
+        == "valid"
+    )
+
+
+def _rco_scout_done_lifecycle(
+    payload: Any,
+    *,
+    now_utc: datetime,
+) -> tuple[str, str, datetime, datetime] | None:
+    """Validate a terminal claim-to-done lifecycle without granting identity."""
+    if not isinstance(payload, Mapping):
+        return None
     required_fields = (
         "agent",
         "task_id",
@@ -2466,29 +2519,51 @@ def _is_trusted_rco_scout_done_record(
     )
     values = {key: _required_exact_string(payload, key) for key in required_fields}
     if not all(values.values()):
-        return False
-    # Security-sensitive scout completion never inherits identity merely from
-    # a registered agent string or a done filename. Legacy/unbound records
-    # cannot clear the completion gate.
-    if bridge_identity_binding_status(
-        payload,
-        registry=identity_registry,
-        restricted_agents=frozenset(identity_registry),
-    ) != "valid":
-        return False
+        return None
     status = values["release_status"]
     if status not in SUCCESSFUL_COMPLETION_STATUSES and status != "handoff":
-        return False
+        return None
 
     task_id = values["task_id"]
+    if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
+        return None
     claimed_at = _parse_strict_utc(values["claimed_at_utc"])
     released_at = _parse_strict_utc(values["released_at_utc"])
     episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
-    return (
-        claimed_at is not None
-        and released_at is not None
-        and episode_started_at <= claimed_at <= released_at <= now_utc
-    )
+    if (
+        claimed_at is None
+        or released_at is None
+        or not episode_started_at <= claimed_at <= released_at <= now_utc
+    ):
+        return None
+    return task_id, values["agent"], claimed_at, released_at
+
+
+def _corroborating_rco_scout_done_claim_time(
+    event: Mapping[str, Any],
+    *,
+    done_lifecycles: Mapping[
+        tuple[str, str],
+        Sequence[tuple[datetime, datetime]],
+    ],
+) -> datetime | None:
+    """Return a lifecycle claim time only when it encloses this exact event."""
+    task_id = _required_exact_string(event, "task_id")
+    agent = _required_exact_string(event, "agent")
+    event_time = _parse_strict_utc(event.get("ts_utc"))
+    if not task_id or not agent or event_time is None:
+        return None
+    matching_claims = [
+        claimed_at
+        for claimed_at, released_at in done_lifecycles.get(
+            (task_id, agent),
+            (),
+        )
+        if claimed_at
+        <= event_time
+        <= released_at + RCO_SCOUT_DONE_EVENT_GRACE
+    ]
+    return max(matching_claims, default=None)
 
 
 def _required_exact_string(mapping: Mapping[str, Any], key: str) -> str:

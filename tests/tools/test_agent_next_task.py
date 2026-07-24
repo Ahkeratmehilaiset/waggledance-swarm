@@ -885,6 +885,177 @@ def test_identity_bound_claim_then_rco_scout_outcome_advances_to_smoke(
 
 
 @pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("done", "done"),
+        ("handoff", "rco_lane_inactive_diagnostics_clear"),
+        ("handoff", "rco1_lane_stalled_verify_or_restart_requested"),
+        ("handoff", "rco2_lane_stalled_verify_or_restart_requested"),
+    ],
+)
+def test_identity_bound_outcome_can_use_matching_legacy_done_lifecycle(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
+    """Legacy work-queue rows corroborate, but never supply, identity."""
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            _rco_lane_stall_event(),
+            _rco_scout_outcome_event(
+                event_type=event_type,
+                status=status,
+                ts_utc="2026-05-20T11:45:00Z",
+            ),
+        ],
+    )
+    done_dir = bridge / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    (done_dir / "legacy-rco-scout.json").write_text(
+        json.dumps(
+            {
+                "agent": "codex-lead-1",
+                "task_id": RCO_FAILOVER_TASK_ID,
+                "summary": "bounded RCO lane failover diagnostic",
+                "release_status": "done",
+                "release_message": "diagnostic complete",
+                "claimed_at_utc": "2026-05-20T11:30:00Z",
+                "released_at_utc": "2026-05-20T11:50:00Z",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+
+
+@pytest.mark.parametrize(
+    "hostile_case",
+    [
+        "missing_event_uuid",
+        "mismatched_event_uuid",
+        "wrong_record_agent",
+        "mismatched_record_uuid",
+        "event_before_claim",
+        "event_after_release_grace",
+        "nonterminal_release",
+    ],
+)
+def test_legacy_done_lifecycle_corroboration_fails_closed(
+    tmp_path: Path,
+    hostile_case: str,
+) -> None:
+    outcome = _rco_scout_outcome_event(
+        event_type="handoff",
+        status="rco1_lane_stalled_verify_or_restart_requested",
+        ts_utc="2026-05-20T11:45:00Z",
+    )
+    payload = {
+        "agent": "codex-lead-1",
+        "task_id": RCO_FAILOVER_TASK_ID,
+        "summary": "bounded RCO lane failover diagnostic",
+        "release_status": "done",
+        "release_message": "diagnostic complete",
+        "claimed_at_utc": "2026-05-20T11:30:00Z",
+        "released_at_utc": "2026-05-20T11:50:00Z",
+    }
+    if hostile_case == "missing_event_uuid":
+        del outcome["agent_uuid"]
+    elif hostile_case == "mismatched_event_uuid":
+        outcome["agent_uuid"] = "00000000-0000-0000-0000-000000000000"
+    elif hostile_case == "wrong_record_agent":
+        payload["agent"] = "fable-5"
+    elif hostile_case == "mismatched_record_uuid":
+        payload["agent_uuid"] = "00000000-0000-0000-0000-000000000000"
+    elif hostile_case == "event_before_claim":
+        outcome["ts_utc"] = "2026-05-20T11:29:59Z"
+    elif hostile_case == "event_after_release_grace":
+        outcome["ts_utc"] = "2026-05-20T11:50:06Z"
+    elif hostile_case == "nonterminal_release":
+        payload["release_status"] = "active"
+
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [_rco_lane_stall_event(), outcome],
+    )
+    done_dir = bridge / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    (done_dir / "legacy-rco-scout.json").write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_lane_failover_scout"
+    assert report["completed_rco_lane_failover_task_ids"] == []
+
+
+def test_real_shaped_legacy_done_prevents_duplicate_rco_scout(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            _rco_lane_stall_event(),
+            _rco_scout_outcome_event(
+                event_type="handoff",
+                status="rco1_lane_stalled_verify_or_restart_requested",
+                ts_utc="2026-05-20T11:49:59Z",
+            ),
+        ],
+    )
+    done_dir = bridge / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    (done_dir / "real-shaped-legacy-record.json").write_text(
+        json.dumps(
+            {
+                "agent": "codex-lead-1",
+                "task_id": RCO_FAILOVER_TASK_ID,
+                "summary": "bounded RCO lane failover diagnostic",
+                "release_status": "done",
+                "release_message": "diagnostic complete; handoff emitted",
+                "claimed_at_utc": "2026-05-20T11:30:00Z",
+                "released_at_utc": "2026-05-20T11:50:00Z",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["candidate"]["kind"] == "run_substrate_smoke"
+
+
+@pytest.mark.parametrize(
     "hostile_case",
     [
         "missing_claim",
@@ -995,6 +1166,56 @@ def test_nonterminal_or_unknown_rco_scout_handoff_does_not_complete_task(
     assert report["decision"] == "claim_rco_lane_failover_scout"
     assert report["candidate"]["kind"] == "rco_lane_failover_scout"
     assert report["completed_rco_lane_failover_task_ids"] == []
+
+
+def test_naive_rco_scout_timestamps_fail_closed(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    _claims_dir(bridge)
+
+    naive_claim_events = [
+        _rco_lane_stall_event(),
+        _rco_scout_claim_event(ts_utc="2026-05-20T11:30:00"),
+        _rco_scout_outcome_event(),
+    ]
+    naive_claim_report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=_events_file(bridge, naive_claim_events),
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    assert naive_claim_report["completed_rco_lane_failover_task_ids"] == []
+
+    naive_outcome_events = [
+        _rco_lane_stall_event(),
+        _rco_scout_claim_event(),
+        _rco_scout_outcome_event(ts_utc="2026-05-20T11:50:00"),
+    ]
+    naive_outcome_report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=_events_file(bridge, naive_outcome_events),
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    assert naive_outcome_report["completed_rco_lane_failover_task_ids"] == []
+
+
+def test_pre_episode_outcome_lower_bound_fails_closed() -> None:
+    identity_registry = agent_next_task.load_bridge_identity_registry()
+    event = _rco_scout_outcome_event(ts_utc="2026-05-20T11:10:00Z")
+
+    assert not agent_next_task._is_trusted_rco_scout_completion_event(
+        event=event,
+        claimed_at=datetime(
+            2026,
+            5,
+            20,
+            11,
+            0,
+            tzinfo=timezone.utc,
+        ),
+        now_utc=NOW,
+        identity_registry=identity_registry,
+    )
 
 
 def test_rco_scout_completion_matching_accepts_only_exact_or_repeat_n() -> None:

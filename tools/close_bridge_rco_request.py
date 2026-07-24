@@ -42,13 +42,18 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.bridge_event_writer import (  # noqa: E402
+    AppendV1Backend,
+    BridgeEventWriteError,
+    validate_v1_replayer_event,
+    write_bridge_event,
+)
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -170,6 +175,7 @@ def close_bridge_rco_request(
     note: str = "",
     now_utc: datetime,
     emit: bool,
+    writer_backend: AppendV1Backend | None = None,
 ) -> dict[str, Any]:
     if not task_id or not task_id.strip():
         raise CloseRcoError("task_id must not be empty", "invalid_args")
@@ -207,6 +213,10 @@ def close_bridge_rco_request(
         note=note,
         now_utc=now_utc,
     )
+    try:
+        validate_v1_replayer_event(event)
+    except BridgeEventWriteError as exc:
+        raise CloseRcoError(str(exc), "invalid_args") from exc
 
     report: dict[str, Any] = {
         "ok": True,
@@ -219,7 +229,18 @@ def close_bridge_rco_request(
         "open_rco_opened_at_utc": open_state["opened_at_utc"],
     }
     if emit:
-        _append_event_with_retry(events_path, event)
+        try:
+            write_bridge_event(
+                bridge_root=bridge_root,
+                events_path=events_path,
+                event=event,
+                # This close helper historically writes only the canonical
+                # stream.  Keep its sidecars deliberately disabled.
+                write_sidecars=False,
+                backend=writer_backend,
+            )
+        except BridgeEventWriteError as exc:
+            raise CloseRcoError(str(exc), exc.decision) from exc
         report["emitted"] = True
         report["decision"] = "closed"
         report["events_path"] = str(events_path)
@@ -334,20 +355,6 @@ def _read_events(events_path: Path) -> list[dict[str, Any]]:
             )
         events.append(event)
     return events
-
-
-def _append_event_with_retry(events_path: Path, event: Mapping[str, Any]) -> None:
-    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
-    events_path.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(40):
-        try:
-            with events_path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line)
-            return
-        except OSError:
-            if attempt == 39:
-                raise
-            time.sleep(0.025 + (attempt * 0.01))
 
 
 def _parse_utc(value: str) -> datetime:

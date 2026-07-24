@@ -26,11 +26,11 @@ def test_independent_reference_reproduces_every_pinned_golden():
         if case["kind"] == "negative":
             assert case["golden"] is None
             continue
-        if case["axis"] in {"identity", "restore"}:
+        if case["axis"] in {"identity", "authority", "timestamp", "restore"}:
             key = (
-                "identity_mapping"
-                if case["axis"] == "identity"
-                else "stored_mapping"
+                "stored_mapping"
+                if case["axis"] == "restore"
+                else "identity_mapping"
             )
             mapping = case["subject"][key]
             assert tool.ref_cell_id(
@@ -61,9 +61,9 @@ def test_corpus_runs_public_verifiers_separately_and_restore_rebuilds():
     # the frozen negative axis-by-reason matrix is added.
     assert report["ok"] is False
     assert report["coverage_complete"] is False
-    assert report["total"] == 10
-    assert report["accepted"] == 3
-    assert report["rejected"] == 7
+    assert report["total"] == 14
+    assert report["accepted"] == 4
+    assert report["rejected"] == 10
     assert report["mismatches"] == []
     assert report["divergences"] == []
     assert report["corpus_matrix_complete"] is False
@@ -94,7 +94,11 @@ def test_pinned_identity_cells_bind_subject_golden_and_expectation(tmp_path):
         case["case_id"]
         for case in document["cases"]
         if case["axis"] == "identity"
-    } == set(tool.PINNED_CASE_DIGESTS)
+    } == {
+        case_id
+        for case_id in tool.PINNED_CASE_DIGESTS
+        if case_id.startswith("identity.")
+    }
 
     tampered = deepcopy(document)
     tampered["cases"][1]["expect"]["reason"] = "keyset"
@@ -102,6 +106,38 @@ def test_pinned_identity_cells_bind_subject_golden_and_expectation(tmp_path):
     path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(tool.CorpusError, match=r"^case:semantic_digest$"):
         tool.load_corpus(path)
+
+
+def test_authority_axis_has_identity_only_witness_and_rejects_smuggling():
+    cases = {
+        case["case_id"]: case
+        for case in tool.load_corpus(CORPUS_PATH)["cases"]
+        if case["axis"] == "authority"
+    }
+    assert set(cases) == {
+        "authority.positive.identity_only",
+        "authority.negative.grant_field",
+        "authority.negative.budget_field",
+        "authority.negative.capability_field",
+    }
+    assert set(cases).issubset(tool.PINNED_CASE_DIGESTS)
+    for case in cases.values():
+        result = tool.run_case(case)
+        assert result["matched_expectation"] is True
+        assert result["diverged"] is False
+
+    smuggled = deepcopy(cases["authority.positive.identity_only"])
+    smuggled["subject"]["authority_grant"] = True
+    result = tool.run_case(smuggled)
+    assert result["verifier_verdict"] == "REJECT"
+    assert result["reason"] == "case:semantic_digest"
+    assert result["matched_expectation"] is False
+    assert tool._authority_result(smuggled) == {
+        "oracle_verdict": "REJECT",
+        "verifier_verdict": "REJECT",
+        "reason": "authority:keyset",
+        "diverged": False,
+    }
 
 
 def test_cli_declares_code_probe_gate_without_fabricating_execution():

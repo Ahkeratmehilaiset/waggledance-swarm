@@ -76,6 +76,7 @@ IDENTITY_KEYS = frozenset(
         "created_at_utc",
     }
 )
+AUTHORITY_SUBJECT_KEYS = frozenset({"identity_mapping"})
 
 # Frozen W2C-A v4 inert-corpus cells. The manifest is deliberately exact:
 # repeating an axis/kind under a new label cannot satisfy matrix coverage.
@@ -157,6 +158,18 @@ PINNED_CASE_DIGESTS = {
     ),
     "identity.negative.extra_key": (
         "sha256:16b75846dfcef64d525ae4a1bd3fa56d766386a720bc740b60dee6b5f72dd924"
+    ),
+    "authority.positive.identity_only": (
+        "sha256:a3ec2ae77efd3e325b7ee4bc128cd1d970e77ee32ac5ccf3977a13aa5405afb9"
+    ),
+    "authority.negative.grant_field": (
+        "sha256:afead55748591c41d4386c9d82b55e84aeb66fb866ca2744aea1a59feb73e4fe"
+    ),
+    "authority.negative.budget_field": (
+        "sha256:119c26fd52c249ed2f5ac21f551d8f4b756f427cfa9be1fe36aec7a5d9644cff"
+    ),
+    "authority.negative.capability_field": (
+        "sha256:a35374f62b384af8940e6f852b0e4c3658f97262ab3534461e58b6abebbf3751"
     ),
 }
 
@@ -495,6 +508,20 @@ def _identity_result(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _authority_result(case: dict[str, Any]) -> dict[str, Any]:
+    """Verify the zero-authority envelope before invoking the identity SUT."""
+
+    subject = case["subject"]
+    if set(subject) != AUTHORITY_SUBJECT_KEYS:
+        return {
+            "oracle_verdict": "REJECT",
+            "verifier_verdict": "REJECT",
+            "reason": "authority:keyset",
+            "diverged": False,
+        }
+    return _identity_result(case)
+
+
 def _lineage_result(case: dict[str, Any]) -> dict[str, Any]:
     from waggledance.core.genesis_lineage import verify_lineage_entry
 
@@ -562,8 +589,10 @@ def run_case(case: object) -> dict[str, Any]:
         case_id = checked_case["case_id"]
         axis = checked_case["axis"]
         expectation = checked_case["expect"]
-        if axis in {"identity", "authority", "timestamp"}:
+        if axis in {"identity", "timestamp"}:
             result = _identity_result(checked_case)
+        elif axis == "authority":
+            result = _authority_result(checked_case)
         elif axis == "lineage":
             result = _lineage_result(checked_case)
         else:

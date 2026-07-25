@@ -28,12 +28,12 @@ without weakening any charter gate.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -45,6 +45,10 @@ from tools.bridge_next_action import (  # noqa: E402
     _load_production_liveness_suppression_config,
     read_events,
     recommend_next_action,
+)
+from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    bridge_identity_binding_status,
+    load_bridge_identity_registry,
 )
 from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
     deferred_lift_state,
@@ -100,6 +104,26 @@ RCO_RESPONSE_STATUSES = {
     "blocked",
     "block_requested",
 }
+RCO_SCOUT_OUTCOME_TYPES = frozenset(
+    {*SUCCESSFUL_COMPLETION_TYPES, "finding", "handoff"}
+)
+RCO_SCOUT_TERMINAL_HANDOFF_STATUSES = frozenset({
+    "handoff",
+    "rco_lane_failover_requested",
+    "rco_lane_inactive_diagnostics_clear",
+    "rco_lane_restart_or_fallback_verification_requested",
+    "rco_lane_restart_or_verify_requested",
+    "rco_lane_restart_requested",
+    "rco_lane_restart_verification_requested",
+    "rco_lane_verification_requested",
+    "rco_lane_verify_requested",
+    "rco1_lane_failover_requested",
+    "rco1_lane_stalled_verify_or_restart_requested",
+    "rco1_lane_verify_requested",
+    "rco2_lane_stalled_verify_or_restart_requested",
+    "rco2_lane_verify_requested",
+})
+RCO_SCOUT_DONE_EVENT_GRACE = timedelta(seconds=5)
 RCO_REEMIT_GATE_TOKENS = (
     "needs rco reemit",
     "rco re-emit",
@@ -2006,8 +2030,14 @@ def _is_same_day_production_liveness_reactivation_task_id(
     task_id: str,
     now_utc: datetime,
 ) -> bool:
-    return task_id.startswith(
-        f"production-liveness-reactivation-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    prefix = (
+        "production-liveness-reactivation-scout-"
+        f"{now_utc.strftime('%Y-%m-%d')}-"
+    )
+    return _is_structured_liveness_task_id(
+        task_id,
+        prefix=prefix,
+        target_agents=tuple(PRODUCTION_PEER_AGENT.values()),
     )
 
 
@@ -2019,9 +2049,30 @@ def _matching_production_liveness_reactivation_task_ids(
     return {
         task_id
         for task_id in task_ids
-        if task_id == canonical_task_id
-        or task_id.startswith(f"{canonical_task_id}-")
+        if _is_exact_or_repeat_task_id(
+            task_id,
+            canonical_task_id=canonical_task_id,
+        )
     }
+
+
+def _iter_done_records(bridge_root: Path) -> Iterator[Mapping[str, Any]]:
+    """Yield only readable JSON-object work-queue completion records."""
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        return
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        # ValueError includes JSONDecodeError and UnicodeError. RecursionError
+        # remains separate because deeply nested hostile JSON can raise it.
+        except (OSError, ValueError, RecursionError):
+            continue
+        if isinstance(payload, Mapping):
+            yield payload
 
 
 def _production_liveness_task_completed_at_or_after(
@@ -2040,17 +2091,7 @@ def _production_liveness_task_completed_at_or_after(
         if completed_at is not None and completed_at >= threshold:
             return True
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         if str(payload.get("task_id") or "") != task_id:
             continue
         status = str(
@@ -2098,8 +2139,11 @@ def _is_same_day_rco_lane_failover_task_id(
     task_id: str,
     now_utc: datetime,
 ) -> bool:
-    return task_id.startswith(
-        f"rco-lane-failover-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    prefix = f"rco-lane-failover-scout-{now_utc.strftime('%Y-%m-%d')}-"
+    return _is_structured_liveness_task_id(
+        task_id,
+        prefix=prefix,
+        target_agents=RCO_REVIEW_AGENTS,
     )
 
 
@@ -2111,9 +2155,52 @@ def _matching_rco_lane_failover_task_ids(
     return {
         task_id
         for task_id in task_ids
-        if task_id == canonical_task_id
-        or task_id.startswith(f"{canonical_task_id}-")
+        if _is_exact_or_repeat_task_id(
+            task_id,
+            canonical_task_id=canonical_task_id,
+        )
     }
+
+
+def _is_exact_or_repeat_task_id(
+    task_id: str,
+    *,
+    canonical_task_id: str,
+) -> bool:
+    if task_id == canonical_task_id:
+        return True
+    return re.fullmatch(
+        rf"{re.escape(canonical_task_id)}-repeat-[1-9][0-9]*",
+        task_id,
+    ) is not None
+
+
+def _is_structured_liveness_task_id(
+    task_id: str,
+    *,
+    prefix: str,
+    target_agents: Sequence[str],
+) -> bool:
+    repeat_pattern = r"(?:-repeat-[1-9][0-9]*)?"
+    for target_agent in target_agents:
+        base = f"{prefix}{target_agent}"
+        match = re.fullmatch(
+            rf"{re.escape(base)}"
+            r"(?:(?:-since-([0-9]{8}t[0-9]{6}z))|"
+            r"(?:-task-[a-z0-9](?:[a-z0-9-]{0,47})))?"
+            rf"{repeat_pattern}",
+            task_id,
+        )
+        if match is None:
+            continue
+        since_token = match.group(1)
+        if since_token:
+            try:
+                datetime.strptime(since_token, "%Y%m%dt%H%M%Sz")
+            except ValueError:
+                continue
+        return True
+    return False
 
 
 def _is_same_day_dream_mode_task_id(task_id: str, now_utc: datetime) -> bool:
@@ -2192,17 +2279,7 @@ def _completed_substrate_smoke_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         if str(payload.get("agent", "")) != agent:
             continue
         task_id = str(payload.get("task_id", ""))
@@ -2238,17 +2315,7 @@ def _completed_production_liveness_reactivation_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_production_liveness_reactivation_task_id(
             task_id,
@@ -2274,38 +2341,289 @@ def _completed_rco_lane_failover_task_ids(
     now_utc: datetime,
 ) -> set[str]:
     completed: set[str] = set()
+    trusted_claims: dict[tuple[str, str], datetime] = {}
+    done_lifecycles: dict[
+        tuple[str, str],
+        list[tuple[datetime, datetime]],
+    ] = {}
+    try:
+        identity_registry = load_bridge_identity_registry()
+    except (OSError, ValueError):
+        identity_registry = {}
+
+    for payload in _iter_done_records(bridge_root):
+        lifecycle = _rco_scout_done_lifecycle(
+            payload,
+            now_utc=now_utc,
+        )
+        if lifecycle is None:
+            continue
+        task_id, agent, claimed_at, released_at = lifecycle
+        binding_status = bridge_identity_binding_status(
+            payload,
+            registry=identity_registry,
+            restricted_agents=frozenset(identity_registry),
+        )
+        if binding_status == "valid":
+            completed.add(task_id)
+        # A legacy record with no UUID is never completion authority by
+        # itself. Its atomic claim-to-done lifecycle may only corroborate a
+        # separately identity-bound terminal event from the same agent.
+        legacy_uuid_absent = (
+            binding_status == "missing_uuid"
+            and "agent_uuid" not in payload
+        )
+        if binding_status == "valid" or legacy_uuid_absent:
+            done_lifecycles.setdefault((task_id, agent), []).append(
+                (claimed_at, released_at)
+            )
 
     for event in events:
         task_id = str(event.get("task_id", ""))
         if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
             continue
-        if _is_successful_completion_event(event):
-            completed.add(task_id)
-
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        task_id = str(payload.get("task_id", ""))
-        if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
-            continue
-        status = str(
-            payload.get("release_status")
-            or payload.get("status")
-            or payload.get("release_message")
-            or ""
+        agent = str(event.get("agent", ""))
+        claim_time = _trusted_rco_scout_claim_time(
+            event,
+            now_utc=now_utc,
+            identity_registry=identity_registry,
         )
-        if _status_is_successful(status):
+        if claim_time is not None:
+            trusted_claims.setdefault((task_id, agent), claim_time)
+            continue
+        done_claim_time = _corroborating_rco_scout_done_claim_time(
+            event,
+            done_lifecycles=done_lifecycles,
+        )
+        if _is_trusted_rco_scout_completion_event(
+            event=event,
+            claimed_at=(
+                done_claim_time
+                if done_claim_time is not None
+                else trusted_claims.get((task_id, agent))
+            ),
+            now_utc=now_utc,
+            identity_registry=identity_registry,
+        ):
             completed.add(task_id)
 
     return completed
+
+
+def _is_trusted_rco_scout_completion_event(
+    *,
+    event: Mapping[str, Any],
+    claimed_at: datetime | None,
+    now_utc: datetime,
+    identity_registry: Mapping[str, str],
+) -> bool:
+    event_type = event.get("type")
+    if not isinstance(event_type, str) or event_type not in RCO_SCOUT_OUTCOME_TYPES:
+        return False
+
+    task_id = _required_exact_string(event, "task_id")
+    agent = _required_exact_string(event, "agent")
+    status = _required_exact_string(event, "status")
+    message = _required_exact_string(event, "message")
+    if not all((task_id, agent, status, message)):
+        return False
+    if bridge_identity_binding_status(
+        event,
+        registry=identity_registry,
+        restricted_agents=frozenset(identity_registry),
+    ) != "valid":
+        return False
+
+    if event_type in SUCCESSFUL_COMPLETION_TYPES:
+        if status not in SUCCESSFUL_COMPLETION_STATUSES:
+            return False
+    elif event_type == "finding":
+        if status != "open":
+            return False
+    elif not _is_terminal_rco_scout_handoff_status(status):
+        return False
+
+    event_time = _parse_strict_utc(event.get("ts_utc"))
+    episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
+    if (
+        event_time is None
+        or event_time < episode_started_at
+        or event_time > now_utc
+        or claimed_at is None
+        or claimed_at > event_time
+    ):
+        return False
+    return True
+
+
+def _is_terminal_rco_scout_handoff_status(status: str) -> bool:
+    """Recognize only the exact terminal vocabulary emitted by RCO scouts."""
+    return status in RCO_SCOUT_TERMINAL_HANDOFF_STATUSES
+
+
+def _trusted_rco_scout_claim_time(
+    event: Mapping[str, Any],
+    *,
+    now_utc: datetime,
+    identity_registry: Mapping[str, str],
+) -> datetime | None:
+    if event.get("type") != "claim":
+        return None
+    task_id = _required_exact_string(event, "task_id")
+    if (
+        not task_id
+        or not _required_exact_string(event, "agent")
+        or _required_exact_string(event, "status") != "active"
+        or not _required_exact_string(event, "message")
+    ):
+        return None
+    if bridge_identity_binding_status(
+        event,
+        registry=identity_registry,
+        restricted_agents=frozenset(identity_registry),
+    ) != "valid":
+        return None
+    claimed_at = _parse_strict_utc(event.get("ts_utc"))
+    episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
+    if (
+        claimed_at is None
+        or claimed_at < episode_started_at
+        or claimed_at > now_utc
+    ):
+        return None
+    return claimed_at
+
+
+def _is_trusted_rco_scout_done_record(
+    payload: Any,
+    *,
+    now_utc: datetime,
+    identity_registry: Mapping[str, str],
+) -> bool:
+    lifecycle = _rco_scout_done_lifecycle(payload, now_utc=now_utc)
+    if lifecycle is None:
+        return False
+    # Security-sensitive scout completion never inherits identity merely from
+    # a registered agent string or a done filename. Legacy/unbound records
+    # need a separately identity-bound terminal event and are handled only as
+    # corroborating lifecycle evidence by the collector.
+    return (
+        bridge_identity_binding_status(
+            payload,
+            registry=identity_registry,
+            restricted_agents=frozenset(identity_registry),
+        )
+        == "valid"
+    )
+
+
+def _rco_scout_done_lifecycle(
+    payload: Any,
+    *,
+    now_utc: datetime,
+) -> tuple[str, str, datetime, datetime] | None:
+    """Validate a terminal claim-to-done lifecycle without granting identity."""
+    if not isinstance(payload, Mapping):
+        return None
+    required_fields = (
+        "agent",
+        "task_id",
+        "summary",
+        "release_status",
+        "release_message",
+        "claimed_at_utc",
+        "released_at_utc",
+    )
+    values = {key: _required_exact_string(payload, key) for key in required_fields}
+    if not all(values.values()):
+        return None
+    status = values["release_status"]
+    if status not in SUCCESSFUL_COMPLETION_STATUSES and status != "handoff":
+        return None
+
+    task_id = values["task_id"]
+    if not _is_same_day_rco_lane_failover_task_id(task_id, now_utc):
+        return None
+    claimed_at = _parse_strict_utc(values["claimed_at_utc"])
+    released_at = _parse_strict_utc(values["released_at_utc"])
+    episode_started_at = _liveness_task_episode_started_at(task_id, now_utc)
+    if (
+        claimed_at is None
+        or released_at is None
+        or not episode_started_at <= claimed_at <= released_at <= now_utc
+    ):
+        return None
+    return task_id, values["agent"], claimed_at, released_at
+
+
+def _corroborating_rco_scout_done_claim_time(
+    event: Mapping[str, Any],
+    *,
+    done_lifecycles: Mapping[
+        tuple[str, str],
+        Sequence[tuple[datetime, datetime]],
+    ],
+) -> datetime | None:
+    """Return a lifecycle claim time only when it encloses this exact event."""
+    task_id = _required_exact_string(event, "task_id")
+    agent = _required_exact_string(event, "agent")
+    event_time = _parse_strict_utc(event.get("ts_utc"))
+    if not task_id or not agent or event_time is None:
+        return None
+    matching_claims = [
+        claimed_at
+        for claimed_at, released_at in done_lifecycles.get(
+            (task_id, agent),
+            (),
+        )
+        if claimed_at
+        <= event_time
+        <= released_at + RCO_SCOUT_DONE_EVENT_GRACE
+    ]
+    return max(matching_claims, default=None)
+
+
+def _required_exact_string(mapping: Mapping[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value or value != value.strip():
+        return ""
+    return value
+
+
+def _parse_strict_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _liveness_task_episode_started_at(
+    task_id: str,
+    now_utc: datetime,
+) -> datetime:
+    match = re.search(
+        r"-since-([0-9]{8}t[0-9]{6}z)(?:-repeat-[1-9][0-9]*)?$",
+        task_id,
+    )
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%dt%H%M%Sz").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            pass
+    return datetime(
+        now_utc.year,
+        now_utc.month,
+        now_utc.day,
+        tzinfo=timezone.utc,
+    )
 
 
 def _completed_dream_mode_task_ids(
@@ -2327,17 +2645,7 @@ def _completed_dream_mode_task_ids(
         if _is_successful_completion_event(event):
             completed.add(canonical_task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         canonical_task_id = _canonical_same_day_dream_mode_task_id(
             task_id,
@@ -2372,17 +2680,7 @@ def _completed_operational_scout_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_operational_scout_task_id(task_id, now_utc):
             continue
@@ -2413,17 +2711,7 @@ def _completed_continuous_operational_scout_task_ids(
         if _is_successful_completion_event(event):
             completed.add(task_id)
 
-    done_dir = bridge_root / "work_queue" / "done"
-    try:
-        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
-    except OSError:
-        done_files = []
-
-    for done_file in done_files:
-        try:
-            payload = json.loads(done_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+    for payload in _iter_done_records(bridge_root):
         task_id = str(payload.get("task_id", ""))
         if not _is_same_day_continuous_operational_scout_task_id(task_id, now_utc):
             continue

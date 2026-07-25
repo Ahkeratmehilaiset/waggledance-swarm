@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -47,6 +48,32 @@ from waggledance.core.work_queue import (  # noqa: E402
 DEFAULT_EVENTS_PATH = DEFAULT_BRIDGE_ROOT / "shared" / "events.jsonl"
 DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS = 12.0
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
+# The append-only bridge's LF row 44000 contains one historical bare-CR
+# separator. Its full physical-row SHA-256 is
+# 207a8e5cba836e2e3e63b777b537b18d397bc58f01613d2034fa7b899395c0bd;
+# the tail reader removes the final CRLF, so compatibility binds the
+# normalized digest below.
+_LEGACY_BARE_CR_ROW_SHA256 = (
+    "53f863ac93dd977504346feddc382ccd65bafceb4aeaad2bba1765712190a0d3"
+)
+_LEGACY_BARE_CR_EVENT_FINGERPRINTS = (
+    (
+        "codex-lead-1",
+        "production-liveness-reactivation-scout-2026-07-01-"
+        "codex-tools-1-since-20260701t161039z",
+        "2026-07-01T16:45:30.4576368Z",
+        "test",
+        "attention",
+    ),
+    (
+        "codex-lead-1",
+        "production-liveness-reactivation-scout-2026-07-01-"
+        "codex-tools-1-since-20260701t161039z",
+        "2026-07-01T16:46:54.4324612Z",
+        "message",
+        "bridge_log_repair_note",
+    ),
+)
 REQUEST_TYPES = {
     "message",
     "finding",
@@ -344,7 +371,7 @@ def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
         if ascii_trimmed == "null":
             continue
         try:
-            event = parse_bridge_json_object(raw)
+            row_events = _parse_selected_bridge_row(raw)
         except ValueError as exc:
             raise BridgeNextActionError(
                 {
@@ -358,7 +385,39 @@ def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
                     ],
                 }
             ) from exc
-        events.append(event)
+        events.extend(row_events)
+    return events
+
+
+def _parse_selected_bridge_row(raw: str) -> tuple[dict[str, Any], ...]:
+    """Strictly parse one LF row, with one exact historical compatibility case."""
+
+    if "\r" not in raw:
+        return (parse_bridge_json_object(raw),)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if digest != _LEGACY_BARE_CR_ROW_SHA256:
+        return (parse_bridge_json_object(raw),)
+
+    fragments = raw.split("\r")
+    if len(fragments) != 2 or any(not fragment for fragment in fragments):
+        raise ValueError(
+            "known historical bare-CR row must contain exactly two non-empty fragments"
+        )
+    events = tuple(parse_bridge_json_object(fragment) for fragment in fragments)
+    fingerprints = tuple(
+        (
+            event.get("agent"),
+            event.get("task_id"),
+            event.get("ts_utc"),
+            event.get("type"),
+            event.get("status"),
+        )
+        for event in events
+    )
+    if fingerprints != _LEGACY_BARE_CR_EVENT_FINGERPRINTS:
+        raise ValueError(
+            "known historical bare-CR row event fingerprints do not match"
+        )
     return events
 
 

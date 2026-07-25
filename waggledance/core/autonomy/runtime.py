@@ -1388,9 +1388,9 @@ class AutonomyRuntime:
     ) -> Dict[str, Any]:
         """Drain accumulated day cases and run a night learning cycle.
 
-        Includes Dream Mode: counterfactual simulation with real solver
-        evaluation.  Successful dream insights are fed as routing hints
-        into the SolverRouter for the next day.
+        Includes advisory Dream Mode counterfactual simulation. Dream output
+        is reported only: this production path does not execute alternative
+        capabilities or write routing hints.
 
         Returns the NightLearningResult as a dict.
         """
@@ -1457,13 +1457,6 @@ class AutonomyRuntime:
             capability_confidence=conf_scores,
         )
 
-        # Run real solver evaluation on successful alternatives
-        dream_session = self._evaluate_dream_alternatives(dream_session)
-
-        # Feed dream routing hints into solver_router
-        if dream_session.simulated_trajectories:
-            self.solver_router.apply_dream_hints(dream_session)
-
         # Update epistemic uncertainty with current capability confidence
         if self.capability_confidence:
             self._persist_safe("uncertainty.compute",
@@ -1488,15 +1481,21 @@ class AutonomyRuntime:
             "simulations_run": dream_session.simulations_run,
             "insights_found": dream_session.insights_found,
             "insight_score": dream_session.insight_score,
+            "authority": "none",
+            "real_solver_evaluation_applied": False,
+            "routing_hints_applied": 0,
         }
         return result_dict
 
     def _evaluate_dream_alternatives(self, dream_session) -> Any:
-        """Evaluate dream counterfactual alternatives against real solvers.
+        """Legacy explicit evaluation helper; not used by night learning.
 
         For each simulated trajectory with a non-empty alternative chain,
         attempt real execution (marked synthetic=True) and compare verifier
         scores against the original outcome.
+
+        This method invokes the ActionBus. It must not be reintroduced into
+        the production Dream path without a separate authority review.
         """
         from waggledance.core.learning.dream_mode import DreamSession
 

@@ -63,6 +63,10 @@ $previousAuxiliaryAppendFailure = [Environment]::GetEnvironmentVariable(
     'AGENT_BRIDGE_TEST_AUXILIARY_APPEND_FAILURE_AFTER_BYTES',
     'Process'
 )
+$previousCanonicalScanReady = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY',
+    'Process'
+)
 
 function New-TestBridgeRoot {
     param([Parameter(Mandatory)] [string] $Name)
@@ -126,9 +130,9 @@ try {
     [void](New-Item -ItemType Directory -Path (Join-Path $tempRoot 'spool') -Force)
     $eventsPath = Join-Path (Join-Path $tempRoot 'shared') 'events.jsonl'
 
-    # Long-hold and abandonment cases use exact script copies whose V1 names
-    # carry a unique Local namespace suffix. This exercises the same fence
-    # without blocking the live machine-wide bridge mutex for ten seconds.
+    # Runtime cases use exact script copies whose V1 names carry a unique Local
+    # namespace suffix. This exercises the same fence without either colliding
+    # with or blocking the live machine-wide bridge mutex.
     $isolationId = [guid]::NewGuid().ToString('N')
     $isolatedBin = Join-Path $tempRoot 'isolated-bin'
     [void](New-Item -ItemType Directory -Path $isolatedBin -Force)
@@ -187,7 +191,7 @@ try {
         $utf8
     )
     $leaseBarrierNeedle = `
-        '    # AppendV1 remains owned across WAL discovery/recovery, live-log scan,'
+        '    # Initial AppendV1 ownership covers WAL discovery/recovery and canonical'
     if (-not $replaySource.Contains($leaseBarrierNeedle)) {
         throw 'lease smoke could not locate the post-AppendV1 acquisition point'
     }
@@ -227,7 +231,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllText($abandonHelper, $abandonSource, $utf8)
 
     # 1. Empty spool -> no-op
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     Add-Check -Name 'empty spool is a no-op' -Passed ($out -match 'nothing to replay')
 
     # 2. A valid spooled event replays into the shared log and archives
@@ -235,7 +239,7 @@ Start-Sleep -Seconds 60
     $spoolFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-fable-5-20260702T100000000-1234.jsonl'
     Write-TestWal -Path $spoolFile -Text $event
 
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     Add-Check -Name 'replay reports one replayed' -Passed ($out -match 'replayed=1 deduped=0 failed=0')
     $logged = Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8
     Add-Check -Name 'event appended to shared log' -Passed ($logged -match 'spool-replay-smoke')
@@ -245,7 +249,7 @@ Start-Sleep -Seconds 60
     )
 
     # 3. Idempotent rerun -> nothing to replay
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     Add-Check -Name 'rerun is a no-op' -Passed ($out -match 'nothing to replay')
 
     # An existing same-name archive is immutable. Preserve both records under
@@ -309,7 +313,7 @@ Start-Sleep -Seconds 60
     Write-TestWal -Path $badFile -Text '{not json'
     $before = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($eventsPath))
     $badError = ''
-    try { & $replayScript -BridgeRoot $tempRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $tempRoot 3>$null | Out-Null }
     catch { $badError = $_.Exception.Message }
     $after = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($eventsPath))
     Add-Check -Name 'malformed file fails loud and is kept' -Passed (
@@ -329,7 +333,7 @@ Start-Sleep -Seconds 60
     # The spooled FAILED attempt: same signal, OLDER ts + different pid.
     Write-TestWal -Path $dupSpool -Text '{"ts_utc":"2026-07-02T10:00:01Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}'
     $before = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     $after = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'distinct same-semantic records both survive' -Passed (
         ($out -match 'replayed=1 deduped=0') -and ($after -eq ($before + 1)) -and
@@ -340,7 +344,7 @@ Start-Sleep -Seconds 60
         'failed-append-fable-5-exact-duplicate.jsonl'
     Write-TestWal -Path $exactSpool -Text $retryCopy
     $before = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     $after = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'exact WAL record dedups idempotently' -Passed (
         ($out -match 'replayed=0 deduped=1') -and
@@ -356,7 +360,7 @@ Start-Sleep -Seconds 60
         $utf8
     )
     $before = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     $after = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'exact duplicate rows inside one WAL append once' -Passed (
         ($out -match 'replayed=1 deduped=1') -and
@@ -368,7 +372,7 @@ Start-Sleep -Seconds 60
     $noAgent = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-x-20260702T120000000-5.jsonl'
     Write-TestWal -Path $noAgent -Text '{"ts_utc":"2026-07-02T12:00:00Z","type":"message","task_id":"t","status":"info"}'
     $noAgentError = ''
-    try { & $replayScript -BridgeRoot $tempRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $tempRoot 3>$null | Out-Null }
     catch { $noAgentError = $_.Exception.Message }
     Add-Check -Name 'missing-core-field WAL fails loud and is kept' -Passed (
         ($noAgentError -match 'missing core field') -and
@@ -382,12 +386,12 @@ Start-Sleep -Seconds 60
     $guardMutex = $null
     $guardAcquired = $false
     try {
-        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeSpoolReplayV1')
+        $guardMutex = New-Object System.Threading.Mutex($false, $isolatedReplayName)
         $guardAcquired = $guardMutex.WaitOne(0)
         if (-not $guardAcquired) {
             Add-Check -Name 'concurrent replay guard setup' -Passed $false -Detail 'could not acquire replay mutex'
         } else {
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $replayScript -BridgeRoot $tempRoot
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $isolatedReplay -BridgeRoot $tempRoot
             Add-Check -Name 'concurrent replay guard keeps file' -Passed (
                 ($out -match 'already running') -and (Test-Path -LiteralPath $guardFile)
             ) -Detail "out=$out"
@@ -402,7 +406,7 @@ Start-Sleep -Seconds 60
 
     # 8. DryRun neither appends nor archives
     Write-TestWal -Path $spoolFile -Text $event
-    $out = & $replayScript -BridgeRoot $tempRoot -DryRun
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (
         (($out -match 'would archive as exact duplicate') -or ($out -match 'would replay')) -and (Test-Path -LiteralPath $spoolFile)
     )
@@ -2071,6 +2075,115 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
         [Convert]::ToBase64String($invalidateBefore) -ceq
             [Convert]::ToBase64String($invalidateAfter)
     ) -Detail "out=$invalidateFailureOutput"
+
+    # 24. The expensive canonical JSONL scan runs without AppendV1 ownership
+    #     while its open snapshot shares writes. A live writer completes without
+    #     spooling, then an exact row appended during the scan is reconciled from
+    #     the delta and prevents duplicate replay.
+    $scanRoot = New-TestBridgeRoot -Name 'writer-during-canonical-scan'
+    $scanEvents = Join-Path $scanRoot 'shared/events.jsonl'
+    $scanBaseline = '{"ts_utc":"2026-07-20T11:00:00Z","agent":"smoke-1","type":"message","task_id":"scan-baseline","status":"info","message":"scan-baseline"}'
+    $scanExact = '{"ts_utc":"2026-07-20T11:00:01Z","agent":"smoke-1","type":"message","task_id":"scan-exact-delta","status":"info","message":"scan-exact-delta"}'
+    Write-TestWal -Path $scanEvents -Text $scanBaseline
+    $scanSpool = Join-Path (Join-Path $scanRoot 'spool') `
+        'failed-append-smoke-1-scan-exact-delta.jsonl'
+    Write-TestWal -Path $scanSpool -Text $scanExact
+    $scanReady = Join-Path $tempRoot 'writer-during-canonical-scan.ready'
+    $scanRelease = "$scanReady.release"
+    $scanReplayJob = Start-Job -ScriptBlock {
+        param($ScriptPath, $Root, $ReadyPath)
+        $env:AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY = $ReadyPath
+        Remove-Item Env:AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE `
+            -ErrorAction SilentlyContinue
+        try { & $ScriptPath -BridgeRoot $Root 3>$null | Out-String }
+        catch { "ERROR: $($_.Exception.Message)" }
+    } -ArgumentList $isolatedReplay, $scanRoot, $scanReady
+    $scanReached = $false
+    $scanWriterError = ''
+    $scanWriterElapsed = [TimeSpan]::Zero
+    $scanDirectAcquired = $false
+    $scanIdentityReplacementBlocked = $false
+    $scanReplayOutput = ''
+    $scanMutex = New-Object System.Threading.Mutex($false, $isolatedAppendName)
+    try {
+        for ($attempt = 0; $attempt -lt 400; $attempt++) {
+            if (Test-Path -LiteralPath $scanReady -PathType Leaf) {
+                $scanReached = $true
+                break
+            }
+            if ($scanReplayJob.State -in @('Completed', 'Failed', 'Stopped')) { break }
+            Start-Sleep -Milliseconds 25
+        }
+        if ($scanReached) {
+            try {
+                [System.IO.File]::Move(
+                    $scanEvents,
+                    "$scanEvents.identity-replacement"
+                )
+            } catch {
+                $scanIdentityReplacementBlocked = $true
+            }
+            [Environment]::SetEnvironmentVariable(
+                'AGENT_BRIDGE_RUNTIME_ROOT', $scanRoot, 'Process'
+            )
+            $scanClock = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                & $isolatedWriter -Agent 'smoke-1' -Type message -Status info `
+                    -TaskId 'scan-live-writer' -Message 'scan-live-writer-once' `
+                    -PayloadJson '{}' | Out-Null
+            } catch { $scanWriterError = $_.Exception.Message }
+            $scanClock.Stop()
+            $scanWriterElapsed = $scanClock.Elapsed
+
+            $scanDirectAcquired = $scanMutex.WaitOne(2000)
+            if ($scanDirectAcquired) {
+                [System.IO.File]::AppendAllText(
+                    $scanEvents,
+                    ($scanExact + [char]10),
+                    $utf8
+                )
+                $scanMutex.ReleaseMutex()
+                $scanDirectAcquired = $false
+            }
+        }
+        [System.IO.File]::WriteAllText($scanRelease, 'release')
+        $scanReplayJob | Wait-Job | Out-Null
+        $scanReplayOutput = @(Receive-Job -Job $scanReplayJob) -join ' '
+    } finally {
+        if ($scanDirectAcquired) {
+            try { $scanMutex.ReleaseMutex() } catch {}
+        }
+        $scanMutex.Dispose()
+        if (-not (Test-Path -LiteralPath $scanRelease)) {
+            [System.IO.File]::WriteAllText($scanRelease, 'release')
+        }
+        Remove-Job -Job $scanReplayJob -Force -ErrorAction SilentlyContinue
+    }
+    $scanLines = @([System.IO.File]::ReadAllLines($scanEvents))
+    $scanRemainingSpools = @(
+        Get-ChildItem -LiteralPath (Join-Path $scanRoot 'spool') `
+            -Filter 'failed-append-*.jsonl' -File -Force `
+            -ErrorAction SilentlyContinue
+    )
+    $scanArchived = Join-Path `
+        (Join-Path (Join-Path $scanRoot 'spool') 'replayed') `
+        (Split-Path -Leaf $scanSpool)
+    Add-Check -Name 'canonical scan permits writers and reconciles exact delta' -Passed (
+        $scanReached -and
+        $scanIdentityReplacementBlocked -and
+        [string]::IsNullOrEmpty($scanWriterError) -and
+        ($scanReplayOutput -match 'replayed=0 deduped=1 failed=0') -and
+        $scanLines.Count -eq 3 -and
+        @($scanLines | Where-Object { $_ -match 'scan-live-writer-once' }).Count -eq 1 -and
+        @($scanLines | Where-Object { $_ -match 'scan-exact-delta' }).Count -eq 1 -and
+        $scanRemainingSpools.Count -eq 0 -and
+        (Test-Path -LiteralPath $scanArchived -PathType Leaf)
+    ) -Detail (
+        "ready=$scanReached identityBlocked=$scanIdentityReplacementBlocked " +
+        "writerSeconds=$($scanWriterElapsed.TotalSeconds) " +
+        "writerError=$scanWriterError lines=$($scanLines.Count) " +
+        "spools=$($scanRemainingSpools.Count) replay=$scanReplayOutput"
+    )
 } finally {
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_RUNTIME_ROOT', $previousRuntimeRoot, 'Process'
@@ -2123,6 +2236,11 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_AUXILIARY_APPEND_FAILURE_AFTER_BYTES',
         $previousAuxiliaryAppendFailure,
+        'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY',
+        $previousCanonicalScanReady,
         'Process'
     )
     if (Test-Path -LiteralPath $tempRoot) {

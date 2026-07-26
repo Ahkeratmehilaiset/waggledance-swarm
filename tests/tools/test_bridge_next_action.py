@@ -1434,6 +1434,187 @@ def test_operator_wake_request_is_incoming_for_target_agent() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_same_task_closed_wake_closes_open_wake_from_requester() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "operator-wake-request-closed",
+            "status": "open",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "operator-wake-request-closed",
+            "status": "closed",
+            "message": "request withdrawn",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 0
+
+
+def test_closed_wake_does_not_close_different_task() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "operator-wake-request-open",
+            "status": "open",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "unrelated-wake-request",
+            "status": "closed",
+            "message": "different request withdrawn",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "operator-wake-request-open"
+    assert report["open_incoming_count"] == 1
+
+
+def test_closed_wake_does_not_close_different_task_with_same_pr_payload() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "operator-wake-request-open",
+            "status": "open",
+            "message": "please review",
+            "payload": {"pr": 1563},
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "unrelated-wake-request",
+            "status": "closed",
+            "message": "different request withdrawn",
+            "payload": {"pr": 1563},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "operator-wake-request-open"
+    assert report["open_incoming_count"] == 1
+
+
+def test_closed_wake_does_not_close_same_task_message_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "same-task-different-request-type",
+            "status": "open",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-12T18:53:32Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "same-task-different-request-type",
+            "status": "open",
+            "message": "wake for the same work",
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "same-task-different-request-type",
+            "status": "closed",
+            "message": "only the wake is withdrawn",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "same-task-different-request-type"
+    assert report["open_incoming_count"] == 1
+
+
+def test_target_closed_wake_is_not_treated_as_requester_closure() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-12T18:53:02Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "operator-wake-request-open",
+            "status": "open",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-12T18:54:02Z",
+            "agent": "codex-tools-1",
+            "to": "operator",
+            "type": "wake_request",
+            "task_id": "operator-wake-request-open",
+            "status": "closed",
+            "message": "target-authored closed wake is not an answer",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T18:55:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "operator-wake-request-open"
+    assert report["open_incoming_count"] == 1
+
+
 def test_bridge_follow_nudge_is_not_actionable_incoming_or_stale() -> None:
     events = [
         {

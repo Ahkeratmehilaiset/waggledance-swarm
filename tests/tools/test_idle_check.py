@@ -2417,6 +2417,14 @@ def test_negative_requester_statuses_do_not_close_canonical_request(
                 status="approved_failure",
                 message="Failure suffix contradicts approved.",
             ),
+            _event(
+                ts_utc="2026-05-17T11:26:00Z",
+                agent="codex-lead-1",
+                type="wake_request",
+                task_id=task_id,
+                status="closed_after_recovery",
+                message="Only exact wake_request/closed is requester closure.",
+            ),
         ]
     )
 
@@ -2432,6 +2440,7 @@ def test_negative_requester_statuses_do_not_close_canonical_request(
         ("decision", "cancelled"),
         ("decision", "superseded_requested"),
         ("message", "cancelled_by_requester"),
+        ("wake_request", "closed"),
     ],
 )
 def test_exact_positive_requester_closure_shapes_close_canonical_request(
@@ -2454,6 +2463,83 @@ def test_exact_positive_requester_closure_shapes_close_canonical_request(
     report = _run(tmp_path, _base_idle_events() + [request, closure])
 
     assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+def test_closed_wake_does_not_close_same_task_message_request(
+    tmp_path: Path,
+) -> None:
+    task_id = "same-task-different-request-type"
+    request = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        agent="codex-lead-1",
+        type="message",
+        task_id=task_id,
+        status="rco_requested",
+        to="claude-rco-1",
+        message="Formal review requested through a message event.",
+    )
+    wake = _event(
+        ts_utc="2026-05-17T11:03:00Z",
+        agent="codex-lead-1",
+        type="wake_request",
+        task_id=task_id,
+        status="rco_requested",
+        to="claude-rco-1",
+        message="A later wake repeats the formal review request.",
+    )
+    closure = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-lead-1",
+        type="wake_request",
+        task_id=task_id,
+        status="closed",
+        to="claude-rco-1",
+        message="Only a wake request is withdrawn.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, wake, closure])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+def test_closed_wake_does_not_close_other_requesters_same_task_wake(
+    tmp_path: Path,
+) -> None:
+    task_id = "same-task-two-requesters"
+    first_request = _event(
+        ts_utc="2026-05-17T11:00:00Z",
+        agent="codex-lead-1",
+        type="wake_request",
+        task_id=task_id,
+        status="rco_requested",
+        to="claude-rco-1",
+        message="First requester asks for formal review.",
+    )
+    second_request = _event(
+        ts_utc="2026-05-17T11:03:00Z",
+        agent="codex-tools-1",
+        type="wake_request",
+        task_id=task_id,
+        status="rco_requested",
+        to="claude-rco-1",
+        message="Second requester independently asks for formal review.",
+    )
+    closure = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-tools-1",
+        type="wake_request",
+        task_id=task_id,
+        status="closed",
+        to="claude-rco-1",
+        message="Second requester withdraws only its own wake.",
+    )
+
+    report = _run(
+        tmp_path,
+        _base_idle_events() + [first_request, second_request, closure],
+    )
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
 
 
 def test_canonical_response_requires_strict_raw_head_type_and_status(

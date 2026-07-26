@@ -351,8 +351,8 @@ def _reduce_event_requests(
 ) -> list[dict[str, str]]:
     """Reduce one request family without changing another family's ordering."""
 
-    open_by_key: dict[tuple[str, str, str, str], dict[str, str]] = {}
-    seen_direct_keys: set[tuple[str, str, str, str]] = set()
+    open_by_key: dict[tuple[str, str, str, str, str, str], dict[str, str]] = {}
+    seen_direct_keys: set[tuple[str, str, str, str, str, str]] = set()
     for event in events:
         canonical_schema = _event_schema(event) == CANONICAL_RCO_SCHEMA
         direct_schema = _is_direct_rco_request_candidate(event)
@@ -385,6 +385,16 @@ def _reduce_event_requests(
         for kind, target_agent in request_targets:
             if not task_id:
                 continue
+            request_event_type = (
+                str(event.get("type") or "")
+                if strict_contract
+                else _event_type(event)
+            )
+            request_agent = (
+                _literal_event_agent(event)
+                if strict_contract
+                else _event_agent(event)
+            )
             direct_discriminator = (
                 f"{_literal_event_agent(event)}:"
                 f"{event['payload']['pr']}:{_event_head(event)}"
@@ -393,7 +403,14 @@ def _reduce_event_requests(
                 if direct_schema
                 else ""
             )
-            key = (kind, task_id, target_agent, direct_discriminator)
+            key = (
+                kind,
+                task_id,
+                target_agent,
+                request_agent,
+                request_event_type,
+                direct_discriminator,
+            )
             if direct_contract_valid and key in seen_direct_keys:
                 continue
             if direct_contract_valid:
@@ -402,11 +419,8 @@ def _reduce_event_requests(
                 "kind": kind,
                 "task_id": task_id,
                 "target_agent": target_agent,
-                "request_agent": (
-                    _literal_event_agent(event)
-                    if strict_contract
-                    else _event_agent(event)
-                ),
+                "request_agent": request_agent,
+                "request_event_type": request_event_type,
                 "request_agent_uuid": (
                     str(event.get("agent_uuid") or "")
                     if direct_contract_valid
@@ -1045,6 +1059,10 @@ def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> boo
         not direct_contract
         and _literal_event_agent(event) == request["request_agent"]
         and _is_requester_closure_event(event)
+        and (
+            _event_type(event) != "wake_request"
+            or request.get("request_event_type") == "wake_request"
+        )
     )
     if requester_closure:
         return True
@@ -1075,6 +1093,8 @@ def _is_requester_closure_event(event: Mapping[str, Any]) -> bool:
         return False
     if event_type != event_type.lower() or status != status.lower():
         return False
+    if event_type == "wake_request":
+        return status == "closed"
     stems = (
         REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS
         if event_type == "message"

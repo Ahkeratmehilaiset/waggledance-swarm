@@ -624,13 +624,41 @@ occupied preferred path belonging to another/malformed claim, rather than
 overwrite or release an ambiguous claim. Case-only filename collisions on
 case-insensitive filesystems also fail closed; they are not silently aliased.
 
-Current limitation: primary claim create/refresh writes use per-file atomic
-create/replace, but lifecycle transitions are not transactionally atomic and
-the Python and PowerShell claim, release, heartbeat, liveness, and stale-sweep
-surfaces do not yet share a cross-runtime transaction lock. Their resolve/
-authorize/mutate sequences therefore retain a pre-existing TOCTOU window under
-concurrent writers. Do not describe Force/release as globally race-free until
-every mutator shares one lock with crash recovery and ordering tests.
+All Windows-host work-queue mutators for one canonical runtime root share the
+machine-wide
+`Global\WaggleDanceBridgeWorkQueueV1-<24-hex-root-digest>` mutex. The digest is
+SHA-256 over the absolute path after slash-to-backslash normalization,
+trailing-slash removal, and ASCII-only `a`-to-`A` mapping; non-ASCII characters
+remain unchanged. Python and PowerShell use the same UTF-8 algorithm; separate
+runtime roots do not block or abandon one another. Python claim, Force,
+release, heartbeat, and applied stale-sweep
+operations hold it across their complete resolve/authorize/mutate sequence.
+PowerShell Claim/Release, the claim updates in Send-Liveness, and
+Invoke-StaleClaimSweep use the same identity. Every mutation validates the
+complete canonical `claims/*.json` set while holding the mutex; malformed
+claim state fails closed instead of being ignored for authorization. An
+abandoned owner is recoverable only after that validation.
+
+New claims are written completely to a sibling temporary file before an
+atomic no-replace publication. Refreshes use temp+replace. Release and
+stale-sweep transitions first atomically move the unchanged active generation
+to `done/`, then enrich that terminal file with release metadata using
+temp+replace. A metadata failure can therefore leave an audit-poor terminal
+record, but cannot leave a terminal-stamped active claim that heartbeat could
+resurrect. Once that move succeeds, the release/sweep is reported as committed
+even if metadata enrichment or the later event append only produces a warning.
+Active claim files carrying terminal markers fail validation.
+WorkQueueV1 is always released before Write-AgentEvent acquires AppendV1, so
+there is no nested work-queue/event-lock order.
+
+Current limitation: WorkQueueV1 is host-local, not a distributed lock for
+multiple machines writing one network share. A filesystem lifecycle move and
+its later bridge event are also not one power-loss-durable transaction; for
+example, a process can die after a claim reaches `done/` but before the audit
+event append. Send-Liveness similarly commits its event before its best-effort
+claim lease batch. Do not describe the queue as cross-host, power-loss
+transactional, or exactly-once with the event stream without a separate
+work-queue WAL/replay protocol.
 
 `Read-AgentBridge.ps1` reads the last 50000 events for continuity
 analysis by default. This is intentionally larger than the original

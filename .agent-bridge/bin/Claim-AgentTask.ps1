@@ -36,6 +36,11 @@ $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 if (-not (Test-Path -LiteralPath $claimsDir)) {
     [void](New-Item -ItemType Directory -Path $claimsDir -Force)
 }
+$transactionScript = Join-Path $PSScriptRoot 'WorkQueueTransaction.ps1'
+if (-not (Test-Path -LiteralPath $transactionScript -PathType Leaf)) {
+    throw "work-queue transaction helper not found: $transactionScript"
+}
+. $transactionScript
 
 function ConvertTo-SafeName {
     param([string] $Name)
@@ -96,14 +101,19 @@ function Normalize-Scope {
 function Test-ScopeOverlap {
     param([string[]] $A, [string[]] $B)
     foreach ($a0 in @($A)) {
-        $a = Normalize-Scope $a0
-        if (-not $a) { continue }
+        $normalizedLeft = Normalize-Scope $a0
+        if (-not $normalizedLeft) { continue }
         foreach ($b0 in @($B)) {
-            $b = Normalize-Scope $b0
-            if (-not $b) { continue }
-            if ($a -eq '*' -or $b -eq '*') { return $true }
-            if ($a -eq $b) { return $true }
-            if ($a.StartsWith($b + '/') -or $b.StartsWith($a + '/')) { return $true }
+            $normalizedRight = Normalize-Scope $b0
+            if (-not $normalizedRight) { continue }
+            if ($normalizedLeft -eq '*' -or $normalizedRight -eq '*') { return $true }
+            if ($normalizedLeft -eq $normalizedRight) { return $true }
+            if (
+                $normalizedLeft.StartsWith($normalizedRight + '/') -or
+                $normalizedRight.StartsWith($normalizedLeft + '/')
+            ) {
+                return $true
+            }
         }
     }
     return $false
@@ -149,6 +159,10 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     }
 }
 
+$workQueueTransaction = Enter-WaggleDanceWorkQueueTransaction `
+    -BridgeRoot $bridgeRoot
+try {
+Assert-WaggleDanceWorkQueueClaimSet -ClaimsDirectory $claimsDir
 $activeClaims = @(
     Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue
@@ -249,6 +263,12 @@ foreach ($capability in @($Capabilities)) {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
+if (
+    $PSBoundParameters.ContainsKey('LeaseSeconds') -and
+    $LeaseSeconds -le 0
+) {
+    throw 'LeaseSeconds must be positive when explicitly provided'
+}
 if ($LeaseSeconds -le 0 -and $env:AGENT_BRIDGE_STALE_LEASE_SECONDS) {
     $parsedLease = 0
     if ([int]::TryParse([string]$env:AGENT_BRIDGE_STALE_LEASE_SECONDS, [ref]$parsedLease) -and $parsedLease -gt 0) {
@@ -286,54 +306,55 @@ if (@($Capabilities).Count -gt 0) { $claim['capabilities'] = @($Capabilities) }
 $json = ($claim | ConvertTo-Json -Depth 8)
 
 $encoding = New-Object System.Text.UTF8Encoding($false)
+$tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
 try {
-    $fs = New-Object System.IO.FileStream($claimPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
-    try {
-        $bytes = $encoding.GetBytes($json)
-        $fs.Write($bytes, 0, $bytes.Length)
-    } finally {
-        $fs.Dispose()
-    }
-} catch {
-    if (-not $Force -or -not $forceReplaceAllowed) {
-        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
-    }
-    # Internal review fix R7 (2026-05-09): the -Force fallback used
-    # Set-Content, which is non-atomic; a concurrent reader could
-    # observe a partially-written claim and treat it as malformed.
-    # Write to a temp sibling and Replace() so readers always see the
-    # old or the new claim, never a torn write.
-    $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+    # Publish only a complete JSON file. A direct CreateNew + streaming write
+    # exposes a truncated canonical claim if the process dies mid-write.
     [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
-    $backupClaim = $null
-    try {
-        if (Test-Path -LiteralPath $claimPath) {
-            $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
+    if ($forceReplaceAllowed) {
+        $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
+        try {
             [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
             try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
-        } else {
-            [System.IO.File]::Move($tmpClaim, $claimPath)
+        } catch {
+            try {
+                if (Test-Path -LiteralPath $backupClaim) {
+                    Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+            throw
         }
-    } catch {
-        try {
-            if ($backupClaim -and (Test-Path -LiteralPath $backupClaim)) {
-                Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-        try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
-        throw
+    } else {
+        [System.IO.File]::Move($tmpClaim, $claimPath)
     }
+} catch {
+    try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
+    if (-not $forceReplaceAllowed) {
+        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
+    }
+    throw
+}
+} finally {
+    Exit-WaggleDanceWorkQueueTransaction -Transaction $workQueueTransaction
 }
 
-& (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
-    -Agent $Agent `
-    -Type claim `
-    -TaskId $TaskId `
-    -Status active `
-    -Message $Summary `
-    -WriteScope $WriteScope `
-    -RunId $RunId `
-    -Role $Role `
-    -AgentUuid $AgentUuid `
-    -Capabilities $Capabilities | Out-Null
+try {
+    & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
+        -Agent $Agent `
+        -Type claim `
+        -TaskId $TaskId `
+        -Status active `
+        -Message $Summary `
+        -WriteScope $WriteScope `
+        -RunId $RunId `
+        -Role $Role `
+        -AgentUuid $AgentUuid `
+        -Capabilities $Capabilities | Out-Null
+} catch {
+    Write-Warning (
+        "claim committed, but bridge event emit failed for task {0}: {1}" -f
+        $TaskId,
+        $_.Exception.Message
+    )
+}
 [pscustomobject]$claim

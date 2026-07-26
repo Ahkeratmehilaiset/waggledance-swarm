@@ -48,7 +48,15 @@ def build_parser() -> argparse.ArgumentParser:
     claim.add_argument("--mode", choices=["read-only", "write"], default="read-only")
     claim.add_argument("--write-scope", action="append", default=[])
     claim.add_argument("--run-id", default="")
-    claim.add_argument("--lease-seconds", type=int, default=900)
+    claim.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Positive claim lease. Defaults to "
+            "AGENT_BRIDGE_STALE_LEASE_SECONDS, then 300 seconds."
+        ),
+    )
     claim.add_argument("--force", action="store_true")
 
     release = sub.add_parser("release")
@@ -69,7 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list")
 
     stale = sub.add_parser("stale")
-    stale.add_argument("--max-age-seconds", type=int, default=12 * 60 * 60)
+    stale.add_argument(
+        "--max-age-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Fallback expiry age for legacy claims without a positive "
+            "lease_seconds value. Defaults to "
+            "AGENT_BRIDGE_STALE_LEASE_SECONDS, then 300 seconds. Per-claim "
+            "lease/expiry fields take precedence."
+        ),
+    )
 
     overlap = sub.add_parser("check-overlap")
     overlap.add_argument("--write-scope", action="append", required=True)

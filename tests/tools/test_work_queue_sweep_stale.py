@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,20 @@ from waggledance.core.work_queue import claim_task  # noqa: E402
 
 def _now() -> datetime:
     return datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_direct_cli_bootstraps_repo_imports_outside_repo(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "work_queue_sweep_stale.py"), "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    assert "--max-age-seconds" in completed.stdout
 
 
 def test_cli_dry_run_human_output_no_stale(
@@ -74,6 +89,37 @@ def test_cli_uses_runtime_bridge_root_env_by_default(
     assert payload["archived"][0]["applied"] is False
     # Dry-run did not mutate the runtime-root claim.
     assert (bridge / "work_queue" / "claims" / "task-cli-env-stale.json").exists()
+
+
+def test_cli_honors_environment_fallback_for_legacy_claim(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-cli-legacy-env",
+        summary="legacy fallback",
+        bridge_root=bridge,
+        now_utc=datetime.now(timezone.utc) - timedelta(seconds=500),
+    )
+    claim_path = bridge / "work_queue" / "claims" / "task-cli-legacy-env.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload.pop("lease_seconds")
+    payload.pop("claim_lease_expires_utc")
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "1000")
+
+    exit_code = sweep_cli.main(
+        ["--bridge-root", str(bridge), "--json"]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    report = json.loads(captured.out)
+    assert report["max_age_seconds"] == 1000
+    assert report["archived"] == []
 
 
 def test_cli_apply_archives_and_emits_json(

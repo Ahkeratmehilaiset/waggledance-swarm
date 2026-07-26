@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import waggledance.core.work_queue as work_queue_module
 from waggledance.core.work_queue import (
     ArchivedClaim,
     Claim,
@@ -54,6 +55,22 @@ def test_dry_run_returns_planned_archives_without_mutating_fs(tmp_path: Path) ->
     assert not record.archived_path.exists()
 
 
+def test_dry_run_on_missing_root_creates_no_lock_or_queue_files(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / "missing-bridge"
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_stale_now(),
+        max_age_seconds=60,
+        apply=False,
+    )
+
+    assert archived == []
+    assert not bridge.exists()
+
+
 def test_apply_archives_stale_claim_and_unlinks_original(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
@@ -78,6 +95,112 @@ def test_apply_archives_stale_claim_and_unlinks_original(tmp_path: Path) -> None
     assert payload["released_at_utc"].endswith("Z")
     # Original claim file is gone.
     assert not (bridge / "work_queue" / "claims" / "task-stale-2.json").exists()
+
+
+def test_stale_move_failure_leaves_original_active_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-stale-move-failure",
+        summary="archive me safely",
+        bridge_root=bridge,
+    )
+    claim_path = (
+        bridge / "work_queue" / "claims" / "task-stale-move-failure.json"
+    )
+    before = claim_path.read_bytes()
+
+    def fail_move(_source: Path, _target: Path) -> None:
+        raise WorkQueueError("simulated stale terminal target collision")
+
+    monkeypatch.setattr(work_queue_module, "_move_no_replace", fail_move)
+    with pytest.raises(WorkQueueError, match="target collision"):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert claim_path.read_bytes() == before
+    assert list((bridge / "work_queue" / "done").glob("*.json")) == []
+
+
+def test_stale_metadata_failure_reports_committed_terminal_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-stale-metadata-failure",
+        summary="terminal transition wins",
+        bridge_root=bridge,
+    )
+
+    def fail_metadata_write(*_args, **_kwargs) -> None:
+        raise OSError("simulated stale metadata failure")
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_write_json_file",
+        fail_metadata_write,
+    )
+    with pytest.warns(RuntimeWarning, match="stale release committed"):
+        archived = archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert len(archived) == 1
+    assert archived[0].applied is True
+    assert list((bridge / "work_queue" / "claims").glob("*.json")) == []
+    terminal = list((bridge / "work_queue" / "done").glob("*.json"))
+    assert len(terminal) == 1
+    payload = json.loads(terminal[0].read_text(encoding="utf-8"))
+    assert payload["task_id"] == "task-stale-metadata-failure"
+    assert "release_status" not in payload
+
+
+def test_archive_stale_legacy_claim_honors_environment_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="legacy-archive-env",
+        summary="legacy fallback",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / "legacy-archive-env.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload.pop("lease_seconds")
+    payload.pop("claim_lease_expires_utc")
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    now = _now() + timedelta(seconds=500)
+
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "1000")
+    assert archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=now,
+        apply=False,
+    ) == []
+
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "100")
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=now,
+        apply=False,
+    )
+    assert [record.claim.task_id for record in archived] == [
+        "legacy-archive-env"
+    ]
 
 
 def test_apply_archives_legacy_powershell_namespaced_claim_file(
@@ -214,7 +337,9 @@ def test_apply_creates_done_directory_when_missing(tmp_path: Path) -> None:
     assert done_dir.exists()
 
 
-def test_both_timestamps_unparseable_falls_back_to_max_age(tmp_path: Path) -> None:
+def test_both_timestamps_unparseable_are_not_destructively_archived(
+    tmp_path: Path,
+) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
         agent="claude-1",
@@ -234,8 +359,100 @@ def test_both_timestamps_unparseable_falls_back_to_max_age(tmp_path: Path) -> No
         max_age_seconds=60,
         apply=False,
     )
-    assert len(archived) == 1
-    assert archived[0].age_seconds == 60
+    assert archived == []
+    assert claim_file.exists()
+
+
+def test_per_claim_lease_replaces_shorter_global_threshold(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-long-lease",
+        summary="long lease",
+        bridge_root=bridge,
+        lease_seconds=1_000,
+    )
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now() + timedelta(seconds=500),
+        max_age_seconds=60,
+        apply=False,
+    )
+
+    assert archived == []
+
+
+def test_later_explicit_lease_expiry_extends_effective_expiry(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-explicit-expiry",
+        summary="explicit expiry",
+        bridge_root=bridge,
+        lease_seconds=60,
+    )
+    claim_file = bridge / "work_queue" / "claims" / "task-explicit-expiry.json"
+    payload = json.loads(claim_file.read_text(encoding="utf-8"))
+    payload["claim_lease_expires_utc"] = (
+        _now() + timedelta(seconds=600)
+    ).isoformat().replace("+00:00", "Z")
+    claim_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    before_expiry = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now() + timedelta(seconds=599),
+        max_age_seconds=30,
+        apply=False,
+    )
+    at_expiry = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now() + timedelta(seconds=600),
+        max_age_seconds=30,
+        apply=False,
+    )
+
+    assert before_expiry == []
+    assert [record.claim.task_id for record in at_expiry] == [
+        "task-explicit-expiry"
+    ]
+
+
+def test_legacy_claim_without_lease_fields_uses_global_threshold(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-legacy-lease",
+        summary="legacy lease",
+        bridge_root=bridge,
+    )
+    claim_file = bridge / "work_queue" / "claims" / "task-legacy-lease.json"
+    payload = json.loads(claim_file.read_text(encoding="utf-8"))
+    payload.pop("lease_seconds")
+    payload.pop("claim_lease_expires_utc")
+    claim_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    before_expiry = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now() + timedelta(seconds=59),
+        max_age_seconds=60,
+        apply=False,
+    )
+    at_expiry = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now() + timedelta(seconds=60),
+        max_age_seconds=60,
+        apply=False,
+    )
+
+    assert before_expiry == []
+    assert [record.claim.task_id for record in at_expiry] == [
+        "task-legacy-lease"
+    ]
 
 
 def test_unparseable_heartbeat_falls_back_to_fresh_claimed_at(tmp_path: Path) -> None:

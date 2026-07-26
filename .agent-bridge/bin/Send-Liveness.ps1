@@ -126,6 +126,16 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
     }
     $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
     if (Test-Path -LiteralPath $claimsDir -PathType Container) {
+        $workQueueTransaction = $null
+        try {
+        $transactionScript = Join-Path $PSScriptRoot 'WorkQueueTransaction.ps1'
+        if (-not (Test-Path -LiteralPath $transactionScript -PathType Leaf)) {
+            throw "work-queue transaction helper not found: $transactionScript"
+        }
+        . $transactionScript
+        $workQueueTransaction = Enter-WaggleDanceWorkQueueTransaction `
+            -BridgeRoot $bridgeRoot
+        Assert-WaggleDanceWorkQueueClaimSet -ClaimsDirectory $claimsDir
         $heartbeatTs = (Get-Date).ToUniversalTime().ToString('o')
         foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' `
                                           -File -ErrorAction SilentlyContinue)) {
@@ -141,14 +151,34 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
                 $obj | Add-Member -NotePropertyName last_heartbeat_utc `
                     -NotePropertyValue $heartbeatTs -Force
             }
+            $leaseSeconds = 0
             if ($obj.PSObject.Properties['lease_seconds']) {
-                $leaseSeconds = 0
-                if ([int]::TryParse([string]$obj.lease_seconds, [ref]$leaseSeconds) -and $leaseSeconds -gt 0) {
-                    $expires = (Get-Date).ToUniversalTime().AddSeconds($leaseSeconds).ToString('o')
-                    $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
-                        -NotePropertyValue $expires -Force
+                [void][int]::TryParse(
+                    [string]$obj.lease_seconds,
+                    [ref]$leaseSeconds
+                )
+            }
+            if ($leaseSeconds -le 0 -and $env:AGENT_BRIDGE_STALE_LEASE_SECONDS) {
+                $configuredLease = 0
+                if (
+                    [int]::TryParse(
+                        [string]$env:AGENT_BRIDGE_STALE_LEASE_SECONDS,
+                        [ref]$configuredLease
+                    ) -and
+                    $configuredLease -gt 0
+                ) {
+                    $leaseSeconds = $configuredLease
                 }
             }
+            if ($leaseSeconds -le 0) { $leaseSeconds = 300 }
+            $obj | Add-Member -NotePropertyName lease_seconds `
+                -NotePropertyValue $leaseSeconds -Force
+            $expires = ([DateTime]::Parse($heartbeatTs).ToUniversalTime()).AddSeconds(
+                $leaseSeconds
+            ).ToString('o')
+            $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
+                -NotePropertyValue $expires -Force
+            $tmp = $null
             try {
                 $json = ($obj | ConvertTo-Json -Depth 8)
                 $tmp = "$($file.FullName).tmp.$PID.$([guid]::NewGuid().ToString('N'))"
@@ -157,11 +187,33 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
                 Move-Item -LiteralPath $tmp -Destination $file.FullName `
                     -Force -ErrorAction Stop
             } catch {
+                if ($tmp) {
+                    try {
+                        Remove-Item -LiteralPath $tmp -Force `
+                            -ErrorAction SilentlyContinue
+                    } catch {}
+                }
                 # Lease bump is best-effort; failure here just
                 # means the next heartbeat will retry. Don't fail
                 # the liveness emit because of a lease-update glitch.
                 Write-Warning ("could not bump lease for {0}: {1}" -f `
                     $file.Name, $_.Exception.Message)
+            }
+        }
+        } catch {
+            # The liveness event is already durable. Refuse an unlocked claim
+            # update and let the next heartbeat retry.
+            Write-Warning ("could not lock/bump work-queue leases: {0}" -f `
+                $_.Exception.Message)
+        } finally {
+            if ($null -ne $workQueueTransaction) {
+                try {
+                    Exit-WaggleDanceWorkQueueTransaction `
+                        -Transaction $workQueueTransaction
+                } catch {
+                    Write-Warning ("could not release work-queue mutex: {0}" -f `
+                        $_.Exception.Message)
+                }
             }
         }
     }

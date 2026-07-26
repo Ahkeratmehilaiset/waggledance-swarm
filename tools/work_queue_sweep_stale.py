@@ -24,11 +24,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from waggledance.core.work_queue import (
     ArchivedClaim,
     WorkQueueError,
     archive_stale_claims,
     resolve_bridge_root,
+    resolve_stale_fallback_seconds,
 )
 
 
@@ -39,8 +45,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="work_queue_sweep_stale",
         description=(
-            "Archive stale agent-bridge claims whose heartbeat is older "
-            "than --max-age-seconds. Dry-run unless --apply is passed."
+            "Archive agent-bridge claims at their effective lease expiry. "
+            "--max-age-seconds is only the fallback for legacy claims. "
+            "Dry-run unless --apply is passed."
         ),
     )
     parser.add_argument(
@@ -55,11 +62,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-age-seconds",
         type=int,
-        default=CLI_DEFAULT_MAX_AGE_SECONDS,
+        default=None,
         help=(
-            "Lease threshold in seconds (default: "
-            f"{CLI_DEFAULT_MAX_AGE_SECONDS}s). Claims whose "
-            "last_heartbeat_utc is older than this are swept."
+            "Fallback lease age for legacy claims without a positive "
+            "lease_seconds value (default: "
+            "AGENT_BRIDGE_STALE_LEASE_SECONDS, then "
+            f"{CLI_DEFAULT_MAX_AGE_SECONDS}s). "
+            "Per-claim lease_seconds and later claim_lease_expires_utc values "
+            "take precedence."
         ),
     )
     parser.add_argument(
@@ -96,10 +106,11 @@ def main(argv: list[str] | None = None) -> int:
 
     now = datetime.now(timezone.utc)
     try:
+        fallback_seconds = resolve_stale_fallback_seconds(args.max_age_seconds)
         archived = archive_stale_claims(
             bridge_root=bridge_root,
             now_utc=now,
-            max_age_seconds=args.max_age_seconds,
+            max_age_seconds=fallback_seconds,
             apply=args.apply,
         )
     except WorkQueueError as exc:
@@ -112,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         payload = {
             "applied": args.apply,
-            "max_age_seconds": args.max_age_seconds,
+            "max_age_seconds": fallback_seconds,
             "now_utc": now.isoformat().replace("+00:00", "Z"),
             "archived": [_serialize(record) for record in archived],
         }
@@ -121,7 +132,10 @@ def main(argv: list[str] | None = None) -> int:
 
     label = "ARCHIVED" if args.apply else "WOULD ARCHIVE"
     if not archived:
-        print(f"no stale claims (threshold {args.max_age_seconds}s)")
+        print(
+            "no stale claims "
+            f"(legacy fallback {fallback_seconds}s; per-claim leases honored)"
+        )
         return 0
     for record in archived:
         print(

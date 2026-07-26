@@ -179,11 +179,21 @@ try {
     # Re-read claim and confirm last_heartbeat_utc was bumped.
     $obj3 = Get-Content -Raw -Path $freshClaimPath -Encoding UTF8 |
         ConvertFrom-Json
-    $bumpedTs = [DateTime]::Parse([string]$obj3.last_heartbeat_utc).ToUniversalTime()
+    $bumpedValue = $obj3.last_heartbeat_utc
+    $bumpedTs = if ($bumpedValue -is [DateTime]) {
+        ([DateTime]$bumpedValue).ToUniversalTime()
+    } else {
+        ([DateTimeOffset]::Parse(
+            [string]$bumpedValue,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+                [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        )).UtcDateTime
+    }
     $oldTsParsed = [DateTime]::Parse($oldTs).ToUniversalTime()
     Add-Check -Name 'heartbeat bumped last_heartbeat_utc on own claim' `
         -Passed ($bumpedTs -gt $oldTsParsed) `
-        -Detail "old=$oldTs new=$([string]$obj3.last_heartbeat_utc)"
+        -Detail "old=$oldTs new=$($bumpedTs.ToString('o'))"
 
     # Now sweep with stale=2s; the bumped claim must survive.
     $sweptAfterHb = & $sweep -StaleSeconds 2 -Quiet

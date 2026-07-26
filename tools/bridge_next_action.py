@@ -192,6 +192,7 @@ TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
 PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
+REQUESTER_CLOSURE_AGENT_KEY_PREFIX = "requester-closure:"
 TERMINAL_RECEIPT_AGENT_KEY = "terminal-receipt"
 
 
@@ -814,7 +815,8 @@ def _build_request_closure_index(
     """Return latest answer-like event timestamps by task and closing agent."""
     closure_index: dict[str, dict[str, str]] = {}
     for event in events:
-        if not _is_answer_like(event):
+        requester_closure = _is_requester_closure_event(event)
+        if not _is_answer_like(event) and not requester_closure:
             continue
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
@@ -823,13 +825,23 @@ def _build_request_closure_index(
             closure_keys = {_task_closure_key(task_id)}
         else:
             closure_keys = _empty_task_closure_keys_for_answer(event)
-        pr_closure_key = _pr_closure_key_for_event(event)
+        # A closed wake withdraws only its exact task (or exact empty-task
+        # requester/target pair). It must never become a PR-wide terminal
+        # closure merely because the wake payload also names a PR.
+        pr_closure_key = (
+            None if requester_closure else _pr_closure_key_for_event(event)
+        )
         if pr_closure_key:
             closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
             task_closures = closure_index.setdefault(closure_key, {})
-            if event_ts > task_closures.get(event_agent, ""):
-                task_closures[event_agent] = event_ts
+            closing_agent_key = (
+                _requester_closure_agent_key(event_agent)
+                if requester_closure
+                else event_agent
+            )
+            if event_ts > task_closures.get(closing_agent_key, ""):
+                task_closures[closing_agent_key] = event_ts
             if _is_same_task_terminal_receipt(event):
                 if event_ts > task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, ""):
                     task_closures[TERMINAL_RECEIPT_AGENT_KEY] = event_ts
@@ -878,6 +890,12 @@ def _request_closed_by_index(
             continue
         if task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, "") > request_ts:
             return True
+        if _event_type(request) == "wake_request":
+            requester_closure_key = _requester_closure_agent_key(
+                _event_agent(request)
+            )
+            if task_closures.get(requester_closure_key, "") > request_ts:
+                return True
         for closing_agent in {agent.lower(), _event_agent(request)}:
             if task_closures.get(closing_agent, "") > request_ts:
                 return True
@@ -935,6 +953,10 @@ def _is_same_task_terminal_receipt(event: Mapping[str, Any]) -> bool:
 
 def _pr_requester_terminal_agent_key(agent: str) -> str:
     return f"{PR_REQUESTER_TERMINAL_AGENT_PREFIX}{agent}"
+
+
+def _requester_closure_agent_key(agent: str) -> str:
+    return f"{REQUESTER_CLOSURE_AGENT_KEY_PREFIX}{agent}"
 
 
 def _deduplicate_repeated_wake_requests(
@@ -1310,6 +1332,11 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
         or _is_response_only_status(status)
         or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
     )
+
+
+def _is_requester_closure_event(event: Mapping[str, Any]) -> bool:
+    """Recognize exact requester-side closures that are not target answers."""
+    return _event_type(event) == "wake_request" and _event_status(event) == "closed"
 
 
 def _is_closed_request_status(status: str) -> bool:

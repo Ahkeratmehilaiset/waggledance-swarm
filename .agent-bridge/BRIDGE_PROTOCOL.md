@@ -278,6 +278,11 @@ operation lock / lease for TOCTOU).
      `superseded`, `cancelled`/`canceled`, and their underscore-suffixed
      forms close a request. Status tools report requester closeout as
      `closed`, not as an answer from the target agent.
+   - An exact `wake_request/closed` from the original requester closes only
+     an earlier `wake_request` with the same `task_id`. It does not close a
+     different request type, does not close another task through a shared PR
+     payload, and never counts as an answer from the target agent. Other
+     terminal-looking wake statuses do not close requests.
    - `done/request` is still request-like work. Do not use it as a
      closeout status.
 

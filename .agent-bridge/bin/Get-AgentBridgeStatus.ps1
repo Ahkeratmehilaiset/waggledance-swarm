@@ -100,7 +100,8 @@ foreach ($agent in $agents) {
 $latestRequests = @{}
 foreach ($event in @($events | Where-Object { Test-BridgeRequestLikeEvent -Event $_ } | Sort-Object ts_utc)) {
     foreach ($target in @(Get-BridgeEventTargets -Event $event)) {
-        $key = "{0}|{1}" -f $target, [string]$event.task_id
+        $key = "{0}|{1}|{2}|{3}" -f `
+            $target, [string]$event.agent, [string]$event.task_id, [string]$event.type
         $latestRequests[$key] = [pscustomobject]@{
             target = $target
             event = $event
@@ -143,7 +144,7 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
                 [string]$_.agent -eq [string]$request.agent -and
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.ts_utc -gt [string]$request.ts_utc -and
-                (Test-BridgeRequesterClosureEvent -Event $_)
+                (Test-BridgeRequesterClosureForRequest -Request $request -Event $_)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1

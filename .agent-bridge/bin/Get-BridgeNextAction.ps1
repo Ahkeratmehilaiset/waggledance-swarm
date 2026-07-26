@@ -199,7 +199,7 @@ function Test-BridgeRequestStillOpen {
                 [string]$_.agent -eq [string]$Request.agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
                 [string]$_.ts_utc -gt [string]$Request.ts_utc -and
-                (Test-BridgeRequesterClosureEvent -Event $_)
+                (Test-BridgeRequesterClosureForRequest -Request $Request -Event $_)
             } |
             Select-Object -First 1
     )
@@ -216,11 +216,13 @@ foreach ($req in $freshRequestsForAgent) {
 # Stale bucket: previously counted raw (no dedup, no answered check), which
 # inflated stale_incoming_count with every repeated poke ever received and
 # produced false dark-agent alarms. Dedup by requester+task (latest poke per
-# pair) FIRST, then apply the same answered/closure filter as the fresh path.
+# request type) FIRST, then apply the same answered/closure filter as the
+# fresh path. A closed wake must not hide a different request type that reused
+# the same task id.
 $staleOpenRequests = New-Object System.Collections.Generic.List[object]
 $staleByKey = @{}
 foreach ($req in $staleRequests) {
-    $key = "$([string]$req.agent)|$([string]$req.task_id)"
+    $key = "$([string]$req.agent)|$([string]$req.task_id)|$([string]$req.type)"
     $staleByKey[$key] = $req  # requests are ts-sorted; last wins
 }
 foreach ($req in @($staleByKey.Values)) {

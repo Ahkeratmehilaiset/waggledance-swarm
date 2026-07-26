@@ -274,7 +274,17 @@ if ($Agent -and -not $NoContinuity) {
             Write-Host '  incoming:'
             $latestByTask = @{}
             foreach ($r in $requests) {
-                $latestByTask[[string]$r.task_id] = $r
+                $requestKey = "{0}|{1}|{2}" -f `
+                    [string]$r.agent, [string]$r.task_id, [string]$r.type
+                $latestByTask[$requestKey] = $r
+            }
+            $requestKeysByTask = @{}
+            foreach ($requestKey in $latestByTask.Keys) {
+                $requestTaskId = [string]$latestByTask[$requestKey].task_id
+                if (-not $requestKeysByTask.ContainsKey($requestTaskId)) {
+                    $requestKeysByTask[$requestTaskId] = New-Object System.Collections.Generic.List[string]
+                }
+                [void]$requestKeysByTask[$requestTaskId].Add([string]$requestKey)
             }
             $receivedByTask = @{}
             $hiddenResolvedCount = 0
@@ -282,34 +292,38 @@ if ($Agent -and -not $NoContinuity) {
             $closureByTask = @{}
             foreach ($event in $allEvents) {
                 $eventTaskId = [string]$event.task_id
-                if (-not $eventTaskId -or -not $latestByTask.ContainsKey($eventTaskId)) {
+                if (-not $eventTaskId -or -not $requestKeysByTask.ContainsKey($eventTaskId)) {
                     continue
                 }
-                $requestForTask = $latestByTask[$eventTaskId]
-                if ([string]$event.ts_utc -le [string]$requestForTask.ts_utc) {
-                    continue
-                }
-                if ([string]$event.agent -eq $Agent -and (Test-BridgeAnswerEvent -Event $event)) {
-                    $replyByTask[$eventTaskId] = $event
-                    continue
-                }
-                if ([string]$event.agent -eq [string]$requestForTask.agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
-                    $closureByTask[$eventTaskId] = $event
+                foreach ($requestKey in @($requestKeysByTask[$eventTaskId])) {
+                    $requestForTask = $latestByTask[$requestKey]
+                    if ([string]$event.ts_utc -le [string]$requestForTask.ts_utc) {
+                        continue
+                    }
+                    if ([string]$event.agent -eq $Agent -and (Test-BridgeAnswerEvent -Event $event)) {
+                        $replyByTask[$requestKey] = $event
+                        continue
+                    }
+                    if ([string]$event.agent -eq [string]$requestForTask.agent -and
+                        (Test-BridgeRequesterClosureForRequest -Request $requestForTask -Event $event)) {
+                        $closureByTask[$requestKey] = $event
+                    }
                 }
             }
             if (-not $NoAckReceived -and -not $Raw) {
-                foreach ($taskId in $latestByTask.Keys) {
-                    $receivedByTask[$taskId] = Send-ReceivedAck `
+                foreach ($requestKey in $latestByTask.Keys) {
+                    $receivedByTask[$requestKey] = Send-ReceivedAck `
                         -AgentName $Agent `
-                        -RequestEvent $latestByTask[$taskId] `
+                        -RequestEvent $latestByTask[$requestKey] `
                         -AllEvents $allEvents
                 }
             }
-            foreach ($taskId in ($latestByTask.Keys | Sort-Object)) {
-                $req = $latestByTask[$taskId]
+            foreach ($requestKey in ($latestByTask.Keys | Sort-Object)) {
+                $req = $latestByTask[$requestKey]
+                $taskId = [string]$req.task_id
                 $reply = @()
-                if ($replyByTask.ContainsKey($taskId)) {
-                    $reply = @($replyByTask[$taskId])
+                if ($replyByTask.ContainsKey($requestKey)) {
+                    $reply = @($replyByTask[$requestKey])
                 }
                 if ($reply.Count -gt 0) {
                     $last = $reply[-1]
@@ -321,8 +335,8 @@ if ($Agent -and -not $NoContinuity) {
                     }
                 } else {
                     $closure = @()
-                    if ($closureByTask.ContainsKey($taskId)) {
-                        $closure = @($closureByTask[$taskId])
+                    if ($closureByTask.ContainsKey($requestKey)) {
+                        $closure = @($closureByTask[$requestKey])
                     }
                     if ($closure.Count -gt 0) {
                         $last = $closure[-1]
@@ -335,7 +349,7 @@ if ($Agent -and -not $NoContinuity) {
                         continue
                     }
                     $receivedSuffix = ''
-                    if ($receivedByTask.ContainsKey($taskId) -and $receivedByTask[$taskId]) {
+                    if ($receivedByTask.ContainsKey($requestKey) -and $receivedByTask[$requestKey]) {
                         $receivedSuffix = ' (received)'
                     }
                     Write-Host ("  OPEN {0}{1}: {2}/{3} from {4}: {5}" -f `
@@ -368,7 +382,8 @@ if ($Agent -and -not $NoContinuity) {
             Write-Host '  outgoing:'
             $sentLatestByTask = @{}
             foreach ($r in $sentRequests) {
-                $sentKey = "{0}|{1}" -f [string]$r.target, [string]$r.event.task_id
+                $sentKey = "{0}|{1}|{2}" -f `
+                    [string]$r.target, [string]$r.event.task_id, [string]$r.event.type
                 $sentLatestByTask[$sentKey] = $r
             }
             $sentKeysByTask = @{}
@@ -398,7 +413,8 @@ if ($Agent -and -not $NoContinuity) {
                         $sentReplyByKey[$sentKey] = $event
                         continue
                     }
-                    if ([string]$event.agent -eq $Agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                    if ([string]$event.agent -eq $Agent -and
+                        (Test-BridgeRequesterClosureForRequest -Request $requestForKey -Event $event)) {
                         $sentClosureByKey[$sentKey] = $event
                         continue
                     }

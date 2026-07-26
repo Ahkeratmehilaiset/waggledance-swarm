@@ -91,6 +91,12 @@ function Test-BridgeRequesterClosureEvent {
 
     $status = [string]$Event.status
     $type = [string]$Event.type
+    # A requester can explicitly close a previously emitted wake without
+    # turning the wake into an answer from the target. Keep this pairing exact:
+    # broader terminal-looking wake statuses remain non-authoritative.
+    if ($type -eq 'wake_request') {
+        return $status -eq 'closed'
+    }
     if ($type -eq 'message') {
         return @('closed','superseded','cancelled','canceled') -contains $status -or
             $status.StartsWith('closed_', [System.StringComparison]::OrdinalIgnoreCase) -or
@@ -100,6 +106,23 @@ function Test-BridgeRequesterClosureEvent {
     }
     if (@('done','release','decision') -notcontains $type) { return $false }
     return (Test-BridgeRequesterClosureStatus -Status $status)
+}
+
+function Test-BridgeRequesterClosureForRequest {
+    param(
+        [Parameter(Mandatory)] [object] $Request,
+        [Parameter(Mandatory)] [object] $Event
+    )
+
+    if (-not (Test-BridgeRequesterClosureEvent -Event $Event)) {
+        return $false
+    }
+    # wake_request/closed withdraws an earlier wake only. Other established
+    # requester closeouts remain task-wide for backward compatibility.
+    if ([string]$Event.type -eq 'wake_request') {
+        return [string]$Request.type -eq 'wake_request'
+    }
+    return $true
 }
 
 function Test-BridgeRequestLikeEvent {
@@ -157,8 +180,8 @@ function Test-BridgeAnswerEvent {
         return $true
     }
 
-    # `wake_request` is request-like, never a closure/answer: a nudge must not
-    # mark another agent's open request as answered.
+    # `wake_request` is never a target answer. Exact wake_request/closed is
+    # handled separately as a requester-authored closure.
     if (@('status','intent','wake_request') -contains $type) { return $false }
     return $true
 }

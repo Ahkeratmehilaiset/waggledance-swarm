@@ -115,6 +115,26 @@ def test_duplicate_events_count_one_open_task(powershell: str) -> None:
     assert report["open_request_count"] == 2
 
 
+def test_whitespace_only_task_ids_do_not_open_tasks(powershell: str) -> None:
+    report = _state(
+        powershell,
+        [
+            _event("2026-07-26T07:00:00Z", task_id="   "),
+            _event(
+                "2026-07-26T07:01:00Z",
+                event_type="wake_request",
+                task_id="\t",
+            ),
+        ],
+    )
+
+    assert report["open_incoming_count"] == 0
+    assert report["open_task_count"] == 0
+    assert report["open_request_count"] == 0
+    assert report["open_task_ids"] == []
+    assert report["fresh_rco_wake"] is False
+
+
 def test_status_updates_do_not_reset_request_age(powershell: str) -> None:
     report = _state(
         powershell,

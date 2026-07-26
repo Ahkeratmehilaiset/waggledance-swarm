@@ -143,7 +143,7 @@ function Get-BridgeNudgeAgentState {
         }
 
         if (
-            -not $taskId -or
+            [string]::IsNullOrWhiteSpace($taskId) -or
             $eventAgent -eq $target -or
             (Test-BridgeNudgeFollowTask -Event $event) -or
             -not (Test-BridgeAddressedTo -Event $event -TargetAgent $target) -or

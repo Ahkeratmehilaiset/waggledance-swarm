@@ -1182,7 +1182,7 @@ def test_artifact_adapter_rejects_junction_bundle_without_pathlib_helper(
         target.rename(bundle_root)
         pytest.skip(f"junction creation unavailable: {created.stderr}")
     try:
-        monkeypatch.setattr(Path, "is_junction", None)
+        monkeypatch.setattr(Path, "is_junction", None, raising=False)
         report = _artifact_report(case)
     finally:
         os.rmdir(bundle_root)

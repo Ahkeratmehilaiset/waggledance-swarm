@@ -28,6 +28,11 @@ $doneDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'done'
 if (-not (Test-Path -LiteralPath $doneDir)) {
     [void](New-Item -ItemType Directory -Path $doneDir -Force)
 }
+$transactionScript = Join-Path $PSScriptRoot 'WorkQueueTransaction.ps1'
+if (-not (Test-Path -LiteralPath $transactionScript -PathType Leaf)) {
+    throw "work-queue transaction helper not found: $transactionScript"
+}
+. $transactionScript
 
 function ConvertTo-SafeName {
     param([string] $Name)
@@ -94,6 +99,10 @@ if (-not $legacySafeTask) {
     throw 'TaskId does not produce a safe claim filename'
 }
 $safeTask = ConvertTo-SafeName $TaskId
+$workQueueTransaction = Enter-WaggleDanceWorkQueueTransaction `
+    -BridgeRoot $bridgeRoot
+try {
+Assert-WaggleDanceWorkQueueClaimSet -ClaimsDirectory $claimsDir
 $matchingClaimFiles = @(
     Get-ExactTaskClaimFiles -Directory $claimsDir -ExactTaskId $TaskId
 )
@@ -130,35 +139,53 @@ $claim | Add-Member -NotePropertyName release_message -NotePropertyValue $Messag
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $donePath = Join-Path $doneDir ($safeTask + '.' + $stamp + '.' + $Status + '.json')
 
-# Internal review fix R9 (2026-05-09): the previous "Set-Content done +
-# Remove-Item claim" had a race window where a concurrent reader could
-# observe both files simultaneously, or where a Remove-Item failure
-# would leave the claim "active" even though the agent had archived
-# it as done. Two-step atomic recipe:
-#   1. Update the claim content in place via temp+Replace (so the claim
-#      file already carries the released_at_utc fields).
-#   2. Atomically Move() the claim into the done dir: single FS op, no
-#      window where both files exist or neither exists.
+# Move the unchanged active generation first. If that atomic transition
+# fails, the active claim is untouched. Enrich the file only after it is
+# terminal so a metadata-write failure can never leave a terminal-stamped
+# active claim that a later heartbeat might resurrect.
 $encoding = New-Object System.Text.UTF8Encoding($false)
 $claimJson = ($claim | ConvertTo-Json -Depth 8)
-$tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-[System.IO.File]::WriteAllText($tmpClaim, $claimJson, $encoding)
-$backupClaim = $null
+[System.IO.File]::Move($claimPath, $donePath)
+$tmpDone = "$donePath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+$backupDone = $null
 try {
-    $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
-    [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
-    try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
+    if (
+        [Environment]::GetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_WORK_QUEUE_TERMINAL_METADATA_FAILURE',
+            'Process'
+        ) -eq '1'
+    ) {
+        throw 'simulated terminal metadata update failure'
+    }
+    [System.IO.File]::WriteAllText($tmpDone, $claimJson, $encoding)
+    $backupDone = "$donePath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
+    [System.IO.File]::Replace($tmpDone, $donePath, $backupDone)
+    try { Remove-Item -LiteralPath $backupDone -Force -ErrorAction SilentlyContinue } catch {}
 } catch {
     try {
-        if ($backupClaim -and (Test-Path -LiteralPath $backupClaim)) {
-            Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue
+        if ($backupDone -and (Test-Path -LiteralPath $backupDone)) {
+            Remove-Item -LiteralPath $backupDone -Force -ErrorAction SilentlyContinue
         }
     } catch {}
-    try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
-    throw
+    try { Remove-Item -LiteralPath $tmpDone -Force -ErrorAction SilentlyContinue } catch {}
+    Write-Warning (
+        "claim reached done/ and release committed, but metadata update failed: {0}: {1}" -f
+        $donePath,
+        $_.Exception.Message
+    )
 }
-[System.IO.File]::Move($claimPath, $donePath)
+} finally {
+    Exit-WaggleDanceWorkQueueTransaction -Transaction $workQueueTransaction
+}
 
 $eventType = if ($Status -eq 'done') { 'done' } elseif ($Status -eq 'handoff') { 'handoff' } elseif ($Status -eq 'blocked') { 'blocked' } else { 'release' }
-& (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') -Agent $Agent -Type $eventType -TaskId $TaskId -Status $Status -Message $Message -RunId $RunId | Out-Null
+try {
+    & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') -Agent $Agent -Type $eventType -TaskId $TaskId -Status $Status -Message $Message -RunId $RunId | Out-Null
+} catch {
+    Write-Warning (
+        "release committed, but bridge event emit failed for task {0}: {1}" -f
+        $TaskId,
+        $_.Exception.Message
+    )
+}
 [pscustomobject]@{ task_id = $TaskId; status = $Status; archived_claim = $donePath }

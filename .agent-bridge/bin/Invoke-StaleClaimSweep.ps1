@@ -79,6 +79,11 @@ if ($StaleSeconds -le 0) {
 
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 $doneDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'done'
+$transactionScript = Join-Path $PSScriptRoot 'WorkQueueTransaction.ps1'
+if (-not (Test-Path -LiteralPath $transactionScript -PathType Leaf)) {
+    throw "work-queue transaction helper not found: $transactionScript"
+}
+. $transactionScript
 
 function ConvertTo-BridgeUtc {
     param([object] $Value)
@@ -120,7 +125,12 @@ if (-not (Test-Path -LiteralPath $doneDir -PathType Container)) {
 }
 
 $now = (Get-Date).ToUniversalTime()
+$workQueueTransaction = Enter-WaggleDanceWorkQueueTransaction `
+    -BridgeRoot $bridgeRoot
+$sweptRecords = New-Object System.Collections.Generic.List[object]
 
+try {
+Assert-WaggleDanceWorkQueueClaimSet -ClaimsDirectory $claimsDir
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue)) {
     try {
@@ -185,30 +195,72 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -NotePropertyValue ("last_heartbeat_utc was $([int]$ageSeconds)s old; lease threshold $effectiveLeaseSeconds s") `
         -Force
 
+    $claimJson = ($claim | ConvertTo-Json -Depth 8)
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $tmpDone = "$donePath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+    $backupDone = "$donePath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
+    $movedToDone = $false
     try {
-        $claim | ConvertTo-Json -Depth 8 |
-            Set-Content -Path $donePath -Encoding UTF8
-        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+        # Move the original active generation first. A later metadata failure
+        # can leave an audit-poor terminal file, but never a terminal-stamped
+        # active generation that a heartbeat could resurrect.
+        [System.IO.File]::Move($file.FullName, $donePath)
+        $movedToDone = $true
+        if (
+            [Environment]::GetEnvironmentVariable(
+                'AGENT_BRIDGE_TEST_WORK_QUEUE_TERMINAL_METADATA_FAILURE',
+                'Process'
+            ) -eq '1'
+        ) {
+            throw 'simulated terminal metadata update failure'
+        }
+        [System.IO.File]::WriteAllText($tmpDone, $claimJson, $encoding)
+        [System.IO.File]::Replace($tmpDone, $donePath, $backupDone)
+        try { Remove-Item -LiteralPath $backupDone -Force -ErrorAction SilentlyContinue } catch {}
     } catch {
-        Write-Warning ("could not archive stale claim {0}: {1}" -f `
-            $file.Name, $_.Exception.Message)
-        continue
+        try { Remove-Item -LiteralPath $tmpDone -Force -ErrorAction SilentlyContinue } catch {}
+        try { Remove-Item -LiteralPath $backupDone -Force -ErrorAction SilentlyContinue } catch {}
+        if (-not $movedToDone) {
+            Write-Warning ("could not archive stale claim {0}: {1}" -f `
+                $file.Name, $_.Exception.Message)
+            continue
+        }
+        Write-Warning (
+            "claim reached done/ and stale release committed, but metadata update failed for {0}: {1}" -f
+            $file.Name,
+            $_.Exception.Message
+        )
     }
 
-    # Emit release event (best-effort; lease sweep must not fail
-    # because the bridge writer is momentarily contended).
+    [void]$sweptRecords.Add([pscustomobject]@{
+        task_id        = [string]$claim.task_id
+        agent          = $agent
+        age_seconds    = [int]$ageSeconds
+        archived_path  = $donePath
+        last_heartbeat_utc = $tsString
+        stale_threshold_s = $effectiveLeaseSeconds
+        claim_lease_seconds = $claimLeaseSeconds
+        claim_lease_expires_utc = $effectiveExpiresUtc.ToString('o')
+    })
+}
+} finally {
+    Exit-WaggleDanceWorkQueueTransaction -Transaction $workQueueTransaction
+}
+
+foreach ($record in $sweptRecords) {
+    # AppendV1 is intentionally acquired only after WorkQueueV1 is released.
     try {
         $writeEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
         if (Test-Path -LiteralPath $writeEvent -PathType Leaf) {
             $payload = [pscustomobject]@{
-                task_id            = [string]$claim.task_id
-                claim_agent        = $agent
-                last_heartbeat_utc = $tsString
-                age_seconds        = [int]$ageSeconds
-                stale_threshold_s  = $effectiveLeaseSeconds
-                claim_lease_seconds = $claimLeaseSeconds
-                claim_lease_expires_utc = $effectiveExpiresUtc.ToString('o')
-                archived_path      = $donePath
+                task_id            = $record.task_id
+                claim_agent        = $record.agent
+                last_heartbeat_utc = $record.last_heartbeat_utc
+                age_seconds        = $record.age_seconds
+                stale_threshold_s  = $record.stale_threshold_s
+                claim_lease_seconds = $record.claim_lease_seconds
+                claim_lease_expires_utc = $record.claim_lease_expires_utc
+                archived_path      = $record.archived_path
                 swept_by           = $env:AGENT_BRIDGE_RUN_ID
             }
             $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
@@ -217,8 +269,8 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                 -Type release `
                 -Status stale_lease `
                 -Severity medium `
-                -TaskId ([string]$claim.task_id) `
-                -Message ("auto-released stale claim by $agent (heartbeat $([int]$ageSeconds)s old)") `
+                -TaskId $record.task_id `
+                -Message ("auto-released stale claim by $($record.agent) (heartbeat $($record.age_seconds)s old)") `
                 -PayloadJson $payloadJson | Out-Null
         }
     } catch {
@@ -228,15 +280,14 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
 
     if (-not $Quiet) {
         Write-Host ("STALE LEASE SWEPT: {0} by {1} (heartbeat {2}s old)" -f `
-            [string]$claim.task_id, $agent, [int]$ageSeconds) `
+            $record.task_id, $record.agent, $record.age_seconds) `
             -ForegroundColor Yellow
     }
 
-    # Emit into pipeline (caller wraps with @(...)).
     [pscustomobject]@{
-        task_id        = [string]$claim.task_id
-        agent          = $agent
-        age_seconds    = [int]$ageSeconds
-        archived_path  = $donePath
+        task_id       = $record.task_id
+        agent         = $record.agent
+        age_seconds   = $record.age_seconds
+        archived_path = $record.archived_path
     }
 }

@@ -1642,10 +1642,6 @@ def test_powershell_claim_fails_closed_on_occupied_preferred_paths(
     preferred = next(claims_dir.glob("*.json"))
     legacy_collision = claims_dir / "codex-2_task.json"
     preferred.rename(legacy_collision)
-    (claims_dir / "unrelated-malformed.json").write_text(
-        "{not json",
-        encoding="utf-8",
-    )
 
     mismatched = _run_bridge_script(
         root,
@@ -1686,8 +1682,8 @@ def test_powershell_claim_fails_closed_on_occupied_preferred_paths(
         executable=powershell,
     )
 
-    assert malformed.returncode == 3
-    assert "claim path collision for task" in malformed.stderr
+    assert malformed.returncode != 0
+    assert "unreadable canonical claim file" in malformed.stderr
     assert malformed_preferred.read_text(encoding="utf-8") == "{not json"
 
 

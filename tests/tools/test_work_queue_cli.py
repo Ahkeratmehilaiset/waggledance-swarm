@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tools.work_queue import main
@@ -42,6 +42,58 @@ def test_claim_and_list_round_trip(tmp_path: Path, capsys) -> None:
     assert report["decision"] == "listed"
     assert len(report["claims"]) == 1
     assert report["claims"][0]["task_id"] == "task-001"
+
+
+def test_claim_cli_uses_environment_lease_default(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "1000")
+
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "task-env-lease",
+        "--summary",
+        "environment lease",
+    )
+
+    assert exit_code == 0
+    assert report["claim"]["lease_seconds"] == 1000
+
+
+def test_explicit_claim_cli_lease_overrides_environment(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "1000")
+
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "task-explicit-lease",
+        "--summary",
+        "explicit lease",
+        "--lease-seconds",
+        "45",
+    )
+
+    assert exit_code == 0
+    assert report["claim"]["lease_seconds"] == 45
 
 
 def test_cli_defaults_to_runtime_bridge_root_env_for_list(
@@ -336,6 +388,48 @@ def test_stale_command_outputs_json(tmp_path: Path, capsys) -> None:
     )
     assert exit_code == 0
     assert report == {"claims": [], "decision": "stale_claims", "ok": True}
+
+
+def test_stale_command_honors_environment_fallback_for_legacy_claim(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="codex-1",
+        task_id="legacy-env-stale",
+        summary="legacy fallback",
+        bridge_root=bridge,
+        now_utc=datetime.now(timezone.utc) - timedelta(seconds=500),
+    )
+    claim_path = bridge / "work_queue" / "claims" / "legacy-env-stale.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload.pop("lease_seconds")
+    payload.pop("claim_lease_expires_utc")
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "1000")
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "stale",
+    )
+    assert exit_code == 0
+    assert report["claims"] == []
+
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "100")
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "stale",
+    )
+    assert exit_code == 3
+    assert [claim["task_id"] for claim in report["claims"]] == [
+        "legacy-env-stale"
+    ]
 
 
 def test_stale_command_returns_exit_three_for_stale_claims(

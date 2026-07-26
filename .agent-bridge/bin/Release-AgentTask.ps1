@@ -31,20 +31,92 @@ if (-not (Test-Path -LiteralPath $doneDir)) {
 
 function ConvertTo-SafeName {
     param([string] $Name)
-    return (($Name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    $safe = (($Name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    if (-not $safe) { $safe = 'claim' }
+    if ($safe -ceq $Name) { return $safe }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Name)
+        $hash = $sha.ComputeHash($bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    $digest = -join @($hash | ForEach-Object { $_.ToString('x2') })
+    return "{0}-{1}" -f $safe, $digest.Substring(0, 12)
 }
 
+function Get-ExactTaskClaimFiles {
+    param(
+        [Parameter(Mandatory)] [string] $Directory,
+        [Parameter(Mandatory)] [string] $ExactTaskId
+    )
+
+    $matches = @()
+    foreach ($file in @(
+        Get-ChildItem -LiteralPath $Directory -Filter '*.json' -File `
+            -ErrorAction SilentlyContinue |
+            Sort-Object FullName
+    )) {
+        try {
+            $existing = Get-Content -Raw -LiteralPath $file.FullName `
+                -Encoding UTF8 | ConvertFrom-Json
+            $taskProperty = $existing.PSObject.Properties['task_id']
+            if ($null -eq $taskProperty) { continue }
+            $existingTaskId = [string]$taskProperty.Value
+        } catch {
+            continue
+        }
+        if (
+            [string]::Equals(
+                $existingTaskId,
+                $ExactTaskId,
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            $matches += $file
+        }
+    }
+    return $matches
+}
+
+function Stop-BridgeRelease {
+    param(
+        [Parameter(Mandatory)] [string] $ErrorMessage,
+        [Parameter(Mandatory)] [int] $Code
+    )
+    [Console]::Error.WriteLine($ErrorMessage)
+    exit $Code
+}
+
+$legacySafeTask = (($TaskId -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+if (-not $legacySafeTask) {
+    throw 'TaskId does not produce a safe claim filename'
+}
 $safeTask = ConvertTo-SafeName $TaskId
-$claimPath = Join-Path $claimsDir ($safeTask + '.json')
-if (-not (Test-Path -LiteralPath $claimPath)) {
-    Write-Error ("no active claim found for task: {0}" -f $TaskId)
-    exit 2
+$matchingClaimFiles = @(
+    Get-ExactTaskClaimFiles -Directory $claimsDir -ExactTaskId $TaskId
+)
+if ($matchingClaimFiles.Count -gt 1) {
+    Stop-BridgeRelease -ErrorMessage (
+        "multiple active claims found for exact task {0}: {1}" -f
+        $TaskId,
+        ((@($matchingClaimFiles.FullName) | Sort-Object) -join ', ')
+    ) -Code 3
 }
+if ($matchingClaimFiles.Count -eq 0) {
+    Stop-BridgeRelease -ErrorMessage (
+        "no active claim found for task: {0}" -f $TaskId
+    ) -Code 2
+}
+$claimPath = $matchingClaimFiles[0].FullName
 
-$claim = Get-Content -Raw -Path $claimPath -Encoding UTF8 | ConvertFrom-Json
+$claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 |
+    ConvertFrom-Json
 if ([string]$claim.agent -ne $Agent) {
-    Write-Error ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent)
-    exit 3
+    Stop-BridgeRelease -ErrorMessage (
+        "claim belongs to {0}, not {1}" -f $claim.agent, $Agent
+    ) -Code 3
 }
 
 if (-not $RunId) {

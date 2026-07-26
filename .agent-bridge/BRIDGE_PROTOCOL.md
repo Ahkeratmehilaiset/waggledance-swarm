@@ -613,6 +613,25 @@ nonexistent combined agent named `claude,operator`.
 - `.agent-bridge/work_queue/done/*.json` - released task claims.
 - `.agent-bridge/inbox/<agent>/*.md` - one-off messages an agent should read.
 
+Claim identity comes from the JSON payload's exact, case-sensitive `task_id`,
+not from a lossy filename. New claim filenames use the same
+sanitization-collision-resistant mapping in Python and PowerShell: values
+changed by filesystem sanitization receive a 12-hex SHA-256 suffix. Readers
+still discover legacy unsuffixed PowerShell claim files by exact payload
+identity. The task-targeted Python resolver and PowerShell Claim/Release
+resolvers fail closed on multiple active files for the same exact task or an
+occupied preferred path belonging to another/malformed claim, rather than
+overwrite or release an ambiguous claim. Case-only filename collisions on
+case-insensitive filesystems also fail closed; they are not silently aliased.
+
+Current limitation: primary claim create/refresh writes use per-file atomic
+create/replace, but lifecycle transitions are not transactionally atomic and
+the Python and PowerShell claim, release, heartbeat, liveness, and stale-sweep
+surfaces do not yet share a cross-runtime transaction lock. Their resolve/
+authorize/mutate sequences therefore retain a pre-existing TOCTOU window under
+concurrent writers. Do not describe Force/release as globally race-free until
+every mutator shares one lock with crash recovery and ordering tests.
+
 `Read-AgentBridge.ps1` reads the last 50000 events for continuity
 analysis by default. This is intentionally larger than the original
 5000-line window so two agents emitting heartbeat events every minute do

@@ -502,17 +502,27 @@ def _safe_name(value: str) -> str:
 
 def _claim_path_for_task(claims_dir: Path, task_id: str) -> Path:
     preferred = claims_dir / f"{_safe_name(task_id)}.json"
-    if preferred.exists():
-        return preferred
     if not claims_dir.exists():
         return preferred
+    matches: list[Path] = []
     for path in sorted(claims_dir.glob("*.json")):
         try:
             claim = _read_claim_file(path)
         except WorkQueueError:
             continue
         if claim.task_id == task_id:
-            return path
+            matches.append(path)
+    if len(matches) > 1:
+        rendered = ", ".join(str(path) for path in matches)
+        raise WorkQueueError(
+            f"multiple active claims for exact task {task_id}: {rendered}"
+        )
+    if matches:
+        return matches[0]
+    if preferred.exists():
+        raise WorkQueueError(
+            f"claim path collision for task {task_id}: {preferred}"
+        )
     return preferred
 
 

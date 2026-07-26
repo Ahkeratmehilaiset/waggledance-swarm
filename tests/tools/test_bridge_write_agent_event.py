@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import subprocess
 import pytest
 
 from waggledance.core.bridge_event_schema import validate_event_line
+from waggledance.core.work_queue import claim_task, release_task
 
 REQUIRES_TASK_ID_CASES = [
     ("claim", ""),
@@ -38,15 +40,22 @@ WINDOWS_APPEND_V1 = pytest.mark.skipif(
 )
 
 
+def _powershells() -> list[str]:
+    found: list[str] = []
+    for candidate in ("pwsh", "powershell", "powershell.exe"):
+        executable = shutil.which(candidate)
+        if executable and executable.lower() not in {
+            item.lower() for item in found
+        }:
+            found.append(executable)
+    return found
+
+
 def _powershell() -> str:
-    executable = (
-        shutil.which("pwsh")
-        or shutil.which("powershell")
-        or shutil.which("powershell.exe")
-    )
-    if executable is None:
+    executables = _powershells()
+    if not executables:
         pytest.skip("PowerShell is required for Write-AgentEvent smoke tests")
-    return executable
+    return executables[0]
 
 
 def _run_writer(
@@ -62,6 +71,7 @@ def _run_bridge_script(
     runtime_root: Path,
     script_name: str,
     *args: str,
+    executable: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for name in (
@@ -75,7 +85,7 @@ def _run_bridge_script(
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
     return subprocess.run(
         [
-            _powershell(),
+            executable or _powershell(),
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -1402,6 +1412,363 @@ def test_claim_and_release_accept_regex_agent_id(tmp_path: Path) -> None:
     assert {json.loads(line)["agent"] for line in lines} == {"codex-2"}
     for line in lines:
         validate_event_line(line)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_powershell_release_accepts_python_namespaced_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-2/python-to-powershell-release"
+    claim_task(
+        agent="codex-2",
+        task_id=task_id,
+        summary="python claim",
+        bridge_root=runtime_root,
+    )
+
+    release = _run_bridge_script(
+        root,
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        task_id,
+        "-Status",
+        "done",
+        "-Message",
+        "cross-runtime release",
+        executable=powershell,
+    )
+
+    assert release.returncode == 0, release.stderr
+    assert list((runtime_root / "work_queue" / "claims").glob("*.json")) == []
+    done_files = list((runtime_root / "work_queue" / "done").glob("*.json"))
+    assert len(done_files) == 1
+    assert json.loads(done_files[0].read_text(encoding="utf-8"))["task_id"] == task_id
+
+    event_lines = (
+        (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert len(event_lines) == 1
+    assert json.loads(event_lines[0])["type"] == "done"
+    validate_event_line(event_lines[0])
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_powershell_force_refreshes_python_claim_in_place(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-2/python-to-powershell-force"
+    claim_task(
+        agent="codex-2",
+        task_id=task_id,
+        summary="python claim",
+        bridge_root=runtime_root,
+    )
+
+    refreshed = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "powershell refresh",
+        "-Force",
+        executable=powershell,
+    )
+
+    assert refreshed.returncode == 0, refreshed.stderr
+    claim_files = list((runtime_root / "work_queue" / "claims").glob("*.json"))
+    assert len(claim_files) == 1
+    payload = json.loads(claim_files[0].read_text(encoding="utf-8"))
+    assert payload["task_id"] == task_id
+    assert payload["summary"] == "powershell refresh"
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_powershell_claim_namespaced_and_underscore_tasks_coexist(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    slash = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        "codex-2/task",
+        "-Summary",
+        "slash task",
+        executable=powershell,
+    )
+    underscore = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        "codex-2_task",
+        "-Summary",
+        "underscore task",
+        executable=powershell,
+    )
+
+    assert slash.returncode == 0, slash.stderr
+    assert underscore.returncode == 0, underscore.stderr
+    claim_files = list((runtime_root / "work_queue" / "claims").glob("*.json"))
+    assert len(claim_files) == 2
+    slash_digest = hashlib.sha256(b"codex-2/task").hexdigest()[:12]
+    assert {path.name for path in claim_files} == {
+        f"codex-2_task-{slash_digest}.json",
+        "codex-2_task.json",
+    }
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["task_id"]
+        for path in claim_files
+    } == {"codex-2/task", "codex-2_task"}
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_powershell_claim_and_release_fail_closed_on_duplicate_exact_task(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-2/duplicate-exact-task"
+    claim_task(
+        agent="codex-2",
+        task_id=task_id,
+        summary="python claim",
+        bridge_root=runtime_root,
+    )
+    claims_dir = runtime_root / "work_queue" / "claims"
+    preferred = next(claims_dir.glob("*.json"))
+    legacy_duplicate = claims_dir / "codex-2_duplicate-exact-task.json"
+    legacy_duplicate.write_bytes(preferred.read_bytes())
+
+    refreshed = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "must not refresh an ambiguous claim",
+        "-Force",
+        executable=powershell,
+    )
+    released = _run_bridge_script(
+        root,
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        task_id,
+        "-Status",
+        "done",
+        executable=powershell,
+    )
+
+    assert refreshed.returncode != 0
+    assert "multiple active claims found for exact task" in refreshed.stderr
+    assert released.returncode != 0
+    assert "multiple active claims found for exact task" in released.stderr
+    assert len(list(claims_dir.glob("*.json"))) == 2
+    assert list((runtime_root / "work_queue" / "done").glob("*.json")) == []
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_powershell_claim_fails_closed_on_occupied_preferred_paths(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    slash_task_id = "codex-2/task"
+    underscore_task_id = "codex-2_task"
+    claim_task(
+        agent="codex-2",
+        task_id=slash_task_id,
+        summary="slash task in legacy path",
+        bridge_root=runtime_root,
+    )
+    preferred = next(claims_dir.glob("*.json"))
+    legacy_collision = claims_dir / "codex-2_task.json"
+    preferred.rename(legacy_collision)
+    (claims_dir / "unrelated-malformed.json").write_text(
+        "{not json",
+        encoding="utf-8",
+    )
+
+    mismatched = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        underscore_task_id,
+        "-Summary",
+        "must not overwrite slash task",
+        "-Force",
+        executable=powershell,
+    )
+
+    assert mismatched.returncode == 3
+    assert "claim path collision for task" in mismatched.stderr
+    assert json.loads(legacy_collision.read_text(encoding="utf-8"))["task_id"] == (
+        slash_task_id
+    )
+
+    malformed_root = tmp_path / "malformed-preferred-runtime"
+    malformed_claims = malformed_root / "work_queue" / "claims"
+    malformed_claims.mkdir(parents=True)
+    malformed_preferred = malformed_claims / "codex-2_task.json"
+    malformed_preferred.write_text("{not json", encoding="utf-8")
+    malformed = _run_bridge_script(
+        root,
+        malformed_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        underscore_task_id,
+        "-Summary",
+        "must not overwrite malformed occupant",
+        "-Force",
+        executable=powershell,
+    )
+
+    assert malformed.returncode == 3
+    assert "claim path collision for task" in malformed.stderr
+    assert malformed_preferred.read_text(encoding="utf-8") == "{not json"
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_powershell_release_wrong_owner_returns_three_and_preserves_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-2/owned-task"
+    claim_task(
+        agent="codex-2",
+        task_id=task_id,
+        summary="owned by codex-2",
+        bridge_root=runtime_root,
+    )
+
+    released = _run_bridge_script(
+        root,
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex-3",
+        "-TaskId",
+        task_id,
+        "-Status",
+        "done",
+        executable=powershell,
+    )
+
+    assert released.returncode == 3
+    assert "claim belongs to codex-2, not codex-3" in released.stderr
+    claim_files = list((runtime_root / "work_queue" / "claims").glob("*.json"))
+    assert len(claim_files) == 1
+    assert json.loads(claim_files[0].read_text(encoding="utf-8"))["task_id"] == task_id
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "powershell",
+    _powershells(),
+    ids=lambda path: Path(path).stem,
+)
+def test_python_release_accepts_powershell_namespaced_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "codex-2/powershell-to-python-release"
+    claimed = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-2",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "powershell claim",
+        executable=powershell,
+    )
+    assert claimed.returncode == 0, claimed.stderr
+
+    record = release_task(
+        agent="codex-2",
+        task_id=task_id,
+        release_status="done",
+        release_message="python release",
+        bridge_root=runtime_root,
+    )
+
+    assert record.task_id == task_id
+    assert list((runtime_root / "work_queue" / "claims").glob("*.json")) == []
+    assert len(list((runtime_root / "work_queue" / "done").glob("*.json"))) == 1
 
 
 @WINDOWS_APPEND_V1

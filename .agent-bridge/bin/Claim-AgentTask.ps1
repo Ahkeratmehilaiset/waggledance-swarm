@@ -39,7 +39,53 @@ if (-not (Test-Path -LiteralPath $claimsDir)) {
 
 function ConvertTo-SafeName {
     param([string] $Name)
-    return (($Name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    $safe = (($Name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    if (-not $safe) { $safe = 'claim' }
+    if ($safe -ceq $Name) { return $safe }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Name)
+        $hash = $sha.ComputeHash($bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    $digest = -join @($hash | ForEach-Object { $_.ToString('x2') })
+    return "{0}-{1}" -f $safe, $digest.Substring(0, 12)
+}
+
+function Get-ExactTaskClaimFiles {
+    param(
+        [Parameter(Mandatory)] [string] $Directory,
+        [Parameter(Mandatory)] [string] $ExactTaskId
+    )
+
+    $matches = @()
+    foreach ($file in @(
+        Get-ChildItem -LiteralPath $Directory -Filter '*.json' -File `
+            -ErrorAction SilentlyContinue |
+            Sort-Object FullName
+    )) {
+        try {
+            $existing = Get-Content -Raw -LiteralPath $file.FullName `
+                -Encoding UTF8 | ConvertFrom-Json
+            $taskProperty = $existing.PSObject.Properties['task_id']
+            if ($null -eq $taskProperty) { continue }
+            $existingTaskId = [string]$taskProperty.Value
+        } catch {
+            continue
+        }
+        if (
+            [string]::Equals(
+                $existingTaskId,
+                $ExactTaskId,
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            $matches += $file
+        }
+    }
+    return $matches
 }
 
 function Normalize-Scope {
@@ -81,9 +127,14 @@ if ($Mode -eq 'write' -and @($WriteScope).Count -eq 0) {
     throw 'write claims require at least one -WriteScope path'
 }
 
+$legacySafeTask = (($TaskId -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+if (-not $legacySafeTask) {
+    throw 'TaskId does not produce a safe claim filename'
+}
 $safeTask = ConvertTo-SafeName $TaskId
-if (-not $safeTask) { throw 'TaskId does not produce a safe claim filename' }
-$claimPath = Join-Path $claimsDir ($safeTask + '.json')
+$preferredClaimPath = Join-Path $claimsDir ($safeTask + '.json')
+$claimPath = $preferredClaimPath
+$forceReplaceAllowed = $false
 
 # R15 follow-up (Codex review 2026-05-09): claim acquisition is the
 # path that most needs stale-lease continuity. Status/read helpers
@@ -98,20 +149,68 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     }
 }
 
-$activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+$activeClaims = @(
+    Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File `
+        -ErrorAction SilentlyContinue
+)
+$matchingClaimFiles = @(
+    Get-ExactTaskClaimFiles -Directory $claimsDir -ExactTaskId $TaskId
+)
+if ($matchingClaimFiles.Count -gt 1) {
+    Stop-BridgeClaim -Message (
+        "multiple active claims found for exact task {0}: {1}" -f
+        $TaskId,
+        ((@($matchingClaimFiles.FullName) | Sort-Object) -join ', ')
+    ) -Code 3
+}
+if ($matchingClaimFiles.Count -eq 1) {
+    $matchingFile = $matchingClaimFiles[0]
+    $existing = Get-Content -Raw -LiteralPath $matchingFile.FullName `
+        -Encoding UTF8 | ConvertFrom-Json
+    if (-not $Force) {
+        Stop-BridgeClaim -Message (
+            "task already claimed by {0}: {1}" -f
+            $existing.agent,
+            $matchingFile.FullName
+        ) -Code 2
+    }
+    if (
+        [string]$existing.agent -ne $Agent -and
+        $Agent -notin @('operator','system')
+    ) {
+        Stop-BridgeClaim -Message (
+            "cannot force-update claim owned by {0}: {1}" -f
+            $existing.agent,
+            $matchingFile.FullName
+        ) -Code 3
+    }
+    $claimPath = $matchingFile.FullName
+    $forceReplaceAllowed = $true
+} elseif (Test-Path -LiteralPath $preferredClaimPath -PathType Leaf) {
+    Stop-BridgeClaim -Message (
+        "claim path collision for task {0}: {1}" -f
+        $TaskId,
+        $preferredClaimPath
+    ) -Code 3
+}
+
 foreach ($file in $activeClaims) {
     try {
-        $existing = Get-Content -Raw -Path $file.FullName -Encoding UTF8 | ConvertFrom-Json
+        $existing = Get-Content -Raw -LiteralPath $file.FullName `
+            -Encoding UTF8 | ConvertFrom-Json
+        $taskProperty = $existing.PSObject.Properties['task_id']
+        if ($null -eq $taskProperty) { continue }
+        $existingTaskId = [string]$taskProperty.Value
     } catch {
         continue
     }
-    if ([string]$existing.task_id -eq $TaskId) {
-        if (-not $Force) {
-            Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existing.agent, $file.FullName) -Code 2
-        }
-        if ([string]$existing.agent -ne $Agent -and $Agent -notin @('operator','system')) {
-            Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $file.FullName) -Code 3
-        }
+    if (
+        [string]::Equals(
+            $existingTaskId,
+            $TaskId,
+            [System.StringComparison]::Ordinal
+        )
+    ) {
         continue
     }
     if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
@@ -196,7 +295,7 @@ try {
         $fs.Dispose()
     }
 } catch {
-    if (-not $Force) {
+    if (-not $Force -or -not $forceReplaceAllowed) {
         Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
     }
     # Internal review fix R7 (2026-05-09): the -Force fallback used

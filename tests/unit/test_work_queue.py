@@ -78,6 +78,68 @@ def test_bridge_namespaced_task_id_file_name_does_not_collide(
     assert {path.stem for path in claim_files} != {"codex-tools-1_task"}
 
 
+def test_claim_does_not_overwrite_colliding_legacy_claim_file(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    slash_task_id = "codex-tools-1/collision"
+    underscore_task_id = "codex-tools-1_collision"
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id=slash_task_id,
+        summary="slash namespace",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    preferred = next(claims_dir.glob("*.json"))
+    legacy = claims_dir / "codex-tools-1_collision.json"
+    preferred.rename(legacy)
+
+    with pytest.raises(WorkQueueError, match="claim path collision"):
+        claim_task(
+            agent="codex-tools-1",
+            task_id=underscore_task_id,
+            summary="must not replace slash namespace",
+            bridge_root=bridge,
+            force=True,
+        )
+
+    claims = list_claims(bridge_root=bridge)
+    assert len(claims) == 1
+    assert claims[0].task_id == slash_task_id
+    assert claims[0].summary == "slash namespace"
+
+
+def test_release_fails_closed_on_duplicate_exact_task_claim_files(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "codex-tools-1/duplicate-exact-task"
+
+    claim_task(
+        agent="codex-tools-1",
+        task_id=task_id,
+        summary="preferred claim",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    preferred = next(claims_dir.glob("*.json"))
+    duplicate = claims_dir / "codex-tools-1_duplicate-exact-task.json"
+    duplicate.write_bytes(preferred.read_bytes())
+
+    with pytest.raises(WorkQueueError, match="multiple active claims"):
+        release_task(
+            agent="codex-tools-1",
+            task_id=task_id,
+            release_status="done",
+            bridge_root=bridge,
+        )
+
+    assert len(list(claims_dir.glob("*.json"))) == 2
+    assert list((bridge / "work_queue" / "done").glob("*.json")) == []
+
+
 def test_heartbeat_accepts_legacy_powershell_namespaced_claim_file(
     tmp_path: Path,
 ) -> None:

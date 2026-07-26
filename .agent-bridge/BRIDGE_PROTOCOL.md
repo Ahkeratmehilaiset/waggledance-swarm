@@ -493,6 +493,28 @@ A claim with no `heartbeat` event within 5 minutes is considered
 **dropped** and may be re-claimed by another agent (or the operator
 may release it via `Release-AgentTask.ps1`).
 
+### Automated bridge nudger
+
+The canonical focus-safe watcher is
+`.agent-bridge/bin/Watch-AgentsBridgeNudge.ps1`. Its open-work decision is
+provided by the side-effect-free `BridgeNudgeState.ps1` reducer:
+
+- recipients are parsed exactly; agent-name substrings are not matches;
+- open request identity is target + requester + `task_id` + request type;
+- surviving requests are aggregated by target + `task_id`, so repeated rows
+  for one task count once;
+- only a later same-task target answer or a valid requester closeout resolves
+  a request; unrelated target output is diagnostic activity, not resolution;
+- watcher-authored `bridge-follow-nudge*` tasks never feed the watcher; and
+- exact `wake_request/closed` is a closeout, never actionable work or an RCO
+  fast-wake trigger.
+
+Window, bridge-wake, and clear cooldowns remain agent-wide because one generic
+nudge covers all of that agent's open tasks. The reducer performs no writes,
+window selection, or keystrokes. Machine-local copies must be deployed from
+the reviewed canonical script after merge; an untracked `C:\Python` copy is
+not development source of truth.
+
 ### Wake requests
 
 When an agent needs another to act and has no other in-flight work,

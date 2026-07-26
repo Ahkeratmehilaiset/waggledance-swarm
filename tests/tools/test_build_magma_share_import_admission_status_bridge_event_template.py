@@ -14,7 +14,9 @@ from tools.build_magma_share_import_admission_status_bridge_event_template impor
 from waggledance.core.bridge_event_schema import validate_event
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.share_manifest import (
+    IMPORT_ADMISSION_CONTRACT_VERSION,
     IMPORT_ADMISSION_STATUS_VERSION,
+    build_magma_share_import_admission_status_summary,
     build_magma_share_import_failed_admission_status_summary,
 )
 
@@ -31,6 +33,7 @@ def _digest(seed: str) -> str:
 def _ready_status() -> dict[str, object]:
     return {
         "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
         "source": "magma_share_manifest_import_report",
         "status": "ready_for_peer_review_handoff",
         "severity": "none",
@@ -85,6 +88,9 @@ def test_ready_admission_status_renders_valid_bridge_event_template() -> None:
     assert event["status"] == "magma_share_import_admission_ready"
     assert event["cwd"] == "template_not_emitted"
     assert event["payload"]["entry_count"] == 3
+    assert event["payload"]["admission_contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
     assert event["payload"]["transport_enabled"] is False
     assert event["payload"]["runtime_authority_granted"] is False
     assert event["payload"]["payload_files_imported"] == 0
@@ -121,6 +127,27 @@ def test_rejected_admission_status_renders_finding_template() -> None:
     assert event["payload"]["runtime_authority_granted"] is False
 
 
+def test_empty_and_blocked_production_statuses_render_finding_templates() -> None:
+    statuses = (
+        build_magma_share_import_admission_status_summary(None),
+        build_magma_share_import_admission_status_summary({"not": "a report"}),
+    )
+    for status in statuses:
+        report = build_magma_share_import_admission_status_bridge_event_template(
+            admission_status=status,
+            agent_id="codex-tools-1",
+            task_id="magma-share-admission-status",
+            to="codex-lead-1",
+        )
+        assert report["ok"] is True
+        event = report["bridge_event_template"]
+        validate_event(event)
+        assert event["type"] == "finding"
+        assert event["payload"]["ok"] is False
+        assert event["payload"]["replay_metadata_only"] is True
+        assert event["payload"]["no_authority_import"] is True
+
+
 def test_rejects_authority_or_path_markers_without_echo() -> None:
     status = _ready_status()
     status["runtime_authority_granted"] = True
@@ -138,6 +165,101 @@ def test_rejects_authority_or_path_markers_without_echo() -> None:
     serialized = json.dumps(report, sort_keys=True)
     assert r"C:\private" not in serialized
     assert "DO_NOT_LEAK" not in serialized
+
+
+def test_rejects_wrong_admission_contract_version() -> None:
+    status = _ready_status()
+    status["admission_contract_version"] = (
+        "magma.share_manifest_replay_admission_contract.v0"
+    )
+
+    report = build_magma_share_import_admission_status_bridge_event_template(
+        admission_status=status,
+        agent_id="codex-tools-1",
+        task_id="magma-share-admission-status",
+        to="codex-lead-1",
+    )
+
+    assert report["ok"] is False
+    assert report["blockers"] == [
+        "admission_status_bridge_event_template_failed:"
+        "admission_contract_version_mismatch"
+    ]
+
+
+def _assert_ready_status_rejected(
+    status: dict[str, object],
+    blocker_substr: str,
+) -> None:
+    report = build_magma_share_import_admission_status_bridge_event_template(
+        admission_status=status,
+        agent_id="codex-tools-1",
+        task_id="magma-share-admission-status",
+        to="codex-lead-1",
+    )
+    assert report["ok"] is False
+    assert any(blocker_substr in blocker for blocker in report["blockers"])
+    assert "bridge_event_template" not in report
+
+
+def test_ready_evidence_digests_are_required() -> None:
+    for key in (
+        "report_digest",
+        "admission_contract_digest",
+        "share_manifest_digest",
+        "source_manifest_digest",
+    ):
+        status = _ready_status()
+        status[key] = ""
+        _assert_ready_status_rejected(status, f"{key}_unsafe")
+
+
+def test_ready_counts_are_strict_non_bool_unsigned_integers() -> None:
+    for key, value in (
+        ("entry_count", "3"),
+        ("age_seconds", 1.5),
+        ("max_age_hours", True),
+    ):
+        status = _ready_status()
+        status[key] = value
+        _assert_ready_status_rejected(status, f"{key}_unsafe")
+
+
+def test_ready_evidence_booleans_are_strict() -> None:
+    cases = (
+        ("context_verified", False, "context_verified_not_true"),
+        (
+            "context_drift_detected",
+            True,
+            "context_drift_detected_not_false",
+        ),
+        ("controls_present", True, "controls_present_not_false"),
+        (
+            "operator_handoff_required_for_peer_review",
+            False,
+            "operator_handoff_required_for_peer_review_not_true",
+        ),
+    )
+    for key, value, blocker in cases:
+        status = _ready_status()
+        status[key] = value
+        _assert_ready_status_rejected(status, blocker)
+
+
+def test_ready_categorical_evidence_must_be_canonical() -> None:
+    for key, value in (
+        ("source", "magma_share_manifest_import_failure"),
+        ("status", "rejected"),
+        ("severity", "warning"),
+        ("blocker_class", "expected_share_id_mismatch"),
+    ):
+        status = _ready_status()
+        status[key] = value
+        _assert_ready_status_rejected(status, f"{key}_ready_mismatch")
+
+    status = _ready_status()
+    status["blockers"] = ["expected_share_id_mismatch"]
+    _assert_ready_status_rejected(status, "ready_blockers_present")
 
 
 def test_cli_json_is_path_free(tmp_path: Path) -> None:

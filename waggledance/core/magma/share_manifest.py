@@ -25,11 +25,14 @@ SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
 SCHEMA_NAME = "magma_share_manifest.v0.json"
 MANIFEST_VERSION = "magma.share_manifest.v0"
 EXPORT_REPORT_VERSION = "magma.share_manifest_export.v0"
-IMPORT_REPORT_VERSION = "magma.share_manifest_import.v0"
-IMPORT_ADMISSION_CONTRACT_VERSION = "magma.share_manifest_replay_admission_contract.v0"
-IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v0"
-IMPORT_HANDOFF_STATUS_VERSION = "magma.share_manifest_import_handoff_status.v0"
-IMPORT_ADMISSION_STATUS_VERSION = "magma.share_manifest_import_admission_status.v0"
+IMPORT_REPORT_VERSION = "magma.share_manifest_import.v1"
+IMPORT_ADMISSION_CONTRACT_VERSION = "magma.share_manifest_replay_admission_contract.v1"
+PRODUCER_PROVENANCE_BINDING_VERSION = (
+    "magma.share_manifest_producer_provenance_binding.v0"
+)
+IMPORT_HANDOFF_VERSION = "magma.share_manifest_import_handoff.v1"
+IMPORT_HANDOFF_STATUS_VERSION = "magma.share_manifest_import_handoff_status.v1"
+IMPORT_ADMISSION_STATUS_VERSION = "magma.share_manifest_import_admission_status.v1"
 IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION = (
     "magma.share_manifest_replay_sanitization_summary.v0"
 )
@@ -66,9 +69,187 @@ IMPORT_HANDOFF_DECISION_STATUS = {
 IMPORT_HANDOFF_HISTORY_LIMIT = 5
 IMPORT_HANDOFF_HISTORY_MAX_SNAPSHOT = 20
 _REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9:._-]{2,180}$")
+_IMPORT_REPORT_FIELDS = frozenset(
+    {
+        "report_version",
+        "ok",
+        "blockers",
+        "admission_contract",
+        "admission_contract_digest",
+        "share_id",
+        "purpose",
+        "created_at_utc",
+        "max_age_hours",
+        "age_seconds",
+        "share_manifest_digest",
+        "source_manifest_digest",
+        "source_receipt_verification_ok",
+        "context_verified",
+        "context_drift_detected",
+        "replay_metadata_only",
+        "no_authority_import",
+        "runtime_export_enabled",
+        "runtime_authority_granted",
+        "runtime_authority_changed",
+        "payload_files_imported",
+        "payload_digest_imported",
+        "raw_material_imported",
+        "replacement_map_imported",
+        "artifact_counts",
+        "replay_plan",
+    }
+)
+_IMPORT_ARTIFACT_COUNT_FIELDS = frozenset(
+    {"entries", "receipts", "evaluation_results", "payload_files"}
+)
+_IMPORT_REPLAY_PLAN_FIELDS = frozenset({"mode", "entry_count", "entries"})
+_IMPORT_REPLAY_ENTRY_FIELDS = frozenset(
+    {
+        "entry_id",
+        "receipt_digest",
+        "evaluation_result_digest",
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    }
+)
+_IMPORT_REPLAY_SUBJECT_TYPES = frozenset(
+    {"solver", "policy", "counterfactual", "promotion", "peer_review"}
+)
+_IMPORT_REPLAY_RISK_CLASSES = frozenset(
+    {"informational", "internal_memory", "local_artifact", "external_effect"}
+)
+_IMPORT_REPLAY_GATE_DECISIONS = frozenset(
+    {"allow", "refuse", "review", "require_approval"}
+)
+_IMPORT_REPLAY_VERDICTS = frozenset(
+    {"pass", "fail", "review", "refuse", "insufficient_evidence", "abstain"}
+)
+_IMPORT_HANDOFF_FIELDS = frozenset(
+    {
+        "handoff_version",
+        "ok",
+        "blockers",
+        "created_at_utc",
+        "share_id",
+        "purpose",
+        "admission_contract_version",
+        "admission_contract_digest",
+        "import_report_digest",
+        "share_manifest_digest",
+        "source_manifest_digest",
+        "operator_ownership",
+        "authority",
+        "privacy",
+        "replay_plan",
+        "handoff_digest",
+        "handoff_id",
+    }
+)
+_IMPORT_HANDOFF_OWNERSHIP_FIELDS = frozenset(
+    {
+        "operator_owned",
+        "operator_agent_id",
+        "operator_decision_ref",
+        "operator_decision_id_recorded",
+        "bridge_event_ref",
+        "import_decision",
+        "import_decision_recorded",
+        "decision_reason_ref",
+    }
+)
+_IMPORT_HANDOFF_AUTHORITY_FIELDS = frozenset(
+    {
+        "operator_gate_required",
+        "operator_gate_satisfied",
+        "handoff_scope",
+        "runtime_export_enabled",
+        "runtime_authority_granted",
+        "runtime_authority_changed",
+        "runtime_traffic_mutation_applied",
+        "runtime_receipt_emission_changed",
+    }
+)
+_IMPORT_HANDOFF_PRIVACY_FIELDS = frozenset(
+    {
+        "replay_metadata_only",
+        "no_authority_import",
+        "local_paths_recorded",
+        "payload_files_imported",
+        "payload_digest_imported",
+        "raw_material_imported",
+        "replacement_map_imported",
+    }
+)
 
 
 VerifySourceManifest = Callable[[Path], Mapping[str, Any]]
+
+
+def build_magma_share_producer_provenance_digest(
+    *,
+    agent_id: str,
+    role: str,
+    bridge_event_ref: str,
+) -> str:
+    """Bind the receiver-pinned producer triplet without echoing raw refs."""
+    try:
+        _ensure_ref("expected_producer_agent_id", agent_id)
+        if role not in PRODUCER_ROLES:
+            raise ValueError("expected_producer_role is not allowed")
+        _ensure_ref("expected_producer_bridge_event_ref", bridge_event_ref)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("expected producer provenance is invalid") from exc
+    return sha256_digest(
+        {
+            "binding_version": PRODUCER_PROVENANCE_BINDING_VERSION,
+            "agent_id": agent_id,
+            "role": role,
+            "bridge_event_ref": bridge_event_ref,
+        }
+    )
+
+
+def build_magma_share_replay_admission_contract(
+    *,
+    max_age_hours: int,
+    expected_share_id: str,
+    expected_purpose: str,
+    expected_producer_agent_id: str,
+    expected_producer_role: str,
+    expected_producer_bridge_event_ref: str,
+) -> dict[str, Any]:
+    """Build the receiver-owned, no-authority replay admission contract."""
+    if (
+        isinstance(max_age_hours, bool)
+        or not isinstance(max_age_hours, int)
+        or max_age_hours <= 0
+        or max_age_hours > DEFAULT_IMPORT_MAX_AGE_HOURS
+    ):
+        raise ValueError(
+            "max_age_hours must be between 1 and "
+            f"{DEFAULT_IMPORT_MAX_AGE_HOURS}"
+        )
+    _ensure_ref("expected_share_id", expected_share_id)
+    if expected_purpose not in PURPOSES:
+        raise ValueError("expected_purpose is not allowed")
+    expected_producer_provenance_digest = (
+        build_magma_share_producer_provenance_digest(
+            agent_id=expected_producer_agent_id,
+            role=expected_producer_role,
+            bridge_event_ref=expected_producer_bridge_event_ref,
+        )
+    )
+    return _replay_admission_contract(
+        max_age_hours=max_age_hours,
+        expected_share_id=expected_share_id,
+        expected_purpose=expected_purpose,
+        expected_producer_provenance_digest=(
+            expected_producer_provenance_digest
+        ),
+    )
 
 
 def build_magma_share_manifest(
@@ -226,6 +407,9 @@ def build_magma_share_manifest_import_report(
     max_age_hours: int = DEFAULT_IMPORT_MAX_AGE_HOURS,
     expected_share_id: str | None = None,
     expected_purpose: str | None = None,
+    expected_producer_agent_id: str | None = None,
+    expected_producer_role: str | None = None,
+    expected_producer_bridge_event_ref: str | None = None,
 ) -> dict[str, Any]:
     """Verify a share manifest as no-authority replay metadata.
 
@@ -234,12 +418,39 @@ def build_magma_share_manifest_import_report(
     enough for local review and that its digest/categorical references still
     match a separately supplied local receipt-bundle manifest.
     """
-    if max_age_hours <= 0:
-        raise ValueError("max_age_hours must be positive")
-    if expected_share_id is not None:
-        _ensure_ref("expected_share_id", expected_share_id)
-    if expected_purpose is not None and expected_purpose not in PURPOSES:
+    if (
+        isinstance(max_age_hours, bool)
+        or not isinstance(max_age_hours, int)
+        or max_age_hours <= 0
+        or max_age_hours > DEFAULT_IMPORT_MAX_AGE_HOURS
+    ):
+        raise ValueError(
+            "max_age_hours must be between 1 and "
+            f"{DEFAULT_IMPORT_MAX_AGE_HOURS}"
+        )
+    if expected_share_id is None or expected_purpose is None:
+        raise ValueError("receiver replay identity expectations are required")
+    _ensure_ref("expected_share_id", expected_share_id)
+    if expected_purpose not in PURPOSES:
         raise ValueError("expected_purpose is not allowed")
+    if (
+        expected_producer_agent_id is None
+        or expected_producer_role is None
+        or expected_producer_bridge_event_ref is None
+    ):
+        raise ValueError(
+            "receiver producer provenance expectations are required"
+        )
+    admission_contract = build_magma_share_replay_admission_contract(
+        max_age_hours=max_age_hours,
+        expected_share_id=expected_share_id,
+        expected_purpose=expected_purpose,
+        expected_producer_agent_id=expected_producer_agent_id,
+        expected_producer_role=expected_producer_role,
+        expected_producer_bridge_event_ref=(
+            expected_producer_bridge_event_ref
+        ),
+    )
 
     now = _ensure_utc(now_utc or datetime.now(timezone.utc), "now_utc")
     share_manifest_path = share_manifest_path.resolve()
@@ -249,16 +460,20 @@ def build_magma_share_manifest_import_report(
     if not isinstance(share_manifest, dict):
         raise ValueError("share manifest must be a JSON object")
     validate_magma_share_manifest(share_manifest)
-    if (
-        expected_share_id is not None
-        and share_manifest.get("share_id") != expected_share_id
-    ):
+    if share_manifest.get("share_id") != expected_share_id:
         raise ValueError("expected_share_id mismatch")
-    if (
-        expected_purpose is not None
-        and share_manifest.get("purpose") != expected_purpose
-    ):
+    if share_manifest.get("purpose") != expected_purpose:
         raise ValueError("expected_purpose mismatch")
+    producer = share_manifest.get("producer")
+    if not isinstance(producer, Mapping):
+        raise ValueError("producer provenance mismatch")
+    if (
+        producer.get("agent_id") != expected_producer_agent_id
+        or producer.get("role") != expected_producer_role
+        or producer.get("bridge_event_ref")
+        != expected_producer_bridge_event_ref
+    ):
+        raise ValueError("producer provenance mismatch")
 
     created_at = _parse_created_at_utc(share_manifest)
     age = now - created_at
@@ -321,19 +536,6 @@ def build_magma_share_manifest_import_report(
             }
         )
 
-    contract_expected_share_id = (
-        expected_share_id
-        if expected_share_id is not None
-        else share_manifest["share_id"]
-    )
-    contract_expected_purpose = (
-        expected_purpose if expected_purpose is not None else share_manifest["purpose"]
-    )
-    admission_contract = _replay_admission_contract(
-        max_age_hours=max_age_hours,
-        expected_share_id=contract_expected_share_id,
-        expected_purpose=contract_expected_purpose,
-    )
     return {
         "report_version": IMPORT_REPORT_VERSION,
         "ok": True,
@@ -377,6 +579,7 @@ def build_magma_share_import_peer_review_handoff(
     import_decision: str = "accepted_for_peer_review",
     decision_reason_ref: str = "reason:operator_peer_review_handoff",
     expected_purpose: str = DEFAULT_IMPORT_HANDOFF_EXPECTED_PURPOSE,
+    expected_producer_provenance_digest: str | None = None,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Build an operator-owned peer-review handoff from an import report.
@@ -390,6 +593,9 @@ def build_magma_share_import_peer_review_handoff(
     _ensure_import_report_ready_for_handoff(
         import_report,
         expected_purpose=expected_purpose,
+        expected_producer_provenance_digest=(
+            expected_producer_provenance_digest
+        ),
     )
     _ensure_ref("operator_decision_id", operator_decision_id)
     _ensure_ref("operator_agent_id", operator_agent_id)
@@ -399,6 +605,7 @@ def build_magma_share_import_peer_review_handoff(
         raise ValueError("import_decision is not allowed")
 
     replay_plan = import_report["replay_plan"]
+    admission_contract = import_report["admission_contract"]
     entries = replay_plan["entries"]
     replay_refs = [
         {
@@ -420,6 +627,12 @@ def build_magma_share_import_peer_review_handoff(
         "created_at_utc": _format_utc(now_utc or datetime.now(timezone.utc)),
         "share_id": import_report["share_id"],
         "purpose": import_report["purpose"],
+        "admission_contract_version": admission_contract[
+            "contract_version"
+        ],
+        "admission_contract_digest": import_report[
+            "admission_contract_digest"
+        ],
         "import_report_digest": sha256_digest(import_report),
         "share_manifest_digest": import_report["share_manifest_digest"],
         "source_manifest_digest": import_report["source_manifest_digest"],
@@ -476,6 +689,7 @@ def write_magma_share_import_peer_review_handoff(
     import_decision: str = "accepted_for_peer_review",
     decision_reason_ref: str = "reason:operator_peer_review_handoff",
     expected_purpose: str = DEFAULT_IMPORT_HANDOFF_EXPECTED_PURPOSE,
+    expected_producer_provenance_digest: str | None = None,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Write a local peer-review handoff for a verified import report."""
@@ -492,6 +706,9 @@ def write_magma_share_import_peer_review_handoff(
         import_decision=import_decision,
         decision_reason_ref=decision_reason_ref,
         expected_purpose=expected_purpose,
+        expected_producer_provenance_digest=(
+            expected_producer_provenance_digest
+        ),
         now_utc=now_utc,
     )
     _write_json(out_path, handoff)
@@ -500,6 +717,8 @@ def write_magma_share_import_peer_review_handoff(
 
 def build_magma_share_import_admission_status_summary(
     import_report: Mapping[str, Any] | None = None,
+    *,
+    expected_producer_provenance_digest: str | None = None,
 ) -> dict[str, Any]:
     """Return a path-free no-authority admission status summary.
 
@@ -522,6 +741,9 @@ def build_magma_share_import_admission_status_summary(
         _ensure_import_report_ready_for_handoff(
             import_report,
             expected_purpose=expected_purpose,
+            expected_producer_provenance_digest=(
+                expected_producer_provenance_digest
+            ),
         )
         admission_contract = import_report.get("admission_contract")
         if not isinstance(admission_contract, Mapping):
@@ -565,6 +787,7 @@ def build_magma_share_import_admission_status_summary(
 
     return {
         "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
         "source": source,
         "status": "ready_for_peer_review_handoff",
         "severity": "none",
@@ -606,6 +829,9 @@ def build_magma_share_import_failed_admission_status_summary(
     max_age_hours: int = DEFAULT_IMPORT_MAX_AGE_HOURS,
     expected_share_id: str | None = None,
     expected_purpose: str | None = None,
+    expected_producer_agent_id: str | None = None,
+    expected_producer_role: str | None = None,
+    expected_producer_bridge_event_ref: str | None = None,
 ) -> dict[str, Any]:
     """Return a sanitized fail-closed admission status for rejected imports."""
     safe_max_age_hours = _safe_import_status_max_age_hours(max_age_hours)
@@ -615,14 +841,25 @@ def build_magma_share_import_failed_admission_status_summary(
     safe_expected_purpose = (
         expected_purpose if expected_purpose in PURPOSES else None
     )
+    safe_expected_producer_provenance_digest = (
+        _safe_expected_producer_provenance_digest(
+            agent_id=expected_producer_agent_id,
+            role=expected_producer_role,
+            bridge_event_ref=expected_producer_bridge_event_ref,
+        )
+    )
     admission_contract = _replay_admission_contract(
         max_age_hours=safe_max_age_hours,
         expected_share_id=safe_expected_share_id,
         expected_purpose=safe_expected_purpose,
+        expected_producer_provenance_digest=(
+            safe_expected_producer_provenance_digest
+        ),
     )
     blocker_class = _classify_share_import_failure_reason(reason)
     return {
         "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
         "source": "magma_share_manifest_import_failure",
         "status": "rejected",
         "severity": "warning",
@@ -655,6 +892,8 @@ def build_magma_share_import_failed_admission_status_summary(
 
 def build_magma_share_import_replay_sanitization_summary(
     import_report: Mapping[str, Any] | None = None,
+    *,
+    expected_producer_provenance_digest: str | None = None,
 ) -> dict[str, Any]:
     """Return a path-free replay sanitization contract summary.
 
@@ -678,6 +917,9 @@ def build_magma_share_import_replay_sanitization_summary(
         _ensure_import_report_ready_for_handoff(
             import_report,
             expected_purpose=expected_purpose,
+            expected_producer_provenance_digest=(
+                expected_producer_provenance_digest
+            ),
         )
         admission_contract = import_report.get("admission_contract")
         if not isinstance(admission_contract, Mapping):
@@ -780,6 +1022,9 @@ def build_magma_share_import_failed_replay_sanitization_summary(
     max_age_hours: int = DEFAULT_IMPORT_MAX_AGE_HOURS,
     expected_share_id: str | None = None,
     expected_purpose: str | None = None,
+    expected_producer_agent_id: str | None = None,
+    expected_producer_role: str | None = None,
+    expected_producer_bridge_event_ref: str | None = None,
 ) -> dict[str, Any]:
     """Return a sanitized fail-closed replay sanitization summary."""
     safe_max_age_hours = _safe_import_status_max_age_hours(max_age_hours)
@@ -789,10 +1034,20 @@ def build_magma_share_import_failed_replay_sanitization_summary(
     safe_expected_purpose = (
         expected_purpose if expected_purpose in PURPOSES else None
     )
+    safe_expected_producer_provenance_digest = (
+        _safe_expected_producer_provenance_digest(
+            agent_id=expected_producer_agent_id,
+            role=expected_producer_role,
+            bridge_event_ref=expected_producer_bridge_event_ref,
+        )
+    )
     admission_contract = _replay_admission_contract(
         max_age_hours=safe_max_age_hours,
         expected_share_id=safe_expected_share_id,
         expected_purpose=safe_expected_purpose,
+        expected_producer_provenance_digest=(
+            safe_expected_producer_provenance_digest
+        ),
     )
     blocker_class = _classify_share_import_failure_reason(reason)
     return {
@@ -908,6 +1163,12 @@ def _import_handoff_status_entry(handoff: Mapping[str, Any]) -> dict[str, Any]:
         "created_at_utc": handoff["created_at_utc"],
         "share_id": handoff["share_id"],
         "purpose": handoff["purpose"],
+        "admission_contract_version": handoff[
+            "admission_contract_version"
+        ],
+        "admission_contract_digest": handoff[
+            "admission_contract_digest"
+        ],
         "status": status,
         "severity": severity,
         "handoff_scope": authority["handoff_scope"],
@@ -1098,6 +1359,7 @@ def _ensure_import_report_ready_for_handoff(
     import_report: Mapping[str, Any],
     *,
     expected_purpose: str,
+    expected_producer_provenance_digest: str | None = None,
 ) -> None:
     required_values = {
         "report_version": IMPORT_REPORT_VERSION,
@@ -1119,6 +1381,10 @@ def _ensure_import_report_ready_for_handoff(
     for field, expected in required_values.items():
         if import_report.get(field) != expected:
             raise ValueError(f"import report is not handoff-ready: {field}")
+    if set(import_report) - _IMPORT_REPORT_FIELDS:
+        raise ValueError(
+            "import report is not handoff-ready: unexpected report fields"
+        )
     for field in ("share_id", "purpose"):
         if not isinstance(import_report.get(field), str):
             raise ValueError(f"import report is not handoff-ready: {field}")
@@ -1127,19 +1393,37 @@ def _ensure_import_report_ready_for_handoff(
         raise ValueError("import report is not handoff-ready: purpose")
     if import_report["purpose"] != expected_purpose:
         raise ValueError("import report is not handoff-ready: expected_purpose")
+    _parse_created_at_utc(import_report)
+    age_seconds = import_report.get("age_seconds")
+    if (
+        isinstance(age_seconds, bool)
+        or not isinstance(age_seconds, int)
+        or age_seconds < 0
+    ):
+        raise ValueError("import report is not handoff-ready: age_seconds")
     admission_contract = import_report.get("admission_contract")
     admission_contract_digest = import_report.get("admission_contract_digest")
     require_replay_identity_binding = False
     if admission_contract is None and admission_contract_digest is None:
-        pass
+        raise ValueError(
+            "import report is not handoff-ready: admission_contract"
+        )
     elif not isinstance(admission_contract, Mapping):
         raise ValueError("import report is not handoff-ready: admission_contract")
     else:
+        if expected_producer_provenance_digest is None:
+            raise ValueError(
+                "import report is not handoff-ready: "
+                "expected producer provenance binding is required"
+            )
         _ensure_replay_admission_contract_matches_import_report(
             import_report,
             admission_contract,
             admission_contract_digest,
             expected_purpose=expected_purpose,
+            expected_producer_provenance_digest=(
+                expected_producer_provenance_digest
+            ),
         )
         require_replay_identity_binding = True
     for field in ("share_manifest_digest", "source_manifest_digest"):
@@ -1147,31 +1431,58 @@ def _ensure_import_report_ready_for_handoff(
     replay_plan = import_report.get("replay_plan")
     if not isinstance(replay_plan, Mapping):
         raise ValueError("import report is not handoff-ready: replay_plan")
+    if set(replay_plan) - _IMPORT_REPLAY_PLAN_FIELDS:
+        raise ValueError(
+            "import report is not handoff-ready: "
+            "replay_plan unexpected fields"
+        )
     if replay_plan.get("mode") != "no_authority_metadata_replay":
         raise ValueError("import report is not handoff-ready: replay_plan.mode")
     entries = replay_plan.get("entries")
     if not isinstance(entries, list):
         raise ValueError("import report is not handoff-ready: replay_plan.entries")
-    if replay_plan.get("entry_count") != len(entries):
+    entry_count = replay_plan.get("entry_count")
+    if (
+        isinstance(entry_count, bool)
+        or not isinstance(entry_count, int)
+        or entry_count != len(entries)
+        or entry_count <= 0
+        or entry_count > 10000
+    ):
         raise ValueError("import report is not handoff-ready: replay_plan.entry_count")
-    required_entry_fields = {
-        "entry_id",
-        "receipt_digest",
-        "evaluation_result_digest",
-        "subject_type",
-        "risk_class",
-        "expected_gate",
-        "actual_gate",
-        "verdict",
+
+    artifact_counts = import_report.get("artifact_counts")
+    if not isinstance(artifact_counts, Mapping):
+        raise ValueError("import report is not handoff-ready: artifact_counts")
+    if set(artifact_counts) != _IMPORT_ARTIFACT_COUNT_FIELDS:
+        raise ValueError(
+            "import report is not handoff-ready: artifact_counts fields"
+        )
+    expected_artifact_counts = {
+        "entries": entry_count,
+        "receipts": entry_count,
+        "evaluation_results": entry_count,
+        "payload_files": 0,
     }
+    for field, expected in expected_artifact_counts.items():
+        value = artifact_counts.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value != expected
+        ):
+            raise ValueError(
+                "import report is not handoff-ready: "
+                f"artifact_counts.{field}"
+            )
+
     for index, entry in enumerate(entries, 1):
         if not isinstance(entry, Mapping):
             raise ValueError("import report is not handoff-ready: replay_plan entry")
-        missing = sorted(required_entry_fields - set(entry))
-        if missing:
+        if set(entry) != _IMPORT_REPLAY_ENTRY_FIELDS:
             raise ValueError(
                 "import report is not handoff-ready: "
-                f"replay_plan entry {index} missing {missing}"
+                f"replay_plan entry {index} fields"
             )
         _ensure_sha256_digest(
             f"replay_plan entry {index} receipt_digest",
@@ -1187,12 +1498,25 @@ def _ensure_import_report_ready_for_handoff(
                 raise ValueError(
                     "import report is not handoff-ready: "
                     f"replay_plan entry {index} entry_id"
-                )
+            )
             _ensure_ref(f"replay_plan entry {index} entry_id", entry_id)
             if not entry_id.startswith(f"{import_report['share_id']}:entry:"):
                 raise ValueError(
                     "import report is not handoff-ready: "
                     f"replay_plan entry {index} share_id"
+                )
+        categorical_values = {
+            "subject_type": _IMPORT_REPLAY_SUBJECT_TYPES,
+            "risk_class": _IMPORT_REPLAY_RISK_CLASSES,
+            "expected_gate": _IMPORT_REPLAY_GATE_DECISIONS,
+            "actual_gate": _IMPORT_REPLAY_GATE_DECISIONS,
+            "verdict": _IMPORT_REPLAY_VERDICTS,
+        }
+        for field, allowed in categorical_values.items():
+            if entry.get(field) not in allowed:
+                raise ValueError(
+                    "import report is not handoff-ready: "
+                    f"replay_plan entry {index} {field}"
                 )
 
 
@@ -1201,6 +1525,7 @@ def _replay_admission_contract(
     max_age_hours: int,
     expected_share_id: str | None,
     expected_purpose: str | None,
+    expected_producer_provenance_digest: str | None,
 ) -> dict[str, Any]:
     """Describe the fail-closed checks for no-authority share replay."""
     required_checks = [
@@ -1208,6 +1533,11 @@ def _replay_admission_contract(
             "name": "share_manifest_schema_valid",
             "input": "share_manifest",
             "rejects_as": "schema_error",
+        },
+        {
+            "name": "receiver_identity_configured",
+            "input": "receiver expected share_id and purpose",
+            "rejects_as": "receiver_identity_not_configured",
         },
         {
             "name": "expected_share_id_matches",
@@ -1220,6 +1550,26 @@ def _replay_admission_contract(
             "input": "share_manifest.purpose",
             "rejects_as": "expected_purpose_mismatch",
             "required": expected_purpose is not None,
+        },
+        {
+            "name": "expected_producer_provenance_configured",
+            "input": "receiver expected producer provenance",
+            "rejects_as": "expected_producer_provenance_required",
+        },
+        {
+            "name": "expected_producer_provenance_valid",
+            "input": "receiver expected producer provenance",
+            "rejects_as": "expected_producer_provenance_invalid",
+        },
+        {
+            "name": "expected_producer_provenance_matches",
+            "input": "share_manifest.producer",
+            "rejects_as": "expected_producer_provenance_mismatch",
+        },
+        {
+            "name": "expected_producer_provenance_binding_preserved",
+            "input": "admission_contract expected producer provenance digest",
+            "rejects_as": "expected_producer_provenance_binding_drift",
         },
         {
             "name": "freshness_window_satisfied",
@@ -1277,6 +1627,9 @@ def _replay_admission_contract(
         "max_age_hours": max_age_hours,
         "expected_share_id": expected_share_id,
         "expected_purpose": expected_purpose,
+        "expected_producer_provenance_digest": (
+            expected_producer_provenance_digest
+        ),
         "transport_enabled": False,
         "runtime_export_enabled": False,
         "runtime_authority_granted": False,
@@ -1337,6 +1690,10 @@ def _ensure_replay_admission_contract_ready(
         raise ValueError(
             "import report is not handoff-ready: admission_contract.report_invariants"
         )
+    _ensure_sha256_digest(
+        "admission_contract.expected_producer_provenance_digest",
+        admission_contract.get("expected_producer_provenance_digest"),
+    )
 
 
 def _ensure_replay_admission_contract_matches_import_report(
@@ -1345,6 +1702,7 @@ def _ensure_replay_admission_contract_matches_import_report(
     admission_contract_digest: Any,
     *,
     expected_purpose: str,
+    expected_producer_provenance_digest: str | None = None,
 ) -> None:
     if admission_contract.get("contract_version") != IMPORT_ADMISSION_CONTRACT_VERSION:
         raise ValueError(
@@ -1379,11 +1737,34 @@ def _ensure_replay_admission_contract_matches_import_report(
         raise ValueError(
             "import report is not handoff-ready: " "admission_contract.expected_purpose"
         )
+    admission_expected_producer_digest = admission_contract.get(
+        "expected_producer_provenance_digest"
+    )
+    _ensure_sha256_digest(
+        "admission_contract.expected_producer_provenance_digest",
+        admission_expected_producer_digest,
+    )
+    if expected_producer_provenance_digest is not None:
+        _ensure_sha256_digest(
+            "expected_producer_provenance_digest",
+            expected_producer_provenance_digest,
+        )
+        if (
+            admission_expected_producer_digest
+            != expected_producer_provenance_digest
+        ):
+            raise ValueError(
+                "import report is not handoff-ready: "
+                "expected producer provenance binding drift"
+            )
 
     canonical_contract = _replay_admission_contract(
         max_age_hours=import_report["max_age_hours"],
         expected_share_id=expected_share_id,
         expected_purpose=admission_expected_purpose,
+        expected_producer_provenance_digest=(
+            admission_expected_producer_digest
+        ),
     )
     if dict(admission_contract) != canonical_contract:
         raise ValueError(
@@ -1403,6 +1784,7 @@ def _import_report_expected_purpose(import_report: Mapping[str, Any]) -> str:
 def _empty_import_admission_status_summary(source: str) -> dict[str, Any]:
     return {
         "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
         "source": source,
         "status": "not_configured",
         "severity": "none",
@@ -1413,6 +1795,8 @@ def _empty_import_admission_status_summary(source: str) -> dict[str, Any]:
         "transport_enabled": False,
         "operator_handoff_required_for_peer_review": True,
         "entry_count": 0,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
         "runtime_export_enabled": False,
         "runtime_authority_granted": False,
         "runtime_authority_changed": False,
@@ -1430,6 +1814,7 @@ def _blocked_import_admission_status_summary(
 ) -> dict[str, Any]:
     return {
         "summary_version": IMPORT_ADMISSION_STATUS_VERSION,
+        "admission_contract_version": IMPORT_ADMISSION_CONTRACT_VERSION,
         "source": source,
         "status": "blocked",
         "severity": "warning",
@@ -1440,6 +1825,8 @@ def _blocked_import_admission_status_summary(
         "transport_enabled": False,
         "operator_handoff_required_for_peer_review": True,
         "entry_count": 0,
+        "replay_metadata_only": True,
+        "no_authority_import": True,
         "runtime_export_enabled": False,
         "runtime_authority_granted": False,
         "runtime_authority_changed": False,
@@ -1668,6 +2055,16 @@ def _replay_admission_report_invariant_flags(
 
 def _classify_share_import_failure_reason(reason: str) -> str:
     normalized = reason.lower()
+    if "receiver replay identity expectations are required" in normalized:
+        return "receiver_identity_not_configured"
+    if "receiver producer provenance expectations are required" in normalized:
+        return "expected_producer_provenance_required"
+    if "expected producer provenance is invalid" in normalized:
+        return "expected_producer_provenance_invalid"
+    if "producer provenance mismatch" in normalized:
+        return "expected_producer_provenance_mismatch"
+    if "producer provenance binding drift" in normalized:
+        return "expected_producer_provenance_binding_drift"
     if "expected_share_id" in normalized:
         return "expected_share_id_mismatch"
     if "expected_purpose" in normalized:
@@ -1727,6 +2124,24 @@ def _safe_import_status_expected_share_id(value: str | None) -> str | None:
     except ValueError:
         return None
     return value
+
+
+def _safe_expected_producer_provenance_digest(
+    *,
+    agent_id: str | None,
+    role: str | None,
+    bridge_event_ref: str | None,
+) -> str | None:
+    if agent_id is None or role is None or bridge_event_ref is None:
+        return None
+    try:
+        return build_magma_share_producer_provenance_digest(
+            agent_id=agent_id,
+            role=role,
+            bridge_event_ref=bridge_event_ref,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _empty_import_handoff_status_summary(source: str) -> dict[str, Any]:
@@ -1814,6 +2229,10 @@ def _ensure_import_handoff_ready_for_summary(
     for field, expected in required_values.items():
         if handoff.get(field) != expected:
             raise ValueError(f"import handoff is not summary-ready: {field}")
+    if set(handoff) != _IMPORT_HANDOFF_FIELDS:
+        raise ValueError(
+            "import handoff is not summary-ready: handoff fields"
+        )
     for field in (
         "handoff_id",
         "created_at_utc",
@@ -1825,13 +2244,24 @@ def _ensure_import_handoff_ready_for_summary(
     _parse_created_at_utc(handoff)
     for field in ("handoff_id", "share_id", "purpose"):
         _ensure_ref(field, handoff[field])
+    if handoff["purpose"] not in PURPOSES:
+        raise ValueError("import handoff is not summary-ready: purpose")
     for field in (
         "handoff_digest",
+        "admission_contract_digest",
         "import_report_digest",
         "share_manifest_digest",
         "source_manifest_digest",
     ):
         _ensure_sha256_digest(field, handoff.get(field))
+    if (
+        handoff.get("admission_contract_version")
+        != IMPORT_ADMISSION_CONTRACT_VERSION
+    ):
+        raise ValueError(
+            "import handoff is not summary-ready: "
+            "admission_contract_version"
+        )
 
     ownership = handoff.get("operator_ownership")
     authority = handoff.get("authority")
@@ -1845,6 +2275,23 @@ def _ensure_import_handoff_ready_for_summary(
         raise ValueError("import handoff is not summary-ready: privacy")
     if not isinstance(replay_plan, Mapping):
         raise ValueError("import handoff is not summary-ready: replay_plan")
+    if set(ownership) != _IMPORT_HANDOFF_OWNERSHIP_FIELDS:
+        raise ValueError(
+            "import handoff is not summary-ready: "
+            "operator_ownership fields"
+        )
+    if set(authority) != _IMPORT_HANDOFF_AUTHORITY_FIELDS:
+        raise ValueError(
+            "import handoff is not summary-ready: authority fields"
+        )
+    if set(privacy) != _IMPORT_HANDOFF_PRIVACY_FIELDS:
+        raise ValueError(
+            "import handoff is not summary-ready: privacy fields"
+        )
+    if set(replay_plan) != _IMPORT_REPLAY_PLAN_FIELDS:
+        raise ValueError(
+            "import handoff is not summary-ready: replay_plan fields"
+        )
 
     ownership_required = {
         "operator_owned": True,
@@ -1899,26 +2346,34 @@ def _ensure_import_handoff_ready_for_summary(
         raise ValueError("import handoff is not summary-ready: replay_plan.mode")
     if not isinstance(entries, list):
         raise ValueError("import handoff is not summary-ready: replay_plan.entries")
-    if replay_plan.get("entry_count") != len(entries):
+    entry_count = replay_plan.get("entry_count")
+    if (
+        isinstance(entry_count, bool)
+        or not isinstance(entry_count, int)
+        or entry_count != len(entries)
+        or entry_count <= 0
+        or entry_count > 10000
+    ):
         raise ValueError("import handoff is not summary-ready: replay_plan.entry_count")
-    required_entry_fields = {
-        "entry_id",
-        "receipt_digest",
-        "evaluation_result_digest",
-        "subject_type",
-        "risk_class",
-        "expected_gate",
-        "actual_gate",
-        "verdict",
-    }
     for index, entry in enumerate(entries, 1):
         if not isinstance(entry, Mapping):
             raise ValueError("import handoff is not summary-ready: replay_plan entry")
-        missing = sorted(required_entry_fields - set(entry))
-        if missing:
+        if set(entry) != _IMPORT_REPLAY_ENTRY_FIELDS:
             raise ValueError(
                 "import handoff is not summary-ready: "
-                f"replay_plan entry {index} missing {missing}"
+                f"replay_plan entry {index} fields"
+            )
+        entry_id = entry.get("entry_id")
+        if not isinstance(entry_id, str):
+            raise ValueError(
+                "import handoff is not summary-ready: "
+                f"replay_plan entry {index} entry_id"
+            )
+        _ensure_ref(f"replay_plan entry {index} entry_id", entry_id)
+        if not entry_id.startswith(f"{handoff['share_id']}:entry:"):
+            raise ValueError(
+                "import handoff is not summary-ready: "
+                f"replay_plan entry {index} share_id"
             )
         _ensure_sha256_digest(
             f"replay_plan entry {index} receipt_digest",
@@ -1928,6 +2383,39 @@ def _ensure_import_handoff_ready_for_summary(
             f"replay_plan entry {index} evaluation_result_digest",
             entry.get("evaluation_result_digest"),
         )
+        categorical_values = {
+            "subject_type": _IMPORT_REPLAY_SUBJECT_TYPES,
+            "risk_class": _IMPORT_REPLAY_RISK_CLASSES,
+            "expected_gate": _IMPORT_REPLAY_GATE_DECISIONS,
+            "actual_gate": _IMPORT_REPLAY_GATE_DECISIONS,
+            "verdict": _IMPORT_REPLAY_VERDICTS,
+        }
+        for field, allowed in categorical_values.items():
+            if entry.get(field) not in allowed:
+                raise ValueError(
+                    "import handoff is not summary-ready: "
+                    f"replay_plan entry {index} {field}"
+                )
+
+    digest_payload = dict(handoff)
+    digest_payload.pop("handoff_digest", None)
+    digest_payload.pop("handoff_id", None)
+    try:
+        expected_handoff_digest = sha256_digest(digest_payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "import handoff is not summary-ready: handoff_digest"
+        ) from exc
+    if handoff["handoff_digest"] != expected_handoff_digest:
+        raise ValueError(
+            "import handoff is not summary-ready: handoff_digest"
+        )
+    expected_handoff_id = (
+        "magma:share-import-handoff:"
+        f"{expected_handoff_digest.removeprefix('sha256:')[:16]}"
+    )
+    if handoff["handoff_id"] != expected_handoff_id:
+        raise ValueError("import handoff is not summary-ready: handoff_id")
 
 
 def _read_json(path: Path, label: str) -> Any:

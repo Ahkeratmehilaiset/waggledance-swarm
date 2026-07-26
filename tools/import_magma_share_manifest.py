@@ -25,6 +25,7 @@ from waggledance.core.magma.share_manifest import (  # noqa: E402
     build_magma_share_import_failed_replay_sanitization_summary,
     build_magma_share_import_replay_sanitization_summary,
     build_magma_share_manifest_import_report,
+    build_magma_share_producer_provenance_digest,
     write_magma_share_import_peer_review_handoff,
 )
 
@@ -50,13 +51,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--expected-share-id",
         default=None,
-        help="Optional exact share id expected by the receiving review context.",
+        help="Exact share id independently expected by the receiver.",
     )
     parser.add_argument(
         "--expected-purpose",
         default=None,
         choices=sorted(PURPOSES),
-        help="Optional exact share purpose expected by the receiving review context.",
+        help="Exact share purpose independently expected by the receiver.",
+    )
+    parser.add_argument(
+        "--expected-producer-agent",
+        default=None,
+        help="Exact producer agent ref independently expected by the receiver.",
+    )
+    parser.add_argument(
+        "--expected-producer-role",
+        default=None,
+        help="Exact producer role independently expected by the receiver.",
+    )
+    parser.add_argument(
+        "--expected-producer-bridge-event-ref",
+        default=None,
+        help=(
+            "Exact producer export-event ref independently expected by the "
+            "receiver."
+        ),
     )
     parser.add_argument(
         "--now",
@@ -150,6 +169,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_age_hours=args.max_age_hours,
             expected_share_id=args.expected_share_id,
             expected_purpose=args.expected_purpose,
+            expected_producer_agent_id=args.expected_producer_agent,
+            expected_producer_role=args.expected_producer_role,
+            expected_producer_bridge_event_ref=(
+                args.expected_producer_bridge_event_ref
+            ),
+        )
+        expected_producer_provenance_digest = (
+            build_magma_share_producer_provenance_digest(
+                agent_id=args.expected_producer_agent,
+                role=args.expected_producer_role,
+                bridge_event_ref=(
+                    args.expected_producer_bridge_event_ref
+                ),
+            )
         )
         handoff = None
         if args.peer_review_handoff_out is not None:
@@ -164,6 +197,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_purpose=(
                     args.expected_purpose
                     or DEFAULT_IMPORT_HANDOFF_EXPECTED_PURPOSE
+                ),
+                expected_producer_provenance_digest=(
+                    expected_producer_provenance_digest
                 ),
                 now_utc=now_utc,
             )
@@ -180,6 +216,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         max_age_hours=args.max_age_hours,
                         expected_share_id=args.expected_share_id,
                         expected_purpose=args.expected_purpose,
+                        expected_producer_agent_id=(
+                            args.expected_producer_agent
+                        ),
+                        expected_producer_role=args.expected_producer_role,
+                        expected_producer_bridge_event_ref=(
+                            args.expected_producer_bridge_event_ref
+                        ),
                     )
                 )
             else:
@@ -188,17 +231,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_age_hours=args.max_age_hours,
                     expected_share_id=args.expected_share_id,
                     expected_purpose=args.expected_purpose,
+                    expected_producer_agent_id=(
+                        args.expected_producer_agent
+                    ),
+                    expected_producer_role=args.expected_producer_role,
+                    expected_producer_bridge_event_ref=(
+                        args.expected_producer_bridge_event_ref
+                    ),
                 )
             print(json.dumps(status, indent=2, sort_keys=True))
         print(f"magma share manifest import FAILED: {exc}", file=sys.stderr)
         return 1
 
     if args.replay_sanitization_summary_json:
-        status = build_magma_share_import_replay_sanitization_summary(report)
+        status = build_magma_share_import_replay_sanitization_summary(
+            report,
+            expected_producer_provenance_digest=(
+                expected_producer_provenance_digest
+            ),
+        )
         print(json.dumps(status, indent=2, sort_keys=True))
+        return 0 if status.get("ok") is True else 1
     elif args.admission_status_json:
-        status = build_magma_share_import_admission_status_summary(report)
+        status = build_magma_share_import_admission_status_summary(
+            report,
+            expected_producer_provenance_digest=(
+                expected_producer_provenance_digest
+            ),
+        )
         print(json.dumps(status, indent=2, sort_keys=True))
+        return 0 if status.get("ok") is True else 1
     elif args.json:
         if handoff is not None:
             report = dict(report)

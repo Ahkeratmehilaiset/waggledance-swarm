@@ -19,6 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from waggledance.adapters.config.settings_loader import WaggleSettings
 from waggledance.bootstrap.container import Container
 from waggledance.core.autonomy.resource_kernel import ResourceKernel
+from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.share_manifest import (
+    build_magma_share_replay_admission_contract,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────
@@ -27,6 +31,44 @@ def _make_container(tier="standard"):
     """Create a stub Container with explicit tier (avoids nvidia-smi)."""
     s = WaggleSettings(profile="HOME", hardware_tier=tier, api_key="test-key-123")
     return Container(settings=s, stub=True)
+
+
+def _bind_magma_import_report(report: dict) -> dict:
+    share_id = report["share_id"]
+    admission_contract = build_magma_share_replay_admission_contract(
+        max_age_hours=168,
+        expected_share_id=share_id,
+        expected_purpose=report["purpose"],
+        expected_producer_agent_id="codex-legacy-fixture",
+        expected_producer_role="tools",
+        expected_producer_bridge_event_ref="bridge:legacy:share-export",
+    )
+    report["max_age_hours"] = 168
+    report["created_at_utc"] = "2026-05-28T08:00:00Z"
+    report["age_seconds"] = 3600
+    report["admission_contract"] = admission_contract
+    report["admission_contract_digest"] = sha256_digest(admission_contract)
+    entries = report["replay_plan"]["entries"]
+    report["artifact_counts"] = {
+        "entries": len(entries),
+        "receipts": len(entries),
+        "evaluation_results": len(entries),
+        "payload_files": 0,
+    }
+    for index, entry in enumerate(entries, 1):
+        entry["entry_id"] = f"{share_id}:entry:{index:03d}"
+        entry["subject_type"] = "solver"
+        entry["risk_class"] = "informational"
+        entry["expected_gate"] = "review"
+        entry["actual_gate"] = "review"
+        entry["verdict"] = "pass"
+    return report
+
+
+def _magma_expected_producer_digest(report: dict) -> str:
+    return report["admission_contract"][
+        "expected_producer_provenance_digest"
+    ]
 
 
 # Patch ElasticScaler.detect() to avoid real hardware calls in tests
@@ -595,6 +637,7 @@ class TestApiOpsExtended:
                 }],
             },
         }
+        report = _bind_magma_import_report(report)
         handoff = build_magma_share_import_peer_review_handoff(
             import_report=report,
             operator_decision_id="operator:decision:ops-summary",
@@ -602,6 +645,9 @@ class TestApiOpsExtended:
             bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
             import_decision="accepted_for_peer_review",
             decision_reason_ref="reason:cross_instance_replay_review",
+            expected_producer_provenance_digest=(
+                _magma_expected_producer_digest(report)
+            ),
         )
 
         class Container:
@@ -718,6 +764,7 @@ class TestApiOpsExtended:
                 }],
             },
         }
+        report = _bind_magma_import_report(report)
         older = build_magma_share_import_peer_review_handoff(
             import_report=report,
             operator_decision_id="operator:decision:ops-history:older",
@@ -725,6 +772,9 @@ class TestApiOpsExtended:
             bridge_event_ref="bridge:ops-history:older",
             import_decision="deferred_for_operator_review",
             decision_reason_ref="reason:ops-history:older",
+            expected_producer_provenance_digest=(
+                _magma_expected_producer_digest(report)
+            ),
             now_utc=datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc),
         )
         newer = build_magma_share_import_peer_review_handoff(
@@ -734,6 +784,9 @@ class TestApiOpsExtended:
             bridge_event_ref="bridge:ops-history:newer",
             import_decision="accepted_for_peer_review",
             decision_reason_ref="reason:ops-history:newer",
+            expected_producer_provenance_digest=(
+                _magma_expected_producer_digest(report)
+            ),
             now_utc=datetime(2026, 5, 28, 9, 0, tzinfo=timezone.utc),
         )
 
@@ -853,6 +906,9 @@ class TestApiOpsExtended:
                 bridge_event_ref=f"bridge:ops-history:{idx}",
                 import_decision="accepted_for_peer_review",
                 decision_reason_ref=f"reason:ops-history:{idx}",
+                expected_producer_provenance_digest=(
+                    _magma_expected_producer_digest(report)
+                ),
                 now_utc=datetime(2026, 5, 28, 10, idx, tzinfo=timezone.utc),
             )
             for idx in range(6)

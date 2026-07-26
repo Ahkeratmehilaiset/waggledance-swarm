@@ -10,6 +10,9 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import stat
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +36,7 @@ from waggledance.core.magma.chat_served_per_query_coverage import (
     canonical_corpus_digest,
     derive_per_query_receipt_coverage,
     derive_per_query_receipt_coverage_from_artifacts,
+    _path_is_link,
 )
 from waggledance.core.magma.chat_served_receipt import (
     CHAIN_ID as CHAT_CHAIN_ID,
@@ -1136,6 +1140,54 @@ def test_artifact_adapter_rejects_symlinked_manifest(tmp_path):
         pytest.skip("symlink creation is unavailable")
     linked = case["index"]._replace(manifest_paths=(link,))
     assert _artifact_report(case, index=linked).coverage_present is False
+
+
+def test_windows_reparse_attribute_is_recognized_without_pathlib_helper(
+    monkeypatch,
+):
+    details = SimpleNamespace(
+        st_mode=stat.S_IFDIR,
+        st_file_attributes=0x400,
+    )
+    monkeypatch.setattr(os, "lstat", lambda _path: details)
+
+    assert _path_is_link(Path("receipt-root")) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction test")
+def test_artifact_adapter_rejects_junction_bundle_without_pathlib_helper(
+    tmp_path, monkeypatch
+):
+    case = _artifact_case(
+        tmp_path / "case", [("s1", "query one", "query one")]
+    )
+    bundle_root = case["index"].manifest_paths[0].parent
+    target = bundle_root.with_name(bundle_root.name + "-target")
+    bundle_root.rename(target)
+    created = subprocess.run(
+        [
+            "cmd.exe",
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(bundle_root),
+            str(target),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        target.rename(bundle_root)
+        pytest.skip(f"junction creation unavailable: {created.stderr}")
+    try:
+        monkeypatch.setattr(Path, "is_junction", None)
+        report = _artifact_report(case)
+    finally:
+        os.rmdir(bundle_root)
+
+    assert report.coverage_present is False
 
 
 def test_artifact_adapter_rejects_artifact_mutation_during_verification(tmp_path):

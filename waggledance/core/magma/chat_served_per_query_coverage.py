@@ -1146,5 +1146,7 @@ def _safe_manifest_relative_path(value: object) -> bool:
 
 
 def _path_is_link(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(is_junction is not None and is_junction())
+    details = os.lstat(path)
+    attributes = int(getattr(details, "st_file_attributes", 0))
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return stat.S_ISLNK(details.st_mode) or bool(attributes & reparse_flag)

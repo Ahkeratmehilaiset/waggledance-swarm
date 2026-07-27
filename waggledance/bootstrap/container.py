@@ -587,6 +587,13 @@ class Container:
                 "clean_shutdown_marker_path",
                 run_dir / "clean_shutdown.json",
             ),
+            "verified_window_registry_path": str(
+                self._settings.get(
+                    "chat_served_receipts.claim_window_evidence."
+                    "verified_window_registry_path",
+                    "",
+                )
+            ),
         }
 
     @cached_property
@@ -692,6 +699,9 @@ class Container:
             start_boundary_path=binding["start_boundary_path"],
             final_boundary_path=binding["final_boundary_path"],
             clean_shutdown_marker_path=binding["clean_shutdown_marker_path"],
+            verified_window_registry_path=(
+                binding["verified_window_registry_path"]
+            ),
             enabled_probe=lambda: _settings_bool(
                 self._settings.get("chat_served_receipts.enabled", False)
             ),

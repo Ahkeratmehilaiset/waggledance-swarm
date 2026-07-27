@@ -29,6 +29,9 @@ from waggledance.core.magma.chat_served_ledger import (
     head_hash,
     read_entries,
 )
+from waggledance.core.magma.chat_served_window_registry import (
+    ChatServedWindowRegistry,
+)
 from waggledance.core.magma.chat_served_per_query_coverage import (
     RUN_CONTEXT_SCHEMA_VERSION,
     ReceiptManifestIndex,
@@ -314,6 +317,9 @@ def test_chat_served_runtime_window_is_fresh_and_uses_the_container_emitter(
                         "enabled": True,
                         "source_head": "a" * 40,
                         "out_dir": str(root / "evidence"),
+                        "verified_window_registry_path": str(
+                            root / "receiver" / "verified-windows.jsonl"
+                        ),
                     },
                 }
             ),
@@ -329,6 +335,33 @@ def test_chat_served_runtime_window_is_fresh_and_uses_the_container_emitter(
     )
     assert first.chat_served_runtime_window._emitter is first.chat_served_emitter
     assert first.chat_served_emitter is first.chat_served_emitter
+
+
+def test_container_runtime_window_requires_explicit_receiver_registry(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    container = Container(
+        settings=_settings_with_chat_served_receipts(
+            {
+                "enabled": True,
+                "out_dir": str(tmp_path / "receipts"),
+                "claim_window_evidence": {
+                    "enabled": True,
+                    "source_head": "a" * 40,
+                    "out_dir": str(evidence_root),
+                },
+            }
+        ),
+        stub=True,
+    )
+
+    result = asyncio.run(container.chat_served_runtime_window.start())
+
+    assert result.status == "ineligible"
+    assert result.reason == "window_registry_path_invalid"
+    assert result.registry_state == "not_reserved"
+    assert evidence_root.exists() is False
 
 
 def test_enabled_container_failure_injects_non_none_noop_and_blocks_private_fallback(
@@ -388,6 +421,7 @@ def test_container_runtime_window_completes_real_five_point_measurement(
 ) -> None:
     receipt_root = tmp_path / "receipts"
     evidence_root = tmp_path / "evidence"
+    registry_path = tmp_path / "receiver" / "verified-windows.jsonl"
     container = Container(
         settings=_settings_with_chat_served_receipts(
             {
@@ -397,6 +431,7 @@ def test_container_runtime_window_completes_real_five_point_measurement(
                     "enabled": True,
                     "source_head": "a" * 40,
                     "out_dir": str(evidence_root),
+                    "verified_window_registry_path": str(registry_path),
                     "sample_interval_seconds": 3600,
                     "max_sample_gap_seconds": 3600,
                     "drain_timeout_seconds": 30,
@@ -445,12 +480,16 @@ def test_container_runtime_window_completes_real_five_point_measurement(
     assert result.status == "complete", result.reason
     assert result.lifecycle_verified is True
     assert result.clean_marker_written is True
+    assert result.registry_state == "reserved_pre_marker"
     marker_path = Path(
         container._chat_served_claim_window_binding[
             "clean_shutdown_marker_path"
         ]
     )
     assert marker_path.exists()
+    registry = ChatServedWindowRegistry(registry_path).snapshot()
+    assert registry.consumed_window_ids == (result.window_id,)
+    assert registry.verified_window_ids == ()
     emitted = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(receipt_root.rglob("*.json"))

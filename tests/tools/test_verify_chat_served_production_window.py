@@ -11,7 +11,7 @@ import pytest
 from tools import verify_chat_served_production_window as verifier_cli
 from tools.verify_chat_served_production_window import INPUT_SCHEMA, main
 from tools.verify_magma_receipt import verify_manifest
-from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 from waggledance.core.magma.chat_query_route_evidence import (
     NORMALIZATION_VERSION,
     canonical_query_digest,
@@ -21,6 +21,8 @@ from waggledance.core.magma.chat_served_accounting import (
 )
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     CLAIM_WINDOW_SIDE_STREAMS,
+    PRODUCTION_WINDOW_VERIFICATION_SCHEMA,
+    ProductionWindowVerification,
     derive_enabled_sample_sequence_digest,
     new_claim_window_final_boundary,
     new_claim_window_start_boundary,
@@ -28,6 +30,10 @@ from waggledance.core.magma.chat_served_claim_window_evidence import (
     new_enabled_state_sample,
     new_receipt_index_entry,
     new_served_point_observation,
+)
+from waggledance.core.magma.chat_served_window_registry import (
+    ChatServedWindowRegistry,
+    RegistryVerificationApproval,
 )
 from waggledance.core.magma.chat_served_ledger import (
     GENESIS_PREV_HASH,
@@ -53,8 +59,9 @@ def _side_offsets(value: int) -> dict[str, int]:
 
 
 def _write_fixture(tmp_path):
-    receipt_root = tmp_path / "receipts"
-    receipt_root.mkdir()
+    producer_root = tmp_path / "producer"
+    receipt_root = producer_root / "receipts"
+    receipt_root.mkdir(parents=True)
     query = "cli query"
     summary = build_chat_served_summary(
         query=query,
@@ -179,8 +186,11 @@ def _write_fixture(tmp_path):
         ],
         "served_point_observations": observations,
     }
-    evidence_path = tmp_path / "evidence.json"
+    evidence_path = producer_root / "evidence" / "evidence.json"
+    evidence_path.parent.mkdir()
     evidence_path.write_text(json.dumps(envelope), encoding="utf-8")
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    marker_path.write_bytes(canonical_json_bytes(marker) + b"\n")
     return receipt_root, evidence_path, envelope
 
 
@@ -192,18 +202,69 @@ def _tree_hashes(root):
     }
 
 
+def _registry_path(tmp_path):
+    return tmp_path / "receiver" / "verified-windows.jsonl"
+
+
+def _reserve_registry(
+    *,
+    registry_path,
+    receipt_root,
+    envelope,
+    marker_path=None,
+    expected_window=_WINDOW,
+    expected_source=_SOURCE_HEAD,
+):
+    if marker_path is None:
+        marker_path = receipt_root.parent / "evidence" / "clean-shutdown.json"
+    binding = verifier_cli._registry_binding(
+        envelope,
+        expected_window_id=expected_window,
+        expected_source_head=expected_source,
+        clean_shutdown_marker_path=marker_path,
+    )
+    pre_marker_envelope = {
+        **envelope,
+        "clean_shutdown_marker": None,
+    }
+    registry = ChatServedWindowRegistry(registry_path)
+
+    def verify_pre_marker(previously_verified_window_ids):
+        verdict = verifier_cli._verify(
+            pre_marker_envelope,
+            receipt_root,
+            expected_window_id=expected_window,
+            expected_source_head=expected_source,
+            previously_verified_window_ids=previously_verified_window_ids,
+        )
+        return RegistryVerificationApproval(binding=binding, verdict=verdict)
+
+    registry.reserve_after_verification(binding, verify_pre_marker)
+    return registry, binding
+
+
 def _cli_args(
     evidence_path,
     receipt_root,
     *extra,
+    registry_path=None,
+    marker_path=None,
     expected_window=_WINDOW,
     expected_source=_SOURCE_HEAD,
 ):
+    if registry_path is None:
+        registry_path = _registry_path(evidence_path.parents[2])
+    if marker_path is None:
+        marker_path = evidence_path.parent / "clean-shutdown.json"
     return [
         "--evidence",
         str(evidence_path),
         "--receipt-root",
         str(receipt_root),
+        "--clean-shutdown-marker",
+        str(marker_path),
+        "--verified-window-registry",
+        str(registry_path),
         "--expected-window-id",
         expected_window,
         "--expected-source-head",
@@ -212,14 +273,283 @@ def _cli_args(
     ]
 
 
-def test_cli_verifies_final_window_with_stable_non_authorizing_json(
+def test_parser_requires_explicit_registry_and_rejects_legacy_flag(
     tmp_path,
     capsys,
 ) -> None:
     receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
-    before = _tree_hashes(tmp_path)
+    args = _cli_args(evidence_path, receipt_root)
+    registry_index = args.index("--verified-window-registry")
+    without_registry = [
+        *args[:registry_index],
+        *args[registry_index + 2 :],
+    ]
 
-    exit_code = main(_cli_args(evidence_path, receipt_root))
+    with pytest.raises(SystemExit) as missing:
+        verifier_cli.build_parser().parse_args(without_registry)
+    assert missing.value.code == 2
+    capsys.readouterr()
+
+    marker_index = args.index("--clean-shutdown-marker")
+    without_marker = [
+        *args[:marker_index],
+        *args[marker_index + 2 :],
+    ]
+    with pytest.raises(SystemExit) as missing_marker:
+        verifier_cli.build_parser().parse_args(without_marker)
+    assert missing_marker.value.code == 2
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as legacy:
+        verifier_cli.build_parser().parse_args(
+            [
+                *args,
+                "--previously-verified-window-id",
+                _WINDOW,
+            ]
+        )
+    assert legacy.value.code == 2
+
+
+def test_cli_rejects_relative_registry_path_with_path_free_json(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path="relative-registry.jsonl",
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert report["measurement_only"] is True
+    assert report["claim_safe_count"] == 0
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_rejects_relative_clean_marker_path_with_path_free_json(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            marker_path="relative-clean-marker.json",
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert report["measurement_only"] is True
+    assert report["claim_safe_count"] == 0
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_fresh_registry_cannot_create_its_own_reservation(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    receipts_before = _tree_hashes(receipt_root)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_reservation_missing"
+    assert not registry_path.exists()
+    assert _tree_hashes(receipt_root) == receipts_before
+
+
+def test_cli_rejects_registry_inside_producer_receipt_root(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    registry_path = receipt_root / "receiver-registry.jsonl"
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert not registry_path.exists()
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_rejects_registry_inside_producer_evidence_namespace(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    registry_path = evidence_path.parent / "receiver-registry.jsonl"
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert not registry_path.exists()
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_rejects_producer_paths_inside_registry_namespace(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    registry_path = evidence_path.parents[1] / "receiver-registry.jsonl"
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert not registry_path.exists()
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_rejects_clean_marker_inside_registry_namespace(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    marker_path = registry_path.parent / "producer-clean-marker.json"
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_bytes(
+        canonical_json_bytes(envelope["clean_shutdown_marker"]) + b"\n"
+    )
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert not registry_path.exists()
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_rejects_resolved_registry_alias_into_evidence_namespace(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    alias = tmp_path / "receiver-alias"
+    try:
+        os.symlink(evidence_path.parent, alias, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {type(exc).__name__}")
+    registry_path = alias / "receiver-registry.jsonl"
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert not registry_path.exists()
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_rejects_resolved_evidence_alias_into_registry_namespace(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    nested_evidence = registry_path.parent / "producer-evidence.json"
+    nested_evidence.parent.mkdir(parents=True)
+    nested_evidence.write_bytes(evidence_path.read_bytes())
+    alias = evidence_path.parent / "evidence-alias.json"
+    try:
+        os.symlink(nested_evidence, alias)
+    except OSError as exc:
+        pytest.skip(f"file symlink unavailable: {type(exc).__name__}")
+
+    exit_code = main(
+        _cli_args(
+            alias,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_path_invalid"
+    assert not registry_path.exists()
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_cli_verifies_final_window_with_stable_non_authorizing_json(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    evidence_before = evidence_path.read_bytes()
+    receipts_before = _tree_hashes(receipt_root)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
@@ -231,52 +561,564 @@ def test_cli_verifies_final_window_with_stable_non_authorizing_json(
     assert "eligible" not in report
     assert "clean_shutdown" not in report
     assert str(tmp_path) not in json.dumps(report)
-    assert _tree_hashes(tmp_path) == before
+    assert evidence_path.read_bytes() == evidence_before
+    assert _tree_hashes(receipt_root) == receipts_before
+    snapshot = registry.snapshot()
+    assert snapshot.consumed_window_ids == (_WINDOW,)
+    assert snapshot.verified_window_ids == (_WINDOW,)
+    assert len(snapshot.records) == 2
 
 
-def test_cli_exits_nonzero_on_marker_mismatch(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("marker_state", ["missing", "pending_only"])
+def test_cli_requires_final_durable_marker_not_pending_artifact(
+    tmp_path,
+    capsys,
+    monkeypatch,
+    marker_state,
+) -> None:
     receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
-    envelope["clean_shutdown_marker"]["marker_hash"] = "sha256:" + "f" * 64
-    evidence_path.write_text(json.dumps(envelope), encoding="utf-8")
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    if marker_state == "pending_only":
+        pending = marker_path.with_name(
+            f".{marker_path.name}.test.pending"
+        )
+        marker_path.replace(pending)
+        assert pending.exists()
+    else:
+        marker_path.unlink()
+    monkeypatch.setattr(
+        verifier_cli,
+        "_verify",
+        lambda *_args, **_kwargs: pytest.fail(
+            "core verifier called before durable marker validation"
+        ),
+    )
 
-    exit_code = main(_cli_args(evidence_path, receipt_root))
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "clean_shutdown_marker_invalid"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    ["missing_lf", "pretty", "duplicate_key", "nonfinite"],
+)
+def test_cli_rejects_noncanonical_clean_marker(
+    tmp_path,
+    capsys,
+    encoding,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    if encoding == "missing_lf":
+        raw = canonical_json_bytes(envelope["clean_shutdown_marker"])
+    elif encoding == "pretty":
+        raw = (
+            json.dumps(
+                envelope["clean_shutdown_marker"],
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
+        )
+    elif encoding == "duplicate_key":
+        raw = b'{"schema_version":"x","schema_version":"y"}\n'
+    else:
+        raw = b'{"marker_hash":NaN}\n'
+    marker_path.write_bytes(raw)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "clean_shutdown_marker_invalid"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_bounds_clean_marker_before_json_parse(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    monkeypatch.setattr(verifier_cli, "MAX_CLEAN_MARKER_BYTES", 1)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "clean_shutdown_marker_invalid"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_rejects_hardlinked_clean_marker(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    outside = tmp_path / "outside-clean-marker.json"
+    try:
+        os.link(marker_path, outside)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {type(exc).__name__}")
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "clean_shutdown_marker_invalid"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_rejects_symlinked_clean_marker(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    real_marker = marker_path.with_name("clean-shutdown-real.json")
+    marker_path.replace(real_marker)
+    try:
+        os.symlink(real_marker, marker_path)
+    except OSError as exc:
+        pytest.skip(f"file symlink unavailable: {type(exc).__name__}")
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "clean_shutdown_marker_invalid"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_rejects_matching_marker_copied_to_different_path(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    copied_marker = marker_path.with_name("copied-clean-shutdown.json")
+    copied_marker.write_bytes(marker_path.read_bytes())
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=copied_marker,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_binding_mismatch"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_second_run_is_replay_and_does_not_append(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    args = _cli_args(
+        evidence_path,
+        receipt_root,
+        registry_path=registry_path,
+    )
+    assert main(args) == 0
+    capsys.readouterr()
+    finalized_bytes = registry_path.read_bytes()
+
+    exit_code = main(args)
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["reason"] == "window_id_reused"
+    assert report["measurement_only"] is True
+    assert report["claim_safe_count"] == 0
+    assert registry_path.read_bytes() == finalized_bytes
+
+
+def test_cli_rechecks_exact_evidence_inside_registry_lock(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    real_read_json = verifier_cli._read_json
+    reads = 0
+
+    def changing_read(path):
+        nonlocal reads
+        reads += 1
+        value = real_read_json(path)
+        if reads == 2:
+            value["clean_shutdown_marker"]["marker_hash"] = (
+                "sha256:" + "f" * 64
+            )
+        return value
+
+    monkeypatch.setattr(verifier_cli, "_read_json", changing_read)
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert reads == 2
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_verification_failed"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_revalidates_namespace_inside_registry_lock(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    real_validate = verifier_cli._validate_registry_separation
+    validations = 0
+
+    def changed_namespace(*args, **kwargs):
+        nonlocal validations
+        validations += 1
+        if validations == 2:
+            raise verifier_cli.WindowRegistryPathError(
+                "simulated_namespace_swap"
+            )
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        verifier_cli,
+        "_validate_registry_separation",
+        changed_namespace,
+    )
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert validations == 2
+    assert exit_code == 1
+    assert report["reason"] == "window_registry_verification_failed"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_rechecks_durable_marker_after_core_verification(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    real_verify = verifier_cli._verify
+
+    def verify_then_replace_marker(*args, **kwargs):
+        verdict = real_verify(*args, **kwargs)
+        changed = dict(envelope["clean_shutdown_marker"])
+        changed["marker_hash"] = "sha256:" + "f" * 64
+        marker_path.write_bytes(canonical_json_bytes(changed) + b"\n")
+        return verdict
+
+    monkeypatch.setattr(
+        verifier_cli,
+        "_verify",
+        verify_then_replace_marker,
+    )
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert (
+        report["reason"]
+        == "clean_shutdown_marker_changed_during_verification"
+    )
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    ["wrong_phase", "wrong_schema", "unsafe_failure_contract"],
+)
+def test_cli_never_reports_success_when_registry_rejects_verdict(
+    tmp_path,
+    capsys,
+    monkeypatch,
+    forgery,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    marker_path = evidence_path.parent / "clean-shutdown.json"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+        marker_path=marker_path,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    forged = ProductionWindowVerification(
+        True,
+        "final_verified",
+        None,
+        True,
+        2,
+        2,
+        0,
+        1,
+        len(REQUIRED_CHAT_SERVED_POINTS),
+        1,
+    )
+    if forgery == "wrong_phase":
+        forged = forged._replace(
+            phase="pre_marker_verified",
+            marker_verified=False,
+        )
+    elif forgery == "wrong_schema":
+        forged = forged._replace(
+            schema_version=(
+                PRODUCTION_WINDOW_VERIFICATION_SCHEMA + ".forged"
+            )
+        )
+    else:
+        forged = forged._replace(
+            ok=False,
+            phase="final_rejected",
+            reason=str(tmp_path),
+            marker_verified=False,
+            measurement_only=False,
+        )
+    monkeypatch.setattr(
+        verifier_cli,
+        "_verify",
+        lambda *_args, **_kwargs: forged,
+    )
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+            marker_path=marker_path,
+        )
+    )
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
     assert report["ok"] is False
-    assert report["reason"] == "clean_marker_invalid"
+    assert report["reason"] == "window_registry_verification_failed"
+    assert str(tmp_path) not in json.dumps(report)
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
+
+
+def test_cli_exits_nonzero_on_durable_marker_mismatch(
+    tmp_path,
+    capsys,
+) -> None:
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    envelope["clean_shutdown_marker"]["marker_hash"] = "sha256:" + "f" * 64
+    evidence_path.write_text(json.dumps(envelope), encoding="utf-8")
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    reservation_bytes = registry_path.read_bytes()
+
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert report["ok"] is False
+    assert report["reason"] == "clean_shutdown_marker_mismatch"
     assert report["measurement_only"] is True
     assert report["claim_safe_count"] == 0
+    assert registry_path.read_bytes() == reservation_bytes
+    snapshot = registry.snapshot()
+    assert snapshot.consumed_window_ids == (_WINDOW,)
+    assert snapshot.verified_window_ids == ()
 
 
 def test_cli_uses_receiver_pinned_context_not_producer_envelope(
     tmp_path,
     capsys,
 ) -> None:
-    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    reservation_bytes = registry_path.read_bytes()
 
     stale_exit = main(
         _cli_args(
             evidence_path,
             receipt_root,
+            registry_path=registry_path,
             expected_source="b" * 40,
         )
     )
     stale = json.loads(capsys.readouterr().out)
-    replay_exit = main(
-        _cli_args(
-            evidence_path,
-            receipt_root,
-            "--previously-verified-window-id",
-            _WINDOW,
-        )
-    )
-    replay = json.loads(capsys.readouterr().out)
 
     assert stale_exit == 1
-    assert stale["reason"] == "source_head_mismatch"
-    assert replay_exit == 1
-    assert replay["reason"] == "window_id_reused"
+    assert stale["reason"] == "window_registry_binding_mismatch"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
 
 
 def test_cli_rejects_unknown_input_fields_with_fixed_shape(tmp_path, capsys) -> None:
@@ -308,42 +1150,64 @@ def test_cli_rejects_unknown_input_fields_with_fixed_shape(tmp_path, capsys) -> 
 
 def test_cli_rejects_traversal_manifest_reference(tmp_path, capsys) -> None:
     receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    reservation_bytes = registry_path.read_bytes()
     row = dict(envelope["receipt_index"][0])
     row["manifest_ref"] = "../served-q1/manifest.json"
     envelope["receipt_index"] = [row]
     evidence_path.write_text(json.dumps(envelope), encoding="utf-8")
 
-    exit_code = main(_cli_args(evidence_path, receipt_root))
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert report["reason"] == "receipt_index_entry_invalid"
+    assert report["reason"] == "window_registry_binding_mismatch"
     assert str(tmp_path) not in json.dumps(report)
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
 
 
 def test_cli_rejects_symlinked_receipt_bundle(tmp_path, capsys) -> None:
     receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
-    link = receipt_root / "linked"
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    reservation_bytes = registry_path.read_bytes()
+    original = receipt_root / "served-q1"
+    moved = receipt_root / "served-q1-real"
+    original.rename(moved)
     try:
-        os.symlink(receipt_root / "served-q1", link, target_is_directory=True)
+        os.symlink(moved, original, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlink unavailable: {type(exc).__name__}")
-    original = envelope["receipt_index"][0]
-    envelope["receipt_index"] = [
-        new_receipt_index_entry(
-            window_id=_WINDOW,
-            served_id=original["served_id"],
-            receipt_ref=original["receipt_ref"],
-            manifest_ref="linked/manifest.json",
-        )
-    ]
-    evidence_path.write_text(json.dumps(envelope), encoding="utf-8")
 
-    exit_code = main(_cli_args(evidence_path, receipt_root))
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
     assert report["reason"] == "receipt_bundle_verification_failed"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
 
 
 def test_cli_rejects_detected_reparse_component(
@@ -351,18 +1215,33 @@ def test_cli_rejects_detected_reparse_component(
     capsys,
     monkeypatch,
 ) -> None:
-    receipt_root, evidence_path, _envelope = _write_fixture(tmp_path)
+    receipt_root, evidence_path, envelope = _write_fixture(tmp_path)
+    registry_path = _registry_path(tmp_path)
+    registry, _binding = _reserve_registry(
+        registry_path=registry_path,
+        receipt_root=receipt_root,
+        envelope=envelope,
+    )
+    reservation_bytes = registry_path.read_bytes()
     real_detector = verifier_cli._path_is_link
 
     def detected(path):
         return path.name == "served-q1" or real_detector(path)
 
     monkeypatch.setattr(verifier_cli, "_path_is_link", detected)
-    exit_code = main(_cli_args(evidence_path, receipt_root))
+    exit_code = main(
+        _cli_args(
+            evidence_path,
+            receipt_root,
+            registry_path=registry_path,
+        )
+    )
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
     assert report["reason"] == "receipt_bundle_verification_failed"
+    assert registry_path.read_bytes() == reservation_bytes
+    assert registry.snapshot().verified_window_ids == ()
 
 
 def test_cli_bounds_evidence_file_before_json_parse(

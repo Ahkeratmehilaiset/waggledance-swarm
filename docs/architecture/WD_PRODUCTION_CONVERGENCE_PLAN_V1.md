@@ -40,6 +40,7 @@ the original main snapshot.
 | #1541 | `c55cf5ad`; chat-receipt verifier hardening; draft; exact-head merge/operator gates remain |
 | #1543 | `a22391ee`; per-query receipt adapter integration containing the #1540/#1541 content; draft; exact-head merge/operator gates remain |
 | #1568 | `5c316f4a`; fail-closed junction leaf stacked on #1543; draft; local handoff evidence exists, but exact-head CI/RCO/operator gates remain |
+| #1571 | `458af5b4`; process-owned served-window lifecycle stacked on #1568; draft; local full suite is green, but the stacked base receives no PR CI and exact-head RCO/operator gates remain |
 | #1530 | `54f9fa6f`; includes #1532 bounds; CI 6/6; full exact-head review and explicit operator gate remain; optional advisory game-theory lane, not on P0/P1 |
 | #1529 | `a827de6a`; incremental bridge reader; operator-gated infrastructure, not production capability |
 
@@ -155,13 +156,37 @@ clean-shutdown assertion. Receipt-index rows use
 `magma.chat_served_receipt_index_entry.v1`, are window-bound and
 content-addressed, and carry only safe relative POSIX manifest references.
 `tools/verify_chat_served_production_window.py` exposes the same verifier as a
-read-only stable-JSON CLI, requires receiver-supplied expected window/source
-pins, and exits nonzero on any mismatch.
+stable-JSON receiver CLI. It requires receiver-supplied expected window/source
+pins and an explicit absolute receiver-owned registry path, and exits nonzero
+on any mismatch. A successful invocation is intentionally stateful: it
+appends and fsyncs one `final_verified` event while holding the same
+cross-process registry lock used during full-marker verification.
 
-A caller-memory list of prior window IDs is not proof of global freshness.
-Production use must bind `previously_verified_window_ids` to a durable,
-closed-schema registry; until that registry exists, the feature remains
-default-off and no live canary or claim transition is authorized.
+A caller-memory list, producer envelope, or caller-supplied list of prior
+window IDs is not proof of global freshness. The receiver registry is strict,
+bounded, closed-schema, append-only JSONL with a record hash chain and two
+states. After pre-marker verification, runtime atomically appends
+`reserved_pre_marker`, permanently consuming the exact window ID and binding
+the receiver pins plus the proposed marker, its domain-separated canonical
+target-path digest, and the full evidence digest. Runtime then re-freezes every
+durable input and writes that exact clean marker last. Only the offline
+receiver CLI may append `final_verified`, and only after re-reading a matching
+reservation, opening the receiver-pinned absolute marker target as a
+no-follow regular single-link file, matching its canonical bytes to the
+envelope and reservation, and running full-marker verification while the
+registry lock remains held. An envelope marker or reconstructed copy at a
+different path is insufficient. A crash after reservation burns the ID but
+does not falsely verify it; a missing durable marker or reservation, second
+finalization, corrupt registry, lock failure, or pin mismatch fails closed.
+
+The registry path is a trust anchor and must be explicitly configured; there
+is no relative or implicit default and the CLI cannot create a reservation.
+The hash chain detects malformed, reordered, or modified retained rows, but it
+cannot prove rollback or valid-tail truncation by an actor with the same
+filesystem authority. Production deployment therefore also requires
+receiver-controlled ACLs and external backup/anchoring. The feature remains
+default-off, `measurement_only`, and `claim_safe_count=0`; this source work
+does not authorize a live canary or claim transition.
 
 The API-only startup/shutdown proposal is insufficient: a reused clean marker
 can survive an unclean restart, and detached receipt tasks can still be pending

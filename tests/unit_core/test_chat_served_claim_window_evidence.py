@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+import copy
 import itertools
 import json
 from datetime import datetime, timezone
@@ -1158,6 +1159,68 @@ def test_production_window_pre_marker_and_final_verdicts_are_non_authorizing() -
         assert verdict.claim_safe_count == 0
         assert "eligible" not in verdict._fields
         assert "clean_shutdown" not in verdict._fields
+
+
+def test_production_window_registry_binding_digest_pins_context_and_all_evidence() -> None:
+    inputs = _production_window_inputs()
+    digest_inputs = {
+        key: value
+        for key, value in inputs.items()
+        if key
+        not in {
+            "resolve_receipt_bundle",
+            "verify_receipt_bundle",
+            "content_address_receipt",
+            "previously_verified_window_ids",
+        }
+    }
+
+    first = E.derive_production_window_registry_binding_digest(**digest_inputs)
+    repeated = E.derive_production_window_registry_binding_digest(
+        **{
+            **digest_inputs,
+            "ledger_entries": tuple(digest_inputs["ledger_entries"]),
+        }
+    )
+    assert first.startswith("sha256:")
+    assert repeated == first
+
+    mutations = {
+        "expected_window_id": "window:other",
+        "expected_source_head": "b" * 40,
+        "start_boundary": {
+            **digest_inputs["start_boundary"],
+            "audit_nonce": "changed",
+        },
+        "final_boundary": {
+            **digest_inputs["final_boundary"],
+            "audit_nonce": "changed",
+        },
+        "clean_shutdown_marker": {
+            **digest_inputs["clean_shutdown_marker"],
+            "audit_nonce": "changed",
+        },
+    }
+    for field in (
+        "ledger_entries",
+        "enabled_samples",
+        "pending_failures",
+        "receipt_index",
+        "served_point_observations",
+    ):
+        mutations[field] = [
+            *copy.deepcopy(digest_inputs[field]),
+            {"audit_nonce": f"changed:{field}"},
+        ]
+    for field, changed_value in mutations.items():
+        changed_inputs = copy.deepcopy(digest_inputs)
+        changed_inputs[field] = changed_value
+        assert (
+            E.derive_production_window_registry_binding_digest(
+                **changed_inputs
+            )
+            != first
+        ), field
 
 
 def test_production_window_rejects_reused_window_and_wrong_source() -> None:

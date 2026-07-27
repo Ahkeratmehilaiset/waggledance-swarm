@@ -67,6 +67,9 @@ RECEIPT_INDEX_ENTRY_HASH_DOMAIN = (
 PRODUCTION_WINDOW_VERIFICATION_SCHEMA = (
     "magma.chat_served_production_window_verification.v1"
 )
+PRODUCTION_WINDOW_REGISTRY_BINDING_SCHEMA = (
+    "magma.chat_served_production_window_registry_binding.v1"
+)
 
 CLAIM_WINDOW_SIDE_STREAMS = frozenset({
     "enabled_state_samples",
@@ -1811,6 +1814,60 @@ def verify_production_window(
     )
 
 
+def derive_production_window_registry_binding_digest(
+    *,
+    expected_window_id: str,
+    expected_source_head: str,
+    start_boundary: Mapping[str, Any],
+    final_boundary: Mapping[str, Any],
+    clean_shutdown_marker: Mapping[str, Any],
+    ledger_entries: Iterable[Mapping[str, Any]],
+    enabled_samples: Iterable[Mapping[str, Any]],
+    pending_failures: Iterable[Mapping[str, Any]],
+    receipt_index: Iterable[Mapping[str, Any]],
+    served_point_observations: Iterable[Mapping[str, Any]],
+) -> str:
+    """Bind receiver pins to one exact, closed-window evidence snapshot.
+
+    This digest is only a replay-registry comparison key. It does not verify the
+    evidence, grant authority, or replace ``verify_production_window``.
+    """
+    records = {
+        "ledger_entries": _bounded_records(ledger_entries),
+        "enabled_samples": _bounded_records(enabled_samples),
+        "pending_failures": _bounded_records(pending_failures),
+        "receipt_index": _bounded_records(receipt_index),
+        "served_point_observations": _bounded_records(
+            served_point_observations
+        ),
+    }
+    if any(value is None for value in records.values()):
+        raise ValueError("registry_binding_evidence_exceeds_bound")
+    if (
+        not is_conforming_token(expected_window_id)
+        or not _is_source_head(expected_source_head)
+        or not isinstance(start_boundary, Mapping)
+        or not isinstance(final_boundary, Mapping)
+        or not isinstance(clean_shutdown_marker, Mapping)
+    ):
+        raise ValueError("registry_binding_context_invalid")
+    binding = {
+        "schema_version": PRODUCTION_WINDOW_REGISTRY_BINDING_SCHEMA,
+        "expected_window_id": expected_window_id,
+        "expected_source_head": expected_source_head,
+        "start_boundary": start_boundary,
+        "final_boundary": final_boundary,
+        "clean_shutdown_marker": clean_shutdown_marker,
+        **records,
+    }
+    if not _privacy_safe(binding):
+        raise ValueError("registry_binding_privacy_violation")
+    try:
+        return sha256_digest(binding)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("registry_binding_not_canonical") from exc
+
+
 def new_served_point_observation(
     *,
     point: str,
@@ -1992,6 +2049,7 @@ __all__ = [
     "MAX_PRIVACY_SCAN_DEPTH",
     "MAX_PRIVACY_SCAN_NODES",
     "MAX_PRODUCTION_WINDOW_RECORDS",
+    "PRODUCTION_WINDOW_REGISTRY_BINDING_SCHEMA",
     "PRODUCTION_WINDOW_VERIFICATION_SCHEMA",
     "RECEIPT_INDEX_ENTRY_HASH_DOMAIN",
     "RECEIPT_INDEX_ENTRY_SCHEMA_V1",
@@ -2006,6 +2064,7 @@ __all__ = [
     "derive_enabled_across_window",
     "derive_enabled_sample_sequence_digest",
     "derive_instrumented_served_points",
+    "derive_production_window_registry_binding_digest",
     "new_claim_window_final_boundary",
     "new_claim_window_id",
     "new_claim_window_start_boundary",

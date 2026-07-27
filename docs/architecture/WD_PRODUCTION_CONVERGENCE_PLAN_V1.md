@@ -41,6 +41,7 @@ the original main snapshot.
 | #1543 | `a22391ee`; per-query receipt adapter integration containing the #1540/#1541 content; draft; exact-head merge/operator gates remain |
 | #1568 | `5c316f4a`; fail-closed junction leaf stacked on #1543; draft; local handoff evidence exists, but exact-head CI/RCO/operator gates remain |
 | #1571 | `458af5b4`; process-owned served-window lifecycle stacked on #1568; draft; local full suite is green, but the stacked base receives no PR CI and exact-head RCO/operator gates remain |
+| #1572 | `cef2cef2`; receiver-owned two-state replay registry stacked on #1571; draft; exact-snapshot local full suite is green, but the stacked base receives no PR CI and exact-head RCO/operator gates remain |
 | #1530 | `54f9fa6f`; includes #1532 bounds; CI 6/6; full exact-head review and explicit operator gate remain; optional advisory game-theory lane, not on P0/P1 |
 | #1529 | `a827de6a`; incremental bridge reader; operator-gated infrastructure, not production capability |
 
@@ -169,15 +170,29 @@ states. After pre-marker verification, runtime atomically appends
 `reserved_pre_marker`, permanently consuming the exact window ID and binding
 the receiver pins plus the proposed marker, its domain-separated canonical
 target-path digest, and the full evidence digest. Runtime then re-freezes every
-durable input and writes that exact clean marker last. Only the offline
-receiver CLI may append `final_verified`, and only after re-reading a matching
-reservation, opening the receiver-pinned absolute marker target as a
-no-follow regular single-link file, matching its canonical bytes to the
-envelope and reservation, and running full-marker verification while the
-registry lock remains held. An envelope marker or reconstructed copy at a
-different path is insufficient. A crash after reservation burns the ID but
-does not falsely verify it; a missing durable marker or reservation, second
-finalization, corrupt registry, lock failure, or pin mismatch fails closed.
+durable input and writes that exact clean marker last. The supported production
+finalization entry point is the offline receiver CLI. Its underlying
+receiver-owned API remains callback-gated and callable by trusted receiver
+code; it is not producer authority or a naked append API. Finalization proceeds
+only after re-reading a matching reservation, opening the receiver-pinned
+absolute marker target as a no-follow regular single-link file, matching its
+canonical bytes to the envelope and reservation, and running full-marker
+verification while the registry lock remains held. An envelope marker or
+reconstructed copy at a different path is insufficient. A crash after
+reservation burns the ID but does not falsely verify it; a missing durable
+marker or reservation, second finalization, corrupt registry, lock failure, or
+pin mismatch fails closed.
+
+The registry lock/durability contract includes real spawned-process race and
+`os._exit` regressions for same-ID reservation, reserve-versus-finalize
+serialization, verifier death and death after durable append. A lock-FD close
+error cannot strand the process mutex. POSIX reads use nonblocking no-follow
+opens so a swapped FIFO or other special file fails closed rather than hanging;
+fork children discard inherited sidecar locks and process-local mutex state.
+Every successful append syncs the POSIX parent directory, including after a
+crash-left empty file, and newly created nested parent entries are anchored in
+order. A Windows short-path target that resolves to a different long path after
+construction is rejected and must be reconstructed and revalidated.
 
 The registry path is a trust anchor and must be explicitly configured; there
 is no relative or implicit default and the CLI cannot create a reservation.

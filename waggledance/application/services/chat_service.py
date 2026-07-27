@@ -84,7 +84,6 @@ LOW_CONFIDENCE_GAP_THRESHOLD = 0.6
 # unknown profile normalizes to an honest "unknown" token, never a user-triggerable gap).
 _CHAT_SERVED_KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
 _DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR = "data/runtime/chat_served_receipts"
-_DEFAULT_CHAT_CLAIM_WINDOW_ID = "chat_served_runtime_window"
 
 
 def _config_bool(value) -> bool:
@@ -182,6 +181,7 @@ class ChatService:
             self._record_telemetry("hotcache", 1.0, elapsed, True, req.query)
             self._emit_served(
                 query=req.query, response=cached, source="hotcache", route_type="hotcache",
+                served_point="hotcache",
                 confidence=1.0, latency_ms=elapsed, cached=True, round_table=False,
                 agent_id=None, language=language, profile=req.profile,
                 route_stage_trace=route_stage_trace)
@@ -259,6 +259,7 @@ class ChatService:
                                         "solver", "solver", elapsed)
                 self._emit_served(
                     query=req.query, response=solver_result, source="solver", route_type="solver",
+                    served_point="solver",
                     confidence=0.95, latency_ms=elapsed, cached=False, round_table=False,
                     agent_id=None, language=language, profile=req.profile,
                     route_stage_trace=route_stage_trace)
@@ -314,7 +315,8 @@ class ChatService:
                 result.route_stage_trace = route_stage_trace
                 self._emit_served(
                     query=req.query, response=result.response, source=result.source,
-                    route_type="hybrid_retrieval", confidence=result.confidence, latency_ms=result.latency_ms,
+                    route_type="hybrid_retrieval", served_point="hybrid_retrieval",
+                    confidence=result.confidence, latency_ms=result.latency_ms,
                     cached=result.cached, round_table=result.round_table, agent_id=result.agent_id,
                     language=result.language, profile=req.profile,
                     route_stage_trace=route_stage_trace)
@@ -360,6 +362,7 @@ class ChatService:
                     self._emit_served(
                         query=req.query, response=hex_result["response"],
                         source=hex_result["source"], route_type="hex_mesh",
+                        served_point="hex_mesh",
                         confidence=hex_result["confidence"], latency_ms=elapsed, cached=False,
                         round_table=False, agent_id=None, language=language, profile=req.profile,
                         route_stage_trace=route_stage_trace)
@@ -446,7 +449,8 @@ class ChatService:
             result.source, route.route_type, elapsed)
         self._emit_served(
             query=req.query, response=result.response, source=result.source,
-            route_type=route.route_type, confidence=result.confidence, latency_ms=elapsed,
+            route_type=route.route_type, served_point="llm",
+            confidence=result.confidence, latency_ms=elapsed,
             cached=False, round_table=round_table_used, agent_id=result.agent_id,
             language=language, profile=req.profile, route_stage_trace=route_stage_trace)
 
@@ -554,6 +558,18 @@ class ChatService:
         try:
             if not _config_bool(self._config.get("chat_served_receipts.enabled", False)):
                 return None
+            if _config_bool(self._config.get(
+                "chat_served_receipts.claim_window_evidence.enabled",
+                False,
+            )):
+                # Production-window evidence has exactly one lifecycle owner:
+                # Container constructs and injects the emitter coordinated by API
+                # startup/shutdown.  A private fallback here would have no authority
+                # to close intake, drain tasks, or publish the marker last.
+                log.debug(
+                    "chat-served claim-window evidence requires an injected emitter"
+                )
+                return None
             import os
 
             from tools.verify_magma_receipt import verify_manifest
@@ -565,42 +581,9 @@ class ChatService:
             ledger_path = os.path.join(out_dir, "ledger.jsonl")
             os.makedirs(out_dir, exist_ok=True)
             sink = ChatServedReceiptSink(ledger_path)
-            evidence_kwargs = {}
-            if _config_bool(self._config.get(
-                "chat_served_receipts.claim_window_evidence.enabled",
-                False,
-            )):
-                evidence_dir = str(self._config.get(
-                    "chat_served_receipts.claim_window_evidence.out_dir",
-                    out_dir,
-                ))
-                evidence_kwargs = {
-                    "ledger_path": ledger_path,
-                    "claim_window_window_id": str(self._config.get(
-                        "chat_served_receipts.claim_window_evidence.window_id",
-                        _DEFAULT_CHAT_CLAIM_WINDOW_ID,
-                    )),
-                    "claim_window_anchor_store_path": str(self._config.get(
-                        "chat_served_receipts.claim_window_evidence.anchor_store_path",
-                        os.path.join(evidence_dir, "claim_window_head_anchors.jsonl"),
-                    )),
-                    "claim_window_enabled_samples_path": str(self._config.get(
-                        "chat_served_receipts.claim_window_evidence.enabled_samples_path",
-                        os.path.join(evidence_dir, "claim_window_enabled_samples.jsonl"),
-                    )),
-                    "claim_window_clean_shutdown_marker_path": str(self._config.get(
-                        "chat_served_receipts.claim_window_evidence.clean_shutdown_marker_path",
-                        os.path.join(evidence_dir, "claim_window_clean_shutdown.json"),
-                    )),
-                    "claim_window_served_point_observations_path": str(self._config.get(
-                        "chat_served_receipts.claim_window_evidence.served_point_observations_path",
-                        os.path.join(evidence_dir, "claim_window_served_points.jsonl"),
-                    )),
-                }
             self._chat_served_emitter = ChatServedEmitter(
                 sink=sink, out_dir=out_dir, verify_manifest=verify_manifest,
                 known_profiles=_CHAT_SERVED_KNOWN_PROFILES, enabled=True,
-                **evidence_kwargs,
             )
             return self._chat_served_emitter
         except Exception:
@@ -609,6 +592,7 @@ class ChatService:
             return None
 
     def _emit_served(self, *, query: str, response: str, source: str, route_type: str,
+                     served_point: str,
                      confidence: float, latency_ms: float, cached: bool, round_table: bool,
                      agent_id: str | None, language: str, profile: str,
                      route_stage_trace) -> None:
@@ -624,6 +608,7 @@ class ChatService:
             served_id = new_served_id()
             if emitter.record_pending(
                 served_id, query=query, source=source, route_type=route_type,
+                served_point=served_point,
                 language=language, profile=profile, agent_id=agent_id,
             ):
                 emitter.schedule_receipt(

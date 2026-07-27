@@ -31,7 +31,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Callable
 
 from waggledance.core.magma.chat_served_ledger import (
     GAP_TERMINAL,
@@ -145,7 +145,7 @@ class ChatServedReceiptSink:
     def record_pending(
         self,
         served_id: str,
-        ts_utc: str,
+        ts_utc: str | Callable[[], str],
         metadata: Mapping[str, Any],
         *,
         fsync: bool | None = None,
@@ -158,13 +158,24 @@ class ChatServedReceiptSink:
         """
         with self._lock:
             self._check_can_transition(served_id, SERVED_PENDING)  # raises ServedIdCollision
-            entry = new_served_pending(served_id, self._head, ts_utc, metadata)
+            timestamp = ts_utc() if callable(ts_utc) else ts_utc
+            entry = new_served_pending(
+                served_id,
+                self._head,
+                timestamp,
+                metadata,
+            )
             self._append_locked(entry, fsync)
             self._set_state(served_id, SERVED_PENDING)
             return self._head
 
     def resolve_receipt(
-        self, served_id: str, ts_utc: str, receipt_ref: str, *, fsync: bool | None = None
+        self,
+        served_id: str,
+        ts_utc: str | Callable[[], str],
+        receipt_ref: str,
+        *,
+        fsync: bool | None = None,
     ) -> str:
         """Resolve a pending with a receipt terminal (a MAGMA receipt was written)."""
         return self._resolve(
@@ -172,7 +183,12 @@ class ChatServedReceiptSink:
         )
 
     def resolve_gap(
-        self, served_id: str, ts_utc: str, gap_reason: str, *, fsync: bool | None = None
+        self,
+        served_id: str,
+        ts_utc: str | Callable[[], str],
+        gap_reason: str,
+        *,
+        fsync: bool | None = None,
     ) -> str:
         """Resolve a pending with a gap terminal (a genuine coverage hole)."""
         return self._resolve(served_id, GAP_TERMINAL, ts_utc, gap_reason=gap_reason, fsync=fsync)
@@ -181,7 +197,7 @@ class ChatServedReceiptSink:
         self,
         served_id: str,
         terminal_type: str,
-        ts_utc: str,
+        ts_utc: str | Callable[[], str],
         *,
         receipt_ref: str | None = None,
         gap_reason: str | None = None,
@@ -189,10 +205,21 @@ class ChatServedReceiptSink:
     ) -> str:
         with self._lock:
             self._check_can_transition(served_id, terminal_type)  # raises TerminalError
+            timestamp = ts_utc() if callable(ts_utc) else ts_utc
             if terminal_type == RECEIPT_TERMINAL:
-                entry = new_receipt_terminal(served_id, self._head, ts_utc, receipt_ref)
+                entry = new_receipt_terminal(
+                    served_id,
+                    self._head,
+                    timestamp,
+                    receipt_ref,
+                )
             else:
-                entry = new_gap_terminal(served_id, self._head, ts_utc, gap_reason)
+                entry = new_gap_terminal(
+                    served_id,
+                    self._head,
+                    timestamp,
+                    gap_reason,
+                )
             self._append_locked(entry, fsync)
             self._set_state(served_id, terminal_type)
             return self._head

@@ -15,11 +15,13 @@ It never flips ``claim_safe`` and does not enable runtime collection by itself.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, NamedTuple
+from datetime import datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any, Callable, NamedTuple
 from uuid import uuid4
 
 from waggledance.core.magma.canonical import sha256_digest
@@ -30,16 +32,24 @@ from waggledance.core.magma.chat_served_accounting import (
     claim_window_from_ledger,
 )
 from waggledance.core.magma.chat_served_ledger import (
+    GAP_TERMINAL,
     GENESIS_PREV_HASH,
+    RECEIPT_TERMINAL,
+    SERVED_PENDING,
     head_hash,
     is_ledger_hash,
+    is_path_safe_token,
     read_entries,
+    verify_entry_self,
+    wellformed_reason,
 )
+from waggledance.core.magma.chat_served_receipt import validate_chat_served_payload
 from waggledance.core.magma.chat_served_metadata import is_conforming_token
 
 HEAD_ANCHOR_SCHEMA = "magma.chat_served_head_anchor.v0"
 CLEAN_SHUTDOWN_MARKER_SCHEMA = "magma.chat_served_clean_shutdown_marker.v0"
 ENABLED_STATE_SAMPLE_SCHEMA = "magma.chat_served_enabled_state_sample.v0"
+ENABLED_STATE_SAMPLE_SCHEMA_V1 = "magma.chat_served_enabled_state_sample.v1"
 SERVED_POINT_OBSERVATION_SCHEMA = "magma.chat_served_point_observation.v0"
 CLAIM_WINDOW_START_BOUNDARY_SCHEMA = (
     "magma.chat_served_claim_window_start_boundary.v1"
@@ -50,6 +60,13 @@ CLAIM_WINDOW_FINAL_BOUNDARY_SCHEMA = (
 CLEAN_SHUTDOWN_MARKER_SCHEMA_V1 = "magma.chat_served_clean_shutdown_marker.v1"
 SERVED_POINT_OBSERVATION_SCHEMA_V1 = "magma.chat_served_point_observation.v1"
 ENABLED_SAMPLE_SEQUENCE_SCHEMA = "magma.chat_served_enabled_sample_sequence.v1"
+RECEIPT_INDEX_ENTRY_SCHEMA_V1 = "magma.chat_served_receipt_index_entry.v1"
+RECEIPT_INDEX_ENTRY_HASH_DOMAIN = (
+    "magma.chat_served_receipt_index_entry_hash.v1"
+)
+PRODUCTION_WINDOW_VERIFICATION_SCHEMA = (
+    "magma.chat_served_production_window_verification.v1"
+)
 
 CLAIM_WINDOW_SIDE_STREAMS = frozenset({
     "enabled_state_samples",
@@ -59,12 +76,50 @@ CLAIM_WINDOW_SIDE_STREAMS = frozenset({
 })
 MAX_DECLARED_SAMPLE_GAP_SECONDS = 86_400
 MAX_ENABLED_SAMPLES_PER_WINDOW = 100_000
+MAX_PRODUCTION_WINDOW_RECORDS = 100_000
+MAX_PRIVACY_SCAN_DEPTH = 64
+MAX_PRIVACY_SCAN_NODES = 1_000_000
+ENABLED_SAMPLE_KINDS_V1 = frozenset({"start", "cadence", "transition", "end"})
 
 _ANCHOR_HASH_FIELD = "anchor_hash"
 _BOUNDARY_HASH_FIELD = "boundary_hash"
 _MARKER_HASH_FIELD = "marker_hash"
 _SAMPLE_HASH_FIELD = "sample_hash"
 _POINT_HASH_FIELD = "point_hash"
+_INDEX_HASH_FIELD = "index_hash"
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_LEDGER_METADATA_REQUIRED = frozenset({
+    "source",
+    "route_type",
+    "language",
+    "profile",
+    "world_snapshot_ref",
+    "query_digest",
+    "normalization_version",
+})
+_LEDGER_METADATA_ALLOWED = _LEDGER_METADATA_REQUIRED | {"agent_id"}
+_FORBIDDEN_EVIDENCE_KEYS = frozenset({
+    "bound",
+    "claim_safe",
+    "claim_safe_count",
+    "coverage_present",
+    "eligible",
+    "raw",
+    "raw_content",
+    "raw_query",
+    "raw_query_text",
+    "raw_response",
+    "raw_response_text",
+    "query_text",
+    "response_text",
+    "prompt",
+    "completion",
+    "local_path",
+    "ok",
+    "absolute_path",
+    "ledger_path",
+    "receipt_root",
+})
 
 
 class HeadAnchorLookup(NamedTuple):
@@ -102,6 +157,24 @@ class LifecycleBindingVerification(NamedTuple):
 
     ok: bool
     reason: str | None
+
+
+class ProductionWindowVerification(NamedTuple):
+    """Closed, measurement-only verdict for one exact production window."""
+
+    ok: bool
+    phase: str
+    reason: str | None
+    marker_verified: bool
+    ledger_entries: int
+    enabled_samples: int
+    pending_failures: int
+    receipt_index_entries: int
+    served_point_observations: int
+    receipt_terminals: int
+    measurement_only: bool = True
+    claim_safe_count: int = 0
+    schema_version: str = PRODUCTION_WINDOW_VERIFICATION_SCHEMA
 
 
 def _canonical_without(entry: Mapping[str, Any], hash_field: str) -> dict[str, Any]:
@@ -637,6 +710,8 @@ def write_enabled_state_sample(
     window_id: str,
     enabled: bool,
     ts_utc: str,
+    sample_kind: str | None = None,
+    previous_enabled: bool | None = None,
     fsync: bool = True,
 ) -> None:
     """Append one hash-validated enabled-state sample to a durable JSONL store."""
@@ -644,6 +719,8 @@ def write_enabled_state_sample(
         window_id=window_id,
         enabled=enabled,
         ts_utc=ts_utc,
+        sample_kind=sample_kind,
+        previous_enabled=previous_enabled,
     )
     _append_jsonl(sample_path, sample, fsync=fsync)
 
@@ -681,17 +758,36 @@ def new_enabled_state_sample(
     window_id: str,
     enabled: bool,
     ts_utc: str,
+    sample_kind: str | None = None,
+    previous_enabled: bool | None = None,
 ) -> dict[str, Any]:
     if not isinstance(enabled, bool):
         raise ValueError("enabled must be a boolean")
     if _parse_utc_timestamp(ts_utc) is None:
         raise ValueError("ts_utc is not a UTC timestamp")
+    if sample_kind is None and previous_enabled is not None:
+        raise ValueError("previous_enabled requires a transition sample")
+    if sample_kind is not None and sample_kind not in ENABLED_SAMPLE_KINDS_V1:
+        raise ValueError("sample_kind is invalid")
+    if sample_kind == "transition":
+        if not isinstance(previous_enabled, bool) or previous_enabled == enabled:
+            raise ValueError("transition previous_enabled is invalid")
+    elif sample_kind is not None and previous_enabled is not None:
+        raise ValueError("previous_enabled is only valid for a transition")
     sample: dict[str, Any] = {
-        "schema_version": ENABLED_STATE_SAMPLE_SCHEMA,
+        "schema_version": (
+            ENABLED_STATE_SAMPLE_SCHEMA
+            if sample_kind is None
+            else ENABLED_STATE_SAMPLE_SCHEMA_V1
+        ),
         "window_id": _require_token("window_id", window_id),
         "enabled": enabled,
         "ts_utc": _require_token("ts_utc", ts_utc),
     }
+    if sample_kind is not None:
+        sample["sample_kind"] = sample_kind
+    if sample_kind == "transition":
+        sample["previous_enabled"] = previous_enabled
     sample[_SAMPLE_HASH_FIELD] = _entry_hash(sample, _SAMPLE_HASH_FIELD)
     return sample
 
@@ -699,15 +795,42 @@ def new_enabled_state_sample(
 def valid_enabled_state_sample(sample: object, *, window_id: str) -> bool:
     if not isinstance(sample, Mapping):
         return False
-    keys = {"schema_version", "window_id", "enabled", "ts_utc", _SAMPLE_HASH_FIELD}
-    if set(sample) != keys:
+    schema = sample.get("schema_version")
+    if schema == ENABLED_STATE_SAMPLE_SCHEMA:
+        expected = {
+            "schema_version",
+            "window_id",
+            "enabled",
+            "ts_utc",
+            _SAMPLE_HASH_FIELD,
+        }
+    elif schema == ENABLED_STATE_SAMPLE_SCHEMA_V1:
+        expected = {
+            "schema_version",
+            "window_id",
+            "enabled",
+            "sample_kind",
+            "ts_utc",
+            _SAMPLE_HASH_FIELD,
+        }
+        if sample.get("sample_kind") == "transition":
+            expected.add("previous_enabled")
+    else:
         return False
-    if sample.get("schema_version") != ENABLED_STATE_SAMPLE_SCHEMA:
+    if set(sample) != expected:
         return False
     if sample.get("window_id") != window_id:
         return False
     if not isinstance(sample.get("enabled"), bool):
         return False
+    if schema == ENABLED_STATE_SAMPLE_SCHEMA_V1:
+        kind = sample.get("sample_kind")
+        if kind not in ENABLED_SAMPLE_KINDS_V1:
+            return False
+        if kind == "transition":
+            previous = sample.get("previous_enabled")
+            if not isinstance(previous, bool) or previous == sample.get("enabled"):
+                return False
     if _parse_utc_timestamp(sample.get("ts_utc")) is None:
         return False
     return sample.get(_SAMPLE_HASH_FIELD) == _entry_hash(sample, _SAMPLE_HASH_FIELD)
@@ -791,6 +914,329 @@ def _bounded_enabled_samples(
     if len(materialized) > MAX_ENABLED_SAMPLES_PER_WINDOW:
         return None
     return tuple(materialized)
+
+
+def _safe_manifest_ref(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 512
+        or "\\" in value
+        or "\x00" in value
+    ):
+        return False
+    posix = PurePosixPath(value)
+    windows = PureWindowsPath(value)
+    if posix.is_absolute() or windows.is_absolute() or windows.drive:
+        return False
+    return all(part not in {"", ".", ".."} for part in value.split("/"))
+
+
+def _receipt_index_hash(entry: Mapping[str, Any]) -> str:
+    return sha256_digest(
+        {
+            "domain": RECEIPT_INDEX_ENTRY_HASH_DOMAIN,
+            "entry": {
+                key: entry[key]
+                for key in sorted(entry)
+                if key != _INDEX_HASH_FIELD
+            },
+        }
+    )
+
+
+def new_receipt_index_entry(
+    *,
+    window_id: str,
+    served_id: str,
+    receipt_ref: str,
+    manifest_ref: str,
+) -> dict[str, Any]:
+    """Build one window-bound, path-safe receipt-manifest index row."""
+    if not is_path_safe_token(served_id):
+        raise ValueError("served_id is invalid")
+    if not _is_digest(receipt_ref):
+        raise ValueError("receipt_ref is invalid")
+    if not _safe_manifest_ref(manifest_ref):
+        raise ValueError("manifest_ref is invalid")
+    entry: dict[str, Any] = {
+        "schema_version": RECEIPT_INDEX_ENTRY_SCHEMA_V1,
+        "window_id": _require_token("window_id", window_id),
+        "served_id": served_id,
+        "receipt_ref": receipt_ref,
+        "manifest_ref": manifest_ref,
+    }
+    entry[_INDEX_HASH_FIELD] = _receipt_index_hash(entry)
+    if not valid_receipt_index_entry(entry, window_id=window_id):
+        raise ValueError("builder produced invalid receipt index entry")
+    return entry
+
+
+def valid_receipt_index_entry(entry: object, *, window_id: str) -> bool:
+    if not isinstance(entry, Mapping):
+        return False
+    expected = {
+        "schema_version",
+        "window_id",
+        "served_id",
+        "receipt_ref",
+        "manifest_ref",
+        _INDEX_HASH_FIELD,
+    }
+    if set(entry) != expected:
+        return False
+    if entry.get("schema_version") != RECEIPT_INDEX_ENTRY_SCHEMA_V1:
+        return False
+    if entry.get("window_id") != window_id or not is_conforming_token(window_id):
+        return False
+    if not is_path_safe_token(entry.get("served_id")):
+        return False
+    if not _is_digest(entry.get("receipt_ref")):
+        return False
+    if not _safe_manifest_ref(entry.get("manifest_ref")):
+        return False
+    return entry.get(_INDEX_HASH_FIELD) == _receipt_index_hash(entry)
+
+
+def _bounded_records(value: object) -> tuple[Mapping[str, Any], ...] | None:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return None
+    try:
+        iterator = iter(value)  # type: ignore[arg-type]
+        records: list[Mapping[str, Any]] = []
+        for _ in range(MAX_PRODUCTION_WINDOW_RECORDS + 1):
+            try:
+                record = next(iterator)
+            except StopIteration:
+                break
+            if type(record) is not dict:
+                return None
+            records.append(record)
+    except Exception:  # noqa: BLE001 - hostile evidence iterables fail closed
+        return None
+    if len(records) > MAX_PRODUCTION_WINDOW_RECORDS:
+        return None
+    return tuple(records)
+
+
+def _is_local_absolute_path(value: str) -> bool:
+    try:
+        return PurePosixPath(value).is_absolute() or bool(
+            PureWindowsPath(value).is_absolute() or PureWindowsPath(value).drive
+        )
+    except (TypeError, ValueError):
+        return True
+
+
+def _privacy_safe(value: object) -> bool:
+    """Reject producer verdicts, raw-content channels, and local absolute paths."""
+    active: set[int] = set()
+    nodes = 0
+
+    def visit(item: object, depth: int) -> bool:
+        nonlocal nodes
+        nodes += 1
+        if nodes > MAX_PRIVACY_SCAN_NODES or depth > MAX_PRIVACY_SCAN_DEPTH:
+            return False
+        if isinstance(item, Mapping):
+            identity = id(item)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                for key, nested in item.items():
+                    if not isinstance(key, str):
+                        return False
+                    lowered = key.casefold()
+                    if (
+                        lowered in _FORBIDDEN_EVIDENCE_KEYS
+                        or lowered.startswith("raw_")
+                        or lowered.endswith("_raw")
+                    ):
+                        return False
+                    if not visit(nested, depth + 1):
+                        return False
+                return True
+            finally:
+                active.remove(identity)
+        if isinstance(item, (list, tuple)):
+            identity = id(item)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                return all(visit(nested, depth + 1) for nested in item)
+            finally:
+                active.remove(identity)
+        if isinstance(item, str):
+            return not _is_local_absolute_path(item)
+        if item is None or isinstance(item, (bool, int)):
+            return True
+        if isinstance(item, float):
+            return math.isfinite(item)
+        return False
+
+    try:
+        return visit(value, 0)
+    except Exception:  # noqa: BLE001 - hostile/cyclic evidence fails closed
+        return False
+
+
+def _bounded_window_ids(value: object) -> tuple[str, ...] | None:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return None
+    try:
+        iterator = iter(value)  # type: ignore[arg-type]
+        identifiers: list[str] = []
+        for _ in range(MAX_PRODUCTION_WINDOW_RECORDS + 1):
+            try:
+                identifier = next(iterator)
+            except StopIteration:
+                break
+            if not isinstance(identifier, str):
+                return None
+            identifiers.append(identifier)
+    except Exception:  # noqa: BLE001 - a registry read failure fails closed
+        return None
+    if len(identifiers) > MAX_PRODUCTION_WINDOW_RECORDS:
+        return None
+    return tuple(identifiers)
+
+
+def _production_verdict(
+    *,
+    ok: bool,
+    phase: str,
+    reason: str | None,
+    marker_verified: bool,
+    ledger_entries: int,
+    enabled_samples: int,
+    pending_failures: int,
+    receipt_index_entries: int,
+    served_point_observations: int,
+    receipt_terminals: int,
+) -> ProductionWindowVerification:
+    return ProductionWindowVerification(
+        ok=ok,
+        phase=phase,
+        reason=reason,
+        marker_verified=marker_verified,
+        ledger_entries=ledger_entries,
+        enabled_samples=enabled_samples,
+        pending_failures=pending_failures,
+        receipt_index_entries=receipt_index_entries,
+        served_point_observations=served_point_observations,
+        receipt_terminals=receipt_terminals,
+    )
+
+
+def _production_failure(
+    reason: str,
+    *,
+    marker_present: bool,
+    ledger_entries: int = 0,
+    enabled_samples: int = 0,
+    pending_failures: int = 0,
+    receipt_index_entries: int = 0,
+    served_point_observations: int = 0,
+    receipt_terminals: int = 0,
+) -> ProductionWindowVerification:
+    return _production_verdict(
+        ok=False,
+        phase="final_rejected" if marker_present else "pre_marker_rejected",
+        reason=reason,
+        marker_verified=False,
+        ledger_entries=ledger_entries,
+        enabled_samples=enabled_samples,
+        pending_failures=pending_failures,
+        receipt_index_entries=receipt_index_entries,
+        served_point_observations=served_point_observations,
+        receipt_terminals=receipt_terminals,
+    )
+
+
+def _utc_after(value: object) -> str | None:
+    parsed = _parse_utc_timestamp(value)
+    if parsed is None:
+        return None
+    return (parsed + timedelta(microseconds=1)).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+
+
+def _closed_pending_failure(entry: Mapping[str, Any]) -> bool:
+    expected = {
+        "schema_version",
+        "served_id_hash",
+        "ts_utc",
+        "reason",
+        "metadata",
+    }
+    if set(entry) != expected:
+        return False
+    if entry.get("schema_version") != "magma.chat_served_pending_append_failure.v0":
+        return False
+    if not _is_digest(entry.get("served_id_hash")):
+        return False
+    if entry.get("reason") not in {"metadata_rejected", "sink_write_failed"}:
+        return False
+    if _parse_utc_timestamp(entry.get("ts_utc")) is None:
+        return False
+    metadata = entry.get("metadata")
+    return bool(
+        isinstance(metadata, Mapping)
+        and all(
+            is_conforming_token(key) and is_conforming_token(item)
+            for key, item in metadata.items()
+        )
+    )
+
+
+def _valid_production_metadata(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    keys = set(value)
+    if not _LEDGER_METADATA_REQUIRED <= keys <= _LEDGER_METADATA_ALLOWED:
+        return False
+    if not all(is_conforming_token(key) and is_conforming_token(item) for key, item in value.items()):
+        return False
+    if value.get("normalization_version") != NORMALIZATION_VERSION:
+        return False
+    return bool(_SHA256_RE.fullmatch(str(value.get("query_digest"))))
+
+
+def _valid_enabled_transition_sequence(
+    samples: tuple[Mapping[str, Any], ...],
+) -> str | None:
+    if len(samples) < 2:
+        return "enabled_boundary_samples_missing"
+    if any(
+        sample.get("schema_version") != ENABLED_STATE_SAMPLE_SCHEMA_V1
+        for sample in samples
+    ):
+        return "enabled_sample_not_v1"
+    if samples[0].get("sample_kind") != "start":
+        return "enabled_start_sample_missing"
+    if samples[-1].get("sample_kind") != "end":
+        return "enabled_end_sample_missing"
+    if any(
+        sample.get("sample_kind") in {"start", "end"}
+        for sample in samples[1:-1]
+    ):
+        return "enabled_boundary_sample_repeated"
+    previous = samples[0].get("enabled")
+    for sample in samples[1:]:
+        current = sample.get("enabled")
+        kind = sample.get("sample_kind")
+        if current != previous:
+            if kind != "transition" or sample.get("previous_enabled") != previous:
+                return "enabled_transition_missing"
+        elif kind == "transition":
+            return "enabled_transition_spurious"
+        previous = current
+    if any(sample.get("enabled") is not True for sample in samples):
+        return "not_enabled_across_window"
+    return None
 
 
 def verify_claim_window_lifecycle_binding(
@@ -897,6 +1343,474 @@ def verify_claim_window_lifecycle_binding(
     return LifecycleBindingVerification(True, None)
 
 
+def verify_production_window(
+    *,
+    expected_window_id: str,
+    expected_source_head: str,
+    start_boundary: Mapping[str, Any],
+    final_boundary: Mapping[str, Any],
+    clean_shutdown_marker: Mapping[str, Any] | None,
+    ledger_entries: Iterable[Mapping[str, Any]],
+    enabled_samples: Iterable[Mapping[str, Any]],
+    pending_failures: Iterable[Mapping[str, Any]],
+    receipt_index: Iterable[Mapping[str, Any]],
+    served_point_observations: Iterable[Mapping[str, Any]],
+    resolve_receipt_bundle: Callable[[str], Mapping[str, Any] | None],
+    verify_receipt_bundle: Callable[[Mapping[str, Any]], bool],
+    content_address_receipt: Callable[[Mapping[str, Any]], str],
+    previously_verified_window_ids: Iterable[str] = (),
+) -> ProductionWindowVerification:
+    """Independently verify one exact, record-cursor-bound v1 measurement window.
+
+    ``clean_shutdown_marker=None`` is the coordinator's pre-marker mode. A passing
+    result is then explicitly ``pre_marker_verified``: it permits only the final
+    marker write. Supplying the marker performs the final verification. Neither
+    mode grants eligibility, runtime authority, or a claim-safety transition.
+
+    The four evidence iterables and the ledger iterable must be the *exact* slices
+    selected by the start/final record cursors. Whole-file projections, omitted
+    rows, historical rows, cross-window rows, and extra receipt manifests therefore
+    fail their cursor/count or closed-schema checks.
+
+    Freshness is proven only against ``previously_verified_window_ids`` supplied by
+    a durable coordinator registry. An empty/process-local iterable cannot establish
+    global uniqueness; source-head and boundary binding still reject stale inputs.
+    """
+    marker_present = clean_shutdown_marker is not None
+    ledger = _bounded_records(ledger_entries)
+    samples = _bounded_records(enabled_samples)
+    failures = _bounded_records(pending_failures)
+    index = _bounded_records(receipt_index)
+    observations = _bounded_records(served_point_observations)
+    if any(value is None for value in (ledger, samples, failures, index, observations)):
+        return _production_failure("evidence_read_failed", marker_present=marker_present)
+    assert ledger is not None
+    assert samples is not None
+    assert failures is not None
+    assert index is not None
+    assert observations is not None
+    counts = {
+        "ledger_entries": len(ledger),
+        "enabled_samples": len(samples),
+        "pending_failures": len(failures),
+        "receipt_index_entries": len(index),
+        "served_point_observations": len(observations),
+    }
+
+    prior_ids = _bounded_window_ids(previously_verified_window_ids)
+    if prior_ids is None:
+        return _production_failure(
+            "window_registry_read_failed",
+            marker_present=marker_present,
+            **counts,
+        )
+    if (
+        not is_conforming_token(expected_window_id)
+        or not _is_source_head(expected_source_head)
+    ):
+        return _production_failure(
+            "expected_context_invalid",
+            marker_present=marker_present,
+            **counts,
+        )
+    if (
+        any(not is_conforming_token(item) for item in prior_ids)
+        or len(set(prior_ids)) != len(prior_ids)
+    ):
+        return _production_failure(
+            "window_registry_invalid",
+            marker_present=marker_present,
+            **counts,
+        )
+    if expected_window_id in prior_ids:
+        return _production_failure(
+            "window_id_reused",
+            marker_present=marker_present,
+            **counts,
+        )
+
+    all_evidence = {
+        "start_boundary": start_boundary,
+        "final_boundary": final_boundary,
+        "clean_shutdown_marker": clean_shutdown_marker,
+        "ledger_entries": ledger,
+        "enabled_samples": samples,
+        "pending_failures": failures,
+        "receipt_index": index,
+        "served_point_observations": observations,
+    }
+    if not _privacy_safe(all_evidence):
+        return _production_failure(
+            "privacy_or_producer_flag_violation",
+            marker_present=marker_present,
+            **counts,
+        )
+    try:
+        evidence_digest = sha256_digest(all_evidence)
+    except Exception:  # noqa: BLE001 - non-canonical evidence fails closed
+        return _production_failure(
+            "evidence_not_canonical",
+            marker_present=marker_present,
+            **counts,
+        )
+
+    if not valid_claim_window_start_boundary(
+        start_boundary,
+        window_id=expected_window_id,
+    ):
+        return _production_failure(
+            "start_boundary_invalid",
+            marker_present=marker_present,
+            **counts,
+        )
+    if start_boundary.get("source_head") != expected_source_head:
+        return _production_failure(
+            "source_head_mismatch",
+            marker_present=marker_present,
+            **counts,
+        )
+    if not valid_claim_window_final_boundary(
+        final_boundary,
+        window_id=expected_window_id,
+    ):
+        return _production_failure(
+            "final_boundary_invalid",
+            marker_present=marker_present,
+            **counts,
+        )
+
+    marker_for_lifecycle: Mapping[str, Any]
+    if clean_shutdown_marker is None:
+        synthetic_ts = _utc_after(final_boundary.get("ts_utc"))
+        if synthetic_ts is None:
+            return _production_failure(
+                "final_boundary_invalid",
+                marker_present=False,
+                **counts,
+            )
+        try:
+            marker_for_lifecycle = new_clean_shutdown_marker_v1(
+                window_id=expected_window_id,
+                start_boundary_digest=str(start_boundary[_BOUNDARY_HASH_FIELD]),
+                final_boundary_digest=str(final_boundary[_BOUNDARY_HASH_FIELD]),
+                final_ledger_head=str(final_boundary["final_ledger_head"]),
+                end_enabled_sample_digest=str(
+                    final_boundary["end_enabled_sample_digest"]
+                ),
+                ts_utc=synthetic_ts,
+            )
+        except Exception:  # noqa: BLE001 - malformed boundary inputs fail closed
+            return _production_failure(
+                "pre_marker_link_invalid",
+                marker_present=False,
+                **counts,
+            )
+    else:
+        marker_for_lifecycle = clean_shutdown_marker
+    lifecycle = verify_claim_window_lifecycle_binding(
+        start_boundary=start_boundary,
+        final_boundary=final_boundary,
+        clean_shutdown_marker=marker_for_lifecycle,
+        enabled_samples=samples,
+        window_id=expected_window_id,
+    )
+    if not lifecycle.ok:
+        return _production_failure(
+            lifecycle.reason or "lifecycle_binding_invalid",
+            marker_present=marker_present,
+            **counts,
+        )
+
+    start_ledger_offset = int(start_boundary["start_ledger_offset"])
+    final_ledger_offset = int(final_boundary["final_ledger_offset"])
+    if final_ledger_offset - start_ledger_offset != len(ledger):
+        return _production_failure(
+            "ledger_cursor_slice_mismatch",
+            marker_present=marker_present,
+            **counts,
+        )
+    if not ledger:
+        return _production_failure(
+            "empty_ledger_window",
+            marker_present=marker_present,
+            **counts,
+        )
+    start_offsets = start_boundary["side_stream_offsets"]
+    final_offsets = final_boundary["side_stream_offsets"]
+    supplied_streams = {
+        "enabled_state_samples": samples,
+        "pending_append_failures": failures,
+        "receipt_index": index,
+        "served_point_observations": observations,
+    }
+    for stream, records in supplied_streams.items():
+        if int(final_offsets[stream]) - int(start_offsets[stream]) != len(records):
+            return _production_failure(
+                f"side_stream_cursor_slice_mismatch:{stream}",
+                marker_present=marker_present,
+                **counts,
+            )
+
+    transition_reason = _valid_enabled_transition_sequence(samples)
+    if transition_reason is not None:
+        return _production_failure(
+            transition_reason,
+            marker_present=marker_present,
+            **counts,
+        )
+
+    start_ts = _parse_utc_timestamp(start_boundary.get("ts_utc"))
+    final_ts = _parse_utc_timestamp(final_boundary.get("ts_utc"))
+    if start_ts is None or final_ts is None:
+        return _production_failure(
+            "lifecycle_timestamp_invalid",
+            marker_present=marker_present,
+            **counts,
+        )
+
+    previous_hash = str(start_boundary["start_ledger_head"])
+    previous_ts = start_ts
+    query_by_served: dict[str, str] = {}
+    state: dict[str, str] = {}
+    receipt_terminals: list[tuple[str, str]] = []
+    for entry in ledger:
+        if wellformed_reason(entry) is not None or not verify_entry_self(entry):
+            return _production_failure(
+                "ledger_entry_invalid",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+        if entry.get("prev_ledger_hash") != previous_hash:
+            return _production_failure(
+                "ledger_segment_chain_broken",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+        entry_ts = _parse_utc_timestamp(entry.get("ts_utc"))
+        if (
+            entry_ts is None
+            or entry_ts < start_ts
+            or entry_ts > final_ts
+            or entry_ts < previous_ts
+        ):
+            return _production_failure(
+                "ledger_timestamp_outside_window",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+        previous_ts = entry_ts
+        previous_hash = str(entry["entry_hash"])
+        served_id = str(entry["served_id"])
+        entry_type = entry["entry_type"]
+        if entry_type == SERVED_PENDING:
+            if served_id in state or not _valid_production_metadata(entry.get("metadata")):
+                return _production_failure(
+                    "ledger_pending_invalid",
+                    marker_present=marker_present,
+                    receipt_terminals=len(receipt_terminals),
+                    **counts,
+                )
+            state[served_id] = "pending"
+            query_by_served[served_id] = str(entry["metadata"]["query_digest"])
+        elif entry_type in {RECEIPT_TERMINAL, GAP_TERMINAL}:
+            if state.get(served_id) != "pending":
+                return _production_failure(
+                    "ledger_terminal_lifecycle_invalid",
+                    marker_present=marker_present,
+                    receipt_terminals=len(receipt_terminals),
+                    **counts,
+                )
+            if entry_type == GAP_TERMINAL:
+                return _production_failure(
+                    "ledger_gap_present",
+                    marker_present=marker_present,
+                    receipt_terminals=len(receipt_terminals),
+                    **counts,
+                )
+            state[served_id] = "receipt"
+            receipt_terminals.append((served_id, str(entry["receipt_ref"])))
+        else:  # defensive: wellformed_reason already pins the set
+            return _production_failure(
+                "ledger_entry_type_invalid",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+    if previous_hash != final_boundary.get("final_ledger_head"):
+        return _production_failure(
+            "final_ledger_head_mismatch",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+    if not state or any(value != "receipt" for value in state.values()):
+        return _production_failure(
+            "ledger_unresolved_pending",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+
+    for failure in failures:
+        if not _closed_pending_failure(failure):
+            return _production_failure(
+                "pending_failure_record_invalid",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+    if failures:
+        return _production_failure(
+            "pending_append_failures_present",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+
+    observed_points: set[str] = set()
+    for observation in observations:
+        if not valid_served_point_observation(
+            observation,
+            window_id=expected_window_id,
+        ):
+            return _production_failure(
+                "served_point_observation_invalid",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+        observation_ts = _parse_utc_timestamp(observation.get("ts_utc"))
+        point = str(observation["point"])
+        if (
+            observation_ts is None
+            or observation_ts < start_ts
+            or observation_ts > final_ts
+            or observation.get("wired") is not True
+            or point in observed_points
+        ):
+            return _production_failure(
+                "served_point_observation_timeline_invalid",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+        observed_points.add(point)
+    if observed_points != set(REQUIRED_CHAT_SERVED_POINTS):
+        return _production_failure(
+            "served_point_instrumentation_incomplete",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+
+    for row in index:
+        if not valid_receipt_index_entry(row, window_id=expected_window_id):
+            return _production_failure(
+                "receipt_index_entry_invalid",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+    sort_key = lambda row: (
+        str(row["manifest_ref"]),
+        str(row["served_id"]),
+        str(row["receipt_ref"]),
+    )
+    if list(index) != sorted(index, key=sort_key):
+        return _production_failure(
+            "receipt_index_not_sorted",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+    indexed_terminals = [
+        (str(row["served_id"]), str(row["receipt_ref"])) for row in index
+    ]
+    manifest_refs = [str(row["manifest_ref"]) for row in index]
+    indexed_receipt_refs = [str(row["receipt_ref"]) for row in index]
+    if (
+        len(set(indexed_terminals)) != len(indexed_terminals)
+        or len(set(manifest_refs)) != len(manifest_refs)
+        or len(set(indexed_receipt_refs)) != len(indexed_receipt_refs)
+        or sorted(indexed_terminals) != sorted(receipt_terminals)
+    ):
+        return _production_failure(
+            "receipt_index_not_exact",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+
+    def verify_resolved_bundle(row: Mapping[str, Any]) -> str | None:
+        try:
+            bundle = resolve_receipt_bundle(str(row["manifest_ref"]))
+            if type(bundle) is not dict or set(bundle) != {"receipt", "payload"}:
+                return None
+            receipt = bundle.get("receipt")
+            payload = bundle.get("payload")
+            if type(receipt) is not dict or type(payload) is not dict:
+                return None
+            if not _privacy_safe(bundle):
+                return None
+            before = sha256_digest(bundle)
+            validate_chat_served_payload(payload)
+            if receipt.get("canonical_payload_digest") != sha256_digest(payload):
+                return None
+            if payload.get("query_digest") != query_by_served.get(str(row["served_id"])):
+                return None
+            canonical_ref = sha256_digest(receipt)
+            if canonical_ref != row.get("receipt_ref"):
+                return None
+            if content_address_receipt(receipt) != canonical_ref:
+                return None
+            if verify_receipt_bundle(bundle) is not True:
+                return None
+            if sha256_digest(bundle) != before:
+                return None
+            return before
+        except Exception:  # noqa: BLE001 - resolver/verifier failures fail closed
+            return None
+
+    for row in index:
+        first_bundle_digest = verify_resolved_bundle(row)
+        second_bundle_digest = verify_resolved_bundle(row)
+        if first_bundle_digest is None or second_bundle_digest != first_bundle_digest:
+            return _production_failure(
+                "receipt_bundle_verification_failed",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+
+    try:
+        if sha256_digest(all_evidence) != evidence_digest:
+            return _production_failure(
+                "evidence_mutated_during_verification",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+    except Exception:  # noqa: BLE001 - post-callback evidence failure is closed
+        return _production_failure(
+            "evidence_mutated_during_verification",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+
+    return _production_verdict(
+        ok=True,
+        phase="final_verified" if marker_present else "pre_marker_verified",
+        reason=None,
+        marker_verified=marker_present,
+        receipt_terminals=len(receipt_terminals),
+        **counts,
+    )
+
+
 def new_served_point_observation(
     *,
     point: str,
@@ -963,11 +1877,25 @@ def derive_instrumented_served_points(
     *,
     window_id: str | None = None,
 ) -> tuple[str, ...]:
+    """Return wired points for diagnostics or for one explicitly bound window.
+
+    With no ``window_id``, legacy callers may inspect either v0 rows or each v1
+    row against its own declared window. That mode is diagnostics-only and does
+    not establish same-window attribution. ``verify_production_window`` instead
+    validates every v1 row against the independently expected window.
+    """
     points: set[str] = set()
     for observation in observations:
+        observed_window = (
+            observation.get("window_id")
+            if window_id is None
+            and observation.get("schema_version")
+            == SERVED_POINT_OBSERVATION_SCHEMA_V1
+            else window_id
+        )
         if valid_served_point_observation(
             observation,
-            window_id=window_id,
+            window_id=observed_window,
         ) and observation.get("wired"):
             points.add(str(observation["point"]))
     return tuple(sorted(points))
@@ -1054,16 +1982,25 @@ __all__ = [
     "CLAIM_WINDOW_START_BOUNDARY_SCHEMA",
     "CLEAN_SHUTDOWN_MARKER_SCHEMA",
     "CLEAN_SHUTDOWN_MARKER_SCHEMA_V1",
+    "ENABLED_SAMPLE_KINDS_V1",
     "ENABLED_STATE_SAMPLE_SCHEMA",
+    "ENABLED_STATE_SAMPLE_SCHEMA_V1",
     "ENABLED_SAMPLE_SEQUENCE_SCHEMA",
     "HEAD_ANCHOR_SCHEMA",
     "MAX_DECLARED_SAMPLE_GAP_SECONDS",
     "MAX_ENABLED_SAMPLES_PER_WINDOW",
+    "MAX_PRIVACY_SCAN_DEPTH",
+    "MAX_PRIVACY_SCAN_NODES",
+    "MAX_PRODUCTION_WINDOW_RECORDS",
+    "PRODUCTION_WINDOW_VERIFICATION_SCHEMA",
+    "RECEIPT_INDEX_ENTRY_HASH_DOMAIN",
+    "RECEIPT_INDEX_ENTRY_SCHEMA_V1",
     "SERVED_POINT_OBSERVATION_SCHEMA",
     "SERVED_POINT_OBSERVATION_SCHEMA_V1",
     "ClaimWindowEvidence",
     "HeadAnchorLookup",
     "LifecycleBindingVerification",
+    "ProductionWindowVerification",
     "build_claim_window_evidence",
     "claim_window_from_evidence",
     "derive_enabled_across_window",
@@ -1076,6 +2013,7 @@ __all__ = [
     "new_clean_shutdown_marker_v1",
     "new_enabled_state_sample",
     "new_head_anchor",
+    "new_receipt_index_entry",
     "new_served_point_observation",
     "read_clean_shutdown_marker",
     "read_latest_head_anchor",
@@ -1085,8 +2023,10 @@ __all__ = [
     "valid_claim_window_start_boundary",
     "valid_enabled_state_sample",
     "valid_head_anchor",
+    "valid_receipt_index_entry",
     "valid_served_point_observation",
     "verify_claim_window_lifecycle_binding",
+    "verify_production_window",
     "write_clean_shutdown_marker",
     "write_enabled_state_sample",
     "write_head_anchor_checkpoint",

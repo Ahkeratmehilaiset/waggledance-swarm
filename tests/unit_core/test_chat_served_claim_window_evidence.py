@@ -1,12 +1,19 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+import itertools
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from waggledance.core.magma import chat_served_claim_window_evidence as E
 from waggledance.core.magma import chat_served_ledger as L
+from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.chat_query_route_evidence import (
+    NORMALIZATION_VERSION,
+    canonical_query_digest,
+)
 from waggledance.core.magma.chat_served_accounting import (
     REQUIRED_CHAT_SERVED_POINTS,
 )
@@ -21,18 +28,26 @@ from waggledance.core.magma.chat_served_claim_window_evidence import (
     new_claim_window_start_boundary,
     new_clean_shutdown_marker_v1,
     new_enabled_state_sample,
+    new_receipt_index_entry,
     new_served_point_observation,
     read_clean_shutdown_marker,
     read_latest_head_anchor,
     valid_claim_window_final_boundary,
     valid_claim_window_start_boundary,
     valid_clean_shutdown_marker_v1,
+    valid_receipt_index_entry,
     valid_served_point_observation,
     verify_claim_window_lifecycle_binding,
+    verify_production_window,
     write_clean_shutdown_marker,
     write_enabled_state_sample,
     write_head_anchor_checkpoint,
     write_served_point_observation,
+)
+from waggledance.core.magma.chat_served_metadata import WORLD_SNAPSHOT_NA_MARKER
+from waggledance.core.magma.chat_served_receipt import (
+    build_chat_served_receipt,
+    build_chat_served_summary,
 )
 
 _TS = "2026-07-04T16:00:00Z"
@@ -984,3 +999,352 @@ def test_legacy_evidence_reason_is_lifecycle_binding_missing(tmp_path) -> None:
     )
     assert missing_point.reason == "lifecycle_binding_missing"
     assert missing_point.input_ready is False
+
+
+def _production_window_inputs():
+    query = "hello"
+    query_digest = canonical_query_digest(query)
+    summary = build_chat_served_summary(
+        query=query,
+        response="world",
+        route_type="solver",
+        source="chat",
+        confidence=1.0,
+        latency_ms=1.0,
+        cached=False,
+        round_table=False,
+        agent_id=None,
+        language="en",
+        profile="HOME",
+        world_snapshot_ref=WORLD_SNAPSHOT_NA_MARKER,
+        route_stage_trace=[],
+    )
+    payload, _evaluation, receipt = build_chat_served_receipt(
+        summary_payload=summary,
+        now_utc=datetime(2026, 7, 4, 16, 0, tzinfo=timezone.utc),
+        ordinal=1,
+    )
+    receipt_ref = sha256_digest(receipt)
+    metadata = {
+        "source": "chat",
+        "route_type": "solver",
+        "language": "en",
+        "profile": "HOME",
+        "world_snapshot_ref": WORLD_SNAPSHOT_NA_MARKER,
+        "query_digest": query_digest,
+        "normalization_version": NORMALIZATION_VERSION,
+    }
+    pending = L.new_served_pending("q1", L.GENESIS_PREV_HASH, _TS, metadata)
+    terminal = L.new_receipt_terminal(
+        "q1",
+        pending["entry_hash"],
+        _TS_1,
+        receipt_ref,
+    )
+    ledger = [pending, terminal]
+    samples = [
+        new_enabled_state_sample(
+            window_id=_WINDOW,
+            enabled=True,
+            ts_utc=_TS,
+            sample_kind="start",
+        ),
+        new_enabled_state_sample(
+            window_id=_WINDOW,
+            enabled=True,
+            ts_utc=_TS_1,
+            sample_kind="end",
+        ),
+    ]
+    observations = [
+        new_served_point_observation(
+            point=point,
+            wired=True,
+            ts_utc=_TS_1,
+            window_id=_WINDOW,
+        )
+        for point in sorted(REQUIRED_CHAT_SERVED_POINTS)
+    ]
+    start_offsets = _side_offsets(0)
+    final_offsets = {
+        "enabled_state_samples": len(samples),
+        "pending_append_failures": 0,
+        "receipt_index": 1,
+        "served_point_observations": len(observations),
+    }
+    sequence_digest = E.derive_enabled_sample_sequence_digest(
+        samples,
+        window_id=_WINDOW,
+    )
+    assert sequence_digest is not None
+    start = new_claim_window_start_boundary(
+        window_id=_WINDOW,
+        start_ledger_head=L.GENESIS_PREV_HASH,
+        start_ledger_offset=0,
+        side_stream_offsets=start_offsets,
+        source_head=_SOURCE_HEAD,
+        start_enabled_sample_digest=samples[0]["sample_hash"],
+        max_enabled_sample_gap_seconds=2,
+        ts_utc=_TS,
+    )
+    final = new_claim_window_final_boundary(
+        window_id=_WINDOW,
+        start_boundary_digest=start["boundary_hash"],
+        final_ledger_head=terminal["entry_hash"],
+        final_ledger_offset=len(ledger),
+        side_stream_offsets=final_offsets,
+        end_enabled_sample_digest=samples[-1]["sample_hash"],
+        enabled_samples_count=len(samples),
+        enabled_sample_sequence_digest=sequence_digest,
+        ts_utc=_TS_2,
+    )
+    marker = new_clean_shutdown_marker_v1(
+        window_id=_WINDOW,
+        start_boundary_digest=start["boundary_hash"],
+        final_boundary_digest=final["boundary_hash"],
+        final_ledger_head=final["final_ledger_head"],
+        end_enabled_sample_digest=final["end_enabled_sample_digest"],
+        ts_utc=_TS_3,
+    )
+    manifest_ref = "served-q1/manifest.json"
+    index = [
+        new_receipt_index_entry(
+            window_id=_WINDOW,
+            served_id="q1",
+            receipt_ref=receipt_ref,
+            manifest_ref=manifest_ref,
+        )
+    ]
+    bundles = {manifest_ref: {"receipt": receipt, "payload": payload}}
+    return {
+        "expected_window_id": _WINDOW,
+        "expected_source_head": _SOURCE_HEAD,
+        "start_boundary": start,
+        "final_boundary": final,
+        "clean_shutdown_marker": marker,
+        "ledger_entries": ledger,
+        "enabled_samples": samples,
+        "pending_failures": [],
+        "receipt_index": index,
+        "served_point_observations": observations,
+        "resolve_receipt_bundle": bundles.get,
+        "verify_receipt_bundle": lambda _bundle: True,
+        "content_address_receipt": sha256_digest,
+        "previously_verified_window_ids": (),
+    }
+
+
+def test_production_window_pre_marker_and_final_verdicts_are_non_authorizing() -> None:
+    inputs = _production_window_inputs()
+    marker = inputs.pop("clean_shutdown_marker")
+
+    pre_marker = verify_production_window(
+        clean_shutdown_marker=None,
+        **inputs,
+    )
+    final = verify_production_window(
+        clean_shutdown_marker=marker,
+        **inputs,
+    )
+
+    assert pre_marker.ok is True
+    assert pre_marker.phase == "pre_marker_verified"
+    assert pre_marker.marker_verified is False
+    assert final.ok is True
+    assert final.phase == "final_verified"
+    assert final.marker_verified is True
+    for verdict in (pre_marker, final):
+        assert verdict.measurement_only is True
+        assert verdict.claim_safe_count == 0
+        assert "eligible" not in verdict._fields
+        assert "clean_shutdown" not in verdict._fields
+
+
+def test_production_window_rejects_reused_window_and_wrong_source() -> None:
+    reused_inputs = _production_window_inputs()
+    reused_inputs["previously_verified_window_ids"] = (_WINDOW,)
+    reused = verify_production_window(**reused_inputs)
+
+    stale_inputs = _production_window_inputs()
+    stale_inputs["expected_source_head"] = "b" * 40
+    stale = verify_production_window(**stale_inputs)
+
+    assert reused.reason == "window_id_reused"
+    assert stale.reason == "source_head_mismatch"
+
+
+def test_production_window_bounds_hostile_window_registry(monkeypatch) -> None:
+    inputs = _production_window_inputs()
+    monkeypatch.setattr(E, "MAX_PRODUCTION_WINDOW_RECORDS", 6)
+    inputs["previously_verified_window_ids"] = itertools.repeat("window:prior")
+
+    result = verify_production_window(**inputs)
+
+    assert result.reason == "window_registry_read_failed"
+
+
+@pytest.mark.parametrize("producer_flag", ["eligible", "ok"])
+def test_production_window_rejects_torn_marker_and_producer_flags(
+    producer_flag,
+) -> None:
+    marker_inputs = _production_window_inputs()
+    marker_inputs["clean_shutdown_marker"] = {
+        **marker_inputs["clean_shutdown_marker"],
+        "marker_hash": _OTHER_DIGEST,
+    }
+    marker_result = verify_production_window(**marker_inputs)
+
+    flag_inputs = _production_window_inputs()
+    flag_inputs["start_boundary"] = {
+        **flag_inputs["start_boundary"],
+        producer_flag: True,
+    }
+    flag_result = verify_production_window(**flag_inputs)
+
+    assert marker_result.reason == "clean_marker_invalid"
+    assert flag_result.reason == "privacy_or_producer_flag_violation"
+
+
+def test_production_window_rejects_cyclic_and_overdeep_evidence() -> None:
+    cyclic_inputs = _production_window_inputs()
+    cycle = {}
+    cycle["nested"] = cycle
+    cyclic_inputs["start_boundary"]["diagnostic"] = cycle
+    cyclic = verify_production_window(**cyclic_inputs)
+
+    deep_inputs = _production_window_inputs()
+    nested = {}
+    cursor = nested
+    for _ in range(E.MAX_PRIVACY_SCAN_DEPTH + 1):
+        child = {}
+        cursor["nested"] = child
+        cursor = child
+    deep_inputs["start_boundary"]["diagnostic"] = nested
+    deep = verify_production_window(**deep_inputs)
+
+    assert cyclic.reason == "privacy_or_producer_flag_violation"
+    assert deep.reason == "privacy_or_producer_flag_violation"
+
+
+def test_production_window_rejects_cross_window_and_whole_file_side_streams() -> None:
+    cross_inputs = _production_window_inputs()
+    row = cross_inputs["receipt_index"][0]
+    cross_inputs["receipt_index"] = [
+        new_receipt_index_entry(
+            window_id="window:other",
+            served_id=row["served_id"],
+            receipt_ref=row["receipt_ref"],
+            manifest_ref=row["manifest_ref"],
+        )
+    ]
+    cross = verify_production_window(**cross_inputs)
+
+    whole_inputs = _production_window_inputs()
+    whole_inputs["receipt_index"] = [
+        *whole_inputs["receipt_index"],
+        whole_inputs["receipt_index"][0],
+    ]
+    whole = verify_production_window(**whole_inputs)
+
+    assert cross.reason == "receipt_index_entry_invalid"
+    assert whole.reason == "side_stream_cursor_slice_mismatch:receipt_index"
+
+
+@pytest.mark.parametrize(
+    "bundle_mutation",
+    [
+        {"raw_query": {"nested": "secret"}},
+        {"diagnostic": {"host_path": "C:/Users/operator/private.txt"}},
+    ],
+)
+def test_production_window_rejects_nested_raw_and_absolute_paths(
+    bundle_mutation,
+) -> None:
+    inputs = _production_window_inputs()
+    original_resolver = inputs["resolve_receipt_bundle"]
+
+    def poisoned(manifest_ref):
+        bundle = original_resolver(manifest_ref)
+        assert bundle is not None
+        return {**bundle, "payload": {**bundle["payload"], **bundle_mutation}}
+
+    inputs["resolve_receipt_bundle"] = poisoned
+    result = verify_production_window(**inputs)
+
+    assert result.reason == "receipt_bundle_verification_failed"
+
+
+@pytest.mark.parametrize(
+    ("callback", "replacement"),
+    [
+        ("verify_receipt_bundle", lambda _bundle: False),
+        ("content_address_receipt", lambda _receipt: _OTHER_DIGEST),
+        ("resolve_receipt_bundle", lambda _ref: None),
+    ],
+)
+def test_production_window_rejects_receipt_callback_mismatch(
+    callback,
+    replacement,
+) -> None:
+    inputs = _production_window_inputs()
+    inputs[callback] = replacement
+
+    result = verify_production_window(**inputs)
+
+    assert result.reason == "receipt_bundle_verification_failed"
+
+
+def test_production_window_rejects_post_marker_evidence_mutation() -> None:
+    inputs = _production_window_inputs()
+    start = inputs["start_boundary"]
+
+    def mutating_verifier(_bundle):
+        start["source_head"] = "b" * 40
+        return True
+
+    inputs["verify_receipt_bundle"] = mutating_verifier
+    result = verify_production_window(**inputs)
+
+    assert result.reason == "evidence_mutated_during_verification"
+
+
+def test_receipt_index_schema_is_closed_domain_bound_and_path_safe() -> None:
+    entry = new_receipt_index_entry(
+        window_id=_WINDOW,
+        served_id="q1",
+        receipt_ref=_DIGEST,
+        manifest_ref="served-q1/manifest.json",
+    )
+
+    assert valid_receipt_index_entry(entry, window_id=_WINDOW) is True
+    assert valid_receipt_index_entry(
+        {**entry, "bound": True},
+        window_id=_WINDOW,
+    ) is False
+    with pytest.raises(ValueError, match="manifest_ref"):
+        new_receipt_index_entry(
+            window_id=_WINDOW,
+            served_id="q1",
+            receipt_ref=_DIGEST,
+            manifest_ref="C:/receipt/manifest.json",
+        )
+
+
+def test_enabled_sample_v1_requires_explicit_transition_shape() -> None:
+    transition = new_enabled_state_sample(
+        window_id=_WINDOW,
+        enabled=False,
+        previous_enabled=True,
+        sample_kind="transition",
+        ts_utc=_TS_1,
+    )
+
+    assert E.valid_enabled_state_sample(transition, window_id=_WINDOW) is True
+    with pytest.raises(ValueError, match="transition previous_enabled"):
+        new_enabled_state_sample(
+            window_id=_WINDOW,
+            enabled=True,
+            previous_enabled=True,
+            sample_kind="transition",
+            ts_utc=_TS_1,
+        )

@@ -63,7 +63,10 @@ PINNED_CACHED_PROPERTIES: frozenset[str] = frozenset(
         "autonomy_service",
         "runtime_receipt_sink",
         "v313_solver_receipt_sink",
+        # One fresh binding and lifecycle owner per Container/process run.
+        "_chat_served_claim_window_binding",
         "chat_served_emitter",
+        "chat_served_runtime_window",
         # Application services
         "memory_service",
         "chat_service",

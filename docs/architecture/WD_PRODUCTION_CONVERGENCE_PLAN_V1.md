@@ -24,8 +24,10 @@ order.
 
 ## Baseline
 
-Snapshot date: 2026-07-15. Assessed `origin/main`:
-`c682182c7fd42e4250b33cded290e899d0c3fccc`.
+Original main snapshot date: 2026-07-15. Assessed `origin/main`:
+`c682182c7fd42e4250b33cded290e899d0c3fccc`. Critical-path draft-PR rows
+were refreshed on 2026-07-27; they are not claims that those drafts landed on
+the original main snapshot.
 
 | Signal | Snapshot truth |
 |---|---|
@@ -34,8 +36,10 @@ Snapshot date: 2026-07-15. Assessed `origin/main`:
 | `production_safe_capability_count` | `0/6` |
 | `all_literal_claims_safe` | `false` |
 | Landed measurement substrate | #1518, #1519, #1524, #1525 |
-| #1527 | `687e37fb`; draft, CI 6/6, dual RCO pass; explicit operator gate remains |
-| #1528 | `19667f56`; draft, CI 6/6; code sound, RCO process hold and explicit operator gate remain |
+| #1540 | `42627ce7`; pending-query identity refresh; draft; exact-head merge/operator gates remain |
+| #1541 | `c55cf5ad`; chat-receipt verifier hardening; draft; exact-head merge/operator gates remain |
+| #1543 | `a22391ee`; per-query receipt adapter integration containing the #1540/#1541 content; draft; exact-head merge/operator gates remain |
+| #1568 | `5c316f4a`; fail-closed junction leaf stacked on #1543; draft; local handoff evidence exists, but exact-head CI/RCO/operator gates remain |
 | #1530 | `54f9fa6f`; includes #1532 bounds; CI 6/6; full exact-head review and explicit operator gate remain; optional advisory game-theory lane, not on P0/P1 |
 | #1529 | `a827de6a`; incremental bridge reader; operator-gated infrastructure, not production capability |
 
@@ -70,9 +74,12 @@ main: #1518 + #1519 + #1524 + #1525
                  |
           +------+------+
           |             |
-     #1527 identity  #1528 verifier
-          +------+------+
-                 |
+       #1540 identity + #1541 verifier
+                    |
+              #1543 adapter
+                    |
+          #1568 fail-closed junction
+                    |
     P0 lifecycle + measurement -----> SC-v0 shadow projection
                  |
         P1 receipts + solver-first
@@ -107,8 +114,11 @@ DREAM and GT are side lanes with no outward authority dependency.
 
 ## P0 - Production measurement spine
 
-Land #1527 and #1528 through their existing exact-head gates. Do not enable
-the dormant served-receipt path until verifier enforcement is on main.
+Land the coherent #1540 -> #1541 -> #1543 -> #1568 content stack through
+exact-head gates. Treat #1543 as the integration point for the #1540/#1541
+content and #1568 as its current leaf; do not merge independent historical
+branches twice. Do not enable the dormant served-receipt path until verifier
+enforcement is on main.
 
 Implement the claim-window lifecycle as one fail-closed production wrapper:
 
@@ -133,8 +143,25 @@ Implement the claim-window lifecycle as one fail-closed production wrapper:
    including timeout, task failure, transition gap, flush failure, checkpoint
    failure, or end-sample failure. Serving may still fail open.
 10. Evaluate only the complete bound start/end segment and verify the sampling
-   cadence, all state transitions, and referenced receipt bundles before
-   declaring the window eligible.
+    cadence, all state transitions, and referenced receipt bundles before
+    verifying the window for measurement.
+
+The production verifier has two non-authorizing phases. A
+`pre_marker_verified` result covers the frozen ledger and every exact
+record-cursor slice and permits only writing the marker last. A subsequent
+`final_verified` result also re-verifies that marker. Both results are
+`measurement_only`, keep `claim_safe_count=0`, and contain no eligibility or
+clean-shutdown assertion. Receipt-index rows use
+`magma.chat_served_receipt_index_entry.v1`, are window-bound and
+content-addressed, and carry only safe relative POSIX manifest references.
+`tools/verify_chat_served_production_window.py` exposes the same verifier as a
+read-only stable-JSON CLI, requires receiver-supplied expected window/source
+pins, and exits nonzero on any mismatch.
+
+A caller-memory list of prior window IDs is not proof of global freshness.
+Production use must bind `previously_verified_window_ids` to a durable,
+closed-schema registry; until that registry exists, the feature remains
+default-off and no live canary or claim transition is authorized.
 
 The API-only startup/shutdown proposal is insufficient: a reused clean marker
 can survive an unclean restart, and detached receipt tasks can still be pending
@@ -288,12 +315,12 @@ meta-learner remains propose-never-enact.
 
 ## Immediate queue
 
-1. Obtain the explicit head-exact operator gate for #1527, then run its receipt
-   gate and merge only if the exact head and CI still match. It stays dormant.
-2. Rebase/review #1528 as necessary after main advances. Obtain its separate
-   head-exact operator signature, convert both RCO process holds to literal
-   passes, and merge verifier enforcement before enabling receipts.
-3. Implement the full P0 lifecycle wrapper only after #1527 and #1528 land.
+1. Reconcile #1540/#1541 content at #1543 and preserve #1568 as the coherent
+   fail-closed leaf; do not double-land equivalent historical branches.
+2. Run CI and exact-head RCO/operator gates on the resulting leaf. Merge only
+   if those literal gates match the unchanged head; keep receipts dormant.
+3. Finish and review the default-off P0 lifecycle wrapper and independent
+   production-window verifier on that coherent leaf.
 4. Add receipt-derived P1 counters and authority classification.
 5. Start SC-v0 in shadow only after those counter fields are stable.
 6. Let #1530 finish independently; it does not satisfy a production phase gate.

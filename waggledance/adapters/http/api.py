@@ -123,11 +123,56 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("DataFeedScheduler start failed: %s", exc)
 
+    # The chat-served measurement window starts only after every prerequisite is
+    # constructible and before FastAPI yields intake authority. It remains opt-in
+    # and fail-open for serving; an evidence failure merely leaves the run
+    # ineligible and can never create a clean marker.
+    chat_served_runtime_window = None
+    try:
+        chat_served_runtime_window = getattr(
+            container, "chat_served_runtime_window", None
+        )
+        if chat_served_runtime_window is not None:
+            result = await chat_served_runtime_window.start()
+            app.state.chat_served_runtime_window_result = result.public_summary()
+            if result.status == "running":
+                logger.info("Chat-served runtime window started")
+            else:
+                logger.warning(
+                    "Chat-served runtime window ineligible at startup: %s",
+                    result.reason,
+                )
+    except Exception as exc:  # noqa: BLE001 - chat serving remains fail-open.
+        try:
+            emitter = getattr(container, "chat_served_emitter", None)
+            close_intake = getattr(emitter, "close_intake", None)
+            if callable(close_intake):
+                close_intake()
+        except Exception:  # noqa: BLE001 - startup still proceeds without evidence.
+            pass
+        logger.warning("Chat-served runtime window start failed: %s", exc)
+
     logger.info("WaggleDance startup complete")
 
     yield  # application is running
 
     # ---- SHUTDOWN ----
+    # Stop chat receipt intake and finish its bounded evidence sequence before
+    # any dependency it uses is torn down.
+    if chat_served_runtime_window is not None:
+        try:
+            result = await chat_served_runtime_window.shutdown()
+            app.state.chat_served_runtime_window_result = result.public_summary()
+            if result.status == "complete":
+                logger.info("Chat-served runtime window completed")
+            else:
+                logger.warning(
+                    "Chat-served runtime window ineligible at shutdown: %s",
+                    result.reason,
+                )
+        except Exception as exc:  # noqa: BLE001 - application shutdown continues.
+            logger.warning("Chat-served runtime window shutdown failed: %s", exc)
+
     # Stop autogrowth ticker before closing ControlPlaneDB.
     autogrowth_ticker = getattr(container, "autogrowth_background_ticker", None)
     if autogrowth_ticker is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.adapters.config.settings_loader import WaggleSettings
@@ -13,6 +14,9 @@ from waggledance.core.magma.chat_query_route_evidence import (
     canonical_query_digest,
 )
 from waggledance.core.magma.chat_served_accounting import coverage_from_ledger
+from waggledance.core.magma.chat_served_accounting import (
+    REQUIRED_CHAT_SERVED_POINTS,
+)
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     derive_enabled_across_window,
     derive_instrumented_served_points,
@@ -100,6 +104,7 @@ def test_chat_served_emitter_is_default_off() -> None:
     container = Container(settings=_settings_with_chat_served_receipts(), stub=True)
 
     assert container.chat_served_emitter is None
+    assert container.chat_served_runtime_window is None
 
 
 def test_chat_served_emitter_opt_in_writes_eligible_chain(tmp_path: Path) -> None:
@@ -239,7 +244,6 @@ def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
 ) -> None:
     receipt_root = tmp_path / "chat-served"
     claim_root = tmp_path / "claim-window"
-    window_id = "window:container"
     container = Container(
         settings=_settings_with_chat_served_receipts(
             {
@@ -247,7 +251,7 @@ def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
                 "out_dir": str(receipt_root),
                 "claim_window_evidence": {
                     "enabled": True,
-                    "window_id": window_id,
+                    "window_id": "window:configured-id-must-be-ignored",
                     "anchor_store_path": str(claim_root / "anchors.jsonl"),
                     "enabled_samples_path": str(claim_root / "enabled.jsonl"),
                     "clean_shutdown_marker_path": str(claim_root / "clean.json"),
@@ -257,9 +261,11 @@ def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
         ),
         stub=True,
     )
+    window_id = container._chat_served_claim_window_binding["window_id"]
     emitter = container.chat_served_emitter
     assert emitter is not None
     assert emitter.claim_window_evidence_enabled is True
+    assert window_id != "window:configured-id-must-be-ignored"
 
     assert emitter.record_pending(
         new_served_id(),
@@ -271,7 +277,9 @@ def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
         agent_id=None,
     ) is True
     observations = _read_jsonl(claim_root / "served-points.jsonl")
-    assert derive_instrumented_served_points(observations) == ("solver",)
+    assert derive_instrumented_served_points(
+        observations, window_id=window_id
+    ) == ("solver",)
     assert not (claim_root / "clean.json").exists()
 
     assert emitter.record_claim_window_enabled_sample(True) is True
@@ -290,6 +298,164 @@ def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
 
     assert emitter.mark_claim_window_clean_shutdown() is True
     assert read_clean_shutdown_marker(str(claim_root / "clean.json"), window_id=window_id)
+
+
+def test_chat_served_runtime_window_is_fresh_and_uses_the_container_emitter(
+    tmp_path: Path,
+) -> None:
+    def configured(name: str) -> Container:
+        root = tmp_path / name
+        return Container(
+            settings=_settings_with_chat_served_receipts(
+                {
+                    "enabled": True,
+                    "out_dir": str(root / "receipts"),
+                    "claim_window_evidence": {
+                        "enabled": True,
+                        "source_head": "a" * 40,
+                        "out_dir": str(root / "evidence"),
+                    },
+                }
+            ),
+            stub=True,
+        )
+
+    first = configured("first")
+    second = configured("second")
+
+    assert (
+        first._chat_served_claim_window_binding["window_id"]
+        != second._chat_served_claim_window_binding["window_id"]
+    )
+    assert first.chat_served_runtime_window._emitter is first.chat_served_emitter
+    assert first.chat_served_emitter is first.chat_served_emitter
+
+
+def test_enabled_container_failure_injects_non_none_noop_and_blocks_private_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import waggledance.application.services.chat_service as chat_service_module
+    import waggledance.core.magma.chat_served_sink as sink_module
+
+    def fail_sink(*_args, **_kwargs):
+        raise OSError("sink unavailable")
+
+    monkeypatch.setattr(sink_module, "ChatServedReceiptSink", fail_sink)
+    container = Container(
+        settings=_settings_with_chat_served_receipts(
+            {
+                "enabled": True,
+                "out_dir": str(tmp_path / "receipts"),
+            }
+        ),
+        stub=True,
+    )
+    emitter = container.chat_served_emitter
+    assert emitter is not None
+    assert emitter.enabled is False
+    assert emitter.record_pending("ignored") is False
+
+    captured: dict = {}
+
+    class _ChatService:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(chat_service_module, "ChatService", _ChatService)
+    container.__dict__.update(
+        orchestrator=object(),
+        memory_service=object(),
+        hot_cache=object(),
+        autonomy_service=SimpleNamespace(
+            _runtime=SimpleNamespace(
+                case_builder=object(),
+                case_store=object(),
+                verifier_store=object(),
+            )
+        ),
+        hybrid_retrieval=object(),
+        hex_neighbor_assist=object(),
+    )
+
+    _ = container.chat_service
+
+    assert captured["chat_served_emitter"] is emitter
+
+
+def test_container_runtime_window_completes_real_five_point_measurement(
+    tmp_path: Path,
+) -> None:
+    receipt_root = tmp_path / "receipts"
+    evidence_root = tmp_path / "evidence"
+    container = Container(
+        settings=_settings_with_chat_served_receipts(
+            {
+                "enabled": True,
+                "out_dir": str(receipt_root),
+                "claim_window_evidence": {
+                    "enabled": True,
+                    "source_head": "a" * 40,
+                    "out_dir": str(evidence_root),
+                    "sample_interval_seconds": 3600,
+                    "max_sample_gap_seconds": 3600,
+                    "drain_timeout_seconds": 30,
+                },
+            }
+        ),
+        stub=True,
+    )
+    window = container.chat_served_runtime_window
+    emitter = container.chat_served_emitter
+
+    async def run():
+        started = await window.start()
+        assert started.status == "running"
+        for point in sorted(REQUIRED_CHAT_SERVED_POINTS):
+            served_id = new_served_id()
+            query = f"private {point} query DO_NOT_LEAK"
+            assert emitter.record_pending(
+                served_id,
+                query=query,
+                source=point,
+                route_type=point,
+                served_point=point,
+                language="fi",
+                profile="HOME",
+                agent_id=None,
+            )
+            emitter.schedule_receipt(
+                served_id,
+                query=query,
+                response=f"private {point} answer DO_NOT_LEAK",
+                source=point,
+                route_type=point,
+                confidence=0.95,
+                latency_ms=1.0,
+                cached=point == "hotcache",
+                round_table=False,
+                agent_id=None,
+                language="fi",
+                profile="HOME",
+            )
+        return await window.shutdown()
+
+    result = asyncio.run(run())
+
+    assert result.status == "complete", result.reason
+    assert result.lifecycle_verified is True
+    assert result.clean_marker_written is True
+    marker_path = Path(
+        container._chat_served_claim_window_binding[
+            "clean_shutdown_marker_path"
+        ]
+    )
+    assert marker_path.exists()
+    emitted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(receipt_root.rglob("*.json"))
+    )
+    assert "DO_NOT_LEAK" not in emitted
 
 
 def test_runtime_receipt_sink_treats_string_false_as_disabled() -> None:

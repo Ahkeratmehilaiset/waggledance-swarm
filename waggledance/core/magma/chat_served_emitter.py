@@ -37,6 +37,7 @@ from typing import Any, Callable
 from waggledance.core.magma.chat_served_accounting import (
     PENDING_APPEND_FAILURE_REASONS,
     PENDING_APPEND_FAILURE_SCHEMA,
+    REQUIRED_CHAT_SERVED_POINTS,
     valid_pending_append_failure,
 )
 from waggledance.core.magma.chat_query_route_evidence import (
@@ -113,6 +114,17 @@ class ChatServedEmitter:
         self._ordinal = 0
         self._pending_append_failures = 0  # bc4: surfaced so the claim can go not-eligible
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._intake_closed = False
+        self._post_close_attempts = 0
+        self._scheduled_tasks = 0
+        self._completed_tasks = 0
+        self._failed_tasks = 0
+        self._cancelled_tasks = 0
+        self._schedule_failures = 0
+        # Receipt bundles may finish on worker threads in a different order from
+        # their start times.  Serialize terminal timestamp acquisition together
+        # with the sink append so ledger timestamps follow ledger order.
+        self._terminal_append_lock = asyncio.Lock()
         self._claim_window_window_id = (
             str(claim_window_window_id)
             if is_conforming_token(claim_window_window_id)
@@ -157,10 +169,190 @@ class ChatServedEmitter:
         return str(self._pending_failure_ledger_path)
 
     @property
+    def ledger_path(self) -> str:
+        return self._ledger_path
+
+    @property
+    def head(self) -> str:
+        head = getattr(self._sink, "head")
+        return str(head() if callable(head) else head)
+
+    @property
+    def intake_closed(self) -> bool:
+        return self._intake_closed
+
+    @property
+    def post_close_attempts(self) -> int:
+        """Monotonic latch for work offered after the shutdown boundary.
+
+        A non-zero value makes the outer lifecycle ineligible for a clean marker.
+        It is deliberately not reset by ``drain``.
+        """
+        return self._post_close_attempts
+
+    @property
+    def claim_window_anchor_store_path(self) -> str | None:
+        return self._claim_window_anchor_store_path
+
+    @property
+    def claim_window_enabled_samples_path(self) -> str | None:
+        return self._claim_window_enabled_samples_path
+
+    @property
+    def claim_window_clean_shutdown_marker_path(self) -> str | None:
+        return self._claim_window_clean_shutdown_marker_path
+
+    @property
+    def claim_window_served_point_observations_path(self) -> str | None:
+        return self._claim_window_served_point_observations_path
+
+    @property
     def claim_window_evidence_enabled(self) -> bool:
         return self._claim_window_window_id is not None
 
+    def close_intake(self) -> bool:
+        """Stop accepting new denominator/receipt work.
+
+        Returns ``True`` only for the first open -> closed transition. Repeated calls
+        are harmless. Serving remains fail-open: callers see only a rejected
+        measurement write, never a response-path exception.
+        """
+        if not self._enabled:
+            return False
+        if self._intake_closed:
+            return False
+        self._intake_closed = True
+        return True
+
+    def flush_sink(self) -> bool:
+        """Explicitly fsync the sink outside the serving path."""
+        try:
+            flush = getattr(self._sink, "flush", None)
+            if not callable(flush):
+                return False
+            flush()
+            return True
+        except Exception:  # noqa: BLE001 -- shutdown evidence fails closed upstream
+            log.debug("chat-served sink flush failed", exc_info=True)
+            return False
+
+    def _task_done(self, task: asyncio.Task[Any]) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            self._cancelled_tasks += 1
+            return
+        self._completed_tasks += 1
+        try:
+            outcome = task.result()
+        except BaseException:  # noqa: BLE001 -- account even unusual task failures
+            self._failed_tasks += 1
+            return
+        if outcome != "receipt":
+            self._failed_tasks += 1
+
+    def _drain_result(
+        self,
+        *,
+        timed_out: bool,
+        caller_cancelled: bool,
+        invalid_timeout: bool = False,
+    ) -> dict[str, object]:
+        pending = len(self._tasks)
+        reason: str | None = None
+        if invalid_timeout:
+            reason = "invalid_timeout"
+        elif caller_cancelled:
+            reason = "caller_cancelled"
+        elif timed_out:
+            reason = "timeout"
+        elif pending:
+            reason = "tasks_pending"
+        elif self._post_close_attempts:
+            reason = "post_close_attempts"
+        elif self._schedule_failures:
+            reason = "schedule_failures"
+        elif self._failed_tasks:
+            reason = "task_failures"
+        elif self._cancelled_tasks:
+            reason = "task_cancellations"
+        elif not self._intake_closed:
+            reason = "intake_open"
+        return {
+            "status": "drained" if reason is None else "not_clean",
+            "reason": reason,
+            "intake_closed": self._intake_closed,
+            "scheduled": self._scheduled_tasks,
+            "completed": self._completed_tasks,
+            "failed": self._failed_tasks,
+            "cancelled": self._cancelled_tasks,
+            "pending": pending,
+            "post_close_attempts": self._post_close_attempts,
+            "schedule_failures": self._schedule_failures,
+            "timed_out": timed_out,
+            "caller_cancelled": caller_cancelled,
+        }
+
+    async def drain(self, timeout_seconds: float) -> dict[str, object]:
+        """Boundedly wait for all scheduled receipt work to quiesce.
+
+        The task set is re-sampled after every wait, so work added while a drain is
+        in progress cannot be missed. The outer coordinator should call
+        ``close_intake`` first; an open intake is reported as not-clean. On timeout
+        the method returns not-clean while keeping unfinished tasks tracked. In
+        particular, cancelling an asyncio wrapper cannot stop an already-running
+        ``to_thread`` worker, so timeout must never detach or falsely quiesce that
+        work. Caller cancellation propagates normally. The result is deterministic,
+        idempotent, and never flips ``claim_safe``.
+        """
+        try:
+            timeout = float(timeout_seconds)
+            if (
+                isinstance(timeout_seconds, bool)
+                or not timeout > 0.0
+                or timeout == float("inf")
+            ):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            return self._drain_result(
+                timed_out=False,
+                caller_cancelled=False,
+                invalid_timeout=True,
+            )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        timed_out = False
+        while self._tasks:
+            remaining = deadline - loop.time()
+            if remaining <= 0.0:
+                timed_out = True
+                break
+            snapshot = tuple(self._tasks)
+            _done, pending = await asyncio.wait(
+                snapshot,
+                timeout=remaining,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            await asyncio.sleep(0)
+            if pending:
+                timed_out = True
+                break
+            # Repeat against the live set: a completing task may have scheduled
+            # another task that was not part of the prior snapshot.
+
+        if not timed_out:
+            # Let callbacks for the final completed snapshot update accounting.
+            await asyncio.sleep(0)
+        return self._drain_result(
+            timed_out=timed_out,
+            caller_cancelled=False,
+        )
+
     def _claim_window_ts(self) -> str:
+        return self._now_fn().strftime(_TS_FORMAT)
+
+    def _ledger_ts(self) -> str:
+        """Acquire a ledger timestamp while the sink's writer lock is held."""
         return self._now_fn().strftime(_TS_FORMAT)
 
     def record_claim_window_enabled_sample(self, enabled: bool) -> bool:
@@ -201,6 +393,7 @@ class ChatServedEmitter:
                 point=point,
                 wired=bool(wired),
                 ts_utc=self._claim_window_ts(),
+                window_id=self._claim_window_window_id,
                 fsync=True,
             )
             self._observed_served_point_keys.add(key)
@@ -276,12 +469,17 @@ class ChatServedEmitter:
     def record_pending(
         self, served_id: str, *, query: str, source: str, route_type: str,
         language: str, profile: str, agent_id: str | None,
+        served_point: str | None = None,
     ) -> bool:
         """SYNC crash-safe denominator. FAIL-OPEN: returns True on success, False when
         disabled OR on any error (the error is surfaced via pending_append_failures,
         never swallowed, and the caller still serves the user)."""
         if not self._enabled:
             return False
+        if self._intake_closed:
+            self._post_close_attempts += 1
+            return False
+        point = route_type if served_point is None else served_point
         if not is_path_safe_token(served_id):
             # INGRESS defense (tools/rco-2 PR#1500): an unsafe served_id must NEVER
             # become a counted receipt -- downstream it is a filesystem path segment,
@@ -303,6 +501,8 @@ class ChatServedEmitter:
             log.debug("chat-served pending rejected: served_id not path-safe (serving continues)")
             return False
         try:
+            if point not in REQUIRED_CHAT_SERVED_POINTS:
+                raise ValueError("served_point is not a closed served-return identity")
             metadata = self._metadata(
                 query=query, source=source, route_type=route_type, language=language,
                 profile=profile, agent_id=agent_id,
@@ -323,9 +523,13 @@ class ChatServedEmitter:
             log.debug("chat-served query identity rejected (serving continues)", exc_info=True)
             return False
         try:
-            ts = self._now_fn().strftime(_TS_FORMAT)
-            self.record_served_point_observation(metadata["route_type"], wired=True)
-            self._sink.record_pending(served_id, ts, metadata, fsync=False)  # windowed (bc5)
+            self.record_served_point_observation(point, wired=True)
+            self._sink.record_pending(
+                served_id,
+                self._ledger_ts,
+                metadata,
+                fsync=False,
+            )  # windowed (bc5)
             return True
         except Exception:  # noqa: BLE001 -- fail-OPEN: serving must never break on this
             self._pending_append_failures += 1  # bc4: surface, do not swallow
@@ -392,30 +596,39 @@ class ChatServedEmitter:
         (a crash then leaves the pending unresolved -> a gap on the next walk)."""
         if not self._enabled:
             return
+        if self._intake_closed:
+            self._post_close_attempts += 1
+            return
         if not is_path_safe_token(served_id):
             return  # never build/resolve a receipt for an unsafe served_id (see record_pending)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            self._schedule_failures += 1
             return  # no running loop (non-async context) -> nothing to schedule
         coro = self._resolve(
             served_id, query=query, response=response, source=source, route_type=route_type,
             confidence=confidence, latency_ms=latency_ms, cached=cached, round_table=round_table,
             agent_id=agent_id, language=language, profile=profile, route_stage_trace=route_stage_trace,
         )
-        task = loop.create_task(coro)
+        try:
+            task = loop.create_task(coro)
+        except Exception:  # noqa: BLE001 -- serving stays fail-open
+            self._schedule_failures += 1
+            coro.close()
+            return
+        self._scheduled_tasks += 1
         self._tasks.add(task)                       # keep a strong ref so it is not GC'd
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._task_done)
 
     async def _resolve(
         self, served_id: str, *, query: str, response: str, source: str, route_type: str,
         confidence: float, latency_ms: float, cached: bool, round_table: bool,
         agent_id: str | None, language: str, profile: str, route_stage_trace: Any,
-    ) -> None:
+    ) -> str:
         """Build the receipt off-loop and resolve the pending to receipt|gap. Every
         failure ends the pending as a GAP -- never left swallowed/unresolved by us."""
         now = self._now_fn()
-        ts = now.strftime(_TS_FORMAT)
         try:
             self._ordinal += 1
             ordinal = self._ordinal
@@ -429,15 +642,28 @@ class ChatServedEmitter:
             )
             report = await asyncio.to_thread(self._write_bundle, summary, now, ordinal, served_id)
             receipt_ref = sha256_digest(report["receipt"])
-            await asyncio.to_thread(self._sink.resolve_receipt, served_id, ts, receipt_ref)
+            async with self._terminal_append_lock:
+                await asyncio.to_thread(
+                    self._sink.resolve_receipt,
+                    served_id,
+                    self._ledger_ts,
+                    receipt_ref,
+                )
+            return "receipt"
         except Exception:  # noqa: BLE001 -- resolution failure -> gap, never a silent hole
             log.debug("chat-served receipt resolution failed -> gap", exc_info=True)
             try:
-                await asyncio.to_thread(
-                    self._sink.resolve_gap, served_id, ts, "receipt_build_failed"
-                )
+                async with self._terminal_append_lock:
+                    await asyncio.to_thread(
+                        self._sink.resolve_gap,
+                        served_id,
+                        self._ledger_ts,
+                        "receipt_build_failed",
+                    )
+                return "gap"
             except Exception:  # noqa: BLE001 -- pending stays unresolved -> gap on walk anyway
                 log.debug("chat-served gap resolution also failed", exc_info=True)
+                return "unresolved"
 
     @staticmethod
     def _safe_bundle_name(served_id: str) -> str:

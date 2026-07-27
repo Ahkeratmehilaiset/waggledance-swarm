@@ -59,6 +59,7 @@ def _assert_chat_served_emitted(
     *,
     query: str,
     route_type: str,
+    served_point: str,
     source: str,
     cached: bool,
 ) -> None:
@@ -68,6 +69,7 @@ def _assert_chat_served_emitted(
     receipt_id, receipt_kwargs = emitter.receipts[0]
     assert pending_id == receipt_id
     assert pending_kwargs["route_type"] == route_type
+    assert pending_kwargs["served_point"] == served_point
     assert pending_kwargs["source"] == source
     assert pending_kwargs["query"] == query
     assert receipt_kwargs["query"] == query
@@ -244,6 +246,7 @@ class TestChatService:
                 emitter,
                 query="What is varroa?",
                 route_type="hotcache",
+                served_point="hotcache",
                 source="hotcache",
                 cached=True,
             )
@@ -275,6 +278,7 @@ class TestChatService:
                 emitter,
                 query="what is 15% of 300",
                 route_type="solver",
+                served_point="solver",
                 source="solver",
                 cached=False,
             )
@@ -325,6 +329,7 @@ class TestChatService:
                 emitter,
                 query="statistics summary",
                 route_type="hybrid_retrieval",
+                served_point="hybrid_retrieval",
                 source="local_faiss",
                 cached=False,
             )
@@ -368,6 +373,7 @@ class TestChatService:
                 emitter,
                 query="tell me about hive layout",
                 route_type="hex_mesh",
+                served_point="hex_mesh",
                 source="hex_mesh",
                 cached=False,
             )
@@ -399,6 +405,58 @@ class TestChatService:
                 emitter,
                 query="explain hive care",
                 route_type="llm",
+                served_point="llm",
+                source="llm",
+                cached=False,
+            )
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize("final_route_type", ["memory", "micromodel"])
+    def test_chat_served_final_point_is_llm_not_dynamic_route_type(
+        self,
+        final_route_type,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        """The final return is one closed ``llm`` served point even when the
+        routing-policy label truthfully remains memory/micromodel."""
+
+        async def _run():
+            emitter = _RecordingChatServedEmitter()
+            if final_route_type == "memory":
+                mock_memory_service.retrieve_context.return_value = [
+                    MagicMock(confidence=0.95)
+                ]
+            else:
+                original_get = mock_config.get.side_effect
+                mock_config.get.side_effect = lambda key, default=None: (
+                    True
+                    if key == "advanced_learning.micro_model_enabled"
+                    else original_get(key, default)
+                )
+
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                chat_served_emitter=emitter,
+            )
+            if final_route_type == "micromodel":
+                svc._probe_micromodel = MagicMock(return_value=(True, 0.95))
+
+            result = await svc.handle(ChatRequest(query="explain ordinary hive care"))
+
+            assert result.source == "llm"
+            _assert_chat_served_emitted(
+                emitter,
+                query="explain ordinary hive care",
+                route_type=final_route_type,
+                served_point="llm",
                 source="llm",
                 cached=False,
             )

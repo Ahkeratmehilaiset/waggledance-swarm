@@ -153,6 +153,52 @@ def test_concurrent_record_pending_is_serialized(tmp_path) -> None:
     assert ChatServedReceiptSink(path).counts()["served"] == total  # durable + rebuildable
 
 
+def test_callable_timestamps_are_acquired_under_the_writer_lock(tmp_path) -> None:
+    path = str(tmp_path / "ledger.jsonl")
+    sink = ChatServedReceiptSink(path, fsync_every=0)
+    tick = 0
+
+    def locked_clock() -> str:
+        nonlocal tick
+        assert sink._lock.locked()
+        tick += 1
+        return f"2026-07-04T07:00:00.{tick:06d}Z"
+
+    sink.record_pending("q1", locked_clock, _META)
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def resolve_first() -> None:
+        try:
+            barrier.wait(timeout=10)
+            sink.resolve_receipt("q1", locked_clock, _DIGEST)
+        except Exception as exc:  # noqa: BLE001 - surface any race
+            errors.append(exc)
+
+    def record_second() -> None:
+        try:
+            barrier.wait(timeout=10)
+            sink.record_pending("q2", locked_clock, _META)
+        except Exception as exc:  # noqa: BLE001 - surface any race
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=resolve_first),
+        threading.Thread(target=record_second),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    entries, torn = L.read_entries(path)
+    assert torn is False
+    timestamps = [entry["ts_utc"] for entry in entries]
+    assert timestamps == sorted(timestamps)
+    assert L.verify_chain(entries).ok is True
+
+
 # --- crash tolerance + corruption ----------------------------------------------
 def test_sink_loads_ledger_with_torn_tail(tmp_path) -> None:
     path = str(tmp_path / "ledger.jsonl")

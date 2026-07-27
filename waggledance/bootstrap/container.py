@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import math
 import re
 import shutil
 from datetime import datetime, timezone
@@ -46,9 +47,29 @@ def _settings_bool(value) -> bool:
 def _settings_positive_int(settings, key: str, default: int) -> int:
     try:
         value = int(settings.get(key, default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return value if value > 0 else default
+
+
+def _settings_positive_float(settings, key: str, default: float) -> float:
+    try:
+        value = float(settings.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
+class _UnavailableChatServedEmitter:
+    """Non-None fail-open sentinel that prevents ChatService's private fallback."""
+
+    enabled = False
+
+    def record_pending(self, *_args, **_kwargs) -> bool:
+        return False
+
+    def schedule_receipt(self, *_args, **_kwargs) -> None:
+        return None
 
 
 def _prune_v313_solver_receipt_bundles(root: Path, max_bundles: int) -> None:
@@ -491,6 +512,84 @@ class Container:
         return sink
 
     @cached_property
+    def _chat_served_claim_window_binding(self):
+        """Fresh, container-owned paths and identity for one enabled process run."""
+        if not _settings_bool(
+            self._settings.get("chat_served_receipts.enabled", False)
+        ) or not _settings_bool(
+            self._settings.get(
+                "chat_served_receipts.claim_window_evidence.enabled",
+                False,
+            )
+        ):
+            return None
+
+        from waggledance.core.magma.chat_served_claim_window_evidence import (
+            new_claim_window_id,
+        )
+
+        out_dir = Path(
+            str(
+                self._settings.get(
+                    "chat_served_receipts.out_dir",
+                    DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR,
+                )
+            )
+        )
+        evidence_dir = Path(
+            str(
+                self._settings.get(
+                    "chat_served_receipts.claim_window_evidence.out_dir",
+                    out_dir,
+                )
+            )
+        )
+        window_id = new_claim_window_id()
+        run_dir = evidence_dir / "windows" / window_id.removeprefix("window:")
+
+        def configured_path(key: str, default: Path) -> str:
+            return str(
+                self._settings.get(
+                    f"chat_served_receipts.claim_window_evidence.{key}",
+                    default,
+                )
+            )
+
+        return {
+            "window_id": window_id,
+            "ledger_path": str(out_dir / "ledger.jsonl"),
+            "receipt_root": str(out_dir),
+            "anchor_store_path": configured_path(
+                "anchor_store_path",
+                evidence_dir / "claim_window_head_anchors.jsonl",
+            ),
+            "enabled_samples_path": configured_path(
+                "enabled_samples_path",
+                evidence_dir / "claim_window_enabled_samples.jsonl",
+            ),
+            "served_point_observations_path": configured_path(
+                "served_point_observations_path",
+                evidence_dir / "claim_window_served_points.jsonl",
+            ),
+            "receipt_index_path": configured_path(
+                "receipt_index_path",
+                evidence_dir / "claim_window_receipt_index.jsonl",
+            ),
+            "start_boundary_path": configured_path(
+                "start_boundary_path",
+                run_dir / "start_boundary.json",
+            ),
+            "final_boundary_path": configured_path(
+                "final_boundary_path",
+                run_dir / "final_boundary.json",
+            ),
+            "clean_shutdown_marker_path": configured_path(
+                "clean_shutdown_marker_path",
+                run_dir / "clean_shutdown.json",
+            ),
+        }
+
+    @cached_property
     def chat_served_emitter(self):
         """Optional ChatService served-receipt emitter.
 
@@ -526,49 +625,18 @@ class Container:
                 fsync_every=fsync_every,
             )
             evidence_kwargs = {}
-            if _settings_bool(self._settings.get(
-                "chat_served_receipts.claim_window_evidence.enabled",
-                False,
-            )):
-                evidence_dir = Path(
-                    str(
-                        self._settings.get(
-                            "chat_served_receipts.claim_window_evidence.out_dir",
-                            out_dir,
-                        )
-                    )
-                )
+            binding = self._chat_served_claim_window_binding
+            if binding is not None:
                 evidence_kwargs = {
                     "ledger_path": str(ledger_path),
-                    "claim_window_window_id": str(
-                        self._settings.get(
-                            "chat_served_receipts.claim_window_evidence.window_id",
-                            "chat_served_runtime_window",
-                        )
+                    "claim_window_window_id": binding["window_id"],
+                    "claim_window_anchor_store_path": binding["anchor_store_path"],
+                    "claim_window_enabled_samples_path": binding["enabled_samples_path"],
+                    "claim_window_clean_shutdown_marker_path": (
+                        binding["clean_shutdown_marker_path"]
                     ),
-                    "claim_window_anchor_store_path": str(
-                        self._settings.get(
-                            "chat_served_receipts.claim_window_evidence.anchor_store_path",
-                            evidence_dir / "claim_window_head_anchors.jsonl",
-                        )
-                    ),
-                    "claim_window_enabled_samples_path": str(
-                        self._settings.get(
-                            "chat_served_receipts.claim_window_evidence.enabled_samples_path",
-                            evidence_dir / "claim_window_enabled_samples.jsonl",
-                        )
-                    ),
-                    "claim_window_clean_shutdown_marker_path": str(
-                        self._settings.get(
-                            "chat_served_receipts.claim_window_evidence.clean_shutdown_marker_path",
-                            evidence_dir / "claim_window_clean_shutdown.json",
-                        )
-                    ),
-                    "claim_window_served_point_observations_path": str(
-                        self._settings.get(
-                            "chat_served_receipts.claim_window_evidence.served_point_observations_path",
-                            evidence_dir / "claim_window_served_points.jsonl",
-                        )
+                    "claim_window_served_point_observations_path": (
+                        binding["served_point_observations_path"]
                     ),
                 }
             return ChatServedEmitter(
@@ -581,7 +649,60 @@ class Container:
             )
         except Exception as exc:  # noqa: BLE001 - chat serving must fail open.
             log.warning("chat-served emitter unavailable: %s", exc)
+            return _UnavailableChatServedEmitter()
+
+    @cached_property
+    def chat_served_runtime_window(self):
+        """Optional process-lifecycle owner for v1 chat-served measurement evidence."""
+        binding = self._chat_served_claim_window_binding
+        if binding is None:
             return None
+
+        from waggledance.core.magma.chat_served_runtime_window import (
+            ChatServedRuntimeWindow,
+        )
+
+        sample_interval = _settings_positive_float(
+            self._settings,
+            "chat_served_receipts.claim_window_evidence.sample_interval_seconds",
+            30.0,
+        )
+        max_sample_gap = _settings_positive_int(
+            self._settings,
+            "chat_served_receipts.claim_window_evidence.max_sample_gap_seconds",
+            max(60, int(sample_interval * 3)),
+        )
+        return ChatServedRuntimeWindow(
+            emitter=self.chat_served_emitter,
+            window_id=binding["window_id"],
+            source_head=str(
+                self._settings.get(
+                    "chat_served_receipts.claim_window_evidence.source_head",
+                    "",
+                )
+            ),
+            ledger_path=binding["ledger_path"],
+            receipt_root=binding["receipt_root"],
+            anchor_store_path=binding["anchor_store_path"],
+            enabled_samples_path=binding["enabled_samples_path"],
+            served_point_observations_path=(
+                binding["served_point_observations_path"]
+            ),
+            receipt_index_path=binding["receipt_index_path"],
+            start_boundary_path=binding["start_boundary_path"],
+            final_boundary_path=binding["final_boundary_path"],
+            clean_shutdown_marker_path=binding["clean_shutdown_marker_path"],
+            enabled_probe=lambda: _settings_bool(
+                self._settings.get("chat_served_receipts.enabled", False)
+            ),
+            sample_interval_seconds=sample_interval,
+            max_sample_gap_seconds=max_sample_gap,
+            drain_timeout_seconds=_settings_positive_float(
+                self._settings,
+                "chat_served_receipts.claim_window_evidence.drain_timeout_seconds",
+                30.0,
+            ),
+        )
 
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 

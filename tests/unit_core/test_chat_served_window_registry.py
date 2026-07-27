@@ -966,16 +966,12 @@ def test_registry_rejects_symlinked_parent(tmp_path) -> None:
         linked.symlink_to(real, target_is_directory=True)
     except OSError:
         pytest.skip("directory symlink creation is unavailable")
-    registry = R.ChatServedWindowRegistry(linked / "registry.jsonl")
 
     with pytest.raises(
         R.WindowRegistryPathError,
         match="path_reparse_not_allowed",
     ):
-        registry.reserve_after_verification(
-            _binding(),
-            lambda _prior: _approval(_binding()),
-        )
+        R.ChatServedWindowRegistry(linked / "registry.jsonl")
 
 
 def test_windows_reparse_attribute_is_recognized(monkeypatch) -> None:

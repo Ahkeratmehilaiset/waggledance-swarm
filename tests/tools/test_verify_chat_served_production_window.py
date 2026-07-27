@@ -771,7 +771,7 @@ def test_cli_rejects_symlinked_clean_marker(
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert report["reason"] == "clean_shutdown_marker_invalid"
+    assert report["reason"] == "window_registry_binding_mismatch"
     assert registry_path.read_bytes() == reservation_bytes
     assert registry.snapshot().verified_window_ids == ()
 

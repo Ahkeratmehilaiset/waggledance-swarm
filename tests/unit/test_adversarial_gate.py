@@ -2,7 +2,12 @@
 """Forge-probe tests for the fail-closed adversarial-corpus promotion gate."""
 from __future__ import annotations
 
-from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+import pytest
+
+from waggledance.core.magma.adversarial_corpus_eval import (
+    CRITICAL_DEFECT_TYPES,
+    REQUIRED_DEFECT_TYPES,
+)
 from waggledance.core.magma.adversarial_gate import (
     verify_adversarial_corpus_gate,
 )
@@ -32,7 +37,7 @@ def _ok_cases(n: int):
     required = _required_types()
     return [
         {
-            "case_id": f"c{i}",
+            "case_id": f"case:adv:test_case:{i:03d}",
             "defect_class": required[i % len(required)],
             "ok": True,
             "status": "full_match",
@@ -62,7 +67,7 @@ def test_forged_top_ok_with_one_uncaught_case_refuses():
     # report['ok']=True but a case is not caught -> must re-derive and refuse.
     cases = _ok_cases(30) + [
         _case_with_defect(
-            case_id="evil",
+            case_id="case:adv:test_case:900",
             defect_class=_required_types()[0],
             ok=False,
             status="mismatch",
@@ -85,7 +90,11 @@ def test_type_confused_case_count_refuses():
 def test_type_confused_case_ok_string_is_not_caught():
     # ok="true" (string) must NOT count as caught.
     cases = _ok_cases(30) + [
-        _case_with_defect(case_id="x", defect_class=_required_types()[0], ok="true")
+        _case_with_defect(
+            case_id="case:adv:test_case:901",
+            defect_class=_required_types()[0],
+            ok="true",
+        )
     ]
     r = _report(cases=cases)
     result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
@@ -96,7 +105,7 @@ def test_type_confused_case_ok_string_is_not_caught():
 def test_invalid_defect_class_is_rejected():
     cases = _ok_cases(30) + [
         {
-            "case_id": "bad",
+            "case_id": "case:adv:test_case:902",
             "defect_class": "bogus_defect",
             "ok": True,
             "status": "full_match",
@@ -109,9 +118,101 @@ def test_invalid_defect_class_is_rejected():
     assert result.invalid_case_count >= 1
 
 
+@pytest.mark.parametrize(
+    "bad_case_id",
+    [
+        None,
+        "",
+        " ",
+        " case:adv:test_case:001",
+        "case:adv:test_case:001 ",
+        "case:adv:test_case:001\nsuffix",
+        "case:adv:test-case:001",
+        "case:adv:x:001",
+        "case:adv:test_case:01",
+        123,
+    ],
+)
+def test_missing_or_invalid_case_id_refuses(bad_case_id):
+    cases = _ok_cases(30)
+    cases[0]["case_id"] = bad_case_id
+    r = _report(cases=cases)
+
+    result = verify_adversarial_corpus_gate(
+        report=r,
+        expected_solver_hash=SOLVER,
+        min_cases=10,
+    )
+
+    assert result.ok is False
+    assert any("missing/invalid case_id" in reason for reason in result.reasons)
+
+
+def test_duplicate_case_ids_cannot_pad_critical_defect_floors():
+    cases = []
+    for defect_class in _required_types():
+        case_id_stem = defect_class.replace("-", "_")
+        first_case_id = f"case:adv:{case_id_stem}:001"
+        cases.append(
+            _case_with_defect(
+                case_id=first_case_id,
+                defect_class=defect_class,
+            )
+        )
+        cases.append(
+            _case_with_defect(
+                case_id=(
+                    first_case_id
+                    if defect_class in CRITICAL_DEFECT_TYPES
+                    else f"case:adv:{case_id_stem}:002"
+                ),
+                defect_class=defect_class,
+            )
+        )
+    r = _report(cases=cases)
+
+    result = verify_adversarial_corpus_gate(
+        report=r,
+        expected_solver_hash=SOLVER,
+        min_cases=10,
+    )
+
+    assert result.ok is False
+    assert any("duplicate case_id" in reason for reason in result.reasons)
+    floor_reason = next(
+        reason
+        for reason in result.reasons
+        if "critical defect classes below caught floor" in reason
+    )
+    for defect_class in CRITICAL_DEFECT_TYPES:
+        assert f"{defect_class}=1" in floor_reason
+
+
+def test_case_ids_must_be_unique_across_defect_classes():
+    cases = _ok_cases(30)
+    assert cases[0]["defect_class"] != cases[1]["defect_class"]
+    cases[1]["case_id"] = cases[0]["case_id"]
+    r = _report(cases=cases)
+
+    result = verify_adversarial_corpus_gate(
+        report=r,
+        expected_solver_hash=SOLVER,
+        min_cases=10,
+    )
+
+    assert result.ok is False
+    assert any("duplicate case_id" in reason for reason in result.reasons)
+
+
 def test_missing_required_defect_class_refuses():
     required = _required_types()
-    cases = [_case_with_defect(case_id=f"c{i}", defect_class=required[i]) for i in range(len(required) - 1)]
+    cases = [
+        _case_with_defect(
+            case_id=f"case:adv:test_case:{i:03d}",
+            defect_class=required[i],
+        )
+        for i in range(len(required) - 1)
+    ]
     # Missing one required class while all listed cases are caught.
     # Gate should still refuse due missing required class coverage.
     r = _report(cases=cases)
@@ -174,10 +275,23 @@ def test_below_floor_refuses():
 
 
 def test_cases_not_a_list_refuses():
-    r = _report(cases=_ok_cases(30))
-    r["cases"] = {"c0": {"ok": True}}  # mapping, not list
-    result = verify_adversarial_corpus_gate(report=r, expected_solver_hash=SOLVER, min_cases=10)
-    assert result.ok is False
+    class HostileList(list):
+        def __len__(self):
+            return 0
+
+    for bad_cases in (
+        {"c0": {"ok": True}},
+        tuple(_ok_cases(30)),
+        HostileList(_ok_cases(30)),
+    ):
+        r = _report(cases=bad_cases)
+        result = verify_adversarial_corpus_gate(
+            report=r,
+            expected_solver_hash=SOLVER,
+            min_cases=10,
+        )
+        assert result.ok is False
+        assert any("not a list" in reason for reason in result.reasons)
 
 
 def test_case_count_mismatch_refuses():

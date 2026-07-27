@@ -30,7 +30,10 @@ from waggledance.core.solver_synthesis.deterministic_solver_compiler import (
     compile_spec,
 )
 from waggledance.core.magma.canonical import sha256_digest
-from waggledance.core.magma.adversarial_corpus_eval import REQUIRED_DEFECT_TYPES
+from waggledance.core.magma.adversarial_corpus_eval import (
+    REQUIRED_DEFECT_TYPES,
+    AdversarialCorpusEvalError,
+)
 from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.storage.control_plane import ControlPlaneDB, ControlPlaneError
 
@@ -102,7 +105,7 @@ def _valid_adversarial_cases(count: int) -> list[dict[str, object]]:
     required = sorted(REQUIRED_DEFECT_TYPES)
     return [
         {
-            "case_id": f"c{i}",
+            "case_id": f"case:adv:test_case:{i:03d}",
             "defect_class": required[i % len(required)],
             "ok": True,
         }
@@ -866,9 +869,9 @@ def test_no_partial_activation_on_shadow_failure(cp: ControlPlaneDB) -> None:
 class TestI11AdversarialGateInline:
     """T5b: fail-closed adversarial-corpus gate (I11), ON by default.
 
-    With no report supplied the engine runs the corpus eval inline (bound to
-    the committed artifact), so a clean candidate still promotes; a supplied
-    report that is mis-bound / below-floor / forged refuses.
+    The engine always runs the corpus eval inline (bound to the committed
+    artifact), so a clean candidate still promotes. A supplied report is
+    additional veto-only evidence; it cannot replace the fresh result.
     """
 
     def _request(self, name="adv_inline_solver", **kw):
@@ -968,3 +971,117 @@ class TestI11AdversarialGateInline:
             adversarial_eval_report=report,
         ))
         assert out.invariant_failed == "I11_adversarial_corpus_gate"
+
+    @pytest.mark.parametrize(
+        "fresh_failure",
+        ["uncaught", "wrong_bound", "below_floor"],
+    )
+    @pytest.mark.parametrize("with_supplied_report", [False, True])
+    def test_supplied_report_cannot_replace_failing_fresh_eval(
+        self,
+        cp: ControlPlaneDB,
+        monkeypatch: pytest.MonkeyPatch,
+        fresh_failure: str,
+        with_supplied_report: bool,
+    ):
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        spec = _scalar_unit_conversion_spec("adv_fresh_required_solver")
+        aid = compile_spec(spec).artifact_id
+        supplied_report = {
+            "bound_solver_hash": aid,
+            "case_count": 42,
+            "cases": _valid_adversarial_cases(42),
+            "ok": True,
+        }
+        fresh_calls = []
+
+        def _fresh_eval(*, bound_solver_hash):
+            fresh_calls.append(bound_solver_hash)
+            fresh_cases = _valid_adversarial_cases(42)
+            fresh_bound = bound_solver_hash
+            if fresh_failure == "uncaught":
+                fresh_cases[-1]["ok"] = False
+            elif fresh_failure == "wrong_bound":
+                fresh_bound = "0" * 64
+            else:
+                fresh_cases = _valid_adversarial_cases(30)
+            return {
+                "bound_solver_hash": fresh_bound,
+                "case_count": len(fresh_cases),
+                "cases": fresh_cases,
+                "ok": True,
+            }
+
+        monkeypatch.setattr(
+            "waggledance.core.autonomy_growth.auto_promotion_engine."
+            "run_adversarial_corpus_evaluation",
+            _fresh_eval,
+        )
+        if fresh_failure == "below_floor":
+            monkeypatch.setattr(
+                "waggledance.core.autonomy_growth.auto_promotion_engine."
+                "ADVERSARIAL_CORPUS_MIN_CASES",
+                42,
+            )
+
+        out = AutoPromotionEngine(cp).evaluate_candidate(PromotionRequest(
+            spec=spec,
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+            adversarial_eval_report=(
+                supplied_report if with_supplied_report else None
+            ),
+        ))
+
+        assert fresh_calls == [aid]
+        assert out.decision == "rejected"
+        assert out.invariant_failed == "I11_adversarial_corpus_gate"
+        assert cp.get_solver(spec.solver_name) is None
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [AdversarialCorpusEvalError, RuntimeError],
+    )
+    @pytest.mark.parametrize("with_supplied_report", [False, True])
+    def test_fresh_eval_error_refuses_with_or_without_supplied_report(
+        self,
+        cp: ControlPlaneDB,
+        monkeypatch: pytest.MonkeyPatch,
+        error_type,
+        with_supplied_report: bool,
+    ):
+        cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+        spec = _scalar_unit_conversion_spec("adv_fresh_error_solver")
+        aid = compile_spec(spec).artifact_id
+        supplied_report = {
+            "bound_solver_hash": aid,
+            "case_count": 42,
+            "cases": _valid_adversarial_cases(42),
+            "ok": True,
+        }
+
+        def _fresh_eval_error(*, bound_solver_hash):
+            raise error_type(bound_solver_hash)
+
+        monkeypatch.setattr(
+            "waggledance.core.autonomy_growth.auto_promotion_engine."
+            "run_adversarial_corpus_evaluation",
+            _fresh_eval_error,
+        )
+
+        out = AutoPromotionEngine(cp).evaluate_candidate(PromotionRequest(
+            spec=spec,
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+            adversarial_eval_report=(
+                supplied_report if with_supplied_report else None
+            ),
+        ))
+
+        assert out.decision == "rejected"
+        assert out.invariant_failed == "I11_adversarial_corpus_eval_error"
+        assert cp.get_solver(spec.solver_name) is None

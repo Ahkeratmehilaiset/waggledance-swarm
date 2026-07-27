@@ -238,6 +238,13 @@ cells:
         cell = reg.select_origin_cell("fire safety alarm security")
         assert cell == "safety_security"
 
+    def test_finnish_smoke_alarm_routes_safety_without_generic_beep_overreach(self):
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+
+        assert reg.select_origin_cell("palovaroitin piippaa", intent="chat") == "safety_security"
+        assert reg.select_origin_cell("jokin piippaa", intent="chat") == "hub"
+
     def test_stats_structure(self):
         from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
         reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])

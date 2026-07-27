@@ -85,7 +85,7 @@ independently:
 |---|---|---|
 | `"talven sähkölasku"` (FI, winter electric bill) | None of the selectors match → falls through to agent-count tiebreaker | `talvi` matches `CELL_SEASONAL`; `sähkö` matches `CELL_ENERGY` |
 | `"frost warning"` | `frost` matches `environment` selector | `frost` matches `CELL_THERMAL` keywords |
-| `"palovaroitin piippaa"` (FI, smoke alarm beeping) | No match in any 7-cell selector | No match in any 8-cell keyword either (gap noted in audit) |
+| `"palovaroitin piippaa"` (FI, smoke alarm beeping) | `palovaroitin` matches `safety_security` | `palovaroitin` matches `CELL_SAFETY` |
 
 This drift is **acceptable** as long as readers know the two
 topologies route different inputs to different outputs. If a future
@@ -130,5 +130,5 @@ PR unifies the keyword vocab, both should change in lockstep.
 
 ---
 
-**Last updated**: 2026-05-11 by PR-E. Update if either topology's
+**Last updated**: 2026-07-27. Update if either topology's
 cell count, IDs, or adjacency changes.

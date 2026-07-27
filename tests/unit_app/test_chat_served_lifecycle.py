@@ -26,6 +26,12 @@ from waggledance.core.magma.chat_served_runtime_window import (
     _strict_jsonl,
     _write_clean_marker_last,
 )
+from waggledance.core.magma.chat_served_window_registry import (
+    ChatServedWindowRegistry,
+    RegistryVerificationApproval,
+    WindowRegistryBinding,
+    derive_window_marker_path_digest,
+)
 
 _SOURCE_HEAD = "a" * 40
 
@@ -34,7 +40,9 @@ class _Emitter:
     enabled = True
 
     def __init__(self, root: Path, events: list[str], *, drain_clean: bool = True):
-        self.pending_failure_ledger_path = str(root / "pending-failures.jsonl")
+        self.pending_failure_ledger_path = str(
+            root / "evidence" / "pending-failures.jsonl"
+        )
         self.pending_append_failures = 0
         self.head = GENESIS_PREV_HASH
         self.events = events
@@ -89,6 +97,8 @@ def _window(
     emitter: _Emitter,
     *,
     enabled_probe=lambda: True,
+    window_id: str = "window:lifecycle-test",
+    registry_path: Path | None = None,
 ) -> tuple[ChatServedRuntimeWindow, dict[str, Path]]:
     paths = {
         "ledger": tmp_path / "receipts" / "ledger.jsonl",
@@ -100,10 +110,15 @@ def _window(
         "start": tmp_path / "evidence" / "start.json",
         "final": tmp_path / "evidence" / "final.json",
         "marker": tmp_path / "evidence" / "marker.json",
+        "registry": (
+            registry_path
+            if registry_path is not None
+            else tmp_path / "receiver" / "window-registry.jsonl"
+        ),
     }
     window = ChatServedRuntimeWindow(
         emitter=emitter,
-        window_id="window:lifecycle-test",
+        window_id=window_id,
         source_head=_SOURCE_HEAD,
         ledger_path=str(paths["ledger"]),
         receipt_root=str(paths["receipts"]),
@@ -114,6 +129,7 @@ def _window(
         start_boundary_path=str(paths["start"]),
         final_boundary_path=str(paths["final"]),
         clean_shutdown_marker_path=str(paths["marker"]),
+        verified_window_registry_path=str(paths["registry"]),
         enabled_probe=enabled_probe,
         sample_interval_seconds=3600.0,
         max_sample_gap_seconds=3600,
@@ -135,6 +151,7 @@ def test_runtime_window_writes_marker_last_after_pre_marker_verification(
         events.append("verify")
         assert kwargs["clean_shutdown_marker"] is None
         assert paths["marker"].exists() is False
+        assert kwargs["previously_verified_window_ids"] == ()
         assert len(kwargs["enabled_samples"]) == 2
         assert kwargs["ledger_entries"] == ()
         return ProductionWindowVerification(
@@ -142,6 +159,21 @@ def test_runtime_window_writes_marker_last_after_pre_marker_verification(
         )
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
+    real_write_marker = _write_clean_marker_last
+
+    def write_marker(path, marker):
+        events.append("marker")
+        assert paths["marker"].exists() is False
+        snapshot = ChatServedWindowRegistry(paths["registry"]).snapshot()
+        assert snapshot.is_consumed("window:lifecycle-test") is True
+        assert snapshot.is_verified("window:lifecycle-test") is False
+        real_write_marker(path, marker)
+
+    monkeypatch.setattr(
+        "waggledance.core.magma.chat_served_runtime_window."
+        "_write_clean_marker_last",
+        write_marker,
+    )
 
     async def run() -> tuple[object, object]:
         started = await window.start()
@@ -156,12 +188,277 @@ def test_runtime_window_writes_marker_last_after_pre_marker_verification(
     assert finished.status == "complete"
     assert finished.lifecycle_verified is True
     assert finished.clean_marker_written is True
-    assert events == ["close_intake", "drain", "flush", "verify"]
+    assert events == ["close_intake", "drain", "flush", "verify", "marker"]
     marker = json.loads(paths["marker"].read_text(encoding="utf-8"))
     assert marker["window_id"] == "window:lifecycle-test"
     assert marker["schema_version"].endswith(".v1")
     assert "claim_safe" not in marker
+    reservation = ChatServedWindowRegistry(paths["registry"]).snapshot()
+    assert reservation.consumed_window_ids == ("window:lifecycle-test",)
+    assert reservation.verified_window_ids == ()
+    assert finished.registry_state == "reserved_pre_marker"
+    assert finished.public_summary()["registry_state"] == "reserved_pre_marker"
     assert str(tmp_path) not in json.dumps(finished.public_summary())
+
+
+def test_runtime_registry_passes_all_prior_consumed_ids_to_verifier(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_path = tmp_path / "receiver" / "window-registry.jsonl"
+    prior_binding = WindowRegistryBinding(
+        window_id="window:registry-first",
+        source_head="b" * 40,
+        binding_digest="sha256:" + ("1" * 64),
+        start_boundary_digest="sha256:" + ("2" * 64),
+        final_boundary_digest="sha256:" + ("3" * 64),
+        marker_digest="sha256:" + ("4" * 64),
+        marker_path_digest=derive_window_marker_path_digest(
+            tmp_path / "prior" / "clean-shutdown.json"
+        ),
+        final_ledger_head="sha256:" + ("5" * 64),
+    )
+    ChatServedWindowRegistry(registry_path).reserve_after_verification(
+        prior_binding,
+        lambda prior_ids: RegistryVerificationApproval(
+            prior_binding,
+            ProductionWindowVerification(
+                True,
+                "pre_marker_verified",
+                None,
+                False,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ),
+        ),
+    )
+    runtime_root = tmp_path / "runtime"
+    window, paths = _window(
+        runtime_root,
+        _Emitter(runtime_root, []),
+        window_id="window:registry-second",
+        registry_path=registry_path,
+    )
+    seen_prior_ids: list[tuple[str, ...]] = []
+
+    def verify(**kwargs):
+        seen_prior_ids.append(kwargs["previously_verified_window_ids"])
+        return ProductionWindowVerification(
+            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
+        )
+
+    monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
+
+    async def run():
+        assert (await window.start()).status == "running"
+        return await window.shutdown()
+
+    result = asyncio.run(run())
+
+    assert result.status == "complete"
+    assert seen_prior_ids == [("window:registry-first",)]
+    assert paths["marker"].exists() is True
+    snapshot = ChatServedWindowRegistry(registry_path).snapshot()
+    assert snapshot.consumed_window_ids == (
+        "window:registry-first",
+        "window:registry-second",
+    )
+    assert snapshot.verified_window_ids == ()
+
+
+def test_runtime_registry_replay_fails_before_any_new_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_path = tmp_path / "receiver" / "window-registry.jsonl"
+    first_root = tmp_path / "first"
+    replay_root = tmp_path / "replay"
+    first, _first_paths = _window(
+        first_root,
+        _Emitter(first_root, []),
+        registry_path=registry_path,
+    )
+    replay, replay_paths = _window(
+        replay_root,
+        _Emitter(replay_root, []),
+        registry_path=registry_path,
+    )
+    verifier_calls = 0
+
+    def verify(**_kwargs):
+        nonlocal verifier_calls
+        verifier_calls += 1
+        return ProductionWindowVerification(
+            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
+        )
+
+    monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
+
+    async def run():
+        assert (await first.start()).status == "running"
+        assert (await first.shutdown()).status == "complete"
+        return await replay.start()
+
+    result = asyncio.run(run())
+
+    assert result.status == "ineligible"
+    assert result.reason == "window_registry_window_id_reused"
+    assert result.registry_state == "not_reserved"
+    assert verifier_calls == 1
+    assert replay_paths["start"].exists() is False
+    assert replay_paths["enabled"].exists() is False
+    assert replay_paths["marker"].exists() is False
+    snapshot = ChatServedWindowRegistry(registry_path).snapshot()
+    assert snapshot.consumed_window_ids == ("window:lifecycle-test",)
+
+
+def test_runtime_mutation_after_reservation_burns_id_without_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+
+    def verify(**_kwargs):
+        return ProductionWindowVerification(
+            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
+        )
+
+    monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
+
+    async def run():
+        assert (await window.start()).status == "running"
+        registry = window._window_registry
+        assert registry is not None
+        reserve = registry.reserve_after_verification
+
+        def reserve_then_mutate(binding, callback):
+            row = reserve(binding, callback)
+            paths["final"].write_text('{"tampered":true}\n', encoding="utf-8")
+            return row
+
+        monkeypatch.setattr(
+            registry,
+            "reserve_after_verification",
+            reserve_then_mutate,
+        )
+        return await window.shutdown()
+
+    result = asyncio.run(run())
+
+    assert result.status == "ineligible"
+    assert result.registry_state == "reserved_pre_marker"
+    assert (
+        result.reason
+        == "runtime_window_shutdown_failed:"
+        "boundary_mutated_after_verification"
+    )
+    assert paths["marker"].exists() is False
+    snapshot = ChatServedWindowRegistry(paths["registry"]).snapshot()
+    assert snapshot.is_consumed("window:lifecycle-test") is True
+    assert snapshot.is_verified("window:lifecycle-test") is False
+
+
+def test_runtime_post_reservation_failure_reports_unknown_and_writes_no_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+
+    def verify(**_kwargs):
+        return ProductionWindowVerification(
+            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
+        )
+
+    monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
+
+    async def run():
+        assert (await window.start()).status == "running"
+        registry = window._window_registry
+        assert registry is not None
+        reserve = registry.reserve_after_verification
+
+        def reserve_then_lose_confirmation(binding, callback):
+            reserve(binding, callback)
+            raise OSError("simulated post-fsync readback failure")
+
+        monkeypatch.setattr(
+            registry,
+            "reserve_after_verification",
+            reserve_then_lose_confirmation,
+        )
+        return await window.shutdown()
+
+    result = asyncio.run(run())
+
+    assert result.status == "ineligible"
+    assert result.registry_state == "reservation_pending_or_unknown"
+    assert (
+        result.reason
+        == "runtime_window_shutdown_failed:OSError"
+    )
+    assert paths["marker"].exists() is False
+    snapshot = ChatServedWindowRegistry(paths["registry"]).snapshot()
+    assert snapshot.is_consumed("window:lifecycle-test") is True
+    assert snapshot.is_verified("window:lifecycle-test") is False
+
+
+def test_runtime_missing_reservation_readback_writes_no_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+
+    def verify(**_kwargs):
+        return ProductionWindowVerification(
+            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
+        )
+
+    monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
+
+    async def run():
+        assert (await window.start()).status == "running"
+        registry = window._window_registry
+        assert registry is not None
+        reserve = registry.reserve_after_verification
+
+        def reserve_then_hide_readback(binding, callback):
+            row = reserve(binding, callback)
+            monkeypatch.setattr(
+                registry,
+                "snapshot",
+                lambda: SimpleNamespace(
+                    reservation_for=lambda _window_id: None,
+                    finalization_for=lambda _window_id: None,
+                ),
+            )
+            return row
+
+        monkeypatch.setattr(
+            registry,
+            "reserve_after_verification",
+            reserve_then_hide_readback,
+        )
+        return await window.shutdown()
+
+    result = asyncio.run(run())
+
+    assert result.status == "ineligible"
+    assert result.registry_state == "reserved_pre_marker"
+    assert (
+        result.reason
+        == "runtime_window_shutdown_failed:"
+        "window_registry_reservation_changed"
+    )
+    assert paths["marker"].exists() is False
+    snapshot = ChatServedWindowRegistry(paths["registry"]).snapshot()
+    assert snapshot.is_consumed("window:lifecycle-test") is True
 
 
 def test_runtime_window_rejects_on_disk_mutation_during_pre_verification(
@@ -326,6 +623,46 @@ def test_start_failure_closes_measurement_intake_before_api_serving(
     assert paths["enabled"].exists() is False
 
 
+@pytest.mark.parametrize("configured_path", [None, "relative/registry.jsonl"])
+def test_runtime_window_requires_absolute_registry_pin_before_first_append(
+    tmp_path: Path,
+    configured_path: str | None,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+    window._verified_window_registry_path = configured_path
+
+    result = asyncio.run(window.start())
+
+    assert result.status == "ineligible"
+    assert result.reason == "window_registry_path_invalid"
+    assert result.registry_state == "not_reserved"
+    assert paths["start"].exists() is False
+    assert paths["enabled"].exists() is False
+    assert paths["marker"].exists() is False
+
+
+def test_runtime_window_rejects_corrupt_registry_before_first_append(
+    tmp_path: Path,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+    paths["registry"].parent.mkdir(parents=True)
+    paths["registry"].write_bytes(b'{"torn":true}')
+
+    result = asyncio.run(window.start())
+
+    assert result.status == "ineligible"
+    assert (
+        result.reason
+        == "runtime_window_start_failed:WindowRegistryCorruptionError"
+    )
+    assert result.registry_state == "not_reserved"
+    assert paths["start"].exists() is False
+    assert paths["enabled"].exists() is False
+    assert paths["marker"].exists() is False
+
+
 def test_runtime_window_rejects_aliased_write_targets_before_first_append(
     tmp_path: Path,
 ) -> None:
@@ -338,6 +675,104 @@ def test_runtime_window_rejects_aliased_write_targets_before_first_append(
     assert result.status == "ineligible"
     assert paths["ledger"].exists() is False
     assert paths["enabled"].exists() is False
+
+
+@pytest.mark.parametrize("alias_kind", ["registry", "lock"])
+def test_runtime_window_rejects_registry_artifact_alias_before_first_append(
+    tmp_path: Path,
+    alias_kind: str,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+    registry = ChatServedWindowRegistry(paths["registry"])
+    alias = registry.path if alias_kind == "registry" else registry.lock_path
+    window._enabled_samples_path = alias
+
+    result = asyncio.run(window.start())
+
+    assert result.status == "ineligible"
+    assert result.reason == "runtime_window_start_failed:ValueError"
+    assert paths["start"].exists() is False
+    assert paths["marker"].exists() is False
+
+
+def test_runtime_window_rejects_registry_inside_receipt_namespace(
+    tmp_path: Path,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    poisoned = tmp_path / "receipts" / "receiver-registry.jsonl"
+    window, paths = _window(tmp_path, emitter, registry_path=poisoned)
+
+    result = asyncio.run(window.start())
+
+    assert result.status == "ineligible"
+    assert result.reason == "runtime_window_start_failed:ValueError"
+    assert paths["start"].exists() is False
+    assert paths["enabled"].exists() is False
+    assert paths["registry"].exists() is False
+    assert paths["marker"].exists() is False
+
+
+@pytest.mark.parametrize(
+    "overlap_direction",
+    ["registry_under_evidence", "evidence_under_registry"],
+)
+def test_runtime_window_rejects_registry_evidence_namespace_overlap(
+    tmp_path: Path,
+    overlap_direction: str,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    if overlap_direction == "registry_under_evidence":
+        registry_path = tmp_path / "evidence" / "registry.jsonl"
+        window, paths = _window(
+            tmp_path,
+            emitter,
+            registry_path=registry_path,
+        )
+    else:
+        window, paths = _window(tmp_path, emitter)
+        window._served_point_observations_path = (
+            paths["registry"].parent / "points.jsonl"
+        )
+
+    result = asyncio.run(window.start())
+
+    assert result.status == "ineligible"
+    assert result.reason == "runtime_window_start_failed:ValueError"
+    assert result.registry_state == "not_reserved"
+    assert paths["start"].exists() is False
+    assert paths["enabled"].exists() is False
+    assert paths["marker"].exists() is False
+
+
+@pytest.mark.parametrize("hardlinked_artifact", ["registry", "lock"])
+def test_runtime_window_rejects_hardlinked_registry_artifacts(
+    tmp_path: Path,
+    hardlinked_artifact: str,
+) -> None:
+    emitter = _Emitter(tmp_path, [])
+    window, paths = _window(tmp_path, emitter)
+    registry = ChatServedWindowRegistry(paths["registry"])
+    target = (
+        registry.path
+        if hardlinked_artifact == "registry"
+        else registry.lock_path
+    )
+    outside = tmp_path / f"outside-{hardlinked_artifact}.bin"
+    target.parent.mkdir(parents=True)
+    outside.write_bytes(b"")
+    try:
+        os.link(outside, target)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {type(exc).__name__}")
+
+    result = asyncio.run(window.start())
+
+    assert result.status == "ineligible"
+    assert result.reason == "runtime_window_start_failed:WindowRegistryPathError"
+    assert paths["start"].exists() is False
+    assert paths["enabled"].exists() is False
+    assert paths["marker"].exists() is False
 
 
 def test_runtime_window_rejects_evidence_inside_receipt_bundle_namespace(

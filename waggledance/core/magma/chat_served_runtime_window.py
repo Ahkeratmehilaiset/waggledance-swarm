@@ -35,6 +35,12 @@ from waggledance.core.magma.chat_served_claim_window_evidence import (
     write_head_anchor_checkpoint,
 )
 from waggledance.core.magma.chat_served_ledger import head_hash, read_entries
+from waggledance.core.magma.chat_served_window_registry import (
+    ChatServedWindowRegistry,
+    RegistryVerificationApproval,
+    WindowRegistryBinding,
+    derive_window_marker_path_digest,
+)
 
 _SOURCE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_SERVED_DIR_RE = re.compile(r"^served-[0-9a-f]{32}$")
@@ -57,6 +63,7 @@ class ChatServedRuntimeWindowResult:
     clean_marker_written: bool
     measurement_only: bool = True
     claim_safe_count: int = 0
+    registry_state: str = "not_reserved"
 
     def public_summary(self) -> dict[str, object]:
         return {
@@ -67,6 +74,7 @@ class ChatServedRuntimeWindowResult:
             "clean_marker_written": self.clean_marker_written,
             "measurement_only": self.measurement_only,
             "claim_safe_count": self.claim_safe_count,
+            "registry_state": self.registry_state,
         }
 
 
@@ -428,6 +436,7 @@ class ChatServedRuntimeWindow:
         start_boundary_path: str,
         final_boundary_path: str,
         clean_shutdown_marker_path: str,
+        verified_window_registry_path: str | None = None,
         enabled_probe: Callable[[], bool],
         sample_interval_seconds: float,
         max_sample_gap_seconds: int,
@@ -448,6 +457,9 @@ class ChatServedRuntimeWindow:
         self._start_boundary_path = Path(start_boundary_path)
         self._final_boundary_path = Path(final_boundary_path)
         self._clean_shutdown_marker_path = Path(clean_shutdown_marker_path)
+        self._verified_window_registry_path = verified_window_registry_path
+        self._window_registry: ChatServedWindowRegistry | None = None
+        self._registry_state = "not_reserved"
         self._pending_failures_path = Path(
             str(getattr(emitter, "pending_failure_ledger_path", ""))
         )
@@ -509,6 +521,7 @@ class ChatServedRuntimeWindow:
             reason=reason,
             lifecycle_verified=False,
             clean_marker_written=False,
+            registry_state=self._registry_state,
         )
         return self._result
 
@@ -545,7 +558,7 @@ class ChatServedRuntimeWindow:
         self,
         manifests: Mapping[str, _ManifestSnapshot],
     ) -> None:
-        evidence_files = (
+        protected_files = (
             self._ledger_path,
             self._anchor_store_path,
             self._enabled_samples_path,
@@ -555,10 +568,11 @@ class ChatServedRuntimeWindow:
             self._start_boundary_path,
             self._final_boundary_path,
             self._clean_shutdown_marker_path,
+            *self._registry_artifact_paths(),
         )
         evidence_identities = {
             (int(details.st_dev), int(details.st_ino))
-            for path in evidence_files
+            for path in protected_files
             if os.path.lexists(os.fspath(path))
             for details in (os.lstat(path),)
             if stat.S_ISREG(details.st_mode)
@@ -571,8 +585,15 @@ class ChatServedRuntimeWindow:
         if evidence_identities.intersection(bundle_identities):
             raise ValueError("runtime_window_receipt_hardlink_overlap")
 
+    def _registry_artifact_paths(self) -> tuple[Path, Path]:
+        registry = self._window_registry
+        if registry is None:
+            raise RuntimeError("window_registry_unavailable")
+        return registry.path, registry.lock_path
+
     def _validate_configured_paths(self) -> None:
-        evidence_files = (
+        registry_files = self._registry_artifact_paths()
+        producer_evidence_files = (
             self._ledger_path,
             self._anchor_store_path,
             self._enabled_samples_path,
@@ -583,42 +604,81 @@ class ChatServedRuntimeWindow:
             self._final_boundary_path,
             self._clean_shutdown_marker_path,
         )
+        protected_files = (*producer_evidence_files, *registry_files)
         _guard_no_reparse_components(self._receipt_root.parent)
         _guard_no_reparse_components(self._receipt_root)
-        for path in evidence_files:
+        for path in protected_files:
             _guard_no_reparse_components(path.parent)
             _guard_no_reparse_components(path)
         lexical = {
             os.path.normcase(os.path.abspath(os.fspath(path))).casefold()
-            for path in evidence_files
+            for path in protected_files
         }
         resolved = {
             os.path.normcase(
                 os.path.abspath(os.fspath(path.resolve(strict=False)))
             ).casefold()
-            for path in evidence_files
+            for path in protected_files
         }
         identities = [
             (
                 int(details.st_dev),
                 int(details.st_ino),
             )
-            for path in evidence_files
+            for path in protected_files
             if os.path.lexists(os.fspath(path))
             for details in (os.lstat(path),)
         ]
         if (
-            len(lexical) != len(evidence_files)
-            or len(resolved) != len(evidence_files)
+            len(lexical) != len(protected_files)
+            or len(resolved) != len(protected_files)
             or len(set(identities)) != len(identities)
         ):
             raise ValueError("runtime_window_paths_overlap")
+
+        def normalized(path: Path, *, resolve: bool) -> Path:
+            target = path.resolve(strict=False) if resolve else path
+            return Path(
+                os.path.normcase(
+                    os.path.abspath(os.fspath(target))
+                ).casefold()
+            )
+
+        for registry_path in registry_files:
+            for evidence_path in producer_evidence_files:
+                for resolve in (False, True):
+                    registry_target = normalized(
+                        registry_path,
+                        resolve=resolve,
+                    )
+                    evidence_target = normalized(
+                        evidence_path,
+                        resolve=resolve,
+                    )
+                    if (
+                        registry_target.is_relative_to(evidence_target.parent)
+                        or evidence_target.is_relative_to(
+                            registry_target.parent
+                        )
+                    ):
+                        raise ValueError(
+                            "runtime_window_registry_evidence_namespace_overlap"
+                        )
         receipt_root = Path(
             os.path.abspath(
                 os.fspath(self._receipt_root.resolve(strict=False))
             )
         )
-        for path in evidence_files:
+        for path in registry_files:
+            target = Path(
+                os.path.abspath(os.fspath(path.resolve(strict=False)))
+            )
+            try:
+                target.relative_to(receipt_root)
+            except ValueError:
+                continue
+            raise ValueError("runtime_window_registry_receipt_namespace_overlap")
+        for path in protected_files:
             target = Path(
                 os.path.abspath(os.fspath(path.resolve(strict=False)))
             )
@@ -740,7 +800,26 @@ class ChatServedRuntimeWindow:
                 or self._drain_timeout_seconds <= 0
             ):
                 return self._ineligible("runtime_window_timing_invalid")
+            if (
+                not isinstance(self._verified_window_registry_path, str)
+                or not self._verified_window_registry_path
+                or "\x00" in self._verified_window_registry_path
+                or not Path(self._verified_window_registry_path).is_absolute()
+            ):
+                return self._ineligible("window_registry_path_invalid")
+            self._window_registry = ChatServedWindowRegistry(
+                self._verified_window_registry_path
+            )
             self._validate_configured_paths()
+            registry_snapshot = await asyncio.to_thread(
+                self._window_registry.snapshot
+            )
+            self._validate_configured_paths()
+            if (
+                registry_snapshot.is_consumed(self.window_id)
+                or registry_snapshot.is_verified(self.window_id)
+            ):
+                return self._ineligible("window_registry_window_id_reused")
             for exclusive_path in (
                 self._start_boundary_path,
                 self._final_boundary_path,
@@ -1108,46 +1187,111 @@ class ChatServedRuntimeWindow:
 
             from waggledance.core.magma import chat_served_claim_window_evidence as evidence
 
+            marker_timestamp = self._next_timestamp()
+            marker = new_clean_shutdown_marker_v1(
+                window_id=self.window_id,
+                start_boundary_digest=str(
+                    self._start_boundary["boundary_hash"]
+                ),
+                final_boundary_digest=str(
+                    self._final_boundary["boundary_hash"]
+                ),
+                final_ledger_head=final_ledger_head,
+                end_enabled_sample_digest=str(final_sample["sample_hash"]),
+                ts_utc=marker_timestamp,
+            )
+            lifecycle = verify_claim_window_lifecycle_binding(
+                start_boundary=self._start_boundary,
+                final_boundary=self._final_boundary,
+                clean_shutdown_marker=marker,
+                enabled_samples=enabled_samples,
+                window_id=self.window_id,
+            )
+            if not lifecycle.ok:
+                raise RuntimeError(
+                    f"lifecycle_binding_invalid:{lifecycle.reason}"
+                )
+            binding = WindowRegistryBinding(
+                window_id=self.window_id,
+                source_head=self._source_head,
+                binding_digest=(
+                    evidence.derive_production_window_registry_binding_digest(
+                        expected_window_id=self.window_id,
+                        expected_source_head=self._source_head,
+                        start_boundary=self._start_boundary,
+                        final_boundary=self._final_boundary,
+                        clean_shutdown_marker=marker,
+                        ledger_entries=ledger_segment,
+                        enabled_samples=enabled_samples,
+                        pending_failures=slices["pending_append_failures"],
+                        receipt_index=slices["receipt_index"],
+                        served_point_observations=slices[
+                            "served_point_observations"
+                        ],
+                    )
+                ),
+                start_boundary_digest=str(
+                    self._start_boundary["boundary_hash"]
+                ),
+                final_boundary_digest=str(
+                    self._final_boundary["boundary_hash"]
+                ),
+                marker_digest=str(marker["marker_hash"]),
+                marker_path_digest=derive_window_marker_path_digest(
+                    self._clean_shutdown_marker_path
+                ),
+                final_ledger_head=final_ledger_head,
+            )
             verifier = getattr(evidence, "verify_production_window", None)
             if verifier is None:
                 raise RuntimeError("production_window_verifier_unavailable")
             callbacks = self._canonical_verify_callbacks(self._receipt_root)
-            verification = verifier(
-                expected_window_id=self.window_id,
-                expected_source_head=self._source_head,
-                start_boundary=self._start_boundary,
-                final_boundary=self._final_boundary,
-                clean_shutdown_marker=None,
-                ledger_entries=ledger_segment,
-                enabled_samples=enabled_samples,
-                pending_failures=slices["pending_append_failures"],
-                receipt_index=slices["receipt_index"],
-                served_point_observations=slices["served_point_observations"],
-                resolve_receipt_bundle=callbacks[0],
-                verify_receipt_bundle=callbacks[1],
-                content_address_receipt=callbacks[2],
-                previously_verified_window_ids=(),
-            )
-            if (
-                getattr(verification, "ok", False) is not True
-                or getattr(verification, "phase", None) != "pre_marker_verified"
-                or getattr(verification, "measurement_only", None) is not True
-                or getattr(verification, "claim_safe_count", None) != 0
-            ):
-                verifier_reason = getattr(verification, "reason", None)
-                if not isinstance(verifier_reason, str) or re.fullmatch(
-                    r"[a-z0-9_:]+", verifier_reason
-                ) is None:
-                    verifier_reason = "invalid_verifier_result"
-                raise RuntimeError(
-                    f"production_window_verification_failed:{verifier_reason}"
+
+            def verify_before_reservation(
+                prior_consumed_window_ids: tuple[str, ...],
+            ) -> RegistryVerificationApproval:
+                verification = verifier(
+                    expected_window_id=self.window_id,
+                    expected_source_head=self._source_head,
+                    start_boundary=self._start_boundary,
+                    final_boundary=self._final_boundary,
+                    clean_shutdown_marker=None,
+                    ledger_entries=ledger_segment,
+                    enabled_samples=enabled_samples,
+                    pending_failures=slices["pending_append_failures"],
+                    receipt_index=slices["receipt_index"],
+                    served_point_observations=slices[
+                        "served_point_observations"
+                    ],
+                    resolve_receipt_bundle=callbacks[0],
+                    verify_receipt_bundle=callbacks[1],
+                    content_address_receipt=callbacks[2],
+                    previously_verified_window_ids=prior_consumed_window_ids,
+                )
+                return RegistryVerificationApproval(
+                    binding=binding,
+                    verdict=verification,
                 )
 
-            # The verifier consumes in-memory slices and invokes receipt callbacks.
-            # Freeze-check every durable input after it returns so callback-time or
-            # concurrent local mutation cannot still receive a clean marker. No
-            # await follows these reads, so event-loop serving cannot interleave
-            # before the marker's atomic rename.
+            registry = self._window_registry
+            if registry is None:
+                raise RuntimeError("window_registry_unavailable")
+            self._registry_state = "reservation_pending_or_unknown"
+            reservation = await asyncio.to_thread(
+                registry.reserve_after_verification,
+                binding,
+                verify_before_reservation,
+            )
+            self._registry_state = "reserved_pre_marker"
+
+            # The verifier consumes in-memory slices and invokes receipt callbacks
+            # while the registry lock is held. The reservation append and fsync
+            # happen before this full freeze. Re-check every durable input and the
+            # exact reservation so callback-time, append-time, or concurrent local
+            # mutation cannot still receive a clean marker. No await follows these
+            # reads, so event-loop serving cannot interleave before the marker's
+            # atomic rename.
+            self._validate_configured_paths()
             frozen_ledger, frozen_head = self._ledger_snapshot()
             if (
                 frozen_ledger != all_ledger_entries
@@ -1210,31 +1354,17 @@ class ChatServedRuntimeWindow:
                 or getattr(self._emitter, "post_close_attempts", None) != 0
             ):
                 raise RuntimeError("emitter_latch_changed_after_verification")
-
-            marker_timestamp = self._next_timestamp()
-            marker = new_clean_shutdown_marker_v1(
-                window_id=self.window_id,
-                start_boundary_digest=str(
-                    self._start_boundary["boundary_hash"]
-                ),
-                final_boundary_digest=str(
-                    self._final_boundary["boundary_hash"]
-                ),
-                final_ledger_head=final_ledger_head,
-                end_enabled_sample_digest=str(final_sample["sample_hash"]),
-                ts_utc=marker_timestamp,
+            registry_snapshot = registry.snapshot()
+            frozen_reservation = registry_snapshot.reservation_for(
+                self.window_id
             )
-            lifecycle = verify_claim_window_lifecycle_binding(
-                start_boundary=self._start_boundary,
-                final_boundary=self._final_boundary,
-                clean_shutdown_marker=marker,
-                enabled_samples=enabled_samples,
-                window_id=self.window_id,
-            )
-            if not lifecycle.ok:
-                raise RuntimeError(
-                    f"lifecycle_binding_invalid:{lifecycle.reason}"
-                )
+            if (
+                frozen_reservation is None
+                or dict(frozen_reservation) != dict(reservation)
+                or registry_snapshot.finalization_for(self.window_id)
+                is not None
+            ):
+                raise RuntimeError("window_registry_reservation_changed")
 
             success_result = ChatServedRuntimeWindowResult(
                 status="complete",
@@ -1242,6 +1372,7 @@ class ChatServedRuntimeWindow:
                 reason=None,
                 lifecycle_verified=True,
                 clean_marker_written=True,
+                registry_state="reserved_pre_marker",
             )
             # LAST durable mutation: no success-sensitive operation follows.
             _write_clean_marker_last(self._clean_shutdown_marker_path, marker)

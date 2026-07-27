@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import os
+import queue
 import stat
+import subprocess
+import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -85,6 +91,315 @@ def _reserve(
     registry.reserve_after_verification(
         binding,
         lambda _prior: _approval(binding),
+    )
+
+
+_SPAWN_WAIT_SECONDS = 20.0
+_VERIFIER_CRASH_EXIT_CODE = 71
+_POST_APPEND_CRASH_EXIT_CODE = 72
+
+
+def _spawn_reservation_race_worker(
+    registry_path: str,
+    binding: R.WindowRegistryBinding,
+    start_gate: Any,
+    ready_queue: Any,
+    result_queue: Any,
+) -> None:
+    pid = os.getpid()
+    ready_queue.put((pid,))
+    if not start_gate.wait(_SPAWN_WAIT_SECONDS):
+        result_queue.put((pid, "unexpected", "start_gate_timeout"))
+        return
+    try:
+        record = R.ChatServedWindowRegistry(
+            registry_path,
+            lock_timeout_seconds=10.0,
+        ).reserve_after_verification(
+            binding,
+            lambda _prior: _approval(binding),
+        )
+    except R.WindowRegistryReplayError as exc:
+        result_queue.put((pid, "replay", str(exc)))
+    except Exception as exc:
+        result_queue.put(
+            (pid, "unexpected", f"{type(exc).__name__}:{exc}")
+        )
+    else:
+        result_queue.put((pid, "reserved", record["event_type"]))
+
+
+def _spawn_holding_finalizer_worker(
+    registry_path: str,
+    binding: R.WindowRegistryBinding,
+    callback_entered: Any,
+    release_callback: Any,
+    result_queue: Any,
+) -> None:
+    pid = os.getpid()
+
+    def verifier(_prior: tuple[str, ...]) -> R.RegistryVerificationApproval:
+        callback_entered.set()
+        if not release_callback.wait(_SPAWN_WAIT_SECONDS):
+            raise RuntimeError("release_callback_timeout")
+        return _approval(
+            binding,
+            phase=R.FINAL_VERIFIED,
+            marker_verified=True,
+        )
+
+    try:
+        record = R.ChatServedWindowRegistry(
+            registry_path,
+            lock_timeout_seconds=10.0,
+        ).finalize_after_verification(binding, verifier)
+    except Exception as exc:
+        result_queue.put(
+            (pid, "unexpected", f"{type(exc).__name__}:{exc}")
+        )
+    else:
+        result_queue.put((pid, "finalized", record["event_type"]))
+
+
+def _spawn_reserve_busy_then_retry_worker(
+    registry_path: str,
+    binding: R.WindowRegistryBinding,
+    first_attempt_done: Any,
+    allow_retry: Any,
+    result_queue: Any,
+) -> None:
+    pid = os.getpid()
+    try:
+        R.ChatServedWindowRegistry(
+            registry_path,
+            lock_timeout_seconds=0,
+        ).reserve_after_verification(
+            binding,
+            lambda _prior: _approval(binding),
+        )
+    except R.WindowRegistryLockError as exc:
+        if str(exc) != "registry_lock_busy":
+            result_queue.put(
+                (pid, "unexpected", f"{type(exc).__name__}:{exc}")
+            )
+            return
+        first_attempt_done.set()
+    except Exception as exc:
+        result_queue.put(
+            (pid, "unexpected", f"{type(exc).__name__}:{exc}")
+        )
+        return
+    else:
+        result_queue.put(
+            (pid, "unexpected", "first_attempt_bypassed_finalizer_lock")
+        )
+        return
+
+    if not allow_retry.wait(_SPAWN_WAIT_SECONDS):
+        result_queue.put((pid, "unexpected", "allow_retry_timeout"))
+        return
+    try:
+        record = R.ChatServedWindowRegistry(
+            registry_path,
+            lock_timeout_seconds=10.0,
+        ).reserve_after_verification(
+            binding,
+            lambda _prior: _approval(binding),
+        )
+    except Exception as exc:
+        result_queue.put(
+            (pid, "unexpected", f"{type(exc).__name__}:{exc}")
+        )
+    else:
+        result_queue.put(
+            (pid, "lock_busy_then_reserved", record["event_type"])
+        )
+
+
+def _spawn_exit_in_verifier_worker(
+    registry_path: str,
+    binding: R.WindowRegistryBinding,
+    callback_entered: Any,
+) -> None:
+    def verifier(_prior: tuple[str, ...]) -> R.RegistryVerificationApproval:
+        callback_entered.set()
+        os._exit(_VERIFIER_CRASH_EXIT_CODE)
+
+    R.ChatServedWindowRegistry(
+        registry_path,
+        lock_timeout_seconds=10.0,
+    ).reserve_after_verification(binding, verifier)
+
+
+def _spawn_exit_after_append_worker(
+    registry_path: str,
+    binding: R.WindowRegistryBinding,
+    append_completed: Any,
+) -> None:
+    original_append = R._append_record_unlocked
+
+    def append_then_exit(*args: Any, **kwargs: Any) -> None:
+        original_append(*args, **kwargs)
+        append_completed.set()
+        os._exit(_POST_APPEND_CRASH_EXIT_CODE)
+
+    R._append_record_unlocked = append_then_exit
+    R.ChatServedWindowRegistry(
+        registry_path,
+        lock_timeout_seconds=10.0,
+    ).reserve_after_verification(
+        binding,
+        lambda _prior: _approval(binding),
+    )
+
+
+def _fork_snapshot_after_release_worker(
+    registry_path: str,
+    inherited_lock_fds: tuple[tuple[int, int, int], ...],
+    allow_snapshot: Any,
+    result_queue: Any,
+) -> None:
+    pid = os.getpid()
+    leaked_lock_fds: list[int] = []
+    for fd, expected_device, expected_inode in inherited_lock_fds:
+        try:
+            details = os.fstat(fd)
+        except OSError:
+            continue
+        if (
+            int(details.st_dev),
+            int(details.st_ino),
+        ) == (expected_device, expected_inode):
+            leaked_lock_fds.append(fd)
+    result_queue.put(
+        (
+            pid,
+            "fork_state",
+            tuple(sorted(R._ACTIVE_LOCK_FDS)),
+            tuple(leaked_lock_fds),
+        )
+    )
+    if not allow_snapshot.wait(_SPAWN_WAIT_SECONDS):
+        result_queue.put((pid, "unexpected", "allow_snapshot_timeout"))
+        return
+    try:
+        snapshot = R.ChatServedWindowRegistry(
+            registry_path,
+            lock_timeout_seconds=1.0,
+        ).snapshot()
+    except Exception as exc:
+        result_queue.put(
+            (pid, "unexpected", f"{type(exc).__name__}:{exc}")
+        )
+    else:
+        result_queue.put((pid, "snapshot", len(snapshot.records)))
+
+
+def _fork_inside_verifier_worker(
+    registry_path: str,
+    result_queue: Any,
+) -> None:
+    original_pid = os.getpid()
+    binding = _binding(36)
+    read_fd, write_fd = os.pipe()
+    forked_pids: list[int] = []
+
+    def verifier(_prior: tuple[str, ...]) -> R.RegistryVerificationApproval:
+        forked_pid = os.fork()
+        if forked_pid == 0:
+            return _approval(binding)
+        forked_pids.append(forked_pid)
+        return _approval(binding)
+
+    try:
+        record = R.ChatServedWindowRegistry(
+            registry_path,
+            lock_timeout_seconds=2.0,
+        ).reserve_after_verification(binding, verifier)
+    except Exception as exc:
+        if os.getpid() != original_pid:
+            payload = f"{type(exc).__name__}:{exc}".encode("utf-8")
+            try:
+                os.write(write_fd, payload)
+            finally:
+                os._exit(
+                    0
+                    if payload
+                    == (
+                        b"WindowRegistryLockError:"
+                        b"process_forked_during_verification"
+                    )
+                    else 81
+                )
+        result_queue.put(
+            (
+                original_pid,
+                "unexpected",
+                f"{type(exc).__name__}:{exc}",
+            )
+        )
+        return
+
+    if os.getpid() != original_pid:
+        try:
+            os.write(write_fd, b"unexpected_child_transition")
+        finally:
+            os._exit(82)
+
+    os.close(write_fd)
+    forked_pid = forked_pids[0]
+    waited_pid, wait_status = os.waitpid(forked_pid, 0)
+    child_payload = os.read(read_fd, 4096).decode("utf-8")
+    os.close(read_fd)
+    snapshot = R.ChatServedWindowRegistry(registry_path).snapshot()
+    result_queue.put(
+        (
+            original_pid,
+            "parent_reserved",
+            record["event_type"],
+            waited_pid,
+            os.waitstatus_to_exitcode(wait_status),
+            child_payload,
+            len(snapshot.records),
+        )
+    )
+
+
+def _spawn_queue_get(result_queue: Any) -> tuple[Any, ...]:
+    try:
+        return result_queue.get(timeout=_SPAWN_WAIT_SECONDS)
+    except queue.Empty:
+        pytest.fail("spawned registry worker did not report before timeout")
+
+
+def _reap_spawned_processes(processes: list[Any]) -> None:
+    for process in processes:
+        process.join(timeout=_SPAWN_WAIT_SECONDS)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5.0)
+        if process.is_alive():
+            pytest.fail("spawned registry worker survived terminate and kill")
+
+
+def _assert_registry_is_canonical_and_valid(
+    path: Path,
+    snapshot: R.WindowRegistrySnapshot,
+) -> None:
+    expected = b"".join(
+        canonical_json_bytes(dict(record)) + b"\n"
+        for record in snapshot.records
+    )
+    assert path.read_bytes() == expected
+    assert b"\r" not in expected
+    assert R.verify_registry_chain(snapshot.records) == R.RegistryChainResult(
+        True,
+        None,
+        None,
     )
 
 
@@ -313,6 +628,29 @@ def test_callback_failure_is_closed_and_persists_no_reservation(tmp_path) -> Non
 
     assert isinstance(caught.value.__cause__, RuntimeError)
     assert registry.snapshot().records == ()
+
+
+def test_finalization_callback_failure_preserves_only_reservation(
+    tmp_path,
+) -> None:
+    registry = R.ChatServedWindowRegistry(tmp_path / "registry.jsonl")
+    binding = _binding()
+    _reserve(registry, binding)
+
+    def fail(_prior):
+        raise RuntimeError("private finalization callback detail")
+
+    with pytest.raises(
+        R.WindowRegistryVerificationError,
+        match="verification_callback_failed",
+    ) as caught:
+        registry.finalize_after_verification(binding, fail)
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    snapshot = registry.snapshot()
+    assert snapshot.consumed_window_ids == (binding.window_id,)
+    assert snapshot.verified_window_ids == ()
+    assert len(snapshot.records) == 1
 
 
 @pytest.mark.parametrize(
@@ -685,6 +1023,66 @@ def test_windows_short_and_long_paths_share_lock_and_marker_digest(
     ) == R.derive_window_marker_path_digest(short_marker)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows 8.3 alias behavior")
+def test_windows_missing_short_alias_cannot_rebind_after_construction(
+    tmp_path,
+) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    long_path = tmp_path / "verified-windows-registry-long-name.jsonl"
+    long_path.write_bytes(b"")
+    get_short_path_name = ctypes.WinDLL(
+        "kernel32",
+        use_last_error=True,
+    ).GetShortPathNameW
+    get_short_path_name.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    )
+    get_short_path_name.restype = wintypes.DWORD
+    required = get_short_path_name(os.fspath(long_path), None, 0)
+    if required == 0:
+        pytest.skip("8.3 short names are unavailable")
+    buffer = ctypes.create_unicode_buffer(required)
+    written = get_short_path_name(
+        os.fspath(long_path),
+        buffer,
+        required,
+    )
+    if written == 0 or written >= required:
+        pytest.skip("8.3 short names are unavailable")
+    short_path = Path(buffer.value)
+    if os.path.normcase(os.fspath(short_path)) == os.path.normcase(
+        os.fspath(long_path)
+    ):
+        pytest.skip("volume did not provide a distinct 8.3 alias")
+
+    long_path.unlink()
+    registry = R.ChatServedWindowRegistry(short_path)
+    frozen_path = registry.path
+    frozen_lock_path = registry.lock_path
+    long_path.write_bytes(b"")
+    try:
+        if not long_path.samefile(short_path):
+            pytest.skip("8.3 alias allocation changed after recreation")
+    except OSError:
+        pytest.skip("8.3 alias allocation changed after recreation")
+
+    effective_path = R._canonicalize_absolute_path(frozen_path)
+    effective_lock_path = effective_path.with_name(
+        f".{effective_path.name}.lock"
+    )
+    assert effective_path != frozen_path
+    assert effective_lock_path != frozen_lock_path
+    with pytest.raises(
+        R.WindowRegistryPathError,
+        match="registry_path_rebound_since_construction",
+    ):
+        registry.snapshot()
+
+
 def test_registry_rejects_hardlinked_registry_file(tmp_path) -> None:
     path = tmp_path / "registry.jsonl"
     registry = R.ChatServedWindowRegistry(path)
@@ -700,6 +1098,37 @@ def test_registry_rejects_hardlinked_registry_file(tmp_path) -> None:
         match="registry_hardlink_not_allowed",
     ):
         registry.snapshot()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO behavior")
+def test_registry_fifo_path_fails_without_blocking(tmp_path) -> None:
+    path = tmp_path / "registry.fifo"
+    os.mkfifo(path)
+    script = (
+        "import sys\n"
+        "from waggledance.core.magma import "
+        "chat_served_window_registry as R\n"
+        "try:\n"
+        "    R.ChatServedWindowRegistry(sys.argv[1]).snapshot()\n"
+        "except R.WindowRegistryPathError as exc:\n"
+        "    print(str(exc))\n"
+        "    raise SystemExit(0 if str(exc) == "
+        "'registry_not_regular' else 3)\n"
+        "raise SystemExit(4)\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script, os.fspath(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("registry FIFO open blocked instead of failing closed")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "registry_not_regular"
 
 
 def test_verification_callback_runs_while_registry_lock_is_held(
@@ -725,6 +1154,355 @@ def test_verification_callback_runs_while_registry_lock_is_held(
     assert registry.snapshot().consumed_window_ids == (binding.window_id,)
 
 
+def test_lock_close_failure_does_not_wedge_process_mutex(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    registry = R.ChatServedWindowRegistry(
+        tmp_path / "registry.jsonl",
+        lock_timeout_seconds=0,
+    )
+    original_close = R.os.close
+
+    def close_then_raise(fd: int) -> None:
+        original_close(fd)
+        raise OSError("injected close failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(R.os, "close", close_then_raise)
+        with pytest.raises(OSError, match="injected close failure"):
+            registry.snapshot()
+
+    assert registry.snapshot().records == ()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or "fork" not in mp.get_all_start_methods(),
+    reason="POSIX fork behavior",
+)
+@pytest.mark.filterwarnings(
+    "ignore:This process.*fork.*:DeprecationWarning"
+)
+def test_fork_child_drops_inherited_thread_and_native_locks(
+    tmp_path,
+) -> None:
+    path = tmp_path / "fork-registry.jsonl"
+    registry = R.ChatServedWindowRegistry(path)
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    holder_errors: list[str] = []
+
+    def hold_registry_lock() -> None:
+        try:
+            with registry._locked():
+                holder_entered.set()
+                if not release_holder.wait(_SPAWN_WAIT_SECONDS):
+                    raise RuntimeError("release_holder_timeout")
+        except Exception as exc:
+            holder_errors.append(f"{type(exc).__name__}:{exc}")
+
+    holder = threading.Thread(target=hold_registry_lock)
+    holder.start()
+    assert holder_entered.wait(_SPAWN_WAIT_SECONDS)
+
+    context = mp.get_context("fork")
+    allow_snapshot = context.Event()
+    result_queue = context.Queue()
+    with R._PATH_LOCKS_GUARD:
+        inherited_lock_fds = tuple(
+            (
+                fd,
+                int(os.fstat(fd).st_dev),
+                int(os.fstat(fd).st_ino),
+            )
+            for fd in sorted(R._ACTIVE_LOCK_FDS)
+        )
+    assert inherited_lock_fds
+    child = context.Process(
+        target=_fork_snapshot_after_release_worker,
+        args=(
+            os.fspath(path),
+            inherited_lock_fds,
+            allow_snapshot,
+            result_queue,
+        ),
+    )
+    child_started = False
+    try:
+        child.start()
+        child_started = True
+        fork_state = _spawn_queue_get(result_queue)
+        release_holder.set()
+        holder.join(timeout=_SPAWN_WAIT_SECONDS)
+        assert not holder.is_alive()
+        allow_snapshot.set()
+        snapshot_result = _spawn_queue_get(result_queue)
+    finally:
+        release_holder.set()
+        allow_snapshot.set()
+        holder.join(timeout=5.0)
+        if child_started:
+            _reap_spawned_processes([child])
+
+    assert holder_errors == []
+    assert fork_state[1:] == ("fork_state", (), ())
+    assert snapshot_result[1:] == ("snapshot", 0)
+    assert child.exitcode == 0
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "fork"),
+    reason="POSIX fork behavior",
+)
+def test_fork_inside_verifier_child_fails_before_transition(
+    tmp_path,
+) -> None:
+    context = mp.get_context("spawn")
+    path = tmp_path / "fork-inside-verifier-registry.jsonl"
+    result_queue = context.Queue()
+    worker = context.Process(
+        target=_fork_inside_verifier_worker,
+        args=(os.fspath(path), result_queue),
+    )
+    started = False
+    try:
+        worker.start()
+        started = True
+        result = _spawn_queue_get(result_queue)
+    finally:
+        if started:
+            _reap_spawned_processes([worker])
+
+    assert result[1] == "parent_reserved"
+    assert result[2] == R.RESERVED_PRE_MARKER
+    assert result[3] > 0
+    assert result[4] == 0
+    assert result[5] == (
+        "WindowRegistryLockError:"
+        "process_forked_during_verification"
+    )
+    assert result[6] == 1
+    assert worker.exitcode == 0
+
+
+def test_spawned_processes_racing_same_reservation_burn_exactly_once(
+    tmp_path,
+) -> None:
+    context = mp.get_context("spawn")
+    path = tmp_path / "spawn-race-registry.jsonl"
+    binding = _binding(31)
+    start_gate = context.Event()
+    ready_queue = context.Queue()
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_spawn_reservation_race_worker,
+            args=(
+                os.fspath(path),
+                binding,
+                start_gate,
+                ready_queue,
+                result_queue,
+            ),
+        )
+        for _index in range(2)
+    ]
+
+    try:
+        for process in processes:
+            process.start()
+        ready_pids = {
+            _spawn_queue_get(ready_queue)[0]
+            for _index in range(2)
+        }
+        start_gate.set()
+        results = [
+            _spawn_queue_get(result_queue)
+            for _index in range(2)
+        ]
+    finally:
+        start_gate.set()
+        _reap_spawned_processes(processes)
+
+    assert len(ready_pids) == 2
+    assert {result[0] for result in results} == ready_pids
+    assert sorted(result[1] for result in results) == [
+        "replay",
+        "reserved",
+    ]
+    assert {
+        (result[1], result[2])
+        for result in results
+    } == {
+        ("reserved", R.RESERVED_PRE_MARKER),
+        ("replay", "window_id_reused"),
+    }
+    assert all(process.exitcode == 0 for process in processes)
+
+    snapshot = R.ChatServedWindowRegistry(path).snapshot()
+    assert len(snapshot.records) == 1
+    assert snapshot.consumed_window_ids == (binding.window_id,)
+    assert snapshot.verified_window_ids == ()
+    assert snapshot.records[0]["sequence"] == 0
+    _assert_registry_is_canonical_and_valid(path, snapshot)
+
+
+def test_spawned_reserve_cannot_bypass_finalizer_and_retries_after_release(
+    tmp_path,
+) -> None:
+    path = tmp_path / "spawn-reserve-finalize-registry.jsonl"
+    first = _binding(32)
+    second = _binding(33)
+    _reserve(R.ChatServedWindowRegistry(path), first)
+
+    context = mp.get_context("spawn")
+    finalizer_entered = context.Event()
+    release_finalizer = context.Event()
+    reserve_first_attempt_done = context.Event()
+    allow_reserve_retry = context.Event()
+    finalizer_results = context.Queue()
+    reserve_results = context.Queue()
+    finalizer = context.Process(
+        target=_spawn_holding_finalizer_worker,
+        args=(
+            os.fspath(path),
+            first,
+            finalizer_entered,
+            release_finalizer,
+            finalizer_results,
+        ),
+    )
+    reserver = context.Process(
+        target=_spawn_reserve_busy_then_retry_worker,
+        args=(
+            os.fspath(path),
+            second,
+            reserve_first_attempt_done,
+            allow_reserve_retry,
+            reserve_results,
+        ),
+    )
+    processes: list[Any] = []
+
+    try:
+        finalizer.start()
+        processes.append(finalizer)
+        assert finalizer_entered.wait(_SPAWN_WAIT_SECONDS)
+
+        reserver.start()
+        processes.append(reserver)
+        assert reserve_first_attempt_done.wait(_SPAWN_WAIT_SECONDS)
+
+        release_finalizer.set()
+        finalizer_result = _spawn_queue_get(finalizer_results)
+        allow_reserve_retry.set()
+        reserve_result = _spawn_queue_get(reserve_results)
+    finally:
+        release_finalizer.set()
+        allow_reserve_retry.set()
+        _reap_spawned_processes(processes)
+
+    assert finalizer_result[1:] == ("finalized", R.FINAL_VERIFIED)
+    assert reserve_result[1:] == (
+        "lock_busy_then_reserved",
+        R.RESERVED_PRE_MARKER,
+    )
+    assert finalizer_result[0] != reserve_result[0]
+    assert all(process.exitcode == 0 for process in processes)
+
+    snapshot = R.ChatServedWindowRegistry(path).snapshot()
+    assert [record["event_type"] for record in snapshot.records] == [
+        R.RESERVED_PRE_MARKER,
+        R.FINAL_VERIFIED,
+        R.RESERVED_PRE_MARKER,
+    ]
+    assert [record["sequence"] for record in snapshot.records] == [0, 1, 2]
+    assert snapshot.consumed_window_ids == (
+        first.window_id,
+        second.window_id,
+    )
+    assert snapshot.verified_window_ids == (first.window_id,)
+    _assert_registry_is_canonical_and_valid(path, snapshot)
+
+
+def test_spawned_exit_inside_verifier_releases_lock_without_consuming_id(
+    tmp_path,
+) -> None:
+    context = mp.get_context("spawn")
+    path = tmp_path / "spawn-verifier-exit-registry.jsonl"
+    binding = _binding(34)
+    callback_entered = context.Event()
+    process = context.Process(
+        target=_spawn_exit_in_verifier_worker,
+        args=(os.fspath(path), binding, callback_entered),
+    )
+
+    try:
+        process.start()
+        entered = callback_entered.wait(_SPAWN_WAIT_SECONDS)
+    finally:
+        _reap_spawned_processes([process])
+
+    assert entered is True
+    assert process.exitcode == _VERIFIER_CRASH_EXIT_CODE
+
+    registry = R.ChatServedWindowRegistry(
+        path,
+        lock_timeout_seconds=1.0,
+    )
+    assert registry.snapshot().records == ()
+    _reserve(registry, binding)
+    snapshot = registry.snapshot()
+    assert snapshot.consumed_window_ids == (binding.window_id,)
+    assert len(snapshot.records) == 1
+    _assert_registry_is_canonical_and_valid(path, snapshot)
+
+
+def test_spawned_exit_after_durable_append_leaves_valid_burned_reservation(
+    tmp_path,
+) -> None:
+    context = mp.get_context("spawn")
+    path = tmp_path / "spawn-post-append-exit-registry.jsonl"
+    binding = _binding(35)
+    append_completed = context.Event()
+    process = context.Process(
+        target=_spawn_exit_after_append_worker,
+        args=(os.fspath(path), binding, append_completed),
+    )
+
+    try:
+        process.start()
+        appended = append_completed.wait(_SPAWN_WAIT_SECONDS)
+    finally:
+        _reap_spawned_processes([process])
+
+    assert appended is True
+    assert process.exitcode == _POST_APPEND_CRASH_EXIT_CODE
+
+    registry = R.ChatServedWindowRegistry(
+        path,
+        lock_timeout_seconds=1.0,
+    )
+    snapshot = registry.snapshot()
+    assert len(snapshot.records) == 1
+    assert snapshot.consumed_window_ids == (binding.window_id,)
+    assert snapshot.verified_window_ids == ()
+    _assert_registry_is_canonical_and_valid(path, snapshot)
+
+    callback_calls: list[tuple[str, ...]] = []
+    with pytest.raises(
+        R.WindowRegistryReplayError,
+        match="window_id_reused",
+    ):
+        registry.reserve_after_verification(
+            binding,
+            lambda prior: (
+                callback_calls.append(prior) or _approval(binding)
+            ),
+        )
+    assert callback_calls == []
+
+
 def test_append_fsyncs_lock_and_registry_before_return(
     tmp_path,
     monkeypatch,
@@ -738,11 +1516,12 @@ def test_append_fsyncs_lock_and_registry_before_return(
     assert len(fsync_fds) >= 2
 
 
-def test_first_registry_creation_fsyncs_parent_directory_only_once(
+def test_every_registry_append_fsyncs_parent_directory(
     tmp_path,
     monkeypatch,
 ) -> None:
     calls: list[Path] = []
+    monkeypatch.setattr(R, "_prepare_parent", lambda _path: None)
     monkeypatch.setattr(
         R,
         "_fsync_parent_directory",
@@ -754,7 +1533,122 @@ def test_first_registry_creation_fsyncs_parent_directory_only_once(
     _reserve(registry, _binding(1))
     _reserve(registry, _binding(2))
 
+    assert calls == [path.parent, path.parent]
+
+
+def test_crash_left_empty_registry_still_fsyncs_parent_on_append(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "registry.jsonl"
+    path.write_bytes(b"")
+    calls: list[Path] = []
+    monkeypatch.setattr(R, "_prepare_parent", lambda _path: None)
+    monkeypatch.setattr(
+        R,
+        "_fsync_parent_directory",
+        lambda target: calls.append(target.parent),
+    )
+
+    _reserve(R.ChatServedWindowRegistry(path), _binding())
+
     assert calls == [path.parent]
+
+
+def test_prepare_parent_requests_full_ancestor_sync_in_order(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    receiver_root = tmp_path / "receiver-root"
+    registry_parent = receiver_root / "registry-state"
+    path = registry_parent / "registry.jsonl"
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        R,
+        "_fsync_parent_directory",
+        lambda target: calls.append(target.parent),
+    )
+
+    R._prepare_parent(path)
+
+    assert calls[-3:] == [
+        tmp_path.parent,
+        tmp_path,
+        receiver_root,
+    ]
+
+
+def test_prepare_parent_retries_full_ancestor_sync_after_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    receiver_root = tmp_path / "receiver-root"
+    registry_parent = receiver_root / "registry-state"
+    path = registry_parent / "registry.jsonl"
+    first_calls: list[Path] = []
+
+    def fail_after_creation(target: Path) -> None:
+        first_calls.append(target)
+        if target == registry_parent:
+            raise R.WindowRegistryError("injected ancestor fsync failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(R, "_fsync_parent_directory", fail_after_creation)
+        with pytest.raises(
+            R.WindowRegistryError,
+            match="injected ancestor fsync failure",
+        ):
+            R._prepare_parent(path)
+
+    assert receiver_root.is_dir()
+    assert registry_parent.is_dir()
+    assert registry_parent in first_calls
+
+    retry_calls: list[Path] = []
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            R,
+            "_fsync_parent_directory",
+            lambda target: retry_calls.append(target),
+        )
+        R._prepare_parent(path)
+
+    assert retry_calls[-3:] == [
+        tmp_path,
+        receiver_root,
+        registry_parent,
+    ]
+
+
+def test_parent_fsync_failure_returns_unknown_but_keeps_valid_burn(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "registry.jsonl"
+    registry = R.ChatServedWindowRegistry(path)
+    binding = _binding()
+    assert registry.snapshot().records == ()
+
+    def fail_parent_fsync(_path: Path) -> None:
+        raise R.WindowRegistryError("injected parent fsync failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(R, "_prepare_parent", lambda _path: None)
+        patch.setattr(R, "_fsync_parent_directory", fail_parent_fsync)
+        with pytest.raises(
+            R.WindowRegistryError,
+            match="injected parent fsync failure",
+        ):
+            _reserve(registry, binding)
+
+    snapshot = registry.snapshot()
+    assert snapshot.consumed_window_ids == (binding.window_id,)
+    assert len(snapshot.records) == 1
+    with pytest.raises(
+        R.WindowRegistryReplayError,
+        match="window_id_reused",
+    ):
+        _reserve(registry, binding)
 
 
 def test_receiver_clock_rollback_advances_sequence_time_without_blocking(

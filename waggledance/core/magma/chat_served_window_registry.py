@@ -118,6 +118,45 @@ _UTC_TIMESTAMP_RE = re.compile(
 
 _PATH_LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS: dict[str, threading.Lock] = {}
+_ACTIVE_LOCK_FDS: set[int] = set()
+_FORK_LOCK_CLEANUP_FAILED = False
+
+
+def _before_registry_fork() -> None:
+    """Freeze lock-FD bookkeeping before POSIX duplicates the process."""
+    _PATH_LOCKS_GUARD.acquire()
+
+
+def _after_registry_fork_parent() -> None:
+    _PATH_LOCKS_GUARD.release()
+
+
+def _after_registry_fork_child() -> None:
+    """Drop locks owned by vanished parent threads in the fork child."""
+    global _ACTIVE_LOCK_FDS
+    global _FORK_LOCK_CLEANUP_FAILED
+    global _PATH_LOCKS
+    global _PATH_LOCKS_GUARD
+
+    cleanup_failed = False
+    for fd in tuple(_ACTIVE_LOCK_FDS):
+        try:
+            os.close(fd)
+        except OSError:
+            cleanup_failed = True
+    _ACTIVE_LOCK_FDS = set()
+    _PATH_LOCKS = {}
+    _PATH_LOCKS_GUARD = threading.Lock()
+    _FORK_LOCK_CLEANUP_FAILED = cleanup_failed
+
+
+_register_at_fork = getattr(os, "register_at_fork", None)
+if callable(_register_at_fork):
+    _register_at_fork(
+        before=_before_registry_fork,
+        after_in_parent=_after_registry_fork_parent,
+        after_in_child=_after_registry_fork_child,
+    )
 
 
 class WindowRegistryError(ValueError):
@@ -736,6 +775,22 @@ def _prepare_parent(path: Path) -> None:
     _guard_no_reparse_components(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
     _guard_no_reparse_components(path.parent)
+    ancestor_entries: list[Path] = []
+    current = path.parent
+    while current.parent != current:
+        ancestor_entries.append(current)
+        current = current.parent
+    for directory in reversed(ancestor_entries):
+        try:
+            directory_details = os.lstat(directory)
+        except OSError as exc:
+            raise WindowRegistryPathError("registry_parent_unreadable") from exc
+        if (
+            not stat.S_ISDIR(directory_details.st_mode)
+            or _path_is_link_or_reparse(directory)
+        ):
+            raise WindowRegistryPathError("registry_parent_invalid")
+        _fsync_parent_directory(directory)
     try:
         details = os.lstat(path.parent)
     except OSError as exc:
@@ -828,6 +883,7 @@ def _open_flags(base: int) -> int:
         | getattr(os, "O_BINARY", 0)
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
+        | (getattr(os, "O_NONBLOCK", 0) if os.name == "posix" else 0)
     )
 
 
@@ -903,6 +959,7 @@ def _exclusive_registry_lock(
     timeout = _validate_lock_timeout(timeout_seconds)
     started = time.monotonic()
     deadline = started + timeout
+    owner_pid = os.getpid()
     thread_lock = _thread_lock_for(registry_path)
     if not thread_lock.acquire(timeout=timeout):
         raise WindowRegistryLockError("registry_lock_busy")
@@ -916,7 +973,11 @@ def _exclusive_registry_lock(
         ):
             raise WindowRegistryPathError("lock_reparse_not_allowed")
         flags = _open_flags(os.O_RDWR | os.O_CREAT)
-        fd = os.open(lock_path, flags, 0o600)
+        with _PATH_LOCKS_GUARD:
+            if _FORK_LOCK_CLEANUP_FAILED:
+                raise WindowRegistryLockError("fork_lock_cleanup_failed")
+            fd = os.open(lock_path, flags, 0o600)
+            _ACTIVE_LOCK_FDS.add(fd)
         lock_details, lock_identity = _fd_matches_path(
             fd,
             lock_path,
@@ -955,14 +1016,22 @@ def _exclusive_registry_lock(
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
         yield
     finally:
-        if fd is not None:
-            if native_locked:
-                try:
-                    _release_native_lock(fd)
-                except OSError:
-                    pass
-            os.close(fd)
-        thread_lock.release()
+        try:
+            if fd is not None and os.getpid() == owner_pid:
+                with _PATH_LOCKS_GUARD:
+                    try:
+                        if native_locked:
+                            try:
+                                _release_native_lock(fd)
+                            except OSError:
+                                pass
+                    finally:
+                        try:
+                            os.close(fd)
+                        finally:
+                            _ACTIVE_LOCK_FDS.discard(fd)
+        finally:
+            thread_lock.release()
 
 
 def _decode_strict_json(raw: bytes) -> object:
@@ -1010,6 +1079,7 @@ def _read_registry_unlocked(
         return _RegistryRead((), 0, None, None)
     if _path_is_link_or_reparse(path):
         raise WindowRegistryPathError("registry_reparse_not_allowed")
+    _safe_identity(os.lstat(path), label="registry")
     fd = os.open(path, _open_flags(os.O_RDONLY))
     try:
         before, identity = _fd_matches_path(fd, path, label="registry")
@@ -1192,8 +1262,7 @@ def _append_record_unlocked(
             raise WindowRegistryCorruptionError(
                 "registry_changed_during_append"
             )
-        if not existed:
-            _fsync_parent_directory(path)
+        _fsync_parent_directory(path)
     finally:
         os.close(fd)
     confirmed = _read_registry_unlocked(
@@ -1263,6 +1332,10 @@ class ChatServedWindowRegistry:
     @contextmanager
     def _locked(self) -> Iterator[Path]:
         effective_path = _canonicalize_absolute_path(self._path)
+        if effective_path != self._path:
+            raise WindowRegistryPathError(
+                "registry_path_rebound_since_construction"
+            )
         _guard_no_reparse_components(effective_path)
         effective_lock_path = effective_path.with_name(
             f".{effective_path.name}.lock"
@@ -1350,12 +1423,18 @@ class ChatServedWindowRegistry:
             raise WindowRegistryVerificationError(
                 "verification_callback_not_callable"
             )
+        owner_pid = os.getpid()
         try:
-            return callback(prior_consumed_window_ids)
+            approval = callback(prior_consumed_window_ids)
         except Exception as exc:
             raise WindowRegistryVerificationError(
                 "verification_callback_failed"
             ) from exc
+        if os.getpid() != owner_pid:
+            raise WindowRegistryLockError(
+                "process_forked_during_verification"
+            )
+        return approval
 
     def reserve_after_verification(
         self,

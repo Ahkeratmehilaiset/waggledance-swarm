@@ -6,7 +6,6 @@ disabled (default), and emission never breaks serving (fail-open).
 """
 
 import asyncio
-import json
 import os
 
 from unittest.mock import MagicMock
@@ -14,9 +13,6 @@ from unittest.mock import MagicMock
 from waggledance.application.dto.chat_dto import ChatRequest
 from waggledance.application.services.chat_service import ChatService
 from waggledance.core.magma import chat_served_ledger as L
-from waggledance.core.magma.chat_served_claim_window_evidence import (
-    derive_instrumented_served_points,
-)
 from waggledance.core.magma.chat_query_route_evidence import (
     NORMALIZATION_VERSION,
     canonical_query_digest,
@@ -72,11 +68,6 @@ def _pending_metadata(out_dir):
     return [e["metadata"] for e in entries if e["entry_type"] == "served_pending"]
 
 
-def _read_jsonl(path):
-    with open(path, encoding="utf-8") as handle:
-        return [json.loads(line) for line in handle if line.strip()]
-
-
 async def _drain(svc):
     emitter = svc._chat_served_emitter
     if emitter is not None and emitter._tasks:
@@ -106,7 +97,7 @@ def test_hotcache_served_records_pending_no_raw(
     assert not os.path.exists(os.path.join(out_dir, "claim_window_served_points.jsonl"))
 
 
-def test_hotcache_claim_window_evidence_opt_in_records_served_point_only(
+def test_claim_window_evidence_requires_injected_lifecycle_owner(
     tmp_path, mock_orchestrator, mock_memory_service, mock_hot_cache
 ):
     out_dir = str(tmp_path / "csr")
@@ -126,14 +117,12 @@ def test_hotcache_claim_window_evidence_opt_in_records_served_point_only(
 
     async def _run():
         result = await svc.handle(ChatRequest(query="private hotcache query", profile="HOME"))
-        assert result.source == "hotcache"
-        await _drain(svc)
+        assert result.source == "hotcache" and result.response == "cached answer"
 
     asyncio.run(_run())
-    observations = _read_jsonl(claim_paths["served_points"])
-
-    assert derive_instrumented_served_points(observations) == ("hotcache",)
-    assert not os.path.exists(claim_paths["clean"])
+    assert svc._chat_served_emitter is None
+    assert not os.path.exists(out_dir)
+    assert not any(os.path.exists(path) for path in claim_paths.values())
 
 
 def test_final_llm_path_records_pending(

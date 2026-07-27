@@ -58,8 +58,17 @@ jobs:
         run: pytest tests/ -x -q --tb=short -p no:warnings
 
       - name: Check test count
+        shell: bash
         run: |
-          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oP '\d+')
+          set -o pipefail
+          COUNT=$(
+            pytest tests/ --collect-only -q \
+              | sed -nE 's/^([0-9]{1,9}) tests? collected(,.*)? in .+$/\1/p'
+          )
+          if [[ ! "$COUNT" =~ ^[0-9]{1,9}$ ]]; then
+            echo "Unable to parse exactly one pytest collection count" >&2
+            exit 1
+          fi
           echo "Test count: $COUNT"
           if [ "$COUNT" -lt 4200 ]; then
             echo "Test count dropped below 4200!"

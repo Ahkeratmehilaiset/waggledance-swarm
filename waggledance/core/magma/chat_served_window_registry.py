@@ -936,9 +936,11 @@ def _release_native_lock(fd: int) -> None:
 
 
 def _validate_lock_timeout(value: float) -> float:
+    if type(value) not in (int, float):
+        raise WindowRegistryLockError("lock_timeout_invalid")
     try:
         timeout = float(value)
-    except (TypeError, ValueError) as exc:
+    except (OverflowError, TypeError, ValueError) as exc:
         raise WindowRegistryLockError("lock_timeout_invalid") from exc
     if (
         not math.isfinite(timeout)

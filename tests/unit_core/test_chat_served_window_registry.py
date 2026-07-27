@@ -928,6 +928,36 @@ def test_constructor_requires_explicit_absolute_receiver_path() -> None:
         R.ChatServedWindowRegistry("relative/registry.jsonl")
 
 
+@pytest.mark.parametrize("value", ["1", b"1", True])
+def test_constructor_rejects_coercible_non_numeric_lock_timeout(
+    tmp_path,
+    value,
+) -> None:
+    with pytest.raises(
+        R.WindowRegistryLockError,
+        match="lock_timeout_invalid",
+    ):
+        R.ChatServedWindowRegistry(
+            tmp_path / "registry.jsonl",
+            lock_timeout_seconds=value,
+        )
+
+
+@pytest.mark.parametrize("value", [10**400, -(10**400)])
+def test_constructor_normalizes_lock_timeout_overflow_to_contract_error(
+    tmp_path,
+    value,
+) -> None:
+    with pytest.raises(
+        R.WindowRegistryLockError,
+        match="lock_timeout_invalid",
+    ):
+        R.ChatServedWindowRegistry(
+            tmp_path / "registry.jsonl",
+            lock_timeout_seconds=value,
+        )
+
+
 def test_registry_rejects_symlinked_parent(tmp_path) -> None:
     real = tmp_path / "real"
     real.mkdir()

@@ -39,8 +39,8 @@ FI_CHARS = set("äöåÄÖÅ")
 # Audit H42: a single ä/ö/å detector misclassifies diacritic-less
 # Finnish (mobile typing) as English and English with German/Swedish
 # proper nouns ("Möbel", "Schrödinger") as Finnish. Stopword overlap
-# gives a confident vote when either set hits; we fall back to the
-# old diacritic check only on a tie (both stopword counts zero).
+# gives a confident vote when either set hits; unresolved ties fall
+# back to the old diacritic check.
 #
 # Sets are small and deliberately uncontroversial — common function
 # words that appear in almost every natural-language sentence in each
@@ -73,6 +73,13 @@ _EN_STOPWORDS = frozenset({
     "tell", "me", "us", "give", "show",
     "today", "yesterday", "tomorrow", "now",
 })
+
+# Exact query-token sets can resolve a known high-confidence tie without
+# turning domain nouns into broad language votes. They are checked only after
+# the stopword scores are equal, so a non-tied score still wins.
+_FI_EXACT_TOKEN_HINT_SETS = (
+    frozenset({"palovaroitin", "piippaa"}),
+)
 
 # Cheap token splitter — unicode-aware via Python 3 default `\w` flags
 # so Finnish letters survive splitting.
@@ -819,9 +826,10 @@ class ChatService:
         - "Möbel sale at IKEA"     (English w/ German noun)    -> fi
         - "paljonko maksaa"        (pure Finnish w/o ä/ö)      -> en
         Now: count tokens overlapping with each language's stopword
-        set. Winner takes the language. On a tie (both 0) we fall
-        back to the diacritic check to preserve the pre-H42 behavior
-        for very short / proper-noun-only queries.
+        set. Winner takes the language. On a tie, a bounded exact query-token
+        set may resolve known high-confidence Finnish content; otherwise we
+        fall back to the diacritic check to preserve the pre-H42 behavior for
+        very short / proper-noun-only queries.
 
         Explicit ``hint != "auto"`` always wins — operator/client
         knows best.
@@ -835,7 +843,9 @@ class ChatService:
             return "fi"
         if en_hits > fi_hits:
             return "en"
-        # Tie: defer to the original diacritic check, then default en.
+        if any(tokens == hint_tokens for hint_tokens in _FI_EXACT_TOKEN_HINT_SETS):
+            return "fi"
+        # Unresolved tie: defer to the original diacritic check, then default en.
         if any(c in FI_CHARS for c in query):
             return "fi"
         return "en"

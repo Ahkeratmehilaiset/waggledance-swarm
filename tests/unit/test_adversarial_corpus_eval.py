@@ -2,11 +2,14 @@
 """Tests for the core (tools-free) adversarial-corpus eval runner (T5b inline)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from waggledance.core.magma.adversarial_corpus_eval import (
+    DEFAULT_CORPUS_PATH,
+    DEFAULT_EXPECTATIONS_PATH,
     MIN_CRITICAL_DEFECT_CASES,
     AdversarialCorpusEvalError,
     build_per_case_coverage_report,
@@ -128,4 +131,71 @@ def test_corpus_with_no_cases_fails_closed(tmp_path: Path):
     with pytest.raises(AdversarialCorpusEvalError):
         run_adversarial_corpus_evaluation(
             bound_solver_hash=SOLVER, corpus_path=corpus, expectations_path=exp
+        )
+
+
+def test_numeric_case_ids_are_not_coerced_to_strings(tmp_path: Path):
+    corpus_doc = json.loads(DEFAULT_CORPUS_PATH.read_text(encoding="utf-8"))
+    expectations_doc = json.loads(
+        DEFAULT_EXPECTATIONS_PATH.read_text(encoding="utf-8")
+    )
+    corpus_doc["cases"][0]["case_id"] = 123
+    expectations_doc["expectations"][0]["case_id"] = 123
+    corpus = tmp_path / "corpus.json"
+    expectations = tmp_path / "expectations.json"
+    corpus.write_text(json.dumps(corpus_doc), encoding="utf-8")
+    expectations.write_text(json.dumps(expectations_doc), encoding="utf-8")
+
+    with pytest.raises(AdversarialCorpusEvalError, match="schema pattern"):
+        run_adversarial_corpus_evaluation(
+            bound_solver_hash=SOLVER,
+            corpus_path=corpus,
+            expectations_path=expectations,
+        )
+
+
+@pytest.mark.parametrize("duplicate_source", ["corpus", "expectations"])
+def test_duplicate_fixture_case_ids_fail_closed(
+    tmp_path: Path,
+    duplicate_source: str,
+):
+    corpus_doc = json.loads(DEFAULT_CORPUS_PATH.read_text(encoding="utf-8"))
+    expectations_doc = json.loads(
+        DEFAULT_EXPECTATIONS_PATH.read_text(encoding="utf-8")
+    )
+    if duplicate_source == "corpus":
+        corpus_doc["cases"][1]["case_id"] = corpus_doc["cases"][0]["case_id"]
+    else:
+        expectations_doc["expectations"][1]["case_id"] = (
+            expectations_doc["expectations"][0]["case_id"]
+        )
+    corpus = tmp_path / "corpus.json"
+    expectations = tmp_path / "expectations.json"
+    corpus.write_text(json.dumps(corpus_doc), encoding="utf-8")
+    expectations.write_text(json.dumps(expectations_doc), encoding="utf-8")
+
+    with pytest.raises(AdversarialCorpusEvalError, match="duplicate"):
+        run_adversarial_corpus_evaluation(
+            bound_solver_hash=SOLVER,
+            corpus_path=corpus,
+            expectations_path=expectations,
+        )
+
+
+def test_dangling_expectation_fails_closed(tmp_path: Path):
+    corpus_doc = json.loads(DEFAULT_CORPUS_PATH.read_text(encoding="utf-8"))
+    expectations_doc = json.loads(
+        DEFAULT_EXPECTATIONS_PATH.read_text(encoding="utf-8")
+    )
+    corpus_doc["cases"].pop(0)
+    corpus = tmp_path / "corpus.json"
+    expectations = tmp_path / "expectations.json"
+    corpus.write_text(json.dumps(corpus_doc), encoding="utf-8")
+    expectations.write_text(json.dumps(expectations_doc), encoding="utf-8")
+
+    with pytest.raises(AdversarialCorpusEvalError, match="cross-reference mismatch"):
+        run_adversarial_corpus_evaluation(
+            bound_solver_hash=SOLVER,
+            corpus_path=corpus,
+            expectations_path=expectations,
         )

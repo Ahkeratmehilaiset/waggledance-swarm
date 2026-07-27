@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import Counter
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 from waggledance.core.magma.demo_policy import demo_policy_for_case
@@ -55,6 +56,9 @@ CRITICAL_DEFECT_TYPES = frozenset(
     }
 )
 MIN_CRITICAL_DEFECT_CASES = 2
+ADVERSARIAL_CASE_ID_PATTERN = re.compile(
+    r"case:adv:[a-z0-9_]{4,48}:[0-9]{3}"
+)
 
 
 class AdversarialCorpusEvalError(RuntimeError):
@@ -78,8 +82,9 @@ def run_adversarial_corpus_evaluation(
     ``case_count``, ``cases`` (each ``{case_id, defect_class, ok}`` where
     ``ok`` is whether the policy caught the adversarial case and ``defect_class``
     is the fixture ``defect_type``), and a re-derivable top-level ``ok``.
-    Raises :class:`AdversarialCorpusEvalError` on any fixture problem
-    (the engine treats that fail-closed).
+    Case IDs must be unique, canonical, and exactly cross-referenced between
+    corpus and expectations. Raises :class:`AdversarialCorpusEvalError` on any
+    recognized fixture problem (the engine treats every exception fail-closed).
     """
     if not isinstance(bound_solver_hash, str) or not bound_solver_hash.strip():
         raise AdversarialCorpusEvalError("bound_solver_hash must be a non-empty string")
@@ -99,17 +104,30 @@ def run_adversarial_corpus_evaluation(
     if not isinstance(raw_expectations, list) or not raw_expectations:
         raise AdversarialCorpusEvalError("expectations doc has no expectations")
 
-    expectations = {
-        str(exp.get("case_id")): exp
-        for exp in raw_expectations
-        if isinstance(exp, dict)
-    }
+    expectations: dict[str, dict[str, Any]] = {}
+    for expectation in raw_expectations:
+        if not isinstance(expectation, dict):
+            raise AdversarialCorpusEvalError("expectation is not an object")
+        case_id = _require_canonical_case_id(
+            expectation.get("case_id"),
+            source="expectation",
+        )
+        if case_id in expectations:
+            raise AdversarialCorpusEvalError("duplicate expectation case_id")
+        expectations[case_id] = expectation
 
     cases: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
     for case in raw_cases:
         if not isinstance(case, dict):
             raise AdversarialCorpusEvalError("corpus case is not an object")
-        case_id = str(case.get("case_id", ""))
+        case_id = _require_canonical_case_id(
+            case.get("case_id"),
+            source="corpus case",
+        )
+        if case_id in seen_case_ids:
+            raise AdversarialCorpusEvalError("duplicate corpus case_id")
+        seen_case_ids.add(case_id)
         defect_class = case.get("defect_type")
         expectation = expectations.get(case_id)
         if expectation is None:
@@ -130,6 +148,11 @@ def run_adversarial_corpus_evaluation(
             }
         )
 
+    if seen_case_ids != set(expectations):
+        raise AdversarialCorpusEvalError(
+            "corpus and expectations case_id cross-reference mismatch"
+        )
+
     return {
         "eval_version": "magma.adversarial_corpus_eval.core.v0",
         "bound_solver_hash": bound_solver_hash,
@@ -138,6 +161,17 @@ def run_adversarial_corpus_evaluation(
         "per_case_coverage": build_per_case_coverage_report(cases),
         "ok": all(c["ok"] for c in cases),
     }
+
+
+def _require_canonical_case_id(value: Any, *, source: str) -> str:
+    if (
+        not isinstance(value, str)
+        or ADVERSARIAL_CASE_ID_PATTERN.fullmatch(value) is None
+    ):
+        raise AdversarialCorpusEvalError(
+            f"{source} case_id does not match the canonical schema pattern"
+        )
+    return value
 
 
 def build_per_case_coverage_report(
@@ -149,8 +183,9 @@ def build_per_case_coverage_report(
     DISTINCT ``case_id``. The two diverge only when the corpus repeats a
     ``case_id`` — so the distinct-vs-occurrence gap makes corpus
     duplicate-padding visible (a critical-defect floor "met" by re-listing one
-    caught case is not real coverage). This is observability only: it surfaces
-    the risk for an operator/RCO; it does NOT change the gate verdict.
+    caught case is not real coverage). This payload is observability only and
+    is not trusted as gate input; the gate independently re-derives case-id
+    validity, uniqueness, and distinct-case coverage.
     """
 
     defect_counts: Counter[str] = Counter()
@@ -206,8 +241,8 @@ def build_per_case_coverage_report(
         "critical_defect_type_caught_counts": critical_caught_counts,
         "critical_defect_types_below_floor": critical_below_floor,
         "min_critical_defect_cases": MIN_CRITICAL_DEFECT_CASES,
-        # Distinct-case coverage (exposes corpus duplicate-padding; observability
-        # only, the gate verdict is unchanged).
+        # Distinct-case coverage exposes corpus duplicate-padding. The gate
+        # independently enforces uniqueness rather than trusting this payload.
         "distinct_case_count": len(case_id_occurrences),
         "duplicate_case_ids": duplicate_case_ids,
         "critical_defect_type_distinct_caught_counts": (

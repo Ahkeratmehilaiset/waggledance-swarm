@@ -25,7 +25,6 @@ from typing import Any, Callable, Optional, Sequence
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.adversarial_gate import verify_adversarial_corpus_gate
 from waggledance.core.magma.adversarial_corpus_eval import (
-    AdversarialCorpusEvalError,
     REQUIRED_DEFECT_TYPES,
     run_adversarial_corpus_evaluation,
 )
@@ -79,11 +78,12 @@ class PromotionRequest:
     shadow_samples: Sequence[ShadowSample]
     oracle: OracleFn
     oracle_kind: str = "external_reference"
-    # T5b adversarial-corpus gate (I11), ON by default + fail-closed. When no
-    # report is supplied the engine RUNS the corpus eval inline, bound to the
-    # exact artifact being committed, so promotions stay gated AND keep
-    # working. require_adversarial_gate may be set False ONLY in tests;
-    # disabling it in production is on the charter code-pattern denylist.
+    # T5b adversarial-corpus gate (I11), ON by default + fail-closed. The engine
+    # ALWAYS runs the corpus eval inline, bound to the exact artifact being
+    # committed. A caller-supplied report is optional additional evidence: it
+    # may refuse a promotion but can never replace the fresh canonical eval.
+    # require_adversarial_gate may be set False ONLY in tests; disabling it in
+    # production is on the charter code-pattern denylist.
     require_adversarial_gate: bool = True
     adversarial_eval_report: Optional[Any] = None
     # T1 slice 2: optional A3 counterfactual replay evidence. This is never a
@@ -224,35 +224,50 @@ class AutoPromotionEngine:
 
         # I11 (T5b): fail-closed adversarial-corpus gate, bound to the EXACT
         # artifact being committed (compiled1.artifact_id == the spec_hash
-        # _commit_promotion records). Default ON. When no report is supplied
-        # the engine runs the corpus eval inline (fresh + bound), so the gate
-        # is enforced without stranding the autogrowth pipeline. The verdict
-        # is re-derived from per-case results (never a bare flag); any
-        # missing/incomplete/mis-bound/below-floor result or eval error
-        # refuses. Disabling the gate is charter-denylisted; opt-out is
-        # test-only.
+        # _commit_promotion records). Default ON. The engine always runs the
+        # corpus eval inline (fresh + bound); a caller-supplied report is
+        # verified only as additional fail-closed evidence and cannot replace
+        # that fresh run. The verdict is re-derived from per-case results
+        # (never a bare flag); any missing/incomplete/mis-bound/below-floor
+        # result or eval error refuses. Disabling the gate is charter-denylisted;
+        # opt-out is test-only.
         if request.require_adversarial_gate:
-            report = request.adversarial_eval_report
-            if report is None:
-                try:
-                    report = run_adversarial_corpus_evaluation(
-                        bound_solver_hash=compiled1.artifact_id,
-                    )
-                except AdversarialCorpusEvalError:
-                    return self._reject_with_validation_shadow(
-                        family_kind, validation, shadow,
-                        "I11_adversarial_corpus_eval_error",
-                    )
-            gate = verify_adversarial_corpus_gate(
-                report=report,
-                expected_solver_hash=compiled1.artifact_id,
-                min_cases=ADVERSARIAL_CORPUS_MIN_CASES,
-            )
-            if not gate.ok:
+            try:
+                fresh_report = run_adversarial_corpus_evaluation(
+                    bound_solver_hash=compiled1.artifact_id,
+                )
+                fresh_gate = verify_adversarial_corpus_gate(
+                    report=fresh_report,
+                    expected_solver_hash=compiled1.artifact_id,
+                    min_cases=ADVERSARIAL_CORPUS_MIN_CASES,
+                )
+            except Exception:  # noqa: BLE001 - promotion boundary fails closed
+                return self._reject_with_validation_shadow(
+                    family_kind, validation, shadow,
+                    "I11_adversarial_corpus_eval_error",
+                )
+            if not fresh_gate.ok:
                 return self._reject_with_validation_shadow(
                     family_kind, validation, shadow,
                     "I11_adversarial_corpus_gate",
                 )
+            if request.adversarial_eval_report is not None:
+                try:
+                    supplied_gate = verify_adversarial_corpus_gate(
+                        report=request.adversarial_eval_report,
+                        expected_solver_hash=compiled1.artifact_id,
+                        min_cases=ADVERSARIAL_CORPUS_MIN_CASES,
+                    )
+                except Exception:  # noqa: BLE001 - untrusted report fails closed
+                    return self._reject_with_validation_shadow(
+                        family_kind, validation, shadow,
+                        "I11_adversarial_corpus_gate",
+                    )
+                if not supplied_gate.ok:
+                    return self._reject_with_validation_shadow(
+                        family_kind, validation, shadow,
+                        "I11_adversarial_corpus_gate",
+                    )
 
         counterfactual = _counterfactual_summary_for_request(request)
 

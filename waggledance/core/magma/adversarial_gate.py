@@ -28,9 +28,10 @@ verdict rather than trusting it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from waggledance.core.magma.adversarial_corpus_eval import (
+    ADVERSARIAL_CASE_ID_PATTERN,
     CRITICAL_DEFECT_TYPES,
     MIN_CRITICAL_DEFECT_CASES,
     REQUIRED_DEFECT_TYPES,
@@ -62,11 +63,12 @@ def verify_adversarial_corpus_gate(
 
     Returns ``ok=True`` only if ALL hold: the report is a non-empty mapping
     bound to ``expected_solver_hash``; it lists at least ``min_cases`` cases;
-    every case is independently caught (per-case ``ok is True``); the declared
-    ``case_count`` is an int equal to the number of case entries; every required
-    defect class is caught by at least one case; every critical defect class
-    meets the per-case caught coverage floor; and there are no invalid/type-
-    confused entries. Any deviation refuses.
+    every case has a unique ``case_id`` matching the canonical adversarial-case
+    schema pattern and is independently caught (per-case ``ok is True``); the
+    declared ``case_count`` is an int equal to the number of case entries; every
+    required defect class is caught by at least one distinct case; every
+    critical defect class meets the distinct-case caught coverage floor; and
+    there are no invalid/type-confused entries. Any deviation refuses.
     """
     reasons: list[str] = []
 
@@ -118,7 +120,7 @@ def verify_adversarial_corpus_gate(
 
     # (3) re-derive from per-case results; never trust report['ok'].
     cases = report.get("cases")
-    if not isinstance(cases, Sequence) or isinstance(cases, (str, bytes)):
+    if type(cases) is not list:
         reasons.append("report 'cases' is not a list (fail-closed)")
         cases = []
 
@@ -126,20 +128,39 @@ def verify_adversarial_corpus_gate(
     not_caught = 0
     invalid = 0
     invalid_shape = 0
+    invalid_case_id = 0
+    duplicate_case_id = 0
     invalid_defect_class = 0
     invalid_ok = 0
+    seen_case_ids: set[str] = set()
+    duplicate_case_ids: set[str] = set()
     caught_by_defect_class = {defect: 0 for defect in REQUIRED_DEFECT_TYPES}
     for case in cases:
         if not isinstance(case, Mapping):
             invalid_shape += 1
             invalid += 1
             continue
+        case_id = case.get("case_id")
+        valid_case_id = (
+            isinstance(case_id, str)
+            and ADVERSARIAL_CASE_ID_PATTERN.fullmatch(case_id) is not None
+        )
+        unique_case_id = False
+        if not valid_case_id:
+            invalid_case_id += 1
+        elif case_id in seen_case_ids:
+            duplicate_case_id += 1
+            duplicate_case_ids.add(case_id)
+        else:
+            seen_case_ids.add(case_id)
+            unique_case_id = True
+
         case_ok = case.get("ok")
         defect_class = case.get("defect_class")
         valid_defect_class = (
             isinstance(defect_class, str) and defect_class in REQUIRED_DEFECT_TYPES
         )
-        case_invalid = False
+        case_invalid = not unique_case_id
         if not valid_defect_class:
             invalid_defect_class += 1
             case_invalid = True
@@ -147,7 +168,7 @@ def verify_adversarial_corpus_gate(
         # Strict bool: a missing or non-bool ok (e.g. the string "true") is
         # treated as NOT caught — type-confusion must not pass.
         if case_ok is True:
-            if valid_defect_class:
+            if valid_defect_class and unique_case_id:
                 caught += 1
                 caught_by_defect_class[defect_class] += 1
         elif case_ok is False:
@@ -160,7 +181,8 @@ def verify_adversarial_corpus_gate(
         if case_invalid:
             invalid += 1
 
-    n_cases = len(list(cases))
+    n_cases = len(cases)
+    distinct_valid_case_count = len(seen_case_ids)
 
     # type-confusion guard on the declared count.
     declared = report.get("case_count")
@@ -171,15 +193,27 @@ def verify_adversarial_corpus_gate(
             f"case_count ({declared}) != number of case entries ({n_cases})"
         )
 
-    if n_cases < min_cases:
+    if distinct_valid_case_count < min_cases:
         reasons.append(
-            f"corpus below floor: {n_cases} cases < required minimum {min_cases}"
+            "corpus below floor: "
+            f"{distinct_valid_case_count} distinct valid cases "
+            f"< required minimum {min_cases}"
         )
     if not_caught > 0:
         reasons.append(f"{not_caught} adversarial case(s) NOT caught")
     if invalid > 0:
         if invalid_shape > 0:
             reasons.append(f"{invalid_shape} case(s) not objects (fail-closed)")
+        if invalid_case_id > 0:
+            reasons.append(
+                f"{invalid_case_id} case(s) with missing/invalid "
+                "case_id (fail-closed)"
+            )
+        if duplicate_case_id > 0:
+            reasons.append(
+                f"{duplicate_case_id} duplicate case_id occurrence(s) across "
+                f"{len(duplicate_case_ids)} value(s) (fail-closed)"
+            )
         if invalid_defect_class > 0:
             reasons.append(
                 f"{invalid_defect_class} case(s) with missing/invalid "
@@ -218,8 +252,8 @@ def verify_adversarial_corpus_gate(
     # bound to the right solver. report['ok'] is deliberately NOT consulted.
     ok = (
         not reasons
-        and n_cases >= min_cases
-        and caught == n_cases
+        and distinct_valid_case_count >= min_cases
+        and caught == distinct_valid_case_count
         and not_caught == 0
         and invalid == 0
         and bound_str == expected_solver_hash

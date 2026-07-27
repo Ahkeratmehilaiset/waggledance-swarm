@@ -297,6 +297,82 @@ def test_head_anchor_store_corruption_and_torn_tail_fail_closed(tmp_path) -> Non
     assert corrupt.reason.startswith("head_anchor_store_invalid:")
 
 
+def test_head_anchor_checkpoint_rejects_torn_ledger(tmp_path) -> None:
+    ledger_path = tmp_path / "torn-ledger.jsonl"
+    anchor_path = tmp_path / "anchors.jsonl"
+    ledger_path.write_bytes(b'{"partial":')
+
+    with pytest.raises(ValueError, match="ledger has torn tail"):
+        write_head_anchor_checkpoint(
+            str(anchor_path),
+            str(ledger_path),
+            window_id=_WINDOW,
+            ts_utc=_TS,
+            fsync=False,
+        )
+
+    assert anchor_path.exists() is False
+
+
+def test_head_anchor_checkpoint_rejects_unterminated_ledger_tail(
+    tmp_path,
+) -> None:
+    ledger_path = tmp_path / "unterminated-ledger.jsonl"
+    anchor_path = tmp_path / "anchors.jsonl"
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    _write_ledger(ledger_path, entries)
+    ledger_path.write_bytes(ledger_path.read_bytes().rstrip(b"\n"))
+    before = ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match="ledger has torn tail"):
+        write_head_anchor_checkpoint(
+            str(anchor_path),
+            str(ledger_path),
+            window_id=_WINDOW,
+            ts_utc=_TS,
+            fsync=False,
+        )
+
+    assert ledger_path.read_bytes() == before
+    assert anchor_path.exists() is False
+
+
+def test_head_anchor_checkpoint_rejects_unterminated_existing_tail(
+    tmp_path,
+) -> None:
+    ledger_path = tmp_path / "ledger.jsonl"
+    anchor_path = tmp_path / "anchors.jsonl"
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    _write_ledger(ledger_path, entries)
+    write_head_anchor_checkpoint(
+        str(anchor_path),
+        str(ledger_path),
+        window_id=_WINDOW,
+        ts_utc=_TS,
+        fsync=False,
+    )
+    anchor_path.write_bytes(anchor_path.read_bytes().rstrip(b"\r\n"))
+    before = anchor_path.read_bytes()
+
+    with pytest.raises(ValueError, match="anchor store has torn tail"):
+        write_head_anchor_checkpoint(
+            str(anchor_path),
+            str(ledger_path),
+            window_id="window:second",
+            ts_utc=_TS_1,
+            fsync=False,
+        )
+
+    assert anchor_path.read_bytes() == before
+    lookup = read_latest_head_anchor(
+        str(anchor_path),
+        str(ledger_path),
+    )
+    assert lookup.ok is False
+    assert lookup.torn_tail is True
+    assert lookup.reason == "head_anchor_store_torn_tail"
+
+
 def test_enabled_samples_are_nonempty_all_true_and_hash_validated() -> None:
     good = new_enabled_state_sample(window_id=_WINDOW, enabled=True, ts_utc=_TS)
     false_sample = new_enabled_state_sample(

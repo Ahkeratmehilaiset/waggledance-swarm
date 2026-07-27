@@ -319,9 +319,18 @@ def _read_head_anchor_entries(anchor_store_path: str) -> tuple[list[Mapping[str,
     if not anchor_store_path or not os.path.exists(anchor_store_path):
         return [], False
     entries: list[Mapping[str, Any]] = []
-    with open(anchor_store_path, "r", encoding="utf-8") as handle:
+    with open(
+        anchor_store_path,
+        "r",
+        encoding="utf-8",
+        newline="",
+    ) as handle:
         lines = handle.readlines()
     for index, line in enumerate(lines):
+        if not line.endswith("\n"):
+            if index == len(lines) - 1:
+                return entries, True
+            raise ValueError("anchor_store_unterminated_record")
         if not line.strip():
             continue
         try:
@@ -353,7 +362,14 @@ def write_head_anchor_checkpoint(
     anchors, torn_tail = _read_head_anchor_entries(anchor_store_path)
     if torn_tail:
         raise ValueError("anchor store has torn tail")
-    ledger_entries, _ledger_torn_tail = read_entries(ledger_path)
+    ledger_entries, ledger_torn_tail = read_entries(ledger_path)
+    if ledger_torn_tail:
+        raise ValueError("ledger has torn tail")
+    if os.path.exists(ledger_path) and os.path.getsize(ledger_path) > 0:
+        with open(ledger_path, "rb") as ledger_handle:
+            ledger_handle.seek(-1, os.SEEK_END)
+            if ledger_handle.read(1) != b"\n":
+                raise ValueError("ledger has torn tail")
     prev_anchor_hash = (
         str(anchors[-1][_ANCHOR_HASH_FIELD]) if anchors else GENESIS_PREV_HASH
     )
